@@ -166,6 +166,14 @@ if ($LASTEXITCODE -ne 0) { throw 'Native portability validation failed' }
 ```
 
 Preserve the toolchain, command, exit status, and named test results per OS.
+The portability lane qualifies every name-filtered Rust selection against
+its actual execution, so a moved or empty selection cannot pass. Linux-only
+Namespace replay remains owned by the required Linux lane. On native Windows,
+the lane first runs the deadline's real Job tests: literal arguments/status,
+Cargo dispatch, missing-Job refusal, timeout, leader exit and owner death.
+The Job is attached before launching the requested command; native Cargo does
+not depend on discovery of a Unix shebang/symlink addon. POSIX admission and
+process-group deadlines retain their separate Linux/macOS tests.
 Native crash qualification includes SQLite and live PostgreSQL separately;
 Linux-specific namespace/pidfd obligations remain in the required Linux gate.
 

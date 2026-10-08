@@ -5,11 +5,15 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import _strict_unittest as strict_unittest
+import deadline
 
 
 # Actual execution subjects are the input authority; temporary-directory walks
@@ -18,14 +22,16 @@ INPUT_GLOBS: tuple[str, ...] = (
     "scripts/ci/deadline.py",
     "scripts/ci/_deadline.sh",
     "scripts/ci/test_deadline.py",
+    "scripts/ci/_windows_job.py",
 )
 ROOT = Path(__file__).resolve().parents[2]
 DEADLINE = ROOT / INPUT_GLOBS[0]
 HELPER = ROOT / INPUT_GLOBS[1]
 
 
+@unittest.skipIf(os.name == "nt", "POSIX process groups and Cargo admission are owned by Linux/macOS")
 class DeadlineTests(unittest.TestCase):
-    def cargo_fixture(self, root, command, *, status=0, delay=0.4, arguments=()):
+    def cargo_fixture(self, root, command, *, status=0, delay=0.4, arguments=(), ready=False):
         # This fixture owns only admission and Cargo's documented argv protocol;
         # it delegates execution/cleanup to the actual shared deadline owner.
         cargo = root / "cargo"
@@ -36,7 +42,9 @@ if [ -z "${FIXTURE_ADMITTED:-}" ]; then
     export FIXTURE_ADMITTED=1
 fi
 case "$1" in
-    awaken-ci-deadline) entry=$(command -v "cargo-$1"); exec "$entry" "$@" ;;
+    awaken-ci-deadline)
+        [ "$FIXTURE_READY" != 1 ] || printf 'ready\\n'
+        entry=$(command -v "cargo-$1"); exec "$entry" "$@" ;;
     fixture) shift; exec "$@" ;;
     *) exit 2 ;;
 esac
@@ -44,7 +52,7 @@ esac
         cargo.chmod(0o755)
         environment = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}",
                            TMPDIR=str(root), FIXTURE_ADMISSION_DELAY=str(delay),
-                           FIXTURE_ADMISSION_STATUS=str(status))
+                           FIXTURE_ADMISSION_STATUS=str(status), FIXTURE_READY=str(int(ready)))
         environment.pop("FIXTURE_ADMITTED", None)
         result = subprocess.run(
             ["bash", "-c", 'source "$1"; shift; run_with_deadline "$@"',
@@ -90,11 +98,12 @@ esac
 
     def test_cargo_execution_still_times_out_after_admission(self):
         # A4: C1 admission succeeds; C2 execution exceeds its unchanged budget.
-        # Effects: actual execution emits readiness, then returns 124. D1-D4
-        # below own the same run()/process-group cleanup's full TERM matrix.
+        # Effects: admission reaches the execution entry, then returns 124.
+        # D1-D4 below own real child readiness and the full TERM matrix; this
+        # row isolates admission/dispatch without timing a second shell startup.
         with tempfile.TemporaryDirectory() as tmp:
             result = self.cargo_fixture(
-                Path(tmp), ["bash", "-c", "printf 'ready\\n'; exec sleep 100"],
+                Path(tmp), ["bash", "-c", "exec sleep 100"], ready=True,
             )
             self.assertEqual(result.returncode, 124, result.stderr)
             self.assertEqual(result.stdout, "ready\n")
@@ -105,15 +114,14 @@ esac
         # A1/A2 above own the matching-name/unchanged-argv positive rules.
         with tempfile.TemporaryDirectory() as tmp:
             entry = Path(tmp) / "cargo-fixture-deadline"
-            entry.symlink_to(DEADLINE)
             marker = Path(tmp) / "executed"
             for arguments in ([], ["wrong-name", "1", "--", sys.executable, "-c",
                                   "from pathlib import Path; import sys; Path(sys.argv[1]).touch()",
                                   str(marker)]):
                 with self.subTest(arguments=arguments):
-                    result = subprocess.run([sys.executable, str(entry), *arguments],
-                                            capture_output=True, text=True, timeout=3)
-                    self.assertEqual(result.returncode, 2, result.stderr)
+                    # Parser unit: the successful external-command integration
+                    # is A1/A2; invalid argv need no interpreter startup race.
+                    self.assertEqual(deadline.main([str(entry), *arguments]), 2)
                     self.assertFalse(marker.exists())
 
     def test_timeout_reaps_group_even_when_leader_exits_first(self):
@@ -154,19 +162,25 @@ while True:
                         # Shorten only cleanup grace in this isolated Python
                         # invocation; production's five-second grace is unchanged.
                         driver = """
-import importlib.util, sys
+import importlib.util, subprocess, sys
 spec = importlib.util.spec_from_file_location('deadline', sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 m.KILL_GRACE_SECONDS = 0.15
-raise SystemExit(m.run(0.5, sys.argv[2:]))
+process = subprocess.Popen(sys.argv[2:], start_new_session=True, stdout=subprocess.PIPE)
+ready = process.stdout.readline()
+assert ready == b'ready\\n', 'both signal dispositions must be installed before timing'
+result = m._wait_posix(process, 0.5)
+assert process.stdout.read() == b'', 'all descendant output handles must close'
+sys.stdout.buffer.write(ready)
+raise SystemExit(result)
 """
                         try:
                             result = subprocess.run(
                                 [sys.executable, "-c", driver, str(DEADLINE),
                                  sys.executable, "-c", code, str(coordinate),
                                  str(int(leader_ignores)), str(int(child_ignores))],
-                                capture_output=True, text=True, timeout=3,
+                                capture_output=True, text=True, timeout=15,
                             )
                             self.assertEqual(result.returncode, 124, result.stderr)
                             self.assertEqual(result.stdout.strip(), "ready")
@@ -211,6 +225,143 @@ raise SystemExit(m.run(0.5, sys.argv[2:]))
                 )
                 self.assertEqual(result.returncode, 128 + number)
                 self.assertIn(f"command terminated by signal {number}", result.stderr)
+
+
+@unittest.skipUnless(os.name == "nt", "Windows Job ownership requires native Windows")
+class WindowsDeadlineTests(unittest.TestCase):
+    @staticmethod
+    def native_bash():
+        configured = os.environ.get("AWAKEN_NATIVE_BASH")
+        if configured:
+            return configured
+        git = shutil.which("git")
+        candidate = Path(git).resolve().parent.parent / "bin/bash.exe" if git else None
+        if candidate is None or not candidate.is_file():
+            raise RuntimeError("Set AWAKEN_NATIVE_BASH to the native Git Bash executable")
+        return str(candidate)
+
+    def test_native_status_and_literal_arguments(self):
+        arguments = ("with spaces", "'quotes'", "$(touch unexpected);`literal`")
+        for status in (0, 23):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                command = [Path(sys.executable).as_posix(), "-c",
+                           f"import json, sys; print(json.dumps(sys.argv[1:])); raise SystemExit({status})",
+                           *arguments]
+                # Introduce literal argv at the shell-helper boundary. Git
+                # Bash's native startup parser itself consumes bare apostrophes
+                # in Windows argv; that earlier boundary is not the deadline.
+                script = root / "literal-arguments.sh"
+                script.write_text(f"source {shlex.quote(HELPER.as_posix())}\nrun_with_deadline 30 "
+                                  + " ".join(shlex.quote(arg) for arg in command) + "\n",
+                                  encoding="utf-8", newline="\n")
+                entries = (
+                    [sys.executable, str(DEADLINE), "30", "--", *command],
+                    [self.native_bash(), script.as_posix()],
+                )
+                for entry in entries:
+                    with self.subTest(status=status, entry=entry[0]):
+                        result = subprocess.run(entry, cwd=root, capture_output=True, text=True,
+                                                encoding="utf-8", errors="replace", timeout=40)
+                        self.assertEqual(result.returncode, status, result.stderr)
+                        self.assertEqual(json.loads(result.stdout), list(arguments))
+                        self.assertFalse((root / "unexpected").exists())
+
+    def test_native_cargo_dispatch_does_not_require_a_unix_addon(self):
+        result = subprocess.run(
+            [self.native_bash(), "-c", 'source "$1"; run_with_deadline 30 cargo --version',
+             "native-cargo", HELPER.as_posix()], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=40)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout.startswith("cargo "), result.stdout)
+
+    def test_missing_job_refuses_command_before_effects(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "executed"
+            result = subprocess.run(
+                [sys.executable, str(DEADLINE), "--windows-job-child", "awaken-ci-absent-job", "--",
+                 sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).touch()",
+                 str(marker)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(marker.exists())
+
+    def owned_tree(self, *, exit_leader=False, kill_owner=False):
+        # W1 timeout with a live leader, W2 normal leader exit with a surviving
+        # child, W3 deadline-owner death. All must close inherited stdout and
+        # terminate the same real child, observed through a retained OS handle.
+        # A file barrier lets this test retain the child handle before effects;
+        # cleanup uses that handle, never a reused PID or unrelated process.
+        import ctypes
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        kernel.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+        kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+        with tempfile.TemporaryDirectory(prefix="awaken-windows-deadline-") as tmp:
+            root = Path(tmp)
+            marker, proceed = root / "child-pid", root / "proceed"
+            fixture = root / "owned-tree.py"
+            fixture.write_text('''import os, subprocess, sys, time
+from pathlib import Path
+if sys.argv[1] == 'child':
+    marker = Path(sys.argv[2])
+    pending = marker.with_suffix('.pending')
+    pending.write_text(str(os.getpid()))
+    pending.replace(marker)
+    time.sleep(300)
+else:
+    subprocess.Popen([sys.executable, __file__, 'child', sys.argv[2]])
+    until = time.monotonic() + 20
+    while not Path(sys.argv[3]).exists():
+        assert time.monotonic() < until, 'parent barrier was not released'
+        time.sleep(0.01)
+    print('ready', flush=True)
+    if sys.argv[1] == 'exit':
+        raise SystemExit(23)
+    time.sleep(300)
+''', encoding="utf-8")
+            budget = "30" if exit_leader or kill_owner else "10"
+            driver = subprocess.Popen(
+                [sys.executable, str(DEADLINE), budget, "--", sys.executable, str(fixture),
+                 "exit" if exit_leader else "wait", str(marker), str(proceed)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+            child_handle = None
+            try:
+                until = time.monotonic() + 8
+                while not marker.exists() and driver.poll() is None and time.monotonic() < until:
+                    time.sleep(0.01)
+                self.assertTrue(marker.exists(), "owned native child did not reach its readiness barrier")
+                child_handle = kernel.OpenProcess(0x00100001, False, int(marker.read_text()))
+                self.assertTrue(child_handle, "cannot retain the owned child's synchronization/cleanup handle")
+                proceed.touch()
+                if kill_owner:
+                    driver.kill()
+                output, errors = driver.communicate(timeout=15)
+                if not kill_owner:
+                    self.assertEqual(driver.returncode, 23 if exit_leader else 124, errors)
+                    self.assertEqual(output.strip(), "ready")
+                self.assertEqual(kernel.WaitForSingleObject(child_handle, 3000), 0,
+                                 "owned child survived timeout, leader exit, or owner death")
+            finally:
+                if driver.poll() is None:
+                    driver.kill()
+                if child_handle:
+                    if kernel.WaitForSingleObject(child_handle, 0) != 0:
+                        kernel.TerminateProcess(child_handle, 1)
+                    kernel.CloseHandle(child_handle)
+                driver.communicate(timeout=5)
+
+    def test_native_job_reaps_children_on_timeout_and_leader_exit(self):
+        for exit_leader in (False, True):
+            with self.subTest(exit_leader=exit_leader):
+                self.owned_tree(exit_leader=exit_leader)
+
+    def test_native_job_reaps_children_when_deadline_owner_dies(self):
+        self.owned_tree(kill_owner=True)
 
 
 if __name__ == "__main__":

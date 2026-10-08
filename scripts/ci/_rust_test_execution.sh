@@ -23,7 +23,10 @@ run_required_rust_tests() (
   # A failed build/list cannot become an empty successful plan. Existing
   # deadline.py owns process-tree termination and Cargo admission for both.
   run_with_deadline "$budget" cargo test "${locked[@]}" "$@" ${separator:+$separator} --list > "$evidence/list.log" 2>&1 || {
-    cat "$evidence/list.log"; exit 1;
+    status=$?
+    cat "$evidence/list.log"
+    echo "required test listing failed with status $status; execution evidence: $evidence" >&2
+    exit "$status"
   }
   remaining=$((budget - SECONDS + started))
   [ "$remaining" -gt 0 ] || { echo "required-test budget exhausted by listing" >&2; exit 124; }
