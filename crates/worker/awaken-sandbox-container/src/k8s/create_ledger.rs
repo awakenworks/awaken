@@ -11,6 +11,7 @@
 
 mod isolation;
 mod state;
+pub(crate) use isolation::original_guard_release_required;
 pub(crate) use isolation::release_original_guard;
 pub(crate) use isolation::verify_reservation as verify_pod_isolation;
 pub use isolation::{

@@ -15,6 +15,38 @@ mod surfaces;
 #[cfg(test)]
 mod tests;
 
+fn broker_router(
+    transport: &worker_transport_security::WorkerTransport,
+    directory: &awaken_coordinator::WorkerDirectoryHandle,
+    clock: &Arc<dyn awaken_time::WallClock>,
+) -> Option<Router> {
+    #[cfg(feature = "container-k8s")]
+    {
+        transport.create_broker_router(directory.clone(), clock.clone())
+    }
+    #[cfg(not(feature = "container-k8s"))]
+    {
+        let _ = (transport, directory, clock);
+        None
+    }
+}
+
+fn resource_management_router(
+    resources: &awaken_resource_application::ResourcesApplication,
+    authorities: &awaken_resource_application::ResourceAuthorities,
+    credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
+) -> Router {
+    awaken_coordinator::resources_router(awaken_coordinator::ResourcesRouterInput {
+        repositories: resources.repositories(credentials),
+        files: resources.files(),
+        memories: authorities.memory_repository(),
+        memory_stores: resources.memory_stores(),
+        skills: Some(authorities.skill_store()),
+        purge: resources.purge_scheduler(),
+        clock: authorities.clock(),
+    })
+}
+
 pub(super) async fn prepare_runtime_routers(
     stores: ProcessStores,
     iam: Option<Arc<ManagementAuthz>>,
@@ -758,22 +790,11 @@ pub(super) async fn prepare_runtime_routers(
     let private_router = executable_agent_private_router
         .merge(executable_environment_private_router)
         .merge(worker_observation_private_router);
-    let resource_authorities = resource_application.authorities();
-    let resource_management_router =
-        awaken_coordinator::resources_router(awaken_coordinator::ResourcesRouterInput {
-            repositories: resource_application.repositories(repository_credentials),
-            files: resource_application.files(),
-            memories: resource_authorities.memory_repository(),
-            memory_stores: resource_application.memory_stores(),
-            skills: Some(resource_authorities.skill_store()),
-            purge: resource_application.purge_scheduler(),
-            clock: resource_authorities.clock(),
-        });
-    #[cfg(feature = "container-k8s")]
-    let worker_create_broker_router =
-        worker_transport.create_broker_router(worker_directory.clone(), clock.clone());
-    #[cfg(not(feature = "container-k8s"))]
-    let worker_create_broker_router = None;
+    let resource_management_router = resource_management_router(
+        &resource_application,
+        &resource_authorities,
+        repository_credentials,
+    );
     let coordinator = awaken_coordinator::build_coordinator_component(
         awaken_coordinator::CoordinatorDependencies {
             service_lifecycle: process.service_lifecycle.clone(),
@@ -795,7 +816,11 @@ pub(super) async fn prepare_runtime_routers(
             worker_execution_bindings,
             worker_execution_stops,
             worker_relay_targets,
-            worker_create_broker_router,
+            worker_create_broker_router: broker_router(
+                &worker_transport,
+                &worker_directory,
+                &clock,
+            ),
             credential_deliveries: attempt_credential_deliveries,
             repository_transport_authorizer: process.repository_transport_authorizer,
             worker_directory: worker_directory.clone(),

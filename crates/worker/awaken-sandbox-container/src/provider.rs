@@ -51,6 +51,11 @@ fn refresh_effect_fence(
 
 // ── Provider + Sandbox over the port ────────────────────────────────────────────
 
+struct ReconstructedTerminalHandle {
+    handle: pc::SandboxHandle,
+    guarded_claim: bool,
+}
+
 /// Realizes [`pc::Sandbox`]es on a [`ContainerRuntime`].
 pub struct ContainerProvider<R: ContainerRuntime> {
     pub(super) runtime: Arc<R>,
@@ -1140,6 +1145,73 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         }
     }
 
+    async fn reconstruct_missing_terminal_handle(
+        &self,
+        spec: &pc::SandboxSpec,
+        expected_effect_fence: Option<&pc::SandboxEffectFence>,
+        admit: &(impl Fn() -> Result<(), pc::SandboxError> + Sync),
+    ) -> Result<Option<ReconstructedTerminalHandle>, pc::SandboxError> {
+        let (plan, adoption_fingerprint) = self.adoption_plan(spec)?;
+        let evidence = self
+            .runtime
+            .missing_handle_terminal_evidence(&spec.scope, &plan, expected_effect_fence)
+            .await
+            .map_err(pc::SandboxError::from)?;
+        admit()?;
+        let (container_id, runtime_handle) = match evidence {
+            MissingHandleTerminalEvidence::Unmaterialized
+            | MissingHandleTerminalEvidence::Isolated => return Ok(None),
+            MissingHandleTerminalEvidence::Unknown => {
+                return Err(pc::SandboxError::invalid(
+                    "container provider cannot dispose an in-flight restore without a durable handle",
+                ));
+            }
+            MissingHandleTerminalEvidence::ExactIncarnation {
+                container_id,
+                runtime_handle,
+            } => (container_id, runtime_handle),
+        };
+        // The missing handle never retained mount or control participants.
+        if !spec.mounts.is_empty() || !spec.control_services.is_empty() {
+            return Err(pc::SandboxError::invalid(
+                "materialized container has unretained terminal participants",
+            ));
+        }
+        #[cfg(feature = "k8s")]
+        let guarded_claim = matches!(
+            runtime_handle,
+            crate::ContainerContinuationHandle::KubernetesGuardedClaim(_)
+        );
+        #[cfg(not(feature = "k8s"))]
+        let guarded_claim = false;
+        let handle = pc::SandboxHandle::container_v2(
+            &spec.scope,
+            ContainerSandboxHandleV2 {
+                previous: ContainerSandboxHandleV1 {
+                    container_id,
+                    outputs_path: spec.outputs_path.clone(),
+                    base_env: spec.env.clone(),
+                    live_input_projection: self.runtime.supports_live_input_projection(),
+                    continuation_excluded_paths: Vec::new(),
+                    runtime_handle: Some(runtime_handle),
+                    sandbox_control_incarnation: None,
+                    control_services: Default::default(),
+                },
+                adoption_fingerprint: adoption_fingerprint.clone(),
+                realization_fingerprint: container_realization_fingerprint(
+                    spec,
+                    &adoption_fingerprint,
+                    &plan.image,
+                ),
+                owned_paths: Vec::new(),
+            },
+        );
+        Ok(Some(ReconstructedTerminalHandle {
+            handle,
+            guarded_claim,
+        }))
+    }
+
     async fn prepare_terminal_container_for_effect(
         &self,
         spec: &pc::SandboxSpec,
@@ -1152,77 +1224,19 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             || pc::with_current_sandbox_effect(terminal_effect_fence, authority, |_| Ok(()));
         admit()?;
         let reconstructed = handle.is_none();
-        let recovered_handle;
-        #[cfg(feature = "k8s")]
-        let mut guarded_claim = false;
-        #[cfg(not(feature = "k8s"))]
-        let guarded_claim = false;
-        let handle = match handle {
-            Some(handle) => handle,
-            None => {
-                let (plan, adoption_fingerprint) = self.adoption_plan(spec)?;
-                let evidence = self
-                    .runtime
-                    .missing_handle_terminal_evidence(&spec.scope, &plan, expected_effect_fence)
-                    .await
-                    .map_err(pc::SandboxError::from)?;
-                admit()?;
-                match evidence {
-                    MissingHandleTerminalEvidence::Unmaterialized
-                    | MissingHandleTerminalEvidence::Isolated => return Ok(None),
-                    MissingHandleTerminalEvidence::Unknown => {
-                        return Err(pc::SandboxError::invalid(
-                            "container provider cannot dispose an in-flight restore without a durable handle",
-                        ));
-                    }
-                    MissingHandleTerminalEvidence::ExactIncarnation {
-                        container_id,
-                        runtime_handle,
-                    } => {
-                        // This is only a temporary typed input to the existing
-                        // terminal adoption/disposal path. A mount or control
-                        // participant needs evidence that the missing handle
-                        // would have retained and must stay Unknown here.
-                        if !spec.mounts.is_empty() || !spec.control_services.is_empty() {
-                            return Err(pc::SandboxError::invalid(
-                                "materialized container has unretained terminal participants",
-                            ));
-                        }
-                        #[cfg(feature = "k8s")]
-                        {
-                            guarded_claim = matches!(
-                                runtime_handle,
-                                crate::ContainerContinuationHandle::KubernetesGuardedClaim(_)
-                            );
-                        }
-                        recovered_handle = pc::SandboxHandle::container_v2(
-                            &spec.scope,
-                            ContainerSandboxHandleV2 {
-                                previous: ContainerSandboxHandleV1 {
-                                    container_id,
-                                    outputs_path: spec.outputs_path.clone(),
-                                    base_env: spec.env.clone(),
-                                    live_input_projection: self
-                                        .runtime
-                                        .supports_live_input_projection(),
-                                    continuation_excluded_paths: Vec::new(),
-                                    runtime_handle: Some(runtime_handle),
-                                    sandbox_control_incarnation: None,
-                                    control_services: Default::default(),
-                                },
-                                adoption_fingerprint: adoption_fingerprint.clone(),
-                                realization_fingerprint: container_realization_fingerprint(
-                                    spec,
-                                    &adoption_fingerprint,
-                                    &plan.image,
-                                ),
-                                owned_paths: Vec::new(),
-                            },
-                        );
-                        &recovered_handle
-                    }
-                }
-            }
+        let recovered_handle = if reconstructed {
+            self.reconstruct_missing_terminal_handle(spec, expected_effect_fence, &admit)
+                .await?
+        } else {
+            None
+        };
+        let guarded_claim = recovered_handle
+            .as_ref()
+            .is_some_and(|recovered| recovered.guarded_claim);
+        let handle = match (handle, recovered_handle.as_ref()) {
+            (Some(handle), _) => handle,
+            (None, Some(recovered)) => &recovered.handle,
+            (None, None) => return Ok(None),
         };
         if guarded_claim {
             // The original Pod never became the Session environment. The
