@@ -9,6 +9,7 @@
 //! the Managed protocol adapter (identity, ordering and projection).
 
 mod acceptance;
+mod accepted_prefix;
 mod activation;
 mod aggregate;
 mod committed_project;
@@ -25,6 +26,7 @@ mod lifecycle;
 mod observation;
 mod order;
 mod outcome;
+mod position;
 mod prefix;
 mod role;
 mod stop;
@@ -33,6 +35,10 @@ mod transcript_plan;
 mod usage;
 
 pub use acceptance::{AcceptanceFence, LifecycleAcceptance, accept_lifecycle};
+pub use accepted_prefix::{
+    AcceptedLifecycle, ChildThreadStates, accept_committed_lifecycle, child_thread_states,
+    committed_pause_health, current_recovery_run,
+};
 pub use activation::{ActivationFailureProjection, activation_failure_projection};
 pub use aggregate::{
     AggregateFallbackClose, AggregateIntervalClose, AggregatePlan, AggregateStop, IntervalHold,
@@ -65,8 +71,9 @@ pub use interval::{
 };
 pub use key::{EventIdentity, FactProvenance};
 pub use lifecycle::{
-    ChildLifecycle, CoordinatedThread, ThreadStatus, archive_children, initial_coordinated_threads,
-    project_child_lifecycle, root_lifecycle_opening_facts, terminate_session,
+    ChildLifecycle, CoordinatedThread, RootTerminalFacts, ThreadStatus, archive_children,
+    initial_coordinated_threads, project_child_lifecycle, root_lifecycle_opening_facts,
+    root_run_boundaries, root_terminal_facts, root_terminal_idle_key, terminate_session,
 };
 pub use observation::run_observation_facts;
 pub use order::{EventPosition, Ordinal, historical_pending_projection_order};
@@ -74,6 +81,7 @@ pub use outcome::{
     AnchoredOutcome, OutcomeAnchor, anchor_outcome, outcome_owns_failure_run,
     outcome_terminal_commit_cursor, validate_outcome,
 };
+pub use position::{AnchoredEvent, EventAnchor, position_events};
 pub use prefix::same_thread_projection_prefix;
 pub use role::{ManagedEventType, TranscriptRole, phase};
 pub use stop::{StopFact, terminal_stop};

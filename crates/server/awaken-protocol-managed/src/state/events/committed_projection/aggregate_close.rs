@@ -8,9 +8,7 @@
 use super::candidate_evidence::CandidateEvidence;
 use super::root_projection::RootProjection;
 use super::*;
-use awaken_managed_session_events::{
-    DerivedSessionEvent, EventIdentity, FactProvenance, ManagedEventType, SessionEventKind,
-};
+use awaken_managed_session_events::{EventIdentity, FactProvenance, ManagedEventType};
 
 impl ManagedState {
     pub(super) fn close_aggregate(
@@ -28,40 +26,31 @@ impl ManagedState {
         let historical_pending = &evidence.historical_pending;
         // Every root Run boundary publishes its Thread idle (and fault) once,
         // from its own committed lifecycle and audit.
-        for terminal in evidence.acceptance.accepted.iter().filter(|event| {
-            event.thread_id.0 == session_id
-                && awaken_session_event_contract::SessionAgentRunBoundary::is_boundary(event.kind)
-        }) {
-            let idle_key = EventIdentity::new(
-                record.session.id.clone(),
-                ManagedEventType::RootLifecycleStatusIdle,
-                FactProvenance::Lifecycle {
-                    cursor: terminal.cursor.0,
-                },
-            );
+        for terminal in awaken_managed_session_events::root_run_boundaries(
+            session_id,
+            &evidence.acceptance.accepted,
+        ) {
+            let idle_key =
+                awaken_managed_session_events::root_terminal_idle_key(&record.session.id, terminal);
             let idle_id = record.fact_id(&idle_key);
             if record.has_event_id(&idle_id) {
                 continue;
             }
-            Self::append_root_terminal_error(
-                record,
+            let facts = awaken_managed_session_events::root_terminal_facts(
+                &record.session.id,
                 terminal,
                 evidence
                     .outcomes
                     .iter()
                     .any(|projection| projection.owns_failure_run(&terminal.run_id)),
                 evidence.root.as_ref(),
-            )?;
-            let stop = awaken_managed_session_events::terminal_stop(
-                &terminal.state,
-                historical_pending.get(&terminal.cursor),
-                terminal.await_reason.as_ref(),
-                false,
-            );
-            record.publish_fact_once(
-                &DerivedSessionEvent::new(idle_key, SessionEventKind::ThreadIdle(stop)),
-                None,
-            )?;
+                historical_pending,
+            )
+            .map_err(projection_error)?;
+            if let Some(error) = &facts.error {
+                record.publish_fact_once(error, None)?;
+            }
+            record.publish_fact_once(&facts.idle, None)?;
             record
                 .checkpoint
                 .progress

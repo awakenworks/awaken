@@ -96,12 +96,7 @@ impl ManagedState {
     pub(super) fn current_recovery_run(
         snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
     ) -> Result<Option<&awaken_agent_contract::agent::run::Record>, StateError> {
-        snapshot.current_run().map_err(|error| {
-            StateError::projection_recovery_required(format!(
-                "Runtime recovery for Thread {:?} is damaged: {error}; interrupt the Session to settle it",
-                snapshot.thread_id.0
-            ))
-        })
+        awaken_managed_session_events::current_recovery_run(snapshot).map_err(projection_error)
     }
 
     /// Return the latest well-formed state-change audit for one Run. Both the
@@ -362,48 +357,6 @@ impl ManagedState {
                 pending,
             )
         }))
-    }
-
-    /// Refuse a committed prefix whose current Run is paused without the
-    /// target of that exact lifecycle commit. The timeline's one audit join
-    /// supplies `targets`; a newer audit without a new lifecycle transition
-    /// cannot retroactively repair the wait. BudgetReached needs no target.
-    pub(super) fn committed_pause_health(
-        snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
-        lifecycle: &[RunLifecycleEvent],
-        targets: &std::collections::HashMap<
-            RunLifecycleCursor,
-            awaken_agent_contract::agent::awaiting::AwaitTarget,
-        >,
-    ) -> Result<(), StateError> {
-        let Some(current) = Self::current_recovery_run(snapshot)? else {
-            return Ok(());
-        };
-        if !matches!(
-            current.state,
-            awaken_agent_contract::agent::run::RunState::Awaiting
-        ) {
-            return Ok(());
-        }
-        let Some(event) = lifecycle
-            .iter()
-            .rev()
-            .find(|event| event.thread_id == snapshot.thread_id && event.run_id == current.id)
-        else {
-            return Err(StateError::projection_recovery_required(
-                "Runtime recovery exposed an Awaiting Run without its answerable ticket; interrupt the Session to settle it",
-            ));
-        };
-        if event.kind == RunLifecycleEventKind::Awaiting
-            && (targets.contains_key(&event.cursor)
-                || event.await_reason.as_ref()
-                    == Some(&awaken_agent_contract::agent::awaiting::AwaitReason::BudgetReached))
-        {
-            return Ok(());
-        }
-        Err(StateError::projection_recovery_required(
-            "Runtime recovery exposed an Awaiting Run without its answerable ticket; interrupt the Session to settle it",
-        ))
     }
 
     pub(super) fn public_tool_thread_id(session_id: &str, owner_thread_id: Option<&str>) -> String {

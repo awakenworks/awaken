@@ -1852,7 +1852,8 @@ fn committed_pause_health_from_snapshot(
     snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
 ) -> Result<(), StateError> {
     let (lifecycle, targets) = committed_await_evidence(snapshot)?;
-    ManagedState::committed_pause_health(snapshot, &lifecycle, &targets)
+    awaken_managed_session_events::committed_pause_health(snapshot, &lifecycle, &targets)
+        .map_err(projection_error)
 }
 
 /// The call a committed pause names in its exact audit after health passes.
@@ -1860,7 +1861,7 @@ fn audited_current_pause(
     snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
 ) -> Option<String> {
     let (lifecycle, targets) = committed_await_evidence(snapshot).ok()?;
-    ManagedState::committed_pause_health(snapshot, &lifecycle, &targets).ok()?;
+    awaken_managed_session_events::committed_pause_health(snapshot, &lifecycle, &targets).ok()?;
     lifecycle
         .iter()
         .rev()

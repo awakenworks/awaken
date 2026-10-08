@@ -9,9 +9,9 @@
 
 use super::*;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
-use awaken_managed_session_events::{AcceptanceFence, LifecycleAcceptance, accept_lifecycle};
+use awaken_managed_session_events::LifecycleAcceptance;
 use awaken_time::WallClockExt as _;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// One budget-reach transition whose owning interval has closed, with its
 /// public usage and limit already priced.
@@ -97,24 +97,11 @@ impl CandidateEvidence {
             .collect::<HashMap<_, _>>();
         // A child with no committed Run yet has no state to project; a damaged
         // prefix is surfaced instead of silently dropping the child's state.
-        let mut child_latest_run_states = HashMap::new();
-        for (thread_id, snapshot) in &children {
-            if let Some(run) = ManagedState::current_recovery_run(snapshot)? {
-                child_latest_run_states.insert(thread_id.clone(), run.state.clone());
-            }
-        }
-        let child_dispositions = children
-            .iter()
-            .map(|(thread_id, snapshot)| {
-                awaken_agent_contract::thread_disposition_from_committed_state(&snapshot.state)
-                    .map(|disposition| (thread_id.clone(), disposition))
-                    .map_err(|error| {
-                        StateError::Run(RunError::internal(format!(
-                            "recover coordinated Thread disposition: {error}"
-                        )))
-                    })
-            })
-            .collect::<Result<HashMap<_, _>, _>>()?;
+        let awaken_managed_session_events::ChildThreadStates {
+            latest_run_states: child_latest_run_states,
+            dispositions: child_dispositions,
+        } = awaken_managed_session_events::child_thread_states(&children)
+            .map_err(projection_error)?;
         let root_response_coordinates = root.as_ref().map_or_else(HashMap::new, |snapshot| {
             let run_ids = snapshot
                 .runs
@@ -162,56 +149,16 @@ impl CandidateEvidence {
         }
         let usage_done = started.elapsed();
 
-        let known_children = links
-            .iter()
-            .map(|link| link.thread_id.0.as_str())
-            .collect::<HashSet<_>>();
-        // The target of every Awaiting commit, read from that commit's own
-        // audit row. A live ticket is never an input: the audit is committed
-        // with the ticket and outlives it, so a pause classifies the same
-        // before and after its ticket is consumed. A pause whose target no
-        // client answers (a scheduled action, a delegation) is still
-        // classified by it; only a pause that left no target blocks.
-        let targets =
-            awaken_managed_session_events::audited_await_targets(&lifecycle, |thread_id| {
-                if thread_id == session_id {
-                    root.as_ref()
-                } else {
-                    children.get(thread_id)
-                }
-            })
-            .map_err(projection_error)?;
-        // Health and fact admission consume the same exact-cursor audit map.
-        // A later repeated Awaiting audit cannot authorize an older wait.
-        for snapshot in root.iter().chain(children.values()) {
-            ManagedState::committed_pause_health(snapshot, &lifecycle, &targets)?;
-        }
-        let audited = targets
-            .iter()
-            .filter_map(|(cursor, target)| Some((*cursor, Pending::from_await_target(target)?)))
-            .collect::<HashMap<_, _>>();
-        let acceptance = accept_lifecycle(
+        // The accepted lifecycle and every accepted pause's ticket, each read
+        // from that pause's own committed audit, never from a live ticket.
+        let accepted = awaken_managed_session_events::accept_committed_lifecycle(
+            session_id,
+            root.as_ref(),
+            &children,
+            &links,
             lifecycle,
-            &AcceptanceFence {
-                session_id,
-                root: root.as_ref(),
-                children: &children,
-                known_children: &known_children,
-            },
-            // Every candidate begins from an empty committed timeline; the
-            // acceptance fence sees the full durable lifecycle prefix.
-            RunLifecycleCursor(0),
-            |event| targets.contains_key(&event.cursor),
-        );
-        let historical_pending = acceptance
-            .accepted
-            .iter()
-            .filter_map(|event| {
-                audited
-                    .get(&event.cursor)
-                    .map(|pending| (event.cursor, pending.clone()))
-            })
-            .collect::<HashMap<_, _>>();
+        )
+        .map_err(projection_error)?;
         // Price only the transitions whose public pause is anchored by this
         // accepted committed prefix. A crossing hidden behind an answerable
         // ticket cannot be inferred from the current Session status.
@@ -223,8 +170,8 @@ impl CandidateEvidence {
                 awaken_managed_session_events::budget_reach_projection_close_cursor(
                     persisted,
                     transition,
-                    &acceptance.accepted,
-                    &historical_pending,
+                    &accepted.acceptance.accepted,
+                    &accepted.historical_pending,
                 )
                 .is_some()
             })
@@ -257,23 +204,11 @@ impl CandidateEvidence {
             .collect::<Result<Vec<_>, StateError>>()?;
         // A Thread's current answerable call is its latest accepted
         // lifecycle commit when that commit is an audited pause.
-        let mut latest_by_thread = HashMap::<&str, &RunLifecycleEvent>::new();
-        for event in &acceptance.accepted {
-            latest_by_thread.insert(event.thread_id.0.as_str(), event);
-        }
-        let current_pending = |thread_id: &str| {
-            latest_by_thread
-                .get(thread_id)
-                .filter(|event| event.kind == RunLifecycleEventKind::Awaiting)
-                .and_then(|event| historical_pending.get(&event.cursor))
-                .cloned()
-        };
-        let child_pending = children
-            .keys()
-            .filter_map(|thread_id| {
-                current_pending(thread_id).map(|pending| (thread_id.clone(), pending))
-            })
-            .collect::<HashMap<_, _>>();
+        let child_pending = accepted.current_pending(children.keys());
+        let awaken_managed_session_events::AcceptedLifecycle {
+            acceptance,
+            historical_pending,
+        } = accepted;
         for thread_id in &acceptance.blocked_threads {
             transcripts.remove(thread_id);
         }
