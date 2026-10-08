@@ -69,69 +69,67 @@ fn admit_pod(
     Ok(())
 }
 
-impl K8sRuntime {
-    pub(super) async fn persist_checkpoint_upload(
-        &self,
-        expectation: ContainerObservationExpectation<'_>,
-        access: ContainerCheckpointAccess<'_>,
-        mutation: ContainerCheckpointMutation<'_>,
-    ) -> Result<Option<pc::SandboxCheckpointUpload>, RuntimeError> {
-        access.admit().map_err(backend)?;
-        let pods = self.pods();
-        let observed = pods.get(expectation.container_id).await.map_err(backend)?;
-        admit_pod(&observed, expectation, access)?;
-        let claim_name = continuation_claim_for_pod(expectation.container_id)?;
-        let claim = self
-            .persistent_volume_claims()
-            .get(&claim_name)
-            .await
-            .map_err(backend)?;
-        access.admit().map_err(backend)?;
-        let expected_claim = continuation::bound_claim_uid(&observed)
-            .expect("Pod admission proved the exact claim UID");
-        continuation::rebuild_claim_admission(&claim, expected_claim)?;
-        let previous = participant(&observed)?;
-        let next = ContainerCheckpointParticipant::apply(previous.as_ref(), access, mutation)
-            .map_err(backend)?;
-        // Exact replay needs no write, but still consumed fresh Pod/PVC and
-        // current-authority evidence. A copied receipt alone is never a grant.
-        if previous.as_ref() == Some(&next)
-            && pod_effect_fence(observed.metadata.annotations.as_ref())?.as_ref()
-                == Some(access.effect_fence)
-        {
-            return Ok(next.upload());
-        }
-        let mut replacement = observed.clone();
-        stamp_effect_fence(&mut replacement, access.effect_fence);
-        replacement
-            .metadata
-            .annotations
-            .get_or_insert_with(Default::default)
-            .insert(
-                CHECKPOINT_ANNOTATION.into(),
-                serde_json::to_string(&next).map_err(backend)?,
-            );
-        access.admit().map_err(backend)?;
-        // Preserve the observed UID and resourceVersion in the one Pod replace.
-        // Conflict or response loss returns error; aggregate retry observes the
-        // accepted prefix rather than silently overwriting a competing write.
-        let written = pods
-            .replace(
-                expectation.container_id,
-                &PostParams::default(),
-                &replacement,
-            )
-            .await
-            .map_err(backend)?;
-        admit_pod(&written, expectation, access)?;
-        if participant(&written)?.as_ref() != Some(&next)
-            || pod_effect_fence(written.metadata.annotations.as_ref())?.as_ref()
-                != Some(access.effect_fence)
-        {
-            return Err(backend(
-                "Kubernetes checkpoint CAS response changed its exact participant",
-            ));
-        }
-        Ok(next.upload())
+pub(super) async fn persist_checkpoint_upload(
+    runtime: &K8sRuntime,
+    expectation: ContainerObservationExpectation<'_>,
+    access: ContainerCheckpointAccess<'_>,
+    mutation: ContainerCheckpointMutation<'_>,
+) -> Result<Option<pc::SandboxCheckpointUpload>, RuntimeError> {
+    access.admit().map_err(backend)?;
+    let pods = runtime.pods();
+    let observed = pods.get(expectation.container_id).await.map_err(backend)?;
+    admit_pod(&observed, expectation, access)?;
+    let claim_name = continuation_claim_for_pod(expectation.container_id)?;
+    let claim = runtime
+        .persistent_volume_claims()
+        .get(&claim_name)
+        .await
+        .map_err(backend)?;
+    access.admit().map_err(backend)?;
+    let expected_claim =
+        continuation::bound_claim_uid(&observed).expect("Pod admission proved the exact claim UID");
+    continuation::rebuild_claim_admission(&claim, expected_claim)?;
+    let previous = participant(&observed)?;
+    let next = ContainerCheckpointParticipant::apply(previous.as_ref(), access, mutation)
+        .map_err(backend)?;
+    // Exact replay needs no write, but still consumed fresh Pod/PVC and
+    // current-authority evidence. A copied receipt alone is never a grant.
+    if previous.as_ref() == Some(&next)
+        && pod_effect_fence(observed.metadata.annotations.as_ref())?.as_ref()
+            == Some(access.effect_fence)
+    {
+        return Ok(next.upload());
     }
+    let mut replacement = observed.clone();
+    stamp_effect_fence(&mut replacement, access.effect_fence);
+    replacement
+        .metadata
+        .annotations
+        .get_or_insert_with(Default::default)
+        .insert(
+            CHECKPOINT_ANNOTATION.into(),
+            serde_json::to_string(&next).map_err(backend)?,
+        );
+    access.admit().map_err(backend)?;
+    // Preserve the observed UID and resourceVersion in the one Pod replace.
+    // Conflict or response loss returns error; aggregate retry observes the
+    // accepted prefix rather than silently overwriting a competing write.
+    let written = pods
+        .replace(
+            expectation.container_id,
+            &PostParams::default(),
+            &replacement,
+        )
+        .await
+        .map_err(backend)?;
+    admit_pod(&written, expectation, access)?;
+    if participant(&written)?.as_ref() != Some(&next)
+        || pod_effect_fence(written.metadata.annotations.as_ref())?.as_ref()
+            != Some(access.effect_fence)
+    {
+        return Err(backend(
+            "Kubernetes checkpoint CAS response changed its exact participant",
+        ));
+    }
+    Ok(next.upload())
 }

@@ -747,6 +747,23 @@ impl K8sRuntime {
         self
     }
 
+    /// Select the independent Create executor once for this runtime. Every
+    /// `Api<K>::create` on the control client then crosses the same broker;
+    /// reads and UID-fenced disposal remain on the existing Kubernetes client.
+    pub fn with_create_transport(
+        mut self,
+        transport: Arc<dyn K8sCreateTransport>,
+    ) -> Result<Self, RuntimeError> {
+        if self.create_transport.is_some() || self.create_mode_frozen.load(Ordering::Acquire) {
+            return Err(RuntimeError::Backend(
+                "Kubernetes Create transport cannot replace an active admission mode".into(),
+            ));
+        }
+        self.clients.control = brokered_client(self.clients.control.clone(), transport.clone());
+        self.create_transport = Some(transport);
+        Ok(self)
+    }
+
     /// A runtime backed by a **lazy** client (no cluster dial), for unit-testing the
     /// builder + Pod-assembly paths; the live `create`/`wait`/… methods still need a
     /// real apiserver (exercised by the gated `k8s_it` integration test).

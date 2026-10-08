@@ -284,8 +284,7 @@ impl ContainerRuntime for K8sRuntime {
         access: crate::ContainerCheckpointAccess<'_>,
         mutation: crate::ContainerCheckpointMutation<'_>,
     ) -> Result<Option<pc::SandboxCheckpointUpload>, RuntimeError> {
-        self.persist_checkpoint_upload(expectation, access, mutation)
-            .await
+        checkpoint::persist_checkpoint_upload(self, expectation, access, mutation).await
     }
 
     fn historical_terminal_configuration(

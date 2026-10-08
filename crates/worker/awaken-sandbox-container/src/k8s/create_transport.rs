@@ -18,7 +18,7 @@ use kube::client::Body;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{K8sRuntime, RequestJoin};
+use super::RequestJoin;
 use crate::{ContainerEffectFence, RuntimeError};
 
 /// Ephemeral wire payload. Object bytes may contain credential material and
@@ -97,33 +97,11 @@ pub(crate) fn brokered_client(direct: Client, broker: Arc<dyn K8sCreateTransport
     Client::new(service, namespace)
 }
 
-impl K8sRuntime {
-    /// Select the independent Create executor once for this runtime. Every
-    /// `Api<K>::create` on the control client then crosses the same broker;
-    /// reads and UID-fenced disposal remain on the existing Kubernetes client.
-    pub fn with_create_transport(
-        mut self,
-        transport: Arc<dyn K8sCreateTransport>,
-    ) -> Result<Self, RuntimeError> {
-        if self.create_transport.is_some()
-            || self
-                .create_mode_frozen
-                .load(std::sync::atomic::Ordering::Acquire)
-        {
-            return Err(RuntimeError::Backend(
-                "Kubernetes Create transport cannot replace an active admission mode".into(),
-            ));
-        }
-        self.clients.control = brokered_client(self.clients.control.clone(), transport.clone());
-        self.create_transport = Some(transport);
-        Ok(self)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ContainerRuntime as _;
+    use crate::k8s::K8sRuntime;
     use http::Request;
     use k8s_openapi::api::core::v1::{ConfigMap, PersistentVolumeClaim};
     use kube::Api;

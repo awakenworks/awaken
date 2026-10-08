@@ -883,6 +883,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         &directory,
         transport.stop_source().unwrap().as_ref(),
         &idle_identity,
+        clock.now_ms(),
     )
     .await
     .unwrap();

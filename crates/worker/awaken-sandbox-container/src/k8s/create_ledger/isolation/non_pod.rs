@@ -2,10 +2,17 @@
 //! This module shares the parent policy and exact metadata checks; it owns no
 //! separate ticket, cleanup authority, or terminal receipt.
 
-use super::*;
-use kube::api::ListParams;
+use super::{
+    CreateTicket, FINALIZER, ISOLATION_ID_ANNOTATION, ISOLATION_LABEL, REQUEST_DIGEST_ANNOTATION,
+    TicketResult, api_conflict, backend, delete_probe_params, deletion_denial,
+    exact_original_metadata, exact_reservation_metadata, policy_ready, valid_isolation_id,
+};
+use crate::RuntimeError;
+use k8s_openapi::api::core::v1::Pod;
+use kube::api::{ListParams, PostParams};
 use kube::core::{ApiResource, DynamicObject, GroupVersionKind};
-use serde_json::Value;
+use kube::{Api, Client};
+use serde_json::{Value, json};
 
 fn only_keys(value: Option<&Value>, allowed: &[&str]) -> bool {
     value
@@ -460,6 +467,7 @@ pub(super) async fn isolate_other(
 
 #[cfg(test)]
 mod tests {
+    use super::super::PVC_PROTECTION_FINALIZER;
     use super::*;
     use crate::k8s::{CreateTicketRequest, TicketStatus};
     use http::{Method, Request, Response};
