@@ -245,31 +245,21 @@ impl CandidateEvidence {
         persisted: &awaken_session_state_contract::PersistedSession,
         session_id: &str,
         source_commit_cursor: u64,
-    ) -> SessionUsage {
-        let thread_usage = |snapshot: &RunRecoverySnapshot| {
-            let state = if snapshot.state_commit_cursors.len() == snapshot.state.len() {
-                snapshot
-                    .state
-                    .iter()
-                    .zip(&snapshot.state_commit_cursors)
-                    .filter(|(_, cursor)| **cursor <= source_commit_cursor)
-                    .map(|(command, _)| command.clone())
-                    .collect::<Vec<_>>()
-            } else {
-                snapshot.state.clone()
-            };
-            awaken_session_application_contract::session_usage_from_thread_usage(
-                awaken_runtime_contract::llm::ThreadUsage::from_committed_state(&state),
-            )
-        };
+    ) -> Result<SessionUsage, StateError> {
+        let thread_usage =
+            |snapshot: &RunRecoverySnapshot| thread_usage_as_of(snapshot, source_commit_cursor);
         let mut usage = awaken_session_application::SessionApplication::project_session_usage(
             persisted,
-            self.root.iter().map(thread_usage).chain(
-                self.children
-                    .iter()
-                    .filter(|(id, _)| id.as_str() != session_id)
-                    .map(|(_, snapshot)| thread_usage(snapshot)),
-            ),
+            self.root
+                .iter()
+                .map(thread_usage)
+                .chain(
+                    self.children
+                        .iter()
+                        .filter(|(id, _)| id.as_str() != session_id)
+                        .map(|(_, snapshot)| thread_usage(snapshot)),
+                )
+                .collect::<Result<Vec<_>, _>>()?,
             0,
         );
         let active_millis = persisted
@@ -286,7 +276,7 @@ impl CandidateEvidence {
             })
             .sum::<u64>();
         usage.active_seconds = active_millis / 1_000;
-        usage
+        Ok(usage)
     }
 
     /// Whether the root transcript is blocked on a ticket not yet visible.
@@ -314,6 +304,89 @@ impl CandidateEvidence {
             historical_pending: &self.historical_pending,
             dispositions: &self.child_dispositions,
             usage: &self.child_thread_usage,
+        }
+    }
+}
+
+/// One Thread's usage from its committed state commands up to
+/// `source_commit_cursor`. A prefix whose commands do not carry their commit
+/// cursors cannot place them before or after the boundary, so it fails the
+/// candidate closed rather than counting later commands into an earlier one.
+fn thread_usage_as_of(
+    snapshot: &RunRecoverySnapshot,
+    source_commit_cursor: u64,
+) -> Result<SessionUsage, StateError> {
+    if snapshot.state_commit_cursors.len() != snapshot.state.len() {
+        return Err(StateError::Run(RunError::internal(format!(
+            "Thread {:?} state recovery omitted commit coordinates; its usage cannot be placed at a commit",
+            snapshot.thread_id.0
+        ))));
+    }
+    let state = snapshot
+        .state
+        .iter()
+        .zip(&snapshot.state_commit_cursors)
+        .filter(|(_, cursor)| **cursor <= source_commit_cursor)
+        .map(|(command, _)| command.clone())
+        .collect::<Vec<_>>();
+    Ok(
+        awaken_session_application_contract::session_usage_from_thread_usage(
+            awaken_runtime_contract::llm::ThreadUsage::from_committed_state(&state),
+        ),
+    )
+}
+
+#[cfg(test)]
+mod usage_as_of_tests {
+    use super::*;
+    use awaken_agent_contract::agent::run::Id as RunId;
+    use awaken_agent_contract::agent::state::{Command, MergePolicy, Scope};
+    use awaken_agent_contract::agent::thread::Id as ThreadId;
+
+    fn snapshot(state: Vec<Command>, state_commit_cursors: Vec<u64>) -> RunRecoverySnapshot {
+        RunRecoverySnapshot {
+            commit_timestamps: Default::default(),
+            thread_id: ThreadId("usage-thread".into()),
+            claimed_run_id: RunId("usage-run".into()),
+            runs: Vec::new(),
+            latest_run_id: None,
+            messages: Vec::new(),
+            message_commit_cursors: Vec::new(),
+            state,
+            state_commit_cursors,
+            events: Vec::new(),
+            resume_tickets: Vec::new(),
+            thread_version: 1,
+            store_cursor: 30,
+            next_commit_ordinal: 0,
+        }
+    }
+
+    #[test]
+    fn historical_usage_without_state_commit_cursors_fails_closed() {
+        // Causes: C1 every state command carries its commit cursor; C2 the
+        // recovered cursors are missing or misaligned. Effects: E1 usage as of
+        // a commit counts only commands at or before it; E2 a prefix that
+        // cannot place its commands fails the candidate instead of counting
+        // every command, later ones included, into an earlier boundary.
+        // Rules: R1 C1 => E1 (an empty prefix before the first command is the
+        // default usage); R2 C2 => E2.
+        let command = Command::set(
+            Scope::Thread,
+            MergePolicy::Disjoint,
+            "usage/probe",
+            serde_json::json!({}),
+        );
+        assert_eq!(
+            thread_usage_as_of(&snapshot(vec![command.clone()], vec![20]), 10).unwrap(),
+            SessionUsage::default(),
+            "R1 a command after the boundary is not counted"
+        );
+        for cursors in [Vec::new(), vec![20, 21]] {
+            assert!(
+                thread_usage_as_of(&snapshot(vec![command.clone()], cursors.clone()), 10).is_err(),
+                "R2 misaligned cursors {cursors:?} fail closed"
+            );
         }
     }
 }
