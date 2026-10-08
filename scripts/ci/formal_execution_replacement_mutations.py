@@ -145,6 +145,14 @@ def check_execution_replacement_model_mutants(tlc_jar: Path) -> None:
     # SR/SC/UC match the real Host projection/retirement tests. Semantic kills
     # distinguish old-wrapper reuse, unknown/live predecessor, cancellation
     # loss and over-denial; parser failures/timeouts never count as evidence.
+    # Frame-order cause/effect table: F1 Setup/Authority/Acquire/Retire/Stop/
+    # Observe/Install/Publish/ReplaceSuccessor preserve receiptVars; F2 Cancel,
+    # CommitRoot and ReadReceipt may write them. Hoisting only F1's unchanged
+    # conjunct preserves every successor while avoiding repeated TLC bindings.
+    # The green base keeps all properties and the existing 60s/512MiB/1-worker
+    # budget. Publication/commit/cancellation mutants and recovery witnesses
+    # below exercise F2, so accidentally framing their writes cannot pass.
+    # No configuration bound, action, invariant or proof oracle is relaxed.
     source = (ROOT / "formal/tla/SessionExecutionReplacement.tla").read_text()
     config = (ROOT / "formal/tla/SessionExecutionReplacement.cfg").read_text()
     header = "SPECIFICATION ReplacementSpec\nCHECK_DEADLOCK FALSE\n"

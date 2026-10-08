@@ -141,10 +141,14 @@ ReplaceSuccessor == /\ caller = 0 /\ phase \in {"fresh", "ready"}
   /\ phase' = "old" /\ tree' = "live" /\ observation' = "unknown"
   /\ newEffect' = FALSE
   /\ UNCHANGED <<bindingAll, caller, cancelled, nextCapture, badNewEffect>>
-ReplacementControlStep == (((Setup \/ Authority
+(* Bind the same receipt frame before enumerating the control alternatives.
+   Conjunction is commutative: this changes neither actions nor reachable
+   states. TLC otherwise repeatedly binds the frame after each alternative.
+   Cancel/CommitRoot/ReadReceipt stay outside because they may write receipts. *)
+ReplacementControlStep == ((UNCHANGED receiptVars /\ (Setup \/ Authority
   \/ (\E c \in Callers : Acquire(c)) \/ Retire \/ Stop
   \/ ObserveAbsent \/ ObserveUnknown \/ Install \/ Publish \/ ReplaceSuccessor)
-  /\ UNCHANGED receiptVars) \/ Cancel \/ CommitRoot \/ ReadReceipt)
+  ) \/ Cancel \/ CommitRoot \/ ReadReceipt)
 ReplacementNext == /\ UNCHANGED originalPhase
   /\ ((ReplacementControlStep /\ UNCHANGED copyWriter)
   \/ (Adopt /\ UNCHANGED copyWriter)
