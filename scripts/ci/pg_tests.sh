@@ -426,6 +426,7 @@ if [ "$ready" -ne 1 ]; then
 fi
 
 export AWAKEN_TEST_DATABASE_URL="postgres://postgres:$PASSWORD@127.0.0.1:$PORT/$DB" # awaken-allow: secret
+export AWAKEN_TEST_REQUIRE_POSTGRES=1
 echo "-> AWAKEN_TEST_DATABASE_URL configured for ephemeral Postgres :$PORT"
 
 # Exact, reviewed tags, served from MinIO's own registry. Docker Hub answers

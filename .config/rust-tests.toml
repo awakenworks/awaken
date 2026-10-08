@@ -1,0 +1,2 @@
+# One Rust execution graph, shared by the full gate, affected tests and coverage.
+workspace_features = ["awaken-cli/container-k8s", "awaken-sandbox/hand"]

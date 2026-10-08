@@ -52,7 +52,8 @@ REQUIRED_TOOL_GATES = (
     'python3 scripts/ci/check_reliability.py --tsan-log "$tsan_log"',
     "cargo mutants",
     "cleanup_mutation_artifacts",
-    "cleanup_mutation_artifacts\npython3 scripts/ci/check_reliability.py",
+    'export CARGO_TARGET_DIR="${CARGO_TARGET_DIR%/}/reliability-mutation-build"',
+    'export CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"',
     'python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/sse/mutants.out"',
     'python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/tool-batch/mutants.out"',
     'python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-event-observations/mutants.out"',
@@ -273,7 +274,8 @@ class ReliabilityCheckerTests(unittest.TestCase):
         # D6 stale fuzz lock => exact preflight failure, zero fuzz/mutation calls;
         # a current lock passes the existing Cargo --locked reader before fuzz.
         # D7 each actual mutation package must be cleaned before and after the
-        # batch, so a migrated owner cannot leave a mutant compilation behind.
+        # batch. D8 cleanup/mutations use the isolated target AND build directory;
+        # ordinary tests retain their original cache even after tool failure.
         # Removing the mkdir line must kill the fresh-directory positive control.
         for case in ("fresh", "existing", "nested", "blocked", "tool-failure", "missing-init", "fuzz-lock-stale"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
@@ -281,7 +283,7 @@ class ReliabilityCheckerTests(unittest.TestCase):
                 scripts = root / "scripts/ci"
                 scripts.mkdir(parents=True)
                 (root / "fuzz").mkdir()
-                for name in ("check-reliability.sh", "_cargo_target.sh", "_provider_environment.sh"):
+                for name in ("check-reliability.sh", "_cargo_target.sh", "_provider_environment.sh", "_rust_test_execution.sh", "_deadline.sh", "deadline.py"):
                     shutil.copyfile(ROOT / "scripts/ci" / name, scripts / name)
                 if case == "missing-init":
                     runner = scripts / "check-reliability.sh"
@@ -291,6 +293,7 @@ class ReliabilityCheckerTests(unittest.TestCase):
                 cargo = '''#!/usr/bin/env bash
 printf '%q ' "$@" >> "$CALL_LOG"
 printf '\\n' >> "$CALL_LOG"
+printf '%s|%s|%s\\n' "$CARGO_TARGET_DIR" "${CARGO_BUILD_BUILD_DIR:-}" "$1" >> "$CALL_TARGET_LOG"
 case "$*" in
   "install --list") echo 'cargo-fuzz 1'; echo 'cargo-mutants 1' ;;
   "+nightly metadata --locked --format-version 1")
@@ -303,7 +306,7 @@ case "$*" in
     echo 'test result: ok. 1 passed; 0 failed; 0 ignored;' ;;
 esac
 '''
-                for name, body in {"cargo": cargo, "python3": "#!/bin/sh\nexit 0\n", "rustup": "#!/bin/sh\necho nightly-test\n", "rustc": "#!/bin/sh\necho 'host: x86_64-unknown-linux-gnu'\n"}.items():
+                for name, body in {"cargo": cargo, "python3": "#!/bin/sh\nexit 0\n", "git": "#!/bin/sh\necho aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n", "rustup": "#!/bin/sh\necho nightly-test\n", "rustc": "#!/bin/sh\necho 'host: x86_64-unknown-linux-gnu'\n"}.items():
                     tool = binary / name
                     tool.write_text(body)
                     tool.chmod(0o755)
@@ -312,10 +315,17 @@ esac
                     output.mkdir()
                 if case == "blocked":
                     output.write_text("owned file must remain unchanged")
-                env = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", CARGO_TARGET_DIR=str(root / "target"), AWAKEN_RELIABILITY_EVIDENCE_DIR=str(output), CALL_LOG=str(root / "calls"), FAIL_MUTANT=str(int(case == "tool-failure")), FAIL_FUZZ_LOCK=str(int(case == "fuzz-lock-stale")))
+                env = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", CARGO_TARGET_DIR=str(root / "target"), CARGO_BUILD_BUILD_DIR=str(root / "normal-build"), AWAKEN_RELIABILITY_EVIDENCE_DIR=str(output), CALL_LOG=str(root / "calls"), CALL_TARGET_LOG=str(root / "targets"), FAIL_MUTANT=str(int(case == "tool-failure")), FAIL_FUZZ_LOCK=str(int(case == "fuzz-lock-stale")))
                 result = subprocess.run(["bash", str(scripts / "check-reliability.sh"), "--require-tools"], env=env, capture_output=True, text=True, timeout=20)
                 calls = [line.rstrip() for line in (root / "calls").read_text().splitlines()]
                 mutations = [line for line in calls if line.startswith("mutants ")]
+                targets = [line.split("|") for line in (root / "targets").read_text().splitlines()]
+                for target, build, command in targets:
+                    isolated = command in ("clean", "mutants")
+                    expected_target = root / "target" / "reliability-mutation-build" if isolated else root / "target"
+                    expected_build = expected_target if isolated else root / "normal-build"
+                    self.assertEqual(Path(target), expected_target, "D8 target isolation")
+                    self.assertEqual(Path(build), expected_build, "D8 build isolation")
                 passed = case in ("fresh", "existing", "nested")
                 self.assertEqual(result.returncode == 0, passed, result.stderr)
                 self.assertEqual(len(mutations), 6 if passed else 0 if case in ("blocked", "fuzz-lock-stale") else 1)
@@ -390,13 +400,14 @@ esac
                 scripts = root / "scripts/ci"
                 scripts.mkdir(parents=True)
                 (root / "fuzz").mkdir()
-                for name in ("check-reliability.sh", "_cargo_target.sh", "_provider_environment.sh"):
+                for name in ("check-reliability.sh", "_cargo_target.sh", "_provider_environment.sh", "_rust_test_execution.sh", "_deadline.sh", "deadline.py"):
                     shutil.copyfile(ROOT / "scripts/ci" / name, scripts / name)
                 binary = root / "bin"
                 binary.mkdir()
                 for name, body in {
                     "cargo": listing,
                     "python3": "#!/bin/sh\nexit 0\n",
+                    "git": "#!/bin/sh\necho aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
                     "rustup": "#!/bin/sh\necho nightly-test\n",
                     "rustc": "#!/bin/sh\necho 'host: x86_64-unknown-linux-gnu'\n",
                 }.items():

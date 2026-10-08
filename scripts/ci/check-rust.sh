@@ -265,7 +265,7 @@ case "$mode" in
     # resolve the real Hand beside their test executable. E1 one full-test
     # artifact tree preserves Cargo's sibling layout for either C1 value.
     export CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"
-    workspace_features+=",awaken-sandbox/hand"
+    workspace_features="$(python3 scripts/ci/rust_test_plan.py --features)" || exit 1
     # The maximal graph, compiled and linted in one step -- the same command
     # --push runs, so the two lanes cannot diverge in what they see. The test
     # feature set below stays narrower on purpose: `--all-features` enables

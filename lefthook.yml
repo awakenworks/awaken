@@ -137,6 +137,12 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/check_test_inventory.py
 
+    affected-rust-plan:
+      # >>> generated glob from rust_test_plan.py INPUT_GLOBS — do not edit
+      glob: "{.config/**,Cargo.lock,Cargo.toml,crates/**,rust-toolchain.toml,scripts/ci/**}"
+      # <<< generated glob
+      run: python3 scripts/ci/rust_test_plan.py --self-test
+
     # 3b. A failed read of durable state may never become an absence. The
     #     recovery path is derived -- every production module that names a
     #     checkpoint or the tri-state -- so a file joins the rule by doing the
