@@ -307,7 +307,7 @@ async fn prepared_image_is_the_only_environment_to_container_image_conversion() 
             prepared_image,
             network: awaken_session_configuration_contract::SessionNetworkPolicy::None,
             credential_realization:
-                awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
+                awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
         }
     }
 

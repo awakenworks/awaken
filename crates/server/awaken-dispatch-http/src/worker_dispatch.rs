@@ -174,7 +174,7 @@ pub struct WorkerDispatchService {
     session_coordination:
         Option<Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>>,
     session_work: Option<Arc<dyn awaken_session_work_contract::SessionWorkLeaseAuthority>>,
-    local_credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
+    local_credential_capabilities: awaken_credential_contract::CredentialRealizationCapabilities,
     credential_deliveries:
         Option<Arc<dyn awaken_runtime_contract::AttemptCredentialDeliverySource>>,
     max_attempts: u64,
@@ -357,7 +357,7 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn with_local_credential_capabilities(
         mut self,
-        capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Self {
         self.local_credential_capabilities = capabilities;
         self

@@ -15,8 +15,8 @@ use awaken_acp_application::{
     AcpCapabilityNegotiator, AcpDiscovery, AcpHostDiscovery, AcpHostObservation,
     AcpWrapperInstaller, LocalAcpPreparation, prepare_host_acp_with,
 };
+use awaken_credential_contract::CredentialObservationState;
 use awaken_run_executor_acp::acp_cli;
-use awaken_runtime_contract::CredentialObservationState;
 
 /// One startup startup result for a trusted local ACP Worker. The durable
 /// sources remain in the credential repository; this value carries only the
@@ -393,15 +393,15 @@ mod tests {
     use async_trait::async_trait;
     use awaken_acp_application::AcpDetectionState;
     use awaken_acp_contract::NegotiatedAcpCapabilities;
+    use awaken_credential_contract::{
+        CredentialMaterialError, CredentialObservationSource, WorkerLocalReferenceRevalidator,
+    };
     use awaken_credential_vault::repo::{
         CredentialRepo, InMemoryCredentialRepo, ensure_worker_local,
     };
     use awaken_credential_vault::{CredentialSource, CredentialStatus, WorkerLocalBinding};
     use awaken_run_executor_acp::AcpCli;
-    use awaken_runtime_contract::{
-        CredentialMaterialError, CredentialMaterialSource, CredentialObservationSource,
-        CredentialRef, WorkerLocalReferenceRevalidator,
-    };
+    use awaken_runtime_contract::{CredentialMaterialSource, CredentialRef};
 
     use super::*;
 
@@ -889,7 +889,7 @@ mod tests {
         .expect("B1");
 
         let evidence =
-            awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+            awaken_credential_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
                 &worker.manifest().capabilities,
             )
             .expect("B2 capability evidence");

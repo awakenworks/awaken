@@ -25,7 +25,9 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
-use awaken_runtime_contract::CredentialRealizationCapabilities;
+use awaken_credential_contract::CredentialRealizationCapabilities;
+#[cfg(test)]
+use awaken_credential_contract::{CredentialAdmissionError, CredentialRealizationKind};
 pub use awaken_runtime_contract::{
     AttemptCredentialBinding, AttemptCredentialBindingError, AttemptCredentialDelivery,
     CandidateFingerprint, CredentialRealizationPersistenceDecision, CredentialRealizationReceipt,
@@ -33,9 +35,7 @@ pub use awaken_runtime_contract::{
     verify_credential_realization_receipt,
 };
 #[cfg(test)]
-use awaken_runtime_contract::{
-    CredentialAdmissionError, CredentialRealizationKind, CredentialUsage, PlaintextBoundary,
-};
+use awaken_runtime_contract::{CredentialUsage, PlaintextBoundary};
 use awaken_session_execution_contract::{
     SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
 };
@@ -298,7 +298,7 @@ mod tests {
         installed.extension_consumers.insert(
             format!(
                 "{}{}",
-                awaken_runtime_contract::credential::ACP_CREDENTIAL_CONSUMER_PREFIX,
+                awaken_credential_contract::ACP_CREDENTIAL_CONSUMER_PREFIX,
                 backend_ref
             ),
             BTreeSet::from(["awaken.credential.mcp-process-protocol-field/v1".to_string()]),
@@ -328,7 +328,7 @@ mod tests {
                 packages: Default::default(),
                 prepared_image: None,
                 network: awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
-                credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
+                credential_realization: awaken_credential_contract::CredentialRealizationProfile {
                     inference_holder: worker.clone(),
                     mcp_holder,
                     resource_holder: worker,
@@ -544,7 +544,7 @@ mod tests {
         marker_only.extension_consumers.insert(
             format!(
                 "{}{}",
-                awaken_runtime_contract::credential::ACP_CREDENTIAL_CONSUMER_PREFIX,
+                awaken_credential_contract::ACP_CREDENTIAL_CONSUMER_PREFIX,
                 "acp:test"
             ),
             BTreeSet::from(["awaken.credential.mcp-process-protocol-field/v1".to_string()]),
@@ -883,10 +883,10 @@ mod tests {
                 installed.extension_consumers.insert(
                     format!(
                         "{}{backend}",
-                        awaken_runtime_contract::credential::ACP_CREDENTIAL_CONSUMER_PREFIX
+                        awaken_credential_contract::ACP_CREDENTIAL_CONSUMER_PREFIX
                     ),
                     BTreeSet::from([
-                        awaken_runtime_contract::credential::PROCESS_SECRET_ENVIRONMENT_MATERIAL_TYPE
+                        awaken_credential_contract::PROCESS_SECRET_ENVIRONMENT_MATERIAL_TYPE
                             .to_string(),
                     ]),
                 );

@@ -97,9 +97,9 @@ pub struct DispatchWorker<S> {
     execution_binding: Option<crate::dispatch::AttemptExecutionBinding>,
     lease_ms: u64,
     cancellation: Option<CancellationToken>,
-    local_credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
+    local_credential_capabilities: awaken_credential_contract::CredentialRealizationCapabilities,
     worker_credential_resolver:
-        Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
+        Option<Arc<dyn awaken_credential_contract::WorkerLocalCredentialResolver>>,
 }
 
 struct ClaimBoundOwnershipVerifier {
@@ -570,7 +570,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     #[must_use]
     pub fn with_local_credential_capabilities(
         mut self,
-        capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Self {
         self.local_credential_capabilities = capabilities;
         self
@@ -581,7 +581,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     #[must_use]
     pub fn with_worker_credential_resolver(
         mut self,
-        resolver: Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>,
+        resolver: Arc<dyn awaken_credential_contract::WorkerLocalCredentialResolver>,
     ) -> Self {
         self.worker_credential_resolver = Some(resolver);
         self
@@ -1206,7 +1206,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                             )),
                         )
                     })?;
-                awaken_runtime_contract::require_exact_available_worker_reference(
+                awaken_credential_contract::require_exact_available_worker_reference(
                     &expected,
                     observation,
                 )

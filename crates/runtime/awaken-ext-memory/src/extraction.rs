@@ -870,22 +870,20 @@ mod tests {
     fn credential_receipt(
         generation: u64,
     ) -> awaken_runtime_contract::CredentialRealizationReceipt {
-        let binding = awaken_runtime_contract::AttemptCredentialBinding {
-            candidate_fingerprint: awaken_runtime_contract::CandidateFingerprint(
-                "candidate-a".into(),
-            ),
-            credential: awaken_runtime_contract::CredentialRef {
-                id: "credential-a".into(),
-                revision: 3,
-            },
-            selected_plaintext_holder: awaken_runtime_contract::PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Worker,
-                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
-            ),
-            selected_realization_kind:
-                awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
-            claim_epoch: generation,
-        };
+        // The realization kind is Platform vocabulary; the SDK names it only
+        // through the binding's wire value.
+        let binding: awaken_runtime_contract::AttemptCredentialBinding =
+            serde_json::from_value(serde_json::json!({
+                "candidate_fingerprint": "candidate-a",
+                "credential": { "id": "credential-a", "revision": 3 },
+                "selected_plaintext_holder": awaken_runtime_contract::PlaintextHolder::new(
+                    awaken_runtime_contract::PlaintextBoundary::Worker,
+                    awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+                ),
+                "selected_realization_kind": "worker_provider_adapter",
+                "claim_epoch": generation,
+            }))
+            .unwrap();
         awaken_runtime_contract::CredentialRealizationReceipt::new(
             &binding,
             binding.selected_realization_kind,

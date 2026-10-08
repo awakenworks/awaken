@@ -376,7 +376,7 @@ mod acp_context_tests {
                 prepared_image: None,
                 network: sc::SessionNetworkPolicy::Unrestricted,
                 credential_realization:
-                    awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
+                    awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
             },
             runtime_placement: sc::SessionRuntimePlacement::Worker,
             mcp_authoring: Default::default(),

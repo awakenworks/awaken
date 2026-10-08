@@ -138,7 +138,7 @@ fn frozen_projection_with_model_override(
                 packages: Default::default(),
                 prepared_image: None,
                 network: awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
-                credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
+                credential_realization: awaken_credential_contract::CredentialRealizationProfile {
                     inference_holder: holder.clone(),
                     mcp_holder: holder.clone(),
                     resource_holder: holder,
@@ -729,7 +729,7 @@ async fn sandbox_spec_carries_deny_egress_and_the_staged_mounts() {
             prepared_image: None,
             network: awaken_session_configuration_contract::SessionNetworkPolicy::None,
             credential_realization:
-                awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
+                awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
         },
     )
     .expect("freeze test Environment");

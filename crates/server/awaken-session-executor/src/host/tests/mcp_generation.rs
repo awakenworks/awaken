@@ -329,7 +329,7 @@ async fn mcp_drain_acknowledges_removed_only_after_busy_call_quiesces() {
 
 #[tokio::test(start_paused = true)]
 async fn worker_relay_drain_retains_exact_route_across_cancel_and_timeout_retry() {
-    use awaken_runtime_contract::CredentialRealizationKind;
+    use awaken_credential_contract::CredentialRealizationKind;
     use awaken_session_mcp_contract::{McpRealizationReceipt, StageMcpAttachment};
 
     use awaken_session_mcp::{McpGenerationProjection, McpProjectionState};

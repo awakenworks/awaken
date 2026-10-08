@@ -31,7 +31,7 @@ fn runtime_capabilities(
         .collect()
 }
 
-fn credential_state_name(state: awaken_runtime_contract::CredentialObservationState) -> String {
+fn credential_state_name(state: awaken_credential_contract::CredentialObservationState) -> String {
     serde_json::to_value(state)
         .expect("credential observation state serializes")
         .as_str()
@@ -90,7 +90,7 @@ fn startup_diagnosis(
 ) -> Option<awaken_control::LocalRuntimeCapability> {
     let refused = !observation.detected()
         || observation.credential_state
-            != Some(awaken_runtime_contract::CredentialObservationState::Available);
+            != Some(awaken_credential_contract::CredentialObservationState::Available);
     if refused {
         return Some(awaken_control::LocalRuntimeCapability {
             detected: false,
@@ -443,7 +443,7 @@ mod tests {
             detection: awaken_acp_application::AcpDetectionState::Detected,
             version: Some("codex 1".into()),
             credential_state: Some(
-                awaken_runtime_contract::CredentialObservationState::LoginRequired,
+                awaken_credential_contract::CredentialObservationState::LoginRequired,
             ),
             reason_code: Some("acp_login_required".into()),
             capability_state: None,
@@ -604,7 +604,7 @@ mod tests {
 
     fn observed(
         detection: awaken_acp_application::AcpDetectionState,
-        credential_state: Option<awaken_runtime_contract::CredentialObservationState>,
+        credential_state: Option<awaken_credential_contract::CredentialObservationState>,
         reason_code: &str,
     ) -> awaken_acp_application::AcpHostObservation {
         awaken_acp_application::AcpHostObservation {
@@ -640,7 +640,7 @@ mod tests {
     #[test]
     fn every_physical_discovery_cause_publishes_its_own_capability_reason_code() {
         use awaken_acp_application::AcpDetectionState;
-        use awaken_runtime_contract::CredentialObservationState;
+        use awaken_credential_contract::CredentialObservationState;
 
         // Without live Worker evidence the capability row is the *only* place an
         // operator learns why a local runtime cannot run. Each physical cause

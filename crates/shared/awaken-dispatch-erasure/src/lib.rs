@@ -196,7 +196,7 @@ impl DispatchQueue for AnyDispatchStore {
         request: RunDispatch,
         owner: &str,
         lease_ms: u64,
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         delegate!(self, claim_new_run(request, owner, lease_ms, capabilities))
     }
@@ -215,7 +215,7 @@ impl DispatchQueue for AnyDispatchStore {
         input: PendingInput,
         owner: &str,
         lease_ms: u64,
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         delegate!(
             self,
@@ -236,7 +236,7 @@ impl DispatchQueue for AnyDispatchStore {
         &self,
         owner: &str,
         lease_ms: u64,
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         delegate!(self, claim(owner, lease_ms, capabilities))
     }
@@ -254,7 +254,7 @@ impl DispatchQueue for AnyDispatchStore {
         run_id: &RunId,
         owner: &str,
         lease_ms: u64,
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         delegate!(self, claim_run(run_id, owner, lease_ms, capabilities))
     }

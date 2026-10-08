@@ -21,7 +21,7 @@ fn repository_credential_descriptor(url: &str) -> awaken_credential_contract::Cr
     awaken_credential_contract::CredentialDescriptor::new(
         "git",
         awaken_credential_contract::CredentialMaterialDescriptor::structured(
-            awaken_runtime_contract::credential::HTTP_BASIC_MATERIAL_TYPE,
+            awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
             ["password", "username"],
         ),
         [awaken_credential_contract::CredentialTargetContract::new(

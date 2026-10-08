@@ -76,8 +76,8 @@ impl awaken_run_executor_acp::LaunchResolver for ScenarioEnvAcpModel {
 
     fn credential_realization_capabilities(
         &self,
-    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
-        awaken_runtime_contract::CredentialRealizationCapabilities {
+    ) -> awaken_credential_contract::CredentialRealizationCapabilities {
+        awaken_credential_contract::CredentialRealizationCapabilities {
             holders: [awaken_runtime_contract::PlaintextHolder::new(
                 awaken_runtime_contract::PlaintextBoundary::Workload,
                 awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
@@ -90,7 +90,7 @@ impl awaken_run_executor_acp::LaunchResolver for ScenarioEnvAcpModel {
             .into_iter()
             .collect(),
             realization_kinds: [
-                awaken_runtime_contract::CredentialRealizationKind::ProcessSecretEnvironment,
+                awaken_credential_contract::CredentialRealizationKind::ProcessSecretEnvironment,
             ]
             .into_iter()
             .collect(),

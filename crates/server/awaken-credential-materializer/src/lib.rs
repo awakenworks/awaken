@@ -60,18 +60,20 @@ use awaken_time::WallClockExt as _;
 
 #[cfg(all(test, feature = "authority"))]
 use awaken_agent_contract::RedactedString;
+use awaken_credential_contract::{
+    CredentialMaterialBinding, CredentialMaterialError, CredentialMaterialRequest,
+    CredentialMaterialResolver, CredentialRealizationKind, ResolvedCredentialMaterial,
+};
 use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
 use awaken_runtime_contract::{
-    CredentialAccess, CredentialMaterialBinding, CredentialMaterialError,
-    CredentialMaterialRequest, CredentialMaterialResolver, CredentialMaterialSource,
-    CredentialRealizationKind, CredentialUsage, PlaintextHolder, ResolvedCredentialMaterial,
+    CredentialAccess, CredentialMaterialSource, CredentialUsage, PlaintextHolder,
     candidate_credential_material_binding, credential_access_has_same_authority,
 };
 
 #[derive(Clone)]
 struct RegisteredExtensionConsumer {
-    descriptor: awaken_runtime_contract::CredentialExtensionDescriptor,
-    consumer: Arc<dyn awaken_runtime_contract::CredentialExtensionConsumer>,
+    descriptor: awaken_credential_contract::CredentialExtensionDescriptor,
+    consumer: Arc<dyn awaken_credential_contract::CredentialExtensionConsumer>,
 }
 
 /// Worker/host-side realization of one already-published credential reference.
@@ -153,7 +155,7 @@ impl PinnedCredentialMaterializer {
     /// duplicate ids and invalid descriptors fail closed at composition time.
     pub fn with_extension_consumer(
         mut self,
-        consumer: Arc<dyn awaken_runtime_contract::CredentialExtensionConsumer>,
+        consumer: Arc<dyn awaken_credential_contract::CredentialExtensionConsumer>,
     ) -> Result<Self, CredentialExtensionRegistryError> {
         let descriptor = consumer.descriptor();
         if descriptor.consumer_id.trim().is_empty()
@@ -214,7 +216,8 @@ impl PinnedCredentialMaterializer {
         selected_holder: &PlaintextHolder,
         workspace: &str,
         target: &T,
-    ) -> Result<awaken_runtime_contract::CredentialExtensionReceipt, CredentialMaterialError> {
+    ) -> Result<awaken_credential_contract::CredentialExtensionReceipt, CredentialMaterialError>
+    {
         let CredentialUsage::Extension {
             consumer_id,
             material_type,
@@ -239,13 +242,14 @@ impl PinnedCredentialMaterializer {
         let resolved = self
             .resolve_validated(access, selected_holder, binding.clone(), None)
             .await?;
-        let awaken_runtime_contract::CredentialMaterial::Structured(material) = &resolved.material
+        let awaken_credential_contract::CredentialMaterial::Structured(material) =
+            &resolved.material
         else {
             return Err(CredentialMaterialError::MaterialKindMismatch);
         };
         let receipt = registration
             .consumer
-            .consume(awaken_runtime_contract::CredentialExtensionRequest {
+            .consume(awaken_credential_contract::CredentialExtensionRequest {
                 access,
                 material,
                 binding: &binding,
@@ -293,7 +297,7 @@ impl PinnedCredentialMaterializer {
         delivered_access: Option<&CredentialAccess>,
         selected_holder: &PlaintextHolder,
         realization: CredentialRealizationKind,
-    ) -> Result<awaken_runtime_contract::CredentialMaterial, String> {
+    ) -> Result<awaken_credential_contract::CredentialMaterial, String> {
         let ModelProvisioning::Provider { .. } = candidate.provisioning() else {
             return Err("model candidate does not require a provider credential".into());
         };
@@ -335,7 +339,7 @@ impl PinnedCredentialMaterializer {
         delivered_access: Option<&CredentialAccess>,
         selected_holder: &PlaintextHolder,
         realization: CredentialRealizationKind,
-    ) -> Result<awaken_runtime_contract::CredentialMaterial, String> {
+    ) -> Result<awaken_credential_contract::CredentialMaterial, String> {
         let ModelProvisioning::Remote { .. } = candidate.provisioning() else {
             return Err("model candidate does not require remote transport authentication".into());
         };
@@ -386,7 +390,7 @@ impl PinnedCredentialMaterializer {
             &access.usage,
         )
         .map_err(|_| CredentialMaterialError::BindingMismatch)?;
-        let external_request = awaken_runtime_contract::CredentialMaterialCapability {
+        let external_request = awaken_credential_contract::CredentialMaterialCapability {
             holder: selected_holder.clone(),
             source: access.material_source,
             envelope: access.envelope.is_some(),
@@ -502,7 +506,7 @@ pub enum CredentialExtensionRegistryError {
 impl CredentialMaterialResolver for PinnedCredentialMaterializer {
     fn material_capabilities(
         &self,
-    ) -> std::collections::BTreeSet<awaken_runtime_contract::CredentialMaterialCapability> {
+    ) -> std::collections::BTreeSet<awaken_credential_contract::CredentialMaterialCapability> {
         self.installed_material_capabilities()
     }
 
@@ -548,16 +552,17 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+    use awaken_credential_contract::CredentialMaterial;
+    use awaken_credential_contract::CredentialRealizationCapabilities;
     use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
     use awaken_credential_vault::{
         CredentialCreateParams, CredentialError, CredentialKind, CredentialStatus,
         InMemorySecretStore, SecretRef, SecretStore,
     };
-    use awaken_runtime_contract::CredentialRealizationCapabilities;
     use awaken_runtime_contract::{
-        CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterial, CredentialRef,
-        CredentialRefreshAccess, CredentialUsage, InferenceEndpoint, ModelBinding,
-        ModelExposurePolicy, PlaintextBoundary, SealedCredentialEnvelopeRef, TokenEndpointAuth,
+        CredentialEnvelope, CredentialExecutionPolicy, CredentialRef, CredentialRefreshAccess,
+        CredentialUsage, InferenceEndpoint, ModelBinding, ModelExposurePolicy, PlaintextBoundary,
+        SealedCredentialEnvelopeRef, TokenEndpointAuth,
     };
 
     #[derive(Clone)]
@@ -571,7 +576,7 @@ mod tests {
     impl CredentialMaterialResolver for ExactExternalResolver {
         fn material_capabilities(
             &self,
-        ) -> std::collections::BTreeSet<awaken_runtime_contract::CredentialMaterialCapability>
+        ) -> std::collections::BTreeSet<awaken_credential_contract::CredentialMaterialCapability>
         {
             let mut profiles = std::collections::BTreeSet::new();
             for holder in [
@@ -589,7 +594,7 @@ mod tests {
                     awaken_runtime_contract::CredentialMaterialSource::WorkerReference,
                 ] {
                     for envelope in [false, true] {
-                        profiles.insert(awaken_runtime_contract::CredentialMaterialCapability {
+                        profiles.insert(awaken_credential_contract::CredentialMaterialCapability {
                             holder: holder.clone(),
                             source,
                             envelope,
@@ -622,9 +627,9 @@ mod tests {
             Ok(ResolvedCredentialMaterial {
                 credential: request.access.credential.clone(),
                 holder: self.returned_holder.clone(),
-                material: awaken_runtime_contract::CredentialMaterial::secret(RedactedString::new(
-                    "external-sealed-material",
-                )),
+                material: awaken_credential_contract::CredentialMaterial::secret(
+                    RedactedString::new("external-sealed-material"),
+                ),
             })
         }
     }
@@ -1700,9 +1705,9 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_runtime_contract::CredentialExtensionConsumer for SshExtensionConsumer {
-        fn descriptor(&self) -> awaken_runtime_contract::CredentialExtensionDescriptor {
-            awaken_runtime_contract::CredentialExtensionDescriptor {
+    impl awaken_credential_contract::CredentialExtensionConsumer for SshExtensionConsumer {
+        fn descriptor(&self) -> awaken_credential_contract::CredentialExtensionDescriptor {
+            awaken_credential_contract::CredentialExtensionDescriptor {
                 consumer_id: "example.ssh-agent".into(),
                 material_types: std::collections::BTreeSet::from([
                     "example.ssh-private-key/v1".into()
@@ -1712,8 +1717,8 @@ mod tests {
 
         async fn consume(
             &self,
-            request: awaken_runtime_contract::CredentialExtensionRequest<'_>,
-        ) -> Result<awaken_runtime_contract::CredentialExtensionReceipt, CredentialMaterialError>
+            request: awaken_credential_contract::CredentialExtensionRequest<'_>,
+        ) -> Result<awaken_credential_contract::CredentialExtensionReceipt, CredentialMaterialError>
         {
             if request
                 .material
@@ -1724,7 +1729,7 @@ mod tests {
             {
                 return Err(CredentialMaterialError::Invalid);
             }
-            Ok(awaken_runtime_contract::CredentialExtensionReceipt {
+            Ok(awaken_credential_contract::CredentialExtensionReceipt {
                 consumer_id: "example.ssh-agent".into(),
                 material_type: "example.ssh-private-key/v1".into(),
                 target_use_fingerprint: if self.corrupt_receipt {

@@ -62,7 +62,7 @@ pub(super) async fn claim_exact_transaction(
     lease_ms: u64,
     now_ms: u64,
     worker: Option<&WorkerSnapshot>,
-    capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+    capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<Claimed>, DispatchError> {
     let phase: Option<(String, Option<i64>)> = sqlx::query_as(&format!(
         "SELECT status, lease_until FROM {NS}_dispatch WHERE run_id = ?1"
@@ -105,7 +105,7 @@ pub(super) async fn claim_exact_transaction_with_mode(
     lease_ms: u64,
     now_ms: u64,
     worker: Option<&WorkerSnapshot>,
-    capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+    capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     mode: ExactClaimMode,
 ) -> Result<Option<Claimed>, DispatchError> {
     let prefix = NS;

@@ -64,7 +64,8 @@ impl ManagedServiceAdapters {
         &mut self,
         path: Option<&std::path::Path>,
         clock: Arc<dyn awaken_time::WallClock>,
-    ) -> Result<Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>, String> {
+    ) -> Result<Option<Arc<dyn awaken_credential_contract::CredentialMaterialResolver>>, String>
+    {
         let Some(path) = path else {
             return Ok(None);
         };
@@ -236,7 +237,7 @@ pub struct CoordinatorServiceAdapters {
         Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>,
     pub worker_placement_policy: Option<Arc<dyn awaken_dispatch::PlacementPolicy>>,
     pub cloud_native_credential_realization:
-        Option<awaken_runtime_contract::CredentialRealizationProfile>,
+        Option<awaken_credential_contract::CredentialRealizationProfile>,
     pub repository_transport_authorizer:
         Option<Arc<dyn awaken_resource_worker_http::RepositoryTransportAuthorizer>>,
     /// Product-selected implementation of the existing runtime inference port.
@@ -280,7 +281,7 @@ impl CoordinatorServiceAdapters {
     #[must_use]
     pub fn with_cloud_native_credential_realization(
         mut self,
-        profile: awaken_runtime_contract::CredentialRealizationProfile,
+        profile: awaken_credential_contract::CredentialRealizationProfile,
     ) -> Self {
         self.cloud_native_credential_realization = Some(profile);
         self

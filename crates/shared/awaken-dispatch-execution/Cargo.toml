@@ -12,6 +12,7 @@ layer = "infrastructure"
 authority = "dispatch-execution"
 
 [dependencies]
+awaken-credential-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-dispatch-contract.workspace = true
 awaken-run-ingress-application-contract.workspace = true

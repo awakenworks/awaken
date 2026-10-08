@@ -41,7 +41,7 @@ pub(super) struct ProcessStartup {
     pub(super) worker_transport: Option<super::worker_transport_security::WorkerTransport>,
     pub(super) worker_placement_policy: Option<Arc<dyn awaken_dispatch::PlacementPolicy>>,
     pub(super) cloud_native_credential_realization:
-        Option<awaken_runtime_contract::CredentialRealizationProfile>,
+        Option<awaken_credential_contract::CredentialRealizationProfile>,
     pub(super) repository_transport_authorizer:
         Option<Arc<dyn awaken_resource_worker_http::RepositoryTransportAuthorizer>>,
     pub(super) inference_materializer:
@@ -57,7 +57,7 @@ pub(super) struct ProcessStartup {
     pub(super) additional_lifecycle_delivery:
         Option<Arc<dyn awaken_session_application_contract::LifecycleFactDelivery>>,
     pub(super) credential_material_resolver:
-        Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
+        Option<Arc<dyn awaken_credential_contract::CredentialMaterialResolver>>,
     pub(super) managed_services: super::ManagedServiceAdapters,
 }
 

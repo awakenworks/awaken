@@ -252,6 +252,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-acp-contract",
+ "awaken-credential-contract",
  "awaken-credential-vault",
  "awaken-run-executor-acp",
  "awaken-runtime-contract",
@@ -850,6 +851,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-credential-contract",
  "awaken-dispatch",
  "awaken-dispatch-contract",
  "awaken-dispatch-execution",
@@ -1061,6 +1063,7 @@ dependencies = [
  "async-nats",
  "async-trait",
  "awaken-agent-contract",
+ "awaken-credential-contract",
  "awaken-dispatch-contract",
  "awaken-dispatch-erasure",
  "awaken-dispatch-execution",
@@ -1099,6 +1102,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-credential-contract",
  "awaken-environment-contract",
  "awaken-lease-contract",
  "awaken-provisioning-contract",
@@ -1125,6 +1129,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-credential-contract",
  "awaken-dispatch",
  "awaken-dispatch-contract",
  "awaken-runtime-contract",
@@ -1139,6 +1144,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-credential-contract",
  "awaken-dispatch",
  "awaken-dispatch-contract",
  "awaken-lease-contract",
@@ -1164,6 +1170,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-coordinator-client",
+ "awaken-credential-contract",
  "awaken-dispatch",
  "awaken-dispatch-contract",
  "awaken-dispatch-testkit",
@@ -1214,6 +1221,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-credential-contract",
  "awaken-dispatch-contract",
  "awaken-lease-testkit",
  "awaken-runtime-contract",
@@ -2959,6 +2967,7 @@ dependencies = [
  "async-trait",
  "awaken-acp-contract",
  "awaken-agent-channel",
+ "awaken-credential-contract",
  "awaken-provisioning-contract",
  "awaken-runtime-contract",
  "awaken-tool-contract",
@@ -3591,6 +3600,7 @@ dependencies = [
  "awaken-authority-clock",
  "awaken-container-contract",
  "awaken-coordinator-client",
+ "awaken-credential-contract",
  "awaken-credential-materializer",
  "awaken-environment-contract",
  "awaken-execution-composition",

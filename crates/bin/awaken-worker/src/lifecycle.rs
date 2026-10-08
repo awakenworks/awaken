@@ -182,7 +182,7 @@ pub(crate) struct WorkerSupervisor {
     pub(crate) control: WorkerControlClient,
     pub(crate) identity: WorkerIdentity,
     pub(crate) credential_observation_resolver:
-        Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
+        Option<Arc<dyn awaken_credential_contract::WorkerLocalCredentialResolver>>,
     pub(crate) acp_capability_observation_source:
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
     pub(crate) session_environment_provider:

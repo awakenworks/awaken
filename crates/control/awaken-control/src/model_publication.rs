@@ -547,7 +547,7 @@ mod tests {
                 policy,
                 (
                     holder,
-                    awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp()
+                    awaken_credential_contract::CredentialRealizationProfile::self_hosted_acp()
                         .inference_holder,
                 ),
             )

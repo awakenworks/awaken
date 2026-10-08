@@ -392,8 +392,8 @@ pub trait LaunchResolver: Send + Sync {
     /// default is empty so a resolver cannot accidentally claim plaintext custody.
     fn credential_realization_capabilities(
         &self,
-    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
-        awaken_runtime_contract::CredentialRealizationCapabilities::default()
+    ) -> awaken_credential_contract::CredentialRealizationCapabilities {
+        awaken_credential_contract::CredentialRealizationCapabilities::default()
     }
 }
 
@@ -417,7 +417,7 @@ pub trait BrokeredAcpModelAccessMaterializer: Send + Sync {
     fn credential_realization_capabilities(
         &self,
         cli: AcpCli,
-    ) -> awaken_runtime_contract::CredentialRealizationCapabilities;
+    ) -> awaken_credential_contract::CredentialRealizationCapabilities;
 }
 
 /// An [`AgentChannelSource`] that projects a run onto a launch via its [`AcpCli`]

@@ -365,10 +365,10 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for UnusedContainerP
 }
 
 #[async_trait::async_trait]
-impl awaken_runtime_contract::CredentialMaterialResolver for ExternalCredentialResolver {
+impl awaken_credential_contract::CredentialMaterialResolver for ExternalCredentialResolver {
     fn material_capabilities(
         &self,
-    ) -> std::collections::BTreeSet<awaken_runtime_contract::CredentialMaterialCapability> {
+    ) -> std::collections::BTreeSet<awaken_credential_contract::CredentialMaterialCapability> {
         let mut profiles = std::collections::BTreeSet::new();
         for holder in [
             awaken_runtime_contract::PlaintextHolder::new(
@@ -385,7 +385,7 @@ impl awaken_runtime_contract::CredentialMaterialResolver for ExternalCredentialR
                 awaken_runtime_contract::CredentialMaterialSource::WorkerReference,
             ] {
                 for envelope in [false, true] {
-                    profiles.insert(awaken_runtime_contract::CredentialMaterialCapability {
+                    profiles.insert(awaken_credential_contract::CredentialMaterialCapability {
                         holder: holder.clone(),
                         source,
                         envelope,
@@ -398,25 +398,25 @@ impl awaken_runtime_contract::CredentialMaterialResolver for ExternalCredentialR
 
     async fn resolve_exact(
         &self,
-        _request: awaken_runtime_contract::CredentialMaterialRequest<'_>,
+        _request: awaken_credential_contract::CredentialMaterialRequest<'_>,
     ) -> Result<
-        awaken_runtime_contract::ResolvedCredentialMaterial,
-        awaken_runtime_contract::CredentialMaterialError,
+        awaken_credential_contract::ResolvedCredentialMaterial,
+        awaken_credential_contract::CredentialMaterialError,
     > {
-        Err(awaken_runtime_contract::CredentialMaterialError::Unavailable)
+        Err(awaken_credential_contract::CredentialMaterialError::Unavailable)
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_runtime_contract::CredentialObservationSource for ExternalCredentialResolver {
+impl awaken_credential_contract::CredentialObservationSource for ExternalCredentialResolver {
     async fn credential_observations(
         &self,
     ) -> Result<
-        std::collections::BTreeSet<awaken_runtime_contract::CredentialObservation>,
-        awaken_runtime_contract::CredentialMaterialError,
+        std::collections::BTreeSet<awaken_credential_contract::CredentialObservation>,
+        awaken_credential_contract::CredentialMaterialError,
     > {
         Ok(std::collections::BTreeSet::from([
-            awaken_runtime_contract::CredentialObservation::available(
+            awaken_credential_contract::CredentialObservation::available(
                 awaken_runtime_contract::CredentialRef {
                     id: "cred:worker".into(),
                     revision: 4,
@@ -428,18 +428,15 @@ impl awaken_runtime_contract::CredentialObservationSource for ExternalCredential
 }
 
 #[async_trait::async_trait]
-impl awaken_runtime_contract::WorkerLocalReferenceRevalidator for ExternalCredentialResolver {
+impl awaken_credential_contract::WorkerLocalReferenceRevalidator for ExternalCredentialResolver {
     async fn revalidate_worker_reference(
         &self,
         credential: &awaken_runtime_contract::CredentialRef,
     ) -> Result<
-        awaken_runtime_contract::CredentialObservation,
-        awaken_runtime_contract::CredentialMaterialError,
+        awaken_credential_contract::CredentialObservation,
+        awaken_credential_contract::CredentialMaterialError,
     > {
-        Ok(awaken_runtime_contract::CredentialObservation::available(
-            credential.clone(),
-            1,
-        ))
+        Ok(awaken_credential_contract::CredentialObservation::available(credential.clone(), 1))
     }
 }
 
@@ -450,8 +447,8 @@ impl InferenceExecutorMaterializer for SchemeMaterializer {
 
     fn credential_realization_capabilities(
         &self,
-    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
-        awaken_runtime_contract::CredentialRealizationCapabilities {
+    ) -> awaken_credential_contract::CredentialRealizationCapabilities {
+        awaken_credential_contract::CredentialRealizationCapabilities {
             holders: [awaken_runtime_contract::PlaintextHolder::new(
                 awaken_runtime_contract::PlaintextBoundary::Worker,
                 awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
@@ -464,7 +461,7 @@ impl InferenceExecutorMaterializer for SchemeMaterializer {
             .into_iter()
             .collect(),
             realization_kinds: [
-                awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+                awaken_credential_contract::CredentialRealizationKind::WorkerProviderAdapter,
             ]
             .into_iter()
             .collect(),
@@ -489,12 +486,13 @@ fn deployment() -> awaken_session_executor::DeploymentConfig {
 }
 
 fn admits_native_source(
-    evidence: &awaken_runtime_contract::CredentialRealizationCapabilities,
+    evidence: &awaken_credential_contract::CredentialRealizationCapabilities,
     source: awaken_runtime_contract::CredentialMaterialSource,
 ) -> bool {
+    use awaken_credential_contract::CredentialRealizationKind;
     use awaken_runtime_contract::{
-        CredentialAccess, CredentialExecutionPolicy, CredentialRealizationKind, CredentialRef,
-        CredentialTarget, CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+        CredentialAccess, CredentialExecutionPolicy, CredentialRef, CredentialTarget,
+        CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
     };
     let holder = PlaintextHolder::new(
         PlaintextBoundary::Worker,
@@ -596,7 +594,7 @@ fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
     );
     assert!(manifest.capabilities.contains("test-access/v1"));
     let realization =
-        awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+        awaken_credential_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
             &manifest.capabilities,
         )
         .expect("credential realization capability decodes");
@@ -609,9 +607,9 @@ fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
             ))
     );
     assert!(
-        realization
-            .realization_kinds
-            .contains(&awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter)
+        realization.realization_kinds.contains(
+            &awaken_credential_contract::CredentialRealizationKind::WorkerProviderAdapter
+        )
     );
 }
 
@@ -1117,7 +1115,7 @@ fn external_credential_resolver_has_one_canonical_resolution_path() {
         "X2 the installed pinned adapter satisfies provider-source placement"
     );
     let evidence =
-        awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+        awaken_credential_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
             &worker.manifest().capabilities,
         )
         .expect("X2 evidence decodes");
@@ -1173,12 +1171,12 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         config: &StandardManifestConfig::default(),
     });
     let workload_realization =
-        awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+        awaken_credential_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
             &workload.capabilities,
         )
         .expect("ACP credential realization capability decodes");
     let supports_workload_process_secret =
-        |profile: &awaken_runtime_contract::CredentialRealizationCapabilities| {
+        |profile: &awaken_credential_contract::CredentialRealizationCapabilities| {
             profile
                 .holders
                 .contains(&awaken_runtime_contract::PlaintextHolder::new(
@@ -1186,11 +1184,11 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
                     awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
                 ))
                 && profile.realization_kinds.contains(
-                    &awaken_runtime_contract::CredentialRealizationKind::ProcessSecretEnvironment,
+                    &awaken_credential_contract::CredentialRealizationKind::ProcessSecretEnvironment,
                 )
         };
     let supports_worker_provider_adapter =
-        |profile: &awaken_runtime_contract::CredentialRealizationCapabilities| {
+        |profile: &awaken_credential_contract::CredentialRealizationCapabilities| {
             profile
                 .holders
                 .contains(&awaken_runtime_contract::PlaintextHolder::new(
@@ -1198,7 +1196,7 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
                     awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
                 ))
                 && profile.realization_kinds.contains(
-                    &awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+                    &awaken_credential_contract::CredentialRealizationKind::WorkerProviderAdapter,
                 )
         };
     assert!(
@@ -1219,13 +1217,13 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         workload_realization
             .acp_backend_realization_kind("acp:claude")
             .expect("process delivery mapping is coherent"),
-        Some(awaken_runtime_contract::CredentialRealizationKind::ProcessSecretEnvironment)
+        Some(awaken_credential_contract::CredentialRealizationKind::ProcessSecretEnvironment)
     );
     assert_eq!(
         workload_realization
             .acp_backend_realization_kind("acp:codex")
             .expect("file delivery mapping is coherent"),
-        Some(awaken_runtime_contract::CredentialRealizationKind::PrivateSecretFile)
+        Some(awaken_credential_contract::CredentialRealizationKind::PrivateSecretFile)
     );
     assert!(
         workload
@@ -1254,7 +1252,7 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         config: &StandardManifestConfig::default(),
     });
     let native =
-        awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+        awaken_credential_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
             &without_acp.capabilities,
         )
         .expect("Native credential realization capability decodes");
@@ -1309,7 +1307,7 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         "R3 a Worker-local resolver cannot imply a provider credential source"
     );
     assert!(
-        awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+        awaken_credential_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
             &local_observation_only.capabilities,
         )
         .expect("R3 credential realization evidence decodes")
@@ -1341,7 +1339,7 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         "R4 absent mechanisms advertise neither independent capability"
     );
     assert!(
-        awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+        awaken_credential_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
             &without_credentials.capabilities,
         )
         .expect("R4 credential realization evidence decodes")
@@ -1396,15 +1394,15 @@ fn standard_manifest_requires_complete_provider_evidence_for_worker_relay() {
             std::collections::BTreeSet::from(["external-secure-provider".to_string()])
         );
         let realization =
-            awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+            awaken_credential_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
                 &manifest.capabilities,
             )
             .expect("credential evidence decodes");
         let supports_worker_relay =
-            |profile: &awaken_runtime_contract::CredentialRealizationCapabilities| {
+            |profile: &awaken_credential_contract::CredentialRealizationCapabilities| {
                 profile
                     .realization_kinds
-                    .contains(&awaken_runtime_contract::CredentialRealizationKind::WorkerRelay)
+                    .contains(&awaken_credential_contract::CredentialRealizationKind::WorkerRelay)
             };
         assert_eq!(
             supports_worker_relay(&realization)
@@ -1455,7 +1453,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
             .contains(awaken_worker_contract::REPOSITORY_CREDENTIALS_CAPABILITY)
     );
     assert!(
-        awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+        awaken_credential_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
             &without.capabilities,
         )
         .expect("W1 evidence decodes")
@@ -1487,7 +1485,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
             .contains(awaken_worker_contract::REPOSITORY_CREDENTIALS_CAPABILITY)
     );
     assert!(
-        awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+        awaken_credential_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
             &secretless.capabilities,
         )
         .expect("W2 evidence decodes")
@@ -1514,7 +1512,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
             .contains(awaken_worker_contract::REPOSITORY_CREDENTIALS_CAPABILITY)
     );
     let evidence =
-        awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+        awaken_credential_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
             &credentialed.capabilities,
         )
         .expect("W3 evidence decodes");
@@ -1550,7 +1548,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
             .contains(awaken_worker_contract::REPOSITORY_CREDENTIALS_CAPABILITY)
     );
     let evidence =
-        awaken_runtime_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
+        awaken_credential_contract::CredentialRealizationCapabilities::from_manifest_capabilities(
             &inference.capabilities,
         )
         .expect("W4 evidence decodes");
@@ -1570,7 +1568,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
     assert_eq!(
         evidence.realization_kinds,
         std::collections::BTreeSet::from([
-            awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+            awaken_credential_contract::CredentialRealizationKind::WorkerProviderAdapter,
         ])
     );
 }

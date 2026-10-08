@@ -167,11 +167,11 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use awaken_acp_contract::AcpCapabilityObservationSource;
-    use awaken_credential_vault::repo::InMemoryCredentialRepo;
-    use awaken_run_executor_acp::AcpCli;
-    use awaken_runtime_contract::{
+    use awaken_credential_contract::{
         CredentialObservationSource, CredentialObservationState, WorkerLocalReferenceRevalidator,
     };
+    use awaken_credential_vault::repo::InMemoryCredentialRepo;
+    use awaken_run_executor_acp::AcpCli;
     use std::collections::BTreeMap;
     use std::path::Path;
 

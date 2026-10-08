@@ -655,7 +655,7 @@ impl HostDependencies {
     #[must_use]
     pub fn with_worker_credential_resolver(
         mut self,
-        resolver: Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>,
+        resolver: Arc<dyn awaken_credential_contract::WorkerLocalCredentialResolver>,
     ) -> Self {
         self.worker.worker_credential_resolver = Some(resolver);
         self

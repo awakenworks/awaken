@@ -58,7 +58,7 @@ pub fn project_mcp_session_transport(
     let generation = &request.generation;
     if let McpTransportMaterialKind::SandboxStdio { command, args } = &prepared.transport {
         if receipt.actual_realization_kind
-            == Some(awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField)
+            == Some(awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField)
         {
             return Err(McpError::internal(
                 "process-private MCP credentials require an HTTP Session transport",
@@ -77,7 +77,7 @@ pub fn project_mcp_session_transport(
     }
     let (original_url, bearer, _) = prepared.http().expect("HTTP material checked above");
     let process_protocol_field = receipt.actual_realization_kind
-        == Some(awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField);
+        == Some(awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField);
     if process_protocol_field {
         if bearer.is_none() {
             return Err(McpError::internal(
@@ -88,7 +88,7 @@ pub fn project_mcp_session_transport(
             .verify_for_delivery(
                 request,
                 awaken_credential_contract::McpCredentialDelivery::ClientInjection,
-                awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField,
+                awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField,
             )
             .map_err(|_| {
                 McpError::internal(
@@ -96,13 +96,13 @@ pub fn project_mcp_session_transport(
                 )
             })?;
     } else if receipt.actual_realization_kind
-        == Some(awaken_runtime_contract::CredentialRealizationKind::PlatformRelay)
+        == Some(awaken_credential_contract::CredentialRealizationKind::PlatformRelay)
     {
         receipt
             .verify_for_delivery(
                 request,
                 awaken_credential_contract::McpCredentialDelivery::GatewayMediation,
-                awaken_runtime_contract::CredentialRealizationKind::PlatformRelay,
+                awaken_credential_contract::CredentialRealizationKind::PlatformRelay,
             )
             .map_err(|_| {
                 McpError::internal(
@@ -138,7 +138,7 @@ pub fn project_mcp_session_transport(
         // bearer out of the sandbox's address space — the sandbox itself holds no credential.
         Some(_)
             if receipt.actual_realization_kind
-                == Some(awaken_runtime_contract::CredentialRealizationKind::WorkerRelay)
+                == Some(awaken_credential_contract::CredentialRealizationKind::WorkerRelay)
                 || receipt.actual_realization_kind.is_none() =>
         {
             // `None` is the persisted pre-discriminator receipt. Exact request
@@ -178,7 +178,7 @@ pub fn project_mcp_session_transport(
         // explicitly rather than letting it share the anonymous arm, so the two
         // stay distinguishable.
         None if receipt.actual_realization_kind
-            == Some(awaken_runtime_contract::CredentialRealizationKind::PlatformRelay) =>
+            == Some(awaken_credential_contract::CredentialRealizationKind::PlatformRelay) =>
         {
             (original_url.to_string(), None)
         }
@@ -471,7 +471,7 @@ mod acp_projection_tests {
 
     fn receipt(
         request: &awaken_session_mcp_contract::StageMcpAttachment,
-        realization: awaken_runtime_contract::CredentialRealizationKind,
+        realization: awaken_credential_contract::CredentialRealizationKind,
     ) -> awaken_session_mcp_contract::McpRealizationReceipt {
         awaken_session_mcp_contract::McpRealizationReceipt {
             generation: request.generation.clone(),
@@ -496,7 +496,8 @@ mod acp_projection_tests {
 
     #[test]
     fn client_injection_uses_only_the_exact_process_protocol_field() {
-        use awaken_runtime_contract::{CredentialRealizationKind, PlaintextBoundary};
+        use awaken_credential_contract::CredentialRealizationKind;
+        use awaken_runtime_contract::PlaintextBoundary;
         // Cause/effect rules: P1 declared Claude/Codex + exact HTTP process-field
         // receipt -> private redacted auth; P2 another sink or tampered receipt
         // -> refusal for either declared client; P3 undeclared OpenCode ->

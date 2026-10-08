@@ -1154,7 +1154,7 @@ impl crate::SharedHost {
     pub(crate) fn thread_credential_realization(
         &self,
         thread: &str,
-    ) -> Option<awaken_runtime_contract::CredentialRealizationProfile> {
+    ) -> Option<awaken_credential_contract::CredentialRealizationProfile> {
         self.session_slots
             .read(thread, |slot| {
                 slot.environment_snapshot
@@ -1248,7 +1248,7 @@ mod network_policy_tests {
             prepared_image: None,
             network: awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
             credential_realization:
-                awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
+                awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
         };
         let projected = crate::provisioning::project_environment(&environment);
         assert_eq!(

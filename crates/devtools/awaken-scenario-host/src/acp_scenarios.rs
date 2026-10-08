@@ -352,7 +352,7 @@ const FAKE_ACP_DISCOVERY: awaken_run_executor_acp::AcpDiscoverySpec =
             },
             rules: &[awaken_run_executor_acp::AcpLoginRule {
                 predicate: awaken_run_executor_acp::AcpProbePredicate::ExitSuccess,
-                state: awaken_runtime_contract::CredentialObservationState::Available,
+                state: awaken_credential_contract::CredentialObservationState::Available,
                 reason_code: "scenario_fixture_available",
             }],
             remediation: "scenario fixture requires no login",

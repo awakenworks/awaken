@@ -276,7 +276,7 @@ fn frozen_projection() -> awaken_session_realization_contract::FrozenSessionProj
                 packages: Default::default(),
                 prepared_image: None,
                 network: awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
-                credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
+                credential_realization: awaken_credential_contract::CredentialRealizationProfile {
                     inference_holder: holder.clone(),
                     mcp_holder: holder.clone(),
                     resource_holder: holder,
@@ -931,7 +931,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         prepared_image: Some("registry.example/env@sha256:signed".into()),
         network: awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
         credential_realization:
-            awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
+            awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
     };
     let router = dispatch_transport_router_with_service(Arc::new(service)).merge(
         worker_environment_warmup_router(

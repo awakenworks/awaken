@@ -7,10 +7,9 @@
 //! the exact Vault materialization effect it deliberately cannot own. ACP tool
 //! transport is supplied through the neutral Host export port.
 
+use awaken_credential_contract::CredentialRealizationKind;
 use awaken_ext_builtin_tools::WebSearchCredentialResolver;
-use awaken_runtime_contract::{
-    CredentialAccess, CredentialRealizationKind, PlaintextBoundary, PlaintextHolder,
-};
+use awaken_runtime_contract::{CredentialAccess, PlaintextBoundary, PlaintextHolder};
 use std::sync::Arc;
 
 use awaken_credential_materializer::PinnedCredentialMaterializer;
@@ -718,13 +717,13 @@ mod tests {
                 )),
                 oauth_command: None,
             },
-            awaken_runtime_contract::credential::CredentialDescriptor::new(
+            awaken_credential_contract::CredentialDescriptor::new(
                 "brave",
-                awaken_runtime_contract::credential::CredentialMaterialDescriptor::secret(
-                    awaken_runtime_contract::credential::OPAQUE_SECRET_MATERIAL_TYPE,
+                awaken_credential_contract::CredentialMaterialDescriptor::secret(
+                    awaken_credential_contract::OPAQUE_SECRET_MATERIAL_TYPE,
                 ),
                 [
-                    awaken_runtime_contract::credential::CredentialTargetContract::new(
+                    awaken_credential_contract::CredentialTargetContract::new(
                         awaken_runtime_contract::CredentialTarget::new(
                             awaken_runtime_contract::credential::CredentialPurpose::WebProviderAuthorization,
                             "brave",

@@ -761,11 +761,12 @@ mod tests {
                     prepared_image: None,
                     network:
                         awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
-                    credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
-                        inference_holder: holder.clone(),
-                        mcp_holder: holder.clone(),
-                        resource_holder: holder,
-                    },
+                    credential_realization:
+                        awaken_credential_contract::CredentialRealizationProfile {
+                            inference_holder: holder.clone(),
+                            mcp_holder: holder.clone(),
+                            resource_holder: holder,
+                        },
                 },
                 runtime_placement:
                     awaken_session_configuration_contract::SessionRuntimePlacement::Worker,

@@ -103,7 +103,8 @@ pub(crate) fn configure_child_native_runtime(
 pub(crate) struct ChildExecutionAdapters {
     pub(crate) acp: Option<ChildAcpExecutorFactory>,
     pub(crate) remote: Option<Arc<dyn RunAttemptExecutor>>,
-    pub(crate) credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
+    pub(crate) credential_capabilities:
+        awaken_credential_contract::CredentialRealizationCapabilities,
     /// The same host-configured plugin instance shape used by a root Native Run.
     /// The child snapshot still decides whether the plugin is selected.
     pub(crate) web_search: Option<Arc<awaken_ext_builtin_tools::WebSearchPlugin>>,

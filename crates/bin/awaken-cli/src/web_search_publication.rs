@@ -7,13 +7,14 @@
 use std::sync::Arc;
 
 use awaken_config_service::PluginPublicationResolver;
+use awaken_credential_contract::CredentialMaterialBinding;
 use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_credential_vault::{ExactCredentialAccessRequest, compile_exact_credential_access};
 use awaken_runtime_contract::credential::CredentialPurpose;
 use awaken_runtime_contract::{
-    CredentialExecutionPolicy, CredentialMaterialBinding, CredentialTarget, ModelExposurePolicy,
-    PlaintextBoundary, PlaintextHolder,
+    CredentialExecutionPolicy, CredentialTarget, ModelExposurePolicy, PlaintextBoundary,
+    PlaintextHolder,
 };
 use awaken_time::{WallClock, WallClockExt as _};
 
@@ -277,20 +278,15 @@ mod tests {
                 secret: Some(RedactedString::new("never-published")),
                 oauth_command: None,
             },
-            awaken_runtime_contract::credential::CredentialDescriptor::new(
+            awaken_credential_contract::CredentialDescriptor::new(
                 provider,
-                awaken_runtime_contract::credential::CredentialMaterialDescriptor::secret(
-                    awaken_runtime_contract::credential::OPAQUE_SECRET_MATERIAL_TYPE,
+                awaken_credential_contract::CredentialMaterialDescriptor::secret(
+                    awaken_credential_contract::OPAQUE_SECRET_MATERIAL_TYPE,
                 ),
-                [
-                    awaken_runtime_contract::credential::CredentialTargetContract::new(
-                        CredentialTarget::new(
-                            CredentialPurpose::WebProviderAuthorization,
-                            provider,
-                        ),
-                        usage,
-                    ),
-                ],
+                [awaken_credential_contract::CredentialTargetContract::new(
+                    CredentialTarget::new(CredentialPurpose::WebProviderAuthorization, provider),
+                    usage,
+                )],
             ),
             &InMemorySecretStore::new(),
             credentials.as_ref(),

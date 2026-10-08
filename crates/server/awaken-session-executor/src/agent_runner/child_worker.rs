@@ -14,11 +14,11 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_credential_contract::CredentialRealizationCapabilities;
 use awaken_dispatch_erasure::AnyDispatchStore;
 use awaken_dispatch_execution::{DispatchWorker, Error, RecoveryProjection};
 use awaken_dispatch_contract::Claimed;
 use awaken_runtime::Runtime;
-use awaken_runtime_contract::CredentialRealizationCapabilities;
 use awaken_runtime_contract::execution::RunAttemptExecutor;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 

@@ -44,5 +44,5 @@ pub trait AcpSessionExecutorFactory: Send + Sync {
     fn credential_realization_capabilities(
         &self,
         backend: &Backend,
-    ) -> Result<awaken_runtime_contract::CredentialRealizationCapabilities, String>;
+    ) -> Result<awaken_credential_contract::CredentialRealizationCapabilities, String>;
 }

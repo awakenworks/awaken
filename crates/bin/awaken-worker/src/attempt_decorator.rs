@@ -71,7 +71,7 @@ pub struct WorkerApplicationDependencies {
 pub struct WorkerApplicationCapabilities {
     pub inference: bool,
     pub inference_schemes: std::collections::BTreeSet<String>,
-    pub inference_credentials: awaken_runtime_contract::CredentialRealizationCapabilities,
+    pub inference_credentials: awaken_credential_contract::CredentialRealizationCapabilities,
     pub checkpoint_store: bool,
     pub attempt_decorator: bool,
     pub web_search_schema: serde_json::Value,
