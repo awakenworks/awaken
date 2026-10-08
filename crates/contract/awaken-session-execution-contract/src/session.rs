@@ -6,11 +6,16 @@
 //! pending tools, Run outcomes, capabilities, Session initialization, and Run errors.
 
 mod neutral;
+mod projection_evidence;
 mod projection_source;
 mod roles;
 
 pub use awaken_session_budget_contract::SessionUsage;
 pub use neutral::NeutralRuntime;
+pub use projection_evidence::{
+    CommittedEvidenceError, CommittedSessionFacts, ProjectionThreadSnapshots,
+    SessionProjectionReadTimings, committed_lifecycle_prefix, outcome_terminal_commit_cursor,
+};
 pub use projection_source::SessionProjectionSource;
 pub use roles::*;
 use std::sync::Arc;

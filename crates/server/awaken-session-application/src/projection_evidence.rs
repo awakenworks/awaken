@@ -2,7 +2,7 @@
 // @formal reason: Read-only evidence gathering moved from the Managed committed projector behind the
 // @formal reason: SessionProjectionSource port: a root prefix before retained terminal Outcome queries,
 // @formal reason: that root lent to coordinated-link projection, child prefixes, then the ordered
-// @formal reason: merge of their lifecycle (the merge itself lives in awaken-managed-session-events). It
+// @formal reason: merge of their lifecycle (the merge itself lives beside the port in the runtime contract). It
 // @formal reason: publishes nothing; the Managed projector still re-reads and compares the same
 // @formal reason: prefixes before its CAS publication. Warm/cold, read-order and prefix-race projection
 // @formal reason: tests cover behavior; reducer TCB linked to the paired-publication obligation.
@@ -14,12 +14,12 @@
 //! links and terminal Outcomes, never an execution context or Environment.
 
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
-use awaken_managed_session_events::{
-    CommittedSessionFacts, ProjectionThreadSnapshots, SessionProjectionReadTimings,
-    committed_lifecycle_prefix,
-};
 use awaken_session_event_contract::{SessionEventBatch, SessionEventCommand};
-use awaken_session_execution_contract::{CoordinatedThreadLink, SessionProjectionSource};
+use awaken_session_execution_contract::{
+    CommittedSessionFacts, CoordinatedThreadLink, ProjectionThreadSnapshots,
+    SessionProjectionReadTimings, SessionProjectionSource, committed_lifecycle_prefix,
+    outcome_terminal_commit_cursor,
+};
 use awaken_session_state_contract::PersistedSession;
 use awaken_session_types::RunError;
 
@@ -110,11 +110,8 @@ impl SessionApplication {
             let root_terminal = root
                 .as_ref()
                 .map(|snapshot| {
-                    awaken_managed_session_events::outcome_terminal_commit_cursor(
-                        &outcome_id,
-                        snapshot,
-                    )
-                    .map_err(|error| RunError::internal(error.to_string()))
+                    outcome_terminal_commit_cursor(&outcome_id, snapshot)
+                        .map_err(|error| RunError::internal(error.to_string()))
                 })
                 .transpose()?
                 .flatten()

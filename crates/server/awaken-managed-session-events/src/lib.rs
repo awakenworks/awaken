@@ -5,8 +5,9 @@
 //! vocabulary. A protocol adapter reads the evidence through the Session
 //! application, asks this crate which facts exist and where each one sits,
 //! mints its own public ids from [`EventIdentity`]s and encodes each fact on its
-//! wire. Consumers: `awaken-session-application` (the evidence it reads) and
-//! the Managed protocol adapter (identity, ordering and projection).
+//! wire. The evidence itself is the Session's (`CommittedSessionFacts` in
+//! `awaken-session-execution-contract`). Consumer: the Managed protocol adapter
+//! (identity, ordering and projection).
 
 mod acceptance;
 mod accepted_prefix;
@@ -15,7 +16,6 @@ mod aggregate;
 mod committed_project;
 mod coordination;
 mod error;
-mod evidence;
 mod fact;
 mod fault;
 mod historical;
@@ -50,10 +50,6 @@ pub use coordination::{
     is_coordination_send, link_facts, project_child_activity,
 };
 pub use error::ProjectionError;
-pub use evidence::{
-    CommittedSessionFacts, ProjectionThreadSnapshots, SessionProjectionReadTimings,
-    committed_lifecycle_prefix,
-};
 pub use fact::{DerivedSessionEvent, SessionEventKind};
 pub use fault::{RunFault, run_fault, run_state_fault};
 pub use historical::{
@@ -78,8 +74,7 @@ pub use lifecycle::{
 pub use observation::run_observation_facts;
 pub use order::{EventPosition, Ordinal, historical_pending_projection_order};
 pub use outcome::{
-    AnchoredOutcome, OutcomeAnchor, anchor_outcome, outcome_owns_failure_run,
-    outcome_terminal_commit_cursor, validate_outcome,
+    AnchoredOutcome, OutcomeAnchor, anchor_outcome, outcome_owns_failure_run, validate_outcome,
 };
 pub use position::{AnchoredEvent, EventAnchor, position_events};
 pub use prefix::same_thread_projection_prefix;

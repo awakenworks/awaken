@@ -194,7 +194,7 @@ pub use event_batches::SessionEventBatchIdempotency;
 mod outcome_reconciliation;
 mod projection;
 mod projection_evidence;
-pub use awaken_managed_session_events::{
+pub use awaken_session_execution_contract::{
     CommittedSessionFacts, ProjectionThreadSnapshots, SessionProjectionReadTimings,
 };
 pub use credentials::SessionPreparationError;
