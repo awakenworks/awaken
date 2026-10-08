@@ -15,6 +15,7 @@ authority = "session-environment"
 separation = "contract"
 
 [dependencies]
+awaken-credential-contract.workspace = true
 # Sandboxes are realized from the provisioning vocabulary.
 awaken-provisioning-contract.workspace = true
 # A rooted sandbox exposes its in-process tools as runtime tools.

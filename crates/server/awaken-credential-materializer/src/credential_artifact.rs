@@ -14,7 +14,7 @@
 //! typed material into the fixed format consumed by the pinned provider CLI.
 
 use awaken_acp_contract::managed_credential::CredentialArtifactCodec;
-use awaken_runtime_contract::{CredentialMaterial, OAuthCredentialMaterial};
+use awaken_credential_contract::{CredentialMaterial, OAuthCredentialMaterial};
 use base64::Engine as _;
 
 pub(crate) struct EncodedCredentialArtifact {

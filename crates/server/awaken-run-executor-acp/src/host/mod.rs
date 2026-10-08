@@ -19,10 +19,11 @@ use crate::{AcpCli, acp_cli};
 use async_trait::async_trait;
 pub use awaken_acp_contract::AcpCapabilityNegotiator;
 use awaken_acp_contract::{AcpCapabilityObservation, AcpCapabilityObservationSource};
-use awaken_runtime_contract::{
+use awaken_credential_contract::{
     CredentialMaterialError, CredentialObservation, CredentialObservationSource,
-    CredentialObservationState, CredentialRef, WorkerLocalReferenceRevalidator,
+    CredentialObservationState, WorkerLocalReferenceRevalidator,
 };
+use awaken_runtime_contract::CredentialRef;
 use awaken_time::{WallClock, WallClockExt};
 
 mod capability_probe;
@@ -771,7 +772,7 @@ impl WorkerLocalReferenceRevalidator for AcpLocalCredentialResolver {
             .filter(|binding| binding.credential.revision == credential.revision)
             .cloned()
             .ok_or(CredentialMaterialError::Unavailable)?;
-        awaken_runtime_contract::require_exact_available_worker_reference(
+        awaken_credential_contract::require_exact_available_worker_reference(
             credential,
             self.observe(&binding).await,
         )

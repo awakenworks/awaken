@@ -7,7 +7,8 @@
 // @formal reason: proof claim.
 //! Last-mile HTTP projection for already-admitted credential material.
 
-use awaken_runtime_contract::{CredentialAccess, CredentialMaterial, CredentialMaterialError};
+use awaken_credential_contract::{CredentialMaterial, CredentialMaterialError};
+use awaken_runtime_contract::CredentialAccess;
 
 /// Convert already-admitted material into the narrow HTTP credential shared by
 /// MCP, A2A, and builtin Web adapters. Provider code receives only the final
@@ -41,10 +42,10 @@ pub fn materialized_http_credential(
 #[cfg(test)]
 mod tests {
     use awaken_agent_contract::RedactedString;
+    use awaken_credential_contract::{CredentialMaterial, CredentialMaterialError};
     use awaken_runtime_contract::{
-        CredentialAccess, CredentialExecutionPolicy, CredentialMaterial, CredentialMaterialError,
-        CredentialMaterialSource, CredentialRef, CredentialUsage, ModelExposurePolicy,
-        PlaintextBoundary, PlaintextHolder,
+        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
+        CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
     };
 
     use super::materialized_http_credential;

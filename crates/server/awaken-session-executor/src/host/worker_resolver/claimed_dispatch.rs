@@ -207,7 +207,7 @@ impl HostWorkerResolver {
 impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
     fn credential_realization_capabilities(
         &self,
-    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
+    ) -> awaken_credential_contract::CredentialRealizationCapabilities {
         self.host
             .upgrade()
             .map(|host| host.local_credential_realization_capabilities())

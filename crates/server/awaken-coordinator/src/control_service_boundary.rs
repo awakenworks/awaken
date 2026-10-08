@@ -86,7 +86,7 @@ struct SourceCommand {
     workspace_id: String,
     target: awaken_session_mcp_contract::McpTarget,
     selected_holder: awaken_runtime_contract::PlaintextHolder,
-    binding: awaken_runtime_contract::CredentialMaterialBinding,
+    binding: awaken_credential_contract::CredentialMaterialBinding,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -97,7 +97,7 @@ struct CredentialAccessCommand {
     usage: awaken_runtime_contract::CredentialUsage,
     policy: awaken_runtime_contract::CredentialExecutionPolicy,
     selected_holder: awaken_runtime_contract::PlaintextHolder,
-    binding: awaken_runtime_contract::CredentialMaterialBinding,
+    binding: awaken_credential_contract::CredentialMaterialBinding,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -592,7 +592,7 @@ impl SessionCredentialSource for HttpControlServiceClient {
         workspace_id: &str,
         target: &awaken_session_mcp_contract::McpTarget,
         selected_holder: &awaken_runtime_contract::PlaintextHolder,
-        binding: &awaken_runtime_contract::CredentialMaterialBinding,
+        binding: &awaken_credential_contract::CredentialMaterialBinding,
     ) -> Result<awaken_runtime_contract::CredentialAccess, String> {
         self.post(
             MCP_ACCESS_PATH,

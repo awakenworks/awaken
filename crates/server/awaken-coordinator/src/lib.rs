@@ -278,7 +278,7 @@ pub fn a2a_attempt_executor(
     credentials: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
 ) -> awaken_session_executor::RemoteAttemptInstallation {
     let credential_realization = credentials.as_ref().map_or_else(
-        awaken_runtime_contract::CredentialRealizationCapabilities::default,
+        awaken_credential_contract::CredentialRealizationCapabilities::default,
         awaken_credential_materializer::PinnedCredentialMaterializer::worker_relay_capabilities,
     );
     awaken_session_executor::RemoteAttemptInstallation {

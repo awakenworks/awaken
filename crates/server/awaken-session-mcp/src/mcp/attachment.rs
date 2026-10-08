@@ -69,7 +69,7 @@ pub trait McpStagingSession: Send + Sync {
         materializer: &PinnedCredentialMaterializer,
         cli: &str,
         http_transport: bool,
-    ) -> Result<Option<awaken_runtime_contract::CredentialRealizationCapabilities>, RunError>;
+    ) -> Result<Option<awaken_credential_contract::CredentialRealizationCapabilities>, RunError>;
 
     /// The Session's resident Environment, if one is realized.
     async fn resident_environment(
@@ -102,7 +102,7 @@ impl McpSessions {
         credentials: McpCredentialMaterialization<'_>,
         request: awaken_session_mcp_contract::StageMcpAttachment,
     ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, RunError> {
-        use awaken_runtime_contract::{CredentialRealizationKind, PlaintextBoundary};
+        use awaken_credential_contract::{CredentialRealizationKind, PlaintextBoundary};
 
         if request.workspace_id.trim().is_empty()
             || request.generation.session_id().as_str().trim().is_empty()
@@ -409,7 +409,7 @@ impl McpSessions {
                         )
                         .await
                         .map_err(|error| match error {
-                            awaken_runtime_contract::CredentialMaterialError::Unavailable => {
+                            awaken_credential_contract::CredentialMaterialError::Unavailable => {
                                 RunError::unavailable_classified(
                                     "mcp_material_source_unavailable",
                                     format!(

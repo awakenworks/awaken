@@ -149,7 +149,7 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
     #[must_use]
     pub fn with_local_credential_capabilities(
         mut self,
-        capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Self {
         let worker = Arc::into_inner(self.worker)
             .expect("credential capabilities must be configured before sharing the worker")
@@ -163,7 +163,7 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
     #[must_use]
     pub fn with_worker_credential_resolver(
         mut self,
-        resolver: Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>,
+        resolver: Arc<dyn awaken_credential_contract::WorkerLocalCredentialResolver>,
     ) -> Self {
         let worker = Arc::into_inner(self.worker)
             .expect("credential resolver must be configured before sharing the worker")

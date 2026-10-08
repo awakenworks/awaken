@@ -163,7 +163,7 @@ fn candidate_deep_sql(local: bool) -> String {
 fn candidate_is_admissible(
     row: &sqlx::postgres::PgRow,
     audience: CandidateAudience<'_>,
-    capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+    capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     now_ms: u64,
 ) -> Result<bool, DispatchError> {
     let thread_eligible: bool = row.try_get("thread_eligible").map_err(store_error)?;
@@ -230,7 +230,7 @@ impl PostgresDispatchStore {
         run_id: String,
         owner: &str,
         lease_ms: u64,
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
         audience: CandidateAudience<'_>,
     ) -> Result<Option<Claimed>, DispatchError> {
         let mut tx = self.pool.begin().await.map_err(store_error)?;
@@ -252,7 +252,7 @@ impl PostgresDispatchStore {
         &self,
         owner: &str,
         lease_ms: u64,
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
         audience: CandidateAudience<'_>,
     ) -> Result<Option<Claimed>, DispatchError> {
         let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
@@ -376,7 +376,7 @@ async fn claim_exact_transaction(
     owner: &str,
     lease_ms: u64,
     worker: Option<&WorkerSnapshot>,
-    capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+    capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<Claimed>, DispatchError> {
     let now_ms = crate::postgres_helpers::postgres_now_ms(&mut **tx).await?;
     let phase = sqlx::query(&format!(
@@ -421,7 +421,7 @@ async fn claim_exact_transaction_with_mode(
     owner: &str,
     lease_ms: u64,
     worker: Option<&WorkerSnapshot>,
-    capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+    capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     mode: ExactClaimMode,
 ) -> Result<Option<Claimed>, DispatchError> {
     let p = NS;

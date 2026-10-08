@@ -8,12 +8,12 @@
 //! The materializer remains the sole realization adapter; this module only
 //! centralizes its immutable target and capability checks.
 
-use awaken_runtime_contract::{
-    CredentialAccess, CredentialAdmissionError, CredentialRealizationCapabilities,
-    CredentialRealizationKind, PlaintextHolder,
+use awaken_credential_contract::{
+    CredentialAdmissionError, CredentialRealizationCapabilities, CredentialRealizationKind,
 };
+use awaken_runtime_contract::{CredentialAccess, PlaintextHolder};
 
-pub(super) use awaken_runtime_contract::CredentialProviderExpectation as ExpectedProviderTarget;
+pub(super) use awaken_credential_contract::CredentialProviderExpectation as ExpectedProviderTarget;
 
 /// Validate one explicit adapter mechanism without introducing a capability
 /// search. The caller is the installed adapter; this function only prevents its

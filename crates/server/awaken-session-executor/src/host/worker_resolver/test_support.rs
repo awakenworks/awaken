@@ -112,7 +112,7 @@ pub(crate) fn deferred_environment() -> awaken_session_configuration_contract::E
         prepared_image: None,
         network: awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
         credential_realization:
-            awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
+            awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
     }
 }
 

@@ -26,11 +26,11 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+#[cfg(feature = "test-support")]
+use awaken_credential_contract::CredentialRealizationCapabilities;
 use awaken_dispatch::DEFAULT_LEASE_MS;
 use awaken_dispatch_testkit::{ConformanceClock, LEASE_MS};
 use awaken_runtime::Runtime;
-#[cfg(feature = "test-support")]
-use awaken_runtime_contract::CredentialRealizationCapabilities;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,

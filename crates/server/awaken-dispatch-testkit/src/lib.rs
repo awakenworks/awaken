@@ -13,6 +13,7 @@ use awaken_agent_contract::agent::delegation::DelegationOrigin;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_credential_contract::{CredentialRealizationCapabilities, CredentialRealizationKind};
 use awaken_dispatch_contract::dispatch::{
     AttemptAdmission, CasOutcome, ContinuationAdmission, ControlDispatch,
     CredentialRealizationReceipt, DispatchError, DispatchOutcome, DispatchState,
@@ -39,9 +40,8 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_contract::{
-    CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource,
-    CredentialRealizationCapabilities, CredentialRealizationKind, CredentialRef, CredentialUsage,
-    InferenceEndpoint, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+    CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
+    CredentialUsage, InferenceEndpoint, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
 };
 use awaken_session_execution_contract::{
     AdmitSessionRun, SessionRunCommandFingerprint, SessionRunExecutionRequirements,

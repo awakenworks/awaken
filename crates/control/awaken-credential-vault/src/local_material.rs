@@ -274,11 +274,14 @@ mod tests {
         CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialTarget,
         CredentialTargetContract, OPAQUE_SECRET_MATERIAL_TYPE,
     };
+    use awaken_credential_contract::{
+        CredentialMaterialBinding, CredentialMaterialError, CredentialMaterialRequest,
+        CredentialMaterialResolver,
+    };
     use awaken_runtime_contract::{
-        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialBinding,
-        CredentialMaterialError, CredentialMaterialRequest, CredentialMaterialResolver,
-        CredentialMaterialSource, CredentialRef, CredentialUsage, HttpEffectPlacement,
-        ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
+        CredentialUsage, HttpEffectPlacement, ModelExposurePolicy, PlaintextBoundary,
+        PlaintextHolder,
     };
 
     use super::{
@@ -317,7 +320,8 @@ mod tests {
         holder: &'a PlaintextHolder,
         binding: &'a CredentialMaterialBinding,
         expected_provider: Option<CredentialProviderExpectation<'a>>,
-    ) -> Result<awaken_runtime_contract::ResolvedCredentialMaterial, CredentialMaterialError> {
+    ) -> Result<awaken_credential_contract::ResolvedCredentialMaterial, CredentialMaterialError>
+    {
         authority
             .resolve_exact(CredentialMaterialRequest {
                 access,

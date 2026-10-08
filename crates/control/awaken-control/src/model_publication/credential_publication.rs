@@ -8,6 +8,7 @@ use awaken_config_resolver::{
     credential_is_executable_supply,
 };
 use awaken_config_service::PublicationResolutionError;
+use awaken_credential_contract::CredentialMaterialBinding;
 use awaken_credential_contract::{CredentialPurpose, CredentialTarget};
 use awaken_credential_vault::{
     CredentialBinding, CredentialPool, CredentialSource, ExactCredentialAccessRequest,
@@ -17,8 +18,7 @@ use awaken_model_catalog::{ApiDialect, Offering, ProviderCatalog};
 use awaken_runtime_contract::resolved::AcpExecutionProfile;
 use awaken_runtime_contract::resolved::{Backend, ModelBinding, ResolvedModelCandidate};
 use awaken_runtime_contract::{
-    CredentialMaterialBinding, CredentialUsage, InferenceEndpoint, ProviderExecutionProfile,
-    UnspecifiedReasoning,
+    CredentialUsage, InferenceEndpoint, ProviderExecutionProfile, UnspecifiedReasoning,
 };
 use awaken_tenancy::ScopeId;
 
@@ -527,10 +527,10 @@ mod tests {
                     );
                     let issued = &calls[0];
                     let holder = if backend == "genai" {
-                        awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native()
+                        awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
                             .inference_holder
                     } else {
-                        awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp()
+                        awaken_credential_contract::CredentialRealizationProfile::self_hosted_acp()
                             .inference_holder
                     };
                     assert_eq!(issued.selected_holder, holder, "D1 backend recipient");

@@ -29,15 +29,16 @@ use crate::Error;
 use crate::RecoveryProjection;
 use crate::dispatch::{DispatchOutcome, PendingInput};
 use crate::{DispatchQueue, FencedStreamCheckpointStore, RunClaim};
+use awaken_credential_contract::CredentialRealizationKind;
 use awaken_dispatch::MemoryDispatchStore;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::AttemptRecoveryMode;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::{
     AttemptCredentialBinding, AttemptCredentialDelivery, CandidateFingerprint, CredentialAccess,
-    CredentialExecutionPolicy, CredentialMaterialSource, CredentialRealizationKind, CredentialRef,
-    CredentialUsage, ExecutableAgentSnapshot, ModelExposurePolicy, PlaintextBoundary,
-    PlaintextHolder, RuntimeRunContext,
+    CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef, CredentialUsage,
+    ExecutableAgentSnapshot, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+    RuntimeRunContext,
 };
 use tokio_util::sync::CancellationToken;
 

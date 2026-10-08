@@ -980,7 +980,7 @@ async fn worker_reconciles_current_environment_shape_after_ready() {
         prepared_image: Some("registry.example/env@sha256:exact".into()),
         network: awaken_session_configuration_contract::SessionNetworkPolicy::None,
         credential_realization:
-            awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
+            awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
     };
     let mut over_budget = snapshot.clone();
     over_budget.environment_id = "env-over-budget".into();

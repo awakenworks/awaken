@@ -164,12 +164,12 @@ pub(super) fn self_hosted_holder_for_boundary(
 ) -> awaken_runtime_contract::PlaintextHolder {
     match boundary {
         awaken_runtime_contract::PlaintextBoundary::Workload => {
-            awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp()
+            awaken_credential_contract::CredentialRealizationProfile::self_hosted_acp()
                 .inference_holder
         }
         awaken_runtime_contract::PlaintextBoundary::Worker
         | awaken_runtime_contract::PlaintextBoundary::Platform => {
-            awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native()
+            awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
                 .inference_holder
         }
     }

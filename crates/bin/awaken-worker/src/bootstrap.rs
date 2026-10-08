@@ -415,7 +415,7 @@ impl WorkerDaemonConfig {
         // credential envelopes and the Host it builds (dispatch pool, recovery,
         // children) share it.
         let clock = awaken_time::system_clock();
-        let resolver: Arc<dyn awaken_runtime_contract::CredentialMaterialResolver> = match &self
+        let resolver: Arc<dyn awaken_credential_contract::CredentialMaterialResolver> = match &self
             .worker
             .credential_envelope_keys_file
         {
@@ -954,7 +954,7 @@ mod tests {
                 detection: AcpDetectionState::Detected,
                 version: Some("fixture".into()),
                 credential_state: Some(
-                    awaken_runtime_contract::CredentialObservationState::Available,
+                    awaken_credential_contract::CredentialObservationState::Available,
                 ),
                 reason_code: None,
                 capability_state: None,

@@ -114,7 +114,7 @@ fn provider_candidate(
 struct TransportState {
     store: Arc<MemoryDispatchStore>,
     stream_calls: Arc<AtomicUsize>,
-    credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
+    credential_capabilities: awaken_credential_contract::CredentialRealizationCapabilities,
 }
 
 async fn spawn_transport_server() -> (
@@ -135,7 +135,7 @@ async fn spawn_transport_server() -> (
     let state = Arc::new(TransportState {
         store: store.clone(),
         stream_calls: stream_calls.clone(),
-        credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities {
+        credential_capabilities: awaken_credential_contract::CredentialRealizationCapabilities {
             holders: [holder].into_iter().collect(),
             material_sources: [
                 awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
@@ -143,7 +143,7 @@ async fn spawn_transport_server() -> (
             .into_iter()
             .collect(),
             realization_kinds: [
-                awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+                awaken_credential_contract::CredentialRealizationKind::WorkerProviderAdapter,
             ]
             .into_iter()
             .collect(),

@@ -15,6 +15,7 @@ use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpoi
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_credential_contract::{CredentialRealizationCapabilities, CredentialRealizationKind};
 use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
     AnyDispatchStore, CredentialRealizationReceipt, DispatchOutcome, DispatchQueue, DispatchState,
@@ -33,9 +34,9 @@ use awaken_runtime_contract::snapshot::{
 use awaken_runtime_contract::{
     AttemptCredentialBinding, AttemptCredentialDelivery, AttemptCredentialDeliveryRequest,
     AttemptCredentialDeliverySource, CredentialAccess, CredentialEnvelope,
-    CredentialExecutionPolicy, CredentialMaterialSource, CredentialRealizationCapabilities,
-    CredentialRealizationKind, CredentialRef, CredentialUsage, InferenceEndpoint,
-    ModelExposurePolicy, PlaintextBoundary, PlaintextHolder, SealedCredentialEnvelopeRef,
+    CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef, CredentialUsage,
+    InferenceEndpoint, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+    SealedCredentialEnvelopeRef,
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamCheckpointStore};
 use awaken_coordinator_client::HttpDispatchQueue;

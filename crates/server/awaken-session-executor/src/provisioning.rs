@@ -403,12 +403,12 @@ pub(crate) fn agent_run_sandbox_spec(thread: &str) -> pc::SandboxSpec {
 }
 
 fn repository_http_basic_credential(
-    material: awaken_runtime_contract::CredentialMaterial,
+    material: awaken_credential_contract::CredentialMaterial,
 ) -> Result<pc::RepositoryHttpBasicCredential, &'static str> {
-    let awaken_runtime_contract::CredentialMaterial::Structured(mut material) = material else {
+    let awaken_credential_contract::CredentialMaterial::Structured(mut material) = material else {
         return Err("HTTP Basic requires structured credential material");
     };
-    if material.type_id != awaken_runtime_contract::credential::HTTP_BASIC_MATERIAL_TYPE {
+    if material.type_id != awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE {
         return Err("HTTP Basic credential material has the wrong type");
     }
     let username = material
@@ -925,7 +925,7 @@ impl SharedHost {
                     .resolve_for_workspace(
                         &pin.access,
                         &pin.selected_plaintext_holder,
-                        awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField,
+                        awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField,
                         &workspace,
                         &(&repository.plan.repository_id, config_version),
                     )

@@ -438,7 +438,7 @@ impl DispatchQueue for PostgresDispatchStore {
         request: RunDispatch,
         owner: &str,
         lease_ms: u64,
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(store_error)?;
@@ -531,7 +531,7 @@ impl DispatchQueue for PostgresDispatchStore {
         input: PendingInput,
         owner: &str,
         lease_ms: u64,
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let input = normalize_pending_millis(input);
         let run_id = input.run_id.clone();
@@ -602,7 +602,7 @@ impl DispatchQueue for PostgresDispatchStore {
         &self,
         owner: &str,
         lease_ms: u64,
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         self.claim_discovered(owner, lease_ms, capabilities, CandidateAudience::Local)
             .await
@@ -628,7 +628,7 @@ impl DispatchQueue for PostgresDispatchStore {
         requested_run: &RunId,
         owner: &str,
         lease_ms: u64,
-        capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
+        capabilities: &awaken_credential_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let mut tx = self.pool.begin().await.map_err(store_error)?;
         let claimed = claim_exact_transaction(

@@ -300,8 +300,8 @@ async fn run_prepared_session(
     run_prepared_session_messages(managed, agent, thread, vec![crate::user_message(content)]).await
 }
 
-fn native_credential_profile() -> awaken_runtime_contract::CredentialRealizationProfile {
-    awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native()
+fn native_credential_profile() -> awaken_credential_contract::CredentialRealizationProfile {
+    awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
 }
 
 fn managed_test_container_capabilities() -> awaken_provisioning_contract::SandboxCapabilities {
@@ -851,7 +851,7 @@ fn managed_with_resource_source_using(
 
 fn http_basic_material(username: &str, password: &str) -> awaken_agent_contract::RedactedString {
     let material = awaken_credential_vault::StructuredCredentialMaterial {
-        type_id: awaken_runtime_contract::credential::HTTP_BASIC_MATERIAL_TYPE.into(),
+        type_id: awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE.into(),
         fields: std::collections::BTreeMap::from([
             (
                 "username".into(),
@@ -932,8 +932,8 @@ fn effective_repository(
     mount_path: &str,
     credential_binding: Option<String>,
 ) -> awaken_session_resource_contract::ResolvedSessionResources {
-    let holder =
-        awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native().resource_holder;
+    let holder = awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
+        .resource_holder;
     let credential = credential_binding.as_ref().map(|binding| {
         Box::new(
             awaken_session_resource_contract::ResolvedRepositoryCredential {
