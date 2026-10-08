@@ -293,14 +293,14 @@ async fn isolated_pod_terminal_evidence(
     }
     Ok(MissingHandleTerminalEvidence::ExactIncarnation {
         container_id: context.pod_name.to_owned(),
-        runtime_handle: crate::ContainerContinuationHandle::KubernetesGuardedClaim(
+        runtime_handle: crate::ContainerContinuationHandle::KubernetesGuardedClaim(Box::new(
             crate::KubernetesGuardedClaimHandle::new(
                 context.scope,
                 context.predecessor,
                 ticket,
                 &claim_uid,
             )?,
-        ),
+        )),
     })
 }
 

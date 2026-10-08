@@ -73,7 +73,7 @@ pub enum ContainerContinuationHandle {
     /// Terminal-only, provider-verified name reservation paired with one
     /// original retained claim. Ordinary adoption must reject this locator.
     #[cfg(feature = "k8s")]
-    KubernetesGuardedClaim(KubernetesGuardedClaimHandle),
+    KubernetesGuardedClaim(Box<KubernetesGuardedClaimHandle>),
     /// Host-owned exact staging target for a checkpoint restore.
     HostBindRestoration(HostBindRestorationHandle),
 }

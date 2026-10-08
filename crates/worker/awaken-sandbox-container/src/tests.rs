@@ -3207,7 +3207,7 @@ impl ContainerRuntime for FakeRuntime {
             return Ok(MissingHandleTerminalEvidence::ExactIncarnation {
                 container_id: container_id.clone(),
                 runtime_handle: crate::ContainerContinuationHandle::KubernetesGuardedClaim(
-                    guarded.clone(),
+                    Box::new(guarded.clone()),
                 ),
             });
         }
