@@ -826,11 +826,13 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         "E10 provider-backed receipt before release"
     );
     // Cause/effect extension: L7 real Always Deployment + real Pod-bound
-    // registration + exact idle withdrawal -> close/delete OLD UID and let the
-    // Kubernetes controller produce a Ready NEW UID. L8 source-side retry for
-    // OLD -> no successor mutation; L9 NEW registers a distinct incarnation.
-    // The existing foreign physical slot stays occupied; no exit receipt is
-    // invented. This is live API/controller evidence, not a full Worker crash
+    // registration + exact idle withdrawal inside the original Registry lease
+    // => no premature DELETE or exit receipt. L7b lease expiry + zero owned
+    // physical slots + original UID => the existing Coordinator release owner
+    // stops OLD, commits its observed exit and lets the controller produce a
+    // Ready NEW UID. L8 source-side retry for OLD => no successor mutation;
+    // L9 NEW registers a distinct incarnation. A foreign physical slot stays
+    // occupied. This is live API/controller evidence, not a full Worker crash
     // or Hosted product acceptance. Readiness settles on persisted Pod status.
     let deployments: kube::Api<Deployment> = kube::Api::namespaced(client.clone(), name);
     deployments.create(&PostParams::default(), &serde_json::from_value(json!({
@@ -860,7 +862,6 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         awaken_dispatch::RegistryMutation::Applied,
         "L7"
     );
-    let successor = ready_deployment_pod(&pods, idle.metadata.uid.as_deref()).await;
     let directory = SqliteWorkerDirectory::open(files.path().join("registry.sqlite"))
         .await
         .unwrap();
@@ -876,8 +877,45 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     );
     assert!(
         closed.process_exit.is_none(),
-        "L7 deletion intent is not exit evidence"
+        "L7 a closed but still-running Worker has no exit evidence"
     );
+    assert!(
+        pods.get(idle.metadata.name.as_deref().unwrap())
+            .await
+            .unwrap()
+            .metadata
+            .deletion_timestamp
+            .is_none(),
+        "L7 the original live lease does not authorize Pod deletion"
+    );
+    clock.set(closed.snapshot.expires_at_ms.checked_add(1).unwrap());
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            awaken_dispatch::release_closed_idle_worker_evidence(
+                store.as_ref(),
+                &directory,
+                transport.stop_source().unwrap().as_ref(),
+                &idle_identity,
+                clock.now_ms(),
+            )
+            .await
+            .unwrap();
+            if directory
+                .incarnation(&idle_identity)
+                .await
+                .unwrap()
+                .unwrap()
+                .process_exit
+                .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("L7b exact original process exit is retained before successor admission");
+    let successor = ready_deployment_pod(&pods, idle.metadata.uid.as_deref()).await;
     awaken_dispatch::release_closed_idle_worker_evidence(
         store.as_ref(),
         &directory,
