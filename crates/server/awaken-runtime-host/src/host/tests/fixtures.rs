@@ -144,10 +144,11 @@ impl awaken_provisioning_contract::MemoryMounter for TestMemoryMounter {
     }
 }
 
-pub(crate) fn install_test_memory_mounter(host: &SharedHost) {
-    host.install_memory_mounter(Arc::new(TestMemoryMounter {
-        fs: host.memory_repository(),
-    }));
+pub(crate) fn with_test_memory_mounter(
+    dependencies: crate::HostDependencies,
+) -> crate::HostDependencies {
+    let fs = dependencies.memory_repository();
+    dependencies.with_memory_mounter(Arc::new(TestMemoryMounter { fs }))
 }
 
 /// The main assistant answers plainly; the memory extractor (identified by its

@@ -646,13 +646,13 @@ mod tests {
             ("F4", false),
             ("F5", false),
         ] {
-            let host = Arc::new(
-                crate::SharedHost::new(
+            let host = Arc::new(crate::SharedHost::from(
+                crate::HostDependencies::ephemeral(
                     Arc::new(crate::no_model::NoModelConfiguredExecutor),
                     "stub",
                 )
                 .await,
-            );
+            ));
             let mut current = lease.clone();
             if rule == "F5" {
                 current.runtime_incarnation.push_str("-new");

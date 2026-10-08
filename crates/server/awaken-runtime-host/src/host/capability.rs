@@ -1,31 +1,33 @@
 //! The capability groups a [`SharedHost`] owns beside its CORE fields.
 //!
-//! Each group is a plain owned struct defined in its own module together with
-//! the `SharedHost::with_*` installers that write it, so construction and the
-//! modules that read a capability name exactly one group. Cross-group Host
-//! behaviour stays in the Host's own modules.
+//! Each group is a plain owned struct defined in its own module, so the
+//! modules that read a capability name exactly one group. A composition
+//! selects every group's dependencies on [`crate::HostDependencies`] before the
+//! Host exists; groups that also carry Host runtime state (Agent execution,
+//! Resources, dispatch) have a separate selection type that the one Host
+//! constructor turns into the group. Cross-group Host behaviour stays in the
+//! Host's own modules.
 
 mod agent;
 mod capture;
 mod dispatch;
 mod environment;
 mod execution;
-mod mcp;
 mod resources;
 mod tools;
 mod worker;
 
-pub(crate) use agent::AgentExecution;
+pub(crate) use agent::{AgentExecution, AgentSelection};
 pub(crate) use capture::ContentCaptureCapability;
-pub(crate) use dispatch::DispatchCapability;
 pub use dispatch::DispatchPoolSizing;
+pub(crate) use dispatch::{DispatchCapability, DispatchSelection};
 pub(crate) use environment::EnvironmentProviders;
 pub(crate) use execution::AttemptBackends;
-pub(crate) use resources::ResourcePorts;
 #[cfg(test)]
 pub(super) use resources::local_memory_extraction_repository;
 #[cfg(any(test, feature = "test-support"))]
 pub use resources::{LocalResourcePorts, LocalSkillPorts};
 pub(super) use resources::{ResourceInputs, WorkerContentAdapters};
+pub(crate) use resources::{ResourcePorts, ResourceSelection};
 pub(crate) use tools::ToolOffering;
 pub(crate) use worker::WorkerTransports;

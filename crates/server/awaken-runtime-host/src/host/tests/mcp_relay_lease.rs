@@ -9,7 +9,9 @@ use super::*;
 // coverage remains in mcp_relay's existing shared-call-fence tests.
 #[tokio::test]
 async fn relay_uses_current_session_authority_without_restaging_its_route() {
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+    ));
     let session = "renewed-relay";
     let lease = awaken_session_resource_contract::SessionRealizationLease {
         owner: "worker".into(),

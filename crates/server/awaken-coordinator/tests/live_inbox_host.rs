@@ -57,7 +57,9 @@ async fn harness() -> Harness {
         started: started_tx,
         permits: Mutex::new(permit_rx),
     };
-    let host = awaken_scenario_host::build_unmounted_host(Arc::new(llm), "gated").await;
+    let host = Arc::new(awaken_scenario_host::SharedHost::from(
+        awaken_scenario_host::build_unmounted_dependencies(Arc::new(llm), "gated").await,
+    ));
     let _runtime = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     Harness {
         host,

@@ -222,11 +222,11 @@ mod tests {
                 )),
             ),
         );
-        let host = Arc::new(
-            SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
+        let host = Arc::new(SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
                 .await
                 .with_runtime_authority(authority),
-        );
+        ));
         let managed = crate::ManagedHost::new(host.clone());
         assert!(
             managed
@@ -428,11 +428,14 @@ mod tests {
                 ),
             );
             let make_host = || async {
-                Arc::new(
-                    SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
-                        .await
-                        .with_runtime_authority(authority.clone()),
-                )
+                Arc::new(SharedHost::from(
+                    crate::HostDependencies::ephemeral(
+                        Arc::new(crate::host::MemoryHostModel),
+                        "stub",
+                    )
+                    .await
+                    .with_runtime_authority(authority.clone()),
+                ))
             };
             let host = make_host().await;
             let managed = crate::ManagedHost::new(host.clone());
@@ -548,7 +551,10 @@ mod tests {
         let session_id = "snapshot-parent-session";
         let child_id = ThreadId("snapshot-logical-child".into());
         let child_run = RunId("snapshot-child-run".into());
-        let host = Arc::new(SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub").await);
+        let host = Arc::new(SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
+                .await,
+        ));
 
         assert_eq!(
             host.session_thread_recovery_snapshot(session_id, &child_id)

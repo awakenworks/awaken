@@ -23,11 +23,11 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
             .await
             .unwrap(),
     );
-    let (host, _managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(MemoryHostModel), "stub")
+    let (host, _managed) = dispatch_test_host(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
             .await
             .with_dispatch_store(dispatch.clone()),
-    );
+    ));
     let thread = ThreadId("native-input-session".into());
     let run = RunId("native-input-run".into());
     let ctx = host.ctx_for(&thread.0, None).await.unwrap();

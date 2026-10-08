@@ -11,7 +11,9 @@ use super::*;
 async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
     for lifecycle in [false, true] {
         for leased in [false, true] {
-            let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
+            let host = Arc::new(SharedHost::from(
+                crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+            ));
             let lease = awaken_session_resource_contract::SessionRealizationLease {
                 owner: "worker".into(),
                 runtime_incarnation: "worker/1".into(),
@@ -92,7 +94,9 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
 // pending owner and a fresh selection finishes it. Empty retry is a no-op.
 #[tokio::test]
 async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup() {
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+    ));
     let mut cancellations = Vec::new();
     for session in ["held", "free"] {
         host.session_slots.update(session, |slot| {
@@ -173,7 +177,8 @@ async fn worker_revocation_error_does_not_short_circuit_other_sessions() {
     use crate::session_slot::{
         BoundSessionEnvironmentIdentity, SessionEnvironmentOwner, SessionEnvironmentPreparation,
     };
-    let host = SharedHost::new(Arc::new(OkModel), "stub").await;
+    let host =
+        SharedHost::from(crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await);
     for id in ["left", "right"] {
         host.session_slots.update(id, |_| ());
     }
@@ -245,15 +250,15 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 let control = Arc::new(RemoteTerminalCleanupControl::default());
                 let gate = Arc::new(tokio::sync::Semaphore::new(0));
                 *control.renewal_gate.lock().unwrap() = Some(gate.clone());
-                let host = Arc::new(
-                    SharedHost::new(Arc::new(OkModel), "stub")
+                let host = Arc::new(SharedHost::from(
+                    crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
                         .await
                         .with_session_realization_control(control.clone())
                         .with_authority(
                             crate::UpstreamAuthority::default()
                                 .with_terminal_cleanup_control(control.clone()),
                         ),
-                );
+                ));
                 let now = crate::terminal_repository_publication::runtime_unix_now_ms();
                 let lease = awaken_session_resource_contract::SessionRealizationLease {
                     owner: "worker".into(),
@@ -551,7 +556,7 @@ impl StagingFixture {
     ) -> Self {
         let source = Arc::new(GatedFileSource::default());
         let control = Arc::new(RemoteTerminalCleanupControl::default());
-        let mut host = SharedHost::new(Arc::new(OkModel), "stub")
+        let mut host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_file_content_source(source.clone())
             .with_session_realization_control(control.clone())
@@ -561,7 +566,7 @@ impl StagingFixture {
         if let Some(authority) = authority {
             host = host.with_execution_authority(authority);
         }
-        let host = Arc::new(host);
+        let host = Arc::new(SharedHost::from(host));
         let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         let mut projection = remote_terminal_cleanup_projection();
         projection.resource_revision = 1;
@@ -732,7 +737,9 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
     // no Control call and no mutation. No HTTP client is installed on Host:
     // the borrowed application Control must reach the one existing scheduler.
     // Resource/phase projections are unchanged: this port owns lease-only work.
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").await);
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+    ));
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     let now = crate::terminal_repository_publication::runtime_unix_now_ms();
     let mut initial = Vec::new();
@@ -805,7 +812,8 @@ async fn missing_control_is_required_only_for_due_leases_without_skipping_refres
     // no renewal; D3 expired/due + no Control -> explicit error, retain the
     // exact root for cleanup. Physical refresh is independently exercised by
     // the real scoped-candidate test below, including a Closed/empty cohort.
-    let host = SharedHost::new(Arc::new(OkModel), "stub").await;
+    let host =
+        SharedHost::from(crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await);
     let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000);
     assert_eq!(
         host.renew_due_session_realizations(timing).await.unwrap(),
@@ -878,10 +886,12 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
         )
         .await
         .expect("install scoped execution");
-    let host = SharedHost::new_with_deployment(Arc::new(OkModel), "stub", deployment)
-        .await
-        .with_backend_owned_environment_provider(trusted.into_session_provider())
-        .with_execution_authority(gate.clone());
+    let host = SharedHost::from(
+        crate::HostDependencies::ephemeral_with_deployment(Arc::new(OkModel), "stub", deployment)
+            .await
+            .with_backend_owned_environment_provider(trusted.into_session_provider())
+            .with_execution_authority(gate.clone()),
+    );
     let lease = awaken_session_resource_contract::SessionRealizationLease {
         owner: "worker".into(),
         runtime_incarnation: "runtime".into(),

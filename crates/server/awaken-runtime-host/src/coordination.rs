@@ -890,9 +890,11 @@ mod tests {
         let dead = Arc::downgrade(&local_port);
         drop(local_port);
         drop(local);
-        let host = crate::SharedHost::new(Arc::new(EndpointModel), "stub")
-            .await
-            .with_session_control(Arc::new(RemoteControl::default()));
+        let host = crate::SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(EndpointModel), "stub")
+                .await
+                .with_session_control(Arc::new(RemoteControl::default())),
+        );
         *host
             .dispatch
             .agent_coordination

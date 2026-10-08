@@ -1134,9 +1134,10 @@ mod tests {
         // replacement; R10 all external strong owners drop -> SharedHost does
         // not retain the Session application. This prevents both a second Run
         // admission owner and an Arc ownership cycle.
-        let host = Arc::new(
-            crate::SharedHost::new(Arc::new(crate::NoModelConfiguredExecutor), "stub").await,
-        );
+        let host = Arc::new(crate::SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(crate::NoModelConfiguredExecutor), "stub")
+                .await,
+        ));
         let managed = crate::ManagedHost::new(host.clone());
         let application = Arc::new(RecordingAttentionApplication::accepting(0));
         let port: Arc<dyn SessionRunBackgroundApplication> = application.clone();

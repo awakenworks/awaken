@@ -54,8 +54,12 @@ impl awaken_runtime_contract::llm::LlmExecutor for NoLlm {
     }
 }
 
+async fn dependencies() -> crate::HostDependencies {
+    crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await
+}
+
 async fn host() -> SharedHost {
-    SharedHost::new(Arc::new(NoLlm), "test").await
+    SharedHost::from(dependencies().await)
 }
 
 #[path = "tests/file_fence.rs"]
@@ -1528,8 +1532,8 @@ async fn live_container_artifact_harvest_reads_one_complete_batch() {
         scans: scans.clone(),
     });
     let storage = tempfile::tempdir().unwrap();
-    let host = Arc::new(
-        SharedHost::new(Arc::new(NoLlm), "test")
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
             .await
             .with_store_dir(storage.path())
             .await
@@ -1537,7 +1541,7 @@ async fn live_container_artifact_harvest_reads_one_complete_batch() {
                 provider,
                 Arc::new(crate::session_environment::UnusedHandExecutorFactory),
             ),
-    );
+    ));
     let thread = "container-artifact-batch";
     install_batch_artifact_environment(host.as_ref(), thread, "workspace-a").await;
 
@@ -1586,12 +1590,12 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
     // then and only then projects physical disposal => Sandbox gone while File
     // metadata/bytes remain.
     let storage = tempfile::tempdir().unwrap();
-    let host = Arc::new(
-        SharedHost::new(Arc::new(NoLlm), "test")
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
             .await
             .with_store_dir(storage.path())
             .await,
-    );
+    ));
     host.register_thread_workspace("session-artifacts", "workspace-a");
     install_terminal_artifact_projection_before_environment(
         host.as_ref(),
@@ -1755,12 +1759,12 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
     // reconstructs that same creation receipt; H4 env absent under ordinary
     // Run semantics => empty, never a broad catalog recovery.
     let storage = tempfile::tempdir().unwrap();
-    let host = Arc::new(
-        SharedHost::new(Arc::new(NoLlm), "test")
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
             .await
             .with_store_dir(storage.path())
             .await,
-    );
+    ));
     host.register_thread_workspace("artifact-response-loss", "workspace-a");
     install_terminal_artifact_projection_before_environment(
         host.as_ref(),
@@ -1956,14 +1960,14 @@ async fn receipt_only_terminal_harvest_skips_a_present_container() {
         scans: scans.clone(),
     });
     let publisher = Arc::new(RecordingArtifactRecovery::default());
-    let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test")
+    let mut raw_host = crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
         .await
         .with_session_container_provider(
             provider,
             Arc::new(crate::session_environment::UnusedHandExecutorFactory),
         );
     raw_host.resources.artifact_publisher = publisher.clone();
-    let host = Arc::new(raw_host);
+    let host = Arc::new(SharedHost::from(raw_host));
     let thread = "container-artifact-receipt-only";
     install_batch_artifact_environment(host.as_ref(), thread, "workspace-a").await;
 
@@ -2110,7 +2114,9 @@ async fn artifact_harvest_has_one_file_authority_and_no_magic_bundle_gate() {
     // E3 replay returns the same File identity. R1 C1+C2=>E1+E2;
     // R2 C1+C2+C3=>E1+E2+E3.
     let storage = tempfile::tempdir().unwrap();
-    let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test").await);
+    let host = Arc::new(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await,
+    ));
     host.register_thread_workspace("plain-files", "workspace-a");
     let spec = agent_run_sandbox_spec("plain-files");
     let environment = Arc::new(
@@ -2299,17 +2305,19 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
     // harvest, never precedes it. Decision rule: execute R4 and require failure
     // with zero disposal.
     let storage = tempfile::tempdir().unwrap();
-    let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test")
+    let mut raw_host = crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
         .await
         .with_store_dir(storage.path())
         .await;
     let catalog = Arc::new(FailingFileCatalog);
     raw_host.resources.file_catalog = catalog.clone();
     let application = Arc::new(awaken_resource_application::FileApplication::new(
-        raw_host.file_store(),
+        raw_host.resources.file_store.clone(),
         catalog,
         raw_host
-            .resource_reclamation()
+            .resources
+            .resource_reclamation
+            .clone()
             .expect("test lifecycle repository"),
         awaken_time::system_clock(),
     ));
@@ -2320,7 +2328,7 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
         ),
         Arc::new(awaken_resource_application::ApplicationArtifactPublisher::new(application)),
     );
-    let host = Arc::new(raw_host);
+    let host = Arc::new(SharedHost::from(raw_host));
     host.register_thread_workspace("session-harvest-failure", "test");
     install_terminal_artifact_projection_before_environment(
         host.as_ref(),
@@ -2405,9 +2413,11 @@ async fn agent_authored_skill_remains_run_scoped_until_explicit_publication() {
     // Constraint: explicit control-plane publication is covered separately
     // by the durable-catalog test below and is the only route to that store.
     let dir = std::env::temp_dir().join(format!("awaken-skillharvest-{}", std::process::id()));
-    let host = SharedHost::new(Arc::new(NoLlm), "test")
-        .await
-        .with_skill_store(dir.join("store"));
+    let host = SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
+            .await
+            .with_skill_store(dir.join("store")),
+    );
 
     // A real sandbox env with a skill authored under the workspace `skills/` dir.
     let base = dir.join("sbx");
@@ -2465,9 +2475,11 @@ async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
     // enter this Managed id set. The static exclusion row is covered by
     // `managed_session_folds_builtins_into_the_agent_toolset`.
     let dir = std::env::temp_dir().join(format!("awaken-skillid-{}", std::process::id()));
-    let host = SharedHost::new(Arc::new(NoLlm), "test")
-        .await
-        .with_skill_store(dir.join("store"));
+    let host = SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
+            .await
+            .with_skill_store(dir.join("store")),
+    );
     host.tools
         .skills
         .persist_authored(
@@ -2677,13 +2689,13 @@ async fn artifact_capture_failures_do_not_publish_partial_or_rebased_sets() {
             ],
             scans: scans.clone(),
         });
-        let mut host = SharedHost::new(Arc::new(NoLlm), "test")
+        let mut dependencies = crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
             .await
             .with_session_container_provider(
                 provider,
                 Arc::new(crate::session_environment::UnusedHandExecutorFactory),
             );
-        let application = host.file_application().unwrap();
+        let application = dependencies.resources.file_application.clone().unwrap();
         let request = awaken_resource_contract::ReplaceArtifactCapture {
             workspace_id: "workspace-a".into(),
             session_id: "capture-fault".into(),
@@ -2692,12 +2704,13 @@ async fn artifact_capture_failures_do_not_publish_partial_or_rebased_sets() {
         };
         application.replace_artifact_capture(request).await.unwrap();
         let publisher = Arc::new(CaptureFaultPublisher {
-            inner: host.resources.artifact_publisher.clone(),
+            inner: dependencies.resources.artifact_publisher.clone(),
             mode,
             scans: scans.clone(),
             calls: std::sync::Mutex::new([0; 3]),
         });
-        host.resources.artifact_publisher = publisher.clone();
+        dependencies.resources.artifact_publisher = publisher.clone();
+        let host = SharedHost::from(dependencies);
         install_batch_artifact_environment(&host, "capture-fault", "workspace-a").await;
         let result = host.harvest_thread_artifacts("capture-fault").await;
         assert_eq!(result.is_ok(), success, "{mode}: {result:?}");

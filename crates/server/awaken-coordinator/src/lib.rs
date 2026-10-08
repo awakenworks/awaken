@@ -87,6 +87,7 @@ pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
 pub use awaken_protocol_managed::{ResourcesRouterInput, models_router, resources_router};
 
 pub use awaken_run_ingress_http::durable_ops_router;
+use awaken_runtime_host::HostDependencies;
 pub use awaken_runtime_host::{
     HostResume, ManagedHost, NoModelConfiguredExecutor, RunApplicationHost, SharedHost,
     ThreadEvent, ThreadEventHub, UNCONFIGURED_MODEL_REF, advertised_tools,
@@ -137,22 +138,27 @@ fn platform_memory_projection(tier: awaken_runtime_host::SandboxTier) -> Platfor
     }
 }
 
-/// Assemble the governed MemoryRepository data plane with its worker-side mount adapter.
+/// Select the governed MemoryRepository data plane's worker-side mount adapter
+/// over the Host's own Memory content port, unless the composition already
+/// selected one (an explicitly injected Worker adapter is preserved).
 /// Authorization has already selected workspace/store/access before this adapter
-/// sees an opaque store id; no IAM vocabulary crosses this seam.
-pub fn install_platform_memory_data_plane(host: &SharedHost) {
-    if !host.has_memory_mounter() {
-        let repository = host.memory_repository();
-        let mounter = match platform_memory_projection(host.sandbox_tier()) {
-            PlatformMemoryProjection::FusePreferred => {
-                awaken_sandbox_memoryd::MemoryStoreMounter::new(repository, host.clock())
-            }
-            PlatformMemoryProjection::CopyOnly => {
-                awaken_sandbox_memoryd::MemoryStoreMounter::copy_only(repository)
-            }
-        };
-        host.install_memory_mounter(Arc::new(mounter));
+/// sees an opaque store id; no IAM vocabulary crosses this seam. Every
+/// composition that mounts this Coordinator selects it before building the Host.
+#[must_use]
+pub fn with_platform_memory_data_plane(dependencies: HostDependencies) -> HostDependencies {
+    if dependencies.has_memory_mounter() {
+        return dependencies;
     }
+    let repository = dependencies.memory_repository();
+    let mounter = match platform_memory_projection(dependencies.deployment_config().sandbox_tier) {
+        PlatformMemoryProjection::FusePreferred => {
+            awaken_sandbox_memoryd::MemoryStoreMounter::new(repository, dependencies.clock())
+        }
+        PlatformMemoryProjection::CopyOnly => {
+            awaken_sandbox_memoryd::MemoryStoreMounter::copy_only(repository)
+        }
+    };
+    dependencies.with_memory_mounter(Arc::new(mounter))
 }
 
 #[cfg(test)]
@@ -469,9 +475,11 @@ async fn local_managed_state_over(
         credentials.clone(),
         clock.clone(),
     ));
-    // Keep the Session aggregate and its extraction intents in the same concrete
-    // repository. The two application SPIs remain separate, while their local
-    // durability boundary is shared at this process boundary.
+    // The Session aggregate lives in the same `sessions.db` as the Memory
+    // extraction intents: the composition that built this Host selected its
+    // extraction repository over that file before construction. The two
+    // application SPIs remain separate, while their local durability boundary
+    // is shared at this process boundary.
     let durable_session_repo = match host.storage_dir() {
         Some(root) => {
             std::fs::create_dir_all(root).expect("create durable session repository directory");
@@ -485,9 +493,6 @@ async fn local_managed_state_over(
         }
         None => None,
     };
-    if let Some(repo) = &durable_session_repo {
-        host.install_memory_extraction_repository(repo.clone());
-    }
     let session_repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
         match durable_session_repo {
             Some(repo) => repo,
@@ -1360,10 +1365,6 @@ async fn mount_with_managed_over_and_models(
                 as Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>,
             None => source,
         });
-    // This is the sole Coordinator-owned installation point. It runs after the
-    // Session provider is selected, and `install_memory_mounter` updates every
-    // provider atomically while preserving an explicitly injected Worker adapter.
-    install_platform_memory_data_plane(&host);
     // Spawn the process-level dispatch pool once when durable ingress is enabled
     // (O2): it is the sole claimer of the shared queue and drives every session's
     // runs. This is the single seam that owns an `Arc<SharedHost>`, which the pool's

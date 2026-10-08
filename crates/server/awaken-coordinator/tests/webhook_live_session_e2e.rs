@@ -123,7 +123,9 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
         ),
         None,
     );
-    let host = awaken_scenario_host::build_unmounted_host(Arc::new(DeadModel), "test").await;
+    let host = Arc::new(awaken_scenario_host::SharedHost::from(
+        awaken_scenario_host::build_unmounted_dependencies(Arc::new(DeadModel), "test").await,
+    ));
     let managed = Arc::new(
         ManagedState::new(ManagedHost::new(host).install_dispatch_session_runtime())
             .await

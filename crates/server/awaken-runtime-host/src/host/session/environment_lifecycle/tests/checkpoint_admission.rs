@@ -92,14 +92,16 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                     puts: AtomicUsize::new(0),
                     gate: tokio::sync::Semaphore::new(usize::from(wait == "lifecycle")),
                 });
-                let mut raw =
-                    SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub")
-                        .await
-                        .with_environment_checkpoint_store(store.clone());
+                let mut raw = crate::HostDependencies::ephemeral(
+                    Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                    "stub",
+                )
+                .await
+                .with_environment_checkpoint_store(store.clone());
                 if registered {
-                    raw.execution_authority = Some(worker.clone());
+                    raw = raw.with_execution_authority(worker.clone());
                 }
-                let host = Arc::new(raw);
+                let host = Arc::new(SharedHost::from(raw));
                 let install = || {
                     host.session_slots.update(thread, |slot| {
                         slot.environment_owner = resident(thread, environment.clone());
@@ -255,15 +257,19 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
         let worker = Arc::new(pc::test_support::EffectAuthority::new(&fence));
         let events = Arc::new(Mutex::new(Vec::new()));
         let gate = Arc::new(tokio::sync::Semaphore::new(0));
-        let mut host =
-            SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub")
-                .await
-                .with_environment_checkpoint_store(Arc::new(RecordingTerminalCheckpointStore {
-                    events: events.clone(),
-                    expected_id: "exact-checkpoint".into(),
-                    delete_gate: Some(gate.clone()),
-                }));
-        host.execution_authority = Some(worker.clone());
+        let host = SharedHost::from(
+            crate::HostDependencies::ephemeral(
+                Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                "stub",
+            )
+            .await
+            .with_environment_checkpoint_store(Arc::new(RecordingTerminalCheckpointStore {
+                events: events.clone(),
+                expected_id: "exact-checkpoint".into(),
+                delete_gate: Some(gate.clone()),
+            }))
+            .with_execution_authority(worker.clone()),
+        );
         host.session_slots.update(thread, |slot| {
             slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
                 crate::session_slot::test_observed_lease(lease.clone()),
@@ -376,8 +382,13 @@ async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen
         ("S14", "uninstalled", "same", false, false),
         ("S15", "absent", "same", false, false),
     ] {
-        let host =
-            SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub").await;
+        let host = SharedHost::from(
+            crate::HostDependencies::ephemeral(
+                Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                "stub",
+            )
+            .await,
+        );
         let root = match state {
             "absent" | "uninstalled" => Authority::Uninstalled,
             "closed-empty" => Authority::Closed(None),

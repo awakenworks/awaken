@@ -171,11 +171,13 @@ async fn file_staging_passes_one_exact_prepared_fence_to_one_source_read() {
     ];
     for (rule, remote, claim, realization, accepted, sent, succeeds, reads) in rules {
         let source = Arc::new(FileFenceProbe::new(accepted));
-        let mut host = host().await.with_file_content_source(source.clone());
+        let mut dependencies = dependencies()
+            .await
+            .with_file_content_source(source.clone());
         if remote {
-            host = host.with_authority(crate::UpstreamAuthority::default());
+            dependencies = dependencies.with_authority(crate::UpstreamAuthority::default());
         }
-        let result = crate::ManagedHost::new(Arc::new(host))
+        let result = crate::ManagedHost::new(Arc::new(SharedHost::from(dependencies)))
             .stage_resolved_input(
                 "workspace",
                 &input,
@@ -237,9 +239,11 @@ async fn terminal_repository_guard_rejects_file_before_any_source_read() {
         },
     };
     let source = Arc::new(FileFenceProbe::new(None));
-    let runtime = crate::ManagedHost::new(Arc::new(
-        host().await.with_file_content_source(source.clone()),
-    ));
+    let runtime = crate::ManagedHost::new(Arc::new(SharedHost::from(
+        dependencies()
+            .await
+            .with_file_content_source(source.clone()),
+    )));
     let error = match runtime
         .stage_terminal_repository_publication_input(
             "workspace",

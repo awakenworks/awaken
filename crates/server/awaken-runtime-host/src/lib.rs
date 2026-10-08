@@ -124,7 +124,7 @@ pub use crate::cache_volume::{
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::host::capability::{LocalResourcePorts, LocalSkillPorts};
 pub use crate::host::{
-    AttemptExecutorDecorator, DispatchPoolSizing, HostProcess, HostResume,
+    AttemptExecutorDecorator, DispatchPoolSizing, HostDependencies, HostProcess, HostResume,
     RemoteAttemptInstallation, SharedHost, remote_worker_placement, self_hosted_inference_holder,
 };
 pub use crate::hub::{ThreadEvent, ThreadEventHub};

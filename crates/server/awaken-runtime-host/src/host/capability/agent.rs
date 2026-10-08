@@ -33,80 +33,63 @@ pub(crate) struct AgentExecution {
         Option<Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>>,
 }
 
-impl AgentExecution {
-    /// The default executor/model with routing over the Host's Session slots;
-    /// no remote adapter, Judge override, or publication source yet.
-    pub(in crate::host) fn new(
-        llm: Arc<dyn LlmExecutor>,
-        model_ref: String,
-        session_slots: crate::session_slot::SessionRuntimeSlots,
-    ) -> Self {
+/// The inference and Agent-publication dependencies a composition selects
+/// before the Host exists. Consumer: [`crate::HostDependencies`], which turns it
+/// into the Host's [`AgentExecution`].
+pub(crate) struct AgentSelection {
+    pub(crate) llm: Arc<dyn LlmExecutor>,
+    pub(crate) model_ref: String,
+    pub(crate) remote_attempt_executor:
+        Option<Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>>,
+    pub(crate) remote_credential_realization:
+        awaken_runtime_contract::CredentialRealizationCapabilities,
+    pub(crate) judge_snapshot: Option<ExecutableAgentSnapshot>,
+    pub(crate) agent_publications:
+        Option<Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>>,
+    /// Runtime-only inference materialization shared by per-thread routing
+    /// and Memory extraction.
+    pub(crate) inference_materializer:
+        Option<Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>>,
+}
+
+impl AgentSelection {
+    /// The default executor/model alone: no remote adapter, Judge override,
+    /// publication source, or materializer yet.
+    pub(in crate::host) fn new(llm: Arc<dyn LlmExecutor>, model_ref: String) -> Self {
         Self {
             llm,
             model_ref,
-            inference_routing: crate::inference_routing::InferenceRouting::new(session_slots),
             remote_attempt_executor: None,
             remote_credential_realization: Default::default(),
             judge_snapshot: None,
             agent_publications: None,
+            inference_materializer: None,
+        }
+    }
+}
+
+impl AgentExecution {
+    /// The selected executor/model with routing over the Host's Session slots.
+    pub(in crate::host) fn new(
+        selection: AgentSelection,
+        session_slots: crate::session_slot::SessionRuntimeSlots,
+    ) -> Self {
+        Self {
+            llm: selection.llm,
+            model_ref: selection.model_ref,
+            inference_routing: crate::inference_routing::InferenceRouting::new(
+                session_slots,
+                selection.inference_materializer,
+            ),
+            remote_attempt_executor: selection.remote_attempt_executor,
+            remote_credential_realization: selection.remote_credential_realization,
+            judge_snapshot: selection.judge_snapshot,
+            agent_publications: selection.agent_publications,
         }
     }
 }
 
 impl SharedHost {
-    /// Install the adapter that drives snapshot-selected remote attempts. The
-    /// host depends only on the neutral attempt port; A2A construction remains a
-    /// process-startup responsibility.
-    pub fn with_remote_attempt_executor(mut self, installation: RemoteAttemptInstallation) -> Self {
-        self.agent.remote_attempt_executor = Some(installation.executor);
-        self.agent.remote_credential_realization = installation.credential_realization;
-        self
-    }
-
-    /// Supply immutable executable publications without mounting the authoring
-    /// plane. Intended for embedded process startups and scenario fixtures.
-    pub fn with_agent_publications(
-        mut self,
-        source: Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
-    ) -> Self {
-        self.agent.agent_publications = Some(source);
-        self
-    }
-
-    /// Override the default tool-free Outcome Judge with the named Agent. The
-    /// Judge runs through the same Run boundary in its own fresh context.
-    /// Refused when the host's configured `model_ref` is not an executable
-    /// binding, since the Judge snapshot pins it.
-    pub fn with_judge(
-        mut self,
-        judge_agent_id: impl Into<String>,
-    ) -> Result<Self, awaken_runtime_contract::resolved::InvalidModelBinding> {
-        let id = judge_agent_id.into();
-        let snapshot = default_judge_agent(&self.agent.model_ref, &id, DEFAULT_JUDGE_INSTRUCTIONS)?;
-        self.agent.judge_snapshot = Some(snapshot);
-        Ok(self)
-    }
-
-    /// Pin an arbitrary executable Agent snapshot as the Outcome Grader. Its
-    /// backend may be Native or ACP; both execute through the same Run boundary.
-    pub fn with_judge_snapshot(mut self, snapshot: ExecutableAgentSnapshot) -> Self {
-        self.agent.judge_snapshot = Some(snapshot);
-        self
-    }
-
-    /// Install runtime-only inference materialization. Remote workers use this
-    /// without a configuration resolver because admission already pinned access.
-    pub fn with_inference_materializer(
-        mut self,
-        materializer: Arc<dyn awaken_credential_materializer::InferenceExecutorMaterializer>,
-    ) -> Self {
-        self.resources
-            .memory
-            .set_inference_materializer(materializer.clone());
-        self.agent.inference_routing.set_materializer(materializer);
-        self
-    }
-
     /// Bind `model_ref` to `thread` (R2/R5), staged before its first Run.
     pub fn register_thread_model(&self, thread: &str, model_ref: impl Into<String>) {
         self.agent.inference_routing.register(thread, model_ref);

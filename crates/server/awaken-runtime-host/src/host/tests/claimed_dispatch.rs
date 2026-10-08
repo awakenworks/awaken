@@ -10,7 +10,9 @@ async fn ctx_for_carries_one_self_consistent_snapshot_on_any_claiming_node() {
     // A durable run is driven by whichever pool node claims it (ADR-0019). Its
     // session config is already the complete execution authority and resolves
     // without manufacturing a second node-local catalog object.
-    let (host, _managed) = dispatch_test_host(SharedHost::new(Arc::new(OkModel), "stub").await);
+    let (host, _managed) = dispatch_test_host(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+    ));
     let ctx = host
         .ctx_for("t-catalog", None)
         .await
@@ -32,7 +34,9 @@ async fn claimed_inference_only_grader_keeps_execution_authority_without_a_sandb
         awaken_ext_goal::grader::DEFAULT_JUDGE_INSTRUCTIONS,
     )
     .expect("literal model reference");
-    let (host, _managed) = dispatch_test_host(SharedHost::new(Arc::new(OkModel), "stub").await);
+    let (host, _managed) = dispatch_test_host(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+    ));
     let thread = "claim-inference-only-judge";
     host.register_thread_workspace(thread, "workspace-judge");
     let identity = RuntimePublicationIdentity::from_publications(&published, &[], "stub");
@@ -88,8 +92,9 @@ async fn claimed_snapshot_is_the_worker_session_authority() {
             serde_json::json!({"default": "deny", "rules": []}),
         )])
         .build();
-    let (host, managed) =
-        dispatch_test_host(SharedHost::new(Arc::new(OkModel), "host-default").await);
+    let (host, managed) = dispatch_test_host(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default").await,
+    ));
     install_test_session_application(&host);
     crate::host::worker_resolver::test_support::install_complete_projection_for_snapshot(
         &managed,
@@ -133,8 +138,9 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
         )])
         .build();
 
-    let (local, _local_managed) =
-        dispatch_test_host(SharedHost::new(Arc::new(OkModel), "stub").await);
+    let (local, _local_managed) = dispatch_test_host(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
+    ));
     local.register_thread_agent_projection("background-local", "background-agent");
     local
         .ctx_for_snapshot(
@@ -145,9 +151,11 @@ async fn background_task_fails_closed_on_a_database_less_worker() {
         .await
         .expect("R1 co-located Native context");
 
-    let worker = SharedHost::new(Arc::new(OkModel), "stub")
-        .await
-        .with_authority(crate::UpstreamAuthority::default());
+    let worker = SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+            .await
+            .with_authority(crate::UpstreamAuthority::default()),
+    );
     let error = match worker
         .ctx_for_snapshot(
             "background-worker",
@@ -189,8 +197,9 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
             "a2a:https://agent.example.test",
         ))
         .build();
-    let (host, managed) =
-        dispatch_test_host(SharedHost::new(Arc::new(OkModel), "host-default").await);
+    let (host, managed) = dispatch_test_host(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default").await,
+    ));
     install_test_session_application(&host);
     crate::host::worker_resolver::test_support::install_complete_projection_for_snapshot(
         &managed,
@@ -306,7 +315,9 @@ async fn session_event_dispatch_uses_the_explicit_persisted_trace_source() {
     // so recovery cannot manufacture a parent when root provenance stores None.
     const AMBIENT: &str = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
     const PERSISTED: &str = "00-11111111111111111111111111111111-2222222222222222-01";
-    let host = SharedHost::new(Arc::new(OkModel), "host-default").await;
+    let host = SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default").await,
+    );
     let activation = || {
         awaken_runtime_contract::RunActivation::new(
             awaken_agent_contract::agent::run::Id("run-explicit-trace-source".into()),
@@ -385,7 +396,9 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
         ("R5", true, true, false, Some(4), None, 4),
         ("R6", true, true, true, Some(4), Some(7), 7),
     ] {
-        let host = SharedHost::new(Arc::new(OkModel), "host-default").await;
+        let host = SharedHost::from(
+            crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default").await,
+        );
         let thread = format!("t-dispatch-resources-{rule}");
         let resources = |generation: &str| {
             effective_resources(vec![TestInput {
@@ -515,9 +528,11 @@ async fn durable_dispatch_freezes_the_delegation_publication_closure() {
     let publications =
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([child.clone()])
             .expect("A1 publication source");
-    let host = SharedHost::new(Arc::new(OkModel), "host-default")
-        .await
-        .with_agent_publications(Arc::new(publications));
+    let host = SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default")
+            .await
+            .with_agent_publications(Arc::new(publications)),
+    );
     let parent = awaken_runtime_contract::ExecutableAgentSnapshot::builder("coordinator")
         .model(test_model_binding())
         .agent_bindings(AgentBindings {
@@ -556,7 +571,9 @@ async fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realizat
     //
     // This test owns R1. The adjacent resource-envelope test owns R2 and the
     // existing child-dispatch test owns R3, avoiding a parallel child builder.
-    let host = SharedHost::new(Arc::new(OkModel), "host-default").await;
+    let host = SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default").await,
+    );
     let thread = "prepared-root-session";
     host.session_slots
         .update(thread, |slot| slot.session_dispatch = true);
@@ -589,7 +606,9 @@ async fn thread_extension_dispatch_reuses_frozen_inputs_without_session_admissio
     // preserves the ordinary full-dispatch shape while reusing the canonical
     // decorator. Decision table: public root => E1 (adjacent test); Outcome
     // extension => E2. A structural self-affinity must never be inferred for C2.
-    let host = SharedHost::new(Arc::new(OkModel), "host-default").await;
+    let host = SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default").await,
+    );
     let thread = "prepared-outcome-thread";
     host.session_slots
         .update(thread, |slot| slot.session_dispatch = true);
@@ -635,7 +654,9 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
     // | R7   | T  | T  | F  | F  | F  | T  | F  | F  | reject                   |
     // | R8   | T  | F  | F  | F  | F  | F  | T  | F  | Worker holder            |
     // | R9   | T  | T  | F  | F  | F  | F  | F  | T  | reject                   |
-    let host = SharedHost::new(Arc::new(OkModel), "host-default").await;
+    let host = SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default").await,
+    );
     let candidate_with_policy =
         |model: &str, backend: &str, policy: awaken_runtime_contract::CredentialExecutionPolicy| {
             let binding =
@@ -816,7 +837,9 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
     );
     conflicting_environment.credential_realization =
         awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp();
-    let conflicting_host = SharedHost::new(Arc::new(OkModel), "host-default").await;
+    let conflicting_host = SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default").await,
+    );
     conflicting_host
         .install_environment_projection("cold-thread", &conflicting_environment)
         .expect("replace the prepared Environment profile");
@@ -863,12 +886,12 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
     let storage = tempfile::tempdir().expect("storage dir");
     let thread = "t-sandbox-recovery";
 
-    let (first, first_managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(OkModel), "stub")
+    let (first, first_managed) = dispatch_test_host(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_store_dir(storage.path())
             .await,
-    );
+    ));
     install_test_session_application(&first);
     install_complete_test_session_for_realization(
         &first_managed,
@@ -894,12 +917,12 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
     drop(first_managed);
     drop(first);
 
-    let (replacement, replacement_managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(OkModel), "stub")
+    let (replacement, replacement_managed) = dispatch_test_host(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_store_dir(storage.path())
             .await,
-    );
+    ));
     install_test_session_application(&replacement);
     replacement_managed
         .install_complete_test_session(
@@ -942,12 +965,12 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
 #[tokio::test]
 async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
     let storage = tempfile::tempdir().expect("storage dir");
-    let (host, managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(OkModel), "stub")
+    let (host, managed) = dispatch_test_host(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_store_dir(storage.path())
             .await,
-    );
+    ));
     install_test_session_application(&host);
     install_complete_test_session_for_realization(
         &managed,
@@ -1034,12 +1057,12 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
 #[tokio::test]
 async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
     let storage = tempfile::tempdir().expect("storage dir");
-    let (host, managed) = dispatch_test_host(
-        SharedHost::new(Arc::new(OkModel), "stub")
+    let (host, managed) = dispatch_test_host(SharedHost::from(
+        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_store_dir(storage.path())
             .await,
-    );
+    ));
     install_test_session_application(&host);
     install_complete_test_session_for_realization(
         &managed,

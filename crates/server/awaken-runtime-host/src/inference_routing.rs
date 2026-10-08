@@ -29,18 +29,14 @@ pub(crate) struct InferenceRouting {
 }
 
 impl InferenceRouting {
-    pub(crate) fn new(slots: crate::session_slot::SessionRuntimeSlots) -> Self {
+    pub(crate) fn new(
+        slots: crate::session_slot::SessionRuntimeSlots,
+        materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
+    ) -> Self {
         Self {
-            materializer: None,
+            materializer,
             slots,
         }
-    }
-
-    pub(crate) fn set_materializer(
-        &mut self,
-        materializer: Arc<dyn InferenceExecutorMaterializer>,
-    ) {
-        self.materializer = Some(materializer);
     }
 
     pub(crate) fn materializer(&self) -> Option<Arc<dyn InferenceExecutorMaterializer>> {
@@ -105,7 +101,7 @@ mod tests {
     use std::sync::Mutex;
 
     fn routing() -> InferenceRouting {
-        InferenceRouting::new(Default::default())
+        InferenceRouting::new(Default::default(), None)
     }
 
     fn activation(model_ref: &str) -> RunActivation {
@@ -173,9 +169,11 @@ mod tests {
         let fast: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("fast"));
         let mut map: HashMap<String, Arc<dyn LlmExecutor>> = HashMap::new();
         map.insert("fast-model".into(), fast.clone());
-        let mut binding = routing();
         let provider = Arc::new(MapProvider(map));
-        binding.set_materializer(provider);
+        let binding = InferenceRouting::new(
+            Default::default(),
+            Some(provider as Arc<dyn InferenceExecutorMaterializer>),
+        );
 
         // A resolvable ref → the provider's executor (resolved per run, from the ref).
         assert!(Arc::ptr_eq(
@@ -202,8 +200,10 @@ mod tests {
         let mut map: HashMap<String, Arc<dyn LlmExecutor>> = HashMap::new();
         map.insert("fast-model".into(), fast.clone());
         map.insert("slow-model".into(), slow);
-        let mut routing = routing();
-        routing.set_materializer(Arc::new(MapProvider(map)));
+        let routing = InferenceRouting::new(
+            Default::default(),
+            Some(Arc::new(MapProvider(map)) as Arc<dyn InferenceExecutorMaterializer>),
+        );
 
         let mut activation = activation("fast-model");
         activation.snapshot.resolved_spec.model_candidates.push(
@@ -236,8 +236,10 @@ mod tests {
         let executor: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("smart"));
         let mut map: HashMap<String, Arc<dyn LlmExecutor>> = HashMap::new();
         map.insert("smart-model".into(), executor);
-        let mut routing = routing();
-        routing.set_materializer(Arc::new(MapProvider(map)));
+        let routing = InferenceRouting::new(
+            Default::default(),
+            Some(Arc::new(MapProvider(map)) as Arc<dyn InferenceExecutorMaterializer>),
+        );
 
         let mut activation = activation("smart-model");
         activation.snapshot.resolved_spec.model_candidates.push(
@@ -262,7 +264,6 @@ mod tests {
         // a Run cannot keep using a stale prior model ref. `model_ref` reflects the
         // latest registration (the executor itself is resolved separately via
         // `executor_for` at run time).
-        let mut binding = routing();
         let mut map: HashMap<String, Arc<dyn LlmExecutor>> = HashMap::new();
         map.insert(
             "model-a".into(),
@@ -273,7 +274,10 @@ mod tests {
             Arc::new(LabeledModel("b")) as Arc<dyn LlmExecutor>,
         );
         let provider = Arc::new(MapProvider(map));
-        binding.set_materializer(provider);
+        let binding = InferenceRouting::new(
+            Default::default(),
+            Some(provider as Arc<dyn InferenceExecutorMaterializer>),
+        );
 
         binding.register("t", "model-a");
         assert_eq!(binding.model_ref("t", "default-model"), "model-a");
@@ -296,8 +300,10 @@ mod tests {
 
     #[test]
     fn installed_materializer_rejects_an_unavailable_published_candidate() {
-        let mut binding = routing();
-        binding.set_materializer(Arc::new(MapProvider(HashMap::new())));
+        let binding = InferenceRouting::new(
+            Default::default(),
+            Some(Arc::new(MapProvider(HashMap::new())) as Arc<dyn InferenceExecutorMaterializer>),
+        );
         let activation = activation("model-a");
 
         let error = match binding.executor_for_activation(&activation, &RuntimeRunContext::new()) {
@@ -329,12 +335,14 @@ mod tests {
 
         let seen = Arc::new(Mutex::new(None));
         let executor: Arc<dyn LlmExecutor> = Arc::new(LabeledModel("gateway"));
-        let mut binding = routing();
         let materializer = Arc::new(ReferenceMaterializer {
             seen: seen.clone(),
             executor: executor.clone(),
         });
-        binding.set_materializer(materializer);
+        let binding = InferenceRouting::new(
+            Default::default(),
+            Some(materializer as Arc<dyn InferenceExecutorMaterializer>),
+        );
 
         let activation = activation("gateway-model");
         let candidate = activation.snapshot.resolved_spec.model_binding.clone();

@@ -170,8 +170,8 @@ pub async fn build_model_route_router() -> Router {
     );
     let platform = resource_host(default_model, "default")
         .await
-        .map_host(|host| host.with_agent_publications(publication.clone()))
-        .map_host(|host| host.with_inference_materializer(Arc::new(RouteProvider)));
+        .map_dependencies(|host| host.with_agent_publications(publication.clone()))
+        .map_dependencies(|host| host.with_inference_materializer(Arc::new(RouteProvider)));
     let (host, resources) = platform.into_parts();
     let host = Arc::new(host);
     let catalog = resources.authorities().resource_registry();
