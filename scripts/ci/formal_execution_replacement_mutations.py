@@ -130,11 +130,14 @@ def check_k8s_process_observation_model_mutants(tlc_jar: Path) -> None:
         mutations.append((source.replace(anchor, broken), config, "Safety"))
     for witness in ("NoObservedExit", "NoReplacementBinding", "NoReplacementExit", "NoLiveStopRequest", "NoReplacementStop", "NoPostExitStopReceipt"):
         mutations.append((source, config.replace("INVARIANT Safety", f"INVARIANT {witness}"), witness))
-    # Registry closure adds one monotone bit per Pod generation. Keep the full
-    # three-generation/two-container bound; increase the bounded tool budget
-    # rather than weakening the model after a baseline timeout.
+    # KPT resource qualification keeps the complete three-generation/two-
+    # container configuration. The former 1024MiB/one-worker baseline exceeded
+    # 300s; the same 7,671,532 states completed in 36s at 4096MiB/eight workers.
+    # This shared runner owns the single green baseline and every semantic kill;
+    # the official gate must not repeat that baseline through a separate JVM.
+    # Keep the 300s execution deadline: resource errors/timeouts are never kills.
     check_tlc_model_mutations(tlc_jar, "K8sProcessObservation", source, config, mutations,
-                              heap_mb=1024, timeout_seconds=300)
+                              heap_mb=4096, timeout_seconds=300, workers=8)
     print("Kubernetes process observation/stop: 16 unsafe-evidence mutants killed; 6 observation and exact-stop witnesses reached")
 
 
