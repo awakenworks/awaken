@@ -3,6 +3,9 @@
 - Status: Accepted
 - Date: 2026-06-30
 - Depends on: ADR-0008, ADR-0012
+- Amends: [ADR-0008](0008-durable-postgres-commit-backend.md) D3 (the
+  configured table prefix is replaced by the built-in `runtime` namespace;
+  recorded 2026-10-09)
 
 ## Context
 

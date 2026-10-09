@@ -8,6 +8,7 @@
   decision.
 - Date: 2026-06-30
 - Depends on: ADR-0011, ADR-0019, ADR-0065
+- Amended: 2026-10-09 (D2 item 1 reconciled with this ADR's PostgreSQL database-time rule; see ADR-0011, ADR-0014)
 
 ## Context
 
@@ -933,3 +934,13 @@ one numbering stream. Unknown checksums retain the ordinary migration refusal.
 SQLite adapter tests cover both persisted V7 prefixes, idempotent reopen, exact
 receipt preservation and rejection of an unknown checksum. PostgreSQL uses the
 same selection owner for migration and external-schema verification.
+
+## Amendment 2026-10-09: reconciled with ADR-0011 and ADR-0014
+
+- D2 item 1 ("the same source determines claim eligibility and lease deadline")
+  holds for Memory and SQLite. On PostgreSQL, claims of every mode, due-time
+  checks, lease renewal and ownership checks sample database time inside the
+  transaction, as the later paragraph of this ADR says
+  (`crates/server/awaken-dispatch/src/postgres_helpers.rs:16-25`,
+  `postgres/claim.rs:258,381,434`, `postgres/dispatch_queue.rs:714`). The edge
+  clock still drives renewal cadence and local proof deadlines.

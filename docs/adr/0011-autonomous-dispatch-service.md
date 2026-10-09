@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-06-30
 - Depends on: ADR-0009
+- Amended: 2026-10-09 (reconciled with ADR-0024: PostgreSQL uses database time; removed `RunIngress` types)
 
 ## Context
 
@@ -67,3 +68,15 @@ and is not a competing current renewal design.
 - ADR-0009 — the worker and dispatch store this service drives.
 - [run-ingress-message-delivery.md](../design/run-ingress-message-delivery.md) —
   the durable-ingress boundary.
+
+## Amendment 2026-10-09: reconciled with ADR-0024
+
+- D2 holds per backend. On PostgreSQL, claims of every mode, due-time checks,
+  lease renewal and ownership checks sample database time (`clock_timestamp()`)
+  inside the transaction, as [ADR-0024](0024-daemon-lease-renewal.md) records
+  (`crates/server/awaken-dispatch/src/postgres_helpers.rs:16-25`,
+  `postgres/claim.rs:258,381,434`, `postgres/dispatch_queue.rs:714`). Memory and
+  SQLite use the injected edge clock (`sqlite/claim.rs:22,34`). The Worker still
+  stores no clock.
+- D3 / Consequences: `RunIngressCapabilities.scheduled_wake` and
+  `DurableRunIngress` no longer exist (2026-09-01 amendment of [ADR-0009](0009-durable-run-ingress-slice.md)).

@@ -5,6 +5,11 @@
 - Depends on: ADR-0007 (runtime owns tool execution), ADR-0034 (runtime axis
   model — D5 presentation-only fingerprint, D6 kernel is placement/binding
   agnostic)
+- Amended by: [ADR-0036](0036-skills-as-runtime-extension-single-tool.md) (D4
+  superseded), [ADR-0073](0073-session-environment-owned-hand-and-worker-capability-placement.md)
+  (one Environment per Session, not per Run; ADR-0081 §9 records the container
+  projection)
+- Amended: 2026-10-09 (reconciled with ADR-0073: provisioning is per Session)
 - Relates to: `design/resources-memory-files-skills.md` (owner of the
   resource/skill boundary), `design/tool-and-capability.md`,
   `design/architecture-overview.md`
@@ -221,3 +226,23 @@ fingerprint.
 - [tool-and-capability.md](../design/tool-and-capability.md) — capability
   segments and the neutral `ToolExecutor`/`RawTool` ports.
 - [INVARIANTS.md](../INVARIANTS.md) — G3, G4, G9, G13, G21, G30.
+
+## Amendment 2026-10-09: reconciled with ADR-0073
+
+- **Per Session, not per Run.** D1/D7 describe `SandboxProvider::create` as
+  materializing a per-Run substrate. Under
+  [ADR-0073](0073-session-environment-owned-hand-and-worker-capability-placement.md)
+  a Worker realizes one SessionEnvironment for the Session, and that Environment
+  is the only source of a Hand and its `ToolExecutor`. `SandboxProvider` remains
+  the one neutral provisioning seam
+  (`crates/contract/awaken-provisioning-contract/src/sandbox/runtime.rs:610`).
+- **Container projection.** `ContainerEnvironmentProvider`
+  (`crates/contract/awaken-container-contract/src/provider.rs:99`) is not the
+  separate "managed Environment port" D7 rejects. ADR-0081 §9 records it as a
+  container-tier projection over the same `ContainerProvider` kernels that also
+  implement `SandboxProvider`.
+- **Where a call runs.** The References line "ADR-0007 — where a call runs is a
+  `RawTool` detail" is amended by
+  [ADR-0044](0044-remote-hand-tool-executor-over-a-channel.md) and ADR-0073: the
+  kernel calls the Environment's `ToolExecutor`
+  (`crates/contract/awaken-tool-contract/src/tool.rs:1170`).

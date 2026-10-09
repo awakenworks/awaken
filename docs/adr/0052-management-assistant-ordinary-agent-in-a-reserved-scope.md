@@ -1,7 +1,12 @@
 # ADR-0052: The Management Assistant is an Ordinary Agent in a Reserved Scope — Privilege via a Scope-Keyed Tool-Catalog Projection, Not a Special Agent Type
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-11
+- Implemented: `crates/control/awaken-admin-assistant`; `ToolCatalogSource` / `ScopedToolCatalog`
+  (`crates/control/awaken-config-service/src/tool_catalog.rs:46,54`) wired at
+  `crates/control/awaken-control/src/component.rs:247`; `PublicationBindingReconciler`
+  (`crates/control/awaken-config-service/src/binding_resolver.rs:128`, implemented at `:176`)
+- Amended: 2026-10-09 (reconciled with ADR-0061: the model catalog read is Workspace-scoped)
 - Builds on:
   [ADR-0051](0051-tenancy-edge-aspect-one-opaque-scope-id.md)
   (tenancy is an edge aspect; one **opaque** `ScopeId` the core never interprets —
@@ -403,3 +408,30 @@ Costs (accepted):
   Runtime `ToolCall`/`ToolResult` history for every invocation,
   `awaken::admin_audit` plus atomic config-store identity for mutations; management
   `ToolExecutor` authority check as defense-in-depth.
+
+## Amendment 2026-10-09: reconciled with ADR-0061
+
+The Context and D5 say the model catalog is org/deployment-shared and readable from
+any scope. [ADR-0061](0061-selectable-identity-and-platform-managed-resource-scopes.md) (2026-09-09 amendment) changed that: an endpoint may be owned
+by one Workspace, and publication resolves models against
+`ProviderCatalog::for_workspace` (`crates/control/awaken-control/src/model_publication.rs:209`).
+`Auto` resolution therefore sees the shared operator/brokered endpoints plus the
+publication Workspace's own, never a sibling Workspace's. The rest of D5 (publish-time
+resolution, the reconciler) is unchanged.
+
+## Amendment 2026-10-09: names and references
+
+- `enum ModelBinding { Auto, Pinned(ModelRef) }` (D5, S3) is implemented as
+  `ModelSelection` (`crates/control/awaken-agent-config/src/config.rs:30`), which also has
+  `Profile`, `Target`, `BackendDefault` and `BackendExact` variants. `ModelBinding` is now
+  the resolved concrete struct
+  (`crates/contract/awaken-runtime-contract/src/resolved/model_binding.rs:98`).
+- `ModelResolver` (D5, S4) is `ModelPublicationResolver`
+  (`crates/control/awaken-config-service/src/binding_resolver.rs:115`).
+- D3's "ADR-0051's `ScopedConfig` decorator": ADR-0051 named it `ScopedRepo`, and it was
+  never built (see the ADR-0051 supersession note). The comparison is about grain only.
+- `awaken-coordinator/src/resource_scope_fence.rs` (Context, D5) no longer exists; the
+  catalog scope rule now lives in `ProviderCatalog::for_workspace`
+  (`crates/control/awaken-model-catalog/src/lib.rs:645`).
+- The reserved scope is `RESERVED_ADMIN_SCOPE = "__admin"`
+  (`crates/control/awaken-config-service/src/tool_catalog.rs:23`).

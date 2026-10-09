@@ -229,6 +229,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0088-bounded-context-map-and-sdk-platform-contract.md` | Decision record | Not required | n/a |
 | `adr/0089-session-realization-single-owner.md` | Decision record | Not required | n/a |
 | `adr/0090-session-state-model.md` | Decision record | Not required | n/a |
+| `adr/0091-architecture-rules.md` | Decision record | Not required | n/a |
 
 ## Implementation Context
 

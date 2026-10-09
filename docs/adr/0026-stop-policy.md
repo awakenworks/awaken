@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2026-06-30
 - Depends on: ADR-0005, ADR-0016
+- Amends: [ADR-0005](0005-run-terminal-state-single-authority.md) D2 (adds
+  `EndCause::Stopped(String)` to its closed set; recorded 2026-10-09)
 
 ## Context
 

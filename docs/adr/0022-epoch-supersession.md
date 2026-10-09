@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-06-30
 - Depends on: ADR-0009, ADR-0016
+- Amended: 2026-10-09 (reconciled with ADR-0016: a superseded run cannot be cancelled)
 
 ## Context
 
@@ -66,3 +67,15 @@ operator can `cancel` a superseded run to make it committed-terminal today.
 - [INVARIANTS.md](../INVARIANTS.md) — G5/G6 (durable ingress over runtime control).
 - ADR-0009 — the dispatch claim bands a superseded row is excluded from.
 - ADR-0016 — durable cancel, which this generalizes to "newest wins."
+
+## Amendment 2026-10-09: reconciled with ADR-0016
+
+- D4's last sentence ("An operator can `cancel` a superseded run to make it
+  committed-terminal today") is no longer true. `cancel` on a superseded row
+  returns `NotCancellable`
+  (`crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs:549`),
+  so a superseded run has no committed terminal fact; it is visible only through
+  `superseded()`. [ADR-0016](0016-durable-cancel.md) (amended 2026-10-09) records the same rule.
+- D1 cites [ADR-0017](0017-send-message-over-outbox.md) for "cross-Thread delivery addresses Threads"; the revised
+  ADR-0017 dropped outbox messaging. Thread-addressed delivery is in [ADR-0013](0013-pending-lifecycle-and-cross-thread-outbox.md)
+  and [ADR-0021](0021-idle-thread-delivery.md).

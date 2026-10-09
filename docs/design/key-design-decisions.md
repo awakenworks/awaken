@@ -120,7 +120,7 @@ ADR. Permission policy stays mutable and separate from replayable descriptors.
 product's model of "done" into every run.
 
 **Decision.** Runtime Core provides neutral Run/Thread/Step execution,
-`ContinuationGuard`, committed terminal observation, and Thread state. Runtime
+`RunEndGuard`, committed terminal observation, and Thread state. Runtime
 Extension is broader than Plugin: `awaken-ext-goal` owns the cross-Run Outcome
 controller, lifecycle, grading, stable identities, and state codec. Product
 protocols map onto that extension; the Runtime Host only composes neutral

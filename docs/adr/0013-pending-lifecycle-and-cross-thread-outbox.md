@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-06-30
 - Depends on: ADR-0009, ADR-0010
+- Amended: 2026-10-09 (names and references: ADR-0039 port names; removed `RunIngress` types)
 
 ## Context
 
@@ -69,3 +70,15 @@ does not define a model-visible command.
 - [run-ingress-message-delivery.md](../design/run-ingress-message-delivery.md) —
   the pending lifecycle and cross-thread outbox/idempotent-append rules.
 - ADR-0010 — correlation-keyed delivery this builds the operations surface on.
+
+## Amendment 2026-10-09: names and references
+
+- `PendingInbox` is `Inbox` and `MessageOutbox` is `Outbox`
+  (`crates/contract/awaken-dispatch-contract/src/dispatch/delivery.rs:69,105`),
+  per [ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md).
+- `RunIngress` and `DurableRunIngress` no longer exist (2026-09-01 amendment of
+  [ADR-0009](0009-durable-run-ingress-slice.md)). Staging and relay are `Outbox::stage` / `Outbox::relay`;
+  `DispatchService::send` remains
+  (`crates/shared/awaken-dispatch-execution/src/service.rs:258`).
+- Agent-to-Agent messaging does not use this outbox ([ADR-0017](0017-send-message-over-outbox.md), revised
+  2026-09-01).

@@ -10,6 +10,10 @@
 - Amended: 2026-09-06 — committed terminal Dispatch settlement survives Work retirement
 - Amended: 2026-09-11 — recovery and realization bind the exact Session Work epoch
 - Amended: 2026-10-01 — registered Worker preparation of a complete Session needs no model Run
+- Amended by: ADR-0078 (terminal assignment reuses the root's frozen desired
+  projection; only a verified cleanup receipt releases)
+- Amended by: ADR-0083 (a local Cloud Managed create returns after the durable root
+  commits; Worker placement keeps `AwaitRealization`)
 - Supersedes: the late Worker-authored Session-input path in ADR-0063,
   ADR-0065, and ADR-0066
 - Preserves: ADR-0065 claim recovery and attempt execution; ADR-0066 Session

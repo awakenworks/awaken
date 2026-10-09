@@ -5,6 +5,8 @@
 - Amended: 2026-08-30 — source release is split into durable preparation and
   physical disposal so response loss cannot turn provider absence into
   aggregate proof.
+- Amended: 2026-10-09 (reconciled with ADR-0056: `reconcile_adoption` has no
+  production caller yet)
 - Amends: ADR-0056. Clarifies ADR-0073: `SessionEnvironment` remains the sole
   live environment owner; Hand process hibernation remains an orthogonal local
   optimization, and its stop primitive is reused during Environment quiescence.
@@ -887,3 +889,15 @@ without manufacturing a receipt or deleting a source. Source disappearance
 before a checkpoint receipt is durable is not proven recoverable by this port.
 Physical source disposal still requires the existing aggregate preparation and
 cleanup gate; this participant neither adds a finalizer nor authorizes disposal.
+
+## Amendment 2026-10-09: reconciled with ADR-0056
+
+The gap table row on lease expiry and D9 describe `reconcile_adoption(live,
+referenced)` as the sole cross-restart disposal decision in use. It is not wired:
+the [ADR-0056](0056-sandbox-reuse-two-orthogonal-volumes.md) amendment of 2026-10-06
+records that it has no production caller and is wired only once that decision is
+shared rather than owned by each provider. Evidence: it is defined at
+`crates/contract/awaken-provisioning-contract/src/lease.rs:246` and called only by
+that file's tests. What stays true: lease decisions return only `Keep/Fence`, the
+age reaper is gone, and disposal still requires the durable live reference to be
+absent (the aggregate's preparation and cleanup gate).

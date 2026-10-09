@@ -4,6 +4,7 @@
 - Date: 2026-06-30
 - Amended: 2026-08-31
 - Depends on: ADR-0010, ADR-0013, ADR-0017
+- Amended: 2026-10-09 (names and references: `Inbox::list`, `CommittedThreadView`)
 
 ## Context
 
@@ -74,3 +75,12 @@ follow-ups cannot consume one another's input.
 - ADR-0010 — correlation-keyed pending input and read-then-remove.
 - ADR-0013 — the outbox/relay path the delivery reuses.
 - ADR-0017 — Thread-owned Managed messaging and deterministic fresh-Run admission.
+
+## Amendment 2026-10-09: names and references
+
+- D2: `PendingInbox::list_thread` no longer exists. The worker reads
+  `Inbox::list(thread_id)` and keeps entries with an empty `run_id`
+  (`crates/contract/awaken-dispatch-contract/src/dispatch/delivery.rs:75`;
+  `crates/shared/awaken-dispatch-execution/src/worker.rs:1370-1385`).
+- D4: the after-commit `ThreadReader` is now `CommittedThreadView`
+  ([ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md)).

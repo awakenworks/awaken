@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-06-30
 - Depends on: ADR-0009
+- Amended: 2026-10-09 (names and references: `DispatchQueue`, current `DispatchState` variants)
 
 ## Context
 
@@ -48,3 +49,13 @@ those existing verbs; `list_dispatches` is the missing observability over them.
 
 - [INVARIANTS.md](../INVARIANTS.md) — G6 (dispatch is operational, not run truth).
 - ADR-0009 — the dispatch aggregate this observes.
+
+## Amendment 2026-10-09: names and references
+
+- The port that exposes `dead_letters`, `superseded` and `list_dispatches` is
+  `DispatchQueue` (`crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs:13,373`),
+  per [ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md); `RunDispatch` now names the serializable record.
+- D2: `DispatchState` is `Reserved | ReservationLeased | Pending | Leased |
+  Awaiting | DeadLetter | Superseded` (`.../dispatch/model.rs:370-386`). `Leased`
+  is the former `Running`; the two `Reserved*` states belong to Session Run
+  reservation.

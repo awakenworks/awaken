@@ -3,6 +3,9 @@
 - Status: Accepted
 - Date: 2026-06-30
 - Depends on: ADR-0005, ADR-0006
+- Amended by: ADR-0029 (a built-in `runtime` namespace replaces the D3 table prefix), ADR-0087 (D1: `sqlx` is named by every SQL adapter, not only `awaken-store-postgres`)
+- Amended by: ADR-0039 (D4: reads come from committed facts, not an in-memory read projection)
+- Amended: 2026-10-09 (reconciled with ADR-0087: D1 sqlx ownership)
 
 ## Context
 
@@ -193,3 +196,17 @@ and [top-level transaction management](https://www.postgresql.org/docs/16/plpgsq
 - ADR-0006 — the commit contract any coordinator must satisfy.
 - [runtime-behavior.md](../design/runtime-behavior.md) — `ThreadCommit`,
   `RunRecord`, and the commit boundary.
+
+## Amendment 2026-10-09: reconciled with ADR-0087
+
+- D1 ("`awaken-store-postgres` is the only crate allowed to name `sqlx`") no longer
+  holds. The Postgres dispatch adapter lives in `awaken-dispatch`
+  ([ADR-0009](0009-durable-run-ingress-slice.md) D1, `crates/server/awaken-dispatch/Cargo.toml:38`), and
+  [ADR-0087](0087-sqlite-through-sqlx.md) sends all SQLite access through sqlx
+  (`crates/stores/awaken-store-sqlite/Cargo.toml:24`). What still holds: the
+  runtime core never names a SQL driver; only storage adapters do.
+- D3: the table prefix is a built-in constant, not a parameter ([ADR-0029](0029-built-in-runtime-namespace.md);
+  `crates/stores/awaken-store-postgres/src/lib.rs:190`).
+- Names: `RunStore` / `ThreadReader` are now `CommittedThreadView` (+
+  `CheckpointReader` for events), per [ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md). `DurableRunIngress` no
+  longer exists (removed by the 2026-09-01 amendment of [ADR-0009](0009-durable-run-ingress-slice.md)).

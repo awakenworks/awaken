@@ -23,7 +23,7 @@ Use the existing runtime vocabulary first.
 | `ToolExecutor` | Invoke the selected tool in-process through a neutral call/result port | The runtime invokes the tool by id; the port carries no authorization |
 | `StreamSink` | Stream live runtime progress to callers | Facts still commit through `CommitCoordinator` |
 | `EventReader` / `EventSubscriber` | Read or subscribe to committed durable event records | Cannot create or erase runtime truth |
-| `ContinuationGuard` | Decide whether a natural-end Run should complete or continue before terminal commit | Async, replayable verdicts; no product outcome semantics |
+| `RunEndGuard` | Decide whether a natural-end Run should complete or continue before terminal commit | Async, replayable verdicts; no product outcome semantics |
 | `RunTerminalObserver` | React to an already-committed terminal Run | At-least-once notification; cannot change `RunResult` or commit authority |
 
 These ports are the "waist": server and product code can adapt to them, but the
@@ -66,7 +66,7 @@ surprise.
 Runtime Extension is broader than an in-Run `Plugin`:
 
 1. `PhaseHook` observes and returns staged reactions at one Step phase.
-2. `ContinuationGuard` decides Complete/Continue at natural end, before terminal
+2. `RunEndGuard` decides Complete/Continue at natural end, before terminal
    commit.
 3. `RunTerminalObserver` reacts after an `Ended` Run fact commits; delivery is
    at least once and the observer cannot alter the committed `RunResult`.

@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-18
+- Amended by: ADR-0091 (Proposed; §3 where a port trait lives, §6 the `awaken-session-executor` name)
 - Builds on: the plane-aligned single workspace and inward dependency rule
   (`Cargo.toml` metadata, `scripts/ci/check_crate_boundaries.py`); the
   `X-contract` extraction convention that factored

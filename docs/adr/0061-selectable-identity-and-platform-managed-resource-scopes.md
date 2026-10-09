@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-20
+- Amended by: ADR-0070 (identity-mode default: interactive all-in-one defaults to `awaken-cloud`, otherwise `self-managed`; `no-login` is an explicit choice)
 - Depends on: ADR-0038, ADR-0042, ADR-0048, ADR-0051, ADR-0053
 
 ## Context

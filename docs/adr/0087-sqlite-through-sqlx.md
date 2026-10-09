@@ -8,6 +8,10 @@
 - Affects: awaken-foundation ADR-0005 (rusqlite range for
   `awaken-scoped-migration-sqlite`) and awaken-cloud, which links the same native
   SQLite library.
+- Amends: ADR-0012 D2/D3 (SQLite adapters use sqlx, not rusqlite on blocking
+  threads) and ADR-0008 D1 (`sqlx` is no longer named only by
+  `awaken-store-postgres`) (recorded 2026-10-09)
+- Amended: 2026-10-09 (names and references: the ADR-0045 citation)
 
 ## Context
 
@@ -159,3 +163,17 @@ lockfile already resolves rusqlite 0.32.1, and awaken-cloud pins
   runs crate by crate, and each step leaves the repository consistent.
 - Removing rusqlite completely requires publishing a new awaken-foundation
   revision.
+
+## Amendment 2026-10-09: names and references
+
+- Header "ADR-0045 (the 2026-09-06 amendment keeps database connections out of
+  awaken-foundation's connection crates)": that amendment of
+  [ADR-0045](0045-connection-plan-and-network-topology.md) covers only the network channel
+  factory and says nothing about databases. This ADR does not build on it; the
+  embedded connection policy is owned by `awaken-sqlite-pool` (decision 3,
+  `crates/stores/awaken-sqlite-pool/Cargo.toml:2`).
+- Earlier decisions this ADR changes: [ADR-0012](0012-sqlite-and-postgres-store-backends.md)
+  D2/D3 named rusqlite with `spawn_blocking`; no manifest under `crates/` depends on rusqlite and
+  `crates/stores/awaken-store-sqlite/Cargo.toml:24` uses sqlx.
+  [ADR-0008](0008-durable-postgres-commit-backend.md) D1 allowed only
+  `awaken-store-postgres` to name `sqlx`; 32 manifests name it today.

@@ -4,6 +4,7 @@
 - Superseded by:
   [ADR-0063](0063-resource-input-identity-configuration-pinning-and-lifecycle.md)
 - Date: 2026-07-10
+- Amended: 2026-10-09 (reconciled with ADR-0061: model catalog endpoints may be Workspace-owned)
 
 > Supersession note (2026-07-22): the proposed generic `ScopedSessionStore` /
 > `ScopedRepo` implementation was never selected by a production composition and
@@ -294,3 +295,21 @@ org-shared reads authorize against the request's `readable` set (scope + ancesto
 resolved once at ingress in D4) instead of exact equality — still one opaque column,
 filtered by `scope_id IN (readable)`. Until the Org tier lands, exact equality (with
 the catalog explicitly shared per the decision above) suffices.
+
+## Amendment 2026-10-09: reconciled with ADR-0061
+
+- The supersession note's "ADR-0063 D6" should read [ADR-0063](0063-resource-input-identity-configuration-pinning-and-lifecycle.md) **D4** (resource
+  services own data invariants, not authorization policy). D4 is what G39 in
+  `docs/INVARIANTS.md` cites; D6 is about reclamation.
+- The section "Resolved: the model catalog is org/deployment-shared" no longer holds
+  in full. [ADR-0061](0061-selectable-identity-and-platform-managed-resource-scopes.md) (2026-09-09 amendment) decides it: a protocol endpoint has an
+  optional Workspace owner and every read goes through one scoped projection; only
+  unowned operator-authored or brokered endpoints stay shared
+  (`crates/control/awaken-model-catalog/src/lib.rs:151-155`, `for_workspace` at `:645`,
+  used by publication at `crates/control/awaken-control/src/model_publication.rs:209`).
+- Still current: the opaque `ScopeId` value object
+  (`crates/contract/awaken-agent-contract/src/scope.rs:17`, re-exported by
+  `awaken-tenancy`), D6 (no `awaken-scope` crate remains) and D7. Where a self-hosted
+  deployment has no Org, the deployment operator is the controller
+  ([ADR-0050](0050-telemetry-content-capture-consent-and-gdpr-erasure.md)). ADRs that cite this one for the opaque `ScopeId` (0052, 0059,
+  0061) stay correct; the `ScopedRepo` mechanism of D3 was never built.

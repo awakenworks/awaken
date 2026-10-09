@@ -4,6 +4,7 @@
 - Date: 2026-06-30
 - Amended: 2026-07-21
 - Depends on: ADR-0005, ADR-0009, ADR-0013
+- Amended: 2026-10-09 (reconciled with ADR-0022: dead-letter and superseded cancellation follow the code)
 
 ## Context
 
@@ -109,3 +110,14 @@ slot can be released.
 - ADR-0005 — committed `RunState` / `EndCause` authority.
 - ADR-0013 — monotonic lease-epoch commit and settlement fence.
 - ADR-0022 — cancellation intent is not superseded by newer queued work.
+
+## Amendment 2026-10-09: reconciled with ADR-0022
+
+D1's list of states that return `None` is out of date. The code is authoritative
+(`crates/contract/awaken-dispatch-contract/src/dispatch_transition.rs:516-574`):
+
+- A superseded run is not cancellable (`Superseded => NotCancellable`, :549). It
+  has no committed terminal fact; it is visible only through `superseded()`.
+- A dead-lettered run is cancellable. Cancel sets the cancellation bit, the row
+  stays dead-lettered, and requeue is forbidden for good (:522, :573;
+  `.../dispatch/queue.rs:341-356`). A terminal Session fence uses this.
