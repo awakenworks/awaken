@@ -6,12 +6,16 @@
 use super::*;
 
 use awaken_coordinator::{install_managed_agent_coordination, with_platform_memory_data_plane};
+use cloud_plane::{CloudPlane, assemble_cloud_plane};
 
+mod cloud_plane;
 mod local_execution;
 mod reclamation;
 mod startup;
 mod surfaces;
 
+#[cfg(test)]
+mod route_inventory;
 #[cfg(test)]
 mod tests;
 
@@ -47,6 +51,10 @@ fn resource_management_router(
     })
 }
 
+/// Assemble the runtime process, one stage per component family, in the order
+/// the components depend on each other: process facts, Deployment and Resources,
+/// cloud/model/credential plane, Control, execution stores, execution Host,
+/// Session application, Coordinator, then the protected route surfaces.
 pub(super) async fn prepare_runtime_routers(
     stores: ProcessStores,
     iam: Option<Arc<ManagementAuthz>>,
@@ -61,8 +69,74 @@ pub(super) async fn prepare_runtime_routers(
     // serves external-CLI sessions.
     customize_host: Option<Box<dyn FnOnce(HostDependencies) -> HostDependencies + Send>>,
 ) -> Result<ProcessRouters, String> {
+    let mut base = open_process_base(stores, iam, remote_iam, process).await?;
+    let resources = assemble_deployment_and_resources(&mut base).await?;
+    let mut cloud = assemble_cloud_plane(&mut base, model_supply).await?;
+    let control_component =
+        assemble_control_component(&base, &resources, &cloud, local_browser_auth).await;
+    let execution = assemble_execution_stores(&mut base, &resources).await?;
+    let mut control = assemble_control_surface(&mut base, control_component)?;
+    let mut host = assemble_execution_host(
+        &mut base,
+        &resources,
+        &mut cloud,
+        &control,
+        &execution,
+        customize_host,
+    )
+    .await?;
+    let session = assemble_session_plane(
+        &mut base,
+        &resources,
+        &cloud,
+        &mut control,
+        &execution,
+        &mut host,
+    )?;
+    let event_batch_cutover_validation = session.event_batch_cutover_validation.clone();
+    let coordinator = assemble_coordinator(
+        &mut base, &resources, &mut cloud, &control, &execution, &host, session,
+    )
+    .await?;
+    Ok(finish_process_routers(
+        base,
+        &resources,
+        &execution,
+        control,
+        coordinator,
+        event_batch_cutover_validation,
+    )
+    .await)
+}
+
+/// Process-scope facts every assembly stage reads: the opened stores, the
+/// startup selection, the role and the wiring the startup validated.
+struct ProcessBase {
+    stores: ProcessStores,
+    process: ProcessStartup,
+    role: config::Role,
+    org_id: String,
+    iam: Option<Arc<ManagementAuthz>>,
+    remote_iam: Option<Arc<RemoteManagementAuthz>>,
+    managed_rate_limiter: Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>,
+    runtime_authority: Option<Arc<dyn awaken_session_executor::RuntimeAuthority>>,
+    placement: awaken_session_application::SessionExecutionPlacement,
+    worker_directory: awaken_coordinator::WorkerDirectoryHandle,
+    worker_transport: worker_transport_security::WorkerTransport,
+    worker_observations: worker_observation_wiring::WorkerObservationWiring,
+    agents: executable_agent_registration::ExecutableAgentWiring,
+    environments: executable_environment_registration::ExecutableEnvironmentWiring,
+    enrollment_signing_key: [u8; 32],
+}
+
+async fn open_process_base(
+    stores: ProcessStores,
+    iam: Option<Arc<ManagementAuthz>>,
+    remote_iam: Option<Arc<RemoteManagementAuthz>>,
+    process: ProcessStartup,
+) -> Result<ProcessBase, String> {
     let startup::RuntimeStartup {
-        process,
+        mut process,
         worker_directory,
         worker_observation_wiring,
         worker_transport,
@@ -71,45 +145,9 @@ pub(super) async fn prepare_runtime_routers(
         enrollment_signing_key,
     } = startup::prepare(&stores, process)?;
     let role = process.role;
-    let runtime_authority = process.runtime_authority;
-    let worker_observations = worker_observation_wiring.source;
-    let worker_observation_private_router = worker_observation_wiring.private_router;
-    let worker_authenticator = worker_transport.authenticator();
-    let worker_execution_bindings = worker_transport.binding_source();
-    let worker_execution_stops = worker_transport.stop_source();
-    let worker_relay_targets = worker_transport.relay_target_source();
-    let worker_placement_policy = process.worker_placement_policy;
-    let cloud_native_credential_realization = process.cloud_native_credential_realization;
-    let (
-        executable_agent_catalog,
-        executable_agent_registrar,
-        executable_agent_private_router,
-        executable_agent_projection_refresher,
-        _remote_coordinator_content_eraser,
-        _remote_credential_rollout_target,
-        coordinator_service_authenticator,
-    ) = executable_agent_registration::process_parts(Some(executable_agent_wiring));
-    let content_capture_ceiling = process.content_capture_ceiling;
-    let namespace_hand_path = process.namespace_hand_path;
-    let deployment = process.deployment;
-    #[cfg(any(test, feature = "test-support"))]
-    let runtime_authority = match runtime_authority {
-        Some(authority) => Some(authority),
-        None => {
-            // Scenario/test startup selects one complete reference authority
-            // before either Host or SessionApplication can observe Dispatch.
-            // A Host-only fallback would give them different authority views.
-            let selected = deployment
-                .clone()
-                .unwrap_or_else(awaken_session_executor::DeploymentConfig::ephemeral);
-            Some(
-                awaken_coordinator::init_scenario_runtime(&selected, stores.clock.clone())
-                    .await
-                    .map_err(|error| error.to_string())?,
-            )
-        }
-    };
-    let session_execution_placement = if deployment
+    let runtime_authority = selected_runtime_authority(&mut process, &stores).await?;
+    let placement = if process
+        .deployment
         .as_ref()
         .is_some_and(|deployment| deployment.disable_local_pool)
     {
@@ -117,13 +155,7 @@ pub(super) async fn prepare_runtime_routers(
     } else {
         awaken_session_application::SessionExecutionPlacement::LocalWorker
     };
-    let cloud_api_base_url = process.cloud_api_base_url;
-    let cloud_developer_key_file = process.cloud_developer_key_file;
-    let model_capabilities = process.model_supply.clone();
-    let cloud_models_enabled = model_capabilities.cloud_models_enabled;
-    let injected_brokered_catalog = process.brokered_catalog.clone();
-    let cloud_login = process.cloud_login.clone();
-    let org_id = process.org_id.unwrap_or_else(local_org_id);
+    let org_id = process.org_id.take().unwrap_or_else(local_org_id);
     let managed_rate_limiter = process
         .managed_services
         .request_limiter
@@ -136,12 +168,70 @@ pub(super) async fn prepare_runtime_routers(
                 ),
             )
         });
-    let mcp_bearer_token = process.mcp_bearer_token;
-    let ai_sdk_browser_cors = process.ai_sdk_browser_cors;
+    Ok(ProcessBase {
+        stores,
+        process,
+        role,
+        org_id,
+        iam,
+        remote_iam,
+        managed_rate_limiter,
+        runtime_authority,
+        placement,
+        worker_directory,
+        worker_transport,
+        worker_observations: worker_observation_wiring,
+        agents: executable_agent_wiring,
+        environments: executable_environment_wiring,
+        enrollment_signing_key,
+    })
+}
+
+/// The Runtime authority the process selected. Scenario/test startup selects
+/// one complete reference authority before either Host or SessionApplication
+/// can observe Dispatch; a Host-only fallback would give them different
+/// authority views.
+async fn selected_runtime_authority(
+    process: &mut ProcessStartup,
+    stores: &ProcessStores,
+) -> Result<Option<Arc<dyn awaken_session_executor::RuntimeAuthority>>, String> {
+    #[cfg(any(test, feature = "test-support"))]
+    if process.runtime_authority.is_none() {
+        let selected = process
+            .deployment
+            .clone()
+            .unwrap_or_else(awaken_session_executor::DeploymentConfig::ephemeral);
+        process.runtime_authority = Some(
+            awaken_coordinator::init_scenario_runtime(&selected, stores.clock.clone())
+                .await
+                .map_err(|error| error.to_string())?,
+        );
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    let _ = stores;
+    Ok(process.runtime_authority.take())
+}
+
+/// The Deployment aggregate and the Resources authorities every sibling
+/// component shares.
+struct DeploymentAndResources {
+    deployment_application: Arc<awaken_deployment_application::DeploymentApplication>,
+    projection_refresh:
+        Option<Arc<awaken_session_application_contract::ExecutableProjectionRefresh>>,
+    content_eraser: Arc<dyn awaken_data_governance_contract::ContentEraser>,
+    resource_application: awaken_resource_application::ResourcesApplication,
+    resource_authorities: awaken_resource_application::ResourceAuthorities,
+    resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+}
+
+async fn assemble_deployment_and_resources(
+    base: &mut ProcessBase,
+) -> Result<DeploymentAndResources, String> {
     // Cause/effect ownership rule: one selected ResourceAuthorities value is moved intact
     // into the Host. The management Skill API borrows the one additional view it
     // needs; no tuple decomposition or parallel Resources reconstruction.
-    let coordinator_stores = stores
+    let coordinator_stores = base
+        .stores
         .coordinator
         .as_ref()
         .expect("Managed Execution role requires Coordinator stores");
@@ -150,193 +240,54 @@ pub(super) async fn prepare_runtime_routers(
     // the Coordinator router/scheduler receive this same instance.
     let deployment_application = awaken_coordinator::restore_deployment_application(
         coordinator_stores.deployments.clone(),
-        stores.clock.clone(),
+        base.stores.clock.clone(),
     )
     .await
     .map_err(|error| format!("restore Deployment state: {error}"))?;
-    let agent_archive_cascade =
-        deployment_application.clone() as Arc<dyn awaken_deployment_contract::AgentArchiveCascade>;
-    let executable_environment_catalog = executable_environment_wiring.catalog;
-    let executable_environment_registrar = executable_environment_wiring.registrar;
-    let executable_environment_projection_refresher =
-        executable_environment_wiring.projection_refresher;
-    let executable_projection_refresh = executable_projection_refresh::shared(
-        executable_agent_projection_refresher,
-        executable_environment_projection_refresher,
+    let projection_refresh = executable_projection_refresh::shared(
+        base.agents.projection_refresher.take(),
+        base.environments.projection_refresher.take(),
     )?;
-    let executable_environment_private_router = executable_environment_wiring.private_router;
-    let executable_environment_image_builds = executable_environment_wiring.image_builds;
-    let coordinator_content_eraser =
-        awaken_coordinator::data_subject_boundary::coordinator_content_eraser(
-            coordinator_stores.captured_content_eraser.clone(),
-            deployment
-                .as_ref()
-                .and_then(|deployment| deployment.acp_session_blob_root.clone()),
-        );
+    let content_eraser = awaken_coordinator::data_subject_boundary::coordinator_content_eraser(
+        coordinator_stores.captured_content_eraser.clone(),
+        base.process
+            .deployment
+            .as_ref()
+            .and_then(|deployment| deployment.acp_session_blob_root.clone()),
+    );
     let resource_application = coordinator_stores.resources.clone();
     let resource_authorities = resource_application.authorities();
-    // Store startup resolves the installation Workspace exactly once after its
-    // canonical Session authority succeeds. Every adapter receives that value;
-    // this router never publishes or regenerates installation identity.
-    let platform_workspace = stores.platform_workspace.clone();
-    let brokered_client = brokered_inference_client(
-        cloud_models_enabled && role == config::Role::AllInOne,
-        remote_iam.as_ref(),
-        cloud_developer_key_file.as_deref(),
-        cloud_api_base_url.as_deref(),
-        &platform_workspace,
-        &local_client_instance_id(stores.workspace_root.as_deref()),
-    );
-    // Cloud-catalog startup decision table:
-    // | Cloud models | authenticated brokered client | effect |
-    // | disabled | absent | retain local/BYOK catalog; zero Cloud reads |
-    // | enabled | present | reconcile once into the authoritative catalog |
-    // | enabled | construction/admission failure | fail startup closed |
-    // Explicit refresh remains the same ConfigService command; this adds no
-    // timer, second catalog, or alternate discovery path.
-    if let Some(client) = brokered_client.as_ref() {
-        let catalog = stores
-            .control
-            .as_ref()
-            .expect("AllInOne Cloud model discovery owns Control stores")
-            .catalog
-            .clone();
-        let discovery = crate::brokered_catalog::BrokeredCatalogAdapter::new(
-            client.clone(),
-            stores.clock.clone(),
-        );
-        awaken_admin_config_api::reconcile_brokered_catalog(&discovery, catalog.as_ref())
-            .await
-            .map_err(|error| {
-                format!("initial Cloud model catalog reconciliation failed: {error}")
-            })?;
-    }
-    let local_credential_authority = (role == config::Role::AllInOne)
-        .then(|| {
-            stores.control.as_ref().map(|control| {
-                Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
-                    control.credentials.clone(),
-                    control.secrets.clone(),
-                    stores.clock.clone(),
-                ))
-            })
-        })
-        .flatten();
-    let mut credential_materializer = local_credential_authority.as_ref().map(|authority| {
-        awaken_credential_materializer::PinnedCredentialMaterializer::new(
-            authority.clone(),
-            stores.clock.clone(),
-        )
-    });
-    if let (Some(materializer), Some(resolver)) = (
-        credential_materializer.as_mut(),
-        process.credential_material_resolver,
-    ) {
-        *materializer = materializer
-            .clone()
-            .with_external_material_resolver(resolver);
-    }
-    let credential_refresh_factory = (role == config::Role::AllInOne)
-        .then(|| {
-            stores.control.as_ref().map(|control| {
-                Arc::new(awaken_control::VaultRefreshFactory::new(
-                    control.credentials.clone(),
-                    control.secrets.clone(),
-                    stores.clock.clone(),
-                ))
-                    as Arc<dyn awaken_credential_materializer::CredentialRefreshFactory>
-            })
-        })
-        .flatten();
-    let attempt_credential_deliveries = match (
-        local_credential_authority,
-        process
-            .managed_services
-            .credential_material_delivery
-            .clone(),
-    ) {
-        (
-            Some(authority),
-            Some(awaken_credential_contract::CredentialMaterialDelivery::RecipientEnvelope(issuer)),
-        ) => Some(Arc::new(
-            awaken_credential_vault::VaultAttemptCredentialDeliverySource::new(authority, issuer),
-        )
-            as Arc<
-                dyn awaken_credential_contract::AttemptCredentialDeliverySource,
-            >),
-        _ => None,
-    };
-    let mut web_search_providers = process
-        .web_search_providers
-        .unwrap_or_else(awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins);
-    if let Some(client) = brokered_client.as_ref()
-        && let Err(error) = client
-            .install_managed_web_routes(&mut web_search_providers)
-            .await
-    {
-        eprintln!("Awaken Cloud Web tools are unavailable: {error}");
-    }
-    let model_services = (role == config::Role::AllInOne).then(|| {
-        resolve_model_services(
-            model_supply,
-            &stores,
-            cloud_models_enabled,
-            process
-                .managed_services
-                .credential_material_delivery
-                .clone(),
-            worker_observations.clone(),
-        )
-    });
-    let mut model_wiring = match (&model_services, &credential_materializer) {
-        (Some(process), Some(credentials)) => runtime_model_wiring(
-            process.runtime.clone(),
-            credentials,
-            cloud_models_enabled,
-            brokered_client.as_ref(),
-        ),
-        (None, None) => RuntimeModelWiring {
-            executor: Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
-            model_ref: awaken_session_executor::UNCONFIGURED_MODEL_REF.to_string(),
-            materializer: None,
-        },
-        _ => unreachable!("Control model adapters and Control stores are configured together"),
-    };
-    if let Some(materializer) = process.inference_materializer {
-        model_wiring.materializer = Some(materializer);
-    }
-    let web_search_publication_resolver = process.web_search_publication_resolver.or_else(|| {
-        stores.control.as_ref().map(|control| {
-            Arc::new(
-                crate::web_search_publication::WebSearchPublicationResolver::new(
-                    web_search_providers.clone(),
-                    control.credentials.clone(),
-                    stores.clock.clone(),
-                ),
-            ) as Arc<dyn awaken_config_service::PluginPublicationResolver>
-        })
-    });
-    let deployment_iam = iam.clone();
-    let deployment_remote_iam = remote_iam.clone();
-    let live_runtime_capabilities = stores.control.as_ref().map(|control| {
-        Arc::new(LiveRuntimeCapabilities {
-            initial: process.local_acp_observations.clone(),
-            workers: worker_observations.clone(),
-            credentials: control.credentials.clone(),
-            workspace: platform_workspace.clone(),
-            clock: stores.clock.clone(),
-        })
-    });
-    let environment_authoring = match role {
+    let resource_registry = resource_authorities.resource_registry();
+    Ok(DeploymentAndResources {
+        deployment_application,
+        projection_refresh,
+        content_eraser,
+        resource_application,
+        resource_authorities,
+        resource_registry,
+    })
+}
+
+/// Control owns this complete component. Standalone Control and AllInOne
+/// supply different process adapters but call the same domain builder;
+/// Coordinator never constructs ConfigService or a Control router.
+async fn assemble_control_component(
+    base: &ProcessBase,
+    resources: &DeploymentAndResources,
+    cloud: &CloudPlane,
+    local_browser_auth: Option<awaken_control::LocalBrowserAuth>,
+) -> Option<awaken_control::ControlComponent> {
+    let environment_authoring = match base.role {
         config::Role::AllInOne => {
-            let control = stores
+            let control = base
+                .stores
                 .control
                 .as_ref()
                 .expect("AllInOne owns Control Environment stores");
             let application =
                 Arc::new(awaken_environment_application::EnvironmentApplication::new(
                     control.environments.clone(),
-                    executable_environment_registrar,
+                    base.environments.registrar.clone(),
                     Some(control.sandbox_policies.clone()),
                 ));
             let state = Arc::new(awaken_protocol_managed::EnvironmentAuthoringState::new(
@@ -348,91 +299,95 @@ pub(super) async fn prepare_runtime_routers(
         config::Role::Coordinator => None,
         config::Role::Control | config::Role::Worker => unreachable!(),
     };
-
-    // Control owns this complete component. Standalone Control and AllInOne
-    // supply different process adapters but call the same domain builder;
-    // Coordinator never constructs ConfigService or a Control router.
-    let control_component = match role {
-        config::Role::AllInOne => Some(
-            control_component_for_process(
-                &stores,
-                &process.service_lifecycle,
-                &platform_workspace,
-                &org_id,
-                enrollment_signing_key,
-                executable_agent_registrar,
-                Some(agent_archive_cascade),
-                model_services
-                    .as_ref()
-                    .expect("AllInOne configures model publication")
-                    .publication_resolver
-                    .clone(),
-                web_search_publication_resolver
-                    .expect("AllInOne requires a Web publication resolver"),
-                &web_search_providers,
-                brokered_client.clone(),
-                injected_brokered_catalog,
-                model_capabilities,
-                role.mounts_managed_runtime(),
-                &process.local_acp_observations,
-                live_runtime_capabilities
-                    .clone()
-                    .expect("AllInOne configures Control runtime capabilities"),
-                Some(Arc::new(awaken_control::HostResourceInventory::new(
-                    resource_authorities.resource_registry(),
-                    resource_authorities.skill_store(),
-                ))),
-                environment_authoring
-                    .as_ref()
-                    .expect("AllInOne owns Environment authoring")
-                    .application(),
-                environment_authoring
-                    .as_ref()
-                    .expect("AllInOne owns Environment authoring")
-                    .application(),
-                awaken_protocol_managed::environment_authoring_router(
-                    environment_authoring
+    match base.role {
+        config::Role::AllInOne => {
+            let authoring = environment_authoring
+                .as_ref()
+                .expect("AllInOne owns Environment authoring");
+            Some(
+                control_component_for_process(
+                    &base.stores,
+                    &base.process.service_lifecycle,
+                    &base.stores.platform_workspace,
+                    &base.org_id,
+                    base.enrollment_signing_key,
+                    base.agents.registrar.clone(),
+                    Some(resources.deployment_application.clone()
+                        as Arc<dyn awaken_deployment_contract::AgentArchiveCascade>),
+                    cloud
+                        .model_services
+                        .as_ref()
+                        .expect("AllInOne configures model publication")
+                        .publication_resolver
+                        .clone(),
+                    cloud
+                        .web_search_publication_resolver
                         .clone()
-                        .expect("AllInOne owns Environment authoring"),
+                        .expect("AllInOne requires a Web publication resolver"),
+                    &cloud.web_search_providers,
+                    cloud.brokered_client.clone(),
+                    base.process.brokered_catalog.clone(),
+                    base.process.model_supply.clone(),
+                    base.role.mounts_managed_runtime(),
+                    &base.process.local_acp_observations,
+                    cloud
+                        .live_runtime_capabilities
+                        .clone()
+                        .expect("AllInOne configures Control runtime capabilities"),
+                    Some(Arc::new(awaken_control::HostResourceInventory::new(
+                        resources.resource_authorities.resource_registry(),
+                        resources.resource_authorities.skill_store(),
+                    ))),
+                    authoring.application(),
+                    authoring.application(),
+                    awaken_protocol_managed::environment_authoring_router(authoring.clone()).merge(
+                        awaken_protocol_awaken::environment_extensions_router(
+                            authoring.application(),
+                            authoring.sandbox_policy_store(),
+                        ),
+                    ),
+                    base.process.managed_services.tunnel_application.clone(),
+                    base.process.managed_services.inference_geo_policy.clone(),
+                    Some(base.managed_rate_limiter.clone()),
+                    base.process
+                        .managed_services
+                        .credential_material_delivery
+                        .clone(),
+                    resources.content_eraser.clone(),
+                    base.process.content_capture_ceiling,
+                    base.iam.clone(),
+                    local_browser_auth,
+                    base.remote_iam.clone(),
+                    base.process.cloud_login.clone(),
                 )
-                .merge(awaken_protocol_awaken::environment_extensions_router(
-                    environment_authoring
-                        .as_ref()
-                        .expect("AllInOne owns Environment authoring")
-                        .application(),
-                    environment_authoring
-                        .as_ref()
-                        .expect("AllInOne owns Environment authoring")
-                        .sandbox_policy_store(),
-                )),
-                process.managed_services.tunnel_application.clone(),
-                process.managed_services.inference_geo_policy.clone(),
-                Some(managed_rate_limiter.clone()),
-                process
-                    .managed_services
-                    .credential_material_delivery
-                    .clone(),
-                coordinator_content_eraser,
-                content_capture_ceiling,
-                iam.clone(),
-                local_browser_auth,
-                remote_iam.clone(),
-                cloud_login,
+                .await,
             )
-            .await,
-        ),
+        }
         config::Role::Coordinator => None,
         config::Role::Control | config::Role::Worker => {
             unreachable!("runtime process accepts only AllInOne or Coordinator")
         }
-    };
-    let ProcessStores {
-        workspace_root: _,
-        platform_workspace: _,
-        control: control_stores,
-        coordinator,
-        clock,
-    } = stores;
+    }
+}
+
+/// The Coordinator-owned stores an execution process builds over: Session,
+/// application capabilities, Dream, extraction work and the Environment work
+/// queue. They share the exact durable store opened by process startup; split
+/// Control neither mirrors it nor owns a fallback token directory.
+struct ExecutionStores {
+    sessions: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    application_access: Arc<awaken_coordinator::application_access_store::ApplicationAccessStore>,
+    dream_process_store: Arc<dyn awaken_session_dream_contract::DreamProcessStore>,
+    capture_sink: Arc<dyn awaken_runtime_contract::CaptureSink>,
+    environment_execution:
+        Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
+    memory_extractions: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
+}
+
+async fn assemble_execution_stores(
+    base: &mut ProcessBase,
+    resources: &DeploymentAndResources,
+) -> Result<ExecutionStores, String> {
     let CoordinatorStores {
         resources: _,
         sessions,
@@ -443,138 +398,160 @@ pub(super) async fn prepare_runtime_routers(
         capture_sink,
         captured_content_eraser: _,
         environment_work,
-    } = coordinator.expect("Managed Execution role requires Coordinator stores");
+    } = base
+        .stores
+        .coordinator
+        .take()
+        .expect("Managed Execution role requires Coordinator stores");
     let environment_execution =
         awaken_environment_execution_application::EnvironmentExecutionApplication::new(
             environment_work,
-            executable_environment_catalog,
+            base.environments.catalog.clone(),
         );
-    let environment_execution = match cloud_native_credential_realization {
+    let environment_execution = match base.process.cloud_native_credential_realization.take() {
         Some(profile) => environment_execution.with_cloud_native_credential_realization(profile),
         None => environment_execution,
     };
-    let environment_execution = match executable_environment_image_builds.as_ref() {
+    let environment_execution = match base.environments.image_builds.as_ref() {
         Some(builds) => environment_execution.with_image_readiness(builds.clone()),
         None => environment_execution,
     };
-    let environment_execution = Arc::new(environment_execution);
-    let resource_registry = resource_authorities.resource_registry();
     let indexed_memory_extractions =
         Arc::new(awaken_coordinator::ReferenceIndexedMemoryExtractions::new(
             memory_extractions,
-            resource_authorities.reclamation(),
+            resources.resource_authorities.reclamation(),
         ));
     indexed_memory_extractions
         .synchronize_recoverable_references()
         .await
         .map_err(|error| format!("restore Memory extraction references: {error}"))?;
-    let memory_extractions: Arc<dyn awaken_ext_memory::MemoryExtractionRepository> =
-        indexed_memory_extractions;
-    let (
-        control,
-        mcp_export,
-        reconciler,
-        admin_execs,
-        credential_source,
-        repository_credentials,
-        deployment_audit_plane,
-        local_webhook_stores,
-        capture_policy,
-        registration_supervisor,
-        local_vault_state,
-    ) = match control_component {
+    Ok(ExecutionStores {
+        sessions,
+        application_access,
+        dream_process_store,
+        capture_sink,
+        environment_execution: Arc::new(environment_execution),
+        memory_extractions: indexed_memory_extractions,
+    })
+}
+
+/// The Control component's contribution to the execution process. A split
+/// Coordinator has none of Control's routers and reaches its services over the
+/// authenticated private boundary instead.
+struct ControlSurface {
+    router: Router,
+    mcp_export: Router,
+    reconciler: Option<Arc<dyn awaken_config_service::PublicationBindingReconciler>>,
+    admin_execs: Vec<Arc<dyn awaken_tool_contract::RawTool>>,
+    credential_source: Arc<dyn awaken_session_application::SessionCredentialSource>,
+    repository_credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
+    audit_plane: ManagementAuditPlane,
+    webhook_stores: Option<(
+        Arc<dyn awaken_config_resolver::WebhookStore>,
+        Arc<dyn awaken_credential_vault::SecretStore>,
+    )>,
+    capture_policy: awaken_data_governance_contract::CapturePolicySources,
+    registration_supervisor: Option<Arc<awaken_control::StaticRegistrationSupervisor>>,
+    vault_state: Option<Arc<awaken_protocol_managed::VaultState>>,
+}
+
+fn assemble_control_surface(
+    base: &mut ProcessBase,
+    component: Option<awaken_control::ControlComponent>,
+) -> Result<ControlSurface, String> {
+    match component {
         Some(component) => {
-            let control_stores = control_stores
+            let control_stores = base
+                .stores
+                .control
                 .as_ref()
                 .expect("AllInOne Control component has Control stores");
             let mcp_export = awaken_coordinator::mcp_export::router(
                 awaken_admin_assistant::admin_tool_descriptors(),
                 component.admin_tools.clone(),
-                mcp_bearer_token,
+                base.process.mcp_bearer_token.take(),
             )?;
-            (
-                component.router,
+            Ok(ControlSurface {
+                router: component.router,
                 mcp_export,
-                Some(component.publication_reconciler),
-                component.admin_tools,
-                component.vault_state.clone()
+                reconciler: Some(component.publication_reconciler),
+                admin_execs: component.admin_tools,
+                credential_source: component.vault_state.clone()
                     as Arc<dyn awaken_session_application::SessionCredentialSource>,
-                component.repository_credentials.clone(),
-                component.management_audit,
-                Some((
+                repository_credentials: component.repository_credentials.clone(),
+                audit_plane: component.management_audit,
+                webhook_stores: Some((
                     control_stores.webhooks.clone(),
                     control_stores.secrets.clone(),
                 )),
-                component.capture_policy,
-                Some(component.registration_supervisor),
-                Some(component.vault_state),
-            )
+                capture_policy: component.capture_policy,
+                registration_supervisor: Some(component.registration_supervisor),
+                vault_state: Some(component.vault_state),
+            })
         }
         None => {
-            let services = process
+            let services = base
+                .process
                 .control_service
                 .clone()
                 .expect("split Coordinator requires Control services");
-            (
-                Router::new(),
-                Router::new(),
-                None,
-                Vec::new(),
-                services.credentials,
-                services.repository_credentials,
-                ManagementAuditPlane::from_repository(services.audit),
-                None,
-                services.capture_policy,
-                None,
-                None,
-            )
+            Ok(ControlSurface {
+                router: Router::new(),
+                mcp_export: Router::new(),
+                reconciler: None,
+                admin_execs: Vec::new(),
+                credential_source: services.credentials,
+                repository_credentials: services.repository_credentials,
+                audit_plane: ManagementAuditPlane::from_repository(services.audit),
+                webhook_stores: None,
+                capture_policy: services.capture_policy,
+                registration_supervisor: None,
+                vault_state: None,
+            })
         }
-    };
+    }
+}
 
-    // Only Coordinator and AllInOne can reach this point. Their one execution
-    // store group owns Session, application capabilities, Deployment/Run,
-    // Dream, extraction work and the lifecycle outbox. The application issuer
-    // and PEP share the exact durable store opened above; split Control neither
-    // mirrors it nor owns a fallback token directory.
-    let webhook_delivery: Arc<dyn awaken_session_application_contract::LifecycleFactDelivery> =
-        match local_webhook_stores {
-            Some((webhook_store, secrets)) => {
-                awaken_webhook::lifecycle::config_plane_lifecycle_delivery(
-                    Arc::new(
-                        awaken_control::webhook_authoring::ConfigPlaneSubscriptionSource::new(
-                            webhook_store,
-                            secrets,
-                        ),
-                    ),
-                    Some(org_id.clone()),
-                )
-            }
-            None => process
-                .control_service
-                .as_ref()
-                .expect("split Coordinator requires Control webhook delivery")
-                .webhooks
-                .clone(),
-        };
-    // The data plane: the host runs the server model, resolves a session's agent to its
-    // installed config, and carries the management tool executables so the reserved-scope
-    // assistant can call them. It shares the SAME skill store and Resource Registry the
-    // capability inventory reads, so a skill or memory store the host serves is exactly
-    // what the assistant enumerates, and identity survives a restart.
-    let runtime_authority = runtime_authority
+/// The execution Host and the Session persistence it records Environment
+/// bindings through.
+struct ExecutionHost {
+    host: Arc<awaken_session_executor::SharedHost>,
+    /// Consumed once by the Session application that shares these exact handles.
+    session_persistence: Option<awaken_session_application::SessionPersistence>,
+    artifact_fence: Option<Arc<awaken_coordinator::ClaimFencedArtifactPublisher>>,
+}
+
+/// The data plane: the host runs the server model, resolves a session's agent to its
+/// installed config, and carries the management tool executables so the reserved-scope
+/// assistant can call them. It shares the SAME skill store and Resource Registry the
+/// capability inventory reads, so a skill or memory store the host serves is exactly
+/// what the assistant enumerates, and identity survives a restart.
+async fn assemble_execution_host(
+    base: &mut ProcessBase,
+    resources: &DeploymentAndResources,
+    cloud: &mut CloudPlane,
+    control: &ControlSurface,
+    execution: &ExecutionStores,
+    customize_host: Option<Box<dyn FnOnce(HostDependencies) -> HostDependencies + Send>>,
+) -> Result<ExecutionHost, String> {
+    let clock = base.stores.clock.clone();
+    let runtime_authority = base
+        .runtime_authority
+        .take()
         .ok_or_else(|| "execution process requires its selected Runtime authority".to_string())?;
-    let local_dispatch = Some(runtime_authority.dispatch_store());
-    let session_persistence =
-        awaken_session_application::SessionPersistence::new(sessions.clone(), clock.clone());
-    let mut host_builder = match deployment {
+    let session_persistence = awaken_session_application::SessionPersistence::new(
+        execution.sessions.clone(),
+        clock.clone(),
+    );
+    let host_builder = match base.process.deployment.take() {
         Some(deployment) => HostDependencies::for_coordinator(
-            model_wiring.executor,
-            model_wiring.model_ref,
-            resource_application.file_content_source(),
-            resource_authorities.memory_repository(),
-            memory_extractions,
+            cloud.model_wiring.executor.clone(),
+            cloud.model_wiring.model_ref.clone(),
+            resources.resource_application.file_content_source(),
+            resources.resource_authorities.memory_repository(),
+            execution.memory_extractions.clone(),
             awaken_session_executor::HostProcess {
-                local_workspace: platform_workspace.clone(),
+                local_workspace: base.stores.platform_workspace.clone(),
                 deployment,
                 clock: clock.clone(),
             },
@@ -582,11 +559,11 @@ pub(super) async fn prepare_runtime_routers(
         ),
         #[cfg(any(test, feature = "test-support"))]
         None => HostDependencies::for_local_resources(
-            model_wiring.executor,
-            model_wiring.model_ref,
-            awaken_runtime_host_testkit::local_resource_ports(&resource_authorities),
-            memory_extractions,
-            platform_workspace.clone(),
+            cloud.model_wiring.executor.clone(),
+            cloud.model_wiring.model_ref.clone(),
+            awaken_runtime_host_testkit::local_resource_ports(&resources.resource_authorities),
+            execution.memory_extractions.clone(),
+            base.stores.platform_workspace.clone(),
             awaken_session_executor::DeploymentConfig::ephemeral(),
             runtime_authority.clone(),
         ),
@@ -595,49 +572,49 @@ pub(super) async fn prepare_runtime_routers(
     }
     .with_auxiliary_sandboxes(awaken_execution_composition::local_auxiliary_sandboxes())
     .with_environment_binding_sink(session_persistence.environment_binding_sink());
-    let artifact_publisher = resource_application.artifact_publisher();
-    let claim_fenced_artifact_publisher = local_dispatch.map(|dispatch| {
+    let local_dispatch = Some(runtime_authority.dispatch_store());
+    let artifact_publisher = resources.resource_application.artifact_publisher();
+    let artifact_fence = local_dispatch.map(|dispatch| {
         Arc::new(awaken_coordinator::ClaimFencedArtifactPublisher::new(
             artifact_publisher.clone(),
             dispatch,
             clock.clone(),
         ))
     });
-    let artifact_publisher =
-        claim_fenced_artifact_publisher
-            .as_ref()
-            .map_or(artifact_publisher, |publisher| {
-                publisher.clone()
-                    as Arc<
-                        dyn awaken_resource_contract::ArtifactPublisher<
-                                awaken_dispatch::ArtifactPublicationFence,
-                            >,
-                    >
-            });
-    host_builder = host_builder
+    let artifact_publisher = artifact_fence
+        .as_ref()
+        .map_or(artifact_publisher, |publisher| {
+            publisher.clone()
+                as Arc<
+                    dyn awaken_resource_contract::ArtifactPublisher<
+                            awaken_dispatch::ArtifactPublicationFence,
+                        >,
+                >
+        });
+    let mut host_builder = host_builder
         .with_artifact_publisher(artifact_publisher)
-        .with_skill_bundle_source(resource_application.skill_bundle_source())
-        .with_skill_catalog_application(resource_application.skill_catalog_application())
-        .with_web_search_provider_registry(web_search_providers)
+        .with_skill_bundle_source(resources.resource_application.skill_bundle_source())
+        .with_skill_catalog_application(resources.resource_application.skill_catalog_application())
+        .with_web_search_provider_registry(cloud.web_search_providers.clone())
         .with_acp_tool_exporter(Arc::new(awaken_protocol_mcp::SessionToolExporter))
         .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(
-            credential_materializer.clone(),
+            cloud.credential_materializer.clone(),
         ))
-        .with_agent_publications(executable_agent_catalog.clone())
-        .with_capture_sink(capture_sink)
-        .with_capture_policy_sources(capture_policy)
-        .with_admin_tools(admin_execs.clone());
-    if let Some(credentials) = credential_materializer.clone() {
+        .with_agent_publications(base.agents.catalog.clone())
+        .with_capture_sink(execution.capture_sink.clone())
+        .with_capture_policy_sources(control.capture_policy.clone())
+        .with_admin_tools(control.admin_execs.clone());
+    if let Some(credentials) = cloud.credential_materializer.clone() {
         host_builder = host_builder.with_credential_materializer(credentials);
     }
-    if let Some(materializer) = model_wiring.materializer {
+    if let Some(materializer) = cloud.model_wiring.materializer.take() {
         host_builder = host_builder.with_inference_materializer(materializer);
     }
     let host_builder = local_execution::prepare(
         host_builder,
-        session_execution_placement,
-        namespace_hand_path,
-        credential_materializer.clone(),
+        base.placement,
+        base.process.namespace_hand_path.take(),
+        cloud.credential_materializer.clone(),
     )
     .await?;
     // Last-mile backend wiring the standard process does not own, supplied
@@ -648,54 +625,64 @@ pub(super) async fn prepare_runtime_routers(
     });
     let repository_bindings = Arc::new(
         awaken_resource_application::RegistryRepositoryBindingVerifier::new(
-            resource_registry.clone(),
+            resources.resource_registry.clone(),
         ),
     );
-    let mut execution = awaken_session_executor::SessionExecutionDependencies::default()
-        .with_resource_validator(resource_registry.clone())
+    let mut session_execution = awaken_session_executor::SessionExecutionDependencies::default()
+        .with_resource_validator(resources.resource_registry.clone())
         .with_repository_binding_verifier(repository_bindings);
-    if let Some(factory) = credential_refresh_factory {
-        execution = execution.with_credential_refresh_factory(factory);
+    if let Some(factory) = cloud.credential_refresh_factory.take() {
+        session_execution = session_execution.with_credential_refresh_factory(factory);
     }
-    let host_builder = host_builder.with_session_execution(execution);
-    let host = (host_builder)
+    let host = host_builder
+        .with_session_execution(session_execution)
         .build()
         .map_err(|error| format!("construct execution Host: {error}"))?;
+    Ok(ExecutionHost {
+        host,
+        session_persistence: Some(session_persistence),
+        artifact_fence,
+    })
+}
+
+/// The Session application, the Managed state over it and the lifecycle
+/// delivery they share.
+struct SessionPlane {
+    session_application: Arc<awaken_session_application::SessionApplication>,
+    managed_state: Arc<ManagedState>,
+    lifecycle_delivery: awaken_coordinator::PreparedManagedLifecycleDelivery,
+    event_batch_cutover_validation:
+        Arc<awaken_session_application::SessionEventBatchCutoverValidationSource>,
+}
+
+fn assemble_session_plane(
+    base: &mut ProcessBase,
+    resources: &DeploymentAndResources,
+    cloud: &CloudPlane,
+    control: &mut ControlSurface,
+    execution: &ExecutionStores,
+    host: &mut ExecutionHost,
+) -> Result<SessionPlane, String> {
+    let webhook_delivery = lifecycle_webhook_delivery(base, control.webhook_stores.take());
     // The canonical Coordinator component owns Runtime background drain.
     // This process does not register a second drain for the same Host.
-    let resource_reclaimer = Arc::new(
-        awaken_resource_reclaimer::ResourceReclaimer::new(
-            format!("awaken-resource-reclaimer:{}", std::process::id()),
-            30_000,
-            resource_authorities.reclamation(),
-            resource_application.physical_cleanup(),
-        )
-        .expect("construct resource reclaimer")
-        .with_preparation(resource_application.purge_preparation())
-        .with_guard(resource_application.lifecycle_guard())
-        .with_guard(Arc::new(
-            awaken_session_application::SessionResourcePurgeGuard::new(
-                sessions.clone(),
-                resource_authorities.file_catalog(),
-            ),
-        )),
-    );
-    let reclamation_clock = resource_authorities.clock();
-    let managed_host = Arc::new(ManagedHost::new(host.clone()));
+    let managed_host = Arc::new(ManagedHost::new(host.host.clone()));
     let mut session_application =
         awaken_session_application::SessionApplication::new_with_configuration(
             managed_host.clone(),
             managed_host.clone(),
-            session_persistence,
-            environment_execution.clone(),
+            host.session_persistence
+                .take()
+                .expect("Session persistence is consumed once by the Session application"),
+            execution.environment_execution.clone(),
             awaken_session_application::SessionApplicationConfiguration {
-                execution_placement: session_execution_placement,
-                local_realization_owner: host.dispatch_owner().to_string(),
+                execution_placement: base.placement,
+                local_realization_owner: host.host.dispatch_owner().to_string(),
                 ..Default::default()
             },
         );
-    session_application.set_credential_source(credential_source);
-    if let Some(vault_state) = local_vault_state.as_ref() {
+    session_application.set_credential_source(control.credential_source.clone());
+    if let Some(vault_state) = control.vault_state.as_ref() {
         // AllInOne owns the Vault authority locally, so repository credentials
         // supplied through the Managed Sessions API must enter through that
         // same authority.  Merely installing it as a read source makes the
@@ -703,32 +690,108 @@ pub(super) async fn prepare_runtime_routers(
         // create/update request at the product router.
         session_application.set_credential_material_ingress(vault_state.clone());
     }
-    session_application.set_resource_registry(resource_registry.clone());
-    session_application.set_resource_purge_scheduler(resource_application.purge_scheduler());
-    session_application.set_resource_reference_authority(
-        resource_authorities.reclamation(),
-        resource_authorities.file_catalog(),
-    );
-    if let Some(refresh) = executable_projection_refresh.clone() {
+    configure_session_resources(&mut session_application, resources);
+    if let Some(refresh) = resources.projection_refresh.clone() {
         session_application
             .set_executable_projection_refresh(refresh)
             .expect("executable projection refresh binds once before Session sharing");
     }
     // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
     // published agent's model sees the authoritative config-plane truth (M2).
-    session_application.set_config_source(executable_agent_catalog.clone());
-    if let Some(model_services) = &model_services {
+    session_application.set_config_source(base.agents.catalog.clone());
+    if let Some(model_services) = &cloud.model_services {
         session_application.set_model_publication_resolver(Arc::new(
             awaken_config_service::ConfigSessionModelPublicationResolver::new(
                 model_services.publication_resolver.clone(),
             ),
         ));
     }
-    if let Some(provider) = process.managed_services.list_price_provider.clone() {
+    if let Some(provider) = base.process.managed_services.list_price_provider.clone() {
         session_application.set_managed_list_price_provider(provider);
     }
     let session_application = Arc::new(session_application);
-    if let Some(builds) = executable_environment_image_builds.as_ref() {
+    bind_session_lifecycle_hooks(base, host, &session_application)?;
+    let event_batch_cutover_validation =
+        session_application.session_event_batch_cutover_validation_source();
+    install_managed_agent_coordination(&host.host, &managed_host, &session_application)
+        .expect("Managed Session coordination application binds before dispatch starts");
+    let mut managed_state = ManagedState::from_application(
+        session_application.clone(),
+        execution.environment_execution.clone(),
+    );
+    if let Some(policy) = base.process.managed_services.inference_geo_policy.clone() {
+        managed_state = managed_state.with_inference_geo_policy(policy);
+    }
+    let managed_state = Arc::new(managed_state);
+    let lifecycle_delivery = awaken_coordinator::prepare_managed_lifecycle_delivery(
+        &managed_state,
+        &session_application,
+        Some(webhook_delivery),
+        Some(resources.deployment_application.as_ref()),
+    )
+    .expect("Managed lifecycle delivery binds before Coordinator serves traffic");
+    install_credential_rollout_target(base, control, &managed_state);
+    Ok(SessionPlane {
+        session_application,
+        managed_state,
+        lifecycle_delivery,
+        event_batch_cutover_validation,
+    })
+}
+
+/// Lifecycle facts reach webhooks through the Control-owned subscription
+/// source in AllInOne, and through the authenticated Control service when the
+/// Coordinator is split.
+fn lifecycle_webhook_delivery(
+    base: &ProcessBase,
+    local_stores: Option<(
+        Arc<dyn awaken_config_resolver::WebhookStore>,
+        Arc<dyn awaken_credential_vault::SecretStore>,
+    )>,
+) -> Arc<dyn awaken_session_application_contract::LifecycleFactDelivery> {
+    match local_stores {
+        Some((webhook_store, secrets)) => {
+            awaken_webhook::lifecycle::config_plane_lifecycle_delivery(
+                Arc::new(
+                    awaken_control::webhook_authoring::ConfigPlaneSubscriptionSource::new(
+                        webhook_store,
+                        secrets,
+                    ),
+                ),
+                Some(base.org_id.clone()),
+            )
+        }
+        None => base
+            .process
+            .control_service
+            .as_ref()
+            .expect("split Coordinator requires Control webhook delivery")
+            .webhooks
+            .clone(),
+    }
+}
+
+fn configure_session_resources(
+    session_application: &mut awaken_session_application::SessionApplication,
+    resources: &DeploymentAndResources,
+) {
+    session_application.set_resource_registry(resources.resource_registry.clone());
+    session_application
+        .set_resource_purge_scheduler(resources.resource_application.purge_scheduler());
+    session_application.set_resource_reference_authority(
+        resources.resource_authorities.reclamation(),
+        resources.resource_authorities.file_catalog(),
+    );
+}
+
+/// Wire the Environment image-build transition hint and the terminal Artifact
+/// authority to the shared Session application.
+fn bind_session_lifecycle_hooks(
+    base: &ProcessBase,
+    host: &ExecutionHost,
+    session_application: &Arc<awaken_session_application::SessionApplication>,
+) -> Result<(), String> {
+    if let Some(builds) = base.environments.image_builds.as_ref() {
         let application = session_application.clone();
         builds
             .install_transition_hint(Arc::new(move || {
@@ -740,32 +803,30 @@ pub(super) async fn prepare_runtime_routers(
         // one permit until the lifecycle supervisor begins waiting.
         session_application.request_lifecycle_reconciliation();
     }
-    if let Some(publisher) = claim_fenced_artifact_publisher {
+    if let Some(publisher) = host.artifact_fence.as_ref() {
         publisher
             .install_session_control(session_application.clone())
             .map_err(|error| format!("install terminal Artifact authority: {error}"))?;
     }
-    let event_batch_cutover_validation =
-        session_application.session_event_batch_cutover_validation_source();
-    install_managed_agent_coordination(&host, &managed_host, &session_application)
-        .expect("Managed Session coordination application binds before dispatch starts");
-    let mut managed_state =
-        ManagedState::from_application(session_application.clone(), environment_execution.clone());
-    if let Some(policy) = process.managed_services.inference_geo_policy.clone() {
-        managed_state = managed_state.with_inference_geo_policy(policy);
-    }
-    let managed_state = Arc::new(managed_state);
-    let lifecycle_delivery = awaken_coordinator::prepare_managed_lifecycle_delivery(
-        &managed_state,
-        &session_application,
-        Some(webhook_delivery),
-        Some(deployment_application.as_ref()),
-    )
-    .expect("Managed lifecycle delivery binds before Coordinator serves traffic");
-    if let Some(vault_state) = local_vault_state {
+    Ok(())
+}
+
+/// Credential rollout reaches the local Managed state, conjoined with any
+/// external target the hosted composition supplies.
+fn install_credential_rollout_target(
+    base: &mut ProcessBase,
+    control: &ControlSurface,
+    managed_state: &Arc<ManagedState>,
+) {
+    if let Some(vault_state) = control.vault_state.as_ref() {
         let local_target: Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget> =
             managed_state.clone();
-        let rollout_target = match process.managed_services.credential_rollout_target.clone() {
+        let rollout_target = match base
+            .process
+            .managed_services
+            .credential_rollout_target
+            .clone()
+        {
             Some(external) => {
                 managed_platform::conjunctive_credential_rollout_target(local_target, external)
             }
@@ -773,98 +834,151 @@ pub(super) async fn prepare_runtime_routers(
         };
         vault_state.set_rollout_target(rollout_target);
     }
-    // Workspace path addressing (ADR-0048 D3 / ADR-0051): wrap the fully-merged flat
-    // surface so a `/v1/workspaces/{ws}/…` request is captured, rewritten to its flat
-    // `/v1/…` form, and its `{ws}` stamped as the edge scope before it re-enters
-    // routing. Flat requests fall through unchanged. The same process returns the
-    // DreamApplication it mounted, so scheduling cannot target a parallel instance.
+}
+
+/// Build the Coordinator component over the shared Host and Session plane.
+async fn assemble_coordinator(
+    base: &mut ProcessBase,
+    resources: &DeploymentAndResources,
+    cloud: &mut CloudPlane,
+    control: &ControlSurface,
+    execution: &ExecutionStores,
+    host: &ExecutionHost,
+    session: SessionPlane,
+) -> Result<awaken_coordinator::CoordinatorComponent, String> {
     // AllInOne and split Coordinator expose the same rebuildable runtime
     // projection. Process co-location never grants the Coordinator a second,
     // direct read path into Control catalog or credential authority.
     let model_inventory: Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource> =
-        executable_agent_catalog.clone();
+        base.agents.catalog.clone();
     let deployment_session_launcher = Arc::new(
-        awaken_protocol_managed::ManagedDeploymentSessionLauncher::new(managed_state.clone())
-            .with_rate_limiter(managed_rate_limiter.clone()),
+        awaken_protocol_managed::ManagedDeploymentSessionLauncher::new(
+            session.managed_state.clone(),
+        )
+        .with_rate_limiter(base.managed_rate_limiter.clone()),
     );
-    let private_router = executable_agent_private_router
-        .merge(executable_environment_private_router)
-        .merge(worker_observation_private_router);
+    let private_router = base
+        .agents
+        .private_router
+        .clone()
+        .merge(base.environments.private_router.clone())
+        .merge(base.worker_observations.private_router.clone());
     let resource_management_router = resource_management_router(
-        &resource_application,
-        &resource_authorities,
-        repository_credentials,
+        &resources.resource_application,
+        &resources.resource_authorities,
+        control.repository_credentials.clone(),
     );
-    let coordinator = awaken_coordinator::build_coordinator_component(
-        awaken_coordinator::CoordinatorDependencies {
-            service_lifecycle: process.service_lifecycle.clone(),
-            lifecycle_delivery,
-            host,
-            session_application: session_application.clone(),
-            managed_state,
-            resource_registry,
-            resource_management_router,
-            memory_stores: resource_application.memory_stores(),
-            worker_file_application: resource_application.files(),
-            worker_skill_bundles: resource_application.skill_bundle_source(),
-            application_access,
-            ai_sdk_browser_cors,
-            model_inventory,
-            dream_process_store,
-            worker_authenticator: worker_authenticator.clone(),
-            worker_placement_policy,
-            worker_execution_bindings,
-            worker_execution_stops,
-            worker_relay_targets,
-            worker_create_broker_router: broker_router(
-                &worker_transport,
-                &worker_directory,
-                &clock,
-            ),
-            credential_deliveries: attempt_credential_deliveries,
-            repository_transport_authorizer: process.repository_transport_authorizer,
-            worker_directory: worker_directory.clone(),
-            deployment_application,
-            deployment_session_launcher,
-            executable_agents: executable_agent_catalog,
-            executable_projection_refresh,
-            environments: environment_execution,
-            sessions,
-            default_workspace: platform_workspace.clone(),
-            private_router,
-            service_authenticator: coordinator_service_authenticator,
-            relay_destination_authenticator: process.relay_destination_authenticator,
-            clock,
-        },
-    )
+    awaken_coordinator::build_coordinator_component(awaken_coordinator::CoordinatorDependencies {
+        service_lifecycle: base.process.service_lifecycle.clone(),
+        lifecycle_delivery: session.lifecycle_delivery,
+        host: host.host.clone(),
+        session_application: session.session_application,
+        managed_state: session.managed_state,
+        resource_registry: resources.resource_registry.clone(),
+        resource_management_router,
+        memory_stores: resources.resource_application.memory_stores(),
+        worker_file_application: resources.resource_application.files(),
+        worker_skill_bundles: resources.resource_application.skill_bundle_source(),
+        application_access: execution.application_access.clone(),
+        ai_sdk_browser_cors: std::mem::take(&mut base.process.ai_sdk_browser_cors),
+        model_inventory,
+        dream_process_store: execution.dream_process_store.clone(),
+        worker_authenticator: base.worker_transport.authenticator(),
+        worker_placement_policy: base.process.worker_placement_policy.take(),
+        worker_execution_bindings: base.worker_transport.binding_source(),
+        worker_execution_stops: base.worker_transport.stop_source(),
+        worker_relay_targets: base.worker_transport.relay_target_source(),
+        worker_create_broker_router: broker_router(
+            &base.worker_transport,
+            &base.worker_directory,
+            &base.stores.clock,
+        ),
+        credential_deliveries: cloud.attempt_credential_deliveries.take(),
+        repository_transport_authorizer: base.process.repository_transport_authorizer.take(),
+        worker_directory: base.worker_directory.clone(),
+        deployment_application: resources.deployment_application.clone(),
+        deployment_session_launcher,
+        executable_agents: base.agents.catalog.clone(),
+        executable_projection_refresh: resources.projection_refresh.clone(),
+        environments: execution.environment_execution.clone(),
+        sessions: execution.sessions.clone(),
+        default_workspace: base.stores.platform_workspace.clone(),
+        private_router,
+        service_authenticator: base.agents.service_authenticator.clone(),
+        relay_destination_authenticator: base.process.relay_destination_authenticator.take(),
+        clock: base.stores.clock.clone(),
+    })
     .await
-    .map_err(|error| format!("build Coordinator component: {error}"))?;
+    .map_err(|error| format!("build Coordinator component: {error}"))
+}
+
+/// Resource reclamation over the Resources authorities and the Session
+/// purge guard.
+fn resource_reclaimer(
+    resources: &DeploymentAndResources,
+    execution: &ExecutionStores,
+) -> Arc<awaken_resource_reclaimer::ResourceReclaimer> {
+    Arc::new(
+        awaken_resource_reclaimer::ResourceReclaimer::new(
+            format!("awaken-resource-reclaimer:{}", std::process::id()),
+            30_000,
+            resources.resource_authorities.reclamation(),
+            resources.resource_application.physical_cleanup(),
+        )
+        .expect("construct resource reclaimer")
+        .with_preparation(resources.resource_application.purge_preparation())
+        .with_guard(resources.resource_application.lifecycle_guard())
+        .with_guard(Arc::new(
+            awaken_session_application::SessionResourcePurgeGuard::new(
+                execution.sessions.clone(),
+                resources.resource_authorities.file_catalog(),
+            ),
+        )),
+    )
+}
+
+/// Protect the Coordinator surfaces with the process IAM/audit/admission edge,
+/// merge Control for AllInOne, wrap the flat surface in Workspace path
+/// addressing (ADR-0048 D3 / ADR-0051), and start reclamation.
+async fn finish_process_routers(
+    base: ProcessBase,
+    resources: &DeploymentAndResources,
+    execution: &ExecutionStores,
+    control: ControlSurface,
+    coordinator: awaken_coordinator::CoordinatorComponent,
+    event_batch_cutover_validation: Arc<
+        awaken_session_application::SessionEventBatchCutoverValidationSource,
+    >,
+) -> ProcessRouters {
+    let resource_reclaimer = resource_reclaimer(resources, execution);
+    let reclamation_clock = resources.resource_authorities.clock();
     let surfaces::ProtectedSurfaces { data, private } = surfaces::protect(
         coordinator,
-        deployment_iam,
-        deployment_remote_iam,
-        deployment_audit_plane,
-        managed_rate_limiter,
+        base.iam.clone(),
+        base.remote_iam.clone(),
+        control.audit_plane,
+        base.managed_rate_limiter.clone(),
     );
-    let (flat, mcp_export) = match role {
-        config::Role::AllInOne => (data.merge(control), mcp_export),
+    let (flat, mcp_export) = match base.role {
+        config::Role::AllInOne => (data.merge(control.router), control.mcp_export),
         config::Role::Coordinator => (data, Router::new()),
         config::Role::Control => unreachable!("Control returned before Coordinator process"),
         config::Role::Worker => unreachable!("Worker has its own process startup"),
     };
+    let worker_authenticator = base.worker_transport.authenticator();
     let routers = ProcessRouters::new(
         process_surface::finish(
             flat,
             mcp_export,
-            reconciler,
-            worker_observations,
-            platform_workspace,
+            control.reconciler,
+            base.worker_observations.source,
+            base.stores.platform_workspace,
         ),
         private,
-        registration_supervisor,
-        process.service_lifecycle,
+        control.registration_supervisor,
+        base.process.service_lifecycle,
         Some(event_batch_cutover_validation),
-        admin_execs,
+        control.admin_execs,
     )
     .with_worker_authenticator(worker_authenticator);
     reclamation::install(
@@ -873,5 +987,5 @@ pub(super) async fn prepare_runtime_routers(
         reclamation_clock,
     )
     .await;
-    Ok(routers)
+    routers
 }
