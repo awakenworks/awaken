@@ -1,7 +1,7 @@
-"""Modules inside a crate stay real boundaries; five ratchets that only shrink.
+"""Modules inside a crate stay real boundaries; six ratchets that only shrink.
 
 Plan 9.12 / W22. A module is a boundary only when it owns its state and the
-other modules reach it through a narrow surface. Five ways to lose that, each
+other modules reach it through a narrow surface. Six ways to lose that, each
 counted from production code (comments and `cfg(test)` code are not scanned)
 and held at or below `modularity_baseline.json`:
 
@@ -22,6 +22,11 @@ and held at or below `modularity_baseline.json`:
   lines (crates of layer `tooling` are not scanned). Today's are recorded by
   `crate::file::function` with their length and may only get shorter; a moved or
   renamed one renames its key in the same commit.
+* `crate-budget`: a crate being split (listed with a reason) may not grow in
+  production lines or in workspace dependencies while the split runs, so new
+  behavior lands in its future home instead. Dependencies are exact (a lower
+  count is recorded in the same commit); lines may float below the budget and
+  must be re-recorded once they fall `BUDGET_LINE_SLACK` or more below it.
 
 A count above its baseline is an error; a count below it is an error until the
 baseline is lowered in the same commit, so the file records the real state.
@@ -43,6 +48,7 @@ BASELINE = Path(__file__).with_name("modularity_baseline.json")
 MAX_IMPL_FILES = 5
 MAX_IMPL_METHODS = 60
 MAX_FUNCTION_LINES = 150
+BUDGET_LINE_SLACK = 1000
 
 _IMPL = re.compile(r"^\s*impl(?:<[^>{]*>)?\s+([A-Z][A-Za-z0-9_]*)(?:<[^>{]*>)?\s*(?:where[^{]*)?\{", re.M)
 _FN = re.compile(r"\bfn\s+[A-Za-z_]\w*")
@@ -178,6 +184,9 @@ def crate_measures(manifest_path: Path) -> dict:
     layer = _crate_boundary_workspace.load_manifest(manifest_path).get("package", {}).get("metadata", {}).get(
         "awaken", {}).get("layer", "")
     return {
+        "lines": sum(source.count("\n") for source in files.values()),
+        "deps": _crate_boundary_workspace.normal_dependency_names(
+            _crate_boundary_workspace.load_manifest(manifest_path)),
         "long-function": {} if layer == "tooling" else long_functions(files),
         "impl-spread": impl_spread(files),
         "super-glob": super_globs(files),
@@ -248,6 +257,25 @@ def modularity_errors(measures: dict[str, dict], baseline: dict) -> list[str]:
             elif lines < held:
                 errors.append(f"long-function: {key} is {lines} lines, below the baseline {held}; lower "
                               f"{BASELINE.name} in this commit")
+    for crate, held in sorted(baseline.get("crate-budget", {}).items()):
+        measure = measures.get(crate)
+        if measure is None:
+            errors.append(f"crate-budget: {crate} is no longer a crate; remove it from {BASELINE.name} in this commit")
+            continue
+        if not str(held.get("reason", "")).strip():
+            errors.append(f"crate-budget: baseline entry {crate} must name the split it guards")
+        lines, deps = measure.get("lines", 0), len(measure.get("workspace-deps", ()))
+        if lines > held["lines"]:
+            errors.append(f"crate-budget: {crate} grew to {lines} production lines, budget {held['lines']}; "
+                          "put the new behavior in the crate it is moving to")
+        elif lines <= held["lines"] - BUDGET_LINE_SLACK:
+            errors.append(f"crate-budget: {crate} is at {lines} production lines, {BUDGET_LINE_SLACK}+ below the "
+                          f"budget {held['lines']}; lower {BASELINE.name} in this commit")
+        if deps > held["deps"]:
+            errors.append(f"crate-budget: {crate} grew to {deps} workspace dependencies, budget {held['deps']}")
+        elif deps < held["deps"]:
+            errors.append(f"crate-budget: {crate} has {deps} workspace dependencies, below the budget "
+                          f"{held['deps']}; lower {BASELINE.name} in this commit")
     for key in sorted(set(long_held) - seen_long):
         errors.append(f"long-function: {key} is no longer over {MAX_FUNCTION_LINES} lines or no longer exists; "
                       f"remove it from {BASELINE.name} in this commit (or rename it if it moved)")
@@ -259,6 +287,8 @@ def check_all(crates: Path, baseline_path: Path = BASELINE) -> list[str]:
         _crate_boundary_workspace.package_name(_crate_boundary_workspace.load_manifest(path)): crate_measures(path)
         for path in _crate_boundary_workspace.crate_manifests(crates)
     }
+    for measure in measures.values():
+        measure["workspace-deps"] = frozenset(measure.get("deps", ())) & set(measures)
     return modularity_errors(measures, json.loads(baseline_path.read_text(encoding="utf-8")))
 
 
@@ -273,6 +303,7 @@ def selftest() -> None:
     | M5   | `crate::a` <-> `super::b` paths close a cycle of top modules | cycle size counted |
     | M6   | lint adopted while pending / missing while not pending       | error / error |
     | M7   | function over the limit: unrecorded / grew / shorter / equal / gone or under | error / error / error (lower) / accept / stale |
+    | M8   | budgeted crate: lines grow / float < slack / fall >= slack; deps grow / shrink / equal | error / accept / error (lower); error / error (lower) / accept |
     """
     spread = impl_spread({"a.rs": "impl Big { fn x(&self) {} fn y(&self) {} }", "b.rs": "impl<T> Big { fn z() {} }"})
     assert spread == {"Big": (2, 3)}, "impl-spread counting"
@@ -309,4 +340,15 @@ def selftest() -> None:
     assert "below the baseline" in modularity_errors({"c": measure(long={"a.rs::big": 190})}, held)[0], "M7 shorter"
     assert modularity_errors({"c": measure(long={"a.rs::big": 200})}, held) == [], "M7 equal"
     assert "no longer over" in modularity_errors({"c": measure()}, held)[0], "M7 gone"
+    budget = {"crate-budget": {"c": {"lines": 5000, "deps": 3, "reason": "split"}}}
+
+    def sized(lines, deps):
+        return {"c": {**measure(), "lines": lines, "workspace-deps": frozenset(f"d{i}" for i in range(deps))}}
+
+    assert modularity_errors(sized(5000, 3), budget) == [], "M8 equal"
+    assert "grew to 5001" in modularity_errors(sized(5001, 3), budget)[0], "M8 lines grow"
+    assert modularity_errors(sized(5000 - BUDGET_LINE_SLACK + 1, 3), budget) == [], "M8 float"
+    assert "lower" in modularity_errors(sized(5000 - BUDGET_LINE_SLACK, 3), budget)[0], "M8 fall"
+    assert "workspace dependencies, budget" in modularity_errors(sized(5000, 4), budget)[0], "M8 deps grow"
+    assert "below the budget" in modularity_errors(sized(5000, 2), budget)[0], "M8 deps shrink"
     print("_modularity_fitness selftest: the decision tables hold")
