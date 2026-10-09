@@ -14,6 +14,32 @@
 
 pub use awaken_dispatch_contract::dispatch::*;
 
+// SQL projection of the one Thread-peer exclusion rule. SQLite and PostgreSQL
+// use these exact expressions inside their existing transactions; adapter lock
+// and clock ownership are unchanged. Cancellation excludes only Running peers,
+// while ordinary claims also exclude Awaiting peers, always excluding the
+// candidate itself. The ControlDispatch conformance decision table owns the
+// executable assertions rather than matching SQL strings in another test.
+#[cfg(feature = "durable")]
+pub(crate) fn thread_available_for_claim(prefix: &str) -> String {
+    let cancellation_available = no_running_peer(prefix);
+    format!(
+        "((d.cancel_requested = 1 AND {cancellation_available}) \
+         OR (d.cancel_requested = 0 AND NOT EXISTS (SELECT 1 FROM {prefix}_dispatch r \
+         WHERE r.thread_id = d.thread_id AND r.run_id <> d.run_id \
+         AND r.status IN ('running', 'reservation_running', 'awaiting'))))"
+    )
+}
+
+#[cfg(feature = "durable")]
+pub(crate) fn no_running_peer(prefix: &str) -> String {
+    format!(
+        "NOT EXISTS (SELECT 1 FROM {prefix}_dispatch r \
+         WHERE r.thread_id = d.thread_id AND r.run_id <> d.run_id \
+         AND r.status IN ('running', 'reservation_running'))"
+    )
+}
+
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 pub(crate) fn verify_physical_attempt_binding(
     transition: awaken_dispatch_contract::PhysicalAttemptTransition,

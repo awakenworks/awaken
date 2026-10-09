@@ -39,7 +39,7 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 # core migrator (schema) is shared; each backend pulls its own runner.
 awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"], optional = true }
 awaken-sqlite-pool = { workspace = true, optional = true }
-awaken-sql-storage = { workspace = true, optional = true }
+awaken-sql-storage.workspace = true
 object_store = { version = "0.14", features = ["aws", "gcp"], optional = true }
 futures = { version = "0.3", optional = true }
 
@@ -48,7 +48,7 @@ futures = { version = "0.3", optional = true }
 test-support = []
 # Postgres bytea backend (idempotent INSERT ... ON CONFLICT). Compile-verified;
 # running needs a database.
-postgres = ["dep:awaken-sql-storage", "dep:sqlx", "dep:awaken-scoped-migration", "awaken-sql-storage/postgres"]
+postgres = ["dep:sqlx", "dep:awaken-scoped-migration", "awaken-sql-storage/postgres"]
 # SQLite BLOB backend (`sqlite::SqliteFileStore`) over the same `file_store` scope.
 sqlite = ["dep:sqlx", "dep:awaken-scoped-migration", "dep:awaken-sqlite-pool"]
 # Object-store backend (S3-compatible/GCS via `object_store`; key = content id).
