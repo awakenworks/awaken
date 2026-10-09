@@ -16,9 +16,9 @@ use awaken_managed_session_events::{AnchoredEvent, EventAnchor, OrderIndex, posi
 use std::collections::HashMap;
 
 pub(super) struct CanonicalizationEvidence<'a> {
-    pub(super) outcome_projections: &'a [AnchoredOutcomeProjection],
+    pub(super) outcome_projections: &'a [awaken_managed_session_events::CommittedOutcome],
     pub(super) index: &'a OrderIndex<'a>,
-    pub(super) coordination: &'a awaken_managed_session_events::CommittedProjection,
+    pub(super) coordination: &'a awaken_managed_session_events::CoordinationEvents,
 }
 
 /// The committed identity behind one projected event, decoded from the
@@ -97,9 +97,8 @@ impl ManagedState {
             };
             for iteration in &report.iterations {
                 let Some(source_commit_cursor) = projection
-                    .evaluation_commit_cursors
-                    .get(&iteration.iteration)
-                    .copied()
+                    .as_anchored()
+                    .evaluation_commit_cursor(iteration.iteration)
                 else {
                     continue;
                 };

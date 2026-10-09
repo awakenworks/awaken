@@ -121,12 +121,60 @@ pub fn historical_message_boundaries<'a>(
         .collect()
 }
 
+/// One accepted Awaiting target that no committed ToolUse Message had made
+/// public as of its pause. It is published as a tool use qualified by its Run;
+/// a Message committed later cannot rekey that already-issued call.
+///
+/// Consumers: the protocol adapter's synthetic tool renderer and the
+/// committed coordination plan, which select from the same list.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SyntheticAwaitingTool {
+    pub thread_id: String,
+    pub run_id: awaken_agent_contract::agent::run::Id,
+    pub pending: Pending,
+}
+
+/// Every accepted Awaiting target that needs its synthetic tool, in lifecycle
+/// commit order. A target whose Thread has no committed snapshot, or whose
+/// snapshot's Message cursors are not aligned, fails the candidate.
+pub fn synthetic_awaiting_tools<'a>(
+    lifecycle_events: &[RunLifecycleEvent],
+    historical_pending: &HashMap<RunLifecycleCursor, Pending>,
+    snapshots: impl Fn(&str) -> Option<&'a RunRecoverySnapshot>,
+) -> Result<Vec<SyntheticAwaitingTool>, ProjectionError> {
+    let mut cursors = historical_pending.keys().copied().collect::<Vec<_>>();
+    cursors.sort_unstable();
+    let mut tools = Vec::new();
+    for cursor in cursors {
+        let pending = &historical_pending[&cursor];
+        let Some(lifecycle) = lifecycle_events.iter().find(|event| event.cursor == cursor) else {
+            continue;
+        };
+        let snapshot = snapshots(&lifecycle.thread_id.0).ok_or_else(|| {
+            ProjectionError::corrupt("accepted Awaiting target has no committed Thread snapshot")
+        })?;
+        if snapshot.messages.len() != snapshot.message_commit_cursors.len() {
+            return Err(ProjectionError::corrupt(
+                "committed ToolUse Message cursors are not aligned",
+            ));
+        }
+        if needs_synthetic_awaiting_tool(snapshot, lifecycle, pending) {
+            tools.push(SyntheticAwaitingTool {
+                thread_id: lifecycle.thread_id.0.clone(),
+                run_id: lifecycle.run_id.clone(),
+                pending: pending.clone(),
+            });
+        }
+    }
+    Ok(tools)
+}
+
 /// An Awaiting audit needs its Run-qualified synthetic ToolUse only when no
 /// exact matching Assistant ToolUse had committed as of that audit. The
 /// protocol renderer and committed coordination plan share this predicate so
 /// a later Message cannot rekey an already-issued call on either path.
 #[must_use]
-pub fn needs_synthetic_awaiting_tool(
+pub(crate) fn needs_synthetic_awaiting_tool(
     snapshot: &RunRecoverySnapshot,
     lifecycle: &RunLifecycleEvent,
     pending: &Pending,
@@ -417,5 +465,84 @@ mod tests {
                 "H1-H3 {changed:?}"
             );
         }
+    }
+
+    #[test]
+    fn synthetic_tool_is_selected_only_when_no_call_had_committed_by_its_pause() {
+        // Causes: C1 an accepted Awaiting target at commit 4 names `call`; C2 an
+        // Assistant ToolUse for that exact call committed at 3 (before the
+        // pause) or at 6 (after it); C3 a second pause at 2 targets `early`
+        // with no ToolUse; C4 the paused Thread has no snapshot or its Message
+        // cursors are misaligned. Effects: E1 a target with no call committed
+        // by its pause is selected, Run-qualified; E2 a call committed by then
+        // makes the target ordinary; E3 a later Message cannot rekey the
+        // already-issued synthetic call; E4 selection follows commit order; E5
+        // C4 fails the candidate. Rules: R1=C1=>E1; R2=C1+C2(3)=>E2;
+        // R3=C1+C2(6)=>E3; R4=C1+C3=>E4; R5=C4=>E5.
+        let pending = |call: &str| Pending {
+            tool_use_id: call.into(),
+            name: "write".into(),
+            input: serde_json::json!({"path": call}),
+            client_executed: false,
+        };
+        let lifecycle = [awaiting(2), awaiting(4)];
+        let targets = HashMap::from([
+            (lifecycle[1].cursor, pending("call")),
+            (lifecycle[0].cursor, pending("early")),
+        ]);
+        let call_message = Message::new(
+            awaken_agent_contract::agent::message::Id::assistant(
+                &awaken_agent_contract::RunId("run".into()),
+                0,
+            ),
+            Role::Assistant,
+            vec![ContentBlock::tool_use(
+                "call",
+                "write",
+                serde_json::json!({"path": "call"}),
+            )],
+        );
+        let with_call = |cursor: Option<u64>| {
+            let mut snapshot = audit_prefix(Vec::new());
+            if let Some(cursor) = cursor {
+                snapshot.messages.push(call_message.clone());
+                snapshot.message_commit_cursors.push(cursor);
+            }
+            snapshot
+        };
+        let selected = |snapshot: &RunRecoverySnapshot| {
+            synthetic_awaiting_tools(&lifecycle, &targets, |thread| {
+                (thread == "thread").then_some(snapshot)
+            })
+            .map(|tools| {
+                tools
+                    .into_iter()
+                    .map(|tool| (tool.thread_id, tool.run_id.0, tool.pending.tool_use_id))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let run = |call: &str| ("thread".to_string(), "run".to_string(), call.to_string());
+        assert_eq!(
+            selected(&with_call(None)).unwrap(),
+            vec![run("early"), run("call")],
+            "R1/R4 E1+E4"
+        );
+        assert_eq!(
+            selected(&with_call(Some(3))).unwrap(),
+            vec![run("early")],
+            "R2/E2"
+        );
+        assert_eq!(
+            selected(&with_call(Some(6))).unwrap(),
+            vec![run("early"), run("call")],
+            "R3/E3"
+        );
+        let mut misaligned = with_call(Some(3));
+        misaligned.message_commit_cursors.clear();
+        assert!(selected(&misaligned).is_err(), "R5/E5 misaligned");
+        assert!(
+            synthetic_awaiting_tools(&lifecycle, &targets, |_| None).is_err(),
+            "R5/E5 missing snapshot"
+        );
     }
 }

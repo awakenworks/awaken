@@ -42,6 +42,13 @@ pub enum SessionEventKind {
     SessionTerminated,
     /// The usage one admitted interval closed with.
     IntervalUsage(crate::IntervalUsage),
+    /// The usage a budget reach was counted at, its rounded public list cost
+    /// and the cap it crossed.
+    BudgetReachUsage {
+        usage: awaken_session_budget_contract::SessionUsage,
+        list_cost_minor: Option<u64>,
+        max_list_cost_minor: u64,
+    },
     ContextCompacted,
     ModelRequestStart,
     ModelRequestEnd {
@@ -61,6 +68,36 @@ pub enum SessionEventKind {
     ActivationFailed {
         message: String,
     },
+    /// One evaluation iteration of an Outcome began grading.
+    OutcomeEvaluationStart {
+        outcome_id: String,
+        iteration: u32,
+    },
+    /// The iteration's grading is in progress.
+    OutcomeEvaluationOngoing {
+        outcome_id: String,
+        iteration: u32,
+    },
+    /// The iteration was graded.
+    OutcomeEvaluationEnd(Box<OutcomeVerdict>),
+    /// The Outcome aggregate committed an infrastructure failure.
+    OutcomeError {
+        code: String,
+        message: String,
+    },
+}
+
+/// What one graded Outcome evaluation iteration concluded. `start` names the
+/// iteration's start fact; `usage` is what grading cost, absent when the round
+/// was never graded or its Run recorded none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutcomeVerdict {
+    pub outcome_id: String,
+    pub iteration: u32,
+    pub start: EventIdentity,
+    pub result: String,
+    pub explanation: String,
+    pub usage: Option<TokenUsage>,
 }
 
 impl DerivedSessionEvent {

@@ -20,11 +20,60 @@ fn child_agent_name(record: &SessionRecord, thread_id: &str) -> Result<String, S
         })
 }
 
+/// The single root/child Message pipeline: one occurrence classifier, one
+/// exact result-source resolver, and the existing wire encoder/qualifier.
+pub(super) fn project_committed_message(
+    record: &SessionRecord,
+    owner_thread_id: Option<&str>,
+    fold: &awaken_managed_session_events::MessageFold<'_>,
+    index: &awaken_managed_session_events::OrderIndex<'_>,
+    current_pending: Option<&Pending>,
+    transcript: &awaken_managed_session_events::CommittedTranscriptEvidence,
+) -> Result<
+    (
+        awaken_managed_session_events::CommittedMessageProjection,
+        Vec<ProjectedEvent>,
+    ),
+    StateError,
+> {
+    let message = fold.message;
+    let pending_history = fold.pending_history();
+    let tools = record.projected_tool_index_for(owner_thread_id);
+    let selected = transcript.project_message(
+        message,
+        &tools.sources,
+        fold.source_run_id.map(|run| run.0.as_str()),
+        &pending_history,
+        current_pending,
+    );
+    let sources = index
+        .tool_result_sources(owner_thread_id.unwrap_or(&record.session.id), message)
+        .map_err(projection_error)?;
+    let mut events = project_messages_with_mcp_ids(
+        std::slice::from_ref(&selected.message),
+        None,
+        &tools.all,
+        awaken_managed_session_events::ToolFamilies::for_result_sources(&sources),
+        transcript.advisor_blocks(),
+        &pending_history,
+    );
+    ManagedState::qualify_tool_projection(
+        record,
+        owner_thread_id,
+        std::slice::from_ref(&selected.message),
+        fold.source_run_id,
+        &sources,
+        &mut events,
+    )?;
+    Ok((selected, events))
+}
+
 impl ManagedState {
     pub(super) fn append_child_transcript_projection(
         &self,
         record: &mut SessionRecord,
         projection: ChildTranscriptProjection<'_>,
+        order_index: &awaken_managed_session_events::OrderIndex<'_>,
     ) -> Result<(), StateError> {
         let ChildTranscriptProjection {
             thread_id,
@@ -98,7 +147,14 @@ impl ManagedState {
         // occurrence classification is rebuilt once from the full committed
         // prefix, while stable Event ids make a partially classified source
         // Message safely revisitable without another cursor or registry.
-        let transcript_evidence = project::committed_transcript_evidence(messages, pending);
+        if steps.is_empty() {
+            return Ok(());
+        }
+        let transcript_evidence = order_index.transcript_evidence(thread_id).ok_or_else(|| {
+            StateError::Run(RunError::internal(
+                "child transcript has no committed prefix",
+            ))
+        })?;
         for step in steps {
             let fold = match step {
                 ChildTranscriptStep::Report {
@@ -125,31 +181,13 @@ impl ManagedState {
                 ChildTranscriptStep::Fold(fold) => fold,
             };
             let message = fold.message;
-            let pending_history = fold.pending_history();
-            let tool_index = record.projected_tool_index_for(Some(thread_id));
-            let selected = transcript_evidence.project_message(
-                message,
-                &tool_index.sources,
-                fold.source_run_id.map(|run_id| run_id.0.as_str()),
-                &pending_history,
-            );
-            // Only this Message's committed Awaiting boundaries classify its
-            // calls. The latest ticket must not synthesize a call in another
-            // historical Message merely because that Message had an old wait.
-            let mut projected = project_messages_with_mcp_ids(
-                std::slice::from_ref(&selected.message),
-                None,
-                &tool_index.all,
-                tool_index.mcp,
-                transcript_evidence.advisor_blocks(),
-                &pending_history,
-            );
-            self.qualify_tool_projection(
+            let (selected, projected) = project_committed_message(
                 record,
                 Some(thread_id),
-                std::slice::from_ref(&selected.message),
-                fold.source_run_id,
-                &mut projected,
+                &fold,
+                order_index,
+                pending,
+                transcript_evidence,
             )?;
             for (ordinal, projected) in projected.into_iter().enumerate() {
                 let kind = projected.kind;

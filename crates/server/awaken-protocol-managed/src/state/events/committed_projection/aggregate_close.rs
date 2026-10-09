@@ -8,7 +8,6 @@
 use super::candidate_evidence::CandidateEvidence;
 use super::root_projection::RootProjection;
 use super::*;
-use awaken_managed_session_events::{EventIdentity, FactProvenance, ManagedEventType};
 
 impl ManagedState {
     pub(super) fn close_aggregate(
@@ -64,25 +63,11 @@ impl ManagedState {
         // Each historical reach is admitted by its own committed close and
         // answerable-wait history. A later Running Session, pending call or
         // child Archive cannot erase a previously issued budget pair.
-        for (generation, usage, budget) in projected_budget_reach.iter().cloned() {
-            let at = |role| {
-                EventIdentity::new(session_id, role, FactProvenance::BudgetReach { generation })
-            };
-            record.push_fact(
-                at(ManagedEventType::BudgetReachUsage),
-                OutboundKind::SessionUsage {
-                    usage,
-                    budget: Some(budget),
-                },
-            );
-            record.push_fact(
-                at(ManagedEventType::BudgetReachStatusIdle),
-                OutboundKind::SessionStatusIdle {
-                    stop_reason: StopReason::BudgetReached,
-                    stop_details: None,
-                },
-            );
-            record.checkpoint.source.budget_reach_generation = generation;
+        for reach in projected_budget_reach {
+            for fact in reach.facts(session_id) {
+                record.publish_fact(&fact, None)?;
+            }
+            record.checkpoint.source.budget_reach_generation = reach.generation;
         }
         Self::render_aggregate_fallback(record, persisted, evidence, plan)
     }
@@ -112,9 +97,7 @@ impl ManagedState {
                             let owner = (thread != &session_id).then_some(thread.as_str());
                             record
                                 .projected_tool_index_for(owner)
-                                .latest
-                                .get(call)
-                                .cloned()
+                                .latest_id(call)
                                 .ok_or_else(|| {
                                     StateError::Run(RunError::internal(
                                         "an answerable pause has no public Managed tool event",

@@ -138,6 +138,29 @@ pub struct CommittedToolOccurrence {
     call_id: String,
 }
 
+/// The committed ToolUse that one result answers. Synthetic waits retain the
+/// existing Run source; ordinary calls retain their exact Message source.
+#[derive(Clone, Debug)]
+pub struct ToolResultSource {
+    pub source_id: String,
+    pub call_id: String,
+    pub name: String,
+}
+
+impl ToolResultSource {
+    fn identity(&self) -> (&str, &str, &str) {
+        (&self.source_id, &self.call_id, &self.name)
+    }
+}
+
+impl PartialEq for ToolResultSource {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity() == other.identity()
+    }
+}
+
+impl Eq for ToolResultSource {}
+
 /// One read-only classification of a committed transcript prefix. This is the
 /// shared root/child evidence seam: ToolResult pairs and the current ResumeTicket
 /// classify exact ToolUse occurrences, while the existing Event log identifies
@@ -148,6 +171,11 @@ pub struct CommittedTranscriptEvidence {
     /// The result commit that first made a previously unclassified call
     /// visible. Indexed by the same exact ToolUse occurrence as disposition.
     result_message_indices: std::collections::HashMap<CommittedToolOccurrence, usize>,
+    /// First committed Assistant occurrences, indexed during the same fold.
+    /// Audit attribution borrows these positions instead of rescanning Messages.
+    call_message_indices: std::collections::HashMap<String, Vec<usize>>,
+    result_sources: std::collections::HashMap<(String, usize), ToolResultSource>,
+    pending_occurrences: std::collections::HashMap<String, CommittedToolOccurrence>,
 }
 
 pub struct CommittedMessageProjection {
@@ -156,6 +184,21 @@ pub struct CommittedMessageProjection {
 }
 
 impl CommittedTranscriptEvidence {
+    pub(crate) fn result_source(
+        &self,
+        message_id: &str,
+        block_ordinal: usize,
+    ) -> Option<&ToolResultSource> {
+        self.result_sources
+            .get(&(message_id.to_string(), block_ordinal))
+    }
+
+    pub(crate) fn call_message_indices(&self, call_id: &str) -> &[usize] {
+        self.call_message_indices
+            .get(call_id)
+            .map_or(&[], Vec::as_slice)
+    }
+
     /// Matching result Message for an exact committed ToolUse occurrence.
     /// Consumers attach the late-visible tool to this commit's frontier.
     #[must_use]
@@ -189,6 +232,7 @@ impl CommittedTranscriptEvidence {
         projected_tool_sources: &std::collections::HashSet<(String, String)>,
         pending_source_id: Option<&str>,
         pending_history: &[&Pending],
+        current_pending: Option<&Pending>,
     ) -> CommittedMessageProjection {
         use awaken_agent_contract::agent::content::ContentBlock;
 
@@ -219,6 +263,13 @@ impl CommittedTranscriptEvidence {
                     .get(&key)
                     .copied()
                     .unwrap_or(RuntimeToolProjectionPhase::Unclassified);
+                if disposition == RuntimeToolProjectionPhase::Unclassified
+                    && let Some(pending) =
+                        current_pending.filter(|pending| pending.tool_use_id == *id)
+                    && self.pending_occurrences.get(id) == Some(&key)
+                {
+                    disposition = RuntimeToolProjectionPhase::from_pending(pending.client_executed);
+                }
                 // A closed wait remains committed classification evidence even
                 // when failure/cancellation removed its current ResumeTicket.
                 // The caller has scoped history to this Thread/Run/message;
@@ -304,6 +355,7 @@ pub fn committed_transcript_evidence(
 
     struct Occurrence {
         key: CommittedToolOccurrence,
+        name: String,
         advisor: bool,
         classification: RuntimeToolProjectionPhase,
         result_message_index: Option<usize>,
@@ -318,6 +370,8 @@ pub fn committed_transcript_evidence(
     let mut unmatched =
         std::collections::HashMap::<String, std::collections::VecDeque<usize>>::new();
     let mut advisor_blocks = AdvisorConsultationBlocks::default();
+    let mut call_message_indices = std::collections::HashMap::<String, Vec<usize>>::new();
+    let mut result_sources = std::collections::HashMap::new();
     for (message_index, message) in messages.iter().enumerate() {
         if message.id.is_agent_thread_report() || !seen_messages.insert(message.id.0.as_str()) {
             continue;
@@ -328,6 +382,10 @@ pub fn committed_transcript_evidence(
                     let ContentBlock::ToolUse { id, name, .. } = block else {
                         continue;
                     };
+                    call_message_indices
+                        .entry(id.clone())
+                        .or_default()
+                        .push(message_index);
                     let advisor = name == ADVISOR_TOOL_ID;
                     if advisor {
                         advisor_blocks
@@ -341,6 +399,7 @@ pub fn committed_transcript_evidence(
                             block_ordinal,
                             call_id: id.clone(),
                         },
+                        name: name.clone(),
                         advisor,
                         classification: RuntimeToolProjectionPhase::Unclassified,
                         result_message_index: None,
@@ -366,6 +425,14 @@ pub fn committed_transcript_evidence(
                     } else {
                         occurrences[index].classification = RuntimeToolProjectionPhase::Processed;
                         occurrences[index].result_message_index = Some(message_index);
+                        result_sources.insert(
+                            (message.id.0.clone(), block_ordinal),
+                            ToolResultSource {
+                                source_id: occurrences[index].key.message_id.clone(),
+                                call_id: occurrences[index].key.call_id.clone(),
+                                name: occurrences[index].name.clone(),
+                            },
+                        );
                     }
                 }
             }
@@ -385,6 +452,15 @@ pub fn committed_transcript_evidence(
     }
     let mut dispositions = std::collections::HashMap::new();
     let mut result_message_indices = std::collections::HashMap::new();
+    let pending_occurrences = unmatched
+        .into_iter()
+        .filter_map(|(call, indices)| {
+            indices
+                .into_iter()
+                .find(|index| !occurrences[*index].advisor)
+                .map(|index| (call, occurrences[index].key.clone()))
+        })
+        .collect();
     for occurrence in occurrences
         .into_iter()
         .filter(|occurrence| !occurrence.advisor)
@@ -398,6 +474,9 @@ pub fn committed_transcript_evidence(
         advisor_blocks,
         dispositions,
         result_message_indices,
+        call_message_indices,
+        result_sources,
+        pending_occurrences,
     }
 }
 

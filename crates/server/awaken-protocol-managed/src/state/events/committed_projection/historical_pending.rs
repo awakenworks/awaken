@@ -5,74 +5,39 @@
 use super::*;
 
 impl ManagedState {
-    /// Materialize the one synthetic event for an accepted Awaiting target
-    /// when no exact ToolUse Message belonged to that committed prefix yet.
-    /// A Message committed later cannot rekey an already-issued Run-qualified
-    /// tool; the audit and Message cursors decide this on warm and cold reads.
+    /// Render the one synthetic event of each accepted Awaiting target the
+    /// timeline domain selects (no exact ToolUse Message belonged to that
+    /// committed prefix yet), unless an earlier refresh already issued it.
     pub(super) fn append_synthetic_historical_pending_projections(
         &self,
         record: &mut SessionRecord,
         session_id: &str,
-        lifecycle_events: &[RunLifecycleEvent],
-        historical_pending: &std::collections::HashMap<RunLifecycleCursor, Pending>,
-        root_snapshot: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-        child_snapshots: &std::collections::HashMap<
-            String,
-            awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
-        >,
+        index: &OrderIndex<'_>,
     ) -> Result<(), StateError> {
-        let mut cursors = historical_pending.keys().copied().collect::<Vec<_>>();
-        cursors.sort_unstable();
-        for cursor in cursors {
-            let pending = &historical_pending[&cursor];
-            let Some(lifecycle) = lifecycle_events.iter().find(|event| event.cursor == cursor)
-            else {
-                continue;
-            };
-            let is_root = lifecycle.thread_id.0 == session_id;
-            let owner_thread_id = (!is_root).then_some(lifecycle.thread_id.0.as_str());
-            let snapshot = if is_root {
-                root_snapshot
-            } else {
-                child_snapshots.get(&lifecycle.thread_id.0)
-            }
-            .ok_or_else(|| {
-                StateError::Run(RunError::internal(
-                    "accepted Awaiting target has no committed Thread snapshot",
-                ))
-            })?;
-            if snapshot.messages.len() != snapshot.message_commit_cursors.len() {
-                return Err(StateError::Run(RunError::internal(
-                    "committed ToolUse Message cursors are not aligned",
-                )));
-            }
-            if !awaken_managed_session_events::needs_synthetic_awaiting_tool(
-                snapshot, lifecycle, pending,
-            ) {
-                continue;
-            }
+        for tool in index.synthetic_awaiting_tools().map_err(projection_error)? {
+            let owner_thread_id = (tool.thread_id != session_id).then_some(tool.thread_id.as_str());
             let qualified_id = project::managed_tool_event_id(
                 &Self::public_tool_thread_id(session_id, owner_thread_id),
-                &lifecycle.run_id.0,
-                &pending.tool_use_id,
+                &tool.run_id.0,
+                &tool.pending.tool_use_id,
             );
             if record.has_event_id(&qualified_id) {
                 continue;
             }
-            let tool_index = record.projected_tool_index_for(owner_thread_id);
             let mut projected = project_messages_with_mcp_ids(
                 &[],
-                Some(pending),
+                Some(&tool.pending),
                 &std::collections::HashSet::new(),
-                tool_index.mcp,
+                Default::default(),
                 &Default::default(),
-                &[pending],
+                &[&tool.pending],
             );
-            self.qualify_tool_projection(
+            Self::qualify_tool_projection(
                 record,
                 owner_thread_id,
                 &[],
-                Some(&lifecycle.run_id),
+                Some(&tool.run_id),
+                &[],
                 &mut projected,
             )?;
             for projected in projected {

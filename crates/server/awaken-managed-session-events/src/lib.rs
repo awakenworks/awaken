@@ -13,8 +13,9 @@ mod acceptance;
 mod accepted_prefix;
 mod activation;
 mod aggregate;
-mod committed_project;
+mod budget;
 mod coordination;
+mod coordination_events;
 mod error;
 mod fact;
 mod fault;
@@ -26,11 +27,13 @@ mod lifecycle;
 mod observation;
 mod order;
 mod outcome;
+mod permission;
 mod position;
 mod prefix;
 mod role;
 mod stop;
 mod transcript;
+mod transcript_fold;
 mod transcript_plan;
 mod usage;
 
@@ -44,17 +47,20 @@ pub use aggregate::{
     AggregateFallbackClose, AggregateIntervalClose, AggregatePlan, AggregateStop, IntervalHold,
     IntervalUsage, interval_hold, plan_aggregate,
 };
-pub use committed_project::{CommittedPrefix, CommittedProjection, project};
+pub use budget::BudgetReach;
 pub use coordination::{
     CoordinationReceipts, IssuedToolEvent, SEND_MESSAGE_TOOL_ID, coordination_orders, cross_posts,
     is_coordination_send, link_facts, project_child_activity,
 };
+pub use coordination_events::{
+    CoordinationEvents, CoordinationEvidence, derive_coordination_events,
+};
 pub use error::ProjectionError;
-pub use fact::{DerivedSessionEvent, SessionEventKind};
+pub use fact::{DerivedSessionEvent, OutcomeVerdict, SessionEventKind};
 pub use fault::{RunFault, run_fault, run_state_fault};
 pub use historical::{
-    audited_await_targets, historical_message_await_name, historical_message_boundaries,
-    historical_pending_by_lifecycle, needs_synthetic_awaiting_tool,
+    SyntheticAwaitingTool, audited_await_targets, historical_message_await_name,
+    historical_message_boundaries, historical_pending_by_lifecycle, synthetic_awaiting_tools,
 };
 pub use index::{
     BudgetReachAnchor, OrderEvidence, OrderIndex, ParentTerminalEvidence,
@@ -73,21 +79,24 @@ pub use lifecycle::{
 };
 pub use observation::run_observation_facts;
 pub use order::{EventPosition, Ordinal, historical_pending_projection_order};
-pub use outcome::{
-    AnchoredOutcome, OutcomeAnchor, anchor_outcome, outcome_owns_failure_run, validate_outcome,
-};
+pub use outcome::{AnchoredOutcome, CommittedOutcome, OutcomeAnchor};
 pub use position::{AnchoredEvent, EventAnchor, position_events};
 pub use prefix::same_thread_projection_prefix;
 pub use role::{ManagedEventType, TranscriptRole, phase};
 pub use stop::{StopFact, terminal_stop};
 pub use transcript::{
     AdvisorConsultationBlocks, CommittedMessageProjection, CommittedTranscriptEvidence,
-    RuntimeToolFollowupAdmission, RuntimeToolProjectionPhase, advisor_consultation_blocks,
-    assistant_response_coordinates, committed_transcript_evidence, fold_transcript,
-    validate_committed_message_identities,
+    RuntimeToolFollowupAdmission, RuntimeToolProjectionPhase, ToolResultSource,
+    advisor_consultation_blocks, assistant_response_coordinates, committed_transcript_evidence,
+    fold_transcript, validate_committed_message_identities,
+};
+pub use transcript_fold::{
+    ToolFamilies, ToolUseFamily, TranscriptFold, is_public_user_input, transcript_fact_identity,
 };
 pub use transcript_plan::{
     ChildTranscript, ChildTranscriptPlan, ChildTranscriptStep, MessageFold, plan_child_transcript,
     plan_folds,
 };
 pub use usage::committed_thread_usage;
+
+pub use permission::{RecordedToolPermission, RecordedToolPermissions, recorded_tool_permissions};

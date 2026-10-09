@@ -1362,3 +1362,256 @@ async fn root_and_child_replays_keep_first_public_message_and_reject_conflicting
     )
     .await;
 }
+
+#[tokio::test]
+async fn recorded_permissions_keep_each_reused_call_on_warm_and_cold_wire_histories() {
+    // C1 provider call id repeats at different steps; C2 repeats in a later
+    // Run on the same Thread; C3 builtin/MCP tool families share that raw id;
+    // C4 incremental refresh or cold reconstruction; C5 a later audit
+    // re-decides one occurrence (the gate re-audits a call it still holds).
+    // R1 C1/C2/C3 with exact Message/commit coordinates => every public id
+    // keeps its own decision and its paired result keeps that occurrence's
+    // builtin/MCP family; R2 C4 => byte-equal complete history, including
+    // previously issued ids; R3 C5 => both readers keep the first decision
+    // and agree.
+    // This exercises the production candidate, qualification and wire codec;
+    // it does not infer permission from the completed ToolResult.
+    let mut timeline = RootTimeline::new(&[Step::Legacy(0), Step::Legacy(1)]).await;
+    timeline.apply(Step::Legacy(0)).await;
+    let mut expected = Vec::new();
+    for (index, step, name, decision) in [
+        (0, 10, "read", "deny"),
+        (0, 11, "mcp__srv__echo", "ask"),
+        (1, 10, "read", "allow"),
+    ] {
+        if index == 1 {
+            timeline.apply(Step::Close(0)).await;
+            timeline.apply(Step::Legacy(1)).await;
+        }
+        let run = timeline.slot(index).run.clone();
+        timeline.cursor += 1;
+        let cursor = timeline.cursor;
+        let source = MessageId::assistant(&run, step);
+        timeline.runtime.push_committed_message(
+            cursor,
+            Message::new(
+                source.clone(),
+                Role::Assistant,
+                vec![ContentBlock::tool_use(
+                    "reused",
+                    name,
+                    serde_json::json!({}),
+                )],
+            ),
+        );
+        timeline.runtime.push_committed_message(
+            cursor,
+            Message::new(
+                MessageId(format!("{}-result-{step}", run.0)),
+                Role::Tool,
+                vec![ContentBlock::tool_result(
+                    "reused",
+                    vec![ContentBlock::text("done")],
+                )],
+            ),
+        );
+        timeline.runtime.audit_events.lock().unwrap().push(
+            awaken_agent_contract::audit::record::Record {
+                sequence: encode_run_lifecycle_cursor(cursor, 0).unwrap().0,
+                run_id: run,
+                kind: awaken_agent_contract::audit::kind::Kind::PermissionDecided,
+                payload: serde_json::json!({"call_id":"reused", "decision":decision}),
+            },
+        );
+        expected.push((
+            managed_tool_event_id(
+                &ManagedState::public_tool_thread_id(&timeline.session_id, None),
+                &source.0,
+                "reused",
+            ),
+            decision,
+            if awaken_agent_contract::McpToolId::claims_namespace(name) {
+                "agent.mcp_tool_result"
+            } else {
+                "agent.tool_result"
+            },
+        ));
+        refresh(&timeline.warm, &timeline.session_id, false)
+            .await
+            .unwrap();
+        let warm = durable_history(&timeline.warm, &timeline.session_id);
+        for (id, decision, result_type) in &expected {
+            let event = warm
+                .iter()
+                .find(|event| &event.0 == id)
+                .unwrap_or_else(|| panic!("R1 missing {id}; actual history: {warm:?}"));
+            assert_eq!(event.1["evaluated_permission"], *decision, "R1 {id}");
+            let result = warm
+                .iter()
+                .find(|event| {
+                    event.1["tool_use_id"].as_str() == Some(id.as_str())
+                        || event.1["mcp_tool_use_id"].as_str() == Some(id.as_str())
+                })
+                .unwrap_or_else(|| panic!("R1 missing result for {id}: {warm:?}"));
+            assert_eq!(result.1["type"], *result_type, "R1 result family for {id}");
+        }
+        let cold = timeline.cold().await;
+        refresh(&cold, &timeline.session_id, false).await.unwrap();
+        assert_eq!(durable_history(&cold, &timeline.session_id), warm, "R2");
+    }
+    let last = timeline
+        .runtime
+        .audit_events
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    let mut redecided = last;
+    redecided.sequence = encode_run_lifecycle_cursor(timeline.cursor, 1).unwrap().0;
+    redecided.payload["decision"] = serde_json::json!("deny");
+    timeline
+        .runtime
+        .audit_events
+        .lock()
+        .unwrap()
+        .push(redecided);
+    refresh(&timeline.warm, &timeline.session_id, false)
+        .await
+        .unwrap();
+    let warm = durable_history(&timeline.warm, &timeline.session_id);
+    let (redecided_id, _, _) = expected.last().unwrap();
+    assert_eq!(
+        warm.iter()
+            .find(|event| &event.0 == redecided_id)
+            .map(|event| event.1["evaluated_permission"].clone()),
+        Some(serde_json::json!("allow")),
+        "R3 warm keeps the issued decision"
+    );
+    let cold = timeline.cold().await;
+    refresh(&cold, &timeline.session_id, false).await.unwrap();
+    assert_eq!(
+        durable_history(&cold, &timeline.session_id),
+        warm,
+        "R3 cold"
+    );
+}
+
+#[tokio::test]
+async fn closed_interval_usage_keeps_its_committed_value_when_clock_and_activity_advance() {
+    // Causes: C1 one admitted interval closes after exactly 3500 ms; C2 wall
+    // clock advances; C3 another interval is active; C4 warm or cold reader.
+    // Effects: E1 the closed usage event retains active_seconds=3 and all its
+    // bytes; E2 current Session usage includes the new open interval. Rules:
+    // R1 C1 => E1; R2 C1+C2 with/without C3, for both C4 values => E1;
+    // R3 C3+C2 => E2. Reuse the root interval ledger and injected Clock;
+    // no second duration reducer or frozen-clock production path is added.
+    use awaken_time::WallClockExt as _;
+    let clock = Arc::new(awaken_lease_testkit::ManualClock::new(1_800_000_000_000));
+    let runtime = LifecycleRuntime::default();
+    let repository = Arc::new(ephemeral_session_repo().await);
+    let environments =
+        awaken_protocol_managed_testkit::environment_fixture(clock.clone()).execution;
+    let replica = || {
+        let state = ManagedState::from_fixture_parts(
+            Arc::new(runtime.clone()),
+            None,
+            repository.clone(),
+            environments.clone(),
+            clock.clone(),
+        );
+        state.disable_warm_cold_oracle();
+        state
+    };
+    let warm = replica();
+    let session = warm
+        .create_session(
+            serde_json::from_value(
+                serde_json::json!({"agent":"coder", "environment_id":"env_local"}),
+            )
+            .unwrap(),
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
+        )
+        .await
+        .unwrap();
+    let session_id = SessionId::from(&session.id);
+    let run = RunId("closed-interval".into());
+    let activity = warm.application.begin_activity(&session_id).await.unwrap();
+    runtime.lifecycle.lock().unwrap().push(lifecycle(
+        1,
+        &session.id,
+        &run,
+        RunLifecycleEventKind::Running,
+        RunState::Running,
+    ));
+    clock.advance(3500);
+    runtime.lifecycle.lock().unwrap().push(lifecycle(
+        2,
+        &session.id,
+        &run,
+        RunLifecycleEventKind::Completed,
+        RunState::Ended(EndCause::NaturalEnd),
+    ));
+    warm.application
+        .settle_activity_observed(
+            &session_id,
+            activity.activity_epoch,
+            Some(
+                awaken_session_state_contract::SessionRuntimeIntervalObservation {
+                    activity_epoch: activity.activity_epoch,
+                    thread_id: ThreadId(session.id.clone()),
+                    run_id: run,
+                    lifecycle_cursor: lifecycle_cursor(2),
+                    source_commit_cursor: 2,
+                },
+            ),
+        )
+        .await
+        .unwrap();
+    refresh(&warm, &session.id, false).await.unwrap();
+    let closed = durable_history(&warm, &session.id);
+    let usage = closed
+        .iter()
+        .find(|event| event.1["type"] == "session.usage")
+        .unwrap();
+    assert_eq!(usage.1["usage"]["active_seconds"], 3, "R1");
+    for active in [false, true] {
+        if active {
+            warm.application.begin_activity(&session_id).await.unwrap();
+            runtime.lifecycle.lock().unwrap().push(lifecycle(
+                3,
+                &session.id,
+                &RunId("next-interval".into()),
+                RunLifecycleEventKind::Running,
+                RunState::Running,
+            ));
+        }
+        clock.advance(86_400_000);
+        for state in [&warm, &replica()] {
+            refresh(state, &session.id, false).await.unwrap();
+            let current = durable_history(state, &session.id);
+            assert_eq!(
+                &current[..closed.len()],
+                closed.as_slice(),
+                "R2 active={active}"
+            );
+        }
+        if active {
+            let root = awaken_session_repository_contract::SessionRepository::get(
+                repository.as_ref(),
+                &session_id,
+            )
+            .await
+            .unwrap();
+            let current = awaken_session_application::SessionApplication::project_session_usage(
+                &root,
+                [],
+                clock.now_ms(),
+            );
+            assert!(
+                current.active_seconds > 3,
+                "R3 current usage still observes time"
+            );
+        }
+    }
+}

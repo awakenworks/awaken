@@ -61,6 +61,41 @@ pub struct RecordedPermission {
 }
 
 impl RecordedPermission {
+    /// Render all neutral recorded facts once; selection stays with the domain.
+    pub(crate) fn project_index(
+        index: &awaken_managed_session_events::OrderIndex<'_>,
+    ) -> Result<
+        std::collections::HashMap<(String, String, String), Self>,
+        awaken_managed_session_events::ProjectionError,
+    > {
+        Ok(
+            awaken_managed_session_events::recorded_tool_permissions(index)?
+                .into_iter()
+                .filter_map(|(key, recorded)| {
+                    Self::from_recorded(recorded).map(|recorded| (key, recorded))
+                })
+                .collect(),
+        )
+    }
+
+    /// Render the one neutral recorded gate fact through the existing SDK codec.
+    pub(crate) fn from_recorded(
+        recorded: awaken_managed_session_events::RecordedToolPermission,
+    ) -> Option<Self> {
+        use awaken_runtime_contract::permission::GateAuditDecision;
+        let decision = match recorded.decision {
+            GateAuditDecision::Allow => EvaluatedPermission::Allow,
+            GateAuditDecision::Ask => EvaluatedPermission::Ask,
+            GateAuditDecision::Deny => EvaluatedPermission::Deny,
+            GateAuditDecision::SetResult | GateAuditDecision::Schedule => return None,
+        };
+        Some(Self::from_audit(
+            decision,
+            recorded.policy,
+            recorded.reason_code,
+        ))
+    }
+
     /// Project one recorded audit row. Exact and fail-closed: `evaluation` is
     /// absent when no policy was recorded (a historical row, a narrowing, a
     /// plugin gate), when the policy is outside the SDK's `permission_policy`
@@ -246,8 +281,29 @@ mod tests {
             ("R9a", Some(P::Auto), D::Ask, None, None),
             ("R9b", Some(P::Auto), D::Deny, None, None),
         ];
+        // C6 the neutral index carries the same SDK decision/policy/reason.
+        // Every R1-R9 row must render identically through the neutral bridge;
+        // SetResult/Schedule are not permission labels and produce no wire fact.
         for (rule, policy, decision, reason_code, expected) in rows {
+            use awaken_runtime_contract::permission::GateAuditDecision;
+            let neutral_decision = match decision {
+                D::Allow => GateAuditDecision::Allow,
+                D::Ask => GateAuditDecision::Ask,
+                D::Deny => GateAuditDecision::Deny,
+            };
+            let bridged = RecordedPermission::from_recorded(
+                awaken_managed_session_events::RecordedToolPermission {
+                    decision: neutral_decision,
+                    policy,
+                    reason_code: reason_code.clone(),
+                },
+            );
             let recorded = RecordedPermission::from_audit(decision, policy, reason_code);
+            assert_eq!(
+                bridged.as_ref(),
+                Some(&recorded),
+                "{rule}: C6 uses the same codec"
+            );
             assert_eq!(
                 recorded.decision, decision,
                 "{rule}: the flat decision is always kept"
@@ -267,6 +323,22 @@ mod tests {
                     "{rule}: the auto judgement type equals the flat decision"
                 );
             }
+        }
+        for decision in [
+            awaken_runtime_contract::permission::GateAuditDecision::SetResult,
+            awaken_runtime_contract::permission::GateAuditDecision::Schedule,
+        ] {
+            assert!(
+                RecordedPermission::from_recorded(
+                    awaken_managed_session_events::RecordedToolPermission {
+                        decision,
+                        policy: None,
+                        reason_code: None
+                    }
+                )
+                .is_none(),
+                "C6 unsupported permission label stays absent"
+            );
         }
     }
 }

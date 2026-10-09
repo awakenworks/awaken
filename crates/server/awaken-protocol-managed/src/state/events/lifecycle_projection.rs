@@ -16,7 +16,7 @@ impl ManagedState {
             String,
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
         >,
-        plan: &awaken_managed_session_events::CommittedProjection,
+        plan: &awaken_managed_session_events::CoordinationEvents,
     ) -> Result<
         (
             awaken_managed_session_events::ChildLifecycle,
@@ -96,9 +96,10 @@ impl ManagedState {
         &self,
         record: &mut SessionRecord,
         evidence: DelegationProjectionEvidence<'_>,
-        plan: &awaken_managed_session_events::CommittedProjection,
+        plan: &awaken_managed_session_events::CoordinationEvents,
     ) -> Result<Vec<CoordinatedThread>, StateError> {
         let DelegationProjectionEvidence {
+            order_index,
             links,
             snapshots,
             transcripts,
@@ -130,14 +131,13 @@ impl ManagedState {
                 .child_threads
                 .iter()
                 .position(|thread| thread.id == thread_id);
-            let is_new = existing.is_none();
             let index = existing.unwrap_or_else(|| {
                 let child = Self::child_thread(&record.session, &thread_id, agent);
                 record.child_threads.push(child);
                 record.child_threads.len() - 1
             });
             record.child_threads[index].usage = usage.get(&thread_id).cloned().flatten();
-            if is_new {
+            if existing.is_none() {
                 for fact in awaken_managed_session_events::link_facts(link) {
                     record.publish_fact(&fact, None)?;
                 }
@@ -170,12 +170,10 @@ impl ManagedState {
                 .iter()
                 .find(|child| child.id == thread_id)
                 .expect("validated coordinated Thread is cached");
-            let advisor_model = match &child.agent {
-                crate::types::SessionThreadAgentValue::Advisor(advisor) => {
-                    Some(advisor.model.clone())
-                }
-                crate::types::SessionThreadAgentValue::Agent(_) => None,
-            };
+            let advisor_model = child
+                .agent
+                .as_advisor()
+                .map(|advisor| advisor.model.clone());
             let child_lifecycle_events = lifecycle_events
                 .iter()
                 .filter(|event| event.thread_id.0 == thread_id)
@@ -209,6 +207,7 @@ impl ManagedState {
                         .map(|event| &event.run_id),
                     historical_pending,
                 },
+                order_index,
             )?;
         }
         for fact in activity.facts.iter().filter(|fact| {

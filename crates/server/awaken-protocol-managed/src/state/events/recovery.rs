@@ -387,11 +387,11 @@ impl ManagedState {
     /// rewrite all references to that public identity. The Runtime call id stays
     /// inside the reversible encoding and is decoded only at command admission.
     pub(super) fn qualify_tool_projection(
-        &self,
         record: &SessionRecord,
         owner_thread_id: Option<&str>,
         messages: &[awaken_agent_contract::agent::message::Message],
         synthetic_source_run_id: Option<&awaken_agent_contract::agent::run::Id>,
+        result_sources: &[awaken_managed_session_events::ToolResultSource],
         events: &mut Vec<ProjectedEvent>,
     ) -> Result<(), StateError> {
         let public_thread_id = Self::public_tool_thread_id(&record.session.id, owner_thread_id);
@@ -414,10 +414,8 @@ impl ManagedState {
             })
             .collect::<std::collections::HashSet<_>>();
         let mut sources = Self::tool_call_sources(messages);
-        let tool_index = record.projected_tool_index_for(owner_thread_id);
-        let mut latest = tool_index.latest;
-        let client_settled_occurrences = tool_index.client_settled_occurrences;
-        let mut custom = tool_index.custom;
+        let mut tool_index = record.projected_tool_index_for(owner_thread_id);
+        let mut result_sources = result_sources.iter();
         let mut qualified = Vec::with_capacity(events.len());
         for mut event in std::mem::take(events) {
             // Runtime's neutral pending state says only that the client must
@@ -442,34 +440,7 @@ impl ManagedState {
                     session_thread_id: session_thread_id.clone(),
                 };
             }
-            // The recorded gate decision replaces whatever the transcript-only
-            // fold inferred. A refused call and an executed call that errored
-            // look identical in the transcript, so only this record can tell
-            // them apart — and reporting a refusal as `allow` tells a client the
-            // call it blocked went through.
-            if let Some(recorded) = event
-                .source_tool_call_id
-                .as_deref()
-                .and_then(|call_id| record.recorded_permission(owner_thread_id, call_id))
-            {
-                match &mut event.kind {
-                    OutboundKind::AgentToolUse {
-                        evaluated_permission,
-                        evaluation,
-                        ..
-                    }
-                    | OutboundKind::AgentMcpToolUse {
-                        evaluated_permission,
-                        evaluation,
-                        ..
-                    } => {
-                        *evaluated_permission = Some(recorded.decision);
-                        *evaluation = recorded.evaluation.clone();
-                    }
-                    _ => {}
-                }
-            }
-            if ProjectedToolUseFamily::from_kind(&event.kind).is_some() {
+            let source_id = if let Some(family) = ProjectedToolUseFamily::from_kind(&event.kind) {
                 let runtime_call_id = event.id.as_deref().ok_or_else(|| {
                     StateError::Run(RunError::internal(
                         "Managed tool-use projection is missing its Runtime call id",
@@ -486,12 +457,18 @@ impl ManagedState {
                     })?;
                 let public_id =
                     managed_tool_event_id(&public_thread_id, &source_id, runtime_call_id);
-                latest.insert(runtime_call_id.to_string(), public_id.clone());
-                if matches!(event.kind, OutboundKind::AgentCustomToolUse { .. }) {
-                    custom.insert(public_id.clone());
-                }
+                tool_index.observe_tool_use(runtime_call_id, public_id.clone(), family);
                 event.id = Some(public_id);
-            }
+                Some(source_id)
+            } else {
+                None
+            };
+            // The recorded gate decision replaces whatever the transcript-only
+            // fold inferred. A refused call and an executed call that errored
+            // look identical in the transcript, so only this record can tell
+            // them apart — and reporting a refusal as `allow` tells a client the
+            // call it blocked went through.
+            record.apply_recorded_permission(owner_thread_id, source_id.as_deref(), &mut event);
             match &mut event.kind {
                 OutboundKind::AgentToolResult {
                     tool_use_id,
@@ -504,15 +481,18 @@ impl ManagedState {
                     // exposing that same fact again as `agent.tool_result`
                     // violates the public tool family and makes an exact SDK
                     // history internally contradictory.
-                    let public_tool_use_id = latest.get(tool_use_id).cloned().ok_or_else(|| {
-                        StateError::Run(RunError::internal(format!(
-                            "Managed tool result `{tool_use_id}` has no preceding tool-use identity"
-                        )))
-                    })?;
-                    if client_settled_occurrences.contains(&public_tool_use_id) {
+                    let public_tool_use_id = tool_index.result_id(
+                        &public_thread_id,
+                        tool_use_id,
+                        result_sources.next(),
+                    )?;
+                    if tool_index
+                        .client_settled_occurrences
+                        .contains(&public_tool_use_id)
+                    {
                         continue;
                     }
-                    if custom.contains(&public_tool_use_id) {
+                    if tool_index.custom.contains(&public_tool_use_id) {
                         event.kind = OutboundKind::UserCustomToolResult {
                             custom_tool_use_id: public_tool_use_id,
                             content: Some(content.clone()),
@@ -526,18 +506,18 @@ impl ManagedState {
                 OutboundKind::AgentMcpToolResult {
                     mcp_tool_use_id, ..
                 } => {
-                    *mcp_tool_use_id = latest.get(mcp_tool_use_id).cloned().ok_or_else(|| {
-                        StateError::Run(RunError::internal(
-                            "Managed MCP result has no preceding tool-use identity",
-                        ))
-                    })?;
+                    *mcp_tool_use_id = tool_index.result_id(
+                        &public_thread_id,
+                        mcp_tool_use_id,
+                        result_sources.next(),
+                    )?;
                 }
                 OutboundKind::SessionStatusIdle {
                     stop_reason: StopReason::RequiresAction { event_ids },
                     ..
                 } => {
                     for event_id in event_ids {
-                        *event_id = latest.get(event_id).cloned().ok_or_else(|| {
+                        *event_id = tool_index.latest_id(event_id).ok_or_else(|| {
                             StateError::Run(RunError::internal(
                                 "Managed requires_action has no answerable tool-use identity",
                             ))
