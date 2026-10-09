@@ -1135,7 +1135,7 @@
               "type": "object"
             },
             {
-              "description": "RFC 7617 HTTP Basic authentication. This consumes the built-in typed\nmaterial id [`crate::HTTP_BASIC_MATERIAL_TYPE`].",
+              "description": "RFC 7617 HTTP Basic authentication. This consumes the built-in typed\nHTTP Basic material (`awaken.http-basic/v1`).",
               "properties": {
                 "type": {
                   "const": "http_basic_auth",
@@ -1816,7 +1816,7 @@
               "type": "object"
             },
             {
-              "description": "RFC 7617 HTTP Basic authentication. This consumes the built-in typed\nmaterial id [`crate::HTTP_BASIC_MATERIAL_TYPE`].",
+              "description": "RFC 7617 HTTP Basic authentication. This consumes the built-in typed\nHTTP Basic material (`awaken.http-basic/v1`).",
               "properties": {
                 "type": {
                   "const": "http_basic_auth",
@@ -4680,7 +4680,7 @@
               "type": "object"
             },
             {
-              "description": "RFC 7617 HTTP Basic authentication. This consumes the built-in typed\nmaterial id [`crate::HTTP_BASIC_MATERIAL_TYPE`].",
+              "description": "RFC 7617 HTTP Basic authentication. This consumes the built-in typed\nHTTP Basic material (`awaken.http-basic/v1`).",
               "properties": {
                 "type": {
                   "const": "http_basic_auth",
@@ -5736,7 +5736,7 @@
               "type": "object"
             },
             {
-              "description": "RFC 7617 HTTP Basic authentication. This consumes the built-in typed\nmaterial id [`crate::HTTP_BASIC_MATERIAL_TYPE`].",
+              "description": "RFC 7617 HTTP Basic authentication. This consumes the built-in typed\nHTTP Basic material (`awaken.http-basic/v1`).",
               "properties": {
                 "type": {
                   "const": "http_basic_auth",
