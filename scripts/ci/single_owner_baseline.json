@@ -1,0 +1,26 @@
+{
+  "$comment": "Shrink-only ratchet of scripts/ci/_single_owner_fitness.py (ADR-0091). Numbers may only fall; write it with `python3 scripts/ci/_single_owner_fitness.py --write-baseline`; raising one needs --reason, kept in growth_reasons.",
+  "state-construction": {
+    "awaken-protocol-managed::SessionExecutionState": 1,
+    "awaken-session-executor::SessionEnvironmentState": 1,
+    "awaken-session-application::SessionEnvironmentState": 1,
+    "awaken-session-application::SessionExecutionState": 7,
+    "awaken-session-store::SessionEnvironmentState": 2,
+    "awaken-store-conformance::SessionEnvironmentState": 2,
+    "awaken-store-conformance::SessionExecutionState": 11
+  },
+  "realization-code": {
+    "awaken-credential-contract": 269,
+    "awaken-executable-environment-contract": 327,
+    "awaken-protocol-managed": 32,
+    "awaken-dispatch-http": 819,
+    "awaken-session-executor": 8197,
+    "awaken-scenario-host": 78,
+    "awaken-session-application": 2996,
+    "awaken-session-environment": 78,
+    "awaken-session-environment-contract": 253,
+    "awaken-session-realization-driver": 266,
+    "awaken-session-resource-contract": 84,
+    "awaken-session-state-contract": 16
+  }
+}
