@@ -288,6 +288,7 @@ async fn exact_http_policy_reaches_session_and_kubernetes_pod_requests() {
     });
     let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
     deployment.sandbox_tier = awaken_session_executor::SandboxTier::Local;
+    let installed = deployment.clone();
     let app = build_all_in_one_router_with_host_customizer(
         Arc::new(EchoModel),
         ModelBinding::new("host", "echo", "genai"),
@@ -296,6 +297,7 @@ async fn exact_http_policy_reaches_session_and_kubernetes_pod_requests() {
         move |host| {
             awaken_execution_composition::install_container_provider(
                 host,
+                &installed,
                 provider,
                 None,
                 Arc::new(UnusedHandFactory),

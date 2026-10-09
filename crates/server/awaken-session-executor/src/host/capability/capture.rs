@@ -22,11 +22,11 @@ pub(crate) struct ContentCaptureCapability {
 }
 
 impl ContentCaptureCapability {
-    /// The deployment's capture ceiling, no sink, and the open null consent source.
-    pub(in crate::host) fn new(deployment: &crate::deployment_config::DeploymentConfig) -> Self {
+    /// The process capture ceiling, no sink, and the open null consent source.
+    pub(in crate::host) fn new(settings: crate::ContentCaptureSettings) -> Self {
         Self {
             capture_sink: None,
-            capture_decision: crate::redact::capture_decision(deployment.content_capture, false),
+            capture_decision: crate::redact::capture_decision(settings, false),
             policy_sources: awaken_data_governance_contract::CapturePolicySources::default(),
         }
     }

@@ -1050,7 +1050,7 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
     use awaken_session_configuration_contract::SessionInit;
     use awaken_skill_store::{SkillBundleFile, SkillVersion, bundle_sha256};
     let mut host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
-    host.deployment.disable_local_pool = true;
+    host.execution.local = crate::LocalExecution::RemoteWorkersOnly;
     let host = (host).build().expect("validated Host dependencies");
 
     install_test_session_application(&host);
@@ -1158,7 +1158,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     let mut dependencies = crate::acp_backend::with_fixture_acp(
         crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
     );
-    dependencies.deployment.disable_local_pool = true;
+    dependencies.execution.local = crate::LocalExecution::RemoteWorkersOnly;
     let host = (dependencies).build().expect("validated Host dependencies");
     let candidate = awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(
         awaken_runtime_contract::resolved::ModelBinding::new("local", "", "acp:codex"),
@@ -1466,7 +1466,7 @@ async fn frozen_environment_selects_trusted_host_exactly() {
     let namespace_root = tempfile::tempdir().unwrap();
     let trusted_root = tempfile::tempdir().unwrap();
     let mut host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
-    host.deployment.sandbox.trusted_host_enabled = true;
+    host.env.trusted_host = crate::TrustedHostPolicy::Admitted;
     host.env.session_provider =
         crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             namespace_root.path(),
@@ -1500,7 +1500,7 @@ async fn frozen_environment_selects_trusted_host_exactly() {
     assert!(selected.realizer().supports_host_identity(), "T1/E1");
 
     let mut absent = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
-    absent.deployment.sandbox.trusted_host_enabled = true;
+    absent.env.trusted_host = crate::TrustedHostPolicy::Admitted;
     absent.env.session_provider =
         crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             namespace_root.path(),

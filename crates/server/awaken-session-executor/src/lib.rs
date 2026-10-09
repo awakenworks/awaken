@@ -121,13 +121,24 @@ pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
 pub use crate::cache_volume::{
     CacheVolumeInitializer, CacheVolumeWarmup, SandboxCacheVolumeInitializer,
 };
+pub use crate::commit_ingest::session_commit_owner;
+pub use crate::config::{
+    advertised_tools, authorable_tools, block_text, platform_plugin_capabilities,
+    platform_plugin_capabilities_with_web_search,
+};
+pub use crate::deployment_config::{
+    AcpWorkerProfile, ContentCaptureSettings, ContentRedaction, DeploymentConfig, DispatchBackend,
+    PackageImageBuilder, SandboxPackageSettingsInput, SandboxSettings, SandboxTier, StoreKind,
+    Wake, default_postgres_max_connections, session_sandbox_base,
+};
 pub(crate) use crate::host::ApplicationPortBinding;
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::host::capability::{LocalResourcePorts, LocalSkillPorts};
 pub use crate::host::{
-    AttemptExecutorDecorator, DispatchPoolSizing, HostDependencies, HostProcess, HostResume,
-    RemoteAttemptInstallation, SessionApplicationBindingError, SessionApplicationBindings,
-    SessionExecutionDependencies, SharedHost, remote_worker_placement,
+    AttemptExecutorDecorator, DispatchPoolSizing, ExecutionTopology, HostDependencies, HostProcess,
+    HostResume, LeaseOwnerId, LocalExecution, QueueDepthSource, RemoteAttemptInstallation,
+    RunIngress, SessionApplicationBindingError, SessionApplicationBindings,
+    SessionExecutionDependencies, SharedHost, TrustedHostPolicy, WarmPool, remote_worker_placement,
     self_hosted_inference_holder,
 };
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
@@ -137,18 +148,6 @@ use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialM
 use awaken_resource_contract::FileContentSource;
 #[cfg(test)]
 use awaken_resource_contract::RepositoryBindingVerifier;
-// The root every composition selects its Session environment providers under.
-pub use crate::acp_backend::session_sandbox_base;
-pub use crate::commit_ingest::session_commit_owner;
-pub use crate::config::{
-    advertised_tools, authorable_tools, block_text, platform_plugin_capabilities,
-    platform_plugin_capabilities_with_web_search,
-};
-pub use crate::deployment_config::{
-    AcpWorkerProfile, ContentCaptureSettings, ContentRedaction, DeploymentConfig, DispatchBackend,
-    PackageImageBuilder, SandboxPackageSettingsInput, SandboxSettings, SandboxTier, StoreKind,
-    Wake, default_postgres_max_connections,
-};
 use managed_adapter_error::{to_live_inbox_error, to_run_error};
 pub(crate) use managed_input_projection::{session_system_message, user_message};
 // The model-route seam (R1/R2/R5): a process startup supplies its own

@@ -480,6 +480,23 @@ pub struct DeploymentConfig {
     pub disable_local_pool: bool,
 }
 
+/// The base dir the Session sandbox roots and per-thread config homes live
+/// under, or a per-process temp dir when unset.
+pub fn session_sandbox_base(deployment: &DeploymentConfig) -> std::path::PathBuf {
+    deployment
+        .sandbox_dir
+        .clone()
+        .or_else(|| {
+            deployment
+                .storage_dir
+                .as_ref()
+                .map(|storage| storage.join("sandboxes"))
+        })
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("awaken-acp-sbx-{}", std::process::id()))
+        })
+}
+
 /// The default wake channel/subject, shared by the `pg_notify` channel and the NATS
 /// subject.
 pub const DEFAULT_WAKE_CHANNEL: &str = "awaken_dispatch_wake";
@@ -571,26 +588,66 @@ const fn sandbox_support_projection(
 }
 
 impl DeploymentConfig {
-    /// Project the one deployment-owned fallback interval into the existing
-    /// dispatch service schedule for local pools and coordinator-only repair.
-    pub(crate) fn dispatch_service_config(
+    /// Project the Run-execution axes into the typed topology a Host is
+    /// constructed with (ADR-0091 D6). This is the composition-side reading of
+    /// the file: the Host itself never sees `durable`, `disable_local_pool`,
+    /// `dispatch_owner`, the poll bound or the depth flag.
+    pub fn execution_topology(&self) -> Result<crate::ExecutionTopology, String> {
+        let topology = crate::ExecutionTopology {
+            ingress: if self.durable {
+                crate::RunIngress::Durable
+            } else {
+                crate::RunIngress::Direct
+            },
+            local: if self.disable_local_pool {
+                crate::LocalExecution::RemoteWorkersOnly
+            } else {
+                crate::LocalExecution::in_process_pool()
+            },
+            lease_owner: crate::LeaseOwnerId::new(self.dispatch_owner.clone())?,
+            lost_wake_recovery_bound: self.dispatch_poll_interval,
+            queue_depth: if self.sample_dispatch_queue_depth {
+                crate::QueueDepthSource::BuiltInSampler
+            } else {
+                crate::QueueDepthSource::External
+            },
+        };
+        topology.validate()?;
+        Ok(topology)
+    }
+
+    /// The process a Host is constructed in, projected from this file by the
+    /// composition root. Consumer: every `HostDependencies` constructor.
+    pub fn host_process(
         &self,
-    ) -> awaken_dispatch_execution::DispatchServiceConfig {
-        awaken_dispatch_execution::DispatchServiceConfig {
-            poll_interval: self.dispatch_poll_interval,
-            sample_dispatch_queue_depth: self.sample_dispatch_queue_depth,
-            ..awaken_dispatch_execution::DispatchServiceConfig::default()
-        }
+        local_workspace: String,
+        clock: std::sync::Arc<dyn awaken_time::WallClock>,
+    ) -> Result<crate::HostProcess, String> {
+        Ok(crate::HostProcess {
+            local_workspace,
+            execution: self.execution_topology()?,
+            content_capture: self.content_capture,
+            storage_dir: self.storage_dir.clone(),
+            sandbox_root: session_sandbox_base(self),
+            trusted_host: if self.trusted_host_enabled() {
+                crate::TrustedHostPolicy::Admitted
+            } else {
+                crate::TrustedHostPolicy::Refused
+            },
+            warm_pool: crate::WarmPool::new(
+                self.sandbox.warm_pool_size,
+                self.sandbox.warm_pool_total_size,
+            ),
+            mcp_relay: self.sandbox.container_mcp_relay.clone(),
+            acp_profile: self.acp.clone(),
+            clock,
+        })
     }
 
     /// One configuration admission rule, reused by Worker and direct Host
     /// construction. The capability projection remains independently qualified.
     pub fn validate_local_execution(&self) -> Result<(), String> {
-        if self.dispatch_poll_interval.is_zero()
-            || self.dispatch_poll_interval > std::time::Duration::from_secs(60)
-        {
-            return Err("dispatch_poll_interval_ms must be between 1 and 60000".into());
-        }
+        self.execution_topology()?;
         if self.sandbox.trusted_host_scoped_execution
             && (!cfg!(target_os = "linux") || !self.trusted_host_enabled())
         {
@@ -961,20 +1018,46 @@ mod tests {
     }
 
     #[test]
-    fn direct_deployment_poll_interval_has_one_validated_projection() {
-        // C1 direct embedder supplies a positive interval within 60s; C2 it
-        // supplies zero or more than 60s. E1 the same value reaches the shared
-        // local-pool/reconciler schedule; E2 invalid values fail before a Host
-        // starts. Rules: D1=C1 -> E1, D2=C2 -> E2. CLI parsing is the parallel
-        // input path, not a second schedule owner.
+    fn execution_axes_project_into_one_validated_topology() {
+        // Causes: C1 durable; C2 disable_local_pool; C3 dispatch_owner blank;
+        // C4 poll interval outside 1ms..=60s; C5 sample_dispatch_queue_depth.
+        // Effects: E1 ingress Durable iff C1; E2 RemoteWorkersOnly iff C2, else
+        // a CPU-sized in-process pool; E3 C3 or C4 refused before a Host
+        // exists; E4 External depth observer iff !C5; E5 owner and bound kept
+        // verbatim. The Host reads only this projection.
         let mut config = base();
         config.dispatch_poll_interval = std::time::Duration::from_millis(750);
-        config.validate_local_execution().expect("D1 valid");
+        let direct = config.execution_topology().expect("valid");
+        assert_eq!(direct.ingress, crate::RunIngress::Direct, "E1");
+        assert_eq!(direct.local, crate::LocalExecution::in_process_pool(), "E2");
+        assert_eq!(direct.lease_owner.as_str(), "host-1", "E5");
         assert_eq!(
-            config.dispatch_service_config().poll_interval,
-            config.dispatch_poll_interval,
-            "D1/E1"
+            direct.lost_wake_recovery_bound,
+            std::time::Duration::from_millis(750),
+            "E5"
         );
+        assert_eq!(
+            direct.queue_depth,
+            crate::QueueDepthSource::BuiltInSampler,
+            "E4"
+        );
+
+        config.durable = true;
+        config.disable_local_pool = true;
+        config.sample_dispatch_queue_depth = false;
+        let coordinator = config.execution_topology().expect("valid");
+        assert_eq!(coordinator.ingress, crate::RunIngress::Durable, "C1/E1");
+        assert_eq!(
+            coordinator.local,
+            crate::LocalExecution::RemoteWorkersOnly,
+            "C2/E2"
+        );
+        assert_eq!(
+            coordinator.queue_depth,
+            crate::QueueDepthSource::External,
+            "C5/E4"
+        );
+
         for invalid in [0, 60_001] {
             config.dispatch_poll_interval = std::time::Duration::from_millis(invalid);
             assert!(
@@ -982,28 +1065,17 @@ mod tests {
                     .validate_local_execution()
                     .unwrap_err()
                     .contains("dispatch_poll_interval_ms"),
-                "D2/E2"
+                "C4/E3"
             );
         }
-    }
-
-    #[test]
-    fn hosted_depth_observation_choice_reaches_the_one_dispatch_schedule() {
-        // Causes: C1 a standalone deployment uses its default; C2 hosted
-        // composition supplies the single external queue observer. Effects:
-        // E1 the open sampler stays enabled by default; E2 both pool and
-        // coordinator-only reconciliation receive the disabled flag through
-        // their shared DispatchServiceConfig. Rules D1=C1 -> E1,
-        // D2=C2 -> E2. No lease or claim setting changes.
-        let mut config = base();
+        config.dispatch_poll_interval = std::time::Duration::from_millis(750);
+        config.dispatch_owner = " ".into();
         assert!(
-            config.dispatch_service_config().sample_dispatch_queue_depth,
-            "D1/E1"
-        );
-        config.sample_dispatch_queue_depth = false;
-        assert!(
-            !config.dispatch_service_config().sample_dispatch_queue_depth,
-            "D2/E2"
+            config
+                .execution_topology()
+                .unwrap_err()
+                .contains("dispatch_owner"),
+            "C3/E3"
         );
     }
 

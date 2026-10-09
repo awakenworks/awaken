@@ -8,6 +8,53 @@
 
 use crate::host::*;
 
+/// Whether this process may realize an exact `trusted_host` Environment: the
+/// boundary that preserves the local machine identity the author selected.
+/// The process composition selects it once from its configuration. Consumer:
+/// Session environment provider selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustedHostPolicy {
+    /// `trusted_host` Environments fail closed on this process.
+    Refused,
+    /// The operator admitted `trusted_host` Environments on this process.
+    Admitted,
+}
+
+/// Never-used warm Session capacity this process keeps ready. The process
+/// composition selects it once from its configuration. Consumer: the Host's
+/// warm Environment capacity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WarmPool {
+    /// No warm capacity is prepared.
+    Disabled,
+    /// Ready, never-used containers per exact mount-less Session shape, under a
+    /// global cap across the default and every Environment shape.
+    Target {
+        per_shape: std::num::NonZeroUsize,
+        total: usize,
+    },
+}
+
+impl WarmPool {
+    /// A per-shape target of zero disables warm capacity.
+    #[must_use]
+    pub fn new(per_shape: usize, total: usize) -> Self {
+        match std::num::NonZeroUsize::new(per_shape) {
+            Some(per_shape) => Self::Target { per_shape, total },
+            None => Self::Disabled,
+        }
+    }
+
+    /// The per-shape target and the global budget, when warm capacity is on.
+    #[must_use]
+    pub fn limits(self) -> Option<(usize, usize)> {
+        match self {
+            Self::Disabled => None,
+            Self::Target { per_shape, total } => Some((per_shape.get(), total)),
+        }
+    }
+}
+
 /// Sandbox-provider wiring. Consumer: Session environment realization and
 /// lifecycle, ACP backend selection, warm capacity, and helper sub-agents.
 pub(crate) struct EnvironmentProviders {
@@ -38,6 +85,14 @@ pub(crate) struct EnvironmentProviders {
     /// stores only the neutral contract; the outer server process selects
     /// the FUSE/copy adapter with the Host's dependencies.
     pub(crate) memory_mounter: Option<Arc<dyn awaken_provisioning_contract::MemoryMounter>>,
+    /// Whether `trusted_host` Environments may be realized on this process.
+    pub(crate) trusted_host: TrustedHostPolicy,
+    /// The warm capacity this process keeps per Session shape.
+    pub(crate) warm_pool: WarmPool,
+    /// The Session sandbox root the construction-time provider realizes under;
+    /// this crate's fixtures pre-create physical sandboxes beneath it.
+    #[cfg(test)]
+    pub(crate) sandbox_root: PathBuf,
 }
 
 impl EnvironmentProviders {
@@ -47,9 +102,13 @@ impl EnvironmentProviders {
     pub(in crate::host) fn new(
         sandbox_root: PathBuf,
         auxiliary_sandboxes: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxFactory>,
+        trusted_host: TrustedHostPolicy,
+        warm_pool: WarmPool,
     ) -> Self {
         Self {
             auxiliary_sandboxes,
+            #[cfg(test)]
+            sandbox_root: sandbox_root.clone(),
             session_provider: crate::uninstalled_environment::default_session_provider(
                 sandbox_root,
             ),
@@ -58,6 +117,8 @@ impl EnvironmentProviders {
             backend_owned_session_provider: None,
             session_provider_explicit: false,
             memory_mounter: None,
+            trusted_host,
+            warm_pool,
         }
     }
 }

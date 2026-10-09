@@ -257,7 +257,7 @@ impl SharedHost {
         if sandbox.as_ref().is_some_and(|sandbox| {
             sandbox.host_access == awaken_provisioning_contract::HostAccessPolicy::TrustedHost
         }) {
-            if !self.deployment.trusted_host_enabled() {
+            if self.env.trusted_host != crate::TrustedHostPolicy::Admitted {
                 return Err(HostError::bad_request(
                     "trusted_host Environment is disabled on this Worker",
                 ));

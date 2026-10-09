@@ -1,0 +1,255 @@
+//! How this process takes part in Run execution, decided by the composition
+//! root before the Host exists (ADR-0091 D6: only process compositions read
+//! deployment configuration).
+//!
+//! The Host never derives these choices from a configuration file. Each value
+//! names the one decision it carries: whether a foreground Run is delivered
+//! through the durable queue ([`RunIngress`]), whether this process drains that
+//! queue itself and with how many slots ([`LocalExecution`]), the identity its
+//! dispatch leases are fenced with ([`LeaseOwnerId`]), how long a lost wake can
+//! delay recovery, and who observes queue depth ([`QueueDepthSource`]).
+
+/// Whether a foreground Run is delivered through the durable dispatch queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunIngress {
+    /// The submitting Session drives its attempt directly; queued, crashed and
+    /// scheduled work is not recovered across a restart.
+    Direct,
+    /// Every Run is enqueued and claimed from the durable dispatch queue, and
+    /// the durable operational verbs (cancel, requeue, inspect) are admitted.
+    Durable,
+}
+
+impl RunIngress {
+    #[must_use]
+    pub const fn is_durable(self) -> bool {
+        matches!(self, Self::Durable)
+    }
+}
+
+/// How the one process-level dispatch pool got its slot count.
+///
+/// The two paths are deliberately distinct variants instead of one integer with
+/// a default baked into the constructor. A registered Worker publishes
+/// `WorkerCapacity::max_concurrent` to the registry and the scheduler places
+/// against it; installing a locally guessed number instead is exactly the
+/// "registered value nobody consumed" divergence, and it used to be invisible
+/// because both numbers had the same type. Now the CPU guess is a named branch
+/// that only an unregistered composition produces, and [`Registered`] is
+/// produced by moving a [`RegisteredCapacity`] into
+/// [`crate::HostDependencies::for_worker`].
+///
+/// [`Registered`]: DispatchPoolSizing::Registered
+/// [`RegisteredCapacity`]: awaken_dispatch_contract::RegisteredCapacity
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchPoolSizing {
+    /// No Worker registration in this topology (a direct or coordinator-embedded
+    /// Host). No registry ever published a capacity for this process, so local
+    /// parallelism is the whole truth and cannot contradict anything.
+    LocalParallelism(std::num::NonZeroUsize),
+    /// A registered Worker installed its validated manifest capacity. This is
+    /// the number the registry handed the scheduler, so it is also the exact
+    /// number of execution slots the pool installs.
+    Registered(std::num::NonZeroUsize),
+}
+
+impl DispatchPoolSizing {
+    /// Slots to install. Both branches are resolved here so no caller can read
+    /// one variant and forget the other.
+    #[must_use]
+    pub const fn slots(self) -> std::num::NonZeroUsize {
+        match self {
+            Self::LocalParallelism(value) | Self::Registered(value) => value,
+        }
+    }
+
+    /// The registered capacity when this process is a registered Worker.
+    #[must_use]
+    pub const fn registered(self) -> Option<std::num::NonZeroUsize> {
+        match self {
+            Self::Registered(value) => Some(value),
+            Self::LocalParallelism(_) => None,
+        }
+    }
+
+    /// The CPU-derived sizing used by a Host that registered no capacity.
+    #[must_use]
+    pub fn local_parallelism() -> Self {
+        Self::LocalParallelism(
+            std::thread::available_parallelism()
+                .unwrap_or(std::num::NonZeroUsize::new(4).expect("nonzero local fallback")),
+        )
+    }
+}
+
+/// Whether this process executes claimed Runs itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalExecution {
+    /// One process-level dispatch pool with this many slots drains the queue
+    /// here, and Session Environments may be realized locally.
+    InProcessPool(DispatchPoolSizing),
+    /// Admission only: this process owns the queue but never executes a Run;
+    /// registered remote Workers are the sole drainers.
+    RemoteWorkersOnly,
+}
+
+impl LocalExecution {
+    /// The CPU-sized in-process pool of an unregistered process.
+    #[must_use]
+    pub fn in_process_pool() -> Self {
+        Self::InProcessPool(DispatchPoolSizing::local_parallelism())
+    }
+
+    #[must_use]
+    pub const fn runs_local_pool(self) -> bool {
+        matches!(self, Self::InProcessPool(_))
+    }
+
+    /// The pool sizing when this process executes Runs.
+    #[must_use]
+    pub const fn pool_sizing(self) -> Option<DispatchPoolSizing> {
+        match self {
+            Self::InProcessPool(sizing) => Some(sizing),
+            Self::RemoteWorkersOnly => None,
+        }
+    }
+}
+
+/// The dispatch lease owner this process fences claims with: distinct per
+/// process and node, stable across a restart of the same logical Worker.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LeaseOwnerId(String);
+
+impl LeaseOwnerId {
+    /// Refuse a blank owner: an empty identity cannot fence anything.
+    pub fn new(owner: impl Into<String>) -> Result<Self, String> {
+        let owner = owner.into();
+        if owner.trim().is_empty() {
+            return Err("dispatch_owner must be non-empty".to_owned());
+        }
+        Ok(Self(owner))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Who observes the dispatch queue depth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueDepthSource {
+    /// The pool samples the queue depth itself (standalone deployments).
+    BuiltInSampler,
+    /// A hosting composition already samples the same queue for its scaler, so
+    /// this process takes no second reading.
+    External,
+}
+
+/// The process's part in Run execution, selected once by its composition root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionTopology {
+    pub ingress: RunIngress,
+    pub local: LocalExecution,
+    pub lease_owner: LeaseOwnerId,
+    /// Maximum fallback wait before a pool checks durable dispatch again after
+    /// a lost wake. The cross-node wake is only a hint; this is the recovery
+    /// bound. Between 1 ms and 60 s.
+    pub lost_wake_recovery_bound: std::time::Duration,
+    pub queue_depth: QueueDepthSource,
+}
+
+impl ExecutionTopology {
+    /// The one admission rule for the recovery bound, applied by the Host
+    /// constructor and by every composition that parses it.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.lost_wake_recovery_bound.is_zero()
+            || self.lost_wake_recovery_bound > std::time::Duration::from_secs(60)
+        {
+            return Err("dispatch_poll_interval_ms must be between 1 and 60000".into());
+        }
+        Ok(())
+    }
+
+    /// Project the recovery bound and depth observer into the one dispatch
+    /// service schedule shared by local pools and coordinator-only repair.
+    pub(crate) fn dispatch_service_config(
+        &self,
+    ) -> awaken_dispatch_execution::DispatchServiceConfig {
+        awaken_dispatch_execution::DispatchServiceConfig {
+            poll_interval: self.lost_wake_recovery_bound,
+            sample_dispatch_queue_depth: self.queue_depth == QueueDepthSource::BuiltInSampler,
+            ..awaken_dispatch_execution::DispatchServiceConfig::default()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recovery_bound_has_one_validated_projection() {
+        // C1 a positive bound within 60s; C2 zero or more than 60s. E1 the same
+        // value reaches the shared local-pool/reconciler schedule; E2 invalid
+        // values fail before a Host starts. Rules: D1=C1 -> E1, D2=C2 -> E2.
+        let mut topology = crate::DeploymentConfig::ephemeral()
+            .execution_topology()
+            .expect("ephemeral topology");
+        topology.lost_wake_recovery_bound = std::time::Duration::from_millis(750);
+        topology.validate().expect("D1 valid");
+        assert_eq!(
+            topology.dispatch_service_config().poll_interval,
+            topology.lost_wake_recovery_bound,
+            "D1/E1"
+        );
+        for invalid in [0, 60_001] {
+            topology.lost_wake_recovery_bound = std::time::Duration::from_millis(invalid);
+            assert!(
+                topology
+                    .validate()
+                    .unwrap_err()
+                    .contains("dispatch_poll_interval_ms"),
+                "D2/E2"
+            );
+        }
+    }
+
+    #[test]
+    fn hosted_depth_observation_choice_reaches_the_one_dispatch_schedule() {
+        // C1 a standalone process keeps the built-in sampler; C2 a hosting
+        // composition names an external observer. E1 the sampler stays on; E2
+        // pool and coordinator-only reconciliation both receive it disabled
+        // through their shared DispatchServiceConfig. No lease setting changes.
+        let mut topology = crate::DeploymentConfig::ephemeral()
+            .execution_topology()
+            .expect("ephemeral topology");
+        assert!(
+            topology
+                .dispatch_service_config()
+                .sample_dispatch_queue_depth,
+            "C1/E1"
+        );
+        topology.queue_depth = QueueDepthSource::External;
+        let config = topology.dispatch_service_config();
+        assert!(!config.sample_dispatch_queue_depth, "C2/E2");
+        assert_eq!(config.poll_interval, topology.lost_wake_recovery_bound);
+    }
+
+    #[test]
+    fn lease_owner_and_local_execution_are_total() {
+        // Owner: blank -> refused; non-blank -> kept verbatim. Local execution:
+        // only an in-process pool has sizing and drains locally.
+        assert!(LeaseOwnerId::new("  ").is_err());
+        assert_eq!(LeaseOwnerId::new("node-a").unwrap().as_str(), "node-a");
+        let sizing = DispatchPoolSizing::Registered(std::num::NonZeroUsize::new(3).unwrap());
+        assert_eq!(
+            LocalExecution::InProcessPool(sizing).pool_sizing(),
+            Some(sizing)
+        );
+        assert!(LocalExecution::InProcessPool(sizing).runs_local_pool());
+        assert_eq!(LocalExecution::RemoteWorkersOnly.pool_sizing(), None);
+        assert!(!LocalExecution::RemoteWorkersOnly.runs_local_pool());
+        assert!(RunIngress::Durable.is_durable() && !RunIngress::Direct.is_durable());
+    }
+}

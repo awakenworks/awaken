@@ -167,7 +167,7 @@ impl SharedHost {
         thread: &str,
         agent: Option<&str>,
     ) -> Result<bool, HostError> {
-        if self.deployment.durable
+        if self.durable_ingress()
             || !self.authority.observes_terminal_memory_locally()
             || self
                 .session_slots
@@ -236,7 +236,7 @@ impl SharedHost {
     /// a database-less Worker has no global committed reader and must not start it.
     /// Returns whether this call started the loop.
     pub fn ensure_terminal_dispatch_reconciliation(self: &Arc<Self>) -> bool {
-        if !self.deployment.durable
+        if !self.durable_ingress()
             || self.runs_local_dispatch_pool()
             || !self.authority.scans_committed_terminals()
             || self
@@ -263,7 +263,7 @@ impl SharedHost {
             store,
             self.clock.clone(),
             wake,
-            self.deployment.dispatch_service_config(),
+            self.dispatch.execution.dispatch_service_config(),
             resolver,
             Some(self.completion.clone()),
         );
@@ -417,7 +417,7 @@ pub(super) async fn reconcile_committed_terminals(
                 let Some(claimed) = store
                     .claim_for_terminal_recovery(
                         &row.run_id,
-                        &host.deployment.dispatch_owner,
+                        host.dispatch_owner(),
                         DEFAULT_LEASE_MS,
                     )
                     .await?
@@ -1335,8 +1335,8 @@ mod tests {
 
         let mut local_pool =
             crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await;
-        local_pool.deployment.durable = true;
-        local_pool.deployment.disable_local_pool = false;
+        local_pool.execution.ingress = crate::RunIngress::Durable;
+        local_pool.execution.local = crate::LocalExecution::in_process_pool();
         let local_pool = (local_pool).build().expect("validated Host dependencies");
         assert!(!local_pool.ensure_terminal_dispatch_reconciliation(), "R0");
 
@@ -1353,8 +1353,8 @@ mod tests {
             .with_store_dir(storage.path())
             .await
             .with_ephemeral_dispatch(store.clone());
-        coordinator.deployment.durable = true;
-        coordinator.deployment.disable_local_pool = true;
+        coordinator.execution.ingress = crate::RunIngress::Durable;
+        coordinator.execution.local = crate::LocalExecution::RemoteWorkersOnly;
         let coordinator = (coordinator).build().expect("validated Host dependencies");
         let host = coordinator;
 
@@ -1485,8 +1485,8 @@ mod tests {
             .with_store_dir(storage.path())
             .await
             .with_ephemeral_dispatch(store.clone());
-        coordinator.deployment.durable = true;
-        coordinator.deployment.disable_local_pool = true;
+        coordinator.execution.ingress = crate::RunIngress::Durable;
+        coordinator.execution.local = crate::LocalExecution::RemoteWorkersOnly;
         let coordinator = (coordinator).build().expect("validated Host dependencies");
         let host = coordinator;
         let resolver = HostWorkerResolver {
@@ -1616,8 +1616,8 @@ mod tests {
             .with_store_dir(storage.path())
             .await
             .with_ephemeral_dispatch(store.clone());
-        coordinator.deployment.durable = true;
-        coordinator.deployment.disable_local_pool = true;
+        coordinator.execution.ingress = crate::RunIngress::Durable;
+        coordinator.execution.local = crate::LocalExecution::RemoteWorkersOnly;
         let coordinator = (coordinator).build().expect("validated Host dependencies");
         let host = coordinator;
         let fresh = claim(
@@ -1700,8 +1700,8 @@ mod tests {
             .with_store_dir(storage.path())
             .await
             .with_ephemeral_dispatch(store.clone());
-        coordinator.deployment.durable = true;
-        coordinator.deployment.disable_local_pool = true;
+        coordinator.execution.ingress = crate::RunIngress::Durable;
+        coordinator.execution.local = crate::LocalExecution::RemoteWorkersOnly;
         let coordinator = (coordinator).build().expect("validated Host dependencies");
         let host = coordinator;
         let parent = ThreadId("parent-session".into());

@@ -20,101 +20,27 @@ pub(crate) struct DispatchCapability {
     /// its thread. Held here so background submit / cross-thread relay nudge it and
     /// so it lives for the process's lifetime.
     pub(crate) dispatch_pool: std::sync::OnceLock<Arc<DispatchPool<AnyDispatchStore>>>,
-    /// How the one process-level dispatch pool is sized. The registered and the
-    /// unregistered path are distinct variants rather than one integer with a
-    /// silent initializer, so "a Worker registered a capacity nobody installed"
-    /// has no representation here — see [`crate::DispatchPoolSizing`].
-    pub(crate) dispatch_pool_sizing: DispatchPoolSizing,
+    /// This process's part in Run execution, selected by its composition
+    /// root: ingress, local pool and its sizing, lease owner and schedule.
+    pub(crate) execution: super::ExecutionTopology,
     /// The coordinator-only maintenance loop and its terminal scan; owned by
     /// [`super::super::terminal_reconciliation`], the only module that reads them.
     pub(crate) terminal_reconciliation:
         crate::host::terminal_reconciliation::TerminalReconciliationState,
 }
 
-/// The dispatch transport and pool sizing a composition selects before the
-/// Host exists. Consumer: [`crate::HostDependencies`], which turns it into the
-/// Host's [`DispatchCapability`].
-pub(crate) struct DispatchSelection {
-    /// See [`DispatchCapability::dispatch_pool_sizing`].
-    pub(crate) dispatch_pool_sizing: DispatchPoolSizing,
-}
-
-impl Default for DispatchSelection {
-    /// No transport and the CPU-derived sizing; a registered Worker replaces
-    /// the sizing.
-    fn default() -> Self {
-        Self {
-            dispatch_pool_sizing: DispatchPoolSizing::local_parallelism(),
-        }
-    }
-}
-
 impl DispatchCapability {
-    /// The selected transport and sizing, with no pool yet: `mount` spawns it.
+    /// The selected execution topology, with no pool yet: `mount` spawns it.
     pub(in crate::host) fn new(
-        selection: DispatchSelection,
+        execution: super::ExecutionTopology,
         host: std::sync::Weak<SharedHost>,
     ) -> Self {
         Self {
             dispatch_session_runtime: crate::DispatchSessionRuntime { host },
             dispatch_pool: std::sync::OnceLock::new(),
-            dispatch_pool_sizing: selection.dispatch_pool_sizing,
+            execution,
             terminal_reconciliation: Default::default(),
         }
-    }
-}
-
-/// How the one process-level [`DispatchPool`] got its slot count.
-///
-/// The two paths are deliberately distinct variants instead of one integer with
-/// a default baked into the constructor. A registered Worker publishes
-/// `WorkerCapacity::max_concurrent` to the registry and the scheduler places
-/// against it; installing a locally guessed number instead is exactly the
-/// "registered value nobody consumed" divergence, and it used to be invisible
-/// because both numbers had the same type. Now the CPU guess is a named branch
-/// that only an unregistered composition produces, and [`Registered`] is
-/// reachable only by moving a [`RegisteredCapacity`] into
-/// [`crate::HostDependencies::for_worker`].
-///
-/// [`Registered`]: DispatchPoolSizing::Registered
-/// [`RegisteredCapacity`]: awaken_dispatch_contract::RegisteredCapacity
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DispatchPoolSizing {
-    /// No Worker registration in this topology (a direct or coordinator-embedded
-    /// Host). No registry ever published a capacity for this process, so local
-    /// parallelism is the whole truth and cannot contradict anything.
-    LocalParallelism(std::num::NonZeroUsize),
-    /// A registered Worker installed its validated manifest capacity. This is
-    /// the number the registry handed the scheduler, so it is also the exact
-    /// number of execution slots the pool installs.
-    Registered(std::num::NonZeroUsize),
-}
-
-impl DispatchPoolSizing {
-    /// Slots to install. Both branches are resolved here so no caller can read
-    /// one variant and forget the other.
-    #[must_use]
-    pub const fn slots(self) -> std::num::NonZeroUsize {
-        match self {
-            Self::LocalParallelism(value) | Self::Registered(value) => value,
-        }
-    }
-
-    /// The registered capacity when this process is a registered Worker.
-    #[must_use]
-    pub const fn registered(self) -> Option<std::num::NonZeroUsize> {
-        match self {
-            Self::Registered(value) => Some(value),
-            Self::LocalParallelism(_) => None,
-        }
-    }
-
-    /// The CPU-derived sizing used by a Host that registered no capacity.
-    fn local_parallelism() -> Self {
-        Self::LocalParallelism(
-            std::thread::available_parallelism()
-                .unwrap_or(std::num::NonZeroUsize::new(4).expect("nonzero local fallback")),
-        )
     }
 }
 
@@ -137,27 +63,23 @@ impl SharedHost {
     }
 
     /// Whether this process owns a co-located dispatch pool. Process startup uses
-    /// the same parsed deployment value that admission uses, so the process cannot
+    /// the same selected topology that admission uses, so the process cannot
     /// accidentally both advertise coordinator-only behavior and drain locally.
     #[must_use]
     pub fn runs_local_dispatch_pool(&self) -> bool {
-        !self.deployment.disable_local_pool
+        self.dispatch.execution.local.runs_local_pool()
     }
 
-    /// How this process's dispatch pool is sized, and therefore whether the
-    /// number came from a Worker registration or from local parallelism. Reading
-    /// this observes the installed execution side; it is not a second copy of
-    /// the registry.
-    #[must_use]
-    pub fn dispatch_pool_sizing(&self) -> crate::DispatchPoolSizing {
-        self.dispatch.dispatch_pool_sizing
+    /// Whether foreground Runs are delivered through the durable queue.
+    pub(crate) fn durable_ingress(&self) -> bool {
+        self.dispatch.execution.ingress.is_durable()
     }
 
     /// Stable logical identity used by both local dispatch claims and local
     /// Session realization. The process incarnation is deliberately separate.
     #[must_use]
     pub fn dispatch_owner(&self) -> &str {
-        &self.deployment.dispatch_owner
+        self.dispatch.execution.lease_owner.as_str()
     }
 
     /// Stop local durable admission, await every already-claimed Run, then join
@@ -187,10 +109,13 @@ impl SharedHost {
     /// `Arc<SharedHost>` — because the pool's resolver needs a back-reference to
     /// open sessions. Durable and ephemeral Runtime authorities expose the same
     /// dispatch owner; asynchronous Session children use it in either deployment.
-    /// A coordinator-only Host remains admission-only through the existing
-    /// `disable_local_pool` topology fence. Idempotent.
+    /// A coordinator-only Host ([`crate::LocalExecution::RemoteWorkersOnly`])
+    /// has no pool sizing and remains admission-only. Idempotent.
     pub fn ensure_dispatch_pool(self: &Arc<Self>) {
-        if !self.runs_local_dispatch_pool() || self.dispatch.dispatch_pool.get().is_some() {
+        let Some(sizing) = self.dispatch.execution.local.pool_sizing() else {
+            return;
+        };
+        if self.dispatch.dispatch_pool.get().is_some() {
             return;
         }
         let Ok(store) = self.dispatch_store() else {
@@ -202,8 +127,8 @@ impl SharedHost {
         let resolver: Arc<dyn WorkerResolver<AnyDispatchStore>> = Arc::new(HostWorkerResolver {
             host: Arc::downgrade(self),
         });
-        let config = self.deployment.dispatch_service_config();
-        let concurrency = self.dispatch.dispatch_pool_sizing.slots().get();
+        let config = self.dispatch.execution.dispatch_service_config();
+        let concurrency = sizing.slots().get();
         // On the Postgres backend with a typed PgNotify or NATS wake selection,
         // spawn the pool with the cross-node wake so a peer's enqueue nudges this pool
         // without busy-poll; otherwise the in-process `LocalWakeSignal` suffices.
@@ -213,7 +138,7 @@ impl SharedHost {
             Some(wake) => DispatchPool::spawn_with_wake_and_completion(
                 store,
                 self.clock.clone(),
-                self.deployment.dispatch_owner.clone(),
+                self.dispatch_owner().to_owned(),
                 DEFAULT_LEASE_MS,
                 config,
                 resolver,
@@ -224,7 +149,7 @@ impl SharedHost {
             None => DispatchPool::spawn_with_completion(
                 store,
                 self.clock.clone(),
-                self.deployment.dispatch_owner.clone(),
+                self.dispatch_owner().to_owned(),
                 DEFAULT_LEASE_MS,
                 config,
                 resolver,
