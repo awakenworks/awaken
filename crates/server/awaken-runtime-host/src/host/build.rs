@@ -6,9 +6,6 @@
 
 use super::*;
 
-#[path = "environment_capacity.rs"]
-mod environment_capacity;
-
 use awaken_runtime_contract::delegation::RunDelegationService;
 
 /// The process a Host is constructed in: the installation's resolved platform
@@ -121,7 +118,10 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         agent: capability::AgentExecution::new(agent, session_slots.clone()),
         exec,
         worker,
-        env,
+        realizer: crate::SessionRealizer {
+            env,
+            runs_local_dispatch_pool: execution.local.runs_local_pool(),
+        },
         tools,
         resources: capability::ResourcePorts::new(resources, memory),
         mcp,
@@ -146,6 +146,12 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
 }
 
 impl SharedHost {
+    /// The Session realizer this Host was built with (warm Environment capacity).
+    #[must_use]
+    pub fn realizer(&self) -> &crate::SessionRealizer {
+        &self.realizer
+    }
+
     /// Mint a fresh process-unique platform Workspace coordinate. This Host
     /// owns the coordinate's format; it never persists one. A durable
     /// installation publishes the minted value once through its installation

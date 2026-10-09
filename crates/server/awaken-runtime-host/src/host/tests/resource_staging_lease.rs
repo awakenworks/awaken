@@ -902,7 +902,12 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
     };
     host.install_session_realization_lease(SESSION, lease.clone())
         .unwrap();
-    let provider = host.env.backend_owned_session_provider.as_ref().unwrap();
+    let provider = host
+        .realizer
+        .env
+        .backend_owned_session_provider
+        .as_ref()
+        .unwrap();
     let mut spec = crate::session_environment::environment_test_spec();
     spec.scope = SESSION.into();
     let fence = lease.sandbox_effect_fence("scoped-candidate").unwrap();

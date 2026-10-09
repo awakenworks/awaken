@@ -203,6 +203,7 @@ impl SharedHost {
     ) -> Result<&crate::session_environment::SessionEnvironmentProvider, HostError> {
         match provisioning {
             awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. } => self
+                .realizer
                 .env
                 .backend_owned_session_provider
                 .as_ref()
@@ -214,7 +215,7 @@ impl SharedHost {
             awaken_runtime_contract::resolved::ModelProvisioning::Provider { .. }
             | awaken_runtime_contract::resolved::ModelProvisioning::Remote { .. }
             | awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor => {
-                Ok(&self.env.session_provider)
+                Ok(&self.realizer.env.session_provider)
             }
         }
     }
@@ -238,12 +239,13 @@ impl SharedHost {
         if sandbox.as_ref().is_some_and(|sandbox| {
             sandbox.host_access == awaken_provisioning_contract::HostAccessPolicy::TrustedHost
         }) {
-            if self.env.trusted_host != crate::TrustedHostPolicy::Admitted {
+            if self.realizer.env.trusted_host != crate::TrustedHostPolicy::Admitted {
                 return Err(HostError::bad_request(
                     "trusted_host Environment is disabled on this Worker",
                 ));
             }
             let provider = self
+                .realizer
                 .env
                 .backend_owned_session_provider
                 .as_ref()
@@ -1022,7 +1024,8 @@ impl SharedHost {
                 .current_effect_fence(fence)
                 .map_err(|error| HostError::internal(error.to_string()))?;
         }
-        self.env
+        self.realizer
+            .env
             .cache_volume_prewarmer
             .prepare_mounts(&spec.mounts)
             .await

@@ -843,7 +843,8 @@ mod tests {
                 .provider_effect_authority(thread, fence, host.execution_authority.as_ref())
                 .unwrap();
             let environment = Arc::new(
-                host.env
+                host.realizer
+                    .env
                     .session_provider
                     .realizer()
                     .create_effective_for_effect(

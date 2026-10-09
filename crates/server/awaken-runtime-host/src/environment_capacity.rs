@@ -1,16 +1,29 @@
-//! Warm Environment capacity owned by [`SharedHost`]: CacheVolume and image
+//! Warm Environment capacity of the [`SessionRealizer`]: CacheVolume and image
 //! preparation, the default and per-Environment warm Session shapes, and their
 //! disposal. Every operation enters through the installed Session provider.
 
-use super::*;
+use crate::session_realizer::SessionRealizer;
 
-impl SharedHost {
+impl SessionRealizer {
+    /// The exact capacity shape of one Environment under this provider's
+    /// network isolation.
+    fn capacity_projection(
+        &self,
+        environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
+    ) -> crate::provisioning::EnvironmentCapacityProjection {
+        let isolation = self.env.session_provider.realizer().capabilities();
+        crate::provisioning::environment_capacity_projection(
+            environment,
+            isolation.network_isolation,
+        )
+    }
+
     /// Eagerly prepare one caller-owned CacheVolume. The same `(key, location)`
     /// is a no-op when Session realization later requests it. `location` remains
     /// exact for HostPath, Docker/Podman bind mounts, and Kubernetes PVCs.
     pub async fn prewarm_cache_volume(
         &self,
-        volume: crate::CacheVolumeWarmup,
+        volume: crate::cache_volume::CacheVolumeWarmup,
     ) -> Result<(), String> {
         self.env.cache_volume_prewarmer.prewarm(volume).await
     }
@@ -28,17 +41,7 @@ impl SharedHost {
             environments
                 .iter()
                 .filter(|environment| !environment.self_hosted)
-                .map(|environment| {
-                    crate::provisioning::environment_capacity_projection(
-                        environment,
-                        self.env
-                            .session_provider
-                            .realizer()
-                            .capabilities()
-                            .network_isolation,
-                    )
-                    .spec
-                }),
+                .map(|environment| self.capacity_projection(environment).spec),
         );
         self.env
             .session_provider
@@ -53,8 +56,7 @@ impl SharedHost {
         &self,
         target: usize,
     ) -> Result<usize, awaken_provisioning_contract::SandboxError> {
-        if !self.runs_local_dispatch_pool() || self.env.warm_pool.limits().is_none() || target == 0
-        {
+        if !self.runs_local_dispatch_pool || self.env.warm_pool.limits().is_none() || target == 0 {
             return Ok(0);
         }
         self.env
@@ -95,21 +97,14 @@ impl SharedHost {
         environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
         target: usize,
     ) -> Result<usize, awaken_provisioning_contract::SandboxError> {
-        if !self.runs_local_dispatch_pool()
+        if !self.runs_local_dispatch_pool
             || self.env.warm_pool.limits().is_none()
             || target == 0
             || environment.self_hosted
         {
             return Ok(0);
         }
-        let projection = crate::provisioning::environment_capacity_projection(
-            environment,
-            self.env
-                .session_provider
-                .realizer()
-                .capabilities()
-                .network_isolation,
-        );
+        let projection = self.capacity_projection(environment);
         self.env
             .session_provider
             .capacity()
@@ -121,7 +116,7 @@ impl SharedHost {
     /// default Session shape and current Environment shapes.
     #[must_use]
     pub fn environment_warmup_limits(&self) -> (usize, usize) {
-        if !self.runs_local_dispatch_pool() {
+        if !self.runs_local_dispatch_pool {
             return (0, 0);
         }
         self.env.warm_pool.limits().unwrap_or((0, 0))
@@ -134,14 +129,7 @@ impl SharedHost {
         &self,
         environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
     ) -> usize {
-        let projection = crate::provisioning::environment_capacity_projection(
-            environment,
-            self.env
-                .session_provider
-                .realizer()
-                .capabilities()
-                .network_isolation,
-        );
+        let projection = self.capacity_projection(environment);
         self.env
             .session_provider
             .capacity()
@@ -155,15 +143,7 @@ impl SharedHost {
         &self,
         environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
     ) -> awaken_provisioning_contract::SandboxCapacityShapeId {
-        crate::provisioning::environment_capacity_projection(
-            environment,
-            self.env
-                .session_provider
-                .realizer()
-                .capabilities()
-                .network_isolation,
-        )
-        .shape_id
+        self.capacity_projection(environment).shape_id
     }
 
     /// Drop unused capacity for an Environment shape removed from current
@@ -172,14 +152,7 @@ impl SharedHost {
         &self,
         environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
     ) {
-        let projection = crate::provisioning::environment_capacity_projection(
-            environment,
-            self.env
-                .session_provider
-                .realizer()
-                .capabilities()
-                .network_isolation,
-        );
+        let projection = self.capacity_projection(environment);
         self.env
             .session_provider
             .capacity()

@@ -289,7 +289,7 @@ pub(super) async fn memory(
                     host.agent.llm.clone(),
                     snapshot,
                     commit.clone(),
-                    host.env.auxiliary_sandboxes.provider("mem-select"),
+                    host.realizer.env.auxiliary_sandboxes.provider("mem-select"),
                 ))
                     as Arc<dyn awaken_ext_memory::RecallSelector>)
             },
@@ -395,7 +395,7 @@ pub(super) async fn memory(
                 host.agent.llm.clone(),
                 snapshot,
                 commit.clone(),
-                host.env.auxiliary_sandboxes.provider("compact"),
+                host.realizer.env.auxiliary_sandboxes.provider("compact"),
             );
             let backend = build_compact_backend(agent_tool, host.resources.memory.background());
             let plugin = CompactPlugin::new(compact_config).with_backend(thread, backend);

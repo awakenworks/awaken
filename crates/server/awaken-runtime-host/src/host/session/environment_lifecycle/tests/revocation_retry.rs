@@ -533,7 +533,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
             host.adopt_bound_session_environment(
                 thread,
                 Some(&binding),
-                &host.env.session_provider,
+                &host.realizer.env.session_provider,
                 None,
                 false,
             )
@@ -573,7 +573,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
         host.adopt_bound_session_environment(
             thread,
             Some(&binding),
-            &host.env.session_provider,
+            &host.realizer.env.session_provider,
             None,
             false,
         ),

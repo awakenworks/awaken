@@ -521,8 +521,10 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
             ..Default::default()
         },
     );
-    let fresh =
-        host.sandbox_substrate_spec_for_provider("checkpoint-memory", &host.env.session_provider);
+    let fresh = host.sandbox_substrate_spec_for_provider(
+        "checkpoint-memory",
+        &host.realizer.env.session_provider,
+    );
     assert_eq!(fresh.mounts.len(), 1, "M3/E3");
     assert_eq!(
         consistency(&fresh),
@@ -596,7 +598,7 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
     let cold = host.sandbox_spec_for_resolved_resources_and_provider(
         "checkpoint-memory",
         &resolved,
-        &host.env.session_provider,
+        &host.realizer.env.session_provider,
     );
     assert_eq!(cold.mounts.len(), 1, "M4/E3");
     assert_eq!(
@@ -1502,7 +1504,7 @@ async fn install_batch_artifact_environment(host: &SharedHost, thread: &str, wor
     host.register_thread_workspace(thread, workspace);
     let spec = host.sandbox_spec(thread);
     let environment = Arc::new(
-        host.create_session_environment(&host.env.session_provider, &spec)
+        host.create_session_environment(&host.realizer.env.session_provider, &spec)
             .await
             .expect("create batch Artifact Container Environment"),
     );

@@ -150,7 +150,7 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
         .adopt_bound_session_environment(
             ready_thread,
             Some(&ready_binding),
-            &ready_host.env.session_provider,
+            &ready_host.realizer.env.session_provider,
             None,
             true,
         )
@@ -219,7 +219,7 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
         .adopt_bound_session_environment(
             missing_thread,
             Some(&terminated_binding),
-            &missing_host.env.session_provider,
+            &missing_host.realizer.env.session_provider,
             None,
             true,
         )

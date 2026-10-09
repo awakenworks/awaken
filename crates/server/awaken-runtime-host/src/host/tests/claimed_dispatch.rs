@@ -954,7 +954,7 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
             .adopt_bound_session_environment(
                 thread,
                 Some(&binding),
-                &replacement.env.session_provider,
+                &replacement.realizer.env.session_provider,
                 None,
                 false,
             )
@@ -1014,7 +1014,7 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         host.adopt_bound_session_environment(
             "t-resident-adoption",
             Some(&resident_binding),
-            &host.env.session_provider,
+            &host.realizer.env.session_provider,
             None,
             false,
         )
@@ -1038,6 +1038,7 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
     );
 
     let foreign = host
+        .realizer
         .env
         .session_provider
         .create(&host.sandbox_spec("t-foreign-resident"))
@@ -1048,7 +1049,7 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .adopt_bound_session_environment(
             "t-resident-adoption",
             Some(&foreign_binding),
-            &host.env.session_provider,
+            &host.realizer.env.session_provider,
             None,
             false,
         )
@@ -1106,6 +1107,7 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
     drop(original);
 
     let foreign = host
+        .realizer
         .env
         .session_provider
         .create(&host.sandbox_spec("t-foreign-retained"))
@@ -1116,7 +1118,7 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .adopt_bound_session_environment(
             "t-retained-adoption",
             Some(&foreign_binding),
-            &host.env.session_provider,
+            &host.realizer.env.session_provider,
             None,
             false,
         )
@@ -1136,7 +1138,7 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         host.adopt_bound_session_environment(
             "t-retained-adoption",
             Some(&retained_binding),
-            &host.env.session_provider,
+            &host.realizer.env.session_provider,
             None,
             false,
         )

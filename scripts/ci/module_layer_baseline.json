@@ -3,9 +3,6 @@
     "environment_continuation -> crate": [
       "ManagedHost"
     ],
-    "host::build::environment_capacity -> host::build": [
-      "*"
-    ],
     "host::session::environment_lifecycle -> host::session": [
       "*"
     ],
@@ -48,7 +45,6 @@
     ]
   },
   "shared-host-impl": {
-    "host::build::environment_capacity": 11,
     "host::session::environment_lifecycle": 47,
     "host::session::environment_realization": 25,
     "host::terminal_reconciliation": 4,

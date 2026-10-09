@@ -11,18 +11,17 @@
 mod agent;
 mod capture;
 mod dispatch;
-mod environment;
 mod execution;
 mod execution_topology;
 mod resources;
 mod tools;
 mod worker;
 
+pub(crate) use crate::environment_providers::EnvironmentProviders;
+pub use crate::environment_providers::{TrustedHostPolicy, WarmPool};
 pub(crate) use agent::{AgentExecution, AgentSelection};
 pub(crate) use capture::ContentCaptureCapability;
 pub(crate) use dispatch::DispatchCapability;
-pub(crate) use environment::EnvironmentProviders;
-pub use environment::{TrustedHostPolicy, WarmPool};
 pub(crate) use execution::AttemptBackends;
 pub use execution_topology::{
     DispatchPoolSizing, ExecutionTopology, LeaseOwnerId, LocalExecution, QueueDepthSource,

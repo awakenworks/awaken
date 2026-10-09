@@ -291,6 +291,7 @@ impl ManagedHost {
             .map_err(to_run_error)?;
         let store = self
             .host
+            .realizer
             .env
             .environment_checkpoint_store
             .as_ref()
@@ -534,6 +535,7 @@ impl ManagedHost {
             .map_err(to_run_error)?;
         let store = self
             .host
+            .realizer
             .env
             .environment_checkpoint_store
             .as_ref()
@@ -582,6 +584,7 @@ impl ManagedHost {
     ) -> Result<(), RunError> {
         let store = self
             .host
+            .realizer
             .env
             .environment_checkpoint_store
             .as_ref()

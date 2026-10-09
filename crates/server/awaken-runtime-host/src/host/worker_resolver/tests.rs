@@ -2347,7 +2347,7 @@ async fn sandbox_binding_is_validated_before_provider_adoption() {
         host.adopt_bound_session_environment(
             "thread-a",
             Some("not-json"),
-            &host.env.session_provider,
+            &host.realizer.env.session_provider,
             None,
             false,
         )
@@ -2363,7 +2363,7 @@ async fn sandbox_binding_is_validated_before_provider_adoption() {
         host.adopt_bound_session_environment(
             "thread-a",
             Some(&wrong),
-            &host.env.session_provider,
+            &host.realizer.env.session_provider,
             None,
             false,
         )
@@ -2727,13 +2727,14 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
     let spec = host.sandbox_spec_for_resolved_resources_and_provider(
         thread,
         &projection.resources,
-        &host.env.session_provider,
+        &host.realizer.env.session_provider,
     );
     let spec = host
-        .validate_session_environment_capabilities(&host.env.session_provider, &spec)
+        .validate_session_environment_capabilities(&host.realizer.env.session_provider, &spec)
         .expect("C2 exact adoption spec");
     let replacement = Arc::new(
-        host.env
+        host.realizer
+            .env
             .session_provider
             .adopt(&spec, &observed.lifecycle().handle())
             .await

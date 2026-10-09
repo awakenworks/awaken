@@ -625,7 +625,7 @@ impl crate::host::SharedHost {
     pub(crate) fn memory_mounter(
         &self,
     ) -> Option<Arc<dyn awaken_provisioning_contract::MemoryMounter>> {
-        self.env.memory_mounter.clone()
+        self.realizer.env.memory_mounter.clone()
     }
 
     pub(crate) fn register_thread_memory(&self, thread: &str, memory: Option<Arc<BoundMemory>>) {

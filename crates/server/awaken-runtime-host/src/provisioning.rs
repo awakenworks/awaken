@@ -570,7 +570,8 @@ impl SharedHost {
             thread,
             resource_mounts,
             has_repositories,
-            self.env
+            self.realizer
+                .env
                 .session_provider
                 .realizer()
                 .capabilities()

@@ -1076,6 +1076,7 @@ impl SharedHost {
             return Ok(());
         }
         let store = self
+            .realizer
             .env
             .environment_checkpoint_store
             .as_ref()
