@@ -209,6 +209,42 @@ async def exercise_tool_runner(client: anthropic.AsyncAnthropic) -> None:
     error_results = [event for event in failed_events if event.type == "user.custom_tool_result"]
     assert len(error_results) == 1 and error_results[0].is_error
 
+    # Python 1.12 result-codec table: R4 success string/text-block with a lone
+    # surrogate -> well-formed text; R5 success None -> '(no output)'; R6 ordinary
+    # raised error -> repr bounded to 4096 points; R7 explicit ToolError -> its
+    # well-formed content without truncation. Every row posts exactly once and
+    # re-reads the durable result, crossing the actual SDK encoder and service.
+    # Reuse the same Session fixture/runner; no local result serializer owns it.
+    for name, value, is_error, expected in [
+        ("surrogate-string", "\ud800", False, "\ufffd"),
+        ("surrogate-block", [{"type": "text", "text": "\ud800"}], False, "\ufffd"),
+        ("none-output", None, False, "(no output)"),
+        ("bounded-error", RuntimeError("😀" * 5000), True, repr(RuntimeError("😀" * 5000))[:4096]),
+        ("deliberate-error", ToolError("\ud800" + "x" * 5000), True, "\ufffd" + "x" * 5000),
+    ]:
+        session, _ = await create_tool_session(client, environment.id, f"python-tool-{name}")
+
+        @beta_async_tool(name="submit_answer")
+        async def codec_tool(question: str) -> str | list[dict[str, object]] | None:
+            """Return or raise the codec decision-table input.
+
+            Args:
+                question: The question selected by the fixture model.
+            """
+            assert question == "what is 6 x 7?"
+            if isinstance(value, BaseException):
+                raise value
+            return value
+
+        calls = [call async for call in client.beta.sessions.events.tool_runner(
+            session.id, tools=[codec_tool], max_idle=0.05)]
+        assert len(calls) == 1 and calls[0].posted and calls[0].is_error is is_error, name
+        events = await drain(client.beta.sessions.events.list(session.id))
+        results = [event for event in events if event.type == "user.custom_tool_result"]
+        assert len(results) == 1 and results[0].is_error is is_error, name
+        assert [block.text for block in results[0].content] == [expected], name
+        await client.beta.sessions.delete(session.id)
+
     unowned, _ = await create_tool_session(client, environment.id, "python-tool-unowned")
     observed_calls = []
     observed_event = asyncio.Event()
