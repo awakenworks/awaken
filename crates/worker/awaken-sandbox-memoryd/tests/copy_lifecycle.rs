@@ -8,7 +8,7 @@
 
 mod support;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use awaken_memory_store::{MemoryRepository, SqliteMemoryRepository};
@@ -16,6 +16,15 @@ use awaken_provisioning_contract::{MemoryMaterializationEvidence, MemoryMountOut
 use awaken_provisioning_contract::{MemoryMounter, MountAccess};
 use awaken_sandbox_memoryd::MemoryStoreMounter;
 use support::MemoryMountOutcomeTestExt as _;
+
+// Repository Drop starts asynchronous SQLite closure. Await the canonical
+// file-settle witness after releasing every owner before replacement/cleanup;
+// pool accounting alone can finish while its native worker is still closing.
+async fn settle_repository(root: impl AsRef<Path>) {
+    awaken_sqlite_pool::EmbeddedSqlite::file(root.as_ref().join("memory.sqlite"))
+        .settled()
+        .await;
+}
 
 fn temporary_root() -> PathBuf {
     tempfile::Builder::new()
@@ -229,6 +238,7 @@ async fn materialization_rejects_nonportable_store_paths_before_any_file_write()
         );
         drop(mounter);
         drop(repository);
+        settle_repository(&root).await;
         std::fs::remove_dir_all(root).unwrap();
     }
 }
@@ -281,6 +291,7 @@ async fn materialization_never_silently_overwrites_filesystem_aliases() {
     );
     assert_eq!(repository.snapshot_heads("s").await.unwrap(), heads);
     drop(repository);
+    settle_repository(&root).await;
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -522,6 +533,7 @@ async fn unrepresentable_copy_blocks_writeback_until_source_is_repaired() {
                     drop(mount);
                     drop(mounter);
                     drop(repository);
+                    settle_repository(&root).await;
                     let reopened = SqliteMemoryRepository::open(
                         database.to_str().unwrap(),
                         awaken_time::system_clock(),
@@ -647,6 +659,7 @@ async fn unreadable_projection_never_authorizes_partial_writeback() {
         drop(mount);
         drop(mounter);
         drop(repository);
+        settle_repository(&root).await;
         std::fs::remove_dir_all(root).unwrap();
     }
 }
@@ -695,6 +708,7 @@ async fn empty_entry_and_depth_overflows_fail_before_any_repository_write() {
         drop(mount);
         drop(mounter);
         drop(repository);
+        settle_repository(&root).await;
         std::fs::remove_dir_all(root).unwrap();
     }
 }
@@ -779,6 +793,7 @@ async fn unavailable_copy_root_is_not_evidence_of_memory_deletion() {
         drop(mount);
         drop(mounter);
         drop(repository);
+        settle_repository(&root).await;
         std::fs::remove_dir_all(root).unwrap();
     }
 }
@@ -907,6 +922,7 @@ async fn concurrent_copy_harvest_preserves_one_winner_and_retry_evidence() {
             drop(right);
             drop(mounter);
             drop(repository);
+            settle_repository(&root).await;
             let reopened = SqliteMemoryRepository::open(
                 database.to_str().unwrap(),
                 awaken_time::system_clock(),
@@ -919,6 +935,7 @@ async fn concurrent_copy_harvest_preserves_one_winner_and_retry_evidence() {
                 durable
             );
             drop(reopened);
+            settle_repository(&root).await;
             std::fs::remove_dir_all(root).unwrap();
         }
     }
@@ -999,6 +1016,7 @@ async fn unsafe_copy_entries_fail_before_any_durable_mutation() {
         drop(mount);
         drop(mounter);
         drop(repository);
+        settle_repository(&root).await;
         std::fs::remove_dir_all(root).unwrap();
     }
 }
@@ -1038,6 +1056,7 @@ async fn an_existing_empty_copy_is_an_intentional_delete_not_a_missing_tree() {
     drop(mount);
     drop(mounter);
     drop(repository);
+    settle_repository(&root).await;
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -1118,6 +1137,7 @@ async fn windows_junction_is_not_a_readable_memory_projection() {
         drop(mount);
         drop(mounter);
         drop(repository);
+        settle_repository(&root).await;
         std::fs::remove_dir_all(root).unwrap();
     }
 }
@@ -1188,6 +1208,7 @@ async fn partial_copy_commit_keeps_per_file_truth_across_retry_and_reopen() {
         drop(mount);
         drop(mounter);
         drop(repository);
+        settle_repository(&root).await;
         let repository = Arc::new(
             SqliteMemoryRepository::open(database.to_str().unwrap(), awaken_time::system_clock())
                 .await
@@ -1228,6 +1249,7 @@ async fn partial_copy_commit_keeps_per_file_truth_across_retry_and_reopen() {
         assert_eq!(repository.list_versions("s").await.unwrap(), history);
         drop(mounter);
         drop(repository);
+        settle_repository(&root).await;
         std::fs::remove_dir_all(root).unwrap();
     }
 }
@@ -1267,6 +1289,7 @@ async fn recovered_copy_retries_committed_write_without_a_second_version() {
     drop(mount);
     drop(mounter);
     drop(repository);
+    settle_repository(&root).await;
     let repository = Arc::new(
         SqliteMemoryRepository::open(database.to_str().unwrap(), awaken_time::system_clock())
             .await
@@ -1301,6 +1324,7 @@ async fn recovered_copy_retries_committed_write_without_a_second_version() {
     );
     drop(replacement);
     drop(repository);
+    settle_repository(&root).await;
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -1407,6 +1431,7 @@ async fn concurrent_identical_edits_converge_but_different_creates_conflict() {
         drop(right);
         drop(mounter);
         drop(repository);
+        settle_repository(&root).await;
         std::fs::remove_dir_all(root).unwrap();
     }
 }
@@ -1463,8 +1488,10 @@ async fn copy_mount_reconciles_once_and_survives_mounter_replacement() {
     std::fs::create_dir_all(first_projection.join("nested")).expect("create nested directory");
     std::fs::write(first_projection.join("nested/new.md"), "new").expect("create memory");
     mount.teardown().await.unwrap();
+    drop(mount);
     drop(mounter);
     drop(repository);
+    settle_repository(&root).await;
 
     let replacement_repository = Arc::new(
         SqliteMemoryRepository::open(
@@ -1494,5 +1521,9 @@ async fn copy_mount_reconciles_once_and_survives_mounter_replacement() {
     assert!(!second_projection.join("deleted.md").exists(), "M2/E2");
 
     replacement_mount.teardown().await.unwrap();
-    std::fs::remove_dir_all(root).ok();
+    drop(replacement_mount);
+    drop(replacement);
+    drop(replacement_repository);
+    settle_repository(&root).await;
+    std::fs::remove_dir_all(root).unwrap();
 }

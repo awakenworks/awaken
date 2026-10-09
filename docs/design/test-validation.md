@@ -198,6 +198,13 @@ that spawns `ping` introduces an unowned descendant and keeps captured output
 open for 30 seconds; it cannot qualify direct-child retirement. Unix's private
 process-group matrix separately proves real descendant retirement.
 
+Durable SQLite fixtures release every repository/mount owner and await the
+canonical `EmbeddedSqlite::settled()` witness before opening a replacement or
+deleting their owned directory. Dropping a repository only schedules
+asynchronous connection cleanup; it does not prove that Windows has released
+the SQLite file handle. Copy lifecycle tests require physical fixture removal
+and keep every durable head/history assertion before this closure boundary.
+
 The portability lane qualifies every name-filtered Rust selection against
 its actual execution, so a moved or empty selection cannot pass. Linux-only
 Namespace replay remains owned by the required Linux lane. On native Windows,
