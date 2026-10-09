@@ -112,9 +112,7 @@ impl ManagedState {
                             let owner = (thread != &session_id).then_some(thread.as_str());
                             record
                                 .projected_tool_index_for(owner)
-                                .latest
-                                .get(call)
-                                .cloned()
+                                .latest_id(call)
                                 .ok_or_else(|| {
                                     StateError::Run(RunError::internal(
                                         "an answerable pause has no public Managed tool event",

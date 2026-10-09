@@ -97,9 +97,7 @@ impl ManagedState {
         // decision is committed audit truth about a call; the transcript alone
         // cannot distinguish a refused call from an executed one whose tool
         // returned an error.
-        record.permission_decisions = permission_harvest::harvest_permission_decisions(
-            evidence.root.iter().chain(evidence.children.values()),
-        );
+        record.project_recorded_permissions(index)?;
         merge_durable_inbound_projections(record, &evidence.durable_inbound);
         record.primary_thread_usage = evidence.primary_thread_usage.clone();
         // Cause C1: an Awaiting interval and its answerable target committed;
@@ -173,26 +171,15 @@ impl ManagedState {
                 .expect("a committed root Message belongs to the same ordering index");
             let message = fold.message;
             let coordinates = evidence.root_response_coordinates.get(&message.id.0);
-            let message_source_run_id = fold.source_run_id;
-            let tool_index = record.projected_tool_index_for(None);
-            let pending_history = fold.pending_history();
-            let selected = transcript_evidence.project_message(
-                message,
-                &tool_index.sources,
-                message_source_run_id.map(|run_id| run_id.0.as_str()),
-                &pending_history,
-            );
-            // This Message's exact committed Awaiting history classifies its
-            // calls. Supplying the current wait to an unrelated older Message
-            // would synthesize a Run-qualified tool before the owning Message.
-            let mut projected = project_messages_with_mcp_ids(
-                std::slice::from_ref(&selected.message),
-                None,
-                &tool_index.all,
-                tool_index.mcp,
-                transcript_evidence.advisor_blocks(),
-                &pending_history,
-            );
+            let (selected, projected) =
+                super::super::transcript_projection::project_committed_message(
+                    record,
+                    None,
+                    &fold,
+                    index,
+                    None,
+                    transcript_evidence,
+                )?;
             if let Some(input) = transcript_user_input(
                 message,
                 session_id,
@@ -207,13 +194,6 @@ impl ManagedState {
                     input,
                 );
             }
-            self.qualify_tool_projection(
-                record,
-                None,
-                std::slice::from_ref(&selected.message),
-                message_source_run_id,
-                &mut projected,
-            )?;
             for (ordinal, projected) in projected.into_iter().enumerate() {
                 let kind = projected.kind;
                 match projected.id {

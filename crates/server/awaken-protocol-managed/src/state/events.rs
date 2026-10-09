@@ -3,7 +3,7 @@
 //! the live-inbox surface, and `send_events`/`list_events`.
 
 use super::*;
-use crate::types::{EvaluatedPermission, RecordedPermission, SpanModelUsage};
+use crate::types::{EvaluatedPermission, SpanModelUsage};
 use awaken_agent_contract::RunLifecycleCursor;
 use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
 #[cfg(test)]
@@ -329,7 +329,9 @@ fn validate_durable_outcome_projection(
 /// A committed prefix the timeline domain refuses to project is an internal
 /// Runtime fault, or a damaged prefix only an interrupt settles; either way
 /// the published projection is kept.
-fn projection_error(error: awaken_managed_session_events::ProjectionError) -> StateError {
+pub(super) fn projection_error(
+    error: awaken_managed_session_events::ProjectionError,
+) -> StateError {
     match error {
         awaken_managed_session_events::ProjectionError::Corrupt(message) => {
             StateError::Run(RunError::internal(message))
@@ -360,6 +362,7 @@ struct ChildTranscriptProjection<'a> {
 /// drifting into parallel parameter lists without introducing another owner.
 #[derive(Clone, Copy)]
 struct DelegationProjectionEvidence<'a> {
+    order_index: &'a awaken_managed_session_events::OrderIndex<'a>,
     links: &'a [CoordinatedThreadLink],
     snapshots: &'a std::collections::HashMap<
         String,
@@ -597,24 +600,20 @@ fn public_child_thread_id(target: &SessionThreadTarget) -> Option<&str> {
 /// results, but cannot distinguish an Agent tool from a custom tool; that wire
 /// constraint therefore remains at this adapter boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProjectedToolUseFamily {
+pub(super) enum ProjectedToolUseFamily {
     Tool,
     Custom,
     Mcp,
 }
 
 impl ProjectedToolUseFamily {
-    fn from_kind(kind: &OutboundKind) -> Option<Self> {
+    pub(super) fn from_kind(kind: &OutboundKind) -> Option<Self> {
         match kind {
             OutboundKind::AgentToolUse { .. } => Some(Self::Tool),
             OutboundKind::AgentCustomToolUse { .. } => Some(Self::Custom),
             OutboundKind::AgentMcpToolUse { .. } => Some(Self::Mcp),
             _ => None,
         }
-    }
-
-    fn from_event(event: &Event) -> Option<Self> {
-        Self::from_kind(&event.kind)
     }
 }
 

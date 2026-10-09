@@ -26,6 +26,7 @@ mod lifecycle;
 mod observation;
 mod order;
 mod outcome;
+mod permission;
 mod position;
 mod prefix;
 mod role;
@@ -82,12 +83,14 @@ pub use role::{ManagedEventType, TranscriptRole, phase};
 pub use stop::{StopFact, terminal_stop};
 pub use transcript::{
     AdvisorConsultationBlocks, CommittedMessageProjection, CommittedTranscriptEvidence,
-    RuntimeToolFollowupAdmission, RuntimeToolProjectionPhase, advisor_consultation_blocks,
-    assistant_response_coordinates, committed_transcript_evidence, fold_transcript,
-    validate_committed_message_identities,
+    RuntimeToolFollowupAdmission, RuntimeToolProjectionPhase, ToolResultSource,
+    advisor_consultation_blocks, assistant_response_coordinates, committed_transcript_evidence,
+    fold_transcript, validate_committed_message_identities,
 };
 pub use transcript_plan::{
     ChildTranscript, ChildTranscriptPlan, ChildTranscriptStep, MessageFold, plan_child_transcript,
     plan_folds,
 };
 pub use usage::committed_thread_usage;
+
+pub use permission::{RecordedToolPermission, RecordedToolPermissions, recorded_tool_permissions};

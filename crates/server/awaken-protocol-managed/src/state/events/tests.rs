@@ -21,6 +21,7 @@ mod prefix_monotonicity;
 mod refresh_failure;
 mod replica_switch;
 mod timeline_scenarios;
+mod tool_occurrences;
 mod warm_cold_equivalence;
 
 use super::committed_projection::{
@@ -3581,100 +3582,6 @@ async fn pending_child_reply_fixture(
 }
 
 #[tokio::test]
-async fn client_result_index_is_occurrence_exact_when_runtime_call_ids_repeat() {
-    // Cause/effect graph: C1 one custom tool occurrence has a qualified public
-    // id and an admitted client result; C2 a later server-executed occurrence
-    // reuses the same Runtime-local call id but has a different source id.
-    // Effects: E1 C1's neutral Runtime result is suppressed; E2 C2's result is
-    // retained and binds to C2, never C1. Decision table: R1=C1+!C2=>E1;
-    // R2=C1+C2=>E2. This is the alias boundary omitted by family-only tests:
-    // settlement is indexed by full public occurrence identity, not raw call id.
-    let state = ManagedState::new(RehydrateFake::default()).await;
-    let session = state
-        .create_session(
-            serde_json::from_value(serde_json::json!({
-                "agent": "coder", "environment_id": "env_local"
-            }))
-            .unwrap(),
-            awaken_tenancy::DEFAULT_WORKSPACE_ID,
-        )
-        .await
-        .unwrap();
-    let first = managed_tool_event_id(&session.id, "source-1", "same-call");
-    let second = managed_tool_event_id(&session.id, "source-2", "same-call");
-    let mut record = {
-        let mut records = state.sessions.lock().unwrap();
-        let record = records.get_mut(&session.id).unwrap();
-        record.events.extend([
-            Event {
-                id: first.clone(),
-                kind: OutboundKind::AgentCustomToolUse {
-                    name: "client_tool".into(),
-                    input: serde_json::json!({}),
-                    session_thread_id: None,
-                },
-                processed_at: Some(LEGACY_UNRECORDED_AT.into()),
-            },
-            Event {
-                id: "client-result".into(),
-                kind: OutboundKind::UserCustomToolResult {
-                    custom_tool_use_id: first.clone(),
-                    content: Some(vec![ContentBlock::text("client result")]),
-                    is_error: false,
-                    session_thread_id: None,
-                },
-                processed_at: Some(LEGACY_UNRECORDED_AT.into()),
-            },
-        ]);
-        record.clone()
-    };
-    let result = || ProjectedEvent {
-        id: None,
-        kind: OutboundKind::AgentToolResult {
-            tool_use_id: "same-call".into(),
-            content: vec![ContentBlock::text("result")],
-            is_error: Some(false),
-        },
-        // A result is not a call, so it carries no call identity of its own.
-        source_tool_call_id: None,
-    };
-    let mut first_result = vec![result()];
-    state
-        .qualify_tool_projection(&record, None, &[], None, &mut first_result)
-        .unwrap();
-    assert!(
-        first_result.is_empty(),
-        "R1/E1 exact client result owns the wire"
-    );
-
-    record.events.push(Event {
-        id: second.clone(),
-        kind: OutboundKind::AgentToolUse {
-            name: "bash".into(),
-            input: serde_json::json!({}),
-            evaluated_permission: Some(EvaluatedPermission::Allow),
-            evaluation: None,
-            session_thread_id: None,
-        },
-        processed_at: Some(LEGACY_UNRECORDED_AT.into()),
-    });
-    let mut second_result = vec![result()];
-    state
-        .qualify_tool_projection(&record, None, &[], None, &mut second_result)
-        .unwrap();
-    assert!(
-        matches!(
-            &second_result[..],
-            [ProjectedEvent {
-                kind: OutboundKind::AgentToolResult { tool_use_id, .. },
-                ..
-            }] if tool_use_id == &second
-        ),
-        "R2/E2 reused Runtime id binds only to its latest public occurrence"
-    );
-}
-
-#[tokio::test]
 async fn terminal_tool_reply_rejects_new_admission_but_replays_exact_receipt() {
     // Cause/effect table: C1 an exact reply to a current Awaiting child passes
     // strict admission and is retained under one request key; C2 that Run ends
@@ -5540,8 +5447,8 @@ async fn newer_same_run_terminal_replaces_deferred_scheduled_awaiting_reason() {
         assert!(
             record
                 .projected_tool_index_for(None)
-                .latest
-                .contains_key(call_id),
+                .latest_id(call_id)
+                .is_some(),
             "S1/E1 answerable public tool"
         );
         assert!(

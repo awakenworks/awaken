@@ -8,8 +8,15 @@ use std::collections::{HashMap, HashSet};
 use super::*;
 
 mod event_page_index;
+use super::events::ProjectedToolUseFamily;
 use event_page_index::EventPageIndex;
 
+struct ProjectedToolUse {
+    id: String,
+    family: ProjectedToolUseFamily,
+}
+
+#[derive(Default)]
 pub(super) struct ProjectedToolIndex {
     pub(super) all: HashSet<String>,
     /// Exact public tool-use occurrences already settled by a client-provided
@@ -19,12 +26,70 @@ pub(super) struct ProjectedToolIndex {
     pub(super) client_settled_occurrences: HashSet<String>,
     /// Authored custom-tool family of each exact public occurrence.
     pub(super) custom: HashSet<String>,
-    pub(super) mcp: Vec<String>,
-    pub(super) latest: HashMap<String, String>,
+    /// The latest public occurrence and its family are one projection. An
+    /// earlier MCP use cannot classify a later builtin use of the same raw id.
+    latest: HashMap<String, ProjectedToolUse>,
     /// Exact committed source occurrence of every qualified tool-use Event.
     /// Rebuilt from the append-only Event log; never persisted as another
     /// projection cursor or tool authority.
     pub(super) sources: HashSet<(String, String)>,
+}
+
+impl ProjectedToolIndex {
+    /// Replay and incremental qualification share this one indexing operation.
+    pub(super) fn observe_tool_use(
+        &mut self,
+        call_id: &str,
+        id: String,
+        family: ProjectedToolUseFamily,
+    ) {
+        self.all.insert(call_id.to_string());
+        if family == ProjectedToolUseFamily::Custom {
+            self.custom.insert(id.clone());
+        }
+        if let Some(identity) = crate::project::decode_managed_tool_event_id(&id) {
+            self.sources
+                .insert((identity.source_id.to_string(), identity.call_id.to_string()));
+        }
+        self.latest
+            .insert(call_id.to_string(), ProjectedToolUse { id, family });
+    }
+
+    pub(super) fn latest_id(&self, call_id: &str) -> Option<String> {
+        self.latest.get(call_id).map(|tool| tool.id.clone())
+    }
+
+    pub(super) fn latest_family(&self, call_id: &str) -> Option<ProjectedToolUseFamily> {
+        self.latest.get(call_id).map(|tool| tool.family)
+    }
+
+    pub(super) fn result_id(
+        &self,
+        thread_id: &str,
+        call_id: &str,
+        source: Option<&awaken_managed_session_events::ToolResultSource>,
+    ) -> Result<String, StateError> {
+        let source = source
+            .filter(|source| source.call_id == call_id)
+            .ok_or_else(|| {
+                StateError::Run(RunError::internal(
+                    "tool result has no exact committed source",
+                ))
+            })?;
+        if !self
+            .sources
+            .contains(&(source.source_id.clone(), source.call_id.clone()))
+        {
+            return Err(StateError::Run(RunError::internal(
+                "tool result source has no published ToolUse",
+            )));
+        }
+        Ok(crate::project::managed_tool_event_id(
+            thread_id,
+            &source.source_id,
+            call_id,
+        ))
+    }
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -261,9 +326,9 @@ pub(super) struct SessionRecord {
     /// decision beside the transcript lets the projection report the recorded
     /// answer instead of inferring one from the shape of the result — an
     /// inference that read a refusal as a permission.
-    /// Recorded gate decisions keyed by `(thread_id, call_id)`.
+    /// Recorded gate decisions keyed by `(thread_id, source_id, call_id)`.
     pub(super) permission_decisions:
-        HashMap<(String, String), crate::types::session::RecordedPermission>,
+        HashMap<(String, String, String), crate::types::session::RecordedPermission>,
     /// Disposable visibility owner for transcript-derived events. Most entries
     /// name the child whose local stream owns the event; advisor advice names the
     /// primary because the official wire excludes that delivery from the
@@ -452,16 +517,51 @@ impl SessionRecord {
         true
     }
 
-    /// The gate's recorded decision for one call of `owner_thread_id` (the
-    /// primary Thread when `None`). Call ids are unique only within a Thread.
-    pub(super) fn recorded_permission(
+    /// Replace this disposable index only after one complete pure reduction.
+    pub(super) fn project_recorded_permissions(
+        &mut self,
+        index: &awaken_managed_session_events::OrderIndex<'_>,
+    ) -> Result<(), StateError> {
+        let index = crate::types::session::RecordedPermission::project_index(index)
+            .map_err(crate::state::events::projection_error)?;
+        self.permission_decisions = index;
+        Ok(())
+    }
+
+    /// Decorate one existing public ToolUse from its exact committed occurrence.
+    pub(super) fn apply_recorded_permission(
         &self,
         owner_thread_id: Option<&str>,
-        call_id: &str,
-    ) -> Option<&crate::types::session::RecordedPermission> {
+        source_id: Option<&str>,
+        event: &mut crate::project::ProjectedEvent,
+    ) {
+        let Some((source_id, call_id)) = source_id.zip(event.source_tool_call_id.as_deref()) else {
+            return;
+        };
         let thread_id = owner_thread_id.unwrap_or(&self.session.id);
-        self.permission_decisions
-            .get(&(thread_id.to_string(), call_id.to_string()))
+        let Some(recorded) = self.permission_decisions.get(&(
+            thread_id.to_string(),
+            source_id.to_string(),
+            call_id.to_string(),
+        )) else {
+            return;
+        };
+        match &mut event.kind {
+            OutboundKind::AgentToolUse {
+                evaluated_permission,
+                evaluation,
+                ..
+            }
+            | OutboundKind::AgentMcpToolUse {
+                evaluated_permission,
+                evaluation,
+                ..
+            } => {
+                *evaluated_permission = Some(recorded.decision);
+                *evaluation = recorded.evaluation.clone();
+            }
+            _ => {}
+        }
     }
 
     pub(super) fn has_event_id(&mut self, event_id: &str) -> bool {
@@ -491,12 +591,7 @@ impl SessionRecord {
         &self,
         owner_thread_id: Option<&str>,
     ) -> ProjectedToolIndex {
-        let mut all = HashSet::new();
-        let mut client_settled_occurrences = HashSet::new();
-        let mut custom = HashSet::new();
-        let mut mcp = Vec::new();
-        let mut latest = HashMap::new();
-        let mut sources = HashSet::new();
+        let mut index = ProjectedToolIndex::default();
         for event in &self.events {
             // Client replies are admitted on the Session root event log even
             // when their globally qualified tool id targets a child Thread.
@@ -507,10 +602,12 @@ impl SessionRecord {
                 OutboundKind::UserCustomToolResult {
                     custom_tool_use_id, ..
                 } => {
-                    client_settled_occurrences.insert(custom_tool_use_id.clone());
+                    index
+                        .client_settled_occurrences
+                        .insert(custom_tool_use_id.clone());
                 }
                 OutboundKind::UserToolResult { tool_use_id, .. } => {
-                    client_settled_occurrences.insert(tool_use_id.clone());
+                    index.client_settled_occurrences.insert(tool_use_id.clone());
                 }
                 _ => {}
             }
@@ -519,33 +616,11 @@ impl SessionRecord {
             }
             let runtime_call_id = crate::project::decode_managed_tool_event_id(&event.id)
                 .map_or(event.id.as_str(), |identity| identity.call_id);
-            if let Some(identity) = crate::project::decode_managed_tool_event_id(&event.id) {
-                sources.insert((identity.source_id.to_string(), identity.call_id.to_string()));
-            }
-            match &event.kind {
-                OutboundKind::AgentToolUse { .. } | OutboundKind::AgentCustomToolUse { .. } => {
-                    if matches!(event.kind, OutboundKind::AgentCustomToolUse { .. }) {
-                        custom.insert(event.id.clone());
-                    }
-                    all.insert(runtime_call_id.to_string());
-                    latest.insert(runtime_call_id.to_string(), event.id.clone());
-                }
-                OutboundKind::AgentMcpToolUse { .. } => {
-                    all.insert(runtime_call_id.to_string());
-                    mcp.push(runtime_call_id.to_string());
-                    latest.insert(runtime_call_id.to_string(), event.id.clone());
-                }
-                _ => {}
+            if let Some(family) = ProjectedToolUseFamily::from_kind(&event.kind) {
+                index.observe_tool_use(runtime_call_id, event.id.clone(), family);
             }
         }
-        ProjectedToolIndex {
-            all,
-            client_settled_occurrences,
-            custom,
-            mcp,
-            latest,
-            sources,
-        }
+        index
     }
 
     pub(super) fn message_was_projected(&self, thread_id: &str, message_id: &str) -> bool {

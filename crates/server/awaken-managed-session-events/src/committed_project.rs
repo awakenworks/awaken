@@ -55,14 +55,12 @@ enum SourceEvent {
 /// Project the coordination slice once from committed source evidence.
 /// `public_tool_id` is the Managed adapter's existing identity codec; changing
 /// its bytes would change previously issued coordination FactKeys.
-#[must_use]
 pub fn project(
     prefix: &CommittedPrefix<'_>,
     public_tool_id: impl Fn(&str, &str, &str) -> String,
-) -> CommittedProjection {
+) -> Result<CommittedProjection, crate::ProjectionError> {
     let mut source_events = Vec::new();
     let mut orders = HashMap::new();
-    let mut latest = HashMap::<String, String>::new();
     let mut projected_sources = std::collections::HashSet::<(String, String)>::new();
     if let Some(root) = prefix.root {
         // A committed Awaiting audit can make a tool use public before its
@@ -100,7 +98,6 @@ pub fn project(
             ) {
                 orders.insert(event_id.clone(), order);
             }
-            latest.insert(pending.tool_use_id.clone(), event_id.clone());
             source_events.push(SourceEvent::Use {
                 event_id,
                 call_id: pending.tool_use_id.clone(),
@@ -144,6 +141,7 @@ pub fn project(
                         &projected_sources,
                         fold.source_run_id.map(|run| run.0.as_str()),
                         &fold.pending_history(),
+                        None,
                     );
                     for block in &projected.message.content {
                         let ContentBlock::ToolUse { id, name, input } = block else {
@@ -161,7 +159,6 @@ pub fn project(
                         {
                             orders.insert(event_id.clone(), order);
                         }
-                        latest.insert(id.clone(), event_id.clone());
                         source_events.push(SourceEvent::Use {
                             event_id,
                             call_id: id.clone(),
@@ -171,35 +168,14 @@ pub fn project(
                         });
                     }
                 }
-                Role::Tool => {
-                    for (block_ordinal, block) in message.content.iter().enumerate() {
-                        let ContentBlock::ToolResult {
-                            tool_use_id,
-                            content,
-                            is_error,
-                        } = block
-                        else {
-                            continue;
-                        };
-                        let Some(public_tool_use_id) = latest.get(tool_use_id.as_str()) else {
-                            continue;
-                        };
-                        let event_id = format!("committed-result:{}:{block_ordinal}", message.id.0);
-                        if let Some(order) = prefix.order_index.message_call_order(
-                            prefix.session_id,
-                            &message.id.0,
-                            tool_use_id,
-                        ) {
-                            orders.insert(event_id.clone(), order);
-                        }
-                        source_events.push(SourceEvent::Result {
-                            event_id,
-                            tool_use_id: public_tool_use_id.clone(),
-                            content: content.clone(),
-                            is_error: *is_error,
-                        });
-                    }
-                }
+                Role::Tool => append_result_events(
+                    prefix,
+                    message,
+                    &projected_sources,
+                    &mut source_events,
+                    &mut orders,
+                    &public_tool_id,
+                )?,
                 Role::User | Role::System => {}
             }
         }
@@ -239,7 +215,7 @@ pub fn project(
         .iter()
         .map(|(id, order)| (id.as_str(), *order))
         .collect();
-    CommittedProjection {
+    Ok(CommittedProjection {
         cross_posts: cross_posts(&events, prefix.links),
         coordination_orders: coordination_orders(
             prefix.order_index,
@@ -247,7 +223,68 @@ pub fn project(
             prefix.links,
             &order_refs,
         ),
+    })
+}
+
+fn append_result_events(
+    prefix: &CommittedPrefix,
+    message: &awaken_agent_contract::agent::message::Message,
+    projected_sources: &std::collections::HashSet<(String, String)>,
+    source_events: &mut Vec<SourceEvent>,
+    orders: &mut HashMap<String, EventPosition>,
+    public_tool_id: &impl Fn(&str, &str, &str) -> String,
+) -> Result<(), crate::ProjectionError> {
+    let transcript = prefix
+        .order_index
+        .transcript_evidence(prefix.session_id)
+        .expect("the result belongs to the same committed root prefix");
+    let mut sources = prefix
+        .order_index
+        .tool_result_sources(prefix.session_id, message)?
+        .into_iter();
+    for (block_ordinal, block) in message.content.iter().enumerate() {
+        let ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } = block
+        else {
+            continue;
+        };
+        if transcript
+            .advisor_blocks()
+            .is_result(&message.id.0, block_ordinal)
+        {
+            continue;
+        }
+        let source = sources
+            .next()
+            .filter(|source| source.call_id == *tool_use_id)
+            .ok_or_else(|| {
+                crate::ProjectionError::corrupt(
+                    "coordination result has no exact committed ToolUse source",
+                )
+            })?;
+        if !projected_sources.contains(&(source.source_id.clone(), source.call_id.clone())) {
+            continue;
+        }
+        let public_tool_use_id = public_tool_id(prefix.session_id, &source.source_id, tool_use_id);
+        let event_id = format!("committed-result:{}:{block_ordinal}", message.id.0);
+        if let Some(order) =
+            prefix
+                .order_index
+                .message_call_order(prefix.session_id, &message.id.0, tool_use_id)
+        {
+            orders.insert(event_id.clone(), order);
+        }
+        source_events.push(SourceEvent::Result {
+            event_id,
+            tool_use_id: public_tool_use_id,
+            content: content.clone(),
+            is_error: *is_error,
+        });
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -368,7 +405,8 @@ mod tests {
                     order_index: &index,
                 },
                 |thread, source, call| format!("{thread}|{source}|{call}"),
-            );
+            )
+            .unwrap();
             assert_eq!(projected.cross_posts.len(), usize::from(expected), "{rule}");
             if expected {
                 let post = &projected.cross_posts[0];
@@ -478,7 +516,8 @@ mod tests {
                 order_index: &index,
             },
             |thread, source, call| format!("{thread}|{source}|{call}"),
-        );
+        )
+        .unwrap();
         assert_eq!(plan.cross_posts.len(), 1, "R2/E2");
         let key = &plan.cross_posts[0].key;
         assert!(

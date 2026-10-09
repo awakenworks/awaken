@@ -20,7 +20,6 @@ mod historical_pending;
 mod interval_aggregate_projection;
 #[cfg(test)]
 mod oracle_tests;
-mod permission_harvest;
 mod publication;
 mod refresh_entrypoint;
 pub(crate) use refresh_entrypoint::ProjectionObservationDecision;
@@ -195,26 +194,7 @@ impl ManagedState {
         // One domain plan selects both interval-owned and fallback aggregate
         // facts. The adapter only renders it after root/child tool identities
         // exist; it cannot run a second lifecycle selection walk.
-        let aggregate_plan = awaken_managed_session_events::plan_aggregate(
-            &persisted,
-            &evidence.acceptance.accepted,
-            &evidence.historical_pending,
-            &evidence.links,
-        )
-        .map_err(projection_error)?;
-        let coordination = awaken_managed_session_events::project(
-            &awaken_managed_session_events::CommittedPrefix {
-                session_id,
-                root: evidence.root.as_ref(),
-                root_blocked: evidence.root_blocked(session_id),
-                root_response_coordinates: &evidence.root_response_coordinates,
-                links: &evidence.links,
-                lifecycle: &evidence.acceptance.accepted,
-                historical_pending: &evidence.historical_pending,
-                order_index: &order_index,
-            },
-            managed_tool_event_id,
-        );
+        let (aggregate_plan, coordination) = evidence.derive_plans(&persisted, &order_index)?;
 
         // Build the complete disposable projection on a private result snapshot. A
         // transcript can be observed between its ToolUse and ToolResult commits,
@@ -226,7 +206,7 @@ impl ManagedState {
         let record = &mut staged_record;
         let root =
             self.project_root_prefix(record, session_id, &persisted, &evidence, &order_index)?;
-        let delegation = evidence.delegation();
+        let delegation = evidence.delegation(&order_index);
         let mut child_threads =
             self.append_delegation_projections(record, delegation, &coordination)?;
         self.close_aggregate(

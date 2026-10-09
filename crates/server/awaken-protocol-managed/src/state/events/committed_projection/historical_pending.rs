@@ -59,20 +59,20 @@ impl ManagedState {
             if record.has_event_id(&qualified_id) {
                 continue;
             }
-            let tool_index = record.projected_tool_index_for(owner_thread_id);
             let mut projected = project_messages_with_mcp_ids(
                 &[],
                 Some(pending),
                 &std::collections::HashSet::new(),
-                tool_index.mcp,
+                std::iter::empty(),
                 &Default::default(),
                 &[pending],
             );
-            self.qualify_tool_projection(
+            Self::qualify_tool_projection(
                 record,
                 owner_thread_id,
                 &[],
                 Some(&lifecycle.run_id),
+                &[],
                 &mut projected,
             )?;
             for projected in projected {

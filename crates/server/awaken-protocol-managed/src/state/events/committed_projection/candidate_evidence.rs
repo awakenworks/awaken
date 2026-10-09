@@ -44,6 +44,43 @@ pub(super) struct CandidateEvidence {
 }
 
 impl CandidateEvidence {
+    /// Derive both existing domain plans from this one fenced prefix before
+    /// any disposable record is changed. Source failures abort the candidate.
+    pub(super) fn derive_plans(
+        &self,
+        persisted: &awaken_session_state_contract::PersistedSession,
+        index: &OrderIndex<'_>,
+    ) -> Result<
+        (
+            awaken_managed_session_events::AggregatePlan,
+            awaken_managed_session_events::CommittedProjection,
+        ),
+        StateError,
+    > {
+        let aggregate = awaken_managed_session_events::plan_aggregate(
+            persisted,
+            &self.acceptance.accepted,
+            &self.historical_pending,
+            &self.links,
+        )
+        .map_err(projection_error)?;
+        let coordination = awaken_managed_session_events::project(
+            &awaken_managed_session_events::CommittedPrefix {
+                session_id: persisted.session_id.as_str(),
+                root: self.root.as_ref(),
+                root_blocked: self.root_blocked(persisted.session_id.as_str()),
+                root_response_coordinates: &self.root_response_coordinates,
+                links: &self.links,
+                lifecycle: &self.acceptance.accepted,
+                historical_pending: &self.historical_pending,
+                order_index: index,
+            },
+            managed_tool_event_id,
+        )
+        .map_err(projection_error)?;
+        Ok((aggregate, coordination))
+    }
+
     pub(super) async fn read(
         state: &ManagedState,
         session_id: &str,
@@ -269,8 +306,12 @@ impl CandidateEvidence {
     }
 
     /// The borrowed coordination evidence consumed by the child projector.
-    pub(super) fn delegation(&self) -> DelegationProjectionEvidence<'_> {
+    pub(super) fn delegation<'a>(
+        &'a self,
+        order_index: &'a OrderIndex<'a>,
+    ) -> DelegationProjectionEvidence<'a> {
         DelegationProjectionEvidence {
+            order_index,
             links: &self.links,
             snapshots: &self.children,
             transcripts: &self.transcripts,

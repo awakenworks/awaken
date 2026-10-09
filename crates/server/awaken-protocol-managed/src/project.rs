@@ -359,6 +359,7 @@ impl Transcoder for ManagedEncoder {
                 input,
                 disposition,
             } => {
+                self.mcp_ids.remove(id);
                 let kind = match disposition {
                     ToolDisposition::PendingClient => OutboundKind::AgentCustomToolUse {
                         name: name.clone(),
@@ -454,8 +455,17 @@ pub fn project_messages(
 
 pub(crate) use awaken_managed_session_events::{
     AdvisorConsultationBlocks, RuntimeToolFollowupAdmission, RuntimeToolProjectionPhase,
-    advisor_consultation_blocks, committed_transcript_evidence,
+    advisor_consultation_blocks,
 };
+
+pub(crate) fn mcp_result_call_ids(
+    sources: &[awaken_managed_session_events::ToolResultSource],
+) -> impl Iterator<Item = String> + '_ {
+    sources
+        .iter()
+        .filter(|source| awaken_agent_contract::McpToolId::claims_namespace(&source.name))
+        .map(|source| source.call_id.clone())
+}
 
 /// Project a committed transcript delta while retaining MCP call identities
 /// learned from the already-projected prefix. Active-active cache refresh uses
@@ -482,6 +492,56 @@ pub(crate) fn project_messages_with_mcp_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_managed_session_events::committed_transcript_evidence;
+
+    #[test]
+    fn reused_tool_call_ids_keep_the_current_builtin_or_mcp_result_family() {
+        // C1 raw id repeats; C2 the first/second calls are builtin/MCP or
+        // MCP/builtin; C3 each result follows its own call. R1 all C1-C3
+        // rows => each result has its own call's family. A past MCP id must
+        // not permanently classify a later builtin result in this encoder.
+        use awaken_agent_contract::agent::content::ContentBlock;
+        use awaken_agent_contract::agent::message::{Id, Message, Role};
+        for names in [["mcp__srv__echo", "read"], ["read", "mcp__srv__echo"]] {
+            let mut messages = Vec::new();
+            for (step, name) in names.iter().enumerate() {
+                messages.push(Message::new(
+                    Id(format!("assistant-{step}")),
+                    Role::Assistant,
+                    vec![ContentBlock::tool_use(
+                        "reused",
+                        *name,
+                        serde_json::json!({}),
+                    )],
+                ));
+                messages.push(Message::new(
+                    Id(format!("result-{step}")),
+                    Role::Tool,
+                    vec![ContentBlock::tool_result(
+                        "reused",
+                        vec![ContentBlock::text("done")],
+                    )],
+                ));
+            }
+            let events = project_messages(&messages, None);
+            let results = events
+                .iter()
+                .filter_map(|event| match event.kind {
+                    OutboundKind::AgentToolResult { .. } => Some("agent.tool_result"),
+                    OutboundKind::AgentMcpToolResult { .. } => Some("agent.mcp_tool_result"),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let expected = names.map(|name| {
+                if awaken_agent_contract::McpToolId::claims_namespace(name) {
+                    "agent.mcp_tool_result"
+                } else {
+                    "agent.tool_result"
+                }
+            });
+            assert_eq!(results, expected, "R1 {names:?}");
+        }
+    }
 
     #[test]
     fn managed_tool_event_identity_is_stable_qualified_and_reversible() {
@@ -766,7 +826,7 @@ mod tests {
         let prefix = vec![first, first_result, current.clone()];
         let evidence = committed_transcript_evidence(&prefix, Some(&pending));
         let selected =
-            evidence.project_message(&current, &std::collections::HashSet::new(), None, &[]);
+            evidence.project_message(&current, &std::collections::HashSet::new(), None, &[], None);
         assert!(!selected.fully_classified, "F1/E3");
         assert!(
             matches!(
@@ -784,6 +844,7 @@ mod tests {
             &std::collections::HashSet::from([(current.id.0.clone(), "same".to_string())]),
             None,
             &[],
+            None,
         );
         assert!(!selected.fully_classified, "F2/E3");
         assert!(
@@ -805,7 +866,7 @@ mod tests {
         .concat();
         let evidence = committed_transcript_evidence(&completed, None);
         let selected =
-            evidence.project_message(&current, &std::collections::HashSet::new(), None, &[]);
+            evidence.project_message(&current, &std::collections::HashSet::new(), None, &[], None);
         assert!(selected.fully_classified, "F3/E5");
         assert_eq!(
             selected

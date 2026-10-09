@@ -26,12 +26,12 @@ pub(super) fn resolve_stop(
         StopFact::RetriesExhausted => StopReason::RetriesExhausted,
         StopFact::BudgetReached => StopReason::BudgetReached,
         StopFact::RequiresAction { calls } => {
-            let latest = record.projected_tool_index_for(owner_thread_id).latest;
+            let index = record.projected_tool_index_for(owner_thread_id);
             StopReason::RequiresAction {
                 event_ids: calls
                     .iter()
                     .map(|call| {
-                        latest.get(call).cloned().ok_or_else(|| {
+                        index.latest_id(call).ok_or_else(|| {
                             StateError::Run(RunError::internal(
                                 "Managed pending ticket has no answerable public tool event",
                             ))

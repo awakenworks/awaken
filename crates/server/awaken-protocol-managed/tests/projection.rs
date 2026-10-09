@@ -266,22 +266,14 @@ impl CommittedEvidence {
             let terminal = records.pop().expect("the terminal fact is last");
             records.extend(rows.iter().enumerate().map(|(offset, row)| {
                 awaken_agent_contract::audit::record::Record {
-                    sequence: awaken_agent_contract::encode_run_lifecycle_cursor(
-                        2 + offset as u64,
-                        0,
-                    )
-                    .unwrap()
-                    .0,
+                    sequence: awaken_agent_contract::encode_run_lifecycle_cursor(2, offset)
+                        .unwrap()
+                        .0,
                     run_id: run_id.clone(),
                     kind: awaken_agent_contract::audit::kind::Kind::PermissionDecided,
                     payload: permission_decided_payload(*row),
                 }
             }));
-            let mut terminal = terminal;
-            terminal.sequence =
-                awaken_agent_contract::encode_run_lifecycle_cursor(2 + rows.len() as u64, 0)
-                    .unwrap()
-                    .0;
             records.push(terminal);
         }
         records
@@ -301,8 +293,9 @@ impl CommittedEvidence {
         // provenance. This keeps the fake faithful to production without using
         // the transcript as the public payload authority.
         let events = self.audit_records(&run_id, &terminal_state);
-        // The terminal fact is the last audit record; the Thread commit that
-        // carried it (and the Step's new Messages) sits at that same cursor.
+        // Gate audits and their Assistant ToolUse batch share commit 2;
+        // completed results and terminal truth share commit 3. Distinct audit
+        // rows in one batch differ by event offset, not by invented commits.
         let terminal_cursor = events
             .last()
             .map(|record| {
@@ -314,10 +307,24 @@ impl CommittedEvidence {
             .expect("the fixture always commits a terminal fact");
         let mut messages = command.messages.clone();
         let mut message_commit_cursors = vec![1; messages.len()];
-        message_commit_cursors.extend(std::iter::repeat_n(
-            terminal_cursor,
-            outcome.new_messages.len(),
-        ));
+        message_commit_cursors.extend(outcome.new_messages.iter().map(|message| {
+            events
+                .iter()
+                .find(|event| {
+                    message.role == Role::Assistant
+                        && event.kind == awaken_agent_contract::audit::kind::Kind::PermissionDecided
+                        && message.content.iter().any(|block| {
+                            matches!(block, ContentBlock::ToolUse { id, .. }
+                                if event.payload["call_id"].as_str() == Some(id.as_str()))
+                        })
+                })
+                .map_or(terminal_cursor, |event| {
+                    awaken_agent_contract::decode_run_lifecycle_cursor(
+                        awaken_agent_contract::RunLifecycleCursor(event.sequence),
+                    )
+                    .0
+                })
+        }));
         messages.extend(outcome.new_messages);
         let mut state = if matches!(self, Self::Compaction) {
             vec![

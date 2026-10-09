@@ -188,25 +188,10 @@ impl ManagedState {
             let sessions = self.sessions.lock().unwrap();
             let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
             for candidate in &mut candidates {
-                let projected_event_id = record
-                    .projected_tool_index_for(public_child_thread_id(&candidate.key.target))
-                    .latest
-                    .get(&candidate.key.runtime_call_id)
-                    .cloned();
-                candidate.projected_family = projected_event_id
-                    .as_deref()
-                    .and_then(|id| record.events.iter().find(|event| event.id == id))
-                    // Upgrade recovery: main emitted the Runtime call id
-                    // directly. Its already-projected Event kind remains the
-                    // authoritative family even though the id is unqualified.
-                    .or_else(|| {
-                        record
-                            .events
-                            .iter()
-                            .find(|event| event.id == candidate.key.runtime_call_id)
-                    })
-                    .and_then(ProjectedToolUseFamily::from_event);
-                candidate.projected_event_id = projected_event_id;
+                let index =
+                    record.projected_tool_index_for(public_child_thread_id(&candidate.key.target));
+                candidate.projected_family = index.latest_family(&candidate.key.runtime_call_id);
+                candidate.projected_event_id = index.latest_id(&candidate.key.runtime_call_id);
             }
         }
         let tool_reply_phases = Self::tool_reply_projection_phases(&persisted_session, &candidates);
