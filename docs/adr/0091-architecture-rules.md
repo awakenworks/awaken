@@ -1,6 +1,6 @@
 # ADR-0091: Architecture Rules — Contract Granularity, Trait Admission, Construction-Time Capabilities, Composition Roots and Naming
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-09
 - Builds on: [ADR-0001](0001-documentation-model-and-vocabulary-alignment.md) D3 (one
   name per concept); [ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md)

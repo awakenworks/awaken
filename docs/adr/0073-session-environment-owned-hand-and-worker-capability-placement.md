@@ -14,6 +14,9 @@
   no longer the remote tool placement port) (recorded 2026-10-09)
 - Amended by: ADR-0074 (clarifies that `SessionEnvironment` stays the sole live
   environment owner; Hand process hibernation is an orthogonal local optimization)
+- Amended by: ADR-0092 (proposed; the 2026-08-10 amendment's Kubernetes feasibility
+  authority reports unschedulable and over-quota sandboxes back to placement as a typed
+  observation)
 - Depends on: ADR-0065, ADR-0066, ADR-0071, ADR-0072
 
 ## Context

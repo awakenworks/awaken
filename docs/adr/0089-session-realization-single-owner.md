@@ -1,6 +1,6 @@
 # ADR-0089: Session Realization — One Decision Point, One Executor
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-09
 - Revised: 2026-10-09 (after the ADR consistency review: the Session aggregate keeps
   the durable lease and environment truth; the first draft moved them to the realizer)

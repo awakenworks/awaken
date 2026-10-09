@@ -1,6 +1,6 @@
 # ADR-0090: One Session State Machine, Everything Else a Projection
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-09
 - Revised: 2026-10-09 (after the ADR consistency review: plan references described
   inline; relation to ADR-0089 restated)
