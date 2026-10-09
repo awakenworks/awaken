@@ -43,22 +43,34 @@ def execution_errors(inventory: str, results: str, exit_code: int) -> list[str]:
 
 
 class ExecutionTests(unittest.TestCase):
+    @staticmethod
+    def runner_fixture(fixture: Path, *entrypoint_inputs: str) -> Path:
+        from test_deadline import INPUT_GLOBS as deadline_inputs
+
+        root = Path(__file__).resolve().parents[2]
+        inputs = {*deadline_inputs, "scripts/ci/_strict_unittest.py",
+                  "scripts/ci/_rust_test_execution.sh", "scripts/ci/check_rust_test_execution.py",
+                  *entrypoint_inputs}
+        for relative in sorted(inputs):
+            target = fixture / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(root / relative, target)
+        return fixture / "scripts/ci"
+
     @unittest.skipIf(os.name == "nt", "the Bash orchestration runs in the Linux gate")
     def test_portability_entrypoint_requires_the_current_launch_adapter_selection(self) -> None:
+        # P0 the temporary entrypoint includes the deadline owner's declared
+        # inputs -> its native-shell/Job adapters load before selection. Reuse
+        # that declaration rather than a second, stale deadline dependency list.
         # P1 the exact current owner lists and executes => continue to E2E.
         # P2 empty selection or P3 former owner => reject before E2E, even when
         # Cargo itself returns success. Exercise the actual entrypoint/helper.
-        root = Path(__file__).resolve().parents[2]
         selected = "sandbox_source::tests::configured_working_directory_drives_process_and_acp_from_one_view"
         for case in ("passing", "empty", "former-owner"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
                 fixture = Path(temporary)
-                scripts = fixture / "scripts/ci"
-                scripts.mkdir(parents=True)
-                for name in ("check-trusted-host-portability.sh", "_cargo_target.sh", "_provider_environment.sh",
-                             "_rust_test_execution.sh", "_deadline.sh", "deadline.py", "check_rust_test_execution.py",
-                             "test_deadline.py", "_strict_unittest.py"):
-                    shutil.copyfile(root / "scripts/ci" / name, scripts / name)
+                scripts = self.runner_fixture(fixture, "scripts/ci/check-trusted-host-portability.sh",
+                                              "scripts/ci/_cargo_target.sh", "scripts/ci/_provider_environment.sh")
                 entrypoint = scripts / "check-trusted-host-portability.sh"
                 if case == "former-owner":
                     source = entrypoint.read_text(encoding="utf-8")
@@ -118,17 +130,15 @@ if [ "$1" = --input-type=module ]; then echo /owned/hand; else echo E2E >> "$CAL
 
     @unittest.skipIf(os.name == "nt", "the Bash orchestration runs in the Linux gate")
     def test_actual_required_runner_rejects_empty_ignored_skipped_and_failed_runs(self) -> None:
+        # E0 both orchestration fixtures consume the same complete deadline
+        # input declaration, preserving the selection decision's prerequisites.
         # E1 same argv for listing/execution, including existing libtest args.
         # E2 zero selection, E3 ignored, E4 fixture skip, E5 execution failure,
         # E6 listing failure all fail. Preserve E6's status and never execute.
-        root = Path(__file__).resolve().parents[2]
         for case in ("passing", "empty", "ignored", "skipped", "failed", "list-failed"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
                 fixture = Path(temporary)
-                scripts = fixture / "scripts/ci"
-                scripts.mkdir(parents=True)
-                for name in ("_rust_test_execution.sh", "_deadline.sh", "deadline.py", "check_rust_test_execution.py"):
-                    shutil.copyfile(root / "scripts/ci" / name, scripts / name)
+                self.runner_fixture(fixture)
                 binary = fixture / "bin"
                 binary.mkdir()
                 cargo = binary / "cargo"
