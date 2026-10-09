@@ -261,6 +261,18 @@ impl<'a> OrderIndex<'a> {
     /// The exact occurrence classifier already built for this Thread's
     /// committed snapshot. Coordination reuses it instead of refolding the
     /// same ToolUse/ToolResult prefix behind the ordering index.
+    /// Every accepted Awaiting target of this prefix that needs its
+    /// synthetic tool (see [`crate::synthetic_awaiting_tools`]).
+    pub fn synthetic_awaiting_tools(
+        &self,
+    ) -> Result<Vec<crate::SyntheticAwaitingTool>, crate::ProjectionError> {
+        crate::synthetic_awaiting_tools(
+            self.evidence.lifecycle,
+            self.evidence.historical_pending,
+            |thread_id| self.threads.get(thread_id).map(|thread| thread.snapshot),
+        )
+    }
+
     pub fn transcript_evidence(&self, thread_id: &str) -> Option<&CommittedTranscriptEvidence> {
         self.threads.get(thread_id).map(|thread| &thread.transcript)
     }

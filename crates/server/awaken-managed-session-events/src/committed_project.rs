@@ -62,38 +62,24 @@ pub fn project(
     let mut source_events = Vec::new();
     let mut orders = HashMap::new();
     let mut projected_sources = std::collections::HashSet::<(String, String)>::new();
-    if let Some(root) = prefix.root {
+    if prefix.root.is_some() {
         // A committed Awaiting audit can make a tool use public before its
-        // Assistant Message commits. Reuse the same as-of-commit predicate as
-        // the adapter's synthetic-tool renderer, then retain its Run-qualified
-        // identity when the later Message is folded.
-        let mut cursors = prefix
-            .historical_pending
-            .keys()
-            .copied()
-            .collect::<Vec<_>>();
-        cursors.sort_unstable();
-        for cursor in cursors {
-            let pending = &prefix.historical_pending[&cursor];
-            let Some(lifecycle) = prefix
-                .lifecycle
-                .iter()
-                .find(|event| event.cursor == cursor && event.thread_id.0 == prefix.session_id)
-            else {
-                continue;
-            };
-            if !crate::needs_synthetic_awaiting_tool(root, lifecycle, pending) {
+        // Assistant Message commits. Select from the same as-of-commit list
+        // as the adapter's synthetic-tool renderer, then retain its
+        // Run-qualified identity when the later Message is folded.
+        for tool in prefix.order_index.synthetic_awaiting_tools()? {
+            if tool.thread_id != prefix.session_id {
                 continue;
             }
-            projected_sources.insert((lifecycle.run_id.0.clone(), pending.tool_use_id.clone()));
+            let pending = &tool.pending;
+            projected_sources.insert((tool.run_id.0.clone(), pending.tool_use_id.clone()));
             if !is_coordination_send(&pending.name) {
                 continue;
             }
-            let event_id =
-                public_tool_id(prefix.session_id, &lifecycle.run_id.0, &pending.tool_use_id);
+            let event_id = public_tool_id(prefix.session_id, &tool.run_id.0, &pending.tool_use_id);
             if let Some(order) = prefix.order_index.tool_order(
                 prefix.session_id,
-                &lifecycle.run_id.0,
+                &tool.run_id.0,
                 &pending.tool_use_id,
             ) {
                 orders.insert(event_id.clone(), order);
@@ -101,7 +87,7 @@ pub fn project(
             source_events.push(SourceEvent::Use {
                 event_id,
                 call_id: pending.tool_use_id.clone(),
-                source_id: lifecycle.run_id.0.clone(),
+                source_id: tool.run_id.0.clone(),
                 name: pending.name.clone(),
                 input: pending.input.clone(),
             });

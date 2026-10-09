@@ -106,14 +106,7 @@ impl ManagedState {
         // project the same qualified tool event before lifecycle idle reasons;
         // a committed message or prior event remains the canonical projection.
         // Rules: H1=C1+C2+C3=>E1; H2=message/prior event=>reuse unchanged.
-        self.append_synthetic_historical_pending_projections(
-            record,
-            session_id,
-            all_accepted_lifecycle,
-            historical_pending,
-            evidence.root.as_ref(),
-            &evidence.children,
-        )?;
+        self.append_synthetic_historical_pending_projections(record, session_id, index)?;
         let projected_budget_reach = evidence
             .budget_reach
             .iter()

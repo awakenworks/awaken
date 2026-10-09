@@ -56,8 +56,8 @@ pub use error::ProjectionError;
 pub use fact::{DerivedSessionEvent, OutcomeVerdict, SessionEventKind};
 pub use fault::{RunFault, run_fault, run_state_fault};
 pub use historical::{
-    audited_await_targets, historical_message_await_name, historical_message_boundaries,
-    historical_pending_by_lifecycle, needs_synthetic_awaiting_tool,
+    SyntheticAwaitingTool, audited_await_targets, historical_message_await_name,
+    historical_message_boundaries, historical_pending_by_lifecycle, synthetic_awaiting_tools,
 };
 pub use index::{
     BudgetReachAnchor, OrderEvidence, OrderIndex, ParentTerminalEvidence,

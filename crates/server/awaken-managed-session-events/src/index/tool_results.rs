@@ -103,7 +103,8 @@ impl OrderIndex<'_> {
             }) else {
                 continue;
             };
-            if !crate::needs_synthetic_awaiting_tool(thread.snapshot, awaiting, pending) {
+            if !crate::historical::needs_synthetic_awaiting_tool(thread.snapshot, awaiting, pending)
+            {
                 continue;
             }
             if source_message.is_some_and(|message| {
