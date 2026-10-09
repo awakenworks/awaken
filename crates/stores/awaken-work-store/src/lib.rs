@@ -51,10 +51,6 @@ pub use lease_book::{LEASE_TTL_MS, LeaseBook, POLLER_WINDOW_MS};
 mod backends;
 use backends::pg_row_to_item;
 mod mutation;
-// The codec is copied verbatim into each storage context; this context uses
-// only part of it outside tests.
-#[cfg_attr(not(test), allow(dead_code))]
-mod stored_u64;
 use awaken_time::Expiry;
 use mutation::{
     LeaseAuthorityCommand, LeaseAuthorityDecision, LeaseAuthorityTuple, LeaseFence,

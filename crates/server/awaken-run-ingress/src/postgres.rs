@@ -10,6 +10,7 @@
 //! expired lease, then wake an awaiting run with pending input, then a fresh run —
 //! matches the test-support `MemoryDispatchStore` reference backend exactly.
 
+use crate::dispatch::{no_running_peer, thread_available_for_claim};
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::Id as RunId;
@@ -102,29 +103,6 @@ async fn published_checksum(
     .fetch_optional(pool)
     .await
     .map_err(|error| StoreError::Migrate(error.to_string()))
-}
-
-/// Shared PostgreSQL candidate predicate. A normal wake/fresh claim waits behind
-/// every other Running or Awaiting Run on its Thread. Cancellation waits only
-/// behind a Running peer so legacy multi-Awaiting rows can drain sequentially.
-/// The candidate is excluded in both branches, allowing its own exact wake.
-fn thread_available_for_claim(prefix: &str) -> String {
-    format!(
-        "((d.cancel_requested = 1 AND NOT EXISTS (SELECT 1 FROM {prefix}_dispatch r \
-         WHERE r.thread_id = d.thread_id AND r.run_id <> d.run_id \
-         AND r.status IN ('running', 'reservation_running'))) \
-         OR (d.cancel_requested = 0 AND NOT EXISTS (SELECT 1 FROM {prefix}_dispatch r \
-         WHERE r.thread_id = d.thread_id AND r.run_id <> d.run_id \
-         AND r.status IN ('running', 'reservation_running', 'awaiting'))))"
-    )
-}
-
-fn no_running_peer(prefix: &str) -> String {
-    format!(
-        "NOT EXISTS (SELECT 1 FROM {prefix}_dispatch r \
-         WHERE r.thread_id = d.thread_id AND r.run_id <> d.run_id \
-         AND r.status IN ('running', 'reservation_running'))"
-    )
 }
 
 /// A Postgres-backed dispatch store.

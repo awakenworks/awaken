@@ -1,7 +1,9 @@
-//! The exact `u64` <-> SQL `BIGINT` codec for the File catalog's durable authority values.
-//!
-//! Each storage context keeps its own copy of this codec; a negative row or an
-//! out-of-range domain value is a typed error rather than a silent cast.
+// @formal evidence config.generation_is_monotonic
+// @formal evidence config.stale_writer_never_applies
+// @formal entrypoint work.persisted_epoch_is_exact_nonnegative_and_nonwrapping
+//! The one driver-independent `u64` <-> SQL `BIGINT` codec.
+//! Config, File, Memory, Work and commit stores all use this exact boundary;
+//! adapters own their contextual errors, never another conversion law.
 
 /// The only representation permitted at a `u64`/SQL `BIGINT` authority
 /// boundary. SQL backends are signed; silently casting either direction can
@@ -79,10 +81,14 @@ impl TryFrom<i64> for StoredU64 {
 mod tests {
     use proptest::prelude::*;
 
-    use super::*;
+    use super::{StoredU64, StoredU64Error};
 
+    // Consolidates the five identical context-local suites without changing
+    // their input partitions. Causes: C1 SQL sign; C2 unsigned range. Effects:
+    // B1 negative => Negative; B2 zero/MAX => exact round-trip; B3 MAX+1 =>
+    // OutOfRange. The property below additionally preserves arithmetic P4/P5.
     #[test]
-    fn signed_database_boundary_is_fail_closed() {
+    fn sql_bigint_codec_boundaries_are_exact() {
         assert_eq!(
             StoredU64::try_from(-1_i64),
             Err(StoredU64Error::Negative(-1))
@@ -111,7 +117,7 @@ mod tests {
         /// | P4 | n/a | fits | result fits | E1 exact result |
         /// | P5 | n/a | fits | result exceeds/overflows | E2 typed error |
         #[test]
-        fn stored_u64_matches_checked_integer_semantics(
+        fn sql_bigint_codec_matches_checked_integer_semantics(
             signed in any::<i64>(),
             domain in any::<u64>(),
             increment in any::<u64>(),

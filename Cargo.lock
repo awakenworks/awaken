@@ -3382,7 +3382,9 @@ dependencies = [
 name = "awaken-store-runtime"
 version = "1.0.0"
 dependencies = [
+ "proptest",
  "sqlx",
+ "thiserror",
  "tokio",
 ]
 
@@ -3391,9 +3393,8 @@ name = "awaken-store-schema"
 version = "1.0.0"
 dependencies = [
  "awaken-scoped-migration",
- "proptest",
+ "awaken-store-runtime",
  "sqlx",
- "thiserror",
  "tokio",
 ]
 

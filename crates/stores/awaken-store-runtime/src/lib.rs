@@ -1,6 +1,14 @@
-//! The one PostgreSQL checkout policy (`postgres` feature): every adapter's
+//! Shared storage primitives and the PostgreSQL checkout policy (`postgres` feature).
+//!
+//! The exact unsigned BIGINT codec is driver-independent. Every SQL storage
+//! context uses its one implementation and retains its own error projection.
+//! Every PostgreSQL adapter's
 //! pool is built from `postgres_pool_options`, so a transaction-poisoned or
 //! dead connection is retired before another borrower sees it.
+
+mod stored_u64;
+
+pub use stored_u64::{StoredU64, StoredU64Error};
 
 /// Shared PostgreSQL checkout policy. Compositions select capacity; every
 /// adapter receives a clone of that pool rather than another transport owner.
