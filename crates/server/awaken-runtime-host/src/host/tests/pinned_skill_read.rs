@@ -852,11 +852,13 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
     for mismatch in ["version", "hash", "workspace"] {
         host.session_slots.update("cold", |slot| {
             slot.skills = Some(vec![v1.clone()]);
-            slot.workspace = Some(host.local_workspace().into());
+            slot.replace_frozen_with(|next| next.workspace = Some(host.local_workspace().into()));
             match mismatch {
                 "version" => slot.skills.as_mut().unwrap()[0].version = 2,
                 "hash" => slot.skills.as_mut().unwrap()[0].bundle_sha256 = "wrong".into(),
-                _ => slot.workspace = Some("other-workspace".into()),
+                _ => {
+                    slot.replace_frozen_with(|next| next.workspace = Some("other-workspace".into()))
+                }
             }
         });
         assert!(
@@ -870,7 +872,7 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
     }
     host.session_slots.update("cold", |slot| {
         slot.skills = Some(vec![v1.clone()]);
-        slot.workspace = Some(host.local_workspace().into());
+        slot.replace_frozen_with(|next| next.workspace = Some(host.local_workspace().into()));
         let binding = awaken_session_resource_contract::ResolvedSkillBinding {
             kind: awaken_agent_contract::AgentSkillKind::Custom,
             skill_id: "pinned".into(),

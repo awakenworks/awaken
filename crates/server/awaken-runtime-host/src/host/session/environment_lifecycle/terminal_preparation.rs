@@ -690,20 +690,17 @@ impl SharedHost {
         ) = self
             .session_slots
             .read(thread, |slot| {
+                let baseline = slot.frozen.baseline.as_ref();
                 (
                     slot.terminal_environment_state.clone(),
                     slot.environment_owner.clone(),
                     slot.resource_transition
                         .as_ref()
                         .map(|transition| transition.previous().resources.clone()),
-                    slot.workspace.clone(),
-                    slot.baseline
-                        .as_ref()
-                        .map(|baseline| baseline.environment.idle_retention.clone()),
+                    slot.frozen.workspace.clone(),
+                    baseline.map(|baseline| baseline.environment.idle_retention.clone()),
                     slot.realization_authority.lease().cloned(),
-                    slot.baseline
-                        .as_ref()
-                        .map(|baseline| baseline.environment.config_fingerprint.0.clone()),
+                    baseline.map(|baseline| baseline.environment.config_fingerprint.0.clone()),
                 )
             })
             .ok_or_else(|| {

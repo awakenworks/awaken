@@ -49,7 +49,7 @@ impl SessionContextAttemptExecutor {
         if let Some(result) = self
             .slots
             .read(&self.session_id, |slot| {
-                slot.tools.as_ref().map(|tools| {
+                slot.frozen.tools.as_ref().map(|tools| {
                     crate::config::project_session_tools(&mut activation.snapshot, tools)
                 })
             })
@@ -65,7 +65,7 @@ impl SessionContextAttemptExecutor {
         let seed = self
             .slots
             .read(&self.session_id, |slot| {
-                slot.baseline.as_ref().map(|baseline| {
+                slot.frozen.baseline.as_ref().map(|baseline| {
                     awaken_session_configuration_contract::SessionContextSeed::from_prompts(
                         &baseline.prompts,
                     )
@@ -404,7 +404,7 @@ mod acp_context_tests {
         let mut late = awaken_runtime_contract::RuntimeRunContext::new();
         executor.project(activation("genai"), &mut late).unwrap();
         assert_eq!(late.request_timezone.as_deref(), Some("UTC"));
-        slots.update("session-1", |slot| slot.baseline = Some(baseline.clone()));
+        slots.replace_frozen_with("session-1", |next| next.baseline = Some(baseline.clone()));
         executor.project(activation("genai"), &mut late).unwrap();
         assert_eq!(
             late.request_context
@@ -464,13 +464,15 @@ mod acp_context_tests {
         );
         assert_eq!(
             slots
-                .read("session-1", |slot| slot.baseline.clone())
+                .read("session-1", |slot| slot.frozen.baseline.clone())
                 .unwrap(),
             Some(baseline),
             "frozen truth unchanged"
         );
         slots.update("session-1", |slot| {
-            slot.baseline.as_mut().unwrap().prompts.push(seed.encode())
+            let mut baseline = slot.frozen.baseline.clone().unwrap();
+            baseline.prompts.push(seed.encode());
+            slot.replace_frozen_with(|next| next.baseline = Some(baseline))
         });
         assert!(
             executor.project(activation("genai"), &mut fresh).is_err(),
@@ -690,7 +692,7 @@ mod acp_context_tests {
                     input_schema: serde_json::json!({"type": "object"}),
                 }],
             };
-        slots.update("session-1", |slot| slot.tools = Some(flow_policy(true)));
+        slots.replace_frozen_with("session-1", |next| next.tools = Some(flow_policy(true)));
 
         let mut context = awaken_runtime_contract::RuntimeRunContext::default();
         let projected = executor
@@ -733,7 +735,7 @@ mod acp_context_tests {
             .expect("R3 replay");
         assert_eq!(replayed.snapshot, projected.snapshot, "R3/E4");
 
-        slots.update("session-1", |slot| slot.tools = Some(flow_policy(false)));
+        slots.replace_frozen_with("session-1", |next| next.tools = Some(flow_policy(false)));
         let disabled = executor
             .project(activation("genai"), &mut context)
             .expect("R2 projection");

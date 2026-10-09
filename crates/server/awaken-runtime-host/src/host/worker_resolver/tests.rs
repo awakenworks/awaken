@@ -1307,7 +1307,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     assert!(
         host.session_slots
             .read("ordinary-remote", |slot| {
-                slot.baseline.is_some()
+                slot.frozen.baseline.is_some()
                     && slot.realization_authority.lease().is_some_and(|lease| {
                         lease.owner == claimed.lease.owner && lease.epoch == claimed.lease.epoch
                     })
@@ -1876,7 +1876,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
             (
                 slot.resource_transition.clone(),
                 slot.staged_resource_effect_key.clone(),
-                slot.workspace.clone(),
+                slot.frozen.workspace.clone(),
                 slot.manifest.clone(),
             )
         })
@@ -1891,7 +1891,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
             (
                 slot.resource_transition.clone(),
                 slot.staged_resource_effect_key.clone(),
-                slot.workspace.clone(),
+                slot.frozen.workspace.clone(),
                 slot.manifest.clone(),
             )
         }),
@@ -2173,7 +2173,7 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
     );
     host.register_thread_resource_manifest(foreign_thread, foreign.clone());
     host.session_slots.update(foreign_thread, |slot| {
-        slot.workspace = Some("sentinel-workspace".into());
+        slot.replace_frozen_with(|next| next.workspace = Some("sentinel-workspace".into()));
         slot.staged_resource_effect_key = Some("sentinel-key".into());
     });
     let resource_projection = host
@@ -2195,7 +2195,7 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         host.session_slots
             .read(foreign_thread, |slot| {
                 slot.manifest.as_ref() == Some(&foreign)
-                    && slot.workspace.as_deref() == Some("sentinel-workspace")
+                    && slot.frozen.workspace.as_deref() == Some("sentinel-workspace")
                     && slot.staged_resource_effect_key.as_deref() == Some("sentinel-key")
                     && slot.resources.mounts.is_empty()
             })
@@ -2913,7 +2913,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(
             host.session_slots
-                .read(&thread, |slot| slot.baseline.is_some()
+                .read(&thread, |slot| slot.frozen.baseline.is_some()
                     && slot.runtime.is_some())
                 .unwrap_or(false)
         );

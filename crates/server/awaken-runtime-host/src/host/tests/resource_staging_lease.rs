@@ -526,16 +526,16 @@ async fn expired_session_receipt_cannot_publish_any_complete_projection_facts() 
         assert!(
             f.host
                 .session_slots
-                .read(SESSION, |slot| slot.workspace.is_none()
-                    && slot.agent_id.is_none()
-                    && slot.published_snapshot.is_none()
-                    && slot.environment_projection.is_none()
-                    && slot.environment_snapshot.is_none()
-                    && slot.baseline.is_none()
+                .read(SESSION, |slot| slot.frozen.workspace.is_none()
+                    && slot.frozen.agent_id.is_none()
+                    && slot.frozen.published_snapshot.is_none()
+                    && slot.frozen.environment_projection.is_none()
+                    && slot.frozen.environment_snapshot.is_none()
+                    && slot.frozen.baseline.is_none()
                     && slot.frozen_projection_receipt.is_none()
                     && slot.resource_transition.is_none()
                     && !slot.session_dispatch
-                    && slot.request_context.is_empty()
+                    && slot.frozen.request_context.is_empty()
                     && slot.realization_authority.lease().is_none())
                 .unwrap(),
             "R1/R2 no partial complete projection"
@@ -640,7 +640,7 @@ impl StagingFixture {
             self.host
                 .session_slots
                 .read(SESSION, |slot| {
-                    slot.baseline.is_none()
+                    slot.frozen.baseline.is_none()
                         && slot.frozen_projection_receipt.is_none()
                         && slot.runtime.is_none()
                         && !slot.session_dispatch
@@ -717,7 +717,7 @@ async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
             .session_slots
             .read(SESSION, |slot| {
                 assert!(
-                    slot.baseline.is_some() && slot.frozen_projection_receipt.is_some(),
+                    slot.frozen.baseline.is_some() && slot.frozen_projection_receipt.is_some(),
                     "E1"
                 );
                 slot.resource_transition
@@ -797,7 +797,7 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
                 );
                 assert_eq!(slot.mcp.has_frozen_attachment(), rule == "L2");
                 assert!(
-                    slot.baseline.is_none()
+                    slot.frozen.baseline.is_none()
                         && slot.resource_transition.is_none()
                         && !slot.session_dispatch,
                     "{rule}/lease only"
@@ -1194,7 +1194,7 @@ async fn failed_or_cancelled_resource_preparation_drops_only_its_unpublished_lea
                 .read(SESSION, |slot| {
                     slot.realization_authority.lease().is_none()
                         && slot.resource_preparation.is_none()
-                        && slot.workspace.is_none()
+                        && slot.frozen.workspace.is_none()
                         && slot.skills.is_none()
                         && slot.staged_resource_effect_key.is_none()
                 })
@@ -1416,7 +1416,7 @@ async fn many_cold_resource_reads_share_the_existing_renewal_scheduler() {
         f.host
             .session_slots
             .read(&format!("cold-{index}"), |slot| {
-                slot.baseline.is_none() && !slot.session_dispatch
+                slot.frozen.baseline.is_none() && !slot.session_dispatch
             })
             .unwrap()
     });
@@ -1555,7 +1555,7 @@ async fn cold_staging_discards_a_renewal_response_delivered_after_newer_authorit
             assert!(
                 f.host
                     .session_slots
-                    .read(SESSION, |slot| slot.baseline.is_some()
+                    .read(SESSION, |slot| slot.frozen.baseline.is_some()
                         && slot.session_dispatch
                         && slot.resource_preparation.is_none())
                     .unwrap()
@@ -1599,7 +1599,10 @@ async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
             assert!(
                 f.host
                     .session_slots
-                    .read(&format!("soak-{index:02}"), |slot| slot.baseline.is_none()
+                    .read(&format!("soak-{index:02}"), |slot| slot
+                        .frozen
+                        .baseline
+                        .is_none()
                         && slot.resource_preparation.is_some()
                         && slot.realization_authority.remaining().is_some())
                     .unwrap()

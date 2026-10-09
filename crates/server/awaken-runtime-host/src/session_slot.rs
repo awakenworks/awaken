@@ -8,9 +8,7 @@
 //! projection materialized from it so registration and terminal cleanup share one
 //! lifecycle boundary instead of coordinating parallel maps.
 
-use crate::frozen_runtime_projection::{
-    FrozenBaselineRuntimeProjection, FrozenEnvironmentRuntimeProjection, ManagedContentDelivery,
-};
+use crate::frozen_runtime_projection::{FrozenSessionRuntimeProjection, ManagedContentDelivery};
 use crate::staged_resources::EnvironmentResourceReconciliation;
 pub(crate) use awaken_session_mcp::McpQuiescenceAdmissionFence;
 use awaken_session_mcp::SessionMcpState;
@@ -259,10 +257,10 @@ pub(crate) struct SessionRuntimeSlot {
     pub resource_projection: Arc<tokio::sync::Mutex<()>>,
     /// Last accepted aggregate version and equality digest; rebuildable, never authority.
     pub(crate) frozen_projection_receipt: Option<FrozenProjectionReceipt>,
+    /// The Session's frozen inputs, held whole. Install and every later change
+    /// replace this one value; nothing amends a field of it in place.
+    pub(crate) frozen: Arc<FrozenSessionRuntimeProjection>,
     pub runtime: Option<Arc<crate::host::SessionCtx>>,
-    /// Rebuildable model-only context materialized from the Session baseline's
-    /// immutable transcript-prefix reference. Never committed to this Thread.
-    pub request_context: Vec<awaken_agent_contract::agent::message::Message>,
     /// Sole live Environment owner. Every state transition is driven through
     /// `host/session/environment_lifecycle.rs`; other modules may only inspect
     /// Resident/occupancy projections through its read helpers.
@@ -293,27 +291,6 @@ pub(crate) struct SessionRuntimeSlot {
     /// This process-local projection is replaced at every claimed resolve; the
     /// dispatch store remains the lease/epoch authority.
     pub dispatch_claim: Option<awaken_run_ingress_contract::RunClaim>,
-    pub workspace: Option<String>,
-    /// Exact Agent identity copied from the frozen Session baseline. Internal
-    /// history/recovery calls do not carry a wire Agent parameter, so they must
-    /// resolve the publication through this projection instead of defaulting to
-    /// the built-in assistant.
-    pub agent_id: Option<String>,
-    /// Exact immutable Agent publication supplied by the claimed activation.
-    /// Dynamic application publications may not be present in the host catalog,
-    /// so lease-only realization must retain this authority instead of trying
-    /// to reconstruct it from the backend projection.
-    pub published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
-    pub model_ref: Option<String>,
-    /// Process-local copy of the backend frozen in the Session baseline. It is
-    /// validated against the immutable publication before runtime construction.
-    pub backend_ref: Option<String>,
-    /// Exact Environment projection shared by Native and ACP realization.
-    pub environment_projection: Option<FrozenEnvironmentRuntimeProjection>,
-    /// Original secret-free Control snapshot retained solely for durable
-    /// dispatch to another Worker. Runtime provisioning consumes the decoded
-    /// projection above; this value is never a second configuration authority.
-    pub environment_snapshot: Option<awaken_session_configuration_contract::EnvironmentSnapshot>,
     /// Every standard MemoryStore resource frozen for this Session, keyed by
     /// binding id. These exist independently of the optional Awaken automatic
     /// memory extension selected into `memory` below.
@@ -338,13 +315,6 @@ pub(crate) struct SessionRuntimeSlot {
     /// dispatch must therefore cross the claimed Session realization boundary.
     /// It carries no desired-state data of its own.
     pub session_dispatch: bool,
-    /// Exact Control-frozen baseline projected for realization. It is never
-    /// authored or mutated locally.
-    pub baseline: Option<FrozenBaselineRuntimeProjection>,
-    /// Exact published delegation targets projected by a managed Session.
-    pub delegates: Vec<String>,
-    /// Complete Session-local tool replacement; `None` inherits publication.
-    pub tools: Option<awaken_session_configuration_contract::SessionToolConfiguration>,
     /// `Some([])` means the frozen manifest delivers no Skills; `None` means this
     /// embedded Session has no frozen Skill manifest.
     pub skills: Option<Vec<awaken_resource_contract::SkillVersion>>,
@@ -370,6 +340,22 @@ pub(crate) struct SessionRuntimeSlot {
 }
 
 impl SessionRuntimeSlot {
+    /// The only write of the frozen inputs: build the next value from a copy
+    /// and publish it whole; readers holding the previous `Arc` keep it. The
+    /// runtime context is assembled once with its request prefix, so a changed
+    /// prefix drops only that cached context.
+    pub(crate) fn replace_frozen_with(
+        &mut self,
+        build: impl FnOnce(&mut FrozenSessionRuntimeProjection),
+    ) {
+        let mut next = self.frozen.as_ref().clone();
+        build(&mut next);
+        if self.frozen.request_context != next.request_context {
+            self.runtime = None;
+        }
+        self.frozen = Arc::new(next);
+    }
+
     pub(crate) fn close_realization_authority(
         &mut self,
         expected: Option<&awaken_session_resource_contract::SessionRealizationLease>,
@@ -589,7 +575,7 @@ impl SessionRuntimeSlots {
                     .iter()
                     .map(|prompt| prompt.render(delivery, path_view.clone())),
             );
-            if let Some(baseline) = &slot.baseline {
+            if let Some(baseline) = &slot.frozen.baseline {
                 prompts.extend(baseline.prompts.iter()
                     .filter(|prompt| !awaken_session_configuration_contract::SessionContextSeed::is_seed_prompt(prompt))
                     .cloned());
@@ -605,6 +591,30 @@ impl SessionRuntimeSlots {
     #[cfg(test)]
     pub fn realization_lock(&self, session: &str) -> Arc<tokio::sync::Mutex<()>> {
         self.update(session, |slot| slot.realization.clone())
+    }
+
+    /// The immutable Agent publication retained for one Session.
+    pub(crate) fn published_snapshot(
+        &self,
+        session: &str,
+    ) -> Option<awaken_runtime_contract::ExecutableAgentSnapshot> {
+        self.frozen(session).published_snapshot.clone()
+    }
+
+    /// Publish a replacement of one Session's frozen inputs, creating its slot.
+    pub(crate) fn replace_frozen_with(
+        &self,
+        session: &str,
+        build: impl FnOnce(&mut FrozenSessionRuntimeProjection),
+    ) {
+        self.update(session, |slot| slot.replace_frozen_with(build));
+    }
+
+    /// The Session's current frozen inputs, taken out of the lock as one
+    /// value. An unknown Session reads as the empty projection.
+    pub(crate) fn frozen(&self, session: &str) -> Arc<FrozenSessionRuntimeProjection> {
+        self.read(session, |slot| slot.frozen.clone())
+            .unwrap_or_default()
     }
 
     pub fn read<R>(&self, session: &str, f: impl FnOnce(&SessionRuntimeSlot) -> R) -> Option<R> {

@@ -55,14 +55,12 @@ impl InferenceRouting {
     /// Re-registering replaces the binding (the per-Run override re-stages).
     pub(crate) fn register(&self, thread: &str, model_ref: impl Into<String>) {
         self.slots
-            .update(thread, |slot| slot.model_ref = Some(model_ref.into()));
+            .replace_frozen_with(thread, |next| next.model_ref = Some(model_ref.into()));
     }
 
     /// The model ref bound to `thread`, or `default_ref`.
     pub(crate) fn model_ref(&self, thread: &str, default_ref: &str) -> String {
-        self.slots
-            .read(thread, |slot| slot.model_ref.clone())
-            .flatten()
+        self.override_for(thread)
             .unwrap_or_else(|| default_ref.to_string())
     }
 
@@ -70,9 +68,7 @@ impl InferenceRouting {
     /// uses its agent's published binding. Stamped onto the run's activation at
     /// delivery so the resolve seam sees it without consulting this map.
     pub(crate) fn override_for(&self, thread: &str) -> Option<String> {
-        self.slots
-            .read(thread, |slot| slot.model_ref.clone())
-            .flatten()
+        self.slots.frozen(thread).model_ref.clone()
     }
 
     pub(crate) fn executor_for_activation(

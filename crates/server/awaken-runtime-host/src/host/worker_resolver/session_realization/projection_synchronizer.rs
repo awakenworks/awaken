@@ -119,8 +119,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         let retained_publication = self
             .host
             .session_slots
-            .read(session_id.as_str(), |slot| slot.published_snapshot.clone())
-            .flatten();
+            .published_snapshot(session_id.as_str());
         if let Some(claimed) = self.published_snapshot
             && !matches!(
                 awaken_session_realization_contract::frozen_agent_publication_decision(
@@ -264,8 +263,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         let published_snapshot = self
             .host
             .session_slots
-            .read(session_id.as_str(), |slot| slot.published_snapshot.clone())
-            .flatten();
+            .published_snapshot(session_id.as_str());
         // A resident Arc is process-local ownership, not evidence that its
         // physical Sandbox survived. Revalidate every durable binding through
         // the one adoption path; Ready reuses that Arc, while closed evidence
@@ -1683,9 +1681,10 @@ mod tests {
             .session_slots
             .read(thread, |slot| {
                 (
-                    slot.published_snapshot.clone(),
+                    slot.frozen.published_snapshot.clone(),
                     slot.realization_authority.lease().cloned(),
-                    slot.environment_projection
+                    slot.frozen
+                        .environment_projection
                         .as_ref()
                         .map(|projection| projection.fingerprint.clone()),
                     slot.mcp.projection_count(),
@@ -1771,9 +1770,10 @@ mod tests {
         assert_eq!(
             host.session_slots.read(thread, |slot| {
                 (
-                    slot.published_snapshot.clone(),
+                    slot.frozen.published_snapshot.clone(),
                     slot.realization_authority.lease().cloned(),
-                    slot.environment_projection
+                    slot.frozen
+                        .environment_projection
                         .as_ref()
                         .map(|projection| projection.fingerprint.clone()),
                     slot.mcp.projection_count(),

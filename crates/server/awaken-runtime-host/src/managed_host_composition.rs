@@ -54,7 +54,7 @@ impl ManagedHost {
                             .expect("active run mutex poisoned")
                             .clone()
                     }),
-                    slot.baseline.is_some() || slot.session_dispatch,
+                    slot.frozen.baseline.is_some() || slot.session_dispatch,
                     slot.runtime
                         .as_ref()
                         .is_some_and(|context| context.is_coordination_envelope()),

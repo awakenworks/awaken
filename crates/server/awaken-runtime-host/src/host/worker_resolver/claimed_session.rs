@@ -118,7 +118,10 @@ pub(super) async fn install_claimed_session_projection(
         let projection_ready = host
             .session_slots
             .read(&thread_id.0, |slot| {
-                local_claimed_projection_is_ready(slot.baseline.is_some(), slot.session_dispatch)
+                local_claimed_projection_is_ready(
+                    slot.frozen.baseline.is_some(),
+                    slot.session_dispatch,
+                )
             })
             .unwrap_or(false);
         if !projection_ready {

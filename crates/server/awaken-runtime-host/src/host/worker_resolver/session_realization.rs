@@ -231,7 +231,7 @@ mod tests {
         assert!(
             host.session_slots
                 .read("cold-deferred", |slot| slot.deferred_executor.is_some()
-                    && slot.tools.as_ref().is_some_and(|tools| {
+                    && slot.frozen.tools.as_ref().is_some_and(|tools| {
                         tools == &awaken_session_configuration_contract::SessionToolConfiguration::default()
                     }))
                 .unwrap_or(false),
@@ -996,10 +996,7 @@ mod tests {
         )
         .await
         .expect("lease renewal reuses the retained immutable publication");
-        let retained = host
-            .session_slots
-            .read(thread, |slot| slot.published_snapshot.clone())
-            .flatten();
+        let retained = host.session_slots.published_snapshot(thread);
         assert_eq!(retained.as_ref(), Some(&snapshot), "P1/P2");
 
         let mut effective = snapshot.clone();
@@ -1032,10 +1029,7 @@ mod tests {
         .await
         .expect("P3 Session-effective Run snapshot shares the frozen coordinates");
         assert_eq!(
-            host.session_slots
-                .read(thread, |slot| slot.published_snapshot.clone())
-                .flatten()
-                .as_ref(),
+            host.session_slots.published_snapshot(thread).as_ref(),
             Some(&snapshot),
             "P3"
         );

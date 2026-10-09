@@ -136,10 +136,11 @@ impl SharedHost {
         let (resources, runtime_projection, is_session_dispatch) = self
             .session_slots
             .read(&thread, |slot| {
-                let runtime_projection = slot.environment_snapshot.clone().map(|environment| {
-                    let mcp_stages = slot.mcp.active_stage_requests();
-                    (environment, slot.tools.clone(), mcp_stages)
-                });
+                let runtime_projection =
+                    slot.frozen.environment_snapshot.clone().map(|environment| {
+                        let mcp_stages = slot.mcp.active_stage_requests();
+                        (environment, slot.frozen.tools.clone(), mcp_stages)
+                    });
                 // Resource generation, Session identity, and runtime projection
                 // come from one slot snapshot so dispatch cannot mix transition
                 // generations. The slot owns the sole desired/active selector;

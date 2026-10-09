@@ -329,25 +329,27 @@ async fn direct_on_tool_use_brain_skill_adapter_keeps_the_environment_absent() {
         crate::lazy_sandbox::DeferredSandboxExecutor::new(Arc::downgrade(&host), thread),
     );
     host.session_slots.update(thread, |slot| {
-        slot.tools = Some(
-            awaken_session_configuration_contract::SessionToolConfiguration {
-                toolsets: vec![ToolsetPolicy {
-                    source: ToolsetSource::Agent,
-                    default: ToolExecutionPolicy {
-                        enabled: false,
-                        permission: ToolPermissionRequirement::AlwaysAllow,
-                    },
-                    overrides: vec![ToolPolicyOverride::new(
-                        "web_fetch",
-                        ToolExecutionPolicy {
-                            enabled: true,
+        slot.replace_frozen_with(|next| {
+            next.tools = Some(
+                awaken_session_configuration_contract::SessionToolConfiguration {
+                    toolsets: vec![ToolsetPolicy {
+                        source: ToolsetSource::Agent,
+                        default: ToolExecutionPolicy {
+                            enabled: false,
                             permission: ToolPermissionRequirement::AlwaysAllow,
                         },
-                    )],
-                }],
-                client_tools: Vec::new(),
-            },
-        );
+                        overrides: vec![ToolPolicyOverride::new(
+                            "web_fetch",
+                            ToolExecutionPolicy {
+                                enabled: true,
+                                permission: ToolPermissionRequirement::AlwaysAllow,
+                            },
+                        )],
+                    }],
+                    client_tools: Vec::new(),
+                },
+            )
+        });
         slot.deferred_executor = Some(deferred);
     });
 

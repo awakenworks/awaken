@@ -147,13 +147,13 @@ impl SharedHost {
         // physical Environment on every Outcome projection read.
         let worker_placement = self
             .session_slots
-            .read(thread, |slot| {
-                slot.baseline.as_ref().is_some_and(|baseline| {
-                    baseline.runtime_placement
-                        == awaken_session_configuration_contract::SessionRuntimePlacement::Worker
-                })
-            })
-            .unwrap_or(false);
+            .frozen(thread)
+            .baseline
+            .as_ref()
+            .is_some_and(|baseline| {
+                baseline.runtime_placement
+                    == awaken_session_configuration_contract::SessionRuntimePlacement::Worker
+            });
         let ctx = if worker_placement {
             self.ctx_for_session_coordination(thread, None).await?
         } else {

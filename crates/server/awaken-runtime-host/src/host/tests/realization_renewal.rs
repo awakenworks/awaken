@@ -336,7 +336,7 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
                     .unwrap();
                 host.session_slots.update("renew-race", |slot| {
                     slot.dispatch_claim = Some(claim.clone());
-                    slot.workspace = Some("new-workspace".into());
+                    slot.replace_frozen_with(|next| next.workspace = Some("new-workspace".into()));
                 });
             }
             gate.add_permits(1);
@@ -357,7 +357,7 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
                     host.session_slots.read("renew-race", |slot| (
                         slot.realization_authority.lease().cloned(),
                         slot.dispatch_claim.clone(),
-                        slot.workspace.clone()
+                        slot.frozen.workspace.clone()
                     )),
                     Some((Some(replacement), Some(claim), Some("new-workspace".into()))),
                     "R1 {failure:?}/{changed}"

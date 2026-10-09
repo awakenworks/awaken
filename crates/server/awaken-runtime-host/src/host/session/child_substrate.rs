@@ -31,11 +31,7 @@ impl SharedHost {
             None => {
                 let parent = frozen_parent
                     .cloned()
-                    .or_else(|| {
-                        self.session_slots
-                            .read(thread, |slot| slot.published_snapshot.clone())
-                            .flatten()
-                    })
+                    .or_else(|| self.session_slots.published_snapshot(thread))
                     .ok_or_else(|| {
                         HostError::internal(
                             "a cold child requires the frozen parent Session publication",

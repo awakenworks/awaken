@@ -531,8 +531,9 @@ impl SharedHost {
     ) -> pc::SandboxSpec {
         let environment = self
             .session_slots
-            .read(thread, |slot| slot.environment_projection.clone())
-            .flatten();
+            .frozen(thread)
+            .environment_projection
+            .clone();
         let mounts = resources
             .inputs()
             .iter()
@@ -588,9 +589,9 @@ impl SharedHost {
             .session_slots
             .read(thread, |slot| {
                 (
-                    slot.baseline.clone(),
+                    slot.frozen.baseline.clone(),
                     slot.content_delivery,
-                    slot.environment_projection.clone(),
+                    slot.frozen.environment_projection.clone(),
                 )
             })
             .unwrap_or_default();
@@ -1185,10 +1186,7 @@ impl ArtifactHarvester {
         let workspace_owner = terminal_effect
             .map(|effect| effect.command.session_id.as_str())
             .unwrap_or(thread);
-        let workspace = self
-            .session_slots
-            .read(workspace_owner, |slot| slot.workspace.clone())
-            .flatten();
+        let workspace = self.session_slots.frozen(workspace_owner).workspace.clone();
         let workspace = match (workspace, terminal_effect) {
             (Some(workspace), _) => workspace,
             (None, Some(_)) => {

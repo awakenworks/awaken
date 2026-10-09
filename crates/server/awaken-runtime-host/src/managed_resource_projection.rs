@@ -82,8 +82,9 @@ impl crate::ManagedHost {
         let environment = self
             .host
             .session_slots
-            .read(thread, |slot| slot.environment_projection.clone())
-            .flatten();
+            .frozen(thread)
+            .environment_projection
+            .clone();
         for input in inputs.inputs() {
             let one = self
                 .stage_resolved_input(workspace, input, claim, realization, environment.as_ref())
@@ -363,7 +364,7 @@ impl crate::ManagedHost {
             // lock with renewal rejection. Neither a late read nor cancellation
             // may publish requirements after that rejection has linearized.
             validate_preparation_publication(slot, realization.map(|(_, _, lease)| lease))?;
-            slot.workspace = Some(workspace.to_owned());
+            slot.replace_frozen_with(|next| next.workspace = Some(workspace.to_owned()));
             slot.resources = compiled.staged;
             slot.memory_bindings = compiled.memory_bindings;
             slot.memory = None;
@@ -540,10 +541,10 @@ impl crate::ManagedHost {
             .session_slots
             .read(thread, |slot| {
                 (
-                    slot.baseline.is_some(),
+                    slot.frozen.baseline.is_some(),
                     slot.session_dispatch,
                     slot.environment_resource_reconciliation,
-                    slot.environment_projection.clone(),
+                    slot.frozen.environment_projection.clone(),
                 )
             })
             .unwrap_or_default();
@@ -1004,9 +1005,9 @@ impl crate::SharedHost {
             .session_slots
             .read(thread, |slot| {
                 (
-                    slot.baseline.clone(),
+                    slot.frozen.baseline.clone(),
                     slot.content_delivery,
-                    slot.environment_projection.clone(),
+                    slot.frozen.environment_projection.clone(),
                     slot.environment_owner.resident(),
                 )
             })

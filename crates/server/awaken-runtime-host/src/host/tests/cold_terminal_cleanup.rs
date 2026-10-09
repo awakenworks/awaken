@@ -786,8 +786,9 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
     .expect("C2 canonical driver reaches authorization after its unique install");
     assert_eq!(
         host.session_slots
-            .read(session_id, |slot| slot.baseline.clone())
-            .flatten()
+            .frozen(session_id)
+            .baseline
+            .clone()
             .expect("C1/E1 frozen baseline")
             .fingerprint,
         remote_terminal_cleanup_projection().baseline.fingerprint,

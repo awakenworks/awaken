@@ -22,7 +22,6 @@ mod resource_transition;
 
 use std::sync::Arc;
 
-use awaken_agent_contract::agent::message::Message;
 use futures_util::StreamExt as _;
 
 use awaken_run_ingress_contract::RunClaim;
@@ -216,21 +215,13 @@ mod realization_renewal_tests {
 }
 
 impl crate::session_slot::SessionRuntimeSlot {
-    fn install_session_request_context(&mut self, messages: Vec<Message>) {
-        if self.request_context != messages {
-            self.request_context = messages;
-            // RuntimeRunContext is assembled once with a SessionCtx. Drop only
-            // that cached projection; the next attempt uses the new prefix.
-            self.runtime = None;
-        }
-    }
-
     fn validate_environment_projection(
         &self,
         thread: &str,
         projection: &crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection,
     ) -> Result<(), crate::HostError> {
         if self
+            .frozen
             .environment_projection
             .as_ref()
             .is_some_and(|existing| existing.fingerprint != projection.fingerprint)
@@ -240,35 +231,6 @@ impl crate::session_slot::SessionRuntimeSlot {
             )));
         }
         Ok(())
-    }
-
-    fn install_validated_environment_projection(
-        &mut self,
-        environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
-        projection: crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection,
-    ) {
-        self.environment_projection.get_or_insert(projection);
-        self.environment_snapshot = Some(environment.clone());
-    }
-
-    /// The one lowering of validated SessionInit coordinates, shared by the
-    /// legacy preparation entrance and complete fenced projection publication.
-    fn project_validated_session_init(
-        &mut self,
-        init: &awaken_session_configuration_contract::SessionInit,
-        environment: crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection,
-    ) {
-        self.install_validated_environment_projection(&init.environment, environment);
-        self.workspace = Some(init.workspace_id.clone());
-        self.agent_id = Some(init.agent_id.clone());
-        if let Some(model) = &init.model {
-            self.model_ref = Some(model.clone());
-        }
-        if let Some(backend) = &init.runtime {
-            self.register_backend_projection(backend);
-        }
-        self.delegates = init.delegate_ids.clone();
-        self.tools = init.tools.clone();
     }
 }
 
@@ -699,7 +661,7 @@ impl crate::SharedHost {
         let environment = crate::provisioning::project_environment(&init.environment);
         self.session_slots.update(thread, |slot| {
             slot.validate_environment_projection(thread, &environment)?;
-            slot.project_validated_session_init(init, environment);
+            slot.replace_frozen_with(|next| next.lower_session_init(init, environment));
             Ok(())
         })
     }
@@ -796,32 +758,20 @@ impl crate::SharedHost {
         if let Some(asserted) = &publication
             && self
                 .session_slots
-                .read(thread, |slot| {
-                    slot.published_snapshot
-                        .as_ref()
-                        .is_some_and(|existing| existing != asserted)
-                })
-                .unwrap_or(false)
+                .frozen(thread)
+                .published_snapshot
+                .as_ref()
+                .is_some_and(|existing| existing != asserted)
         {
             return Err(crate::HostError::internal(
                 "Session realization cannot replace its immutable Agent publication",
             ));
         }
-        if self
-            .session_slots
+        self.session_slots
             .read(thread, |slot| {
-                slot.environment_projection
-                    .as_ref()
-                    .is_some_and(|existing| {
-                        existing.fingerprint != environment_projection.fingerprint
-                    })
+                slot.validate_environment_projection(thread, &environment_projection)
             })
-            .unwrap_or(false)
-        {
-            return Err(crate::HostError::internal(format!(
-                "thread {thread} is already bound to a different frozen Environment"
-            )));
-        }
+            .transpose()?;
         // Validate the prospective complete layout before publishing any part of
         // a cold projection. The baseline is not resident yet on first install,
         // so a validator that reads only the current slot would miss a Repository
@@ -860,34 +810,31 @@ impl crate::SharedHost {
             )?;
         }
 
-        let baseline_to_install = if let Some(existing) = self
-            .session_slots
-            .read(thread, |slot| slot.baseline.clone())
-            .flatten()
-        {
-            if existing.fingerprint != baseline.fingerprint {
-                return Err(crate::HostError::internal(format!(
-                    "thread {thread} is already bound to a different frozen Session baseline"
-                )));
-            }
-            None
-        } else {
-            let is_realized = self
-                .session_slots
-                .read(thread, |slot| {
-                    slot.runtime
-                        .as_ref()
-                        .is_some_and(|context| !context.is_coordination_envelope())
-                        || slot.environment_owner.has_local_environment()
-                })
-                .unwrap_or(false);
-            if is_realized {
-                return Err(crate::HostError::internal(format!(
-                    "thread {thread} was realized before its frozen Session baseline"
-                )));
-            }
-            Some(baseline)
-        };
+        let baseline_to_install =
+            if let Some(existing) = self.session_slots.frozen(thread).baseline.clone() {
+                if existing.fingerprint != baseline.fingerprint {
+                    return Err(crate::HostError::internal(format!(
+                        "thread {thread} is already bound to a different frozen Session baseline"
+                    )));
+                }
+                None
+            } else {
+                let is_realized = self
+                    .session_slots
+                    .read(thread, |slot| {
+                        slot.runtime
+                            .as_ref()
+                            .is_some_and(|context| !context.is_coordination_envelope())
+                            || slot.environment_owner.has_local_environment()
+                    })
+                    .unwrap_or(false);
+                if is_realized {
+                    return Err(crate::HostError::internal(format!(
+                        "thread {thread} was realized before its frozen Session baseline"
+                    )));
+                }
+                Some(baseline)
+            };
 
         if baseline_to_install.is_some()
             && matches!(
@@ -1021,25 +968,32 @@ impl crate::SharedHost {
                 if let Some(claim) = claim {
                     slot.dispatch_claim = Some(claim.clone());
                 }
-                slot.retain_validated_session_publication(publication.as_ref());
                 slot.install_projected_environment_owner(owner, &projection.environment);
                 slot.frozen_projection_receipt = Some(receipt);
-                slot.project_validated_session_init(&init, environment_projection);
-                slot.install_session_request_context(projection.request_context.clone());
-                if let Some(baseline) = baseline_to_install {
-                    // A cold Coordinator may have opened a metadata-only
-                    // reservation envelope before this complete projection.
-                    // Rebuild it against the newly frozen baseline on its next
-                    // read; it has no executable Environment to preserve.
-                    if slot
+                // A cold Coordinator may have opened a metadata-only
+                // reservation envelope before this complete projection.
+                // Rebuild it against the newly frozen baseline on its next
+                // read; it has no executable Environment to preserve.
+                if baseline_to_install.is_some()
+                    && slot
                         .runtime
                         .as_ref()
                         .is_some_and(|context| context.is_coordination_envelope())
-                    {
-                        slot.runtime = None;
-                    }
-                    slot.baseline = Some(baseline);
+                {
+                    slot.runtime = None;
                 }
+                // One complete next value replaces the frozen inputs. The
+                // validated publication and an installed baseline are kept.
+                slot.replace_frozen_with(|next| {
+                    next.lower_session_init(&init, environment_projection);
+                    if let Some(publication) = publication {
+                        next.published_snapshot = Some(publication);
+                    }
+                    if let Some(baseline) = baseline_to_install {
+                        next.baseline = Some(baseline);
+                    }
+                    next.request_context = projection.request_context.clone();
+                });
                 // The complete frozen projection is the cold Worker's first
                 // observation of Session admission. Publish the existing execution
                 // marker in the same atomic slot update as its baseline and
@@ -1111,7 +1065,7 @@ impl crate::SharedHost {
         let projection = crate::provisioning::project_environment(environment);
         self.session_slots.update(thread, |slot| {
             slot.validate_environment_projection(thread, &projection)?;
-            slot.install_validated_environment_projection(environment, projection);
+            slot.replace_frozen_with(|next| next.lower_environment(environment, projection));
             Ok(())
         })
     }
@@ -1124,7 +1078,8 @@ impl crate::SharedHost {
             .read(thread, |slot| {
                 crate::provisioning::project_session_mounts(
                     slot.resources.mounts.clone(),
-                    slot.baseline
+                    slot.frozen
+                        .baseline
                         .as_ref()
                         .map(|baseline| baseline.mounts.as_slice()),
                     slot.content_delivery,
@@ -1139,7 +1094,8 @@ impl crate::SharedHost {
     ) -> Vec<awaken_provisioning_contract::EnvVar> {
         self.session_slots
             .read(thread, |slot| {
-                slot.baseline
+                slot.frozen
+                    .baseline
                     .as_ref()
                     .map(|baseline| baseline.env.clone())
                     .unwrap_or_default()
@@ -1156,12 +1112,10 @@ impl crate::SharedHost {
         thread: &str,
     ) -> Option<awaken_credential_contract::CredentialRealizationProfile> {
         self.session_slots
-            .read(thread, |slot| {
-                slot.environment_snapshot
-                    .as_ref()
-                    .map(|environment| environment.credential_realization.clone())
-            })
-            .flatten()
+            .frozen(thread)
+            .environment_snapshot
+            .as_ref()
+            .map(|environment| environment.credential_realization.clone())
     }
 
     #[cfg(test)]

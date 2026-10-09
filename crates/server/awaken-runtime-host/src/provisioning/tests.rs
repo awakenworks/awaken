@@ -253,8 +253,9 @@ async fn root_terminal_cleanup_effect(
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
     let workspace_id = host
         .session_slots
-        .read(session_id, |slot| slot.workspace.clone())
-        .flatten()
+        .frozen(session_id)
+        .workspace
+        .clone()
         .expect("terminal test requires a root Workspace projection");
     let projection = terminal_cleanup_projection(
         &workspace_id,
@@ -956,6 +957,7 @@ async fn model_override_only_acp_candidate_rejects_split_process_paths() {
     assert!(
         host.session_slots
             .read("model-override-acp", |slot| slot
+                .frozen
                 .published_snapshot
                 .is_none())
             .unwrap_or(false),
@@ -1668,8 +1670,9 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
     let managed = crate::ManagedHost::new(host.clone());
     let workspace_id = host
         .session_slots
-        .read("session-artifacts", |slot| slot.workspace.clone())
-        .flatten()
+        .frozen("session-artifacts")
+        .workspace
+        .clone()
         .expect("R4 frozen aggregate Repository inputs");
     let authorization = root_terminal_preparation_authorization(&session, &effect, &workspace_id);
     let preparation = managed

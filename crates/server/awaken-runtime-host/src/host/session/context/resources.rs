@@ -238,10 +238,7 @@ pub(super) async fn acquire(
         .as_ref()
         .map(|snapshot| snapshot.resolved_spec.plugin_config.agent.toolsets.clone())
         .unwrap_or_default();
-    let session_tools = host
-        .session_slots
-        .read(thread, |slot| slot.tools.clone())
-        .flatten();
+    let session_tools = host.session_slots.frozen(thread).tools.clone();
     let toolsets = session_tools
         .as_ref()
         .map(|tools| tools.toolsets.clone())

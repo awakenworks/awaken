@@ -124,7 +124,7 @@ pub(crate) fn read_pinned_skill(
             return Err(failure());
         }
         let manifest = slot.dispatch_resource_manifest().ok_or_else(failure)?;
-        if slot.workspace.as_deref() != Some(manifest.workspace_id.as_str()) {
+        if slot.frozen.workspace.as_deref() != Some(manifest.workspace_id.as_str()) {
             return Err(failure());
         }
         let mut bindings = manifest

@@ -139,7 +139,10 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
     assert!(
         ready_host
             .session_slots
-            .read(ready_thread, |slot| slot.published_snapshot.is_none())
+            .read(ready_thread, |slot| slot
+                .frozen
+                .published_snapshot
+                .is_none())
             .unwrap_or(false),
         "R21/C5 ordinary direct Runtime has no frozen provider projection"
     );

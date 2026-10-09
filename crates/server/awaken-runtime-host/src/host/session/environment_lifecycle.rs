@@ -1675,19 +1675,12 @@ impl SharedHost {
                 let realization_authority = slot.realization_authority.clone();
                 let environment_owner = std::mem::take(&mut slot.environment_owner);
                 // A live/unknown Retiring owner is retryable physical state.
-                // Preserve its exact provider selection and SandboxSpec inputs;
-                // terminal takeover must not reconstruct either after a failed
-                // or cancelled revocation attempt.
-                let published_snapshot = slot.published_snapshot.take();
-                let environment_projection = slot.environment_projection.take();
-                let environment_snapshot = slot.environment_snapshot.take();
+                // Preserve its exact provider selection, SandboxSpec inputs and
+                // harvest Workspace; terminal takeover must not reconstruct
+                // them after a failed or cancelled revocation attempt.
+                let frozen = slot.frozen.retained_on_revocation();
                 let content_delivery = slot.content_delivery;
-                let baseline = slot.baseline.take();
                 let resources = std::mem::take(&mut slot.resources);
-                // Terminal retry still has to publish the retained owner's
-                // mutable outputs into its exact Workspace. This is a derived
-                // harvest scope, not continuing realization authority.
-                let workspace = slot.workspace.take();
                 // Revocation clears process-local realization material but is
                 // not an Environment restoration/source-disposal authority.
                 // Preserve an already-closed quiescence fence so only the
@@ -1700,13 +1693,9 @@ impl SharedHost {
                 slot.realization_changed = realization_changed;
                 slot.realization_authority = realization_authority;
                 slot.environment_owner = environment_owner;
-                slot.published_snapshot = published_snapshot;
-                slot.environment_projection = environment_projection;
-                slot.environment_snapshot = environment_snapshot;
+                slot.frozen = std::sync::Arc::new(frozen);
                 slot.content_delivery = content_delivery;
-                slot.baseline = baseline;
                 slot.resources = resources;
-                slot.workspace = workspace;
                 slot.mcp = mcp;
             });
         }

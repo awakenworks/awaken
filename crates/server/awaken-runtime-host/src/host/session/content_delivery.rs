@@ -48,10 +48,7 @@ impl SharedHost {
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         tool: &str,
     ) -> bool {
-        let session_tools = self
-            .session_slots
-            .read(thread, |slot| slot.tools.clone())
-            .flatten();
+        let session_tools = self.session_slots.frozen(thread).tools.clone();
         let toolsets = session_tools
             .as_ref()
             .map(|tools| tools.toolsets.as_slice())
@@ -337,11 +334,11 @@ impl SharedHost {
                                 awaken_provisioning_contract::MountSource::MemoryStore { .. }
                             )
                     };
-                let baseline_requires = slot.baseline.as_ref().is_some_and(|baseline| {
+                let baseline_requires = slot.frozen.baseline.as_ref().is_some_and(|baseline| {
                     baseline.mounts.iter().any(mount_requires_environment)
                         || !baseline.env.is_empty()
                 });
-                let slot_requires = !slot.delegates.is_empty()
+                let slot_requires = !slot.frozen.delegates.is_empty()
                     || slot.resources.mounts.iter().any(mount_requires_environment)
                     || !slot.resources.repositories.is_empty()
                     || baseline_requires
@@ -390,7 +387,7 @@ impl SharedHost {
                 .session_slots
                 .read(thread, |slot| {
                     !slot.session_dispatch
-                        && slot.environment_snapshot.is_none()
+                        && slot.frozen.environment_snapshot.is_none()
                         && slot.dispatch_resource_manifest().is_none()
                 })
                 .unwrap_or(true);
@@ -402,6 +399,7 @@ impl SharedHost {
             .read(thread, |slot| {
                 slot.deferred_executor.is_some()
                     && slot
+                        .frozen
                         .environment_projection
                         .as_ref()
                         .is_some_and(|projection| {
@@ -431,8 +429,9 @@ impl SharedHost {
             });
         let selected_backend_is_acp = self
             .session_slots
-            .read(thread, |slot| slot.backend_ref.clone())
-            .flatten()
+            .frozen(thread)
+            .backend_ref
+            .clone()
             .is_some_and(|backend_ref| {
                 awaken_runtime_contract::resolved::Backend::from_ref(&backend_ref).is_acp()
             });

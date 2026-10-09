@@ -184,8 +184,8 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
             "provider", "model", "backend",
         ))
         .build();
-    host.session_slots.update(thread, |slot| {
-        slot.published_snapshot = Some(snapshot.clone());
+    host.session_slots.replace_frozen_with(thread, |next| {
+        next.published_snapshot = Some(snapshot.clone())
     });
     host.register_thread_resources(
         thread,
@@ -249,8 +249,7 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
     );
     assert_eq!(
         host.session_slots
-            .read(thread, |slot| slot.published_snapshot.clone())
-            .flatten()
+            .published_snapshot(thread)
             .map(|snapshot| snapshot.id),
         Some(snapshot.id),
         "R20/E3 provider publication"
@@ -313,8 +312,8 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     };
     host.install_session_realization_lease(thread, lease.clone())
         .unwrap();
-    host.session_slots.update(thread, |slot| {
-        slot.published_snapshot = Some(snapshot.clone());
+    host.session_slots.replace_frozen_with(thread, |next| {
+        next.published_snapshot = Some(snapshot.clone())
     });
     host.register_thread_resources(
         thread,
@@ -388,8 +387,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     assert_eq!(host.sandbox_spec(thread), spec_before, "E2 SandboxSpec");
     assert_eq!(
         host.session_slots
-            .read(thread, |slot| slot.published_snapshot.clone())
-            .flatten()
+            .published_snapshot(thread)
             .map(|current| current.id),
         Some(snapshot.id),
         "E2 provider publication"

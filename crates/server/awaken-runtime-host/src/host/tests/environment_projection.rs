@@ -1117,6 +1117,7 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
     assert!(
         host.session_slots
             .read("coordinator-dispatch-only", |slot| slot
+                .frozen
                 .environment_snapshot
                 .is_some())
             .unwrap_or(false),
@@ -1372,7 +1373,10 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     );
     assert!(
         host.session_slots
-            .read("worker-dispatch-conflict", |slot| slot.baseline.is_none())
+            .read("worker-dispatch-conflict", |slot| slot
+                .frozen
+                .baseline
+                .is_none())
             .unwrap_or(true),
         "P5/E2"
     );

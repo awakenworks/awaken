@@ -832,7 +832,7 @@ impl awaken_session_runtime_contract::EnvironmentRuntime for ManagedHost {
     ) -> Result<(), RunError> {
         self.host
             .session_slots
-            .update(thread, |slot| slot.tools = Some(tools));
+            .replace_frozen_with(thread, |next| next.tools = Some(tools));
         self.host.evict_session_for_rebuild(thread).await;
         Ok(())
     }

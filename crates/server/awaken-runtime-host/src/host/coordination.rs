@@ -450,14 +450,14 @@ impl SharedHost {
             .session_slots
             .read(session_id.as_str(), |slot| {
                 (
-                    slot.baseline.clone(),
-                    slot.tools.clone(),
+                    slot.frozen.baseline.clone(),
+                    slot.frozen.tools.clone(),
                     // Coordinated children share the exact generation selected
                     // for root and extension dispatch. Selection stays inside
                     // this one slot snapshot; child admission neither publishes
                     // nor reconstructs physical active truth.
                     slot.dispatch_resource_manifest(),
-                    slot.published_snapshot.clone(),
+                    slot.frozen.published_snapshot.clone(),
                 )
             })
             .ok_or_else(|| HostError::bad_request("Session runtime projection is unavailable"))?;
@@ -1028,11 +1028,13 @@ mod tests {
             .expect("validated Host dependencies");
             host.session_slots.update(&session_id, |slot| {
                 slot.session_dispatch = true;
-                slot.baseline = Some(baseline);
-                // This resource-generation fixture explicitly supplies the
-                // coordinator's unrestricted configuration; missing input is
-                // not evidence of an unrestricted parent.
-                slot.tools = Some(Default::default());
+                slot.replace_frozen_with(|next| {
+                    next.baseline = Some(baseline);
+                    // This resource-generation fixture explicitly supplies the
+                    // coordinator's unrestricted configuration; missing input is
+                    // not evidence of an unrestricted parent.
+                    next.tools = Some(Default::default());
+                });
                 slot.manifest = active.clone();
                 slot.resource_transition = transition;
             });
@@ -1131,7 +1133,7 @@ mod tests {
                 client_tools: Vec::new(),
             };
             host.session_slots
-                .update(&session_id, |slot| slot.tools = Some(updated_tools.clone()));
+                .replace_frozen_with(&session_id, |next| next.tools = Some(updated_tools.clone()));
             let mut target = awaken_runtime_contract::ExecutableAgentSnapshot::builder("roster-b")
                 .model(awaken_runtime_contract::resolved::ModelBinding::new(
                     "test", "model-b", "native",

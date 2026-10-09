@@ -455,11 +455,13 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
             slot.session_dispatch = prepared_session;
             slot.manifest = active.clone();
             slot.resource_transition = transition;
-            slot.environment_snapshot = runtime_projection.then(|| {
-                session_environment(
-                    awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
-                    serde_json::json!({}),
-                )
+            slot.replace_frozen_with(|next| {
+                next.environment_snapshot = runtime_projection.then(|| {
+                    session_environment(
+                        awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
+                        serde_json::json!({}),
+                    )
+                })
             });
         });
         let activation = awaken_runtime_contract::RunActivation::new(

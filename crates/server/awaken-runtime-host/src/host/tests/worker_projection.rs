@@ -153,7 +153,7 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
         assert_eq!(
             host.session_slots
                 .read(&thread, |slot| (
-                    slot.baseline.is_some(),
+                    slot.frozen.baseline.is_some(),
                     slot.session_dispatch
                 ))
                 .unwrap_or((false, false)),
@@ -397,7 +397,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             baseline_host
                 .session_slots
                 .read("local-baseline", |slot| {
-                    slot.baseline.is_some() && slot.session_dispatch
+                    slot.frozen.baseline.is_some() && slot.session_dispatch
                 })
                 .unwrap_or(false),
             "B1/E1 frozen baseline and Managed execution marker publish atomically on a cold Worker"
@@ -491,7 +491,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             baseline_host
                 .session_slots
                 .read("coordinator-before-baseline", |slot| {
-                    slot.baseline.is_some() && slot.runtime.is_none()
+                    slot.frozen.baseline.is_some() && slot.runtime.is_none()
                 })
                 .unwrap_or(false),
             "B6/E4 baseline is installed and stale coordination cache is gone"
@@ -517,7 +517,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             baseline_host
                 .session_slots
                 .read("dispatch-before-baseline", |slot| {
-                    slot.baseline.is_some() && slot.runtime.is_none()
+                    slot.frozen.baseline.is_some() && slot.runtime.is_none()
                 })
                 .unwrap_or(false),
             "B6/E4 Dispatch also clears the stale reservation envelope"
@@ -560,14 +560,14 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             failed_host
                 .session_slots
                 .read("failed-projection", |slot| {
-                    slot.baseline.is_none()
-                        && slot.workspace.is_none()
-                        && slot.agent_id.is_none()
+                    slot.frozen.baseline.is_none()
+                        && slot.frozen.workspace.is_none()
+                        && slot.frozen.agent_id.is_none()
                         && slot.manifest.is_none()
                         && slot.resources.mounts.is_empty()
                         && slot.resources.prompts.is_empty()
                         && slot.resources.resource_prompts.is_empty()
-                        && slot.request_context.is_empty()
+                        && slot.frozen.request_context.is_empty()
                         && slot.realization_authority.lease().is_none()
                         && !slot.session_dispatch
                 })
@@ -626,7 +626,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             amendment_host
                 .session_slots
                 .read("authority-amendment", |slot| {
-                    slot.baseline.is_some()
+                    slot.frozen.baseline.is_some()
                         && slot.session_dispatch
                         && slot.manifest.is_none()
                         && slot.resource_transition.as_ref().is_some_and(|transition| {
@@ -740,7 +740,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         assert!(
             host.session_slots
                 .read("prospective-layout-conflict", |slot| {
-                    slot.baseline.is_none() && slot.environment_projection.is_none()
+                    slot.frozen.baseline.is_none() && slot.frozen.environment_projection.is_none()
                 })
                 .unwrap_or(true),
             "F1 no partial frozen projection"

@@ -15,7 +15,8 @@ impl crate::session_slot::SessionRuntimeSlot {
         publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
     ) -> Result<(), HostError> {
         if publication.is_some_and(|publication| {
-            self.published_snapshot
+            self.frozen
+                .published_snapshot
                 .as_ref()
                 .is_some_and(|retained| retained != publication)
         }) {
@@ -24,16 +25,6 @@ impl crate::session_slot::SessionRuntimeSlot {
             ));
         }
         Ok(())
-    }
-
-    /// Called after validation under the same slot lock.
-    pub(crate) fn retain_validated_session_publication(
-        &mut self,
-        publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) {
-        if let Some(publication) = publication {
-            self.published_snapshot = Some(publication.clone());
-        }
     }
 }
 
@@ -182,10 +173,7 @@ impl SharedHost {
             .or(projected_agent.as_deref())
             .or(delivered_agent.as_deref())
             .unwrap_or("assistant");
-        let baseline = self
-            .session_slots
-            .read(thread, |slot| slot.baseline.clone())
-            .flatten();
+        let baseline = self.session_slots.frozen(thread).baseline.clone();
         let skill_pins = self
             .session_slots
             .read(thread, |slot| {
@@ -207,10 +195,7 @@ impl SharedHost {
         let published_backend_ref = model_candidate
             .as_ref()
             .map(|candidate| candidate.binding().identity().2.to_owned());
-        let projected_backend_ref = self
-            .session_slots
-            .read(thread, |slot| slot.backend_ref.clone())
-            .flatten();
+        let projected_backend_ref = self.session_slots.frozen(thread).backend_ref.clone();
         if let (Some(published), Some(projected)) = (&published_backend_ref, &projected_backend_ref)
             && published != projected
         {
@@ -264,13 +249,11 @@ impl SharedHost {
     ) -> Result<&crate::session_environment::SessionEnvironmentProvider, HostError> {
         let sandbox = self
             .session_slots
-            .read(thread, |slot| {
-                slot.environment_projection
-                    .as_ref()
-                    .and_then(|environment| environment.sandbox.as_ref())
-                    .cloned()
-            })
-            .flatten();
+            .frozen(thread)
+            .environment_projection
+            .as_ref()
+            .and_then(|environment| environment.sandbox.as_ref())
+            .cloned();
         if sandbox.as_ref().is_some_and(|sandbox| {
             sandbox.host_access == awaken_provisioning_contract::HostAccessPolicy::TrustedHost
         }) {
@@ -319,7 +302,11 @@ impl SharedHost {
     ) -> Result<(), HostError> {
         self.session_slots.update(thread, |slot| {
             slot.validate_session_publication(publication)?;
-            slot.retain_validated_session_publication(publication);
+            if let Some(publication) = publication {
+                slot.replace_frozen_with(|next| {
+                    next.published_snapshot = Some(publication.clone())
+                });
+            }
             Ok(())
         })
     }
@@ -342,10 +329,7 @@ impl SharedHost {
         thread: &str,
         agent: Option<&str>,
     ) -> Result<awaken_runtime_contract::resolved::ModelProvisioning, HostError> {
-        let delivered = self
-            .session_slots
-            .read(thread, |slot| slot.published_snapshot.clone())
-            .flatten();
+        let delivered = self.session_slots.published_snapshot(thread);
         let (_, _, _, model_candidate) =
             self.resolve_session_publication(thread, agent, delivered)?;
         Ok(model_candidate
@@ -368,7 +352,7 @@ impl SharedHost {
                 let claimed_ordinary_run = realization.is_none()
                     && slot.dispatch_claim.is_some()
                     && !slot.session_dispatch
-                    && slot.baseline.is_none();
+                    && slot.frozen.baseline.is_none();
                 (
                     realization,
                     claimed_ordinary_run,
@@ -384,12 +368,10 @@ impl SharedHost {
         }
         let environment_fingerprint = self
             .session_slots
-            .read(thread, |slot| {
-                slot.baseline
-                    .as_ref()
-                    .map(|baseline| baseline.environment.config_fingerprint.0.clone())
-            })
-            .flatten();
+            .frozen(thread)
+            .baseline
+            .as_ref()
+            .map(|baseline| baseline.environment.config_fingerprint.0.clone());
         let mut intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
             thread,
             kind,
@@ -1220,8 +1202,8 @@ impl SharedHost {
             .session_slots
             .read(&spec.scope, |slot| {
                 crate::provisioning::frozen_session_requires_opaque_process(
-                    slot.published_snapshot.as_ref(),
-                    slot.baseline.as_ref(),
+                    slot.frozen.published_snapshot.as_ref(),
+                    slot.frozen.baseline.as_ref(),
                 )
             })
             .unwrap_or(false);

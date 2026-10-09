@@ -450,7 +450,7 @@ pub(super) async fn assemble(
     ));
     run_context.request_context = host
         .session_slots
-        .read(thread, |slot| slot.request_context.clone())
+        .read(thread, |slot| slot.frozen.request_context.clone())
         .unwrap_or_default();
     let run_context = mcp.plugins.iter().cloned().fold(
         run_context,

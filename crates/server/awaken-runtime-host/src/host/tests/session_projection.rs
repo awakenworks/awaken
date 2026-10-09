@@ -45,7 +45,7 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
     assert!(
         matching
             .session_slots
-            .read("backend-h1", |slot| slot.backend_ref.is_none())
+            .read("backend-h1", |slot| slot.frozen.backend_ref.is_none())
             .unwrap_or(false),
         "H1 default has no redundant projection"
     );
@@ -229,26 +229,27 @@ async fn session_tool_policy_preserves_the_published_snapshot_identity() {
         .build()
         .expect("validated Host dependencies"),
     );
-    host.session_slots.update("policy-session", |slot| {
-        slot.tools = Some(
-            awaken_session_configuration_contract::SessionToolConfiguration {
-                toolsets: vec![ToolsetPolicy {
-                    source: ToolsetSource::Mcp {
-                        server_name: "flow".into(),
-                    },
-                    default: ToolExecutionPolicy::default(),
-                    overrides: vec![ToolPolicyOverride::new(
-                        "write",
-                        ToolExecutionPolicy {
-                            enabled: true,
-                            permission: ToolPermissionRequirement::AlwaysAllow,
+    host.session_slots
+        .replace_frozen_with("policy-session", |next| {
+            next.tools = Some(
+                awaken_session_configuration_contract::SessionToolConfiguration {
+                    toolsets: vec![ToolsetPolicy {
+                        source: ToolsetSource::Mcp {
+                            server_name: "flow".into(),
                         },
-                    )],
-                }],
-                client_tools: Vec::new(),
-            },
-        );
-    });
+                        default: ToolExecutionPolicy::default(),
+                        overrides: vec![ToolPolicyOverride::new(
+                            "write",
+                            ToolExecutionPolicy {
+                                enabled: true,
+                                permission: ToolPermissionRequirement::AlwaysAllow,
+                            },
+                        )],
+                    }],
+                    client_tools: Vec::new(),
+                },
+            )
+        });
 
     let context = host
         .ctx_for("policy-session", Some("assistant"))
@@ -339,25 +340,26 @@ async fn session_web_policy_overlay_reaches_the_configured_plugin_before_inferen
         .build()
         .expect("validated Host dependencies"),
     );
-    host.session_slots.update("provider-server-policy", |slot| {
-        slot.tools = Some(
-            awaken_session_configuration_contract::SessionToolConfiguration {
-                toolsets: vec![ToolsetPolicy {
-                    source: ToolsetSource::Agent,
-                    default: ToolExecutionPolicy::default(),
-                    overrides: vec![ToolPolicyOverride::with_optional_configuration(
-                        awaken_ext_builtin_tools::WEB_FETCH_TOOL_ID,
-                        ToolExecutionPolicy::default(),
-                        Some(serde_json::json!({
-                            "type": "web_fetch",
-                            "max_content_tokens": 512
-                        })),
-                    )],
-                }],
-                client_tools: Vec::new(),
-            },
-        );
-    });
+    host.session_slots
+        .replace_frozen_with("provider-server-policy", |next| {
+            next.tools = Some(
+                awaken_session_configuration_contract::SessionToolConfiguration {
+                    toolsets: vec![ToolsetPolicy {
+                        source: ToolsetSource::Agent,
+                        default: ToolExecutionPolicy::default(),
+                        overrides: vec![ToolPolicyOverride::with_optional_configuration(
+                            awaken_ext_builtin_tools::WEB_FETCH_TOOL_ID,
+                            ToolExecutionPolicy::default(),
+                            Some(serde_json::json!({
+                                "type": "web_fetch",
+                                "max_content_tokens": 512
+                            })),
+                        )],
+                    }],
+                    client_tools: Vec::new(),
+                },
+            );
+        });
 
     let receipt = host
         .run(
@@ -425,19 +427,21 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
         };
     host.session_slots.update("repository-policy", |slot| {
         slot.session_dispatch = true;
-        slot.tools = Some(
-            awaken_session_configuration_contract::SessionToolConfiguration {
-                toolsets: vec![ToolsetPolicy {
-                    source: ToolsetSource::Agent,
-                    default: ToolExecutionPolicy {
-                        enabled: false,
-                        permission: ToolPermissionRequirement::AlwaysAllow,
-                    },
-                    overrides: vec![ToolPolicyOverride::new("bash", enabled)],
-                }],
-                client_tools: Vec::new(),
-            },
-        );
+        slot.replace_frozen_with(|next| {
+            next.tools = Some(
+                awaken_session_configuration_contract::SessionToolConfiguration {
+                    toolsets: vec![ToolsetPolicy {
+                        source: ToolsetSource::Agent,
+                        default: ToolExecutionPolicy {
+                            enabled: false,
+                            permission: ToolPermissionRequirement::AlwaysAllow,
+                        },
+                        overrides: vec![ToolPolicyOverride::new("bash", enabled)],
+                    }],
+                    client_tools: Vec::new(),
+                },
+            )
+        });
         slot.resources.repositories.extend([
             repository("repo-a", "/workspace/repo-a"),
             repository("legacy-repo", "legacy-repo"),
@@ -466,9 +470,11 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
     );
 
     host.session_slots.update("repository-policy", |slot| {
-        slot.tools.as_mut().expect("Session tools").toolsets[0]
+        let mut tools = slot.frozen.tools.clone().expect("Session tools");
+        tools.toolsets[0]
             .overrides
             .push(ToolPolicyOverride::new("read", enabled));
+        slot.replace_frozen_with(|next| next.tools = Some(tools));
     });
     assert!(
         host.session_allows_repository_skill_discovery("repository-policy", Some(&snapshot)),
@@ -570,9 +576,10 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     .build()
     .expect("validated Host dependencies");
 
-    host.session_slots.update("direct-semantic", |slot| {
-        slot.tools = Some(deny_filesystem());
-    });
+    host.session_slots
+        .replace_frozen_with("direct-semantic", |next| {
+            next.tools = Some(deny_filesystem())
+        });
     assert_eq!(
         host.select_content_delivery(
             "direct-semantic",
@@ -600,7 +607,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
 
     host.session_slots.update("managed-denied", |slot| {
         slot.session_dispatch = true;
-        slot.tools = Some(deny_filesystem());
+        slot.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
     });
     let denied = host
         .select_content_delivery(
@@ -621,7 +628,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         .expect("validated Host dependencies");
     empty_host.session_slots.update("managed-no-skill", |slot| {
         slot.session_dispatch = true;
-        slot.tools = Some(deny_filesystem());
+        slot.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
     });
     assert_eq!(
         empty_host
@@ -655,7 +662,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         .session_slots
         .update("managed-memory-path", |slot| {
             slot.session_dispatch = true;
-            slot.tools = Some(deny_filesystem());
+            slot.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
             slot.resources.resource_prompts.push(
                 crate::managed_input_layout::ResourcePromptProjection::try_from_input(
                     &memory_with_path,
@@ -828,25 +835,27 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
 
     host.session_slots.update("semantic-session", |slot| {
         slot.content_delivery = Some(ManagedContentDelivery::SemanticTools);
-        slot.tools = Some(
-            awaken_session_configuration_contract::SessionToolConfiguration {
-                toolsets: vec![ToolsetPolicy {
-                    source: ToolsetSource::Agent,
-                    default: ToolExecutionPolicy {
-                        enabled: false,
-                        permission: ToolPermissionRequirement::AlwaysAllow,
-                    },
-                    overrides: vec![ToolPolicyOverride::new(
-                        "write",
-                        ToolExecutionPolicy {
-                            enabled: true,
+        slot.replace_frozen_with(|next| {
+            next.tools = Some(
+                awaken_session_configuration_contract::SessionToolConfiguration {
+                    toolsets: vec![ToolsetPolicy {
+                        source: ToolsetSource::Agent,
+                        default: ToolExecutionPolicy {
+                            enabled: false,
                             permission: ToolPermissionRequirement::AlwaysAllow,
                         },
-                    )],
-                }],
-                client_tools: Vec::new(),
-            },
-        );
+                        overrides: vec![ToolPolicyOverride::new(
+                            "write",
+                            ToolExecutionPolicy {
+                                enabled: true,
+                                permission: ToolPermissionRequirement::AlwaysAllow,
+                            },
+                        )],
+                    }],
+                    client_tools: Vec::new(),
+                },
+            )
+        });
     });
     assert!(
         host.session_allows_filesystem_tools("semantic-session", None),
@@ -1186,10 +1195,11 @@ async fn session_client_tools_replace_the_published_surface_with_exact_ownership
         .expect("validated Host dependencies"),
     );
 
-    host.session_slots.update("cleared-client-tools", |slot| {
-        slot.tools =
-            Some(awaken_session_configuration_contract::SessionToolConfiguration::default());
-    });
+    host.session_slots
+        .replace_frozen_with("cleared-client-tools", |next| {
+            next.tools =
+                Some(awaken_session_configuration_contract::SessionToolConfiguration::default());
+        });
     let cleared = host
         .ctx_for("cleared-client-tools", Some("assistant"))
         .await
@@ -1214,14 +1224,15 @@ async fn session_client_tools_replace_the_published_surface_with_exact_ownership
             "additionalProperties": false
         }),
     };
-    host.session_slots.update("session-client-tools", |slot| {
-        slot.tools = Some(
-            awaken_session_configuration_contract::SessionToolConfiguration {
-                toolsets: Vec::new(),
-                client_tools: vec![lookup.clone()],
-            },
-        );
-    });
+    host.session_slots
+        .replace_frozen_with("session-client-tools", |next| {
+            next.tools = Some(
+                awaken_session_configuration_contract::SessionToolConfiguration {
+                    toolsets: Vec::new(),
+                    client_tools: vec![lookup.clone()],
+                },
+            )
+        });
     let context = host
         .ctx_for("session-client-tools", Some("assistant"))
         .await
