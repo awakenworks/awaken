@@ -30,8 +30,8 @@ fn validate_preparation_publication(
     slot: &crate::session_slot::SessionRuntimeSlot,
     asserted: Option<&awaken_session_resource_contract::SessionRealizationLease>,
 ) -> Result<(), RunError> {
-    if slot.resource_preparation.is_some()
-        && !asserted.is_some_and(|lease| slot.resource_preparation_authorized(lease))
+    if slot.realization.resource_preparation.is_some()
+        && !asserted.is_some_and(|lease| slot.realization.resource_preparation_authorized(lease))
     {
         return Err(RunError::unavailable_classified(
             "session_realization_authority_lost",
@@ -82,8 +82,9 @@ impl crate::ManagedHost {
         let environment = self
             .host
             .session_slots
-            .read(thread, |slot| slot.environment_projection.clone())
-            .flatten();
+            .frozen(thread)
+            .environment_projection
+            .clone();
         for input in inputs.inputs() {
             let one = self
                 .stage_resolved_input(workspace, input, claim, realization, environment.as_ref())
@@ -280,9 +281,7 @@ impl crate::ManagedHost {
                 || self
                     .host
                     .session_slots
-                    .read(thread, |slot| {
-                        slot.environment_owner.durable_binding().is_some()
-                    })
+                    .read_realization(thread, |r| r.environment_owner.durable_binding().is_some())
                     .unwrap_or(false));
         if awaiting_adoption {
             // The bound provider substrate is the only physical prior
@@ -303,7 +302,7 @@ impl crate::ManagedHost {
                 .await?;
             self.host.session_slots.update(thread, |slot| {
                 validate_preparation_publication(slot, realization_lease)?;
-                slot.skills = Some(versions);
+                slot.realization.skills = Some(versions);
                 Ok(())
             })?;
             return Ok(());
@@ -339,8 +338,8 @@ impl crate::ManagedHost {
             && self
                 .host
                 .session_slots
-                .read(thread, |slot| {
-                    slot.staged_resource_effect_key.as_deref() == Some(effect_key.as_str())
+                .read_realization(thread, |r| {
+                    r.staged_resource_effect_key.as_deref() == Some(effect_key.as_str())
                 })
                 .unwrap_or(false)
         {
@@ -363,12 +362,12 @@ impl crate::ManagedHost {
             // lock with renewal rejection. Neither a late read nor cancellation
             // may publish requirements after that rejection has linearized.
             validate_preparation_publication(slot, realization.map(|(_, _, lease)| lease))?;
-            slot.workspace = Some(workspace.to_owned());
-            slot.resources = compiled.staged;
-            slot.memory_bindings = compiled.memory_bindings;
-            slot.memory = None;
-            slot.skills = Some(versions);
-            slot.staged_resource_effect_key = Some(effect_key);
+            slot.replace_frozen_with(|next| next.workspace = Some(workspace.to_owned()));
+            slot.realization.resources = compiled.staged;
+            slot.realization.memory_bindings = compiled.memory_bindings;
+            slot.realization.memory = None;
+            slot.realization.skills = Some(versions);
+            slot.realization.staged_resource_effect_key = Some(effect_key);
             Ok(())
         })?;
         Ok(())
@@ -417,11 +416,11 @@ impl crate::ManagedHost {
         // Worker enters the frozen Session realization path.
         self.host
             .session_slots
-            .update(thread, |slot| slot.session_dispatch = true);
+            .update_run(thread, |run| run.session_dispatch = true);
         let checks = self
             .host
             .session_slots
-            .read(thread, |slot| slot.resources.binding_checks.clone())
+            .read_realization(thread, |r| r.resources.binding_checks.clone())
             .unwrap_or_default();
         if checks.is_empty() {
             return Ok(());
@@ -474,11 +473,7 @@ impl crate::ManagedHost {
         claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> Result<(), RunError> {
-        let lifecycle = self
-            .host
-            .session_slots
-            .update(thread, |slot| slot.lifecycle.clone());
-        let _lifecycle = lifecycle.lock().await;
+        let _lifecycle = self.host.session_slots.lock_lifecycle(thread).await;
         self.apply_session_inputs_under_lifecycle(thread, transition, claim, realization_lease)
             .await
     }
@@ -495,11 +490,11 @@ impl crate::ManagedHost {
         claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> Result<(), RunError> {
-        let resource_projection = self
+        let _resource_projection = self
             .host
             .session_slots
-            .update(thread, |slot| slot.resource_projection.clone());
-        let _resource_projection = resource_projection.lock().await;
+            .lock_resource_projection(thread)
+            .await;
         self.apply_session_inputs_body(thread, transition, claim, realization_lease)
             .await
     }
@@ -523,27 +518,25 @@ impl crate::ManagedHost {
         // precedes every Workspace, Skill, File, Repository, cache, or provider
         // effect below.
         self.validate_effective_resource_layout(thread, inputs)?;
-        self.host.session_slots.update(thread, |slot| {
-            slot.resource_transition = Some(transition.clone());
+        self.host.session_slots.update_realization(thread, |r| {
+            r.resource_transition = Some(transition.clone());
         });
         let live_environment = self.host.session_environment(thread).await;
         let awaiting_adoption = live_environment.is_none()
             && self
                 .host
                 .session_slots
-                .read(thread, |slot| {
-                    slot.environment_owner.durable_binding().is_some()
-                })
+                .read_realization(thread, |r| r.environment_owner.durable_binding().is_some())
                 .unwrap_or(false);
         let (baseline_is_staged, session_dispatch, reconciliation, environment_projection) = self
             .host
             .session_slots
             .read(thread, |slot| {
                 (
-                    slot.baseline.is_some(),
-                    slot.session_dispatch,
-                    slot.environment_resource_reconciliation,
-                    slot.environment_projection.clone(),
+                    slot.frozen.baseline.is_some(),
+                    slot.run.session_dispatch,
+                    slot.realization.environment_resource_reconciliation,
+                    slot.frozen.environment_projection.clone(),
                 )
             })
             .unwrap_or_default();
@@ -770,8 +763,8 @@ impl crate::ManagedHost {
         let cache_matches = self
             .host
             .session_slots
-            .read(thread, |slot| {
-                slot.staged_resource_effect_key.as_deref() == Some(effect_key.as_str())
+            .read_realization(thread, |r| {
+                r.staged_resource_effect_key.as_deref() == Some(effect_key.as_str())
             })
             .unwrap_or(false);
         if !cache_matches {
@@ -791,13 +784,13 @@ impl crate::ManagedHost {
         let compiled = self
             .host
             .session_slots
-            .read(thread, |slot| {
-                (slot.staged_resource_effect_key.as_deref() == Some(effect_key.as_str())).then(
-                    || CompiledEffectiveInputs {
-                        staged: slot.resources.clone(),
-                        memory_bindings: slot.memory_bindings.clone(),
-                    },
-                )
+            .read_realization(thread, |r| {
+                (r.staged_resource_effect_key.as_deref() == Some(effect_key.as_str())).then(|| {
+                    CompiledEffectiveInputs {
+                        staged: r.resources.clone(),
+                        memory_bindings: r.memory_bindings.clone(),
+                    }
+                })
             })
             .flatten()
             .ok_or_else(|| {
@@ -888,7 +881,7 @@ impl crate::ManagedHost {
                     let versions = self
                         .host
                         .session_slots
-                        .read(thread, |slot| slot.skills.clone())
+                        .read_realization(thread, |r| r.skills.clone())
                         .flatten()
                         .ok_or_else(|| {
                             RunError::internal("compiled pinned Skill bytes are missing")
@@ -981,8 +974,8 @@ impl crate::ManagedHost {
         if let Some(update) = projection_update {
             update.commit();
         }
-        self.host.session_slots.update(thread, |slot| {
-            slot.environment_resource_reconciliation =
+        self.host.session_slots.update_realization(thread, |r| {
+            r.environment_resource_reconciliation =
                 crate::staged_resources::EnvironmentResourceReconciliation::None;
         });
         self.host.evict_session_for_rebuild(thread).await;
@@ -998,16 +991,16 @@ impl crate::SharedHost {
         scope: ManagedLayoutValidationScope<'_>,
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
-        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
     ) -> Result<(), crate::host::HostError> {
         let (resident_baseline, content_delivery, resident_environment, live_environment) = self
             .session_slots
             .read(thread, |slot| {
                 (
-                    slot.baseline.clone(),
-                    slot.content_delivery,
-                    slot.environment_projection.clone(),
-                    slot.environment_owner.resident(),
+                    slot.frozen.baseline.clone(),
+                    slot.realization.content_delivery,
+                    slot.frozen.environment_projection.clone(),
+                    slot.realization.environment_owner.resident(),
                 )
             })
             .unwrap_or_default();
@@ -1096,7 +1089,7 @@ impl crate::SharedHost {
         provider: &crate::session_environment::SessionEnvironmentProvider,
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
-        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
     ) -> Result<(), crate::host::HostError> {
         self.validate_managed_layout_inputs(
             thread,
@@ -1117,7 +1110,7 @@ impl crate::SharedHost {
         resources: &awaken_session_resource_contract::ResolvedSessionResources,
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
-        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
     ) -> Result<(), crate::host::HostError> {
         self.validate_managed_layout_inputs(
             thread,
@@ -1139,7 +1132,7 @@ impl crate::SharedHost {
         provider: &crate::session_environment::SessionEnvironmentProvider,
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
-        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
     ) -> Result<(), crate::host::HostError> {
         self.validate_managed_layout_inputs(
             thread,
@@ -1157,7 +1150,7 @@ impl crate::SharedHost {
         resources: &[awaken_resource_contract::InputBinding],
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
-        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
     ) -> Result<(), crate::host::HostError> {
         self.validate_managed_layout_inputs(
             thread,
@@ -1247,7 +1240,7 @@ impl crate::ManagedHost {
             u64,
             &awaken_session_resource_contract::SessionRealizationLease,
         )>,
-        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
     ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
         let authority = if let (Some((session_id, resource_revision, lease)), true) = (
             realization,
@@ -1327,7 +1320,7 @@ impl crate::ManagedHost {
             u64,
             &awaken_session_resource_contract::SessionRealizationLease,
         )>,
-        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
     ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
         use awaken_session_resource_contract::ResolvedInputSource;
         use awaken_session_types::RunError;

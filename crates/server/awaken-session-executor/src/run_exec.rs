@@ -812,8 +812,8 @@ mod tests {
             _activation: RunActivation,
             _context: RuntimeRunContext,
         ) -> ExecutionResult<RunState> {
-            self.slots.update(&self.thread, |slot| {
-                slot.dispatch_claim = Some(self.replacement.clone());
+            self.slots.update_run(&self.thread, |run| {
+                run.dispatch_claim = Some(self.replacement.clone());
             });
             match self.failure {
                 Some(message) => Err(ExecutionError::Execution(message.into())),
@@ -1052,8 +1052,8 @@ mod tests {
             dispatch: dispatch.clone(),
         });
         let host = (raw_host).build().expect("validated Host dependencies");
-        host.session_slots.update(thread, |slot| {
-            slot.dispatch_claim = Some(expected_claim.clone());
+        host.session_slots.update_run(thread, |run| {
+            run.dispatch_claim = Some(expected_claim.clone());
         });
         host.register_thread_workspace(thread, "workspace-a");
         let spec = crate::provisioning::agent_run_sandbox_spec(thread);
@@ -1177,8 +1177,8 @@ mod tests {
             "R6"
         );
 
-        host.session_slots.update(thread, |slot| {
-            slot.dispatch_claim = Some(expected_claim.clone());
+        host.session_slots.update_run(thread, |run| {
+            run.dispatch_claim = Some(expected_claim.clone());
         });
 
         let replacement = awaken_dispatch_contract::RunClaim {
@@ -1216,8 +1216,8 @@ mod tests {
             "R8"
         );
 
-        host.session_slots.update(thread, |slot| {
-            slot.dispatch_claim = Some(expected_claim.clone());
+        host.session_slots.update_run(thread, |run| {
+            run.dispatch_claim = Some(expected_claim.clone());
         });
         let replacement = awaken_dispatch_contract::RunClaim {
             run_id: expected_claim.run_id.clone(),
@@ -1259,7 +1259,7 @@ mod tests {
         );
 
         host.session_slots
-            .update(thread, |slot| slot.dispatch_claim = None);
+            .update_run(thread, |run| run.dispatch_claim = None);
         let replacement = awaken_dispatch_contract::RunClaim {
             run_id: expected_claim.run_id.clone(),
             owner: "worker-late".into(),
@@ -1290,8 +1290,8 @@ mod tests {
             "R10"
         );
 
-        host.session_slots.update(thread, |slot| {
-            slot.dispatch_claim = Some(expected_claim.clone());
+        host.session_slots.update_run(thread, |run| {
+            run.dispatch_claim = Some(expected_claim.clone());
         });
 
         dispatch

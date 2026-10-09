@@ -25,10 +25,7 @@ impl SharedHost {
                 "coordination query received a snapshot for a different Session root",
             ));
         }
-        let delivered = self
-            .session_slots
-            .read(session_id, |slot| slot.published_snapshot.clone())
-            .flatten();
+        let delivered = self.session_slots.published_snapshot(session_id);
         // Relationship recovery and terminal teardown must remain available
         // after a publication is revoked. The committed advisor call supplies
         // identity; current publication only enriches its model label. Managed

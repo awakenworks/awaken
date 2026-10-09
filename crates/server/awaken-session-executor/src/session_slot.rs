@@ -8,9 +8,7 @@
 //! projection materialized from it so registration and terminal cleanup share one
 //! lifecycle boundary instead of coordinating parallel maps.
 
-use crate::frozen_runtime_projection::{
-    FrozenBaselineRuntimeProjection, FrozenEnvironmentRuntimeProjection, ManagedContentDelivery,
-};
+use crate::frozen_inputs::{FrozenSessionInputs, ManagedContentDelivery};
 use crate::staged_resources::EnvironmentResourceReconciliation;
 pub(crate) use awaken_session_mcp::McpQuiescenceAdmissionFence;
 use awaken_session_mcp::SessionMcpState;
@@ -159,13 +157,14 @@ impl SessionRuntimeSlot {
     pub(crate) fn dispatch_resource_manifest(
         &self,
     ) -> Option<awaken_session_resource_contract::SessionResourceManifest> {
-        if self.session_dispatch {
-            self.resource_transition
+        if self.run.session_dispatch {
+            self.realization
+                .resource_transition
                 .as_ref()
                 .map(|transition| transition.desired().clone())
-                .or_else(|| self.manifest.clone())
+                .or_else(|| self.realization.manifest.clone())
         } else {
-            self.manifest.clone()
+            self.realization.manifest.clone()
         }
     }
 
@@ -177,16 +176,17 @@ impl SessionRuntimeSlot {
         &mut self,
         environment: &awaken_session_state_contract::SessionEnvironmentState,
     ) -> bool {
-        let Some(fence) = self.mcp.quiescence_fence() else {
+        let Some(fence) = self.realization.mcp.quiescence_fence() else {
             return false;
         };
-        let local_effects_cleared = self.runtime.is_none() && self.mcp.local_effects_cleared();
+        let local_effects_cleared =
+            self.run.runtime.is_none() && self.realization.mcp.local_effects_cleared();
         if !local_effects_cleared {
             return false;
         }
         let authoritative_reopen = if fence.restored_by(environment) {
             matches!(
-                (&self.environment_owner, environment),
+                (&self.realization.environment_owner, environment),
                 (
                     SessionEnvironmentOwner::Preparing(
                         SessionEnvironmentPreparation::AwaitingAdoption {
@@ -207,7 +207,7 @@ impl SessionRuntimeSlot {
                     && owner_generation == generation
                     && owner_binding == binding
             ) || matches!(
-                (&self.environment_owner, environment),
+                (&self.realization.environment_owner, environment),
                 (
                     SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
                         identity: BoundSessionEnvironmentIdentity::Durable {
@@ -231,18 +231,41 @@ impl SessionRuntimeSlot {
             matches!(
                 environment,
                 awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
-            ) && matches!(&self.environment_owner, SessionEnvironmentOwner::Vacant)
+            ) && matches!(
+                &self.realization.environment_owner,
+                SessionEnvironmentOwner::Vacant
+            )
         };
         if !authoritative_reopen {
             return false;
         }
-        self.mcp.reopen_admission();
+        self.realization.mcp.reopen_admission();
         true
     }
 }
 
+/// One Session's process-local state, in three layers by lifetime. The
+/// Session aggregate stays the sole authority; every layer is a rebuildable
+/// projection of it or a resource this process runs. Dependencies point one
+/// way: `run` reads `realization` and `frozen`, `realization` reads `frozen`.
 #[derive(Default)]
 pub(crate) struct SessionRuntimeSlot {
+    /// The Session's frozen inputs, held whole. Install and every later change
+    /// replace this one value; nothing amends a field of it in place.
+    pub(crate) frozen: Arc<FrozenSessionInputs>,
+    /// What this process realized for the Session: its Environment owner,
+    /// realization lease, staged Resources and the locks that serialize them.
+    pub(crate) realization: SessionRealizationState,
+    /// The Session's running context and the dispatch it currently serves.
+    pub(crate) run: SessionRunState,
+}
+
+/// The environment-realization layer: who owns the Session's Environment,
+/// under which realization lease, and which Resources, memory, Skills and MCP
+/// generations are staged for it. Built while realizing; revocation keeps
+/// only what a retry of a retained Environment owner still needs.
+#[derive(Default)]
+pub(crate) struct SessionRealizationState {
     /// Serializes the canonical realization phase driver for this Session.
     /// Lease renewal may advance authority while this lock is held, but it must
     /// not start a second Stage/Publish driver. This is deliberately separate
@@ -259,10 +282,6 @@ pub(crate) struct SessionRuntimeSlot {
     pub resource_projection: Arc<tokio::sync::Mutex<()>>,
     /// Last accepted aggregate version and equality digest; rebuildable, never authority.
     pub(crate) frozen_projection_receipt: Option<FrozenProjectionReceipt>,
-    pub runtime: Option<Arc<crate::host::SessionCtx>>,
-    /// Rebuildable model-only context materialized from the Session baseline's
-    /// immutable transcript-prefix reference. Never committed to this Thread.
-    pub request_context: Vec<awaken_agent_contract::agent::message::Message>,
     /// Sole live Environment owner. Every state transition is driven through
     /// `host/session/environment_lifecycle.rs`; other modules may only inspect
     /// Resident/occupancy projections through its read helpers.
@@ -288,32 +307,6 @@ pub(crate) struct SessionRuntimeSlot {
     /// projection; the Session aggregate receipt remains the only transition
     /// authority and clears it after durable publication.
     pub environment_rebuild_source: Option<(String, Option<String>)>,
-    pub deferred_executor: Option<Arc<dyn awaken_tool_contract::tool::ToolExecutor>>,
-    /// Current durable dispatch claim used by claim-fenced Resource effects.
-    /// This process-local projection is replaced at every claimed resolve; the
-    /// dispatch store remains the lease/epoch authority.
-    pub dispatch_claim: Option<awaken_dispatch_contract::RunClaim>,
-    pub workspace: Option<String>,
-    /// Exact Agent identity copied from the frozen Session baseline. Internal
-    /// history/recovery calls do not carry a wire Agent parameter, so they must
-    /// resolve the publication through this projection instead of defaulting to
-    /// the built-in assistant.
-    pub agent_id: Option<String>,
-    /// Exact immutable Agent publication supplied by the claimed activation.
-    /// Dynamic application publications may not be present in the host catalog,
-    /// so lease-only realization must retain this authority instead of trying
-    /// to reconstruct it from the backend projection.
-    pub published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
-    pub model_ref: Option<String>,
-    /// Process-local copy of the backend frozen in the Session baseline. It is
-    /// validated against the immutable publication before runtime construction.
-    pub backend_ref: Option<String>,
-    /// Exact Environment projection shared by Native and ACP realization.
-    pub environment_projection: Option<FrozenEnvironmentRuntimeProjection>,
-    /// Original secret-free Control snapshot retained solely for durable
-    /// dispatch to another Worker. Runtime provisioning consumes the decoded
-    /// projection above; this value is never a second configuration authority.
-    pub environment_snapshot: Option<awaken_session_configuration_contract::EnvironmentSnapshot>,
     /// Every standard MemoryStore resource frozen for this Session, keyed by
     /// binding id. These exist independently of the optional Awaken automatic
     /// memory extension selected into `memory` below.
@@ -326,25 +319,14 @@ pub(crate) struct SessionRuntimeSlot {
     pub mcp: SessionMcpState,
     /// Current Control-issued projection authority. It is a live cache used to
     /// request renewal; durable ownership remains in the Session aggregate.
-    pub realization_authority: SessionRealizationAuthority,
+    pub authority: SessionRealizationAuthority,
     /// Cancellation of the current Resource preparation only. This carries no
-    /// ownership: `realization_authority` and Control remain the sole authorities.
+    /// ownership: `authority` and Control remain the sole authorities.
     pub resource_preparation: Option<Arc<awaken_runtime_contract::CancellationToken>>,
     /// Wakes a claim resolver waiting for the Session application's initial
     /// restart reassignment. The lease above remains the only projected fact;
     /// this notification carries no authority or parallel state.
-    pub realization_changed: Arc<tokio::sync::Notify>,
-    /// The thread entered through the Session application API and its durable
-    /// dispatch must therefore cross the claimed Session realization boundary.
-    /// It carries no desired-state data of its own.
-    pub session_dispatch: bool,
-    /// Exact Control-frozen baseline projected for realization. It is never
-    /// authored or mutated locally.
-    pub baseline: Option<FrozenBaselineRuntimeProjection>,
-    /// Exact published delegation targets projected by a managed Session.
-    pub delegates: Vec<String>,
-    /// Complete Session-local tool replacement; `None` inherits publication.
-    pub tools: Option<awaken_session_configuration_contract::SessionToolConfiguration>,
+    pub changed: Arc<tokio::sync::Notify>,
     /// `Some([])` means the frozen manifest delivers no Skills; `None` means this
     /// embedded Session has no frozen Skill manifest.
     pub skills: Option<Vec<awaken_resource_contract::SkillVersion>>,
@@ -369,22 +351,82 @@ pub(crate) struct SessionRuntimeSlot {
     pub environment_resource_reconciliation: EnvironmentResourceReconciliation,
 }
 
-impl SessionRuntimeSlot {
-    pub(crate) fn close_realization_authority(
+/// The run layer: the Session context built for running and the durable
+/// dispatch it serves. Rebuilt from the other two layers when dropped.
+#[derive(Default)]
+pub(crate) struct SessionRunState {
+    pub runtime: Option<Arc<crate::host::SessionCtx>>,
+    pub deferred_executor: Option<Arc<dyn awaken_tool_contract::tool::ToolExecutor>>,
+    /// Current durable dispatch claim used by claim-fenced Resource effects.
+    /// This process-local projection is replaced at every claimed resolve; the
+    /// dispatch store remains the lease/epoch authority.
+    pub dispatch_claim: Option<awaken_dispatch_contract::RunClaim>,
+    /// The thread entered through the Session application API and its durable
+    /// dispatch must therefore cross the claimed Session realization boundary.
+    /// It carries no desired-state data of its own.
+    pub session_dispatch: bool,
+}
+
+impl SessionRunState {
+    /// Drop a metadata-only coordination envelope so the next read rebuilds
+    /// it; an executable context is kept.
+    pub(crate) fn drop_coordination_envelope(&mut self) {
+        if self
+            .runtime
+            .as_ref()
+            .is_some_and(|context| context.is_coordination_envelope())
+        {
+            self.runtime = None;
+        }
+    }
+}
+
+impl SessionRealizationState {
+    /// Resources the Environment held before an in-flight resource transition.
+    pub(crate) fn previous_resources(
+        &self,
+    ) -> Option<awaken_session_resource_contract::ResolvedSessionResources> {
+        let transition = self.resource_transition.as_ref()?;
+        Some(transition.previous().resources.clone())
+    }
+
+    /// What revocation keeps while an Environment owner is still retained:
+    /// the slot's lock identities, the closed authority, the owner itself and
+    /// the content it was staged with. Everything else is rebuilt.
+    pub(crate) fn take_retained_on_revocation(&mut self) -> Self {
+        Self {
+            realization: self.realization.clone(),
+            lifecycle: self.lifecycle.clone(),
+            resource_projection: self.resource_projection.clone(),
+            changed: self.changed.clone(),
+            authority: self.authority.clone(),
+            environment_owner: std::mem::take(&mut self.environment_owner),
+            content_delivery: self.content_delivery,
+            resources: std::mem::take(&mut self.resources),
+            // Revocation clears process-local realization material but is
+            // not an Environment restoration/source-disposal authority.
+            // Preserve an already-closed quiescence fence so only the
+            // canonical durable projection proof may reopen MCP effects.
+            mcp: self.mcp.take_retained_on_revocation(),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn close_authority(
         &mut self,
         expected: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> bool {
-        if !self.realization_authority.close(expected) {
+        if !self.authority.close(expected) {
             return false;
         }
         if let Some(preparation) = &self.resource_preparation {
             preparation.cancel();
         }
-        self.realization_changed.notify_waiters();
+        self.changed.notify_waiters();
         true
     }
 
-    pub(crate) fn install_realization_lease(
+    pub(crate) fn install_lease(
         &mut self,
         proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
     ) -> bool {
@@ -395,7 +437,7 @@ impl SessionRuntimeSlot {
             return false;
         }
         let lease = &proof.lease;
-        if let SessionRealizationAuthority::Closed(Some(closed)) = &self.realization_authority
+        if let SessionRealizationAuthority::Closed(Some(closed)) = &self.authority
             && (awaken_session_realization_contract::realization_lease_generation_authorizes(
                 closed, lease,
             ) || awaken_session_realization_contract::realization_lease_generation_authorizes(
@@ -405,17 +447,17 @@ impl SessionRuntimeSlot {
             // An assertion or delayed renewal cannot reopen a closed generation.
             return false;
         }
-        if let Some(current) = self.realization_authority.lease()
+        if let Some(current) = self.authority.lease()
             && (awaken_session_realization_contract::realization_lease_generation_authorizes(
                 current, lease,
             ) || awaken_session_realization_contract::realization_lease_generation_authorizes(
                 lease, current,
             ))
-            && self.realization_authority.remaining().is_none()
+            && self.authority.remaining().is_none()
         {
             return false;
         }
-        if self.realization_authority.lease().is_some_and(|current| {
+        if self.authority.lease().is_some_and(|current| {
             awaken_session_realization_contract::realization_lease_generation_authorizes(
                 current, lease,
             )
@@ -423,7 +465,7 @@ impl SessionRuntimeSlot {
             // A slow preparation must not overwrite an intervening renewal.
             return true;
         }
-        if self.realization_authority.lease().is_some_and(|current| {
+        if self.authority.lease().is_some_and(|current| {
             !awaken_session_realization_contract::realization_lease_generation_authorizes(
                 lease, current,
             )
@@ -431,19 +473,19 @@ impl SessionRuntimeSlot {
         {
             preparation.cancel();
         }
-        self.realization_authority = SessionRealizationAuthority::Live(proof);
+        self.authority = SessionRealizationAuthority::Live(proof);
         true
     }
 
     /// The only renewal response application edge. Callers with an I/O
     /// snapshot must supply it unchanged; a fresh same-lock caller may use
     /// the currently visible lease. Neither can recreate absent/closed state.
-    pub(crate) fn renew_realization_lease(
+    pub(crate) fn renew_lease(
         &mut self,
         asserted: &awaken_session_resource_contract::SessionRealizationLease,
         renewed: awaken_session_realization_contract::ObservedSessionRealizationLease,
     ) -> bool {
-        if self.realization_authority.lease() != Some(asserted)
+        if self.authority.lease() != Some(asserted)
             || !awaken_session_realization_contract::realization_lease_generation_authorizes(
                 &renewed.lease,
                 asserted,
@@ -454,11 +496,11 @@ impl SessionRuntimeSlot {
         let Some(now) = awaken_authority_clock::authority_proof_started().ok() else {
             return false;
         };
-        if self.realization_authority.remaining().is_none() || renewed.remaining_at(now).is_none() {
+        if self.authority.remaining().is_none() || renewed.remaining_at(now).is_none() {
             return false;
         }
-        self.realization_authority = SessionRealizationAuthority::Live(renewed);
-        self.realization_changed.notify_waiters();
+        self.authority = SessionRealizationAuthority::Live(renewed);
+        self.changed.notify_waiters();
         true
     }
 
@@ -466,14 +508,28 @@ impl SessionRuntimeSlot {
         &self,
         asserted: &awaken_session_resource_contract::SessionRealizationLease,
     ) -> bool {
-        !self.realization_authority.is_closed()
+        !self.authority.is_closed()
             && self
                 .resource_preparation
                 .as_ref()
                 .is_none_or(|preparation| {
-                    !preparation.is_cancelled()
-                        && self.realization_authority.remaining_for(asserted).is_some()
+                    !preparation.is_cancelled() && self.authority.remaining_for(asserted).is_some()
                 })
+    }
+}
+
+impl SessionRuntimeSlot {
+    /// The only write of the frozen inputs: build the next value from a copy
+    /// and publish it whole; readers holding the previous `Arc` keep it. The
+    /// runtime context is assembled once with its request prefix, so a changed
+    /// prefix drops only that cached context.
+    pub(crate) fn replace_frozen_with(&mut self, build: impl FnOnce(&mut FrozenSessionInputs)) {
+        let mut next = self.frozen.as_ref().clone();
+        build(&mut next);
+        if self.frozen.request_context != next.request_context {
+            self.run.runtime = None;
+        }
+        self.frozen = Arc::new(next);
     }
 }
 
@@ -494,17 +550,17 @@ impl SessionRealizationRevocationSelection {
         slot: &mut SessionRuntimeSlot,
         expected: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> Option<Self> {
-        slot.close_realization_authority(expected).then(|| Self {
-            realization: slot.realization.clone(),
-            lifecycle: slot.lifecycle.clone(),
-            authority: slot.realization_authority.clone(),
+        slot.realization.close_authority(expected).then(|| Self {
+            realization: slot.realization.realization.clone(),
+            lifecycle: slot.realization.lifecycle.clone(),
+            authority: slot.realization.authority.clone(),
         })
     }
 
     pub(crate) fn matches(&self, slot: &SessionRuntimeSlot) -> bool {
-        Arc::ptr_eq(&self.realization, &slot.realization)
-            && Arc::ptr_eq(&self.lifecycle, &slot.lifecycle)
-            && self.authority == slot.realization_authority
+        Arc::ptr_eq(&self.realization, &slot.realization.realization)
+            && Arc::ptr_eq(&self.lifecycle, &slot.realization.lifecycle)
+            && self.authority == slot.realization.authority
     }
 }
 
@@ -518,8 +574,9 @@ impl SessionRuntimeSlots {
         )>,
     ) -> Option<SessionRealizationRevocationSelection> {
         self.modify(session, |slot| {
-            if expected.is_some_and(|(_, realization)| !Arc::ptr_eq(&slot.realization, realization))
-            {
+            if expected.is_some_and(|(_, realization)| {
+                !Arc::ptr_eq(&slot.realization.realization, realization)
+            }) {
                 return None;
             }
             SessionRealizationRevocationSelection::close(slot, expected.map(|(lease, _)| lease))
@@ -551,13 +608,13 @@ impl SessionRuntimeSlots {
         session: &str,
         fence: McpQuiescenceAdmissionFence,
     ) -> Result<bool, crate::HostError> {
-        self.update(session, |slot| slot.mcp.close_admission(fence))
+        self.update(session, |slot| slot.realization.mcp.close_admission(fence))
             .map_err(crate::HostError::from)
     }
 
     #[cfg(test)]
     pub(crate) fn mcp_realization_admitted(&self, session: &str) -> bool {
-        self.read(session, |slot| slot.mcp.admits_realization())
+        self.read(session, |slot| slot.realization.mcp.admits_realization())
             .unwrap_or(true)
     }
 
@@ -573,9 +630,9 @@ impl SessionRuntimeSlots {
         has_native: bool,
     ) -> Result<Vec<String>, String> {
         self.read(session, |slot| {
-            let mut prompts = slot.resources.prompts.clone();
-            let delivery = slot.content_delivery.unwrap_or_default();
-            let environment = slot.environment_owner.resident();
+            let mut prompts = slot.realization.resources.prompts.clone();
+            let delivery = slot.realization.content_delivery.unwrap_or_default();
+            let environment = slot.realization.environment_owner.resident();
             let path_view = match environment.as_deref() {
                 Some(environment) => environment
                     .agent_tools()
@@ -584,17 +641,17 @@ impl SessionRuntimeSlots {
                 None => Default::default(),
             };
             prompts.extend(
-                slot.resources
+                slot.realization.resources
                     .resource_prompts
                     .iter()
                     .map(|prompt| prompt.render(delivery, path_view.clone())),
             );
-            if let Some(baseline) = &slot.baseline {
+            if let Some(baseline) = &slot.frozen.baseline {
                 prompts.extend(baseline.prompts.iter()
                     .filter(|prompt| !awaken_session_configuration_contract::SessionContextSeed::is_seed_prompt(prompt))
                     .cloned());
             }
-            if let Some(skill_prompt) = &slot.skill_prompt {
+            if let Some(skill_prompt) = &slot.realization.skill_prompt {
                 prompts.push(skill_prompt.render(&path_view, environment.as_deref())?);
             }
             Ok(prompts)
@@ -602,9 +659,48 @@ impl SessionRuntimeSlots {
         .unwrap_or_else(|| Ok(Vec::new()))
     }
 
+    /// Hold one Session's Environment `lifecycle` lock, creating its slot.
+    pub(crate) async fn lock_lifecycle(&self, session: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lifecycle = self.update(session, |slot| slot.realization.lifecycle.clone());
+        lifecycle.lock_owned().await
+    }
+
+    /// Hold one Session's `resource_projection` lock, creating its slot.
+    pub(crate) async fn lock_resource_projection(
+        &self,
+        session: &str,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        let projection = self.update(session, |slot| slot.realization.resource_projection.clone());
+        projection.lock_owned().await
+    }
+
     #[cfg(test)]
     pub fn realization_lock(&self, session: &str) -> Arc<tokio::sync::Mutex<()>> {
-        self.update(session, |slot| slot.realization.clone())
+        self.update(session, |slot| slot.realization.realization.clone())
+    }
+
+    /// The immutable Agent publication retained for one Session.
+    pub(crate) fn published_snapshot(
+        &self,
+        session: &str,
+    ) -> Option<awaken_runtime_contract::ExecutableAgentSnapshot> {
+        self.frozen(session).published_snapshot.clone()
+    }
+
+    /// Publish a replacement of one Session's frozen inputs, creating its slot.
+    pub(crate) fn replace_frozen_with(
+        &self,
+        session: &str,
+        build: impl FnOnce(&mut FrozenSessionInputs),
+    ) {
+        self.update(session, |slot| slot.replace_frozen_with(build));
+    }
+
+    /// The Session's current frozen inputs, taken out of the lock as one
+    /// value. An unknown Session reads as the empty projection.
+    pub(crate) fn frozen(&self, session: &str) -> Arc<FrozenSessionInputs> {
+        self.read(session, |slot| slot.frozen.clone())
+            .unwrap_or_default()
     }
 
     pub fn read<R>(&self, session: &str, f: impl FnOnce(&SessionRuntimeSlot) -> R) -> Option<R> {
@@ -632,6 +728,60 @@ impl SessionRuntimeSlots {
             .map(f)
     }
 
+    /// Read only the realization layer of one Session's slot.
+    pub(crate) fn read_realization<R>(
+        &self,
+        session: &str,
+        f: impl FnOnce(&SessionRealizationState) -> R,
+    ) -> Option<R> {
+        self.read(session, |slot| f(&slot.realization))
+    }
+
+    /// Change only the realization layer, creating the Session's slot.
+    pub(crate) fn update_realization<R>(
+        &self,
+        session: &str,
+        f: impl FnOnce(&mut SessionRealizationState) -> R,
+    ) -> R {
+        self.update(session, |slot| f(&mut slot.realization))
+    }
+
+    /// Change only the realization layer of an existing slot.
+    pub(crate) fn modify_realization<R>(
+        &self,
+        session: &str,
+        f: impl FnOnce(&mut SessionRealizationState) -> R,
+    ) -> Option<R> {
+        self.modify(session, |slot| f(&mut slot.realization))
+    }
+
+    /// Read only the run layer of one Session's slot.
+    pub(crate) fn read_run<R>(
+        &self,
+        session: &str,
+        f: impl FnOnce(&SessionRunState) -> R,
+    ) -> Option<R> {
+        self.read(session, |slot| f(&slot.run))
+    }
+
+    /// Change only the run layer, creating the Session's slot.
+    pub(crate) fn update_run<R>(
+        &self,
+        session: &str,
+        f: impl FnOnce(&mut SessionRunState) -> R,
+    ) -> R {
+        self.update(session, |slot| f(&mut slot.run))
+    }
+
+    /// Change only the run layer of an existing slot.
+    pub(crate) fn modify_run<R>(
+        &self,
+        session: &str,
+        f: impl FnOnce(&mut SessionRunState) -> R,
+    ) -> Option<R> {
+        self.modify(session, |slot| f(&mut slot.run))
+    }
+
     pub fn remove(&self, session: &str) -> Option<SessionRuntimeSlot> {
         let removed = self
             .0
@@ -639,10 +789,10 @@ impl SessionRuntimeSlots {
             .expect("session runtime slots mutex poisoned")
             .remove(session);
         if let Some(slot) = &removed {
-            if let Some(preparation) = &slot.resource_preparation {
+            if let Some(preparation) = &slot.realization.resource_preparation {
                 preparation.cancel();
             }
-            slot.realization_changed.notify_waiters();
+            slot.realization.changed.notify_waiters();
         }
         removed
     }
@@ -658,7 +808,8 @@ impl SessionRuntimeSlots {
             .expect("session runtime slots mutex poisoned")
             .iter()
             .filter_map(|(session_id, slot)| {
-                slot.realization_authority
+                slot.realization
+                    .authority
                     .proof()
                     .cloned()
                     .map(|lease| (session_id.clone(), lease))
@@ -685,417 +836,4 @@ impl SessionRuntimeSlots {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use awaken_session_mcp::{McpGenerationProjection, McpProjectionState};
-
-    #[test]
-    fn realization_authority_close_and_renewal_have_one_projection() {
-        // Decision table: C1 absent/live/closed; C2 expected exact/stale/none;
-        // C3 renewal snapshot exact/stale; C4 renewed same-generation expiry
-        // shorter/equal/longer. Effects: close hides authority and cancels I/O;
-        // stale close changes nothing; only exact live monotonic renewal wins;
-        // closed replay cannot regain authority, a fresh generation can.
-        // Q1 absent+exact rejects; Q2 absent+none closes; Q3 live+stale rejects;
-        // Q4 live+exact closes; Q5 closed+exact retry succeeds; Q6-Q8 exact
-        // renewal crosses the three expiry partitions; Q9 stale reply rejects.
-        let base = crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000;
-        let lease = awaken_session_resource_contract::SessionRealizationLease {
-            owner: "worker".into(),
-            runtime_incarnation: "worker/1".into(),
-            epoch: 1,
-            expires_at_unix_ms: base + 100,
-        };
-        let mut slot = SessionRuntimeSlot::default();
-        assert!(!slot.close_realization_authority(Some(&lease)), "Q1");
-        assert!(slot.close_realization_authority(None), "Q2");
-        assert!(
-            !slot.resource_preparation_authorized(&lease),
-            "Q2 no-preparation fallback denied"
-        );
-        slot.install_realization_lease(test_observed_lease(lease.clone()));
-        let mut stale = lease.clone();
-        stale.expires_at_unix_ms -= 1;
-        let cancellation = Arc::new(awaken_runtime_contract::CancellationToken::new());
-        slot.resource_preparation = Some(cancellation.clone());
-        assert!(!slot.close_realization_authority(Some(&stale)), "Q3");
-        assert!(!cancellation.is_cancelled(), "Q3");
-        assert!(slot.close_realization_authority(Some(&lease)), "Q4");
-        assert!(cancellation.is_cancelled(), "Q4");
-        assert!(slot.close_realization_authority(Some(&lease)), "Q5");
-        for expiry in [base + 99, base + 100, base + 101] {
-            let mut renewed = lease.clone();
-            renewed.expires_at_unix_ms = expiry;
-            assert!(
-                !slot.renew_realization_lease(&lease, test_observed_lease(renewed.clone())),
-                "Q5 closed reply"
-            );
-            slot.install_realization_lease(test_observed_lease(renewed.clone()));
-            assert!(
-                slot.realization_authority.lease().is_none(),
-                "Q5 closed assertion"
-            );
-            let mut live = SessionRuntimeSlot::default();
-            live.install_realization_lease(test_observed_lease(lease.clone()));
-            assert_eq!(
-                live.renew_realization_lease(&lease, test_observed_lease(renewed.clone())),
-                expiry >= base + 100,
-                "Q6-Q8"
-            );
-            assert_eq!(
-                live.realization_authority.lease(),
-                Some(if expiry >= base + 100 {
-                    &renewed
-                } else {
-                    &lease
-                })
-            );
-            assert!(
-                !live.renew_realization_lease(&stale, test_observed_lease(renewed)),
-                "Q9"
-            );
-        }
-        let mut next = lease;
-        next.epoch += 1;
-        slot.install_realization_lease(test_observed_lease(next.clone()));
-        assert_eq!(
-            slot.realization_authority.lease(),
-            Some(&next),
-            "fresh Control generation"
-        );
-    }
-
-    #[test]
-    fn dispatch_resource_manifest_has_one_session_generation_selector() {
-        // Cause/effect graph: C1 the slot is ordinary/prepared Session; C2 a
-        // desired transition is absent/present; C3 active is absent/present.
-        // Effects: E1 ordinary dispatch selects active only; E2 prepared
-        // dispatch selects desired before physical publication; E3 desired
-        // wins over stale active; E4 a legacy Session falls back to active; E5
-        // selection never publishes or replaces active.
-        //
-        // | Rule | C1       | C2   | C3   | Selected | Active after |
-        // | S1   | ordinary | A->B | A    | A        | A            |
-        // | S2   | Session  | 0->B | none | B        | none         |
-        // | S3   | Session  | A->B | A    | B        | A            |
-        // | S4   | Session  | none | A    | A        | A            |
-        let manifest = |revision| {
-            awaken_session_resource_contract::SessionResourceManifest::at_revision(
-                "workspace-a",
-                revision,
-                awaken_session_resource_contract::ResolvedSessionResources::default(),
-            )
-        };
-        for (rule, session_dispatch, active, desired, expected) in [
-            ("S1", false, Some(4), Some(7), 4),
-            ("S2", true, None, Some(7), 7),
-            ("S3", true, Some(4), Some(7), 7),
-            ("S4", true, Some(4), None, 4),
-        ] {
-            let active = active.map(manifest);
-            let transition = desired.map(|revision| {
-                awaken_session_resource_contract::SessionResourceTransition::new(
-                    active.clone().unwrap_or_else(|| manifest(0)),
-                    manifest(revision),
-                )
-                .expect("test transition belongs to one Workspace")
-            });
-            let slot = SessionRuntimeSlot {
-                session_dispatch,
-                manifest: active.clone(),
-                resource_transition: transition,
-                ..Default::default()
-            };
-
-            assert_eq!(
-                slot.dispatch_resource_manifest()
-                    .unwrap_or_else(|| panic!("{rule} selected manifest"))
-                    .revision,
-                expected,
-                "{rule} selection",
-            );
-            assert_eq!(slot.manifest, active, "{rule}/E5 active is unchanged");
-        }
-    }
-
-    #[test]
-    fn environment_only_session_lease_remains_supervised() {
-        // FMECA/causal graph: C1 Environment startup outlives the initial lease;
-        // C2 the Session has no MCP projection; C3 supervision filters on MCP.
-        // E1 C1+C2 must still expose the lease for renewal, otherwise C3 lets
-        // the durable fence expire before the Environment receipt can commit.
-        let slots = SessionRuntimeSlots::default();
-        slots.update("environment-only", |slot| {
-            assert!(!slot.mcp.has_frozen_attachment(), "C2");
-            slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
-                test_observed_lease(awaken_session_resource_contract::SessionRealizationLease {
-                    owner: "worker".into(),
-                    runtime_incarnation: "worker/incarnation".into(),
-                    epoch: 1,
-                    expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms(
-                    ) + 30_000,
-                }),
-            );
-        });
-
-        let leases = slots.realization_leases();
-        assert_eq!(leases.len(), 1, "E1");
-        assert_eq!(leases[0].0, "environment-only", "E1");
-    }
-
-    #[tokio::test]
-    async fn unpolled_staging_future_drop_releases_drain_without_false_proof() {
-        // Cause/effect rule U1: C1 the canonical Staging projection is already
-        // installed; C2 its spawned Future captures the activity guard but is
-        // dropped before first poll; C3 drain has already claimed that exact
-        // owner. Effects: E1 drain remains pending before C2, E2 Future drop
-        // completes the same activity, and E3 the retry emits exact Removed
-        // proof only after the unstarted spawn owner is known to be gone.
-        let host = (crate::HostDependencies::ephemeral(
-            std::sync::Arc::new(crate::no_model::NoModelConfiguredExecutor),
-            "stub",
-        )
-        .await)
-            .build()
-            .expect("validated Host dependencies");
-        let generation =
-            crate::test_mcp::mcp_fence("unpolled-staging", "docs", 1, "runtime-1", 1, u64::MAX);
-        let request = awaken_session_mcp_contract::StageMcpAttachment {
-            workspace_id: "workspace-a".into(),
-            generation: generation.clone(),
-            realization_id: "realize-1".into(),
-            stage_idempotency_key: "stage-1".into(),
-            name: "docs".into(),
-            target: awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.example.test")
-                .unwrap(),
-            prompts_as_skills: false,
-            credential: None,
-            selected_plaintext_holder: None,
-        };
-        let staging = awaken_session_mcp::McpStagingActivity::default();
-        let guard = staging.guard();
-        let unpolled = async move {
-            let _guard = guard;
-            std::future::pending::<()>().await;
-        };
-        host.insert_mcp_projection(McpGenerationProjection {
-            receipt: awaken_session_mcp_contract::McpRealizationReceipt {
-                generation: generation.clone(),
-                realization_id: request.realization_id.clone(),
-                selected_plaintext_holder: None,
-                actual_realization_kind: None,
-                receipt_fingerprint: request.fingerprint(),
-            },
-            request,
-            server: None,
-            native_wiring: None,
-            mcp_process: None,
-            staging: Some(staging),
-            drain: std::sync::Arc::new(tokio::sync::Mutex::new(())),
-            state: McpProjectionState::Staging,
-        })
-        .unwrap();
-
-        let drain_host = host.clone();
-        let drain_generation = generation.clone();
-        let draining = tokio::spawn(async move {
-            drain_host
-                .drain_mcp_projections("unpolled-staging", &[drain_generation])
-                .await
-        });
-        loop {
-            if host
-                .mcp_projection(&generation)
-                .is_some_and(|projection| projection.state == McpProjectionState::Draining)
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-        assert!(!draining.is_finished(), "U1/E1 no early proof");
-
-        drop(unpolled);
-        let proof = tokio::time::timeout(std::time::Duration::from_millis(50), draining)
-            .await
-            .expect("U1/E2 unpolled Future drop releases drain")
-            .expect("U1/E2 drain task remains owned")
-            .expect("U1/E3 exact drain succeeds");
-        assert_eq!(
-            proof.generations.as_slice(),
-            std::slice::from_ref(&generation),
-            "U1/E3"
-        );
-        assert!(
-            host.mcp_projection(&generation).is_some_and(|projection| {
-                projection.state == McpProjectionState::Removed
-                    && projection.mcp_process.is_none()
-                    && projection.staging.is_none()
-            }),
-            "U1/E3 Removed only after the captured owner drops"
-        );
-    }
-
-    #[test]
-    fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
-        // Cause graph: C1 exact suspend/source/generation closes admission; C2
-        // the same close replays or conflicts; C3 Control projects the old
-        // Resident, a wrong generation, an exact restored Resident, or an
-        // explicit source-free Unmaterialized state. C4 the old Environment
-        // owner is still pending or is exactly Vacant. Effects: E1 close once;
-        // E2 reject conflict and retain fence; E3 stale/early projections stay
-        // closed; E4 exact restore/fresh-generation authority reopens once.
-        //
-        // | Rule | Close | Projected Environment | Effect |
-        // |---|---|---|---|
-        // | F1 | exact first/replay | none | E1 / idempotent |
-        // | F2 | foreign | none | E2 |
-        // | F3 | exact | old Resident / wrong generation | E3 |
-        // | F4 | exact | same generation + new effect/binding | E4 |
-        // | F5 | exact | Unmaterialized + pending source owner | E3 |
-        // | F6 | exact | Unmaterialized + Vacant + no local effects | E4 |
-        let slots = SessionRuntimeSlots::default();
-        let generation = awaken_session_state_contract::SandboxGeneration::new(
-            &awaken_session_types::SessionId::from("mcp-admission"),
-            1,
-            100,
-            "environment",
-            "base",
-        );
-        let operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
-            "workspace",
-            &awaken_session_types::SessionId::from("mcp-admission"),
-            "suspend",
-            &generation,
-            4,
-            None,
-            None,
-        );
-        let fence = McpQuiescenceAdmissionFence::new(
-            &operation,
-            "source-effect",
-            "source-binding",
-            &generation,
-        );
-        assert!(
-            slots
-                .close_mcp_realization_admission("mcp-admission", fence.clone())
-                .unwrap(),
-            "F1/E1"
-        );
-        assert!(
-            !slots
-                .close_mcp_realization_admission("mcp-admission", fence.clone())
-                .unwrap(),
-            "F1 replay"
-        );
-        let mut foreign = fence.clone();
-        foreign.activity_epoch += 1;
-        assert!(
-            slots
-                .close_mcp_realization_admission("mcp-admission", foreign)
-                .is_err(),
-            "F2/E2"
-        );
-        let old_resident = awaken_session_state_contract::SessionEnvironmentState::Resident {
-            binding: "source-binding".into(),
-            effect_id: Some("source-effect".into()),
-            generation: Some(generation.clone()),
-            idle_since_unix_ms: None,
-        };
-        assert!(
-            !slots.update("mcp-admission", |slot| {
-                slot.environment_owner = SessionEnvironmentOwner::Preparing(
-                    SessionEnvironmentPreparation::AwaitingAdoption {
-                        identity: BoundSessionEnvironmentIdentity::Durable {
-                            effect_id: "source-effect".into(),
-                            generation: generation.clone(),
-                        },
-                        binding: "source-binding".into(),
-                    },
-                );
-                slot.reopen_mcp_realization_admission_from_projection(&old_resident)
-            }),
-            "F3/E3 old Resident"
-        );
-        let wrong_generation = awaken_session_state_contract::SessionEnvironmentState::Resident {
-            binding: "restored-binding".into(),
-            effect_id: Some("restore-effect".into()),
-            generation: Some(awaken_session_state_contract::SandboxGeneration::new(
-                &awaken_session_types::SessionId::from("mcp-admission"),
-                2,
-                100,
-                "environment",
-                "base",
-            )),
-            idle_since_unix_ms: None,
-        };
-        assert!(
-            !slots.update("mcp-admission", |slot| {
-                slot.environment_owner = SessionEnvironmentOwner::Preparing(
-                    SessionEnvironmentPreparation::AwaitingAdoption {
-                        identity: BoundSessionEnvironmentIdentity::Durable {
-                            effect_id: "restore-effect".into(),
-                            generation: wrong_generation.generation().unwrap().clone(),
-                        },
-                        binding: "restored-binding".into(),
-                    },
-                );
-                slot.reopen_mcp_realization_admission_from_projection(&wrong_generation)
-            }),
-            "F3/E3 wrong generation"
-        );
-        let restored = awaken_session_state_contract::SessionEnvironmentState::Resident {
-            binding: "restored-binding".into(),
-            effect_id: Some("restore-effect".into()),
-            generation: Some(generation),
-            idle_since_unix_ms: None,
-        };
-        assert!(
-            slots.update("mcp-admission", |slot| {
-                slot.environment_owner = SessionEnvironmentOwner::Preparing(
-                    SessionEnvironmentPreparation::AwaitingAdoption {
-                        identity: BoundSessionEnvironmentIdentity::Durable {
-                            effect_id: "restore-effect".into(),
-                            generation: restored.generation().unwrap().clone(),
-                        },
-                        binding: "restored-binding".into(),
-                    },
-                );
-                slot.reopen_mcp_realization_admission_from_projection(&restored)
-            }),
-            "F4/E4"
-        );
-        assert!(slots.mcp_realization_admitted("mcp-admission"), "F4/E4");
-
-        slots
-            .close_mcp_realization_admission("mcp-admission", fence.clone())
-            .unwrap();
-        assert!(
-            !slots.update("mcp-admission", |slot| {
-                slot.environment_owner = SessionEnvironmentOwner::Preparing(
-                    SessionEnvironmentPreparation::AwaitingAdoption {
-                        identity: BoundSessionEnvironmentIdentity::Durable {
-                            effect_id: fence.source_effect_id.clone(),
-                            generation: fence.generation.clone(),
-                        },
-                        binding: fence.source_binding.clone(),
-                    },
-                );
-                slot.reopen_mcp_realization_admission_from_projection(
-                    &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
-                )
-            }),
-            "F5/E3 expiry before source disposal"
-        );
-        assert!(
-            slots.update("mcp-admission", |slot| {
-                slot.environment_owner = SessionEnvironmentOwner::Vacant;
-                slot.reopen_mcp_realization_admission_from_projection(
-                    &awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
-                )
-            }),
-            "F6/E4 exact source-free projection"
-        );
-        assert!(slots.mcp_realization_admitted("mcp-admission"), "F6/E4");
-    }
-}
+mod tests;

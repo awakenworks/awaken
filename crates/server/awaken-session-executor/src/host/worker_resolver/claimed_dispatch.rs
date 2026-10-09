@@ -311,7 +311,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             host.install_environment_projection(&thread_id.0, &projection.environment)
                 .map_err(Self::map_host_resolution_error)?;
             host.session_slots
-                .update(&thread_id.0, |slot| slot.tools = projection.tools);
+                .replace_frozen_with(&thread_id.0, |next| next.tools = projection.tools);
             projection.mcp_stages
         } else {
             None
@@ -328,8 +328,8 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             .read(&thread_id.0, |slot| {
                 canonical_session_projection_is_installed(
                     super::claimed_session::has_session_projection_authority(claimed),
-                    slot.session_dispatch,
-                    slot.baseline.is_some(),
+                    slot.run.session_dispatch,
+                    slot.frozen.baseline.is_some(),
                 )
             })
             .unwrap_or(false);
@@ -355,8 +355,8 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                 )));
             }
         }
-        host.session_slots.update(&thread_id.0, |slot| {
-            slot.dispatch_claim = Some(claim);
+        host.session_slots.update_run(&thread_id.0, |run| {
+            run.dispatch_claim = Some(claim);
         });
         // A complete frozen Session projection owns MCP realization regardless
         // of whether it arrived through remote Control or was installed by the
@@ -388,14 +388,12 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         let needs_deferred_executor = host
             .session_slots
             .read(&thread_id.0, |slot| {
-                slot.deferred_executor.is_none()
-                    && slot
-                        .environment_projection
-                        .as_ref()
-                        .is_some_and(|environment| {
-                            environment.provisioning
-                                == awaken_session_configuration_contract::SandboxProvisioning::OnToolUse
-                        })
+                let environment = slot.frozen.environment_projection.as_ref();
+                slot.run.deferred_executor.is_none()
+                    && environment.is_some_and(|environment| {
+                        environment.provisioning
+                            == awaken_session_configuration_contract::SandboxProvisioning::OnToolUse
+                    })
             })
             .unwrap_or(false);
         if needs_deferred_executor {
@@ -405,7 +403,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                     &thread_id.0,
                 ));
             host.session_slots
-                .update(&thread_id.0, |slot| slot.deferred_executor = Some(executor));
+                .update_run(&thread_id.0, |run| run.deferred_executor = Some(executor));
         }
         let _adoption = if canonical_session_realization {
             // The Control synchronizer merged projection + claim binding before
@@ -468,8 +466,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         // projection still uses the delivered root as its sole authority.
         let immutable_publication = if canonical_session_realization {
             host.session_slots
-                .read(&thread_id.0, |slot| slot.published_snapshot.clone())
-                .flatten()
+                .published_snapshot(&thread_id.0)
                 .unwrap_or_else(|| claimed.request.activation.snapshot.clone())
         } else {
             claimed.request.activation.snapshot.clone()

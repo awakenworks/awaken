@@ -37,7 +37,7 @@ impl crate::session_slot::SessionRuntimeSlot {
         pending_resource_reservation: bool,
     ) -> Result<SessionEnvironmentOwner, HostError> {
         let projected = projected_environment_owner(state, workspace_id, thread)?;
-        let mut owner = self.environment_owner.clone();
+        let mut owner = self.realization.environment_owner.clone();
         owner.install_projection_with_resource_reservation(
             projected,
             newer,
@@ -51,7 +51,7 @@ impl crate::session_slot::SessionRuntimeSlot {
         owner: SessionEnvironmentOwner,
         state: &awaken_session_state_contract::SessionEnvironmentState,
     ) {
-        self.environment_owner = owner;
+        self.realization.environment_owner = owner;
         self.reopen_mcp_realization_admission_from_projection(state);
     }
 }
@@ -362,11 +362,11 @@ impl SharedHost {
     ) -> ClosedEnvironmentRecoveryPlan<'a> {
         let (owner_class, exact_owner) = self
             .session_slots
-            .read(thread, |slot| {
+            .read_realization(thread, |r| {
                 if let Some(expected) = revoked
                     && expected.cause == SessionEnvironmentRetirementCause::RealizationRevocation
                     && matches!(
-                        &slot.environment_owner,
+                        &r.environment_owner,
                         SessionEnvironmentOwner::Retiring(current)
                             if current.exact_matches(expected)
                     )
@@ -378,7 +378,7 @@ impl SharedHost {
                         ))),
                     )
                 } else if let Some(expected) = resident
-                    && let SessionEnvironmentOwner::Retiring(current) = &slot.environment_owner
+                    && let SessionEnvironmentOwner::Retiring(current) = &r.environment_owner
                     && current.cause == SessionEnvironmentRetirementCause::RecoveryDiscard
                     && Arc::ptr_eq(&current.owned.environment(), expected)
                     && current.owned.environment().lifecycle().handle() == expected.lifecycle().handle()
@@ -391,7 +391,7 @@ impl SharedHost {
                     )
                 } else if let Some(expected) = resident
                     && matches!(
-                        &slot.environment_owner,
+                        &r.environment_owner,
                         SessionEnvironmentOwner::Resident(current)
                             if Arc::ptr_eq(&current.environment, expected)
                                 && current.environment.lifecycle().handle() == expected.lifecycle().handle()
@@ -403,7 +403,7 @@ impl SharedHost {
                     )
                 } else if let Some((identity, binding)) = pending
                     && matches!(
-                        &slot.environment_owner,
+                        &r.environment_owner,
                         SessionEnvironmentOwner::Preparing(
                             SessionEnvironmentPreparation::AwaitingAdoption {
                                 identity: current_identity,
@@ -422,7 +422,7 @@ impl SharedHost {
                 } else if revoked.is_none()
                     && resident.is_none()
                     && pending.is_none()
-                    && matches!(slot.environment_owner, SessionEnvironmentOwner::Vacant)
+                    && matches!(r.environment_owner, SessionEnvironmentOwner::Vacant)
                 {
                     (
                         ClosedEnvironmentRecoveryOwnerClass::Vacant,
@@ -458,22 +458,22 @@ impl SharedHost {
         thread: &str,
     ) -> Option<Arc<crate::session_environment::SessionEnvironment>> {
         self.session_slots
-            .read(thread, |slot| slot.environment_owner.resident())
+            .read_realization(thread, |r| r.environment_owner.resident())
             .flatten()
     }
 
     pub(crate) fn session_environment_owner_is_vacant(&self, thread: &str) -> bool {
         self.session_slots
-            .read(thread, |slot| {
-                matches!(slot.environment_owner, SessionEnvironmentOwner::Vacant)
+            .read_realization(thread, |r| {
+                matches!(r.environment_owner, SessionEnvironmentOwner::Vacant)
             })
             .unwrap_or(true)
     }
 
     pub(crate) fn durable_session_environment_binding(&self, thread: &str) -> Option<String> {
         self.session_slots
-            .read(thread, |slot| {
-                slot.environment_owner.durable_binding().map(str::to_owned)
+            .read_realization(thread, |r| {
+                r.environment_owner.durable_binding().map(str::to_owned)
             })
             .flatten()
     }
@@ -490,10 +490,10 @@ impl SharedHost {
         // than deriving a competing effect identity.
         let authorized = self
             .session_slots
-            .read(thread, |slot| match operation.realization.as_ref() {
-                Some(asserted) => slot.realization_authority.remaining_for(asserted).is_some(),
+            .read_realization(thread, |r| match operation.realization.as_ref() {
+                Some(asserted) => r.authority.remaining_for(asserted).is_some(),
                 None => matches!(
-                    slot.realization_authority,
+                    r.authority,
                     crate::session_slot::SessionRealizationAuthority::Uninstalled
                 ),
             })
@@ -518,7 +518,7 @@ impl SharedHost {
         let expected_identity =
             checkpoint_source_identity(source_effect_id, source_binding, generation);
         self.session_slots
-            .read(thread, |slot| match &slot.environment_owner {
+            .read_realization(thread, |r| match &r.environment_owner {
                 SessionEnvironmentOwner::Resident(owned)
                     if owned.identity == expected_identity
                         && owned.binding == source_binding
@@ -579,8 +579,8 @@ impl SharedHost {
         environment: &Arc<crate::session_environment::SessionEnvironment>,
     ) -> Result<String, HostError> {
         self.session_slots
-            .read(thread, |slot| {
-                slot.environment_owner
+            .read_realization(thread, |r| {
+                r.environment_owner
                     .resident_activity_generation_id(environment)
             })
             .flatten()
@@ -605,8 +605,8 @@ impl SharedHost {
             binding.clone(),
             None,
         );
-        self.session_slots.update(thread, |slot| {
-            slot.environment_owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
+        self.session_slots.update_realization(thread, |r| {
+            r.environment_owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
                 identity: BoundSessionEnvironmentIdentity::LegacyDirect(
                     LegacyDirectEnvironmentProvenance::Direct(receipt),
                 ),
@@ -622,7 +622,7 @@ impl SharedHost {
         request: &awaken_session_state_contract::SandboxRestoreRequest,
     ) -> Result<(), HostError> {
         self.session_slots
-            .update(thread, |slot| slot.environment_owner.begin_restore(request))
+            .update_realization(thread, |r| r.environment_owner.begin_restore(request))
     }
 
     /// Compile the one provider-effective spec used by active adoption,
@@ -642,7 +642,7 @@ impl SharedHost {
             }
             None => self
                 .session_slots
-                .read(thread, |slot| slot.resource_transition.clone())
+                .read_realization(thread, |r| r.resource_transition.clone())
                 .flatten()
                 .map_or_else(
                     || self.sandbox_spec_for_provider(thread, provider),
@@ -670,7 +670,7 @@ impl SharedHost {
         source_generation_id: Option<&str>,
     ) -> Option<RetiringSessionEnvironment> {
         self.session_slots
-            .read(thread, |slot| match &slot.environment_owner {
+            .read_realization(thread, |r| match &r.environment_owner {
                 SessionEnvironmentOwner::Retiring(retiring)
                     if retiring.cause
                         == SessionEnvironmentRetirementCause::RealizationRevocation =>
@@ -726,7 +726,7 @@ impl SharedHost {
         let spec = self.validate_session_environment_adoption(provider, &spec, &handle)?;
         let (retained, candidate) = self
             .session_slots
-            .read(thread, |slot| match &slot.environment_owner {
+            .read_realization(thread, |r| match &r.environment_owner {
                 SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(
                     candidate,
                 )) => (None, Some(candidate.clone())),
@@ -801,10 +801,7 @@ impl SharedHost {
         let Some(encoded) = encoded else {
             return Ok(SessionEnvironmentAdoptionDisposition::NoBinding);
         };
-        let lifecycle = self
-            .session_slots
-            .update(thread, |slot| slot.lifecycle.clone());
-        let _lifecycle = lifecycle.lock().await;
+        let _lifecycle = self.session_slots.lock_lifecycle(thread).await;
         self.adopt_bound_session_environment_under_lifecycle(
             thread,
             encoded,
@@ -832,7 +829,7 @@ impl SharedHost {
     ) -> Result<(), HostError> {
         let retiring = self
             .session_slots
-            .read(thread, |slot| match &slot.environment_owner {
+            .read_realization(thread, |r| match &r.environment_owner {
                 SessionEnvironmentOwner::Retiring(retiring)
                     if matches!(
                         (&retiring.cause, &retiring.owned),
@@ -953,9 +950,9 @@ impl SharedHost {
     ) -> Result<SessionEnvironmentAdoptionDisposition, HostError> {
         if self
             .session_slots
-            .read(thread, |slot| {
+            .read_realization(thread, |r| {
                 matches!(
-                    &slot.environment_owner,
+                    &r.environment_owner,
                     SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
                         cause, owned: RetiringEnvironmentOwner::Unbound(_),
                     }) if *cause != SessionEnvironmentRetirementCause::RealizationRevocation
@@ -1139,8 +1136,8 @@ impl SharedHost {
                         if let Some(retiring) = revoked_owner.as_ref() {
                             // Atomically retain the fresh Candidate before its
                             // canonical binding/publication edge can suspend.
-                            self.session_slots.update(thread, |slot| {
-                                slot.environment_owner
+                            self.session_slots.update_realization(thread, |r| {
+                                r.environment_owner
                                     .prepare_retiring_realization_adoption(retiring, environment.clone())
                             })?;
                         }
@@ -1160,8 +1157,8 @@ impl SharedHost {
                 };
                 self.ensure_published_environment_reconciled_under_lifecycle(thread, environment)
                     .await?;
-                self.session_slots.update(thread, |slot| {
-                    slot.environment_rebuild_source = None;
+                self.session_slots.update_realization(thread, |r| {
+                    r.environment_rebuild_source = None;
                 });
                 Ok(SessionEnvironmentAdoptionDisposition::Ready)
             }
@@ -1262,8 +1259,8 @@ impl SharedHost {
                     }
                     ClosedEnvironmentRecoveryOwner::Pending(pending) => self
                         .session_slots
-                        .modify(thread, |slot| {
-                            slot.environment_owner
+                        .modify_realization(thread, |r| {
+                            r.environment_owner
                                 .discard_closed_pending_adoption(&pending.0, &pending.1)
                         })
                         .unwrap_or(false),
@@ -1274,8 +1271,8 @@ impl SharedHost {
                         "lost the exact sandbox recovery fence for Session {thread}"
                     )));
                 }
-                self.session_slots.update(thread, |slot| {
-                    slot.environment_rebuild_source = Some((
+                self.session_slots.update_realization(thread, |r| {
+                    r.environment_rebuild_source = Some((
                         binding.to_string(),
                         source_generation_id.map(str::to_string),
                     ));
@@ -1320,8 +1317,8 @@ impl SharedHost {
             if incoming.remaining_at(now).is_none() {
                 return Err(HostError::internal("replacement Session authority time proof is exhausted"));
             }
-            let selected = self.session_slots.read(thread, |slot| {
-                let environment = match &slot.environment_owner {
+            let selected = self.session_slots.read_realization(thread, |r| {
+                let environment = match &r.environment_owner {
                     SessionEnvironmentOwner::Resident(owned) => &owned.environment,
                     SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(candidate))
                         => &candidate.environment,
@@ -1330,7 +1327,7 @@ impl SharedHost {
                         return Some(retiring.owned.environment()),
                     _ => return None,
                 };
-                let same_generation = slot.realization_authority.lease().is_some_and(|old| {
+                let same_generation = r.authority.lease().is_some_and(|old| {
                     awaken_session_realization_contract::realization_lease_generation_authorizes(old, &incoming.lease)
                     || awaken_session_realization_contract::realization_lease_generation_authorizes(&incoming.lease, old)
                 });
@@ -1366,9 +1363,12 @@ impl SharedHost {
     ) -> Result<Option<LocalRetirementTransition>, HostError> {
         self.session_slots
             .modify(thread, |slot| {
-                let retirement = slot.environment_owner.begin_retirement(cause, selection)?;
+                let retirement = slot
+                    .realization
+                    .environment_owner
+                    .begin_retirement(cause, selection)?;
                 Ok(retirement.map(|owner| {
-                    slot.runtime = None;
+                    slot.run.runtime = None;
                     LocalRetirementTransition { owner }
                 }))
             })
@@ -1382,8 +1382,8 @@ impl SharedHost {
         retirement: &RetiringSessionEnvironment,
     ) -> bool {
         self.session_slots
-            .modify(thread, |slot| {
-                slot.environment_owner.confirm_terminated(retirement)
+            .modify_realization(thread, |r| {
+                r.environment_owner.confirm_terminated(retirement)
             })
             .unwrap_or(false)
     }
@@ -1395,8 +1395,8 @@ impl SharedHost {
         retirement: &RetiringSessionEnvironment,
         status: Result<awaken_provisioning_contract::SandboxStatus, E>,
     ) -> Result<bool, E> {
-        match self.session_slots.modify(thread, |slot| {
-            slot.environment_owner
+        match self.session_slots.modify_realization(thread, |r| {
+            r.environment_owner
                 .observe_retirement_status(retirement, status)
         }) {
             Some(observed) => observed,
@@ -1513,7 +1513,7 @@ impl SharedHost {
         };
         let retirement = self
             .session_slots
-            .read(thread, |slot| match &slot.environment_owner {
+            .read_realization(thread, |r| match &r.environment_owner {
                 SessionEnvironmentOwner::Retiring(retirement) => Some(retirement.clone()),
                 _ => None,
             })
@@ -1562,7 +1562,7 @@ impl SharedHost {
             ));
         }
         self.session_slots
-            .update(thread, |slot| slot.runtime = None);
+            .update_run(thread, |run| run.runtime = None);
         Ok(())
     }
 
@@ -1574,10 +1574,7 @@ impl SharedHost {
         thread: &str,
         expected: &Arc<crate::session_environment::SessionEnvironment>,
     ) -> bool {
-        let lifecycle = self
-            .session_slots
-            .update(thread, |slot| slot.lifecycle.clone());
-        let _lifecycle = lifecycle.lock().await;
+        let _lifecycle = self.session_slots.lock_lifecycle(thread).await;
         let Ok(Some(retirement)) = self.retire_current_environment(
             thread,
             SessionEnvironmentRetirementCause::RecoveryDiscard,
@@ -1600,7 +1597,7 @@ impl SharedHost {
     ) -> Result<bool, HostError> {
         let retained_realization_owner = self
             .session_slots
-            .modify(thread, |slot| {
+            .modify_realization(thread, |r| {
                 // Physical retirement of an Unowned LegacyDirect environment is
                 // not loss of a never-installed Control lease. Preserve that
                 // existing rebuild path. Explicit Worker/Session revocation has
@@ -1609,12 +1606,12 @@ impl SharedHost {
                 // repeated revocation must not reinterpret that same Managed
                 // Candidate as an Unowned disposable legacy creation.
                 let retained = matches!(
-                    &slot.realization_authority,
+                    &r.authority,
                     crate::session_slot::SessionRealizationAuthority::Live(_)
                         | crate::session_slot::SessionRealizationAuthority::Closed(Some(_))
                 );
-                if slot.realization_authority.lease().is_some() {
-                    slot.close_realization_authority(None);
+                if r.authority.lease().is_some() {
+                    r.close_authority(None);
                 }
                 retained
             })
@@ -1668,46 +1665,13 @@ impl SharedHost {
             self.session_slots.remove(thread);
         } else {
             self.session_slots.modify(thread, |slot| {
-                let realization = slot.realization.clone();
-                let lifecycle = slot.lifecycle.clone();
-                let resource_projection = slot.resource_projection.clone();
-                let realization_changed = slot.realization_changed.clone();
-                let realization_authority = slot.realization_authority.clone();
-                let environment_owner = std::mem::take(&mut slot.environment_owner);
                 // A live/unknown Retiring owner is retryable physical state.
-                // Preserve its exact provider selection and SandboxSpec inputs;
-                // terminal takeover must not reconstruct either after a failed
-                // or cancelled revocation attempt.
-                let published_snapshot = slot.published_snapshot.take();
-                let environment_projection = slot.environment_projection.take();
-                let environment_snapshot = slot.environment_snapshot.take();
-                let content_delivery = slot.content_delivery;
-                let baseline = slot.baseline.take();
-                let resources = std::mem::take(&mut slot.resources);
-                // Terminal retry still has to publish the retained owner's
-                // mutable outputs into its exact Workspace. This is a derived
-                // harvest scope, not continuing realization authority.
-                let workspace = slot.workspace.take();
-                // Revocation clears process-local realization material but is
-                // not an Environment restoration/source-disposal authority.
-                // Preserve an already-closed quiescence fence so only the
-                // canonical durable projection proof may reopen MCP effects.
-                let mcp = slot.mcp.take_retained_on_revocation();
-                *slot = crate::session_slot::SessionRuntimeSlot::default();
-                slot.realization = realization;
-                slot.lifecycle = lifecycle;
-                slot.resource_projection = resource_projection;
-                slot.realization_changed = realization_changed;
-                slot.realization_authority = realization_authority;
-                slot.environment_owner = environment_owner;
-                slot.published_snapshot = published_snapshot;
-                slot.environment_projection = environment_projection;
-                slot.environment_snapshot = environment_snapshot;
-                slot.content_delivery = content_delivery;
-                slot.baseline = baseline;
-                slot.resources = resources;
-                slot.workspace = workspace;
-                slot.mcp = mcp;
+                // Preserve its exact provider selection, SandboxSpec inputs and
+                // harvest Workspace; terminal takeover must not reconstruct
+                // them after a failed or cancelled revocation attempt.
+                slot.frozen = std::sync::Arc::new(slot.frozen.retained_on_revocation());
+                slot.realization = slot.realization.take_retained_on_revocation();
+                slot.run = crate::session_slot::SessionRunState::default();
             });
         }
         retirement_result?;
@@ -1719,7 +1683,7 @@ impl SharedHost {
         thread: &str,
     ) -> Option<(BoundSessionEnvironmentIdentity, String)> {
         self.session_slots
-            .read(thread, |slot| match &slot.environment_owner {
+            .read_realization(thread, |r| match &r.environment_owner {
                 SessionEnvironmentOwner::Preparing(
                     SessionEnvironmentPreparation::AwaitingAdoption { identity, binding },
                 ) => Some((identity.clone(), binding.clone())),

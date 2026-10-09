@@ -153,8 +153,8 @@ async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
         assert_eq!(
             host.session_slots
                 .read(&thread, |slot| (
-                    slot.baseline.is_some(),
-                    slot.session_dispatch
+                    slot.frozen.baseline.is_some(),
+                    slot.run.session_dispatch
                 ))
                 .unwrap_or((false, false)),
             (false, false),
@@ -397,7 +397,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             baseline_host
                 .session_slots
                 .read("local-baseline", |slot| {
-                    slot.baseline.is_some() && slot.session_dispatch
+                    slot.frozen.baseline.is_some() && slot.run.session_dispatch
                 })
                 .unwrap_or(false),
             "B1/E1 frozen baseline and Managed execution marker publish atomically on a cold Worker"
@@ -465,8 +465,8 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         install_test_session_application(&baseline_host);
         baseline_host
             .session_slots
-            .update("coordinator-before-baseline", |slot| {
-                slot.session_dispatch = true;
+            .update_run("coordinator-before-baseline", |run| {
+                run.session_dispatch = true;
             });
         let coordinator = baseline_host
             .ctx_for_session_coordination("coordinator-before-baseline", None)
@@ -491,15 +491,15 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             baseline_host
                 .session_slots
                 .read("coordinator-before-baseline", |slot| {
-                    slot.baseline.is_some() && slot.runtime.is_none()
+                    slot.frozen.baseline.is_some() && slot.run.runtime.is_none()
                 })
                 .unwrap_or(false),
             "B6/E4 baseline is installed and stale coordination cache is gone"
         );
         baseline_host
             .session_slots
-            .update("dispatch-before-baseline", |slot| {
-                slot.session_dispatch = true;
+            .update_run("dispatch-before-baseline", |run| {
+                run.session_dispatch = true;
             });
         let dispatch_coordinator = baseline_host
             .ctx_for_session_coordination("dispatch-before-baseline", None)
@@ -517,7 +517,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             baseline_host
                 .session_slots
                 .read("dispatch-before-baseline", |slot| {
-                    slot.baseline.is_some() && slot.runtime.is_none()
+                    slot.frozen.baseline.is_some() && slot.run.runtime.is_none()
                 })
                 .unwrap_or(false),
             "B6/E4 Dispatch also clears the stale reservation envelope"
@@ -560,16 +560,16 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             failed_host
                 .session_slots
                 .read("failed-projection", |slot| {
-                    slot.baseline.is_none()
-                        && slot.workspace.is_none()
-                        && slot.agent_id.is_none()
-                        && slot.manifest.is_none()
-                        && slot.resources.mounts.is_empty()
-                        && slot.resources.prompts.is_empty()
-                        && slot.resources.resource_prompts.is_empty()
-                        && slot.request_context.is_empty()
-                        && slot.realization_authority.lease().is_none()
-                        && !slot.session_dispatch
+                    slot.frozen.baseline.is_none()
+                        && slot.frozen.workspace.is_none()
+                        && slot.frozen.agent_id.is_none()
+                        && slot.realization.manifest.is_none()
+                        && slot.realization.resources.mounts.is_empty()
+                        && slot.realization.resources.prompts.is_empty()
+                        && slot.realization.resources.resource_prompts.is_empty()
+                        && slot.frozen.request_context.is_empty()
+                        && slot.realization.authority.lease().is_none()
+                        && !slot.run.session_dispatch
                 })
                 .unwrap_or(true),
             "B6 failed preparation cannot publish partial Session truth"
@@ -626,10 +626,10 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             amendment_host
                 .session_slots
                 .read("authority-amendment", |slot| {
-                    slot.baseline.is_some()
-                        && slot.session_dispatch
-                        && slot.manifest.is_none()
-                        && slot.resource_transition.as_ref().is_some_and(|transition| {
+                    slot.frozen.baseline.is_some()
+                        && slot.run.session_dispatch
+                        && slot.realization.manifest.is_none()
+                        && slot.realization.resource_transition.as_ref().is_some_and(|transition| {
                             transition.desired().revision == initial_dispatch.resource_revision
                                 && transition.desired().resources == initial_dispatch.resources
                         })
@@ -667,9 +667,9 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         assert!(
             amendment_host
                 .session_slots
-                .read("authority-amendment", |slot| {
-                    slot.manifest.is_none()
-                        && slot.resource_transition.as_ref().is_some_and(|transition| {
+                .read_realization("authority-amendment", |r| {
+                    r.manifest.is_none()
+                        && r.resource_transition.as_ref().is_some_and(|transition| {
                             transition.desired().resources
                                 == awaken_session_resource_contract::ResolvedSessionResources::default()
                         })
@@ -688,9 +688,9 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         assert!(
             amendment_host
                 .session_slots
-                .read("authority-amendment", |slot| {
-                    slot.manifest.is_none()
-                        && slot.resource_transition.as_ref().is_some_and(|transition| {
+                .read_realization("authority-amendment", |r| {
+                    r.manifest.is_none()
+                        && r.resource_transition.as_ref().is_some_and(|transition| {
                             transition.desired()
                                 == &awaken_session_resource_contract::SessionResourceManifest::at_revision(
                                     amended_dispatch.workspace_id.clone(),
@@ -740,7 +740,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         assert!(
             host.session_slots
                 .read("prospective-layout-conflict", |slot| {
-                    slot.baseline.is_none() && slot.environment_projection.is_none()
+                    slot.frozen.baseline.is_none() && slot.frozen.environment_projection.is_none()
                 })
                 .unwrap_or(true),
             "F1 no partial frozen projection"
@@ -855,9 +855,9 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         // staged sandbox requirements remain available. R1 C1+C2=>E1,E2,E3.
         assert!(
             host.session_slots
-                .read("flow-thread", |slot| {
-                    slot.manifest.is_none()
-                        && slot.resource_transition.as_ref().is_some_and(|transition| {
+                .read_realization("flow-thread", |r| {
+                    r.manifest.is_none()
+                        && r.resource_transition.as_ref().is_some_and(|transition| {
                             transition.desired().revision == 7
                                 && transition.desired().resources
                                     == awaken_session_resource_contract::ResolvedSessionResources::default()
@@ -1248,7 +1248,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     assert!(host.session_environment(thread).await.is_none(), "R1/E2");
     assert!(
         host.session_slots
-            .read(thread, |slot| slot.runtime.clone())
+            .read_run(thread, |run| run.runtime.clone())
             .flatten()
             .is_none(),
         "R1/E3"

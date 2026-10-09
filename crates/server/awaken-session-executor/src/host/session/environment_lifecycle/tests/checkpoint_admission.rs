@@ -103,9 +103,9 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                 }
                 let host = (raw).build().expect("validated Host dependencies");
                 let install = || {
-                    host.session_slots.update(thread, |slot| {
-                        slot.environment_owner = resident(thread, environment.clone());
-                        slot.realization_authority = Authority::Live(
+                    host.session_slots.update_realization(thread, |r| {
+                        r.environment_owner = resident(thread, environment.clone());
+                        r.authority = Authority::Live(
                             awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
                                 lease.clone(),
                                 0,
@@ -131,7 +131,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                 let managed = crate::ManagedHost::new(host.clone());
                 let lifecycle = host
                     .session_slots
-                    .read(thread, |slot| slot.lifecycle.clone())
+                    .read_realization(thread, |r| r.lifecycle.clone())
                     .unwrap();
                 let held = if wait == "lifecycle" {
                     Some(lifecycle.lock().await)
@@ -153,8 +153,8 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                     usize::from(wait == "put")
                 );
                 match change {
-                    "session-close" => host.session_slots.update(thread, |slot| {
-                        slot.realization_authority = Authority::Closed(Some(lease.clone()))
+                    "session-close" => host.session_slots.update_realization(thread, |r| {
+                        r.authority = Authority::Closed(Some(lease.clone()))
                     }),
                     "slot-replace" => {
                         host.session_slots.remove(thread);
@@ -167,8 +167,8 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                     "renew" => {
                         let mut renewed = lease.clone();
                         renewed.expires_at_unix_ms += 1;
-                        host.session_slots.update(thread, |slot| {
-                            slot.realization_authority = Authority::Live(
+                        host.session_slots.update_realization(thread, |r| {
+                            r.authority = Authority::Live(
                                 awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
                                     renewed, 0,
                                 )
@@ -270,8 +270,8 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
         .with_execution_authority(worker.clone()))
         .build()
         .expect("validated Host dependencies");
-        host.session_slots.update(thread, |slot| {
-            slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+        host.session_slots.update_realization(thread, |r| {
+            r.authority = crate::session_slot::SessionRealizationAuthority::Live(
                 crate::session_slot::test_observed_lease(lease.clone()),
             );
         });
@@ -297,17 +297,17 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
         match change {
             "worker-revoke" => *worker.current.lock().unwrap() = None,
             "worker-expire" => worker.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO,
-            "session-revoke" => host.session_slots.update(thread, |slot| {
-                slot.realization_authority =
+            "session-revoke" => host.session_slots.update_realization(thread, |r| {
+                r.authority =
                     crate::session_slot::SessionRealizationAuthority::Closed(Some(lease.clone()));
             }),
-            "replace" | "renew" => host.session_slots.update(thread, |slot| {
+            "replace" | "renew" => host.session_slots.update_realization(thread, |r| {
                 let mut next = lease.clone();
                 if change == "replace" {
                     next.epoch += 1;
                 }
                 next.expires_at_unix_ms += 10_000;
-                slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+                r.authority = crate::session_slot::SessionRealizationAuthority::Live(
                     crate::session_slot::test_observed_lease(next),
                 );
             }),
@@ -329,8 +329,8 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
         // Reset only the fixture for exact-object retry; production renewal
         // cannot revive a closed/replaced Worker or Session incarnation.
         *worker.current.lock().unwrap() = Some((fence.clone(), Duration::from_secs(1)));
-        host.session_slots.update(thread, |slot| {
-            slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+        host.session_slots.update_realization(thread, |r| {
+            r.authority = crate::session_slot::SessionRealizationAuthority::Live(
                 crate::session_slot::test_observed_lease(lease.clone()),
             );
         });
@@ -405,7 +405,7 @@ async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen
         };
         if state != "absent" {
             host.session_slots
-                .update(rule, |slot| slot.realization_authority = root.clone());
+                .update_realization(rule, |r| r.authority = root.clone());
         }
         let mut asserted = current.clone();
         match assertion {
@@ -444,7 +444,7 @@ async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen
         );
         assert_eq!(
             host.session_slots
-                .read(rule, |slot| slot.realization_authority.clone()),
+                .read_realization(rule, |r| r.authority.clone()),
             (state != "absent").then_some(root),
             "{rule}/no root mutation"
         );

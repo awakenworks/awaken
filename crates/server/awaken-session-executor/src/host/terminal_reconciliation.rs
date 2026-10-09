@@ -171,7 +171,7 @@ impl SharedHost {
             || !self.authority.observes_terminal_memory_locally()
             || self
                 .session_slots
-                .read(thread, |slot| slot.runtime.is_some())
+                .read_run(thread, |run| run.runtime.is_some())
                 .unwrap_or(false)
         {
             return Ok(false);

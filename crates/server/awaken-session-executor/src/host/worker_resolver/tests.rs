@@ -232,7 +232,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
         .expect("R1/E2 resolve direct Session claim");
     let resident = ephemeral
         .session_slots
-        .read(session_id, |slot| slot.runtime.clone())
+        .read_run(session_id, |run| run.runtime.clone())
         .flatten()
         .expect("R1 resident Session context");
     assert!(Arc::ptr_eq(&worker, &resident.claimed_worker), "R1/E2");
@@ -318,7 +318,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     assert!(
         coordinator
             .session_slots
-            .read(coordinator_thread, |slot| slot.runtime.is_none())
+            .read_run(coordinator_thread, |run| run.runtime.is_none())
             .unwrap_or(true),
         "R3/E4 rejects before context construction"
     );
@@ -561,7 +561,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
         .expect("K1 claimed resolve");
     let claimed_ctx = host
         .session_slots
-        .read("claimed-cache", |slot| slot.runtime.clone())
+        .read_run("claimed-cache", |run| run.runtime.clone())
         .flatten()
         .expect("K1 claimed context resident");
     assert!(!Arc::ptr_eq(&warm, &claimed_ctx), "K1/E1");
@@ -582,7 +582,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
         .expect("K2 same publications under a different claim");
     let retried = host
         .session_slots
-        .read("claimed-cache", |slot| slot.runtime.clone())
+        .read_run("claimed-cache", |run| run.runtime.clone())
         .flatten()
         .expect("K2 context resident");
     assert!(Arc::ptr_eq(&claimed_ctx, &retried), "K2/E3");
@@ -615,7 +615,7 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
         .expect("K3 effective-model change");
     let model_changed_ctx = host
         .session_slots
-        .read("claimed-cache", |slot| slot.runtime.clone())
+        .read_run("claimed-cache", |run| run.runtime.clone())
         .flatten()
         .expect("K3 context resident");
     assert!(!Arc::ptr_eq(&retried, &model_changed_ctx), "K3/E4");
@@ -679,7 +679,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
         .expect("expired claim is recoverable");
     let deferred = host
         .session_slots
-        .read("durable-lazy", |slot| slot.deferred_executor.clone())
+        .read_run("durable-lazy", |run| run.deferred_executor.clone())
         .flatten()
         .expect("deferred executor");
     let error = deferred
@@ -746,7 +746,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
     loss_sink.fail.store(true, Ordering::SeqCst);
     let loss_deferred = loss_host
         .session_slots
-        .read("durable-loss", |slot| slot.deferred_executor.clone())
+        .read_run("durable-loss", |run| run.deferred_executor.clone())
         .flatten()
         .expect("D4 deferred executor");
     let error = loss_deferred
@@ -827,7 +827,8 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRe
             let physical_only = host.upgrade().is_some_and(|host| {
                 host.session_slots
                     .read(thread, |slot| {
-                        slot.environment_owner.is_resident() && slot.runtime.is_none()
+                        slot.realization.environment_owner.is_resident()
+                            && slot.run.runtime.is_none()
                     })
                     .unwrap_or(false)
             });
@@ -969,7 +970,7 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
     );
     assert!(
         host.session_slots
-            .read(thread, |slot| slot.runtime.is_some())
+            .read_run(thread, |run| run.runtime.is_some())
             .unwrap_or(false),
         "S1/E3"
     );
@@ -1236,8 +1237,8 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         epoch: 0,
     };
     host.session_slots.update("ordinary-remote", |slot| {
-        slot.dispatch_claim = Some(predecessor.clone());
-        slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+        slot.run.dispatch_claim = Some(predecessor.clone());
+        slot.realization.authority = crate::session_slot::SessionRealizationAuthority::Live(
             crate::session_slot::test_observed_lease(
                 awaken_session_resource_contract::SessionRealizationLease {
                     owner: claimed.lease.owner.clone(),
@@ -1261,7 +1262,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         );
         assert_eq!(
             host.session_slots
-                .read("ordinary-remote", |slot| slot.dispatch_claim.clone())
+                .read_run("ordinary-remote", |run| run.dispatch_claim.clone())
                 .flatten(),
             Some(predecessor.clone()),
             "CR1 failed request cannot publish its claim"
@@ -1281,11 +1282,11 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         .session_slots
         .read("ordinary-remote", |slot| {
             assert_eq!(
-                slot.dispatch_claim,
+                slot.run.dispatch_claim,
                 Some(ingress::RunClaim::from(&claimed.lease)),
                 "CR2"
             );
-            slot.realization_authority.lease().cloned()
+            slot.realization.authority.lease().cloned()
         })
         .flatten()
         .expect("CR2 installed lease");
@@ -1307,8 +1308,8 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     assert!(
         host.session_slots
             .read("ordinary-remote", |slot| {
-                slot.baseline.is_some()
-                    && slot.realization_authority.lease().is_some_and(|lease| {
+                slot.frozen.baseline.is_some()
+                    && slot.realization.authority.lease().is_some_and(|lease| {
                         lease.owner == claimed.lease.owner && lease.epoch == claimed.lease.epoch
                     })
             })
@@ -1739,15 +1740,15 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         .session_slots
         .read("thread-cold-resource", |slot| {
             (
-                slot.resources.mounts.is_empty(),
-                slot.resources.prompts.is_empty(),
-                slot.resources.resource_prompts.is_empty(),
-                slot.resources.binding_checks.is_empty(),
-                slot.resources.repositories.is_empty(),
-                slot.memory_bindings.is_empty(),
-                slot.memory.is_none(),
-                slot.skills.as_ref().is_some_and(Vec::is_empty),
-                slot.runtime.is_none(),
+                slot.realization.resources.mounts.is_empty(),
+                slot.realization.resources.prompts.is_empty(),
+                slot.realization.resources.resource_prompts.is_empty(),
+                slot.realization.resources.binding_checks.is_empty(),
+                slot.realization.resources.repositories.is_empty(),
+                slot.realization.memory_bindings.is_empty(),
+                slot.realization.memory.is_none(),
+                slot.realization.skills.as_ref().is_some_and(Vec::is_empty),
+                slot.run.runtime.is_none(),
             )
         })
         .expect("F4 canonical Session slot");
@@ -1817,9 +1818,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
 
     let exact_before = host
         .session_slots
-        .read("exact-cold-transition", |slot| {
-            slot.resource_transition.clone()
-        })
+        .read_realization("exact-cold-transition", |r| r.resource_transition.clone())
         .flatten()
         .expect("R1 exact transition projection");
     assert_eq!(exact_before.previous(), &revision_one, "R1/C1 previous");
@@ -1829,9 +1828,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         .expect("R1/E1 exact desired-only consumer");
     assert_eq!(
         host.session_slots
-            .read("exact-cold-transition", |slot| slot
-                .resource_transition
-                .clone())
+            .read_realization("exact-cold-transition", |r| r.resource_transition.clone())
             .flatten(),
         Some(exact_before),
         "R1/E1 retains the exact producer transition"
@@ -1844,7 +1841,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
 
     let active_transition = host
         .session_slots
-        .read(active_thread, |slot| slot.resource_transition.clone())
+        .read_realization(active_thread, |r| r.resource_transition.clone())
         .flatten()
         .expect("R2 exact transition projection");
     assert_eq!(
@@ -1858,7 +1855,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         .expect("R2/E1 exact desired consumer with active previous");
     assert_eq!(
         host.session_slots
-            .read(active_thread, |slot| slot.resource_transition.clone())
+            .read_realization(active_thread, |r| r.resource_transition.clone())
             .flatten(),
         Some(active_transition),
         "R2/E1 retains the exact producer transition"
@@ -1874,10 +1871,10 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         .session_slots
         .read(mismatched_thread, |slot| {
             (
-                slot.resource_transition.clone(),
-                slot.staged_resource_effect_key.clone(),
-                slot.workspace.clone(),
-                slot.manifest.clone(),
+                slot.realization.resource_transition.clone(),
+                slot.realization.staged_resource_effect_key.clone(),
+                slot.frozen.workspace.clone(),
+                slot.realization.manifest.clone(),
             )
         })
         .expect("R3 producer slot");
@@ -1889,10 +1886,10 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
     assert_eq!(
         host.session_slots.read(mismatched_thread, |slot| {
             (
-                slot.resource_transition.clone(),
-                slot.staged_resource_effect_key.clone(),
-                slot.workspace.clone(),
-                slot.manifest.clone(),
+                slot.realization.resource_transition.clone(),
+                slot.realization.staged_resource_effect_key.clone(),
+                slot.frozen.workspace.clone(),
+                slot.realization.manifest.clone(),
             )
         }),
         Some(before_mismatch),
@@ -2036,10 +2033,7 @@ async fn complete_projection_resource_guard_excludes_desired_only_staging() {
         host.local_workspace(),
         awaken_session_resource_contract::ResolvedSessionResources::default(),
     );
-    let resource_projection = host
-        .session_slots
-        .update(thread, |slot| slot.resource_projection.clone());
-    let guard = resource_projection.lock().await;
+    let guard = host.session_slots.lock_resource_projection(thread).await;
     let mut staging = tokio::spawn({
         let host = host.clone();
         let manifest = manifest.clone();
@@ -2057,10 +2051,10 @@ async fn complete_projection_resource_guard_excludes_desired_only_staging() {
     );
     assert!(
         host.session_slots
-            .read(thread, |slot| {
-                slot.resource_transition.is_none()
-                    && slot.staged_resource_effect_key.is_none()
-                    && slot.manifest.is_none()
+            .read_realization(thread, |r| {
+                r.resource_transition.is_none()
+                    && r.staged_resource_effect_key.is_none()
+                    && r.manifest.is_none()
             })
             .unwrap_or(false),
         "L1 no correlated Resource fact is published while the guard is held"
@@ -2073,10 +2067,10 @@ async fn complete_projection_resource_guard_excludes_desired_only_staging() {
         .expect("L2 cold staging succeeds after guard release");
     assert!(
         host.session_slots
-            .read(thread, |slot| {
-                slot.resource_transition.is_some()
-                    && slot.staged_resource_effect_key.is_some()
-                    && slot.manifest.is_none()
+            .read_realization(thread, |r| {
+                r.resource_transition.is_some()
+                    && r.staged_resource_effect_key.is_some()
+                    && r.manifest.is_none()
             })
             .unwrap_or(false),
         "L2 cold requirements and command stage without active completion"
@@ -2173,13 +2167,13 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
     );
     host.register_thread_resource_manifest(foreign_thread, foreign.clone());
     host.session_slots.update(foreign_thread, |slot| {
-        slot.workspace = Some("sentinel-workspace".into());
-        slot.staged_resource_effect_key = Some("sentinel-key".into());
+        slot.replace_frozen_with(|next| next.workspace = Some("sentinel-workspace".into()));
+        slot.realization.staged_resource_effect_key = Some("sentinel-key".into());
     });
-    let resource_projection = host
+    let _guard = host
         .session_slots
-        .update(foreign_thread, |slot| slot.resource_projection.clone());
-    let _guard = resource_projection.lock().await;
+        .lock_resource_projection(foreign_thread)
+        .await;
     let error = host
         .stage_prevalidated_dispatched_resource_transition_under_resource_projection(
             foreign_thread,
@@ -2194,10 +2188,11 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
     assert!(
         host.session_slots
             .read(foreign_thread, |slot| {
-                slot.manifest.as_ref() == Some(&foreign)
-                    && slot.workspace.as_deref() == Some("sentinel-workspace")
-                    && slot.staged_resource_effect_key.as_deref() == Some("sentinel-key")
-                    && slot.resources.mounts.is_empty()
+                slot.realization.manifest.as_ref() == Some(&foreign)
+                    && slot.frozen.workspace.as_deref() == Some("sentinel-workspace")
+                    && slot.realization.staged_resource_effect_key.as_deref()
+                        == Some("sentinel-key")
+                    && slot.realization.resources.mounts.is_empty()
             })
             .unwrap_or(false),
         "P1 rejects before compilation or any correlated slot write"
@@ -2205,10 +2200,10 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
     drop(_guard);
 
     let bound_thread = "prospective-bound-resource";
-    let resource_projection = host
+    let _guard = host
         .session_slots
-        .update(bound_thread, |slot| slot.resource_projection.clone());
-    let _guard = resource_projection.lock().await;
+        .lock_resource_projection(bound_thread)
+        .await;
     host.stage_prevalidated_dispatched_resource_transition_under_resource_projection(
         bound_thread,
         &transition,
@@ -2220,12 +2215,12 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
     .expect("P2 prospective binding defers missing File compilation");
     assert!(
         host.session_slots
-            .read(bound_thread, |slot| {
-                slot.manifest.is_none()
-                    && slot.resource_transition.is_none()
-                    && slot.staged_resource_effect_key.is_none()
-                    && slot.resources.mounts.is_empty()
-                    && slot.skills.as_ref().is_some_and(|skills| {
+            .read_realization(bound_thread, |r| {
+                r.manifest.is_none()
+                    && r.resource_transition.is_none()
+                    && r.staged_resource_effect_key.is_none()
+                    && r.resources.mounts.is_empty()
+                    && r.skills.as_ref().is_some_and(|skills| {
                         skills.len() == 1 && skills[0].skill_id.as_str() == "cold-recovery"
                     })
             })
@@ -2653,7 +2648,7 @@ async fn a_dead_resident_environment_fails_continuity_and_is_fenced_before_rebui
     assert!(
         !host
             .session_slots
-            .read(thread, |slot| slot.runtime.is_some())
+            .read_run(thread, |run| run.runtime.is_some())
             .unwrap_or(false)
     );
 }
@@ -2698,7 +2693,7 @@ async fn a_stale_binding_cannot_evict_a_different_resident_environment() {
     );
     assert!(
         host.session_slots
-            .read(thread, |slot| slot.runtime.is_some())
+            .read_run(thread, |run| run.runtime.is_some())
             .unwrap_or(false)
     );
 }
@@ -2831,7 +2826,7 @@ async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
     assert!(
         !host
             .session_slots
-            .read(&thread.0, |slot| slot.runtime.is_some())
+            .read_run(&thread.0, |run| run.runtime.is_some())
             .unwrap_or(false)
     );
 }
@@ -2913,8 +2908,8 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert!(
             host.session_slots
-                .read(&thread, |slot| slot.baseline.is_some()
-                    && slot.runtime.is_some())
+                .read(&thread, |slot| slot.frozen.baseline.is_some()
+                    && slot.run.runtime.is_some())
                 .unwrap_or(false)
         );
         assert!(host.session_environment(&thread).await.is_some());

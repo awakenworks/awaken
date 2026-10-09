@@ -452,14 +452,16 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
             .or_else(|| active.clone())
             .expect("selected manifest");
         host.session_slots.update(&thread, |slot| {
-            slot.session_dispatch = prepared_session;
-            slot.manifest = active.clone();
-            slot.resource_transition = transition;
-            slot.environment_snapshot = runtime_projection.then(|| {
-                session_environment(
-                    awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
-                    serde_json::json!({}),
-                )
+            slot.run.session_dispatch = prepared_session;
+            slot.realization.manifest = active.clone();
+            slot.realization.resource_transition = transition;
+            slot.replace_frozen_with(|next| {
+                next.environment_snapshot = runtime_projection.then(|| {
+                    session_environment(
+                        awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
+                        serde_json::json!({}),
+                    )
+                })
             });
         });
         let activation = awaken_runtime_contract::RunActivation::new(
@@ -586,7 +588,7 @@ async fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realizat
         .expect("validated Host dependencies");
     let thread = "prepared-root-session";
     host.session_slots
-        .update(thread, |slot| slot.session_dispatch = true);
+        .update_run(thread, |run| run.session_dispatch = true);
     let activation = awaken_runtime_contract::RunActivation::new(
         awaken_agent_contract::agent::run::Id("run-prepared-root-session".into()),
         awaken_agent_contract::agent::thread::Id(thread.into()),
@@ -621,7 +623,7 @@ async fn thread_extension_dispatch_reuses_frozen_inputs_without_session_admissio
         .expect("validated Host dependencies");
     let thread = "prepared-outcome-thread";
     host.session_slots
-        .update(thread, |slot| slot.session_dispatch = true);
+        .update_run(thread, |run| run.session_dispatch = true);
     let activation = awaken_runtime_contract::RunActivation::new(
         awaken_agent_contract::agent::run::Id("outcome-worker-run".into()),
         awaken_agent_contract::agent::thread::Id(thread.into()),

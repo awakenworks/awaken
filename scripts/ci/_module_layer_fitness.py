@@ -67,7 +67,7 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (REALIZER, _LEAF_REASON, (
         "staged_resources",
         "managed_input_layout",
-        "frozen_runtime_projection",
+        "frozen_inputs",
     )),
     (HOST, _MIXED_REASON, (
         "host",

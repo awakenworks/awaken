@@ -49,7 +49,7 @@ impl SessionContextAttemptExecutor {
         if let Some(result) = self
             .slots
             .read(&self.session_id, |slot| {
-                slot.tools.as_ref().map(|tools| {
+                slot.frozen.tools.as_ref().map(|tools| {
                     crate::config::project_session_tools(&mut activation.snapshot, tools)
                 })
             })
@@ -65,7 +65,7 @@ impl SessionContextAttemptExecutor {
         let seed = self
             .slots
             .read(&self.session_id, |slot| {
-                slot.baseline.as_ref().map(|baseline| {
+                slot.frozen.baseline.as_ref().map(|baseline| {
                     awaken_session_configuration_contract::SessionContextSeed::from_prompts(
                         &baseline.prompts,
                     )
@@ -404,7 +404,7 @@ mod acp_context_tests {
         let mut late = awaken_runtime_contract::RuntimeRunContext::new();
         executor.project(activation("genai"), &mut late).unwrap();
         assert_eq!(late.request_timezone.as_deref(), Some("UTC"));
-        slots.update("session-1", |slot| slot.baseline = Some(baseline.clone()));
+        slots.replace_frozen_with("session-1", |next| next.baseline = Some(baseline.clone()));
         executor.project(activation("genai"), &mut late).unwrap();
         assert_eq!(
             late.request_context
@@ -464,13 +464,15 @@ mod acp_context_tests {
         );
         assert_eq!(
             slots
-                .read("session-1", |slot| slot.baseline.clone())
+                .read("session-1", |slot| slot.frozen.baseline.clone())
                 .unwrap(),
             Some(baseline),
             "frozen truth unchanged"
         );
         slots.update("session-1", |slot| {
-            slot.baseline.as_mut().unwrap().prompts.push(seed.encode())
+            let mut baseline = slot.frozen.baseline.clone().unwrap();
+            baseline.prompts.push(seed.encode());
+            slot.replace_frozen_with(|next| next.baseline = Some(baseline))
         });
         assert!(
             executor.project(activation("genai"), &mut fresh).is_err(),
@@ -494,8 +496,8 @@ mod acp_context_tests {
         );
         // Construction happens before the claim-fenced frozen projection is
         // accepted; realization installs the one authoritative slot later.
-        slots.update("session-1", |slot| {
-            slot.resources.prompts = vec!["frozen session prompt".into()];
+        slots.update_realization("session-1", |r| {
+            r.resources.prompts = vec!["frozen session prompt".into()];
         });
         let durable = activation("genai");
         let mut context = awaken_runtime_contract::RuntimeRunContext::default();
@@ -556,8 +558,8 @@ mod acp_context_tests {
             "session-1",
             awaken_time::system_clock(),
         );
-        slots.update("session-1", |slot| {
-            slot.resources.prompts = vec!["resource revision one".into()]
+        slots.update_realization("session-1", |r| {
+            r.resources.prompts = vec!["resource revision one".into()]
         });
         let durable = activation("genai");
         let mut first = awaken_runtime_contract::RuntimeRunContext::default();
@@ -569,8 +571,8 @@ mod acp_context_tests {
             "C1"
         );
 
-        slots.update("session-1", |slot| {
-            slot.resources.prompts = vec!["resource revision two".into()]
+        slots.update_realization("session-1", |r| {
+            r.resources.prompts = vec!["resource revision two".into()]
         });
         let mut second = awaken_runtime_contract::RuntimeRunContext::default();
         let projected = executor.project(durable.clone(), &mut second).unwrap();
@@ -600,8 +602,8 @@ mod acp_context_tests {
         // never a mixed R1/R2 vector. The barrier makes the interleaving exact:
         // the reader starts only after the writer owns the publication lock.
         let slots = crate::session_slot::SessionRuntimeSlots::default();
-        slots.update("session-1", |slot| {
-            slot.resources.prompts = vec!["r1-a".into(), "r1-b".into()]
+        slots.update_realization("session-1", |r| {
+            r.resources.prompts = vec!["r1-a".into(), "r1-b".into()]
         });
         let executor = Arc::new(SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
@@ -617,7 +619,7 @@ mod acp_context_tests {
             writer_slots.update("session-1", |slot| {
                 writer_locked_tx.send(()).unwrap();
                 writer_release.wait();
-                slot.resources.prompts = vec!["r2-a".into(), "r2-b".into()];
+                slot.realization.resources.prompts = vec!["r2-a".into(), "r2-b".into()];
             });
         });
         writer_locked_rx.recv().unwrap();
@@ -690,7 +692,7 @@ mod acp_context_tests {
                     input_schema: serde_json::json!({"type": "object"}),
                 }],
             };
-        slots.update("session-1", |slot| slot.tools = Some(flow_policy(true)));
+        slots.replace_frozen_with("session-1", |next| next.tools = Some(flow_policy(true)));
 
         let mut context = awaken_runtime_contract::RuntimeRunContext::default();
         let projected = executor
@@ -733,7 +735,7 @@ mod acp_context_tests {
             .expect("R3 replay");
         assert_eq!(replayed.snapshot, projected.snapshot, "R3/E4");
 
-        slots.update("session-1", |slot| slot.tools = Some(flow_policy(false)));
+        slots.replace_frozen_with("session-1", |next| next.tools = Some(flow_policy(false)));
         let disabled = executor
             .project(activation("genai"), &mut context)
             .expect("R2 projection");

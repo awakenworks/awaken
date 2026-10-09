@@ -92,10 +92,10 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
             "R2"
         );
     }
-    host.session_slots.update(session, |slot| {
+    host.session_slots.update_realization(session, |r| {
         let mut expired = lease.clone();
         expired.expires_at_unix_ms = 1;
-        slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+        r.authority = crate::session_slot::SessionRealizationAuthority::Live(
             crate::session_slot::test_expired_observed_lease(expired),
         );
     });

@@ -126,10 +126,10 @@ pub(super) async fn assemble(
     let is_acp = resources.plan.execution_backend.is_acp();
     let mut memory_descriptors = Vec::new();
     let mut semantic_memory_tools = None;
-    if content_delivery == crate::frozen_runtime_projection::ManagedContentDelivery::SemanticTools {
+    if content_delivery == crate::frozen_inputs::ManagedContentDelivery::SemanticTools {
         let bindings = host
             .session_slots
-            .read(thread, |slot| slot.memory_bindings.clone())
+            .read_realization(thread, |r| r.memory_bindings.clone())
             .unwrap_or_default();
         if let Some(wiring) = crate::session_memory_tools::SessionMemoryTools::new(bindings) {
             if installed.is_some() && !is_acp {
@@ -391,9 +391,7 @@ pub(super) async fn assemble(
     };
     let tool_executor = if a2a_only {
         None
-    } else if content_delivery
-        == crate::frozen_runtime_projection::ManagedContentDelivery::SemanticTools
-    {
+    } else if content_delivery == crate::frozen_inputs::ManagedContentDelivery::SemanticTools {
         let mut tools = Vec::new();
         if let Some((_, skill_tools)) = semantic_skill_tools.as_ref() {
             tools.extend(skill_tools.iter().cloned());
@@ -413,7 +411,7 @@ pub(super) async fn assemble(
         Some(environment.agent_tools().tool_executor())
     } else {
         host.session_slots
-            .read(thread, |slot| slot.deferred_executor.clone())
+            .read_run(thread, |run| run.deferred_executor.clone())
             .flatten()
     };
     // Cause/effect rules: terminal observers and Session plugins
@@ -438,7 +436,7 @@ pub(super) async fn assemble(
         );
     let dispatch_claim = host
         .session_slots
-        .read(thread, |slot| slot.dispatch_claim.clone())
+        .read_run(thread, |run| run.dispatch_claim.clone())
         .flatten();
     let mut run_context = run_context.with_model_content_materializer(Arc::new(
         crate::model_content_materializer::ResourceModelContentMaterializer::new(
@@ -450,7 +448,7 @@ pub(super) async fn assemble(
     ));
     run_context.request_context = host
         .session_slots
-        .read(thread, |slot| slot.request_context.clone())
+        .read(thread, |slot| slot.frozen.request_context.clone())
         .unwrap_or_default();
     let run_context = mcp.plugins.iter().cloned().fold(
         run_context,

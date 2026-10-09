@@ -141,8 +141,8 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
     .await)
         .build()
         .expect("validated Host dependencies");
-    host.session_slots.update(thread, |slot| {
-        slot.environment_owner = SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
+    host.session_slots.update_realization(thread, |r| {
+        r.environment_owner = SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
             cause: SessionEnvironmentRetirementCause::RealizationRevocation,
             owned: RetiringEnvironmentOwner::Bound(initial.clone()),
         });
@@ -172,7 +172,7 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
         "R2 foreign generation"
     );
     assert!(
-        matches!(host.session_slots.read(thread, |slot| slot.environment_owner.clone()),
+        matches!(host.session_slots.read_realization(thread, |r| r.environment_owner.clone()),
         Some(SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
             cause: SessionEnvironmentRetirementCause::RealizationRevocation,
             owned: RetiringEnvironmentOwner::Bound(owned),
@@ -708,7 +708,7 @@ async fn discard_keeps_live_owner_and_exact_retry_clears_after_termination() {
     assert!(
         matches!(
             host.session_slots
-                .read(thread, |slot| slot.environment_owner.clone()),
+                .read_realization(thread, |r| r.environment_owner.clone()),
             Some(SessionEnvironmentOwner::Retiring(_))
         ),
         "R19/E1"
@@ -930,7 +930,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
 
     let lifecycle = host
         .session_slots
-        .read(thread, |slot| slot.lifecycle.clone())
+        .read_realization(thread, |r| r.lifecycle.clone())
         .unwrap();
     {
         let _lifecycle = lifecycle.lock().await;
@@ -943,7 +943,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     }
     let retired = host
         .session_slots
-        .read(thread, |slot| slot.environment_owner.clone())
+        .read_realization(thread, |r| r.environment_owner.clone())
         .unwrap();
     assert!(
         matches!(
@@ -981,7 +981,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     assert!(
         matches!(
             host.session_slots
-                .read(thread, |slot| slot.environment_owner.clone()),
+                .read_realization(thread, |r| r.environment_owner.clone()),
             Some(SessionEnvironmentOwner::Retiring(current)) if current.exact_matches(
                 match &retired {
                     SessionEnvironmentOwner::Retiring(current) => current,
@@ -1022,7 +1022,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     assert!(
         matches!(
             host.session_slots
-                .read(thread, |slot| slot.environment_owner.clone()),
+                .read_realization(thread, |r| r.environment_owner.clone()),
             Some(SessionEnvironmentOwner::Vacant)
         ),
         "CP2/E2 or CP3/E3 exact Retiring fence is consumed"

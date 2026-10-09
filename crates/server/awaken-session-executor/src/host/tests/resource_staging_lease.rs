@@ -20,20 +20,18 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
                 epoch: 1,
                 expires_at_unix_ms: u64::MAX,
             };
-            host.session_slots.update(SESSION, |slot| {
+            host.session_slots.update_realization(SESSION, |r| {
                 if leased {
-                    slot.install_realization_lease(crate::session_slot::test_observed_lease(
-                        lease.clone(),
-                    ));
+                    r.install_lease(crate::session_slot::test_observed_lease(lease.clone()));
                 }
             });
             let lock = host
                 .session_slots
-                .read(SESSION, |slot| {
+                .read_realization(SESSION, |r| {
                     if lifecycle {
-                        slot.lifecycle.clone()
+                        r.lifecycle.clone()
                     } else {
-                        slot.realization.clone()
+                        r.realization.clone()
                     }
                 })
                 .unwrap();
@@ -47,16 +45,15 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
             };
             host.session_slots.update(SESSION, |slot| {
                 if leased {
-                    slot.install_realization_lease(crate::session_slot::test_observed_lease(
-                        lease.clone(),
-                    ));
+                    slot.realization
+                        .install_lease(crate::session_slot::test_observed_lease(lease.clone()));
                 }
-                slot.dispatch_claim = Some(claim.clone());
+                slot.run.dispatch_claim = Some(claim.clone());
             });
             let replacement = host.begin_session_realization_revocation();
             let replacement_lock = host
                 .session_slots
-                .read(SESSION, |slot| slot.lifecycle.clone())
+                .read_realization(SESSION, |r| r.lifecycle.clone())
                 .unwrap();
             let replacement_held = replacement_lock.lock().await;
             drop(held);
@@ -73,7 +70,7 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
             );
             assert_eq!(
                 host.session_slots
-                    .read(SESSION, |slot| slot.dispatch_claim.clone()),
+                    .read_run(SESSION, |run| run.dispatch_claim.clone()),
                 Some(Some(claim))
             );
             drop(replacement_held);
@@ -99,8 +96,8 @@ async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup
         .expect("validated Host dependencies");
     let mut cancellations = Vec::new();
     for session in ["held", "free"] {
-        host.session_slots.update(session, |slot| {
-            slot.install_realization_lease(crate::session_slot::test_observed_lease(
+        host.session_slots.update_realization(session, |r| {
+            r.install_lease(crate::session_slot::test_observed_lease(
                 awaken_session_resource_contract::SessionRealizationLease {
                     owner: "worker".into(),
                     runtime_incarnation: "worker/1".into(),
@@ -109,7 +106,7 @@ async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup
                 },
             ));
             let cancellation = Arc::new(awaken_runtime_contract::CancellationToken::new());
-            slot.resource_preparation = Some(cancellation.clone());
+            r.resource_preparation = Some(cancellation.clone());
             cancellations.push(cancellation);
         });
     }
@@ -151,7 +148,7 @@ async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup
     assert!(cleanup.await.unwrap_err().is_cancelled());
     assert!(
         host.session_slots
-            .read(held_session, |slot| slot.realization_authority.is_closed())
+            .read_realization(held_session, |r| r.authority.is_closed())
             .unwrap(),
         "W3"
     );
@@ -188,8 +185,8 @@ async fn worker_revocation_error_does_not_short_circuit_other_sessions() {
     let ids = host.session_slots.session_ids();
     let unknown = &ids[0];
     let free = &ids[1];
-    host.session_slots.update(unknown, |slot| {
-        slot.environment_owner =
+    host.session_slots.update_realization(unknown, |r| {
+        r.environment_owner =
             SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::AwaitingAdoption {
                 identity: BoundSessionEnvironmentIdentity::Durable {
                     effect_id: "unadopted-effect".into(),
@@ -219,10 +216,10 @@ async fn worker_revocation_error_does_not_short_circuit_other_sessions() {
         );
         assert!(
             host.session_slots
-                .read(unknown, |slot| {
-                    slot.realization_authority.is_closed()
+                .read_realization(unknown, |r| {
+                    r.authority.is_closed()
                         && matches!(
-                            slot.environment_owner,
+                            r.environment_owner,
                             SessionEnvironmentOwner::Preparing(
                                 SessionEnvironmentPreparation::AwaitingAdoption { .. }
                             )
@@ -300,14 +297,14 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 .expect("C2 request reached Control barrier");
                 let (lock, changed) = host
                     .session_slots
-                    .read(SESSION, |slot| {
+                    .read_realization(SESSION, |r| {
                         (
                             if lifecycle {
-                                slot.lifecycle.clone()
+                                r.lifecycle.clone()
                             } else {
-                                slot.realization.clone()
+                                r.realization.clone()
                             },
-                            slot.realization_changed.clone(),
+                            r.changed.clone(),
                         )
                     })
                     .unwrap();
@@ -395,7 +392,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     epoch: 2,
                 };
                 host.session_slots
-                    .update(SESSION, |slot| slot.dispatch_claim = Some(claim.clone()));
+                    .update_run(SESSION, |run| run.dispatch_claim = Some(claim.clone()));
                 drop(held);
                 if replace {
                     assert!(
@@ -409,8 +406,8 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 }
                 assert_eq!(
                     host.session_slots.read(SESSION, |slot| (
-                        slot.realization_authority.lease().cloned(),
-                        slot.dispatch_claim.clone(),
+                        slot.realization.authority.lease().cloned(),
+                        slot.run.dispatch_claim.clone(),
                     )),
                     Some((Some(extended), Some(claim))),
                     "E5"
@@ -493,7 +490,7 @@ async fn expired_session_receipt_cannot_publish_any_complete_projection_facts() 
         let resource_lock = f
             .host
             .session_slots
-            .update(SESSION, |slot| slot.resource_projection.clone());
+            .update_realization(SESSION, |r| r.resource_projection.clone());
         let held = resource_lock.lock().await;
         let proof = awaken_session_realization_contract::SessionRealizationLeaseReceipt {
             lease: f.lease.clone(),
@@ -526,17 +523,17 @@ async fn expired_session_receipt_cannot_publish_any_complete_projection_facts() 
         assert!(
             f.host
                 .session_slots
-                .read(SESSION, |slot| slot.workspace.is_none()
-                    && slot.agent_id.is_none()
-                    && slot.published_snapshot.is_none()
-                    && slot.environment_projection.is_none()
-                    && slot.environment_snapshot.is_none()
-                    && slot.baseline.is_none()
-                    && slot.frozen_projection_receipt.is_none()
-                    && slot.resource_transition.is_none()
-                    && !slot.session_dispatch
-                    && slot.request_context.is_empty()
-                    && slot.realization_authority.lease().is_none())
+                .read(SESSION, |slot| slot.frozen.workspace.is_none()
+                    && slot.frozen.agent_id.is_none()
+                    && slot.frozen.published_snapshot.is_none()
+                    && slot.frozen.environment_projection.is_none()
+                    && slot.frozen.environment_snapshot.is_none()
+                    && slot.frozen.baseline.is_none()
+                    && slot.realization.frozen_projection_receipt.is_none()
+                    && slot.realization.resource_transition.is_none()
+                    && !slot.run.session_dispatch
+                    && slot.frozen.request_context.is_empty()
+                    && slot.realization.authority.lease().is_none())
                 .unwrap(),
             "R1/R2 no partial complete projection"
         );
@@ -640,11 +637,11 @@ impl StagingFixture {
             self.host
                 .session_slots
                 .read(SESSION, |slot| {
-                    slot.baseline.is_none()
-                        && slot.frozen_projection_receipt.is_none()
-                        && slot.runtime.is_none()
-                        && !slot.session_dispatch
-                        && slot.resource_transition.is_none()
+                    slot.frozen.baseline.is_none()
+                        && slot.realization.frozen_projection_receipt.is_none()
+                        && slot.run.runtime.is_none()
+                        && !slot.run.session_dispatch
+                        && slot.realization.resource_transition.is_none()
                 })
                 .unwrap_or(true),
             "preparation does not publish an executable projection"
@@ -669,8 +666,8 @@ async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
     f.host
         .install_session_realization_lease(SESSION, old.clone())
         .unwrap();
-    f.host.session_slots.update(SESSION, |slot| {
-        assert!(slot.close_realization_authority(Some(&old)), "R1");
+    f.host.session_slots.update_realization(SESSION, |r| {
+        assert!(r.close_authority(Some(&old)), "R1");
     });
     assert!(
         f.host
@@ -717,10 +714,12 @@ async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
             .session_slots
             .read(SESSION, |slot| {
                 assert!(
-                    slot.baseline.is_some() && slot.frozen_projection_receipt.is_some(),
+                    slot.frozen.baseline.is_some()
+                        && slot.realization.frozen_projection_receipt.is_some(),
                     "E1"
                 );
-                slot.resource_transition
+                slot.realization
+                    .resource_transition
                     .as_ref()
                     .map(|transition| transition.desired().revision)
             })
@@ -758,10 +757,10 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
             .insert(rule.into(), lease.clone());
         host.install_session_realization_lease(rule, lease.clone())
             .unwrap();
-        host.session_slots.update(rule, |slot| {
-            slot.mcp.set_has_frozen_attachment(rule == "L2");
+        host.session_slots.update_realization(rule, |r| {
+            r.mcp.set_has_frozen_attachment(rule == "L2");
             if rule == "L5" {
-                assert!(slot.close_realization_authority(Some(&lease)));
+                assert!(r.close_authority(Some(&lease)));
             }
         });
         initial.push((rule, lease));
@@ -791,15 +790,15 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
         host.session_slots
             .read(rule, |slot| {
                 assert_eq!(
-                    slot.realization_authority.lease(),
+                    slot.realization.authority.lease(),
                     (rule != "L5").then_some(&lease),
                     "{rule}"
                 );
-                assert_eq!(slot.mcp.has_frozen_attachment(), rule == "L2");
+                assert_eq!(slot.realization.mcp.has_frozen_attachment(), rule == "L2");
                 assert!(
-                    slot.baseline.is_none()
-                        && slot.resource_transition.is_none()
-                        && !slot.session_dispatch,
+                    slot.frozen.baseline.is_none()
+                        && slot.realization.resource_transition.is_none()
+                        && !slot.run.session_dispatch,
                     "{rule}/lease only"
                 );
             })
@@ -835,8 +834,8 @@ async fn missing_control_is_required_only_for_due_leases_without_skipping_refres
         0,
         "D2"
     );
-    host.session_slots.update(SESSION, |slot| {
-        slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+    host.session_slots.update_realization(SESSION, |r| {
+        r.authority = crate::session_slot::SessionRealizationAuthority::Live(
             crate::session_slot::test_expired_observed_lease(lease.clone()),
         );
     });
@@ -846,7 +845,7 @@ async fn missing_control_is_required_only_for_due_leases_without_skipping_refres
     );
     assert_eq!(
         host.session_slots
-            .read(SESSION, |slot| slot.realization_authority.lease().cloned()),
+            .read_realization(SESSION, |r| r.authority.lease().cloned()),
         Some(Some(lease)),
         "D3 retained cleanup identity"
     );
@@ -969,8 +968,8 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
         "no-due early return must not bypass physical refresh"
     );
     assert!(host.worker.session_control.is_none());
-    host.session_slots.update(SESSION, |slot| {
-        assert!(slot.close_realization_authority(Some(&lease)));
+    host.session_slots.update_realization(SESSION, |r| {
+        assert!(r.close_authority(Some(&lease)));
     });
     assert!(host.session_slots.realization_leases().is_empty());
     assert!(
@@ -1162,7 +1161,7 @@ async fn cold_resource_staging_is_renewable_before_projection_publication() {
     assert_eq!(
         f.host
             .session_slots
-            .read(SESSION, |slot| slot.realization_authority.lease().cloned())
+            .read_realization(SESSION, |r| r.authority.lease().cloned())
             .flatten()
             .unwrap()
             .expires_at_unix_ms,
@@ -1192,11 +1191,11 @@ async fn failed_or_cancelled_resource_preparation_drops_only_its_unpublished_lea
             f.host
                 .session_slots
                 .read(SESSION, |slot| {
-                    slot.realization_authority.lease().is_none()
-                        && slot.resource_preparation.is_none()
-                        && slot.workspace.is_none()
-                        && slot.skills.is_none()
-                        && slot.staged_resource_effect_key.is_none()
+                    slot.realization.authority.lease().is_none()
+                        && slot.realization.resource_preparation.is_none()
+                        && slot.frozen.workspace.is_none()
+                        && slot.realization.skills.is_none()
+                        && slot.realization.staged_resource_effect_key.is_none()
                 })
                 .unwrap()
         );
@@ -1334,7 +1333,7 @@ async fn obsolete_resource_preparation_cannot_publish_or_erase_a_successor() {
         let current = f
             .host
             .session_slots
-            .read(SESSION, |slot| slot.realization_authority.lease().cloned())
+            .read_realization(SESSION, |r| r.authority.lease().cloned())
             .flatten();
         assert_eq!(current, (mutation == "replace").then_some(successor));
         if mutation == "remove" {
@@ -1416,7 +1415,7 @@ async fn many_cold_resource_reads_share_the_existing_renewal_scheduler() {
         f.host
             .session_slots
             .read(&format!("cold-{index}"), |slot| {
-                slot.baseline.is_none() && !slot.session_dispatch
+                slot.frozen.baseline.is_none() && !slot.run.session_dispatch
             })
             .unwrap()
     });
@@ -1555,9 +1554,9 @@ async fn cold_staging_discards_a_renewal_response_delivered_after_newer_authorit
             assert!(
                 f.host
                     .session_slots
-                    .read(SESSION, |slot| slot.baseline.is_some()
-                        && slot.session_dispatch
-                        && slot.resource_preparation.is_none())
+                    .read(SESSION, |slot| slot.frozen.baseline.is_some()
+                        && slot.run.session_dispatch
+                        && slot.realization.resource_preparation.is_none())
                     .unwrap()
             );
         }
@@ -1599,9 +1598,12 @@ async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
             assert!(
                 f.host
                     .session_slots
-                    .read(&format!("soak-{index:02}"), |slot| slot.baseline.is_none()
-                        && slot.resource_preparation.is_some()
-                        && slot.realization_authority.remaining().is_some())
+                    .read(&format!("soak-{index:02}"), |slot| slot
+                        .frozen
+                        .baseline
+                        .is_none()
+                        && slot.realization.resource_preparation.is_some()
+                        && slot.realization.authority.remaining().is_some())
                     .unwrap()
             );
         }

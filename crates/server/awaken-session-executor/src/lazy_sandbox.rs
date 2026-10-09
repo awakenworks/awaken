@@ -60,7 +60,7 @@ impl ToolExecutor for DeferredSandboxExecutor {
             .upgrade()
             .and_then(|host| {
                 host.session_slots
-                    .read(&self.thread, |slot| slot.environment_owner.resident())
+                    .read_realization(&self.thread, |r| r.environment_owner.resident())
                     .flatten()
             })
             .map_or(ToolRecoveryCapability::NonRecoverable, |environment| {

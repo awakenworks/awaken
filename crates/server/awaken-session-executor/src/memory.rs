@@ -629,9 +629,9 @@ impl crate::host::SharedHost {
     }
 
     pub(crate) fn register_thread_memory(&self, thread: &str, memory: Option<Arc<BoundMemory>>) {
-        self.session_slots.update(thread, |slot| {
-            slot.memory_bindings.clear();
-            slot.memory = memory;
+        self.session_slots.update_realization(thread, |r| {
+            r.memory_bindings.clear();
+            r.memory = memory;
         });
     }
 
@@ -643,9 +643,9 @@ impl crate::host::SharedHost {
         thread: &str,
         bindings: std::collections::HashMap<String, Arc<BoundMemory>>,
     ) {
-        self.session_slots.update(thread, |slot| {
-            slot.memory_bindings = bindings;
-            slot.memory = None;
+        self.session_slots.update_realization(thread, |r| {
+            r.memory_bindings = bindings;
+            r.memory = None;
         });
     }
 
@@ -658,8 +658,9 @@ impl crate::host::SharedHost {
         binding_id: Option<&str>,
     ) -> Result<Option<Arc<BoundMemory>>, String> {
         let selected = self.session_slots.update(thread, |slot| {
-            let selected = binding_id.and_then(|id| slot.memory_bindings.get(id).cloned());
-            slot.memory = selected.clone();
+            let selected =
+                binding_id.and_then(|id| slot.realization.memory_bindings.get(id).cloned());
+            slot.realization.memory = selected.clone();
             selected
         });
         match (binding_id, selected) {
@@ -673,7 +674,7 @@ impl crate::host::SharedHost {
 
     pub(crate) fn memory_for_thread(&self, thread: &str) -> Option<Arc<BoundMemory>> {
         self.session_slots
-            .read(thread, |slot| slot.memory.clone())
+            .read_realization(thread, |r| r.memory.clone())
             .flatten()
     }
 
@@ -697,13 +698,13 @@ impl crate::host::SharedHost {
         }
         let bindings = self
             .session_slots
-            .read(session_thread, |slot| {
+            .read_realization(session_thread, |r| {
                 let mut bindings: Vec<Arc<BoundMemory>> = Vec::new();
-                for memory in slot
+                for memory in r
                     .memory_bindings
                     .values()
                     .cloned()
-                    .chain(slot.memory.iter().cloned())
+                    .chain(r.memory.iter().cloned())
                 {
                     if !bindings
                         .iter()

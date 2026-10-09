@@ -12,30 +12,23 @@ impl SharedHost {
         thread: &str,
         frozen_parent: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
     ) -> Result<ChildExecutionSubstrate, HostError> {
-        let lifecycle = self
-            .session_slots
-            .update(thread, |slot| slot.lifecycle.clone());
-        let lifecycle_guard = lifecycle.lock().await;
+        let lifecycle_guard = self.session_slots.lock_lifecycle(thread).await;
         self.retry_unpublished_session_environment_cleanup(thread)
             .await?;
         let warm_context = self
             .session_slots
-            .read(thread, |slot| slot.runtime.clone())
+            .read_run(thread, |run| run.runtime.clone())
             .flatten();
         let retained = self
             .session_slots
-            .read(thread, |slot| slot.environment_owner.resident())
+            .read_realization(thread, |r| r.environment_owner.resident())
             .flatten();
         let environment = match retained {
             Some(existing) => existing,
             None => {
                 let parent = frozen_parent
                     .cloned()
-                    .or_else(|| {
-                        self.session_slots
-                            .read(thread, |slot| slot.published_snapshot.clone())
-                            .flatten()
-                    })
+                    .or_else(|| self.session_slots.published_snapshot(thread))
                     .ok_or_else(|| {
                         HostError::internal(
                             "a cold child requires the frozen parent Session publication",
@@ -93,7 +86,7 @@ impl SharedHost {
                 }
                 if self
                     .session_slots
-                    .read(thread, |slot| slot.session_dispatch)
+                    .read_run(thread, |run| run.session_dispatch)
                     .unwrap_or(false)
                     && let Some(endpoint) = self.coordination_endpoint()
                 {
@@ -193,7 +186,10 @@ mod tests {
         let physical = host
             .session_slots
             .read(parent_thread, |slot| {
-                (slot.environment_owner.is_resident(), slot.runtime.is_some())
+                (
+                    slot.realization.environment_owner.is_resident(),
+                    slot.run.runtime.is_some(),
+                )
             })
             .expect("S1 parent physical slot");
         assert_eq!(physical, (true, false), "S1/E2,E3");

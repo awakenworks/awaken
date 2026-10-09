@@ -48,10 +48,7 @@ impl SharedHost {
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         tool: &str,
     ) -> bool {
-        let session_tools = self
-            .session_slots
-            .read(thread, |slot| slot.tools.clone())
-            .flatten();
+        let session_tools = self.session_slots.frozen(thread).tools.clone();
         let toolsets = session_tools
             .as_ref()
             .map(|tools| tools.toolsets.as_slice())
@@ -122,7 +119,7 @@ impl SharedHost {
     ) -> Option<Vec<String>> {
         let managed_session = self
             .session_slots
-            .read(thread, |slot| slot.session_dispatch)
+            .read_run(thread, |run| run.session_dispatch)
             .unwrap_or(false);
         let read_enabled =
             self.session_allows_repository_skill_discovery(thread, published_snapshot);
@@ -142,8 +139,8 @@ impl SharedHost {
 
         let mut roots = self
             .session_slots
-            .read(thread, |slot| {
-                slot.resources
+            .read_realization(thread, |r| {
+                r.resources
                     .repositories
                     .iter()
                     .map(|repository| {
@@ -178,10 +175,10 @@ impl SharedHost {
         thread: &str,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         skill_evidence: SkillDeliveryEvidence<'_>,
-    ) -> Result<crate::frozen_runtime_projection::ManagedContentDelivery, HostError> {
+    ) -> Result<crate::frozen_inputs::ManagedContentDelivery, HostError> {
         let managed_session = self
             .session_slots
-            .read(thread, |slot| slot.session_dispatch)
+            .read_run(thread, |run| run.session_dispatch)
             .unwrap_or(false);
         let selected_skills = published_skill_ids(published_snapshot);
         let managed_has_skill = if managed_session {
@@ -232,12 +229,11 @@ impl SharedHost {
         // choice instead of trying to re-author the Session's mounts/tools.
         if let Some(existing) = self
             .session_slots
-            .read(thread, |slot| slot.content_delivery)
+            .read_realization(thread, |r| r.content_delivery)
             .flatten()
         {
             if managed_has_skill
-                && existing
-                    != crate::frozen_runtime_projection::ManagedContentDelivery::ManagedFilesystem
+                && existing != crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem
             {
                 return Err(HostError::bad_request(
                     "Managed Agent Skills require filesystem progressive disclosure, but this Session disables every filesystem tool",
@@ -252,15 +248,15 @@ impl SharedHost {
             ));
         }
         let delivery = if allows_filesystem {
-            crate::frozen_runtime_projection::ManagedContentDelivery::ManagedFilesystem
+            crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem
         } else {
-            crate::frozen_runtime_projection::ManagedContentDelivery::SemanticTools
+            crate::frozen_inputs::ManagedContentDelivery::SemanticTools
         };
-        if delivery == crate::frozen_runtime_projection::ManagedContentDelivery::SemanticTools
+        if delivery == crate::frozen_inputs::ManagedContentDelivery::SemanticTools
             && self
                 .session_slots
-                .read(thread, |slot| {
-                    slot.resources
+                .read_realization(thread, |r| {
+                    r.resources
                         .resource_prompts
                         .iter()
                         .any(crate::managed_input_layout::ResourcePromptProjection::requires_filesystem_delivery)
@@ -271,7 +267,7 @@ impl SharedHost {
                 "MemoryStore instructions reference a filesystem path, but this Session disables filesystem delivery",
             ));
         }
-        if delivery == crate::frozen_runtime_projection::ManagedContentDelivery::SemanticTools
+        if delivery == crate::frozen_inputs::ManagedContentDelivery::SemanticTools
             && !managed_session
         {
             let frozen_requires_filesystem =
@@ -294,7 +290,7 @@ impl SharedHost {
             }
         }
         self.session_slots
-            .update(thread, |slot| slot.content_delivery = Some(delivery));
+            .update_realization(thread, |r| r.content_delivery = Some(delivery));
         Ok(delivery)
     }
 
@@ -313,17 +309,18 @@ impl SharedHost {
                         .as_ref()
                         .is_none_or(|selected| selected.contains(id))
                 };
-                let frozen_has_selected = slot.skills.as_ref().is_some_and(|versions| {
-                    versions
-                        .iter()
-                        .any(|version| is_selected(version.skill_id.as_str()))
-                });
+                let frozen_has_selected =
+                    slot.realization.skills.as_ref().is_some_and(|versions| {
+                        versions
+                            .iter()
+                            .any(|version| is_selected(version.skill_id.as_str()))
+                    });
                 // Managed attached bundles are immutable Resource bytes. The
                 // deferred `read` executor can disclose them before Hand exists;
                 // executing scripts still follows ordinary Sandbox demand.
                 // Direct semantic/fork compatibility retains its eager rule.
-                let frozen_requires = !slot.session_dispatch
-                    && slot.skills.as_ref().is_some_and(|versions| {
+                let frozen_requires = !slot.run.session_dispatch
+                    && slot.realization.skills.as_ref().is_some_and(|versions| {
                         versions.iter().any(|version| {
                             is_selected(version.skill_id.as_str())
                                 && crate::skills::version_requires_environment(version)
@@ -337,16 +334,25 @@ impl SharedHost {
                                 awaken_provisioning_contract::MountSource::MemoryStore { .. }
                             )
                     };
-                let baseline_requires = slot.baseline.as_ref().is_some_and(|baseline| {
+                let baseline_requires = slot.frozen.baseline.as_ref().is_some_and(|baseline| {
                     baseline.mounts.iter().any(mount_requires_environment)
                         || !baseline.env.is_empty()
                 });
-                let slot_requires = !slot.delegates.is_empty()
-                    || slot.resources.mounts.iter().any(mount_requires_environment)
-                    || !slot.resources.repositories.is_empty()
+                let slot_requires = !slot.frozen.delegates.is_empty()
+                    || slot
+                        .realization
+                        .resources
+                        .mounts
+                        .iter()
+                        .any(mount_requires_environment)
+                    || !slot.realization.resources.repositories.is_empty()
                     || baseline_requires
                     || frozen_requires;
-                (slot.session_dispatch, slot_requires, frozen_has_selected)
+                (
+                    slot.run.session_dispatch,
+                    slot_requires,
+                    frozen_has_selected,
+                )
             })
             .unwrap_or((false, false, false));
         let workspace = self.thread_workspace(thread);
@@ -389,8 +395,8 @@ impl SharedHost {
             && self
                 .session_slots
                 .read(thread, |slot| {
-                    !slot.session_dispatch
-                        && slot.environment_snapshot.is_none()
+                    !slot.run.session_dispatch
+                        && slot.frozen.environment_snapshot.is_none()
                         && slot.dispatch_resource_manifest().is_none()
                 })
                 .unwrap_or(true);
@@ -400,8 +406,9 @@ impl SharedHost {
         let slot_allows = self
             .session_slots
             .read(thread, |slot| {
-                slot.deferred_executor.is_some()
+                slot.run.deferred_executor.is_some()
                     && slot
+                        .frozen
                         .environment_projection
                         .as_ref()
                         .is_some_and(|projection| {
@@ -431,8 +438,9 @@ impl SharedHost {
             });
         let selected_backend_is_acp = self
             .session_slots
-            .read(thread, |slot| slot.backend_ref.clone())
-            .flatten()
+            .frozen(thread)
+            .backend_ref
+            .clone()
             .is_some_and(|backend_ref| {
                 awaken_runtime_contract::resolved::Backend::from_ref(&backend_ref).is_acp()
             });

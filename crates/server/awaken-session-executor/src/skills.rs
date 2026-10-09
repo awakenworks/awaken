@@ -90,7 +90,7 @@ pub(crate) fn read_pinned_skill(
     use awaken_provisioning_contract::WorkspaceLayout;
     use std::path::Component;
 
-    if !slot.session_dispatch || slot.environment_owner.resident().is_some() {
+    if !slot.run.session_dispatch || slot.realization.environment_owner.resident().is_some() {
         return None;
     }
     let relative = WorkspaceLayout::relative(&args.path).unwrap_or(&args.path);
@@ -117,6 +117,7 @@ pub(crate) fn read_pinned_skill(
         let (stem, file_parts) = parts.split_first().ok_or_else(failure)?;
         let directory = format!("{DELIVERED_SKILLS_SUBDIR}/{stem}");
         if !slot
+            .realization
             .skill_prompt
             .as_ref()
             .is_some_and(|prompt| prompt.exposes_directory(&directory))
@@ -124,7 +125,7 @@ pub(crate) fn read_pinned_skill(
             return Err(failure());
         }
         let manifest = slot.dispatch_resource_manifest().ok_or_else(failure)?;
-        if slot.workspace.as_deref() != Some(manifest.workspace_id.as_str()) {
+        if slot.frozen.workspace.as_deref() != Some(manifest.workspace_id.as_str()) {
             return Err(failure());
         }
         let mut bindings = manifest
@@ -137,6 +138,7 @@ pub(crate) fn read_pinned_skill(
             return Err(failure());
         }
         let version = slot
+            .realization
             .skills
             .as_ref()
             .and_then(|versions| {
@@ -895,9 +897,7 @@ mod tests {
         .unwrap();
         let projection = filesystem_skill_prompt(registry.as_ref()).unwrap().unwrap();
         let slots = crate::session_slot::SessionRuntimeSlots::default();
-        slots.update("skill-path", |slot| {
-            slot.skill_prompt = Some(projection.clone())
-        });
+        slots.update_realization("skill-path", |r| r.skill_prompt = Some(projection.clone()));
         assert!(
             slots
                 .prompts("skill-path", None, true, false)
@@ -908,9 +908,9 @@ mod tests {
         );
         // The test installs a resident projection only, not a durable claim.
         // Actual Managed owner transitions retain their existing integration tests.
-        slots.update("skill-path", |slot| {
+        slots.update_realization("skill-path", |r| {
             use crate::session_slot::*;
-            slot.environment_owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
+            r.environment_owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
                 binding: "fixture".into(),
                 environment: env.clone(),
                 identity: BoundSessionEnvironmentIdentity::LegacyDirect(
@@ -968,15 +968,15 @@ mod tests {
         }
         assert_eq!(
             slots
-                .read("skill-path", |slot| slot.skill_prompt.clone())
+                .read_realization("skill-path", |r| r.skill_prompt.clone())
                 .flatten(),
             Some(projection),
             "P2 metadata remains frozen"
         );
         // P6 malformed directory metadata cannot yield a model request once
         // realized; propagate the shared path validator's failure unchanged.
-        slots.update("skill-path", |slot| {
-            slot.skill_prompt = Some(FilesystemSkillPrompt::from_entries(vec![(
+        slots.update_realization("skill-path", |r| {
+            r.skill_prompt = Some(FilesystemSkillPrompt::from_entries(vec![(
                 "Unsafe".into(),
                 "invalid".into(),
                 "../escape".into(),

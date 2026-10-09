@@ -26,7 +26,7 @@ pub(super) struct ContextResources {
     pub(super) has_published_advisor: bool,
     pub(super) managed_coordination: bool,
     pub(super) coordination_endpoint: Option<crate::coordination::CoordinationEndpoint>,
-    pub(super) content_delivery: crate::frozen_runtime_projection::ManagedContentDelivery,
+    pub(super) content_delivery: crate::frozen_inputs::ManagedContentDelivery,
     pub(super) session_tools:
         Option<awaken_session_configuration_contract::SessionToolConfiguration>,
     pub(super) toolsets: Vec<awaken_runtime_contract::agent_bindings::ToolsetPolicy>,
@@ -67,13 +67,13 @@ pub(super) async fn acquire(
     }
     let retained = host
         .session_slots
-        .read(thread, |slot| slot.environment_owner.resident())
+        .read_realization(thread, |r| r.environment_owner.resident())
         .flatten();
     let environment_owner_is_vacant = host.session_environment_owner_is_vacant(thread);
     let environment_owner_has_unpublished_candidate = host
         .session_slots
-        .read(thread, |slot| {
-            slot.environment_owner.unpublished_candidate().is_some()
+        .read_realization(thread, |r| {
+            r.environment_owner.unpublished_candidate().is_some()
         })
         .unwrap_or(false);
     if a2a_only && !environment_owner_is_vacant {
@@ -238,10 +238,7 @@ pub(super) async fn acquire(
         .as_ref()
         .map(|snapshot| snapshot.resolved_spec.plugin_config.agent.toolsets.clone())
         .unwrap_or_default();
-    let session_tools = host
-        .session_slots
-        .read(thread, |slot| slot.tools.clone())
-        .flatten();
+    let session_tools = host.session_slots.frozen(thread).tools.clone();
     let toolsets = session_tools
         .as_ref()
         .map(|tools| tools.toolsets.clone())

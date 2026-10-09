@@ -53,7 +53,7 @@ impl ManagedMountMetadata {
 
     pub(crate) fn validation_requirement(
         self,
-        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
     ) -> awaken_provisioning_contract::MountRequirement {
         let source = match &self.validation_source {
             ManagedMountValidationSource::File => {
@@ -206,7 +206,7 @@ pub(crate) fn resolved_input_effect_path(
 
 pub(crate) fn resolved_input_validation_mount(
     input: &awaken_session_resource_contract::ResolvedInput,
-    environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+    environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
 ) -> Option<awaken_provisioning_contract::MountRequirement> {
     match resolved_input_layout_projection(input) {
         ManagedLayoutProjection::Mount(mount) => Some(mount.validation_requirement(environment)),

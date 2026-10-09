@@ -247,14 +247,15 @@ async fn root_terminal_cleanup_effect(
 ) {
     let environment = host
         .session_slots
-        .read(session_id, |slot| slot.environment_owner.resident())
+        .read_realization(session_id, |r| r.environment_owner.resident())
         .flatten()
         .expect("terminal test requires a resident Environment");
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
     let workspace_id = host
         .session_slots
-        .read(session_id, |slot| slot.workspace.clone())
-        .flatten()
+        .frozen(session_id)
+        .workspace
+        .clone()
         .expect("terminal test requires a root Workspace projection");
     let projection = terminal_cleanup_projection(
         &workspace_id,
@@ -418,9 +419,7 @@ async fn projected_sandbox_layout_preserves_one_complete_input_snapshot() {
             has_repositories: true,
             baseline_mounts: Some(&baseline_mounts),
             baseline_env: Some(&baseline_env),
-            content_delivery: Some(
-                crate::frozen_runtime_projection::ManagedContentDelivery::SemanticTools,
-            ),
+            content_delivery: Some(crate::frozen_inputs::ManagedContentDelivery::SemanticTools),
             environment: Some(&environment),
             network_isolation: false,
         },
@@ -956,6 +955,7 @@ async fn model_override_only_acp_candidate_rejects_split_process_paths() {
     assert!(
         host.session_slots
             .read("model-override-acp", |slot| slot
+                .frozen
                 .published_snapshot
                 .is_none())
             .unwrap_or(false),
@@ -1668,8 +1668,9 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
     let managed = crate::ManagedHost::new(host.clone());
     let workspace_id = host
         .session_slots
-        .read("session-artifacts", |slot| slot.workspace.clone())
-        .flatten()
+        .frozen("session-artifacts")
+        .workspace
+        .clone()
         .expect("R4 frozen aggregate Repository inputs");
     let authorization = root_terminal_preparation_authorization(&session, &effect, &workspace_id);
     let preparation = managed
@@ -1685,10 +1686,8 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .unwrap();
     assert!(
         host.session_slots
-            .read("session-artifacts", |slot| {
-                slot.environment_owner
-                    .terminal_bound_environment()
-                    .is_some()
+            .read_realization("session-artifacts", |r| {
+                r.environment_owner.terminal_bound_environment().is_some()
             })
             .unwrap_or(false),
         "R3 exact owner remains Retiring until aggregate-authorized Disposal"
@@ -1834,9 +1833,10 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         "H1"
     );
 
-    host.session_slots.update("artifact-response-loss", |slot| {
-        slot.environment_owner = crate::session_slot::SessionEnvironmentOwner::Vacant;
-    });
+    host.session_slots
+        .update_realization("artifact-response-loss", |r| {
+            r.environment_owner = crate::session_slot::SessionEnvironmentOwner::Vacant;
+        });
     let recovered = host
         .artifact_harvester()
         .harvest_with_fence(
@@ -2398,10 +2398,8 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
     assert!(error.message.contains("injected catalog failure"));
     assert!(
         host.session_slots
-            .read("session-harvest-failure", |slot| {
-                slot.environment_owner
-                    .terminal_bound_environment()
-                    .is_some()
+            .read_realization("session-harvest-failure", |r| {
+                r.environment_owner.terminal_bound_environment().is_some()
             })
             .unwrap_or(false),
         "R4 exact terminal owner remains hidden and retryable"

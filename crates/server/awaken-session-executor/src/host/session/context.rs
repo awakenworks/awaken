@@ -72,7 +72,7 @@ async fn install(
         ctx.config.resolved_spec.plugin_config.plugins(),
     )?;
     host.session_slots
-        .update(thread, |slot| slot.runtime = Some(ctx.clone()));
+        .update_run(thread, |run| run.runtime = Some(ctx.clone()));
     // A prior process may have crashed after atomically ending the parent
     // and before delivering its remote child cancellations. Re-entering the
     // session redelivers those idempotent outbox entries.

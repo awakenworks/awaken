@@ -39,18 +39,18 @@ impl<'a> ResourcePreparation<'a> {
         let asserted = proof.lease.clone();
         let cancellation = Arc::new(awaken_runtime_contract::CancellationToken::new());
         let (introduced_lease, changed) = host.authorize_worker_effect(|| {
-            host.session_slots.update(session, |slot| {
-                if slot.resource_preparation.is_some() {
+            host.session_slots.update_realization(session, |r| {
+                if r.resource_preparation.is_some() {
                     return Err(crate::HostError::internal(
                         "Resource preparation already holds its projection lock",
                     ));
                 }
-                let introduced = slot.realization_authority.lease().is_none();
-                if !slot.install_realization_lease(proof) {
+                let introduced = r.authority.lease().is_none();
+                if !r.install_lease(proof) {
                     return Err(Self::ended());
                 }
-                slot.resource_preparation = Some(cancellation.clone());
-                Ok((introduced, slot.realization_changed.clone()))
+                r.resource_preparation = Some(cancellation.clone());
+                Ok((introduced, r.changed.clone()))
             })
         })?;
         changed.notify_waiters();
@@ -66,10 +66,13 @@ impl<'a> ResourcePreparation<'a> {
     }
 
     fn authorized(&self, slot: &crate::session_slot::SessionRuntimeSlot) -> bool {
-        slot.resource_preparation
+        slot.realization
+            .resource_preparation
             .as_ref()
             .is_some_and(|current| Arc::ptr_eq(current, &self.cancellation))
-            && slot.resource_preparation_authorized(&self.asserted)
+            && slot
+                .realization
+                .resource_preparation_authorized(&self.asserted)
     }
 
     fn ended() -> crate::HostError {
@@ -98,7 +101,7 @@ impl<'a> ResourcePreparation<'a> {
         if !self.authorized(slot) {
             return Err(Self::ended());
         }
-        slot.resource_preparation = None;
+        slot.realization.resource_preparation = None;
         Ok(())
     }
 
@@ -107,7 +110,7 @@ impl<'a> ResourcePreparation<'a> {
             let Some(changed) = self
                 .host
                 .session_slots
-                .read(self.session, |slot| slot.realization_changed.clone())
+                .read_realization(self.session, |r| r.changed.clone())
             else {
                 return Self::ended();
             };
@@ -120,7 +123,7 @@ impl<'a> ResourcePreparation<'a> {
                 .session_slots
                 .read(self.session, |slot| {
                     self.authorized(slot)
-                        .then(|| slot.realization_authority.remaining())
+                        .then(|| slot.realization.authority.remaining())
                         .flatten()
                 })
                 .flatten();
@@ -138,24 +141,23 @@ impl<'a> ResourcePreparation<'a> {
 
 impl Drop for ResourcePreparation<'_> {
     fn drop(&mut self) {
-        self.host.session_slots.modify(self.session, |slot| {
-            if slot
-                .resource_preparation
+        self.host.session_slots.modify_realization(self.session, |r| {
+            if r.resource_preparation
                 .as_ref()
                 .is_some_and(|current| Arc::ptr_eq(current, &self.cancellation))
             {
-                slot.resource_preparation = None;
+                r.resource_preparation = None;
                 if self.introduced_lease
-                    && slot.realization_authority.lease().is_some_and(|current| {
+                    && r.authority.lease().is_some_and(|current| {
                         awaken_session_realization_contract::realization_lease_generation_authorizes(
                             current,
                             &self.asserted,
                         )
                     })
                 {
-                    slot.realization_authority =
+                    r.authority =
                         crate::session_slot::SessionRealizationAuthority::Uninstalled;
-                    slot.realization_changed.notify_waiters();
+                    r.changed.notify_waiters();
                 }
             }
         });
@@ -194,8 +196,8 @@ impl crate::SharedHost {
         let Some(realization) = self
             .session_slots
             .read(&session_id, |slot| {
-                (slot.realization_authority.lease() == Some(&lease))
-                    .then(|| slot.realization.clone())
+                (slot.realization.authority.lease() == Some(&lease))
+                    .then(|| slot.realization.realization.clone())
             })
             .flatten()
         else {
@@ -244,9 +246,9 @@ impl crate::SharedHost {
                 self.authorize_worker_effect(|| {
                     Ok(self
                         .session_slots
-                        .modify(&session_id, |slot| {
-                            Arc::ptr_eq(&slot.realization, &realization)
-                                && slot.renew_realization_lease(&lease, renewed_lease)
+                        .modify_realization(&session_id, |state| {
+                            Arc::ptr_eq(&state.realization, &realization)
+                                && state.renew_lease(&lease, renewed_lease)
                         })
                         .unwrap_or(false))
                 })
@@ -258,10 +260,10 @@ impl crate::SharedHost {
             Ok(false)
                 if self
                     .session_slots
-                    .read(&session_id, |slot| {
-                        Arc::ptr_eq(&slot.realization, &realization)
-                            && slot.realization_authority.lease() == Some(&lease)
-                            && slot.realization_authority.remaining().is_none()
+                    .read_realization(&session_id, |state| {
+                        Arc::ptr_eq(&state.realization, &realization)
+                            && state.authority.lease() == Some(&lease)
+                            && state.authority.remaining().is_none()
                     })
                     .unwrap_or(false) =>
             {
@@ -273,9 +275,9 @@ impl crate::SharedHost {
             Err(_)
                 if !self
                     .session_slots
-                    .read(&session_id, |slot| {
-                        Arc::ptr_eq(&slot.realization, &realization)
-                            && slot.realization_authority.lease() == Some(&lease)
+                    .read_realization(&session_id, |state| {
+                        Arc::ptr_eq(&state.realization, &realization)
+                            && state.authority.lease() == Some(&lease)
                     })
                     .unwrap_or(false) =>
             {
@@ -285,9 +287,7 @@ impl crate::SharedHost {
                 if !revoke_immediately
                     && self
                         .session_slots
-                        .read(&session_id, |slot| {
-                            slot.realization_authority.remaining().is_some()
-                        })
+                        .read_realization(&session_id, |r| r.authority.remaining().is_some())
                         .unwrap_or(false) =>
             {
                 Err(error)

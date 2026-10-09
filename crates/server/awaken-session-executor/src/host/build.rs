@@ -178,37 +178,34 @@ impl SharedHost {
 
     pub(crate) fn register_thread_workspace(&self, thread: &str, workspace: &str) {
         self.session_slots
-            .update(thread, |slot| slot.workspace = Some(workspace.to_string()));
+            .replace_frozen_with(thread, |next| next.workspace = Some(workspace.to_string()));
     }
 
     pub(crate) fn register_thread_agent_projection(&self, thread: &str, agent_id: &str) {
         self.session_slots
-            .update(thread, |slot| slot.agent_id = Some(agent_id.to_string()));
+            .replace_frozen_with(thread, |next| next.agent_id = Some(agent_id.to_string()));
     }
 
     /// Rebuildable Agent projection used only as input to Session admission.
     /// Runtime never treats this cache as an executable publication authority.
     pub fn thread_agent_projection(&self, thread: &str) -> Option<String> {
-        self.session_slots
-            .read(thread, |slot| slot.agent_id.clone())
-            .flatten()
+        self.session_slots.frozen(thread).agent_id.clone()
     }
 
     /// Workspace context supplied to the Session application admission boundary.
     /// Unknown flat-protocol threads use the process's persisted local workspace.
     pub fn thread_workspace(&self, thread: &str) -> String {
         self.session_slots
-            .read(thread, |slot| slot.workspace.clone())
-            .flatten()
+            .frozen(thread)
+            .workspace
+            .clone()
             .unwrap_or_else(|| self.local_workspace.clone())
     }
 
     /// Workspace for a prepared thread; unlike `thread_workspace`, unknown ids
     /// do not inherit local ownership and therefore cannot enumerate artifacts.
     pub fn registered_thread_workspace(&self, thread: &str) -> Option<String> {
-        self.session_slots
-            .read(thread, |slot| slot.workspace.clone())
-            .flatten()
+        self.session_slots.frozen(thread).workspace.clone()
     }
 
     /// Clone the completion projection consumed by the authenticated Worker
@@ -234,12 +231,12 @@ impl SharedHost {
     /// Bind the exact published delegation targets to a prepared Session.
     pub fn register_thread_delegates(&self, thread: &str, delegates: Vec<String>) {
         self.session_slots
-            .update(thread, |slot| slot.delegates = delegates);
+            .replace_frozen_with(thread, |next| next.delegates = delegates);
     }
 
     pub(crate) fn thread_delegate_ids(&self, thread: &str) -> Option<Vec<String>> {
         self.session_slots
-            .read(thread, |slot| slot.delegates.clone())
+            .read(thread, |slot| slot.frozen.delegates.clone())
     }
 
     /// The shared per-thread live observation hub.

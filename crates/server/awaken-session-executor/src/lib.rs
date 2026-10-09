@@ -47,7 +47,7 @@ mod deployment_config;
 mod dispatch_session_runtime;
 mod durable_operations;
 mod environment_continuation;
-mod frozen_runtime_projection;
+mod frozen_inputs;
 mod host;
 mod hub;
 mod inference_routing;
@@ -316,11 +316,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
     ) -> Result<(), RunError> {
         // Every Environment-owner projection, including lease-only recovery,
         // crosses the same lifecycle guard as physical publication/retirement.
-        let lifecycle = self
-            .host
-            .session_slots
-            .update(thread, |slot| slot.lifecycle.clone());
-        let _lifecycle = lifecycle.lock().await;
+        let _lifecycle = self.host.session_slots.lock_lifecycle(thread).await;
         if mode.prepares_session() {
             // Cause/effect rule P2: an unprotected active Runtime rejects before
             // any frozen coordinate is published. The same lifecycle mutex also
@@ -363,11 +359,13 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
                 "cannot renew a Session realization lease that is not installed",
             )
         };
-        self.host.authorize_worker_effect(|| Ok(self.host
+        self.host
+            .authorize_worker_effect(|| {
+                Ok(self.host
             .session_slots
-            .modify(thread, |slot| {
-                let current = slot.realization_authority.lease().cloned().ok_or_else(missing)?;
-                if !slot.renew_realization_lease(&current, lease) {
+            .modify_realization(thread, |r| {
+                let current = r.authority.lease().cloned().ok_or_else(missing)?;
+                if !r.renew_lease(&current, lease) {
                     return Err(RunError::classified(
                         "session_realization_lease_conflict",
                         "Session realization renewal is not a monotonic successor of the installed fence",
@@ -375,8 +373,11 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
                 }
                 Ok(())
             })
-            .unwrap_or_else(|| Err(missing()))))
-            .map_err(|error| RunError::classified("worker_execution_authority_denied", error.to_string()))?
+            .unwrap_or_else(|| Err(missing())))
+            })
+            .map_err(|error| {
+                RunError::classified("worker_execution_authority_denied", error.to_string())
+            })?
     }
 
     async fn invalidate_session_realization_lease(
@@ -832,7 +833,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ManagedHost {
     ) -> Result<(), RunError> {
         self.host
             .session_slots
-            .update(thread, |slot| slot.tools = Some(tools));
+            .replace_frozen_with(thread, |next| next.tools = Some(tools));
         self.host.evict_session_for_rebuild(thread).await;
         Ok(())
     }
