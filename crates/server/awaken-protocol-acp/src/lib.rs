@@ -1298,13 +1298,31 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn reap_escalates_to_kill_when_the_agent_ignores_term() {
+        // C1 TERM is ignored; C2 the grace window is still open; C3 the grace
+        // expires and wait observes exit. R1 C1+C2 -> TERM only, still pending;
+        // R2 C1+C3 -> TERM then KILL, successful cleanup within the total budget.
+        // The fake performs no host IO: virtual time keeps these policy boundaries
+        // independent of Windows scheduling without changing production deadlines.
         let (process, signalled) = FakeProcess::new(false); // never exits on its own
-        let killed = Supervisor::reap(&process, std::time::Duration::from_millis(20))
-            .await
-            .unwrap();
+        let grace = std::time::Duration::from_millis(20);
+        let started = tokio::time::Instant::now();
+        let cleanup = Supervisor::reap(&process, grace);
+        tokio::pin!(cleanup);
+        tokio::select! {
+            biased;
+            result = &mut cleanup => panic!("R1 cleanup completed before grace: {result:?}"),
+            () = tokio::time::sleep(grace / 2) => {}
+        }
+        assert_eq!(signalled.lock().unwrap().as_slice(), &[pc::Signal::Term]);
+        let killed = cleanup.await.unwrap();
         assert!(killed, "an unresponsive agent must be escalated to SIGKILL");
+        assert!(started.elapsed() >= grace, "R2 must retain the TERM grace");
+        assert!(
+            started.elapsed() < grace * 4,
+            "R2 must precede the total deadline"
+        );
         assert_eq!(
             signalled.lock().unwrap().as_slice(),
             &[pc::Signal::Term, pc::Signal::Kill]
