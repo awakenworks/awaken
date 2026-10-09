@@ -4,6 +4,9 @@
 //! Process-local credential realization capabilities.
 
 use super::*;
+use awaken_credential_contract::{
+    ACP_CREDENTIAL_CONSUMER_PREFIX, CredentialRealizationCapabilities, CredentialRealizationProfile,
+};
 use awaken_dispatch_contract::{
     HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
 };
@@ -57,7 +60,7 @@ pub(crate) fn acp_mcp_client_injection_capabilities(
     >,
     cli: &str,
     http_transport: bool,
-) -> Option<awaken_credential_contract::CredentialRealizationCapabilities> {
+) -> Option<CredentialRealizationCapabilities> {
     use awaken_credential_contract::CredentialRealizationKind;
     use awaken_runtime_contract::PlaintextBoundary;
 
@@ -68,18 +71,14 @@ pub(crate) fn acp_mcp_client_injection_capabilities(
     if !policy.admits_mcp_client_credential(cli, delivery, http_transport) {
         return None;
     }
-    let holder =
-        awaken_credential_contract::CredentialRealizationProfile::self_hosted_acp().mcp_holder;
+    let holder = CredentialRealizationProfile::self_hosted_acp().mcp_holder;
     let mut capabilities = materializer
         .realization_capabilities(holder, CredentialRealizationKind::ProcessProtocolField);
     if capabilities.is_empty() {
         return None;
     }
     capabilities.extension_consumers.insert(
-        format!(
-            "{}acp:{cli}",
-            awaken_credential_contract::ACP_CREDENTIAL_CONSUMER_PREFIX
-        ),
+        format!("{}acp:{cli}", ACP_CREDENTIAL_CONSUMER_PREFIX),
         [ACP_MCP_CLIENT_INJECTION_MATERIAL_TYPE.to_string()]
             .into_iter()
             .collect(),
@@ -126,7 +125,7 @@ impl SharedHost {
     /// one declaration; neither may infer custody from only the Native adapter.
     pub(crate) fn local_credential_realization_capabilities(
         &self,
-    ) -> awaken_credential_contract::CredentialRealizationCapabilities {
+    ) -> CredentialRealizationCapabilities {
         let mut profiles = vec![
             self.agent
                 .inference_routing
@@ -145,13 +144,10 @@ impl SharedHost {
             // Repository credentials are consumed only by the Sandbox Git
             // helper protocol. This is a separate installed adapter profile,
             // not a widening of WorkerRelay custody.
-            profiles.push(
-                materializer.realization_capabilities(
-                    awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
-                        .resource_holder,
-                    awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField,
-                ),
-            );
+            profiles.push(materializer.realization_capabilities(
+                CredentialRealizationProfile::self_hosted_native().resource_holder,
+                awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField,
+            ));
             if let Some(acp) = &self.exec.acp {
                 let policy = acp.adapter_policy();
                 let configured = self
@@ -181,7 +177,7 @@ impl SharedHost {
                 }
             }));
         }
-        awaken_credential_contract::CredentialRealizationCapabilities::alternatives(profiles)
+        CredentialRealizationCapabilities::alternatives(profiles)
     }
 }
 

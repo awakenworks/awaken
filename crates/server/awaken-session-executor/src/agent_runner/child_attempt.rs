@@ -6,6 +6,7 @@
 //! selection: the Native plugin composition, the ACP/remote attempt router, and
 //! the credential realization bound to a directly executed child.
 
+use awaken_credential_contract as credential;
 use std::sync::Arc;
 
 use awaken_runtime_contract::activation::RunActivation;
@@ -103,8 +104,7 @@ pub(crate) fn configure_child_native_runtime(
 pub(crate) struct ChildExecutionAdapters {
     pub(crate) acp: Option<ChildAcpExecutorFactory>,
     pub(crate) remote: Option<Arc<dyn RunAttemptExecutor>>,
-    pub(crate) credential_capabilities:
-        awaken_credential_contract::CredentialRealizationCapabilities,
+    pub(crate) credential_capabilities: credential::CredentialRealizationCapabilities,
     /// The same host-configured plugin instance shape used by a root Native Run.
     /// The child snapshot still decides whether the plugin is selected.
     pub(crate) web_search: Option<Arc<awaken_ext_builtin_tools::WebSearchPlugin>>,
@@ -134,22 +134,21 @@ pub(crate) type ChildAcpExecutorFactory = Arc<
 
 struct ChildCredentialRecorder {
     ownership: Arc<dyn awaken_runtime_contract::AttemptOwnershipVerifier>,
-    bindings: Vec<awaken_credential_contract::AttemptCredentialBinding>,
+    bindings: Vec<credential::AttemptCredentialBinding>,
 }
 
 #[async_trait::async_trait]
-impl awaken_credential_contract::CredentialRealizationRecorder for ChildCredentialRecorder {
+impl credential::CredentialRealizationRecorder for ChildCredentialRecorder {
     async fn record(
         &self,
-        receipt: awaken_credential_contract::CredentialRealizationReceipt,
-    ) -> Result<(), awaken_credential_contract::CredentialRealizationRecordError> {
-        self.ownership.verify_current().await.map_err(|error| {
-            awaken_credential_contract::CredentialRealizationRecordError(error.to_string())
-        })?;
-        awaken_credential_contract::verify_credential_realization_receipt(&self.bindings, &receipt)
-            .map_err(|error| {
-                awaken_credential_contract::CredentialRealizationRecordError(error.to_string())
-            })
+        receipt: credential::CredentialRealizationReceipt,
+    ) -> Result<(), credential::CredentialRealizationRecordError> {
+        self.ownership
+            .verify_current()
+            .await
+            .map_err(|error| credential::CredentialRealizationRecordError(error.to_string()))?;
+        credential::verify_credential_realization_receipt(&self.bindings, &receipt)
+            .map_err(|error| credential::CredentialRealizationRecordError(error.to_string()))
     }
 }
 
@@ -251,7 +250,7 @@ pub(super) fn bind_direct_child_credentials(
     let now_unix_ms = awaken_time::WallClockExt::now_ms(clock.as_ref());
     let holder = crate::host::self_hosted_inference_holder(activation)
         .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
-    let bindings = awaken_credential_contract::compile_candidate_credential_bindings(
+    let bindings = credential::compile_candidate_credential_bindings(
         &candidates,
         holder.as_ref(),
         &adapters.credential_capabilities,
@@ -260,15 +259,14 @@ pub(super) fn bind_direct_child_credentials(
     )
     .map_err(|error| AgentRunError::Configuration(error.to_string()))?;
     if !bindings.is_empty() {
-        context = context.with_credential_realization(
-            awaken_credential_contract::AttemptCredentialRealization::new(
+        context =
+            context.with_credential_realization(credential::AttemptCredentialRealization::new(
                 bindings.clone(),
                 Arc::new(ChildCredentialRecorder {
                     ownership,
                     bindings,
                 }),
-            ),
-        );
+            ));
     }
     Ok(context)
 }

@@ -8,6 +8,7 @@
 //! caller's `finish_step` projection is identical either way — ACP and A2A brains
 //! are peer `RunAttemptExecutor` implementations, not parallel lifecycle paths.
 
+use awaken_credential_contract as credential;
 use std::sync::Arc;
 
 use crate::host::{HostError, SessionCtx, SharedHost};
@@ -27,7 +28,7 @@ static LOCAL_ATTEMPT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::At
 struct LocalAttemptAuthority {
     session: std::sync::Weak<SessionCtx>,
     run_id: awaken_agent_contract::agent::run::Id,
-    bindings: Vec<awaken_credential_contract::AttemptCredentialBinding>,
+    bindings: Vec<credential::AttemptCredentialBinding>,
 }
 
 impl LocalAttemptAuthority {
@@ -53,22 +54,18 @@ impl awaken_runtime_contract::AttemptOwnershipVerifier for LocalAttemptAuthority
 }
 
 #[async_trait::async_trait]
-impl awaken_credential_contract::CredentialRealizationRecorder for LocalAttemptAuthority {
+impl credential::CredentialRealizationRecorder for LocalAttemptAuthority {
     async fn record(
         &self,
-        receipt: awaken_credential_contract::CredentialRealizationReceipt,
-    ) -> Result<(), awaken_credential_contract::CredentialRealizationRecordError> {
+        receipt: credential::CredentialRealizationReceipt,
+    ) -> Result<(), credential::CredentialRealizationRecordError> {
         if !self.is_current() {
-            return Err(
-                awaken_credential_contract::CredentialRealizationRecordError(
-                    "process-local attempt lost ownership before receipt".into(),
-                ),
-            );
+            return Err(credential::CredentialRealizationRecordError(
+                "process-local attempt lost ownership before receipt".into(),
+            ));
         }
-        awaken_credential_contract::verify_credential_realization_receipt(&self.bindings, &receipt)
-            .map_err(|error| {
-                awaken_credential_contract::CredentialRealizationRecordError(error.to_string())
-            })
+        credential::verify_credential_realization_receipt(&self.bindings, &receipt)
+            .map_err(|error| credential::CredentialRealizationRecordError(error.to_string()))
     }
 }
 
@@ -494,7 +491,7 @@ impl SharedHost {
                     )));
                 }
             };
-            let compiled = awaken_credential_contract::compile_candidate_credential_bindings(
+            let compiled = credential::compile_candidate_credential_bindings(
                 &[*candidate],
                 holder.as_ref(),
                 &installed,
@@ -525,7 +522,7 @@ impl SharedHost {
         context = context.with_ownership(authority.clone());
         if !bindings.is_empty() {
             context = context.with_credential_realization(
-                awaken_credential_contract::AttemptCredentialRealization::new(bindings, authority),
+                credential::AttemptCredentialRealization::new(bindings, authority),
             );
         }
         // Route this attempt's inference through the run's effective model,
