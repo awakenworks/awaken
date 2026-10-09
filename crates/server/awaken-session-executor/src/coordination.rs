@@ -82,7 +82,7 @@ impl CoordinationEndpoint {
         source_run_id: &str,
     ) -> Result<RunClaim, ToolError> {
         let claim = slots
-            .read(session_id, |slot| slot.dispatch_claim.clone())
+            .read_run(session_id, |run| run.dispatch_claim.clone())
             .flatten()
             .ok_or_else(|| {
                 ToolError::DefinitiveFailure(
@@ -937,7 +937,7 @@ mod tests {
             slots: slots.clone(),
         };
         let factory = claimed_model_request_gate_factory(endpoint.clone(), "session");
-        slots.update("session", |slot| slot.dispatch_claim = Some(parent.clone()));
+        slots.update_run("session", |run| run.dispatch_claim = Some(parent.clone()));
         assert_eq!(
             factory(&child)
                 .admit_model_request(ModelRequestAdmissionRequest {
@@ -949,7 +949,7 @@ mod tests {
             ModelRequestAdmission::Admit,
             "R1 child ignores parent slot"
         );
-        slots.update("session", |slot| slot.dispatch_claim = Some(child.clone()));
+        slots.update_run("session", |run| run.dispatch_claim = Some(child.clone()));
         assert_eq!(
             factory(&parent)
                 .admit_model_request(ModelRequestAdmissionRequest {

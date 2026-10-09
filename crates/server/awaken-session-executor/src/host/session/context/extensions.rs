@@ -123,20 +123,17 @@ pub(super) async fn skills(
         env.clone(),
         authored_skills_subdir,
         skill_source_roots.as_deref(),
-        content_delivery
-            == crate::frozen_runtime_projection::ManagedContentDelivery::ManagedFilesystem,
+        content_delivery == crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem,
         session_dispatch,
     )
     .await
     .map_err(HostError::internal)?
     {
-        if content_delivery
-            == crate::frozen_runtime_projection::ManagedContentDelivery::ManagedFilesystem
-        {
+        if content_delivery == crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem {
             let prompt = crate::skill_prompt::filesystem_skill_prompt(registry.as_ref())
                 .map_err(HostError::internal)?;
             host.session_slots
-                .update(thread, |slot| slot.skill_prompt = prompt);
+                .update_realization(thread, |r| r.skill_prompt = prompt);
         } else {
             if session_dispatch {
                 return Err(HostError::bad_request(
@@ -180,7 +177,7 @@ pub(super) async fn skills(
         skill_registry = Some(registry);
     } else {
         host.session_slots
-            .update(thread, |slot| slot.skill_prompt = None);
+            .update_realization(thread, |r| r.skill_prompt = None);
     }
     Ok(SkillWiring {
         runtime,

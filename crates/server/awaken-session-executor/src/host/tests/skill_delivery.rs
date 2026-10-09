@@ -329,26 +329,28 @@ async fn direct_on_tool_use_brain_skill_adapter_keeps_the_environment_absent() {
         crate::lazy_sandbox::DeferredSandboxExecutor::new(Arc::downgrade(&host), thread),
     );
     host.session_slots.update(thread, |slot| {
-        slot.tools = Some(
-            awaken_session_configuration_contract::SessionToolConfiguration {
-                toolsets: vec![ToolsetPolicy {
-                    source: ToolsetSource::Agent,
-                    default: ToolExecutionPolicy {
-                        enabled: false,
-                        permission: ToolPermissionRequirement::AlwaysAllow,
-                    },
-                    overrides: vec![ToolPolicyOverride::new(
-                        "web_fetch",
-                        ToolExecutionPolicy {
-                            enabled: true,
+        slot.replace_frozen_with(|next| {
+            next.tools = Some(
+                awaken_session_configuration_contract::SessionToolConfiguration {
+                    toolsets: vec![ToolsetPolicy {
+                        source: ToolsetSource::Agent,
+                        default: ToolExecutionPolicy {
+                            enabled: false,
                             permission: ToolPermissionRequirement::AlwaysAllow,
                         },
-                    )],
-                }],
-                client_tools: Vec::new(),
-            },
-        );
-        slot.deferred_executor = Some(deferred);
+                        overrides: vec![ToolPolicyOverride::new(
+                            "web_fetch",
+                            ToolExecutionPolicy {
+                                enabled: true,
+                                permission: ToolPermissionRequirement::AlwaysAllow,
+                            },
+                        )],
+                    }],
+                    client_tools: Vec::new(),
+                },
+            )
+        });
+        slot.run.deferred_executor = Some(deferred);
     });
 
     let result = host
@@ -478,7 +480,7 @@ async fn managed_session_ignores_unbound_host_skill_sources() {
     );
     assert_eq!(
         host.session_slots
-            .read("managed-no-frozen-skill", |slot| slot.skill_prompt.clone())
+            .read_realization("managed-no-frozen-skill", |r| r.skill_prompt.clone())
             .flatten(),
         None,
         "A1/E1 no unbound filesystem Skill prompt"
@@ -602,8 +604,8 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
     );
     let provisional_metadata = host
         .session_slots
-        .read("deferred-managed-filesystem-skill", |slot| {
-            slot.skill_prompt.clone()
+        .read_realization("deferred-managed-filesystem-skill", |r| {
+            r.skill_prompt.clone()
         })
         .flatten()
         .expect("L9/E1 projected Skill metadata");
@@ -646,8 +648,8 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
     );
     let deferred = host
         .session_slots
-        .read("deferred-managed-filesystem-skill", |slot| {
-            slot.deferred_executor.clone()
+        .read_run("deferred-managed-filesystem-skill", |run| {
+            run.deferred_executor.clone()
         })
         .flatten()
         .unwrap();
@@ -696,8 +698,8 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
     );
     assert_eq!(
         host.session_slots
-            .read("deferred-managed-filesystem-skill", |slot| {
-                slot.skill_prompt.clone()
+            .read_realization("deferred-managed-filesystem-skill", |r| {
+                r.skill_prompt.clone()
             })
             .flatten(),
         Some(provisional_metadata),

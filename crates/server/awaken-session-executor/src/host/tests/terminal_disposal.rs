@@ -136,10 +136,10 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         "adoption-conflict" => {
             // Explicit owner input: an existing binding was adopted, but no
             // new Adopt receipt was read. Do not fabricate durable identity.
-            host.session_slots.update("t-end", |slot| {
+            host.session_slots.update_realization("t-end", |r| {
                 let crate::session_slot::SessionEnvironmentOwner::Preparing(
                     crate::session_slot::SessionEnvironmentPreparation::Candidate(current),
-                ) = &mut slot.environment_owner
+                ) = &mut r.environment_owner
                 else {
                     panic!("U4 Candidate input")
                 };
@@ -206,7 +206,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         .expect("U install Managed provenance");
         let lifecycle = host
             .session_slots
-            .read("t-end", |slot| slot.lifecycle.clone())
+            .read_realization("t-end", |r| r.lifecycle.clone())
             .unwrap();
         let _lifecycle = lifecycle.lock().await;
         host.retire_session_environment_for_revocation("t-end")
@@ -294,8 +294,8 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     );
     assert!(
         host.session_slots
-            .read("t-end", |slot| {
-                matches!(&slot.environment_owner, crate::session_slot::SessionEnvironmentOwner::Retiring(retiring)
+            .read_realization("t-end", |r| {
+                matches!(&r.environment_owner, crate::session_slot::SessionEnvironmentOwner::Retiring(retiring)
                     if Arc::ptr_eq(&retiring.owned.environment(), &env)
                         && retiring.owned.environment().lifecycle().handle() == env.lifecycle().handle())
             })
@@ -307,8 +307,8 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         "U no terminal publication"
     );
     if initial == "uncommitted" || initial == "lost-response" {
-        assert!(host.session_slots.read("t-end", |slot| matches!(
-            &slot.environment_owner,
+        assert!(host.session_slots.read_realization("t-end", |r| matches!(
+            &r.environment_owner,
             crate::session_slot::SessionEnvironmentOwner::Retiring(crate::session_slot::RetiringSessionEnvironment {
                 owned: crate::session_slot::RetiringEnvironmentOwner::Unbound(candidate), ..
             }) if candidate.durable_identity().is_none()
@@ -342,7 +342,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     assert!(
         !host
             .session_slots
-            .read("t-end", |slot| slot.runtime.is_some())
+            .read_run("t-end", |run| run.runtime.is_some())
             .unwrap_or(false),
         "terminal cleanup evicts the cached ctx"
     );
@@ -581,7 +581,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         );
         assert!(matches!(
             host.session_slots
-                .read(thread, |slot| slot.environment_owner.clone()),
+                .read_realization(thread, |r| r.environment_owner.clone()),
             Some(crate::session_slot::SessionEnvironmentOwner::Restoring(
                 crate::session_slot::SessionEnvironmentRestoration::Awaiting { request }
             )) if request == restore_target
@@ -625,17 +625,17 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             "worker-expire" => {
                 worker.current.lock().unwrap().as_mut().unwrap().1 = std::time::Duration::ZERO
             }
-            "session-revoke" => host.session_slots.update(thread, |slot| {
-                slot.realization_authority =
+            "session-revoke" => host.session_slots.update_realization(thread, |r| {
+                r.authority =
                     crate::session_slot::SessionRealizationAuthority::Closed(Some(lease.clone()));
             }),
-            "replace" | "renew" => host.session_slots.update(thread, |slot| {
+            "replace" | "renew" => host.session_slots.update_realization(thread, |r| {
                 let mut next = lease.clone();
                 if change == "replace" {
                     next.epoch += 1;
                 }
                 next.expires_at_unix_ms += 10_000;
-                slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+                r.authority = crate::session_slot::SessionRealizationAuthority::Live(
                     crate::session_slot::test_observed_lease(next),
                 );
             }),
@@ -652,7 +652,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
             );
         }
         assert!(
-            matches!(host.session_slots.read(thread, |slot| slot.environment_owner.clone()),
+            matches!(host.session_slots.read_realization(thread, |r| r.environment_owner.clone()),
         Some(crate::session_slot::SessionEnvironmentOwner::Restoring(
             crate::session_slot::SessionEnvironmentRestoration::Awaiting { request }
         )) if request == restore_target),
@@ -669,8 +669,8 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         events.lock().unwrap().truncate(1);
         *worker.current.lock().unwrap() =
             Some((worker_fence.clone(), std::time::Duration::from_secs(60)));
-        host.session_slots.update(thread, |slot| {
-            slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+        host.session_slots.update_realization(thread, |r| {
+            r.authority = crate::session_slot::SessionRealizationAuthority::Live(
                 crate::session_slot::test_observed_lease(lease.clone()),
             );
         });
@@ -714,7 +714,7 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         assert!(
             matches!(
                 host.session_slots
-                    .read(thread, |slot| slot.environment_owner.clone()),
+                    .read_realization(thread, |r| r.environment_owner.clone()),
                 Some(crate::session_slot::SessionEnvironmentOwner::Restoring(
                     crate::session_slot::SessionEnvironmentRestoration::Awaiting { request }
                 )) if request == restore_target
@@ -775,14 +775,14 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
     .expect("P1-P4 install the aggregate-derived root projection");
     for child in ["terminal-retire-done", "terminal-retire-pending"] {
         host.register_thread_workspace(child, "terminal-retire-workspace");
-        host.session_slots.update(child, |slot| {
-            slot.terminal_cleanup_root = Some(session_id.into());
+        host.session_slots.update_realization(child, |r| {
+            r.terminal_cleanup_root = Some(session_id.into());
         });
     }
     let foreign = "terminal-retire-foreign";
     host.register_thread_workspace(foreign, "foreign-workspace");
-    host.session_slots.update(foreign, |slot| {
-        slot.terminal_cleanup_root = Some("replacement-root".into());
+    host.session_slots.update_realization(foreign, |r| {
+        r.terminal_cleanup_root = Some("replacement-root".into());
     });
 
     let mut cleanup = awaken_session_state_contract::SessionCleanupOperation::default();
@@ -868,7 +868,8 @@ async fn terminal_quiescence_never_materializes_a_cold_environment() {
     assert!(
         host.session_slots
             .read("cold-terminal", |slot| {
-                slot.runtime.is_none() && !slot.environment_owner.has_local_environment()
+                slot.run.runtime.is_none()
+                    && !slot.realization.environment_owner.has_local_environment()
             })
             .unwrap_or(true),
         "terminal control may allocate a lock slot but not a Runtime or Environment projection"
@@ -1215,8 +1216,8 @@ async fn terminal_quiescence_fences_ephemeral_children_before_cold_link_enrichme
     assert!(rows.is_empty(), "R1/E4");
     assert!(
         host.session_slots
-            .read(&parent.0, |slot| slot.runtime.is_none()
-                && !slot.environment_owner.has_local_environment())
+            .read(&parent.0, |slot| slot.run.runtime.is_none()
+                && !slot.realization.environment_owner.has_local_environment())
             .unwrap_or(true),
         "R1/E3"
     );

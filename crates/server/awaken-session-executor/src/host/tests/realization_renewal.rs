@@ -335,8 +335,8 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
                 host.install_session_realization_lease("renew-race", replacement.clone())
                     .unwrap();
                 host.session_slots.update("renew-race", |slot| {
-                    slot.dispatch_claim = Some(claim.clone());
-                    slot.workspace = Some("new-workspace".into());
+                    slot.run.dispatch_claim = Some(claim.clone());
+                    slot.replace_frozen_with(|next| next.workspace = Some("new-workspace".into()));
                 });
             }
             gate.add_permits(1);
@@ -355,9 +355,9 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
             } else {
                 assert_eq!(
                     host.session_slots.read("renew-race", |slot| (
-                        slot.realization_authority.lease().cloned(),
-                        slot.dispatch_claim.clone(),
-                        slot.workspace.clone()
+                        slot.realization.authority.lease().cloned(),
+                        slot.run.dispatch_claim.clone(),
+                        slot.frozen.workspace.clone()
                     )),
                     Some((Some(replacement), Some(claim), Some("new-workspace".into()))),
                     "R1 {failure:?}/{changed}"
@@ -435,10 +435,7 @@ async fn renewal_revocation_rechecks_authority_after_realization_admission() {
         );
         assert_eq!(
             host.session_slots
-                .read("renew-revoke", |slot| slot
-                    .realization_authority
-                    .lease()
-                    .cloned())
+                .read_realization("renew-revoke", |r| r.authority.lease().cloned())
                 .flatten(),
             replaced.then_some(next),
             "R4 exact replacement protection"
@@ -490,9 +487,8 @@ async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
         } else {
             crate::session_slot::test_observed_lease(lease)
         };
-        host.session_slots.update(session_id, |slot| {
-            slot.realization_authority =
-                crate::session_slot::SessionRealizationAuthority::Live(proof);
+        host.session_slots.update_realization(session_id, |r| {
+            r.authority = crate::session_slot::SessionRealizationAuthority::Live(proof);
         });
     }
 
@@ -678,8 +674,8 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
                 epoch: 1,
                 expires_at_unix_ms: now.saturating_add(90_000),
             };
-            host.session_slots.update(&session, |slot| {
-                slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+            host.session_slots.update_realization(&session, |r| {
+                r.authority = crate::session_slot::SessionRealizationAuthority::Live(
                     crate::session_slot::test_expired_observed_lease(lease.clone()),
                 );
             });
@@ -704,16 +700,16 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
             (0..crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS)
                 .map(|index| {
                     let session = format!("deadline-mutex-{index:02}");
-                    host.session_slots.read(&session, |slot| serde_json::json!({
+                    host.session_slots.read_realization(&session, |r| serde_json::json!({
                     "session": session,
-                    "identity": format!("{:p}", Arc::as_ptr(&slot.realization)),
-                    "lease": serde_json::to_string(&match &slot.realization_authority {
+                    "identity": format!("{:p}", Arc::as_ptr(&r.realization)),
+                    "lease": serde_json::to_string(&match &r.authority {
                         crate::session_slot::SessionRealizationAuthority::Live(proof) => Some(&proof.lease),
                         crate::session_slot::SessionRealizationAuthority::Closed(lease) => lease.as_ref(),
                         crate::session_slot::SessionRealizationAuthority::Uninstalled => None,
                     }).unwrap(),
-                    "closed": slot.realization_authority.is_closed(),
-                    "locked": slot.realization.try_lock().is_err(),
+                    "closed": r.authority.is_closed(),
+                    "locked": r.realization.try_lock().is_err(),
                 })).unwrap_or(serde_json::Value::Null)
                 })
                 .collect::<Vec<_>>()
@@ -763,8 +759,8 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
             let before: Vec<_> = (0..SESSION_COUNT)
                 .map(|index| {
                     host.session_slots
-                        .read(&format!("deadline-mutex-{index:02}"), |slot| {
-                            (slot.realization.clone(), slot.realization_authority.clone())
+                        .read_realization(&format!("deadline-mutex-{index:02}"), |r| {
+                            (r.realization.clone(), r.authority.clone())
                         })
                         .unwrap()
                 })
@@ -783,11 +779,11 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
                 host.session_slots
                     .read(&format!("deadline-mutex-{index:02}"), |slot| {
                         assert!(
-                            Arc::ptr_eq(&slot.realization, identity),
+                            Arc::ptr_eq(&slot.realization.realization, identity),
                             "M4 exact slot is retained"
                         );
                         assert_eq!(
-                            &slot.realization_authority, lease,
+                            &slot.realization.authority, lease,
                             "M4 cancellation cannot revoke a waiting projection"
                         );
                     })
@@ -896,8 +892,8 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
             },
         };
         if expired {
-            host.session_slots.update(rule, |slot| {
-                slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+            host.session_slots.update_realization(rule, |r| {
+                r.authority = crate::session_slot::SessionRealizationAuthority::Live(
                     crate::session_slot::test_expired_observed_lease(old.clone()),
                 );
             });
@@ -957,7 +953,7 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
             host.install_session_realization_lease(rule, newer.clone())
                 .unwrap();
             host.session_slots
-                .update(rule, |slot| slot.dispatch_claim = Some(claim.clone()));
+                .update_run(rule, |run| run.dispatch_claim = Some(claim.clone()));
         }
         if installation.is_none() {
             gate.add_permits(1);
@@ -969,8 +965,8 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
             .expect("renewal task did not panic");
         let observed = host.session_slots.read(rule, |slot| {
             (
-                slot.realization_authority.lease().cloned(),
-                slot.dispatch_claim.clone(),
+                slot.realization.authority.lease().cloned(),
+                slot.run.dispatch_claim.clone(),
             )
         });
         let preserved = if replacement == "removed" {

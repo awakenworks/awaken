@@ -42,11 +42,11 @@ impl ManagedHost {
             .session_slots
             .acquire_realization(command.session_id.as_str())
             .await;
-        let lifecycle_lock = self
+        let _lifecycle = self
             .host
             .session_slots
-            .update(command.session_id.as_str(), |slot| slot.lifecycle.clone());
-        let _lifecycle = lifecycle_lock.lock().await;
+            .lock_lifecycle(command.session_id.as_str())
+            .await;
         let mut current_lease = self
             .host
             .authorize_terminal_cleanup_lease(&command.session_id, lease)
@@ -72,10 +72,10 @@ impl ManagedHost {
         let (state, resolved_resources) = self
             .host
             .session_slots
-            .read(command.session_id.as_str(), |slot| {
+            .read_realization(command.session_id.as_str(), |r| {
                 (
-                    slot.terminal_environment_state.clone(),
-                    slot.resource_transition
+                    r.terminal_environment_state.clone(),
+                    r.resource_transition
                         .as_ref()
                         .map(|transition| transition.previous().resources.clone()),
                 )

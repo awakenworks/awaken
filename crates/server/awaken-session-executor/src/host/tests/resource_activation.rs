@@ -332,7 +332,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
 
     let bindings = host
         .session_slots
-        .read("semantic-memory", |slot| slot.memory_bindings.clone())
+        .read_realization("semantic-memory", |r| r.memory_bindings.clone())
         .unwrap();
     let tools = crate::session_memory_tools::SessionMemoryTools::new(bindings).unwrap();
     let invoke = |tool_id: &str, arguments: serde_json::Value| {
@@ -420,8 +420,8 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         Some("v2"),
         "M4 never clobbers"
     );
-    host.session_slots.update("semantic-memory", |slot| {
-        slot.runtime = None;
+    host.session_slots.update_run("semantic-memory", |run| {
+        run.runtime = None;
     });
     let rebuilt = host
         .ctx_for("semantic-memory", Some("assistant"))
@@ -429,9 +429,9 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         .expect("M6 rebuilds from the frozen Session projection");
     assert_eq!(
         host.session_slots
-            .read("semantic-memory", |slot| slot.content_delivery)
+            .read_realization("semantic-memory", |r| r.content_delivery)
             .flatten(),
-        Some(crate::frozen_runtime_projection::ManagedContentDelivery::SemanticTools),
+        Some(crate::frozen_inputs::ManagedContentDelivery::SemanticTools),
         "M6 keeps one delivery path"
     );
     assert!(
@@ -1054,8 +1054,8 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     let mut terminal_projection = ordinary_projection.clone();
     let retained = host
         .session_slots
-        .read(session_id, |slot| {
-            slot.environment_owner.terminal_bound_environment()
+        .read_realization(session_id, |r| {
+            r.environment_owner.terminal_bound_environment()
         })
         .flatten()
         .expect("P1 retained exact Environment identity");
@@ -1145,16 +1145,21 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         // publication must reuse it under the current terminal assignment, without
         // reopening ordinary execution. A cold Host does not reproduce this shape.
         host.session_slots.update(session_id, |slot| {
-            let owned = slot.environment_owner.terminal_bound_environment().unwrap();
-            slot.environment_owner = crate::session_slot::SessionEnvironmentOwner::Retiring(
-                crate::session_slot::RetiringSessionEnvironment {
-                    cause: crate::session_slot::SessionEnvironmentRetirementCause::Terminal {
-                        effect_id: "terminal-source-preparation".into(),
+            let owned = slot
+                .realization
+                .environment_owner
+                .terminal_bound_environment()
+                .unwrap();
+            slot.realization.environment_owner =
+                crate::session_slot::SessionEnvironmentOwner::Retiring(
+                    crate::session_slot::RetiringSessionEnvironment {
+                        cause: crate::session_slot::SessionEnvironmentRetirementCause::Terminal {
+                            effect_id: "terminal-source-preparation".into(),
+                        },
+                        owned: crate::session_slot::RetiringEnvironmentOwner::Bound(owned),
                     },
-                    owned: crate::session_slot::RetiringEnvironmentOwner::Bound(owned),
-                },
-            );
-            slot.runtime = None;
+                );
+            slot.run.runtime = None;
         });
         assert!(
             host.session_environment(session_id).await.is_none(),
@@ -1183,9 +1188,9 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             ordinary.is_err(),
             "P6 terminal retirement remains hidden from ordinary live IO"
         );
-        host.session_slots.update(session_id, |slot| {
+        host.session_slots.update_realization(session_id, |r| {
             if let crate::session_slot::SessionEnvironmentOwner::Retiring(retiring) =
-                &mut slot.environment_owner
+                &mut r.environment_owner
             {
                 retiring.cause =
                     crate::session_slot::SessionEnvironmentRetirementCause::RealizationRevocation;
@@ -1195,8 +1200,8 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         });
         let before = host
             .session_slots
-            .read(session_id, |slot| {
-                slot.environment_owner.terminal_bound_environment().unwrap()
+            .read_realization(session_id, |r| {
+                r.environment_owner.terminal_bound_environment().unwrap()
             })
             .unwrap();
         managed
@@ -1207,15 +1212,15 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             .expect("P7 fresh wrapper resumes exact terminal publication");
         let after = host
             .session_slots
-            .read(session_id, |slot| {
+            .read_realization(session_id, |r| {
                 assert!(
                     matches!(
-                        slot.environment_owner,
+                        r.environment_owner,
                         crate::session_slot::SessionEnvironmentOwner::Retiring(_)
                     ),
                     "P7 not Resident"
                 );
-                slot.environment_owner.terminal_bound_environment().unwrap()
+                r.environment_owner.terminal_bound_environment().unwrap()
             })
             .unwrap();
         assert!(
@@ -1309,10 +1314,8 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     );
     assert!(
         host.session_slots
-            .read(session_id, |slot| {
-                slot.environment_owner
-                    .terminal_bound_environment()
-                    .is_some()
+            .read_realization(session_id, |r| {
+                r.environment_owner.terminal_bound_environment().is_some()
             })
             .unwrap_or(false),
         "P1-P2/P5 exact physical source survives until root cleanup"

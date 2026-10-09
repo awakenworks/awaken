@@ -55,7 +55,7 @@ pub(crate) fn resource_mount_is_create_time(mount: &pc::MountRequirement) -> boo
 /// overlay so authored mounts cannot bypass the same consistency policy.
 fn project_memory_write_consistency(
     mounts: &mut [pc::MountRequirement],
-    environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+    environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
 ) {
     for mount in mounts {
         if let pc::MountSource::MemoryStore {
@@ -75,7 +75,7 @@ fn project_memory_write_consistency(
 /// so a Worker cannot claim requirements different from those it materializes.
 pub(crate) fn project_environment(
     environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
-) -> crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection {
+) -> crate::frozen_inputs::FrozenEnvironmentInputs {
     let network = match &environment.network {
         awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted => {
             pc::NetworkPolicy::Unrestricted
@@ -114,7 +114,7 @@ pub(crate) fn project_environment(
             reference: image.clone(),
         });
     }
-    crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection {
+    crate::frozen_inputs::FrozenEnvironmentInputs {
         fingerprint: environment.config_fingerprint.clone(),
         network,
         packages,
@@ -239,7 +239,7 @@ fn sandbox_spec_from_projection(
     scope: &str,
     mounts: Vec<pc::MountRequirement>,
     env: Vec<pc::EnvVar>,
-    environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+    environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
     provider_enforces_network_isolation: bool,
 ) -> pc::SandboxSpec {
     let projected_network = environment
@@ -332,9 +332,8 @@ pub(crate) struct ProjectedSandboxLayout<'a> {
     pub(crate) has_repositories: bool,
     pub(crate) baseline_mounts: Option<&'a [pc::MountRequirement]>,
     pub(crate) baseline_env: Option<&'a [pc::EnvVar]>,
-    pub(crate) content_delivery: Option<crate::frozen_runtime_projection::ManagedContentDelivery>,
-    pub(crate) environment:
-        Option<&'a crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+    pub(crate) content_delivery: Option<crate::frozen_inputs::ManagedContentDelivery>,
+    pub(crate) environment: Option<&'a crate::frozen_inputs::FrozenEnvironmentInputs>,
     pub(crate) network_isolation: bool,
 }
 
@@ -464,23 +463,22 @@ impl SharedHost {
     ) -> pc::SandboxSpec {
         let (create_time_mounts, has_repositories) = self
             .session_slots
-            .read(thread, |slot| {
-                let create_time_mounts = slot
+            .read_realization(thread, |r| {
+                let create_time_mounts = r
                     .resources
                     .mounts
                     .iter()
                     .filter(|mount| resource_mount_is_create_time(mount))
                     .cloned()
                     .collect();
-                let has_repositories =
-                    slot.resource_transition.as_ref().is_some_and(|transition| {
-                        transition.desired().resources.inputs().iter().any(|input| {
-                            matches!(
-                                input.source,
-                                awaken_session_resource_contract::ResolvedInputSource::Repository { .. }
-                            )
-                        })
-                    });
+                let has_repositories = r.resource_transition.as_ref().is_some_and(|transition| {
+                    transition.desired().resources.inputs().iter().any(|input| {
+                        matches!(
+                            input.source,
+                            awaken_session_resource_contract::ResolvedInputSource::Repository { .. }
+                        )
+                    })
+                });
                 (create_time_mounts, has_repositories)
             })
             .unwrap_or_default();
@@ -531,8 +529,9 @@ impl SharedHost {
     ) -> pc::SandboxSpec {
         let environment = self
             .session_slots
-            .read(thread, |slot| slot.environment_projection.clone())
-            .flatten();
+            .frozen(thread)
+            .environment_projection
+            .clone();
         let mounts = resources
             .inputs()
             .iter()
@@ -588,9 +587,9 @@ impl SharedHost {
             .session_slots
             .read(thread, |slot| {
                 (
-                    slot.baseline.clone(),
-                    slot.content_delivery,
-                    slot.environment_projection.clone(),
+                    slot.frozen.baseline.clone(),
+                    slot.realization.content_delivery,
+                    slot.frozen.environment_projection.clone(),
                 )
             })
             .unwrap_or_default();
@@ -671,7 +670,7 @@ impl SharedHost {
     #[cfg(test)]
     pub(crate) fn register_thread_resources(&self, thread: &str, staged: StagedResources) {
         self.session_slots
-            .update(thread, |slot| slot.resources = staged);
+            .update_realization(thread, |r| r.resources = staged);
     }
 
     pub(crate) fn register_thread_resource_manifest(
@@ -680,7 +679,7 @@ impl SharedHost {
         manifest: awaken_session_resource_contract::SessionResourceManifest,
     ) {
         self.session_slots
-            .update(thread, |slot| slot.manifest = Some(manifest));
+            .update_realization(thread, |r| r.manifest = Some(manifest));
     }
 
     pub(crate) fn thread_resource_manifest(
@@ -688,13 +687,13 @@ impl SharedHost {
         thread: &str,
     ) -> Option<awaken_session_resource_contract::SessionResourceManifest> {
         self.session_slots
-            .read(thread, |slot| slot.manifest.clone())
+            .read_realization(thread, |r| r.manifest.clone())
             .flatten()
     }
 
     pub(crate) fn thread_resources_snapshot(&self, thread: &str) -> StagedResources {
         self.session_slots
-            .read(thread, |slot| slot.resources.clone())
+            .read_realization(thread, |r| r.resources.clone())
             .unwrap_or_default()
     }
 
@@ -704,7 +703,7 @@ impl SharedHost {
     #[cfg(test)]
     pub(crate) fn thread_repository_activations(&self, thread: &str) -> Vec<RepositoryActivation> {
         self.session_slots
-            .read(thread, |slot| slot.resources.repositories.clone())
+            .read_realization(thread, |r| r.resources.repositories.clone())
             .unwrap_or_default()
     }
 
@@ -1096,7 +1095,7 @@ impl ArtifactHarvester {
         thread: &str,
     ) -> Option<awaken_dispatch_contract::RunClaim> {
         self.session_slots
-            .read(thread, |slot| slot.dispatch_claim.clone())
+            .read_run(thread, |run| run.dispatch_claim.clone())
             .flatten()
     }
 
@@ -1185,10 +1184,7 @@ impl ArtifactHarvester {
         let workspace_owner = terminal_effect
             .map(|effect| effect.command.session_id.as_str())
             .unwrap_or(thread);
-        let workspace = self
-            .session_slots
-            .read(workspace_owner, |slot| slot.workspace.clone())
-            .flatten();
+        let workspace = self.session_slots.frozen(workspace_owner).workspace.clone();
         let workspace = match (workspace, terminal_effect) {
             (Some(workspace), _) => workspace,
             (None, Some(_)) => {
@@ -1210,7 +1206,7 @@ impl ArtifactHarvester {
         }
         let projected_environment = exact_environment.cloned().or_else(|| {
             self.session_slots
-                .read(thread, |slot| slot.environment_owner.resident())
+                .read_realization(thread, |r| r.environment_owner.resident())
                 .flatten()
         });
         let Some(env) = projected_environment else {
@@ -1369,14 +1365,12 @@ impl SharedHost {
 pub(crate) fn project_session_mounts(
     mut resources: Vec<awaken_provisioning_contract::MountRequirement>,
     baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
-    content_delivery: Option<crate::frozen_runtime_projection::ManagedContentDelivery>,
+    content_delivery: Option<crate::frozen_inputs::ManagedContentDelivery>,
 ) -> Vec<awaken_provisioning_contract::MountRequirement> {
     if let Some(baseline_mounts) = baseline_mounts {
         resources.extend_from_slice(baseline_mounts);
     }
-    if content_delivery
-        == Some(crate::frozen_runtime_projection::ManagedContentDelivery::SemanticTools)
-    {
+    if content_delivery == Some(crate::frozen_inputs::ManagedContentDelivery::SemanticTools) {
         resources.retain(|mount| {
             !matches!(
                 mount.source,

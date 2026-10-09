@@ -92,7 +92,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     let handle_before = environment_before.lifecycle().handle();
     assert!(
         host.session_slots
-            .read("t-attach", |slot| slot.runtime.is_some())
+            .read_run("t-attach", |run| run.runtime.is_some())
             .unwrap_or(false),
         "the first Run caches the Thread's sandbox ctx"
     );
@@ -106,8 +106,8 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         owner: "retired-worker".into(),
         epoch: 1,
     };
-    host.session_slots.update("t-attach", |slot| {
-        slot.dispatch_claim = Some(stale_claim.clone());
+    host.session_slots.update_run("t-attach", |run| {
+        run.dispatch_claim = Some(stale_claim.clone());
     });
 
     // Attach a file resource on the LIVE session.
@@ -146,7 +146,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     assert!(
         !host
             .session_slots
-            .read("t-attach", |slot| slot.runtime.is_some())
+            .read_run("t-attach", |run| run.runtime.is_some())
             .unwrap_or(false),
         "attach evicts the cached ctx so the next Run rebuilds with the mount"
     );
@@ -188,13 +188,13 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     );
     assert_eq!(
         host.session_slots
-            .read("t-attach", |slot| slot.dispatch_claim.clone())
+            .read_run("t-attach", |run| run.dispatch_claim.clone())
             .flatten(),
         Some(stale_claim),
         "R2 Resource reservation leaves the attempt delivery cache untouched"
     );
     host.session_slots
-        .update("t-attach", |slot| slot.dispatch_claim = None);
+        .update_run("t-attach", |run| run.dispatch_claim = None);
 
     run_prepared_session_messages(&managed, "agent", "t-attach", user("after attach"))
         .await
@@ -392,7 +392,7 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     );
     assert!(
         host.session_slots
-            .read("invalid-live-repository", |slot| slot.runtime.is_some())
+            .read_run("invalid-live-repository", |run| run.runtime.is_some())
             .unwrap_or(false),
         "L1/L2 cached Runtime"
     );
@@ -655,7 +655,7 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
     );
     assert!(
         host.session_slots
-            .read("t-local-attach", |slot| slot.runtime.is_some())
+            .read_run("t-local-attach", |run| run.runtime.is_some())
             .unwrap_or(false),
         "rejected replacement leaves the cached runtime intact"
     );
@@ -1089,8 +1089,8 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
     ];
     let hash = bundle_sha256(&files);
     host.session_slots
-        .update("coordinator-dispatch-only", |slot| {
-            slot.skills = Some(vec![SkillVersion {
+        .update_realization("coordinator-dispatch-only", |r| {
+            r.skills = Some(vec![SkillVersion {
                 id: "skver_files_1".into(),
                 skill_id: "files".into(),
                 version: 1,
@@ -1117,6 +1117,7 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
     assert!(
         host.session_slots
             .read("coordinator-dispatch-only", |slot| slot
+                .frozen
                 .environment_snapshot
                 .is_some())
             .unwrap_or(false),
@@ -1372,7 +1373,10 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     );
     assert!(
         host.session_slots
-            .read("worker-dispatch-conflict", |slot| slot.baseline.is_none())
+            .read("worker-dispatch-conflict", |slot| slot
+                .frozen
+                .baseline
+                .is_none())
             .unwrap_or(true),
         "P5/E2"
     );

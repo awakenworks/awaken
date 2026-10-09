@@ -119,8 +119,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         let retained_publication = self
             .host
             .session_slots
-            .read(session_id.as_str(), |slot| slot.published_snapshot.clone())
-            .flatten();
+            .published_snapshot(session_id.as_str());
         if let Some(claimed) = self.published_snapshot
             && !matches!(
                 awaken_session_realization_contract::frozen_agent_publication_decision(
@@ -166,11 +165,11 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         // repair or any projection/Resource effect, and the same guard prevents
         // another owner transition until the replacement projection is wholly
         // installed.
-        let lifecycle = self
+        let lifecycle_guard = self
             .host
             .session_slots
-            .update(session_id.as_str(), |slot| slot.lifecycle.clone());
-        let lifecycle_guard = lifecycle.lock().await;
+            .lock_lifecycle(session_id.as_str())
+            .await;
         if self.claim.is_some() {
             let (canonical_publication, model_candidate) = self
                 .host
@@ -187,8 +186,8 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
             let has_local_environment_owner = self
                 .host
                 .session_slots
-                .read(session_id.as_str(), |slot| {
-                    slot.environment_owner.has_local_environment()
+                .read_realization(session_id.as_str(), |r| {
+                    r.environment_owner.has_local_environment()
                 })
                 .unwrap_or(false);
             let has_environment_binding = self.claimed_environment_binding.is_some()
@@ -259,13 +258,12 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         // generation.
         self.host
             .session_slots
-            .update(session_id.as_str(), |slot| slot.session_dispatch = true);
+            .update_run(session_id.as_str(), |run| run.session_dispatch = true);
         drop(lifecycle_guard);
         let published_snapshot = self
             .host
             .session_slots
-            .read(session_id.as_str(), |slot| slot.published_snapshot.clone())
-            .flatten();
+            .published_snapshot(session_id.as_str());
         // A resident Arc is process-local ownership, not evidence that its
         // physical Sandbox survived. Revalidate every durable binding through
         // the one adoption path; Ready reuses that Arc, while closed evidence
@@ -275,7 +273,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
             .host
             .session_slots
             .read(session_id.as_str(), |slot| {
-                slot.runtime.is_some() || slot.environment_owner.is_resident()
+                slot.run.runtime.is_some() || slot.realization.environment_owner.is_resident()
             })
             .unwrap_or(false);
         if self.requires_runtime_before_effects
@@ -828,10 +826,7 @@ mod tests {
             // Stop at the production sink-readback/local-publication boundary.
             // No synthetic generation or Resident -> Candidate demotion: use
             // the canonical authorization, fenced Provider and retention edges.
-            let lifecycle = host
-                .session_slots
-                .update(thread, |slot| slot.lifecycle.clone());
-            let _lifecycle = lifecycle.lock().await;
+            let _lifecycle = host.session_slots.lock_lifecycle(thread).await;
             let effect = host
                 .authorize_environment_effect_before_io(
                     thread,
@@ -887,9 +882,9 @@ mod tests {
         // execution-authority view; renewal/conflict checks share this oracle.
         let owned_environment = || {
             host.session_slots
-                .read(thread, |slot| {
-                    slot.environment_owner.resident().or_else(|| {
-                        slot.environment_owner
+                .read_realization(thread, |r| {
+                    r.environment_owner.resident().or_else(|| {
+                        r.environment_owner
                             .unpublished_candidate()
                             .map(|candidate| candidate.environment.clone())
                     })
@@ -987,7 +982,7 @@ mod tests {
         };
         let lifecycle = host
             .session_slots
-            .read(thread, |slot| slot.lifecycle.clone())
+            .read_realization(thread, |r| r.lifecycle.clone())
             .expect("DH1 lifecycle owner");
         if revoke {
             let _lifecycle = lifecycle.lock().await;
@@ -1006,8 +1001,8 @@ mod tests {
             !revoke
                 || host
                     .session_slots
-                    .read(thread, |slot| slot.runtime.is_none()
-                        && !slot.environment_owner.is_resident())
+                    .read(thread, |slot| slot.run.runtime.is_none()
+                        && !slot.realization.environment_owner.is_resident())
                     .unwrap_or(false),
             "DH1/C2 revocation clears R1 and hides Retiring A"
         );
@@ -1150,11 +1145,11 @@ mod tests {
             );
             host.session_slots
                 .read(thread, |slot| {
-                    assert!(matches!(&slot.environment_owner,
+                    assert!(matches!(&slot.realization.environment_owner,
                     crate::session_slot::SessionEnvironmentOwner::Retiring(retiring)
                     if Arc::ptr_eq(&retiring.owned.environment(), &original)));
-                    assert_eq!(slot.realization_authority.lease().unwrap().epoch, 1);
-                    assert!(slot.runtime.is_none());
+                    assert_eq!(slot.realization.authority.lease().unwrap().epoch, 1);
+                    assert!(slot.run.runtime.is_none());
                 })
                 .unwrap();
             assert_eq!(
@@ -1404,9 +1399,10 @@ mod tests {
         );
         assert!(
             host.session_slots
-                .read(thread, |slot| slot.runtime.as_ref().is_some_and(
+                .read(thread, |slot| slot.run.runtime.as_ref().is_some_and(
                     |runtime| {
-                        Arc::ptr_eq(runtime, &fresh_runtime) && slot.environment_owner.is_resident()
+                        Arc::ptr_eq(runtime, &fresh_runtime)
+                            && slot.realization.environment_owner.is_resident()
                     }
                 ))
                 .unwrap_or(false),
@@ -1515,7 +1511,7 @@ mod tests {
         host.install_test_resident_session_environment(thread, environment.clone());
         let lifecycle = host
             .session_slots
-            .read(thread, |slot| slot.lifecycle.clone())
+            .read_realization(thread, |r| r.lifecycle.clone())
             .expect("legacy lifecycle owner");
         {
             let _lifecycle = lifecycle.lock().await;
@@ -1683,12 +1679,13 @@ mod tests {
             .session_slots
             .read(thread, |slot| {
                 (
-                    slot.published_snapshot.clone(),
-                    slot.realization_authority.lease().cloned(),
-                    slot.environment_projection
+                    slot.frozen.published_snapshot.clone(),
+                    slot.realization.authority.lease().cloned(),
+                    slot.frozen
+                        .environment_projection
                         .as_ref()
                         .map(|projection| projection.fingerprint.clone()),
-                    slot.mcp.projection_count(),
+                    slot.realization.mcp.projection_count(),
                 )
             })
             .expect("RA1 retained slot caches");
@@ -1756,9 +1753,9 @@ mod tests {
         assert!(root_sentinel.exists(), "RA1/E2 physical root is untouched");
         assert!(
             host.session_slots
-                .read(thread, |slot| {
+                .read_realization(thread, |r| {
                     matches!(
-                        &slot.environment_owner,
+                        &r.environment_owner,
                         crate::session_slot::SessionEnvironmentOwner::Retiring(current)
                             if current.cause
                                 == crate::session_slot::SessionEnvironmentRetirementCause::RealizationRevocation
@@ -1771,12 +1768,13 @@ mod tests {
         assert_eq!(
             host.session_slots.read(thread, |slot| {
                 (
-                    slot.published_snapshot.clone(),
-                    slot.realization_authority.lease().cloned(),
-                    slot.environment_projection
+                    slot.frozen.published_snapshot.clone(),
+                    slot.realization.authority.lease().cloned(),
+                    slot.frozen
+                        .environment_projection
                         .as_ref()
                         .map(|projection| projection.fingerprint.clone()),
-                    slot.mcp.projection_count(),
+                    slot.realization.mcp.projection_count(),
                 )
             }),
             Some(cached),

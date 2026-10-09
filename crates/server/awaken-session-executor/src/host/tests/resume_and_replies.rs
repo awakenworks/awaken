@@ -2260,7 +2260,7 @@ async fn managed_session_root_rejects_legacy_host_run_ingress() {
     .build()
     .expect("validated Host dependencies");
     host.session_slots
-        .update("managed-root", |slot| slot.session_dispatch = true);
+        .update_run("managed-root", |run| run.session_dispatch = true);
 
     for result in [
         host.run(None, "managed-root", user("ordinary bypass"))

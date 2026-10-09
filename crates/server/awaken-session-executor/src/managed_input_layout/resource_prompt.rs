@@ -93,7 +93,7 @@ impl ResourcePromptProjection {
 
     pub(crate) fn render(
         &self,
-        delivery: crate::frozen_runtime_projection::ManagedContentDelivery,
+        delivery: crate::frozen_inputs::ManagedContentDelivery,
         path_view: AgentPathView,
     ) -> String {
         use awaken_resource_contract::ResourceAccess;
@@ -122,7 +122,7 @@ impl ResourcePromptProjection {
             ),
             (
                 ResourcePromptKind::MemoryStore,
-                crate::frozen_runtime_projection::ManagedContentDelivery::ManagedFilesystem,
+                crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem,
             ) => {
                 let usage = match self.access {
                     ResourceAccess::ReadOnly => "Use standard file tools to read it.",
@@ -135,7 +135,7 @@ impl ResourcePromptProjection {
             }
             (
                 ResourcePromptKind::MemoryStore,
-                crate::frozen_runtime_projection::ManagedContentDelivery::SemanticTools,
+                crate::frozen_inputs::ManagedContentDelivery::SemanticTools,
             ) => {
                 let usage = match self.access {
                     ResourceAccess::ReadOnly => {

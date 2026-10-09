@@ -254,12 +254,12 @@ mod tests {
         assert!(
             host.session_slots
                 .read(thread, |slot| {
-                    slot.runtime.is_none()
-                        && !slot.environment_owner.has_local_environment()
-                        && slot.workspace.is_none()
-                        && slot.manifest.is_none()
-                        && slot.memory_bindings.is_empty()
-                        && slot.memory.is_none()
+                    slot.run.runtime.is_none()
+                        && !slot.realization.environment_owner.has_local_environment()
+                        && slot.frozen.workspace.is_none()
+                        && slot.realization.manifest.is_none()
+                        && slot.realization.memory_bindings.is_empty()
+                        && slot.realization.memory.is_none()
                 })
                 .unwrap_or(true),
             "{rule}: claimed commit must not realize a Session projection"
@@ -592,7 +592,7 @@ mod tests {
         .expect("D1 construct cold durable context");
         let ctx = host
             .session_slots
-            .read(thread, |slot| slot.runtime.clone())
+            .read_run(thread, |run| run.runtime.clone())
             .flatten()
             .expect("D1 durable context resident");
         assert!(ctx.delivery.is_durable(), "D1/C3 must use durable delivery");

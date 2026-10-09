@@ -45,8 +45,9 @@ impl awaken_session_mcp::McpStagingSession for ManagedHost {
     ) -> Option<awaken_runtime_contract::resolved::Backend> {
         self.host
             .session_slots
-            .read(session, |slot| slot.backend_ref.clone())
-            .flatten()
+            .frozen(session)
+            .backend_ref
+            .clone()
             .map(|backend_ref| awaken_runtime_contract::resolved::Backend::from_ref(&backend_ref))
     }
 
@@ -64,12 +65,10 @@ impl awaken_session_mcp::McpStagingSession for ManagedHost {
     fn frozen_network(&self, session: &str) -> Option<awaken_provisioning_contract::NetworkPolicy> {
         self.host
             .session_slots
-            .read(session, |slot| {
-                slot.environment_projection
-                    .as_ref()
-                    .map(|projection| projection.network.clone())
-            })
-            .flatten()
+            .frozen(session)
+            .environment_projection
+            .as_ref()
+            .map(|projection| projection.network.clone())
     }
 
     fn acp_client_injection_capabilities(
@@ -98,8 +97,9 @@ impl awaken_session_mcp::McpStagingSession for ManagedHost {
         self.host
             .session_slots
             .read(session, |slot| {
-                slot.agent_id.clone().or_else(|| {
-                    slot.baseline
+                slot.frozen.agent_id.clone().or_else(|| {
+                    slot.frozen
+                        .baseline
                         .as_ref()
                         .map(|baseline| baseline.agent_id.clone())
                 })

@@ -9,9 +9,9 @@ use awaken_session_execution_contract::SessionRuntime;
 use awaken_session_state_contract::SessionEnvironmentState;
 
 fn observation(host: &SharedHost) -> serde_json::Value {
-    host.session_slots.read("projection-convergence", |slot| {
-        let receipt = slot.frozen_projection_receipt.as_ref();
-        let binding = match &slot.environment_owner {
+    host.session_slots.read_realization("projection-convergence", |realization| {
+        let receipt = realization.frozen_projection_receipt.as_ref();
+        let binding = match &realization.environment_owner {
             crate::session_slot::SessionEnvironmentOwner::Preparing(crate::session_slot::SessionEnvironmentPreparation::AwaitingAdoption { binding, .. }) => binding.as_str(),
             _ => "none",
         };
@@ -171,9 +171,9 @@ async fn independent_coordinators_converge_after_binding_replacement_and_reject_
             assert_eq!(before["binding"], "B", "E1 B retained");
             hosts[i]
                 .session_slots
-                .read("projection-convergence", |slot| {
-                    assert!(slot.runtime.is_none(), "no physical realization");
-                    assert!(slot.session_dispatch);
+                .read_run("projection-convergence", |run| {
+                    assert!(run.runtime.is_none(), "no physical realization");
+                    assert!(run.session_dispatch);
                 })
                 .unwrap();
         }

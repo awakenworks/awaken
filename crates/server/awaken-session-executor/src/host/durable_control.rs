@@ -25,7 +25,7 @@ impl SharedHost {
     /// admission ordering; this helper owns only the shared pure lookup.
     fn resident_context(&self, thread: &str) -> Option<std::sync::Arc<SessionCtx>> {
         self.session_slots
-            .read(thread, |slot| slot.runtime.clone())
+            .read_run(thread, |run| run.runtime.clone())
             .flatten()
     }
 

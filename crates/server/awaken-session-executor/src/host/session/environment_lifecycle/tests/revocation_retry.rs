@@ -118,7 +118,7 @@ async fn conflicting_revocation_preserves_active_worker_relay_until_compatible_d
     assert!(
         matches!(
             host.session_slots
-                .read(thread, |slot| slot.environment_owner.clone()),
+                .read_realization(thread, |r| r.environment_owner.clone()),
             Some(SessionEnvironmentOwner::Retiring(current))
                 if current.exact_matches(&terminal.owner)
         ),
@@ -184,8 +184,8 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
             "provider", "model", "backend",
         ))
         .build();
-    host.session_slots.update(thread, |slot| {
-        slot.published_snapshot = Some(snapshot.clone());
+    host.session_slots.replace_frozen_with(thread, |next| {
+        next.published_snapshot = Some(snapshot.clone())
     });
     host.register_thread_resources(
         thread,
@@ -228,7 +228,7 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
     let spec_before = host.sandbox_spec(thread);
     let lifecycle = host
         .session_slots
-        .read(thread, |slot| slot.lifecycle.clone())
+        .read_realization(thread, |r| r.lifecycle.clone())
         .unwrap();
     let _lifecycle = lifecycle.lock().await;
     assert!(
@@ -249,8 +249,7 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
     );
     assert_eq!(
         host.session_slots
-            .read(thread, |slot| slot.published_snapshot.clone())
-            .flatten()
+            .published_snapshot(thread)
             .map(|snapshot| snapshot.id),
         Some(snapshot.id),
         "R20/E3 provider publication"
@@ -313,8 +312,8 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     };
     host.install_session_realization_lease(thread, lease.clone())
         .unwrap();
-    host.session_slots.update(thread, |slot| {
-        slot.published_snapshot = Some(snapshot.clone());
+    host.session_slots.replace_frozen_with(thread, |next| {
+        next.published_snapshot = Some(snapshot.clone())
     });
     host.register_thread_resources(
         thread,
@@ -352,7 +351,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     let spec_before = host.sandbox_spec(thread);
     let lifecycle = host
         .session_slots
-        .read(thread, |slot| slot.lifecycle.clone())
+        .read_realization(thread, |r| r.lifecycle.clone())
         .unwrap();
     let _lifecycle = lifecycle.lock().await;
     host.retire_session_environment_for_revocation(thread)
@@ -360,7 +359,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         .expect("C2 live revocation");
     assert_eq!(
         host.session_slots
-            .read(thread, |slot| slot.realization_authority.clone()),
+            .read_realization(thread, |r| r.authority.clone()),
         Some(crate::session_slot::SessionRealizationAuthority::Closed(
             Some(lease.clone())
         )),
@@ -377,7 +376,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     assert!(
         matches!(
             host.session_slots
-                .read(thread, |slot| slot.environment_owner.clone()),
+                .read_realization(thread, |r| r.environment_owner.clone()),
             Some(SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
                 cause: SessionEnvironmentRetirementCause::RealizationRevocation,
                 owned: RetiringEnvironmentOwner::Bound(owned),
@@ -388,15 +387,14 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     assert_eq!(host.sandbox_spec(thread), spec_before, "E2 SandboxSpec");
     assert_eq!(
         host.session_slots
-            .read(thread, |slot| slot.published_snapshot.clone())
-            .flatten()
+            .published_snapshot(thread)
             .map(|current| current.id),
         Some(snapshot.id),
         "E2 provider publication"
     );
     assert_eq!(
         host.session_slots
-            .read(thread, |slot| slot.mcp.quiescence_fence().cloned()),
+            .read_realization(thread, |r| r.mcp.quiescence_fence().cloned()),
         Some(Some(fence)),
         "E3 revocation is not a quiescence-fence reopen authority"
     );
@@ -476,7 +474,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
     // inventing another generation hid invalid adoption in the old publisher.
     let source_identity = first
         .session_slots
-        .read(thread, |slot| match &slot.environment_owner {
+        .read_realization(thread, |r| match &r.environment_owner {
             SessionEnvironmentOwner::Resident(owned) => owned.identity.clone(),
             _ => panic!("first committed resident"),
         })

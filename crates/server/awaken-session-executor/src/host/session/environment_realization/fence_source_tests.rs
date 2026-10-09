@@ -42,8 +42,8 @@ fn install(host: &SharedHost, lease: SessionRealizationLease) {
     let proof = SessionRealizationLeaseReceipt::issued_at(lease, 0)
         .unwrap()
         .observed(awaken_authority_clock::authority_proof_started().unwrap());
-    host.session_slots.update("session", |slot| {
-        slot.realization_authority = SessionRealizationAuthority::Live(proof);
+    host.session_slots.update_realization("session", |r| {
+        r.authority = SessionRealizationAuthority::Live(proof);
     });
 }
 
@@ -113,28 +113,30 @@ async fn provider_fence_source_decision_table_preserves_exact_live_authority() {
                 }
                 "slot_aba" => {
                     let old = host.session_slots.remove("session").unwrap();
-                    host.session_slots.update("session", |slot| {
-                        slot.realization_authority = old.realization_authority;
+                    host.session_slots.update_realization("session", |r| {
+                        r.authority = old.realization.authority;
                     });
                 }
                 "closed" => {
                     host.session_slots.close_realization("session", None);
                 }
-                "uninstalled" => host.session_slots.update("session", |slot| {
-                    slot.realization_authority = SessionRealizationAuthority::Uninstalled;
+                "uninstalled" => host.session_slots.update_realization("session", |r| {
+                    r.authority = SessionRealizationAuthority::Uninstalled;
                 }),
-                "expired" => host.session_slots.update("session", |slot| {
-                    slot.realization_authority = SessionRealizationAuthority::Live(
+                "expired" => host.session_slots.update_realization("session", |r| {
+                    r.authority = SessionRealizationAuthority::Live(
                         crate::session_slot::test_expired_observed_lease(current.clone()),
                     );
                 }),
-                "realization" | "lifecycle" => host.session_slots.update("session", |slot| {
-                    if rule == "realization" {
-                        slot.realization = Arc::new(tokio::sync::Mutex::new(()));
-                    } else {
-                        slot.lifecycle = Arc::new(tokio::sync::Mutex::new(()));
-                    }
-                }),
+                "realization" | "lifecycle" => {
+                    host.session_slots.update_realization("session", |r| {
+                        if rule == "realization" {
+                            r.realization = Arc::new(tokio::sync::Mutex::new(()));
+                        } else {
+                            r.lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+                        }
+                    })
+                }
                 "asserted_future" => asserted.renew(),
                 "asserted_regressed" => asserted.tamper(|w| w.expires_at_unix_ms -= 1),
                 "asserted_operation" => asserted.tamper(|w| w.operation_id.push_str("-other")),
@@ -266,8 +268,8 @@ async fn provider_fence_source_capture_rejects_absent_slot_and_invalid_identity(
         install(&host, lease());
         let mut initial = lease().sandbox_effect_fence("create").unwrap();
         match rule {
-            "uninstalled" => host.session_slots.update("session", |slot| {
-                slot.realization_authority = SessionRealizationAuthority::Uninstalled;
+            "uninstalled" => host.session_slots.update_realization("session", |r| {
+                r.authority = SessionRealizationAuthority::Uninstalled;
             }),
             "closed" => {
                 host.session_slots.close_realization("session", None);
@@ -354,8 +356,8 @@ async fn provider_fence_source_waiting_for_worker_rechecks_slot_after_revocation
                 }
                 "slot_aba" => {
                     let old = host.session_slots.remove("session").unwrap();
-                    host.session_slots.update("session", |slot| {
-                        slot.realization_authority = old.realization_authority;
+                    host.session_slots.update_realization("session", |r| {
+                        r.authority = old.realization.authority;
                     });
                 }
                 "renewed" => {
@@ -609,8 +611,8 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                         }
                         "aba" => {
                             let old = host.session_slots.remove("session").unwrap();
-                            host.session_slots.update("session", |slot| {
-                                slot.realization_authority = old.realization_authority;
+                            host.session_slots.update_realization("session", |r| {
+                                r.authority = old.realization.authority;
                             });
                         }
                         "renewed" => {
@@ -731,8 +733,8 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
                 host.session_slots.close_realization("session", None);
             } else if rule.ends_with("_aba") {
                 let old = host.session_slots.remove("session").unwrap();
-                host.session_slots.update("session", |slot| {
-                    slot.realization_authority = old.realization_authority;
+                host.session_slots.update_realization("session", |r| {
+                    r.authority = old.realization.authority;
                 });
             } else if rule != "provider_unfenced" {
                 let mut current = lease();
@@ -869,8 +871,8 @@ async fn environment_receipt_refreshes_only_the_captured_live_generation() {
                 }
                 "aba" => {
                     let old = host.session_slots.remove("session").unwrap();
-                    host.session_slots.update("session", |slot| {
-                        slot.realization_authority = old.realization_authority;
+                    host.session_slots.update_realization("session", |r| {
+                        r.authority = old.realization.authority;
                     });
                 }
                 "worker_zero" => {

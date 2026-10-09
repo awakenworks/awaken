@@ -261,7 +261,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     let staged = managed
         .host
         .session_slots
-        .read("realization-memory-session", |slot| slot.resources.clone())
+        .read_realization("realization-memory-session", |r| r.resources.clone())
         .expect("R2/E2 staged slot");
     let awaken_provisioning_contract::MountSource::MemoryStore {
         materialization_reference,
@@ -579,8 +579,8 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         },
     )
     .expect("HS1 project the exact durable source binding");
-    host.session_slots.update(thread, |slot| {
-        slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+    host.session_slots.update_realization(thread, |r| {
+        r.authority = crate::session_slot::SessionRealizationAuthority::Live(
             crate::session_slot::test_observed_lease(lease.clone()),
         );
     });
@@ -625,8 +625,8 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
     );
     assert_eq!(
         host.session_slots
-            .read(thread, |slot| {
-                slot.environment_owner.durable_binding().map(str::to_owned)
+            .read_realization(thread, |r| {
+                r.environment_owner.durable_binding().map(str::to_owned)
             })
             .flatten()
             .as_deref(),
@@ -834,8 +834,8 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         &projection,
     );
 
-    host.session_slots.update(session_id, |slot| {
-        slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+    host.session_slots.update_realization(session_id, |r| {
+        r.authority = crate::session_slot::SessionRealizationAuthority::Live(
             crate::session_slot::test_observed_lease(renewed_lease.clone()),
         );
     });
@@ -862,9 +862,8 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         )
         .unwrap()
         .observed(awaken_authority_clock::authority_proof_started().unwrap());
-    host.session_slots.update(session_id, |slot| {
-        slot.realization_authority =
-            crate::session_slot::SessionRealizationAuthority::Live(skewed_proof);
+    host.session_slots.update_realization(session_id, |r| {
+        r.authority = crate::session_slot::SessionRealizationAuthority::Live(skewed_proof);
     });
     assert_eq!(
         host.terminal_cleanup_effect_fence(&effect).unwrap(),
@@ -879,8 +878,8 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
             .unwrap(),
         "R4 preserve exact aggregate preparation and successor identity"
     );
-    host.session_slots.update(session_id, |slot| {
-        slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+    host.session_slots.update_realization(session_id, |r| {
+        r.authority = crate::session_slot::SessionRealizationAuthority::Live(
             crate::session_slot::test_expired_observed_lease(renewed_lease.clone()),
         );
     });
@@ -895,7 +894,7 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         crate::session_slot::SessionRealizationAuthority::Uninstalled,
     ] {
         host.session_slots
-            .update(session_id, |slot| slot.realization_authority = closed);
+            .update_realization(session_id, |r| r.authority = closed);
         assert!(host.terminal_cleanup_effect_fence(&effect).is_err(), "R6");
         assert!(
             host.terminal_cleanup_disposal_authorization(&disposal)
@@ -904,8 +903,8 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         );
     }
 
-    host.session_slots.update(session_id, |slot| {
-        slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+    host.session_slots.update_realization(session_id, |r| {
+        r.authority = crate::session_slot::SessionRealizationAuthority::Live(
             crate::session_slot::test_expired_observed_lease(expired_lease.clone()),
         );
     });
@@ -924,8 +923,8 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         expires_at_unix_ms: now_unix_ms.saturating_add(30_000),
         ..expired_lease
     };
-    host.session_slots.update(session_id, |slot| {
-        slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+    host.session_slots.update_realization(session_id, |r| {
+        r.authority = crate::session_slot::SessionRealizationAuthority::Live(
             crate::session_slot::test_observed_lease(successor),
         );
     });
@@ -1723,8 +1722,8 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
             );
             assert!(
                 host.session_slots
-                    .read(thread, |slot| {
-                        match &slot.environment_owner {
+                    .read_realization(thread, |r| {
+                        match &r.environment_owner {
                             crate::session_slot::SessionEnvironmentOwner::Retiring(retiring) => {
                                 let environment = retiring.owned.environment();
                                 if let Some(previous) = &retained {
@@ -2026,10 +2025,8 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             .unwrap_or_else(|error| panic!("{} prepares resident owner: {error}", rule.name));
             assert!(
                 host.session_slots
-                    .read(&thread, |slot| {
-                        slot.environment_owner
-                            .terminal_bound_environment()
-                            .is_some()
+                    .read_realization(&thread, |r| {
+                        r.environment_owner.terminal_bound_environment().is_some()
                     })
                     .unwrap_or(false),
                 "H1/C3 exact same-process owner is retained behind Preparation"
@@ -2066,8 +2063,8 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 }
                 assert_eq!(
                     host.session_slots
-                        .read(&thread, |slot| {
-                            slot.environment_owner.physical_binding().map(str::to_owned)
+                        .read_realization(&thread, |r| {
+                            r.environment_owner.physical_binding().map(str::to_owned)
                         })
                         .flatten()
                         .as_deref(),
@@ -2136,9 +2133,9 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
         );
         assert!(
             host.session_slots
-                .read(&thread, |slot| {
+                .read_realization(&thread, |r| {
                     matches!(
-                        &slot.environment_owner,
+                        &r.environment_owner,
                         crate::session_slot::SessionEnvironmentOwner::Retiring(_)
                     )
                 })
@@ -2146,8 +2143,8 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             "HM1/E4 exact owner remains Retiring until Disposal"
         );
         if rule.candidate_unmaterialized.is_some() {
-            assert!(host.session_slots.read(&thread, |slot| matches!(
-                &slot.environment_owner,
+            assert!(host.session_slots.read_realization(&thread, |r| matches!(
+                &r.environment_owner,
                 crate::session_slot::SessionEnvironmentOwner::Retiring(crate::session_slot::RetiringSessionEnvironment {
                     owned: crate::session_slot::RetiringEnvironmentOwner::Unbound(candidate), ..
                 }) if candidate.durable_identity().is_none()

@@ -64,7 +64,7 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
 
     let lifecycle = host
         .session_slots
-        .read(thread, |slot| slot.lifecycle.clone())
+        .read_realization(thread, |r| r.lifecycle.clone())
         .unwrap();
     {
         let _lifecycle = lifecycle.lock().await;
@@ -77,7 +77,7 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
     }
     assert!(
         host.session_slots
-            .read(thread, |slot| slot.runtime.is_none())
+            .read_run(thread, |run| run.runtime.is_none())
             .unwrap_or(false),
         "RR1/E1 revocation clears the cached Runtime"
     );
@@ -134,12 +134,15 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
     let ready_binding = serde_json::to_string(&ready.lifecycle().handle()).unwrap();
     let ready_owner = ready_host
         .session_slots
-        .read(ready_thread, |slot| slot.environment_owner.clone())
+        .read_realization(ready_thread, |r| r.environment_owner.clone())
         .expect("R21/C1 exact Resident owner");
     assert!(
         ready_host
             .session_slots
-            .read(ready_thread, |slot| slot.published_snapshot.is_none())
+            .read(ready_thread, |slot| slot
+                .frozen
+                .published_snapshot
+                .is_none())
             .unwrap_or(false),
         "R21/C5 ordinary direct Runtime has no frozen provider projection"
     );
@@ -169,7 +172,7 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
                 &ready_owner,
                 ready_host
                     .session_slots
-                    .read(ready_thread, |slot| slot.environment_owner.clone())
+                    .read_realization(ready_thread, |r| r.environment_owner.clone())
                     .as_ref(),
             ),
             (
@@ -181,7 +184,7 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
     );
     let restored_runtime = ready_host
         .session_slots
-        .read(ready_thread, |slot| slot.runtime.clone())
+        .read_run(ready_thread, |run| run.runtime.clone())
         .flatten()
         .expect("R21/E1 Runtime restored");
     assert!(
@@ -234,7 +237,7 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
     assert!(
         missing_host
             .session_slots
-            .read(missing_thread, |slot| slot.runtime.is_none())
+            .read_run(missing_thread, |run| run.runtime.is_none())
             .unwrap_or(false),
         "R21/E2 Terminal owner never restores its Runtime"
     );
@@ -262,8 +265,8 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
     .await)
         .build()
         .expect("validated Host dependencies");
-    host.session_slots.update(thread, |slot| {
-        slot.environment_owner = resident(thread, environment.clone());
+    host.session_slots.update_realization(thread, |r| {
+        r.environment_owner = resident(thread, environment.clone());
     });
     host.retire_current_environment(
         thread,
@@ -289,7 +292,7 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
     assert!(
         matches!(
             host.session_slots
-                .read(thread, |slot| slot.environment_owner.clone()),
+                .read_realization(thread, |r| r.environment_owner.clone()),
             Some(SessionEnvironmentOwner::Retiring(_))
         ),
         "R0 retain revoked owner"
@@ -314,7 +317,7 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
     );
     assert_eq!(
         host.session_slots
-            .read(thread, |slot| slot.environment_rebuild_source.clone())
+            .read_realization(thread, |r| r.environment_rebuild_source.clone())
             .flatten(),
         Some((binding, Some(source_generation))),
         "R1 exact aggregate rebuild predecessor retained"
@@ -384,8 +387,8 @@ async fn closed_recovery_cannot_override_protected_retirements() {
         .await)
             .build()
             .expect("validated Host dependencies");
-        host.session_slots.update(thread, |slot| {
-            slot.environment_owner = resident(thread, environment.clone());
+        host.session_slots.update_realization(thread, |r| {
+            r.environment_owner = resident(thread, environment.clone());
         });
         let cause = if terminal {
             SessionEnvironmentRetirementCause::Terminal {
@@ -418,13 +421,13 @@ async fn closed_recovery_cannot_override_protected_retirements() {
             "R2 protected intent"
         );
         assert!(
-            matches!(host.session_slots.read(thread, |slot| slot.environment_owner.clone()),
+            matches!(host.session_slots.read_realization(thread, |r| r.environment_owner.clone()),
             Some(SessionEnvironmentOwner::Retiring(current)) if current.exact_matches(&protected.owner)),
             "R2 identical fence"
         );
         assert!(
             host.session_slots
-                .read(thread, |slot| slot.environment_rebuild_source.is_none())
+                .read_realization(thread, |r| r.environment_rebuild_source.is_none())
                 .unwrap(),
             "R2 no rebuild"
         );
@@ -522,9 +525,9 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
     .await)
         .build()
         .expect("validated Host dependencies");
-    host.session_slots.update(thread, |slot| {
+    host.session_slots.update_realization(thread, |r| {
         // Test fixture write remains inside the sole lifecycle-owner module.
-        slot.environment_owner = resident(thread, environment.clone());
+        r.environment_owner = resident(thread, environment.clone());
     });
     let prepared_generation = generation(thread);
     let prepared_operation = awaken_session_state_contract::SessionEnvironmentOperation::new(
@@ -575,7 +578,7 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
     assert!(error.to_string().contains("retained Preparation owner"));
     let retained = host
         .session_slots
-        .read(thread, |slot| match &slot.environment_owner {
+        .read_realization(thread, |r| match &r.environment_owner {
             SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
                 cause:
                     SessionEnvironmentRetirementCause::CheckpointSource {
@@ -636,7 +639,7 @@ async fn legacy_suspending_projection_keeps_exact_binding_provenance_without_fab
     .expect("E1 legacy projection");
     assert!(matches!(
         host.session_slots
-            .read(thread, |slot| slot.environment_owner.clone()),
+            .read_realization(thread, |r| r.environment_owner.clone()),
         Some(SessionEnvironmentOwner::Preparing(
             SessionEnvironmentPreparation::AwaitingAdoption {
                 identity: BoundSessionEnvironmentIdentity::LegacyDirect(

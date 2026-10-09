@@ -321,10 +321,8 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
     );
     assert_eq!(
         host.session_slots
-            .read(ordinary_id, |slot| {
-                slot.realization_authority
-                    .lease()
-                    .map(|lease| lease.expires_at_unix_ms)
+            .read_realization(ordinary_id, |r| {
+                r.authority.lease().map(|lease| lease.expires_at_unix_ms)
             })
             .flatten(),
         Some(requested_expiry_unix_ms),
@@ -332,10 +330,8 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
     );
     assert_eq!(
         host.session_slots
-            .read(terminal_id, |slot| {
-                slot.realization_authority
-                    .lease()
-                    .map(|lease| lease.expires_at_unix_ms)
+            .read_realization(terminal_id, |r| {
+                r.authority.lease().map(|lease| lease.expires_at_unix_ms)
             })
             .flatten(),
         Some(requested_expiry_unix_ms),
@@ -786,8 +782,9 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
     .expect("C2 canonical driver reaches authorization after its unique install");
     assert_eq!(
         host.session_slots
-            .read(session_id, |slot| slot.baseline.clone())
-            .flatten()
+            .frozen(session_id)
+            .baseline
+            .clone()
             .expect("C1/E1 frozen baseline")
             .fingerprint,
         remote_terminal_cleanup_projection().baseline.fingerprint,
@@ -795,16 +792,13 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
     );
     assert!(
         host.session_slots
-            .read(session_id, |slot| slot.resources.mounts.is_empty())
+            .read_realization(session_id, |r| r.resources.mounts.is_empty())
             .unwrap_or(false),
         "C1/E1 terminal installation must not materialize active Resources"
     );
     assert_eq!(
         host.session_slots
-            .read(session_id, |slot| slot
-                .realization_authority
-                .lease()
-                .cloned())
+            .read_realization(session_id, |r| r.authority.lease().cloned())
             .flatten(),
         Some(lease.clone()),
         "C1/E1"

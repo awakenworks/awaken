@@ -230,8 +230,8 @@ mod tests {
         );
         assert!(
             host.session_slots
-                .read("cold-deferred", |slot| slot.deferred_executor.is_some()
-                    && slot.tools.as_ref().is_some_and(|tools| {
+                .read("cold-deferred", |slot| slot.run.deferred_executor.is_some()
+                    && slot.frozen.tools.as_ref().is_some_and(|tools| {
                         tools == &awaken_session_configuration_contract::SessionToolConfiguration::default()
                     }))
                 .unwrap_or(false),
@@ -275,7 +275,7 @@ mod tests {
                 .is_none_or(|(host, thread)| {
                     host.upgrade().is_some_and(|host| {
                         host.session_slots
-                            .read(thread, |slot| slot.environment_owner.is_resident())
+                            .read_realization(thread, |r| r.environment_owner.is_resident())
                             .unwrap_or(false)
                     })
                 });
@@ -887,7 +887,7 @@ mod tests {
         assert!(host.thread_resource_manifest(thread).is_none(), "M1");
         assert_eq!(
             host.session_slots
-                .read(thread, |slot| slot.realization_authority.lease().cloned())
+                .read_realization(thread, |r| r.authority.lease().cloned())
                 .flatten(),
             Some(lease.clone()),
             "M1 lease still advances"
@@ -996,10 +996,7 @@ mod tests {
         )
         .await
         .expect("lease renewal reuses the retained immutable publication");
-        let retained = host
-            .session_slots
-            .read(thread, |slot| slot.published_snapshot.clone())
-            .flatten();
+        let retained = host.session_slots.published_snapshot(thread);
         assert_eq!(retained.as_ref(), Some(&snapshot), "P1/P2");
 
         let mut effective = snapshot.clone();
@@ -1032,10 +1029,7 @@ mod tests {
         .await
         .expect("P3 Session-effective Run snapshot shares the frozen coordinates");
         assert_eq!(
-            host.session_slots
-                .read(thread, |slot| slot.published_snapshot.clone())
-                .flatten()
-                .as_ref(),
+            host.session_slots.published_snapshot(thread).as_ref(),
             Some(&snapshot),
             "P3"
         );
@@ -1234,8 +1228,8 @@ mod tests {
         );
         assert_eq!(
             host.session_slots
-                .read(thread, |slot| slot
-                    .realization_authority
+                .read_realization(thread, |r| r
+                    .authority
                     .lease()
                     .map(|lease| lease.expires_at_unix_ms))
                 .flatten(),
@@ -1514,7 +1508,7 @@ mod tests {
         );
         assert!(
             host.session_slots
-                .read(thread, |slot| slot.session_dispatch)
+                .read_run(thread, |run| run.session_dispatch)
                 .unwrap_or(false),
             "R1/E1 Control synchronization publishes the existing Managed Session marker so a later empty compatibility envelope cannot drain this MCP generation"
         );
@@ -1525,8 +1519,8 @@ mod tests {
         host.evict_session_for_rebuild(thread).await;
         assert!(
             host.session_slots
-                .read(thread, |slot| slot.runtime.is_none()
-                    && slot.environment_owner.is_resident())
+                .read(thread, |slot| slot.run.runtime.is_none()
+                    && slot.realization.environment_owner.is_resident())
                 .unwrap_or(false),
             "R2 fixture is the publish-to-final-resolve gap"
         );
@@ -1572,7 +1566,7 @@ mod tests {
             }
             assert_eq!(
                 host.session_slots
-                    .read(thread, |slot| slot.runtime.is_some())
+                    .read_run(thread, |run| run.runtime.is_some())
                     .unwrap_or(false),
                 runtime_cached,
                 "R9 fixture independently establishes each Runtime state"
@@ -1619,7 +1613,7 @@ mod tests {
             );
             assert!(
                 matches!(
-                    host.session_slots.read(thread, |slot| slot.realization_authority.clone()),
+                    host.session_slots.read_realization(thread, |r| r.authority.clone()),
                     Some(crate::session_slot::SessionRealizationAuthority::Closed(Some(ref closed)))
                         if closed == &recovery_authority.lease
                 ),
@@ -1771,9 +1765,7 @@ mod tests {
         assert!(
             first_use_host
                 .session_slots
-                .read(first_use_thread, |slot| slot
-                    .environment_owner
-                    .is_resident())
+                .read_realization(first_use_thread, |r| r.environment_owner.is_resident())
                 .unwrap_or(false),
             "R7 Store-read identity remains Resident"
         );

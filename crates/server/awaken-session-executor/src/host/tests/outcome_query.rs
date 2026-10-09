@@ -148,7 +148,7 @@ async fn outcome_queries_need_no_frozen_runtime_or_environment_and_preserve_comm
             );
             assert_eq!(
                 host.session_slots
-                    .read(&thread.0, |slot| slot.runtime.is_some()),
+                    .read_run(&thread.0, |run| run.runtime.is_some()),
                 Some(cached),
                 "Q{rule} no execution context construction"
             );

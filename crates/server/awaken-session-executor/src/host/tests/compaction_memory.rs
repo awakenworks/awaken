@@ -482,7 +482,7 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
         } else {
             assert!(
                 host.session_slots
-                    .read(&parent, |slot| slot.runtime.is_none())
+                    .read_run(&parent, |run| run.runtime.is_none())
                     .unwrap_or(true),
                 "R1 parent Runtime starts cold"
             );
@@ -632,8 +632,8 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
     assert!(
         first
             .session_slots
-            .read(thread, |slot| {
-                slot.runtime
+            .read_run(thread, |run| {
+                run.runtime
                     .as_ref()
                     .is_some_and(|context| context.delivery.direct().is_some())
             })
@@ -938,10 +938,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
             serde_json::json!({}),
         ),
     };
-    let lifecycle = host
-        .session_slots
-        .update("memory-replay", |slot| slot.lifecycle.clone());
-    let lifecycle_guard = lifecycle.lock().await;
+    let lifecycle_guard = host.session_slots.lock_lifecycle("memory-replay").await;
     let preparing = tokio::spawn({
         let managed = managed.clone();
         async move {
@@ -1005,11 +1002,11 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     // Reproduce the active-active recovery state observed in the black-box
     // pressure test: the durable sandbox binding is resident, while this process
     // has not yet projected the authoritative Resource generation.
-    host.session_slots.update("memory-replay", |slot| {
-        slot.manifest = None;
-        slot.resources = Default::default();
-        slot.memory_bindings.clear();
-        slot.memory = None;
+    host.session_slots.update_realization("memory-replay", |r| {
+        r.manifest = None;
+        r.resources = Default::default();
+        r.memory_bindings.clear();
+        r.memory = None;
     });
     let replay = resource_transition(
         host.local_workspace(),

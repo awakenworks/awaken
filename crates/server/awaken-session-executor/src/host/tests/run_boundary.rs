@@ -201,7 +201,7 @@ async fn worker_authority_loss_interrupts_active_session_before_revocation() {
     assert!(
         host.session_slots.session_ids().iter().all(|id| {
             host.session_slots
-                .read(id, |slot| slot.realization_authority.is_closed())
+                .read_realization(id, |r| r.authority.is_closed())
                 .unwrap()
         }),
         "E3 before asynchronous interruption"
@@ -264,9 +264,9 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
             awaken_runtime_contract::execution::LiveInput::None,
         );
         *ctx.active_run.lock().unwrap() = direct.then(|| run_id.clone());
-        worker.session_slots.update("worker-stop", |slot| {
-            slot.runtime = Some(ctx.clone());
-            slot.dispatch_claim = Some(awaken_dispatch_contract::RunClaim {
+        worker.session_slots.update_run("worker-stop", |run| {
+            run.runtime = Some(ctx.clone());
+            run.dispatch_claim = Some(awaken_dispatch_contract::RunClaim {
                 run_id,
                 owner: "worker-old".into(),
                 epoch: 1,
@@ -1047,7 +1047,7 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
     .expect("validated Host dependencies");
     assert!(
         host.session_slots
-            .read(thread, |slot| slot.runtime.clone())
+            .read_run(thread, |run| run.runtime.clone())
             .flatten()
             .is_none(),
         "C2 precondition"
@@ -1068,7 +1068,7 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
     assert!(rows[0].cancellation_requested, "E2 durable cancellation");
     assert!(
         host.session_slots
-            .read(thread, |slot| slot.runtime.clone())
+            .read_run(thread, |run| run.runtime.clone())
             .flatten()
             .is_none(),
         "E3 interrupt must not realize a cold Runtime/Environment"

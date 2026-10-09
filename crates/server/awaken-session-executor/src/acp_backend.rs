@@ -70,15 +70,9 @@ impl crate::host::SharedHost {
     }
 
     pub(crate) fn register_thread_backend_projection(&self, thread: &str, backend_ref: &str) {
-        self.session_slots.update(thread, |slot| {
-            slot.register_backend_projection(backend_ref);
+        self.session_slots.replace_frozen_with(thread, |next| {
+            next.backend_ref = crate::frozen_inputs::backend_projection(backend_ref);
         });
-    }
-}
-
-impl crate::session_slot::SessionRuntimeSlot {
-    pub(crate) fn register_backend_projection(&mut self, backend_ref: &str) {
-        self.backend_ref = (backend_ref != "default").then(|| backend_ref.to_string());
     }
 }
 
@@ -233,16 +227,18 @@ mod tests {
         assert!(host.exec.acp.is_some(), "A1 executor");
         assert_eq!(
             host.session_slots
-                .read("t", |slot| slot.backend_ref.clone())
-                .flatten()
+                .frozen("t")
+                .backend_ref
+                .clone()
                 .as_deref(),
             Some("acp:claude"),
             "A1"
         );
         assert_eq!(
             host.session_slots
-                .read("unstaged-thread", |slot| slot.backend_ref.clone())
-                .flatten(),
+                .frozen("unstaged-thread")
+                .backend_ref
+                .clone(),
             None,
             "A2"
         );
