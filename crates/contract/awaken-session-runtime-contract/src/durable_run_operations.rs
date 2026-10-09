@@ -1,12 +1,10 @@
 // @formal surface requirement=dispatch.durable_ingress.claim_and_delivery
 // @formal reason: Durable operation DTOs and SPI declarations only; they carry no queue or
 // @formal reason: stop authority. Coordinator Ingress owns the single claim-fenced implementation.
-//! Neutral durable-operation values and Host-implemented application ports.
+//! Neutral durable-Run operation values and the Host-implemented application
+//! port the Coordinator's private durable operations API drives.
 
 use awaken_agent_contract::agent::message::Message;
-use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
-use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplicationErrorKind {
@@ -116,15 +114,4 @@ pub trait DurableRunOperations: Send + Sync {
         run_id: &str,
     ) -> Result<bool, ApplicationError>;
     async fn purge_dead_letters(&self, thread: &str) -> Result<usize, ApplicationError>;
-}
-
-/// Select the existing physical commit owner from the Session Thread identity
-/// already derived from a trusted, claim-guarded dispatch by Coordinator
-/// application. The Coordinator retains the sole write invocation.
-#[async_trait::async_trait]
-pub trait ClaimedOperationCoordinatorResolver: Send + Sync {
-    async fn resolve(
-        &self,
-        session_thread_id: &ThreadId,
-    ) -> Result<Arc<dyn OperationCoordinator>, ApplicationError>;
 }

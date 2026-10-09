@@ -45,6 +45,7 @@ pub use managed_lifecycle::{
     prepare_managed_lifecycle_delivery,
 };
 mod runtime_authority;
+mod session_commit_owner;
 pub mod webhooks;
 pub mod worker_fleet;
 pub mod worker_observation_boundary;
@@ -1658,9 +1659,7 @@ async fn mount_with_managed_over_and_models(
         Arc::new(
             awaken_run_ingress::ClaimedCommitService::with_coordinator_resolver(
                 dispatch as Arc<dyn awaken_run_ingress::ControlDispatchQueue>,
-                Arc::new(awaken_runtime_host::HostOperationCoordinatorResolver::new(
-                    host.clone(),
-                )),
+                Arc::new(session_commit_owner::SessionCommitOwner::new(host.clone())),
             ),
         ),
         worker_directory.clone(),

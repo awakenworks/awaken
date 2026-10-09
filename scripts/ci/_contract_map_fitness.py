@@ -52,7 +52,7 @@ TARGET_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
     "awaken-session-configuration-contract": ("Session", ("awaken-session-resource-contract",
                                                           "awaken-session-mcp-contract")),
     "awaken-session-application-contract": ("Session", ()),
-    "awaken-session-runtime-contract": ("Session", ("awaken-run-ingress-application-contract",)),
+    "awaken-session-runtime-contract": ("Session", ()),
     "awaken-session-realization-contract": ("Session", ("awaken-session-environment-contract",)),
     "awaken-deployment-contract": ("Deployment", ()),
     "awaken-run-ingress-contract": ("Dispatch", ()),

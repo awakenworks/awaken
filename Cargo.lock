@@ -1037,7 +1037,6 @@ dependencies = [
  "awaken-lease-testkit",
  "awaken-observability",
  "awaken-run-ingress",
- "awaken-run-ingress-application-contract",
  "awaken-run-ingress-contract",
  "awaken-runtime",
  "awaken-runtime-contract",
@@ -2249,7 +2248,6 @@ dependencies = [
  "awaken-lease-testkit",
  "awaken-observability",
  "awaken-reliability-testkit",
- "awaken-run-ingress-application-contract",
  "awaken-run-ingress-contract",
  "awaken-run-ingress-testkit",
  "awaken-runtime",
@@ -2274,15 +2272,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
-]
-
-[[package]]
-name = "awaken-run-ingress-application-contract"
-version = "1.0.0"
-dependencies = [
- "async-trait",
- "awaken-agent-contract",
- "thiserror",
 ]
 
 [[package]]
@@ -2496,7 +2485,6 @@ dependencies = [
  "awaken-resource-store",
  "awaken-run-executor-acp",
  "awaken-run-ingress",
- "awaken-run-ingress-application-contract",
  "awaken-run-ingress-contract",
  "awaken-run-ingress-testkit",
  "awaken-runtime",
