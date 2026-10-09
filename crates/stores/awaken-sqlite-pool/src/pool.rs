@@ -750,54 +750,60 @@ mod tests {
         // R0 depth=0 reuse is covered by the process-policy/admission cases.
         // These use the actual driver transaction manager and SQL engine, not
         // a mock depth counter or a second pool implementation.
-        let memory = memory_pool().await;
-        let mut connection = memory.acquire().await.unwrap();
-        for _ in 0..2 {
+        // R3 a leaked admission/rollback wait => bounded diagnostic failure,
+        // never the pool's production 24-hour admission wait.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let memory = memory_pool().await;
+            let mut connection = memory.acquire().await.unwrap();
+            for _ in 0..2 {
+                sqlx::sqlite::SqliteTransactionManager::begin(&mut connection, None)
+                    .await
+                    .unwrap();
+            }
+            sqlx::query("INSERT INTO evidence VALUES (1)")
+                .execute(&mut *connection)
+                .await
+                .unwrap();
+            drop(connection);
+            let next = memory.begin_with("BEGIN IMMEDIATE").await.unwrap();
+            next.rollback().await.unwrap();
+            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM evidence")
+                .fetch_one(&memory)
+                .await
+                .unwrap();
+            assert_eq!(count, 0, "R1 all nested uncommitted writes rolled back");
+
+            let directory = tempfile::tempdir().unwrap();
+            let store = EmbeddedSqlite::file(directory.path().join("rollback.db"));
+            let file = store.open().await.unwrap();
+            sqlx::query("CREATE TABLE evidence (id INTEGER); INSERT INTO evidence VALUES (7)")
+                .execute(&file)
+                .await
+                .unwrap();
+            let mut connection = file.acquire().await.unwrap();
             sqlx::sqlite::SqliteTransactionManager::begin(&mut connection, None)
                 .await
                 .unwrap();
-        }
-        sqlx::query("INSERT INTO evidence VALUES (1)")
-            .execute(&mut *connection)
-            .await
-            .unwrap();
-        drop(connection);
-        let next = memory.begin_with("BEGIN IMMEDIATE").await.unwrap();
-        next.rollback().await.unwrap();
-        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM evidence")
-            .fetch_one(&memory)
-            .await
-            .unwrap();
-        assert_eq!(count, 0, "R1 all nested uncommitted writes rolled back");
-
-        let directory = tempfile::tempdir().unwrap();
-        let store = EmbeddedSqlite::file(directory.path().join("rollback.db"));
-        let file = store.open().await.unwrap();
-        sqlx::query("CREATE TABLE evidence (id INTEGER); INSERT INTO evidence VALUES (7)")
-            .execute(&file)
-            .await
-            .unwrap();
-        let mut connection = file.acquire().await.unwrap();
-        sqlx::sqlite::SqliteTransactionManager::begin(&mut connection, None)
-            .await
-            .unwrap();
-        sqlx::query("ROLLBACK")
-            .execute(&mut *connection)
-            .await
-            .unwrap();
-        assert!(
-            connection.is_in_transaction(),
-            "R2 driver still records depth"
-        );
-        drop(connection);
-        let next = file.begin_with("BEGIN IMMEDIATE").await.unwrap();
-        next.rollback().await.unwrap();
-        let value: i64 = sqlx::query_scalar("SELECT id FROM evidence")
-            .fetch_one(&file)
-            .await
-            .unwrap();
-        assert_eq!(value, 7, "R2 committed file authority survives retirement");
-        file.close().await;
-        store.settled().await;
+            sqlx::query("ROLLBACK")
+                .execute(&mut *connection)
+                .await
+                .unwrap();
+            assert!(
+                connection.is_in_transaction(),
+                "R2 driver still records depth"
+            );
+            drop(connection);
+            let next = file.begin_with("BEGIN IMMEDIATE").await.unwrap();
+            next.rollback().await.unwrap();
+            let value: i64 = sqlx::query_scalar("SELECT id FROM evidence")
+                .fetch_one(&file)
+                .await
+                .unwrap();
+            assert_eq!(value, 7, "R2 committed file authority survives retirement");
+            file.close().await;
+            store.settled().await;
+        })
+        .await
+        .expect("R1/R2 release must settle or retire the connection within 5 seconds");
     }
 }
