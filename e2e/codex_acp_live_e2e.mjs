@@ -25,11 +25,16 @@
 // | Rule | C1 | C2 | C3-C5 | Effect |
 // | H1 | Y | host-login | Y | E1 + live local capability + shared resource oracle |
 // | D1 | - | host-fixture | Y | same resource oracle, no inference service |
-// | W1 | - | worker-host-fixture | Y | signed standalone Worker, same resource oracle |
+// | W1 | - | worker-host-fixture | Y | bootstrap embedded source, remote-only
+// |    |   |                     |   | restart, then signed standalone Worker |
 // | N1 | - | native-host-fixture | Y | API-selected TrustedHost Native Hand, same resource oracle |
 // | C1 | Y | container  | Y | E1 + newly observed managed container |
 // | F1 | N | live profile | - | fail before invoking the adapter |
 // | F2 | Y | other      | - | fail before server/session work |
+// W1 cutover subrules: old embedded lease live => wait without admission;
+// old lease expired + exact standalone Ready => one ACP claimer and the shared
+// resource oracle; renewed embedded/foreign ACP or missing standalone => bounded
+// failure. This uses Registry lease evidence, never a fixture delete or a 404.
 // Linux H1/D1/N1 use the same scoped execution selection and namespace oracle;
 // the exhaustive platform/profile/runtime rules live in acp_live_profile.test.mjs.
 // Awaken discovers login through the CLI, without opening its authentication file.
@@ -220,10 +225,13 @@ async function startHostLoginProfile() {
 
     if (external) {
       // W1 bootstrap authors the real locator once. The persistent source is
-      // reused unchanged; only the embedded Worker's ACP selection is removed.
+      // reused unchanged. The second launch uses the existing remote-only
+      // AllInOne role, so it cannot start another embedded claim pool while
+      // the standalone Worker takes over after the old lease expires.
       await stop(child);
-      fs.writeFileSync(config, controlConfig.map((line) =>
-        line.startsWith('acp_clis =') ? 'acp_clis = []' : line).join('\n'));
+      fs.writeFileSync(config, [...controlConfig.map((line) =>
+        line.startsWith('acp_clis =') ? 'acp_clis = []' : line),
+      'run_local_pool = false'].join('\n'));
       child = launch();
       await waitReady(child, baseURL, path.join(temp, 'data', 'admin-token'));
       await external.start(credentialBaseline);
