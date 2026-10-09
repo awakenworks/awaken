@@ -5,14 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-import signal
 import time
 
 import deadline
-
-
-def interrupted(number: int, _frame: object) -> None:
-    raise SystemExit(128 + number)
 
 
 def main() -> int:
@@ -26,8 +21,6 @@ def main() -> int:
         parser.error("positive --timeout and a command are required")
     if args.receipt.exists():
         parser.error("receipt must be fresh")
-    signal.signal(signal.SIGTERM, interrupted)
-    signal.signal(signal.SIGINT, interrupted)
     started = time.monotonic()
     status = 1
     try:

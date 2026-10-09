@@ -56,6 +56,21 @@
   ],
   "tools": [
     {
+      "name": "awaken-build-admission",
+      "locate": "path",
+      "env_override": "AWAKEN_HOST_ADMISSION",
+      "gates": ["static"],
+      "requirement": "optional",
+      "skip": "host resource observations on ordinary developer runners; recorded full gates require the named host contract",
+      "version": {
+        "command": ["awaken-build-admission", "--version"],
+        "contains": "awaken-build-admission 1 sha256=",
+        "mismatch": "hard-error",
+        "owner": "scripts/ci/gate_tools.py HOST_ADMISSION_VERSION"
+      },
+      "install": "Install the same committed cargo_admission.py as cargo and awaken-build-admission on the qualified Linux runner."
+    },
+    {
       "name": "awaken-worktree-gc",
       "locate": "path",
       "env_override": "AWAKEN_HOST_GC",

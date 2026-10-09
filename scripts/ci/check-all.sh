@@ -61,6 +61,24 @@ case "${1:-}" in
     ;;
 esac
 
+gate_candidate_revision="${AWAKEN_FULL_GATE_CANDIDATE:-$(git rev-parse --verify HEAD)}" || exit 1
+if [ "$full_gate" -eq 1 ]; then
+  export AWAKEN_ADMISSION_PROFILE=qualification
+  if [ "${AWAKEN_CARGO_ADMITTED:-}" != 1 ]; then
+    # The existing host lane admits the complete qualification, including its
+    # Python/Java/container stages. Its shared external deadline starts after
+    # admission; no second queue, executor or manually forged nested marker.
+    python3 scripts/ci/gate_tools.py resources --profile qualification --require-host --observe || exit $?
+    source scripts/ci/_deadline.sh
+    full_budget="${AWAKEN_FULL_GATE_TIMEOUT_SECONDS:-86400}"
+    [[ "$full_budget" =~ ^[1-9][0-9]*$ ]] || { echo "invalid full-gate deadline" >&2; exit 2; }
+    AWAKEN_FULL_GATE_CANDIDATE="$gate_candidate_revision" \
+      run_with_deadline --admit "$full_budget" "$0" "${original_arguments[@]}"
+    exit $?
+  fi
+  python3 scripts/ci/gate_tools.py resources --profile qualification --require-host || exit $?
+fi
+
 # A scheduled run needs a file to read afterwards, and a run that takes hours
 # needs one even when a terminal goes away. Re-enter once with output teed; the
 # marker variable is what stops that from recursing.
@@ -69,18 +87,20 @@ if [ "$full_gate" -eq 1 ] && [ -z "${AWAKEN_FULL_GATE_LOG:-}" ]; then
   mkdir -p "$full_gate_log_directory"
   full_gate_log="$full_gate_log_directory/full-gate-$(date -u +%Y%m%dT%H%M%SZ).log"
   echo "full gate log: $full_gate_log"
-  AWAKEN_FULL_GATE_LOG="$full_gate_log" "$0" "${original_arguments[@]}" 2>&1 | tee "$full_gate_log"
+  AWAKEN_FULL_GATE_CANDIDATE="$gate_candidate_revision" AWAKEN_FULL_GATE_LOG="$full_gate_log" \
+    "$0" "${original_arguments[@]}" 2>&1 | tee "$full_gate_log"
   exit "${PIPESTATUS[0]}"
 fi
 
 failed=()   # labels of checks that failed
-gate_candidate_revision="$(git rev-parse --verify HEAD)" || exit 1
+unset AWAKEN_FULL_GATE_CANDIDATE
 repro=()    # standalone reproduce command, parallel to `failed`
+first_failure_status=0
 timing_file="${AWAKEN_TEST_TIMINGS_FILE:-target/test-timings/check-all-${requested_group}.tsv}"
 initialize_timing_file() {
   mkdir -p "$(dirname "$timing_file")"
   if [ ! -e "$timing_file" ]; then
-    printf 'group\tcheck\tstatus\tduration_seconds\n' > "$timing_file"
+    printf 'group\tcheck\tstatus\tduration_seconds\texit_code\tfailure_kind\n' > "$timing_file"
   fi
 }
 rm -f "$timing_file"
@@ -97,14 +117,21 @@ parallel_checks_init "${AWAKEN_STATIC_JOBS:-1}" "$parallel_log_directory" || {
 trap 'parallel_checks_cancel; exit 130' INT
 trap 'parallel_checks_cancel; exit 143' TERM
 parallel_checks_result() {
-  local label="$1" status="$2" duration="$3" command="$4" log="$5" outcome=passed
+  local label="$1" status="$2" duration="$3" command="$4" log="$5" outcome=passed kind=none
   echo "-> $label (${duration}s)"
   cat "$log"
   if [ "$status" -ne 0 ]; then
     outcome=failed; failed+=("$label"); repro+=("$command")
+    [ "$first_failure_status" -ne 0 ] || first_failure_status="$status"
+    case "$status" in 75) kind=resource-unavailable ;; 124) kind=execution-timeout ;; *) kind=execution-failed ;; esac
   fi
   initialize_timing_file
-  printf 'static\t%s\t%s\t%s\n' "$label" "$outcome" "$duration" >> "$timing_file"
+  printf 'static\t%s\t%s\t%s\t%s\t%s\n' "$label" "$outcome" "$duration" "$status" "$kind" >> "$timing_file"
+  if [ "$status" -eq 75 ]; then
+    parallel_checks_cancel
+    echo "resource qualification unavailable; dependent checks were not started" >&2
+    exit 75
+  fi
 }
 
 # A group's first check decides that group's environment first. Every external
@@ -119,19 +146,24 @@ precheck_group() {
   if ! python3 scripts/ci/gate_tools.py require --gate "$group"; then
     failed+=("$group tool precheck")
     repro+=("python3 scripts/ci/gate_tools.py require --gate $group")
+    return 1
   fi
 }
 
 # run "<group>" "<label>" <command...> — runs the check; on failure records its label and
-# a reproduce command. Never aborts early, so one run surfaces every failure.
+# a reproduce command. Ordinary failures accumulate; unavailable prerequisites
+# or resource qualification stop dependent work before it can obscure the cause.
 run() {
-  local group="$1" label="$2" started duration status; shift 2
+  local group="$1" label="$2" started duration status code=0 kind=none; shift 2
   # Finish every admitted static check before a dependent group or receipt.
   [ "$group" = static ] || parallel_checks_drain
   if [ "$requested_group" != all ] && [ "$requested_group" != "$group" ]; then
     return 0
   fi
-  precheck_group "$group"
+  if ! precheck_group "$group"; then
+    echo "group prerequisite unavailable; dependent checks were not started" >&2
+    exit 1
+  fi
   if [ "$group" = static ] && [ "${1:-}" = python3 ]; then
     parallel_checks_submit "$label" "$@"
     return 0
@@ -139,18 +171,25 @@ run() {
   parallel_checks_drain
   echo "-> $label"
   started=$SECONDS
-  if ! "$@"; then
+  if "$@"; then
+    status=passed
+  else
+    code=$?
     status=failed
     failed+=("$label")
     repro+=("$*")
-  else
-    status=passed
+    [ "$first_failure_status" -ne 0 ] || first_failure_status="$code"
+    case "$code" in 75) kind=resource-unavailable ;; 124) kind=execution-timeout ;; *) kind=execution-failed ;; esac
   fi
   duration=$((SECONDS - started))
   # A substrate runner may rotate its Cargo target directory. Timing telemetry
   # must never turn a completed release gate into an orchestration failure.
   initialize_timing_file
-  printf '%s\t%s\t%s\t%s\n' "$group" "$label" "$status" "$duration" >> "$timing_file"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$group" "$label" "$status" "$duration" "$code" "$kind" >> "$timing_file"
+  if [ "$code" -eq 75 ]; then
+    echo "resource qualification unavailable; dependent checks were not started" >&2
+    exit 75
+  fi
 }
 
 run static "repository-hygiene self-test" python3 scripts/ci/check_repository_hygiene.py --self-test
@@ -313,7 +352,7 @@ if [ "${#failed[@]}" -ne 0 ]; then
       echo "       reproduce: ${repro[$i]}"
     done
   } >&2
-  exit 1
+  exit "$first_failure_status"
 fi
 echo "✅ repository check group '$requested_group' passed"
 echo "   timings: $timing_file"

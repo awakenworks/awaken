@@ -70,9 +70,17 @@ step() {
     echo "✗ $label"
     printf '%s\n' "$out" | grep -Ev "$NOISE"
     echo ""
-    echo "→ fix: $fix"
+    if [ "$rc" -eq 75 ]; then
+      echo "→ restore: host resource qualification; this command was not admitted"
+    else
+      echo "→ fix: $fix"
+    fi
   } >&2
   fail=1
+  if [ "$rc" -eq 75 ]; then
+    echo "resource qualification unavailable; remaining Rust checks were not started" >&2
+    exit 75
+  fi
   return "$rc"
 }
 

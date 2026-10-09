@@ -127,6 +127,20 @@ The aggregator must reject missing/duplicate shards and partial/skipped
 results. A scheduler or cache hit alone cannot produce a green full receipt.
 The current implementation keeps full-suite composition unchanged.
 
+Recorded qualification uses the canonical host admission command before work
+starts. The same host policy supplies all filesystem reserves, MemAvailable and
+PSI observations; repository checkers do not contain a competing percentage or
+pressure policy. The existing Cargo external-command adapter admits the whole
+job and starts its shared deadline after queueing. Its source SHA is retained
+through the logged re-entry. Resource exit 75 stops dependent work and cannot
+produce a passing record. All stages still belong to `check-all.sh`.
+
+Real deadline tests separate process readiness from execution timing. A group
+fixture first proves both signal handlers are installed, then exercises the
+actual timeout/cancellation over that group. TERM/INT during spawn and repeated
+signals during grace retain one cleanup and the original outcome. This does
+not claim a subsecond Python startup SLO or expand production execution limits.
+
 Do not use automatic retries to turn flaky tests green or raise the existing
 300-second nextest limit to conceal hangs. Record and repair nondeterminism;
 any temporary quarantine needs an owner, reason, expiry and explicit loss of

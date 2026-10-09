@@ -132,6 +132,27 @@ Disk is checked the same way. Each long stage declares a minimum in the manifest
 naming the stage, the filesystem, the shortfall, the reason, and the directories
 that are safe to delete.
 
+The recorded full gate also requires the named self-hosted resource contract.
+`awaken-build-admission` exposes the same host policy used by Cargo; the tool
+reader validates that observation without copying memory or disk thresholds.
+The full entrypoint submits the complete job through the existing Cargo
+external-command/deadline adapter, so its execution clock begins after host
+admission and its Python, Java and container stages share that execution lane.
+Nested Cargo avoids reacquiring the parent lock but rechecks actual capacity.
+The source candidate is captured before admission and retained through the
+logged re-entry. Ordinary developer runners retain their declared stage minima.
+
+Check timings preserve the exact exit code and failure kind. Resource refusal
+75 stops dependent work; execution timeout 124 and ordinary failures remain
+distinct. All non-passing results still block the full receipt. Formal's
+existing resource-bound evidence remains its exact subject/deadline-bound 124
+contract; a host refusal cannot impersonate a semantic counterexample.
+
+The shared `deadline.py` controls TERM/INT and timeout cleanup, including a
+signal arriving while the child is being constructed and repeated signals
+during cleanup. Parallel static workers delegate to that same control and
+write the returned status. No caller owns a second cancellation policy.
+
 ### 5. Build space is reclaimed by policy, not by hand
 
 Disk is a prerequisite like any other, and this machine ran out of it twice in

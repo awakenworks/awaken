@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import math
 import signal
 import subprocess
 import sys
@@ -13,6 +14,11 @@ from pathlib import Path
 
 TIMEOUT_EXIT = 124
 KILL_GRACE_SECONDS = 5
+
+
+class Cancelled(BaseException):
+    def __init__(self, number: int):
+        self.number = number
 
 
 def terminate_group(process: subprocess.Popen[bytes]) -> None:
@@ -42,27 +48,8 @@ def terminate_group(process: subprocess.Popen[bytes]) -> None:
     process.wait()
 
 
-def _wait_posix(process: subprocess.Popen[bytes], seconds: float) -> int:
-    try:
-        result = process.wait(timeout=seconds)
-        if result < 0:
-            # A child killed by a signal reports a negative Python return code.
-            # Shell callers need the conventional 128 + signal status; otherwise
-            # SystemExit(-15) wraps to 241 and hides the reason for failure.
-            number = -result
-            print(f"command terminated by signal {number}", file=sys.stderr)
-            return 128 + number
-        return result
-    except subprocess.TimeoutExpired:
-        terminate_group(process)
-        return TIMEOUT_EXIT
-    except BaseException:
-        terminate_group(process)
-        raise
-
-
 def run(seconds: float, command: list[str]) -> int:
-    if seconds <= 0 or not command:
+    if not math.isfinite(seconds) or seconds <= 0 or not command:
         return 2
     if os.name == "nt":
         from _windows_job import WindowsJob
@@ -86,7 +73,55 @@ def run(seconds: float, command: list[str]) -> int:
                     process.kill()
                 process.wait()
                 raise
-    return _wait_posix(subprocess.Popen(command, start_new_session=True), seconds)
+    process = None
+    pending_signal = None
+    cleaning = False
+    previous_handlers = {}
+
+    def interrupted(number: int, _frame: object) -> None:
+        nonlocal pending_signal
+        if cleaning:
+            return
+        pending_signal = pending_signal or number
+        # During Popen construction the child may exist before Python assigns
+        # its handle. Defer cancellation until that exact handle is retained.
+        if process is not None:
+            raise Cancelled(pending_signal)
+
+    def cleanup() -> None:
+        nonlocal cleaning
+        cleaning = True
+        if process is not None:
+            terminate_group(process)
+
+    try:
+        for number in (signal.SIGTERM, signal.SIGINT):
+            previous_handlers[number] = signal.signal(number, interrupted)
+        process = subprocess.Popen(command, start_new_session=True)
+        if pending_signal is not None:
+            raise Cancelled(pending_signal)
+        result = process.wait(timeout=seconds)
+        if result < 0:
+            # A child killed by a signal reports a negative Python return code.
+            # Shell callers need the conventional 128 + signal status; otherwise
+            # SystemExit(-15) wraps to 241 and hides the reason for failure.
+            number = -result
+            print(f"command terminated by signal {number}", file=sys.stderr)
+            return 128 + number
+        return result
+    except subprocess.TimeoutExpired:
+        cleanup()
+        return TIMEOUT_EXIT
+    except Cancelled as cancellation:
+        cleanup()
+        print(f"deadline cancelled by signal {cancellation.number}", file=sys.stderr)
+        return 128 + cancellation.number
+    except BaseException:
+        cleanup()
+        raise
+    finally:
+        for number, handler in previous_handlers.items():
+            signal.signal(number, handler)
 
 
 def main(argv: list[str]) -> int:

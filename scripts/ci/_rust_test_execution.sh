@@ -31,6 +31,11 @@ run_required_rust_tests() (
   remaining=$((budget - SECONDS + started))
   [ "$remaining" -gt 0 ] || { echo "required-test budget exhausted by listing" >&2; exit 124; }
   run_with_deadline "$remaining" cargo test "${locked[@]}" "$@" ${separator:+$separator} --show-output > "$evidence/results.log" 2>&1 || status=$?
+  if [ "$status" -eq 75 ]; then
+    cat "$evidence/results.log"
+    echo "resource qualification unavailable; execution evidence: $evidence" >&2
+    exit 75
+  fi
   if ! python3 scripts/ci/check_rust_test_execution.py --inventory "$evidence/list.log" \
     --results "$evidence/results.log" --exit-code "$status"; then
     cat "$evidence/results.log"
