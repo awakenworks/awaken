@@ -766,6 +766,8 @@ mod tests {
         // Effects: E1 Registry closes admission, E2 no process-exit receipt,
         // E3 provider retention remains. Rule U1=C1+C2+C3=>E1+E2+E3;
         // empty Dispatch alone cannot become a physical proof.
+        // C0 select this exact local queue before the canonical Host build;
+        // the construction migration must preserve U1 and its zero-release panic.
         use awaken_dispatch_contract::WorkerDirectory as _;
         let directory = Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new());
         let identity = directory
@@ -783,15 +785,18 @@ mod tests {
             .unwrap()
             .snapshot
             .identity;
-        let host = SharedHost::new(Arc::new(crate::host::MemoryHostModel), "fixture")
-            .await
-            .with_dispatch_store(Arc::new(
-                awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
-                    awaken_lease_testkit::ManualClock::new(0),
-                ))
+        let host =
+            crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "fixture")
                 .await
-                .unwrap(),
-            ));
+                .with_ephemeral_dispatch(Arc::new(
+                    awaken_dispatch::open_sqlite_dispatch_store_in_memory(Arc::new(
+                        awaken_lease_testkit::ManualClock::new(0),
+                    ))
+                    .await
+                    .unwrap(),
+                ))
+                .build()
+                .expect("validated Host dependencies");
         host.bind_worker_evidence_reconciliation(
             directory.clone(),
             Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
