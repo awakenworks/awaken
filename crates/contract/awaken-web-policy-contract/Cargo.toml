@@ -1,0 +1,25 @@
+[package]
+name = "awaken-web-policy-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "runtime"
+product = "sdk"
+bounded_context = "agent-runtime"
+layer = "contract"
+kinds = ["types"]
+authority = "web-policy"
+# Session authoring consumes this pure vocabulary without linking the Web
+# execution extension; the neutral Agent kernel retains opaque tool settings.
+separation = "contract"
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -2,9 +2,11 @@
 // @formal entrypoint tool_policy.managed_agent_and_mcp_defaults_are_source_exact_and_configurable
 //! Managed Agents tool wire vocabulary retained temporarily by Session storage.
 
+use awaken_web_policy_contract::WebFetchUrlSources;
 use serde::{Deserialize, Serialize};
 
-fn deserialize_present_non_null<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+// Preserve field presence once; T owns whether an explicit null is admissible.
+fn deserialize_present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,
@@ -81,7 +83,7 @@ pub struct AgentToolConfig {
         rename = "type",
         default,
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_present_non_null"
+        deserialize_with = "deserialize_present"
     )]
     pub kind: Option<AgentToolsetMember>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,17 +93,25 @@ pub struct AgentToolConfig {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_present_non_null"
+        deserialize_with = "deserialize_present"
     )]
     pub allowed_domains: Option<Vec<String>>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_present_non_null"
+        deserialize_with = "deserialize_present"
     )]
     pub blocked_domains: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_content_tokens: Option<u64>,
+    /// Absent authored field is retained; the Managed WebFetch response owns
+    /// an explicit nullable field. Both non-null forms use one closed policy.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present"
+    )]
+    pub url_sources: Option<Option<WebFetchUrlSources>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_location: Option<AgentWebSearchUserLocation>,
 }
@@ -508,6 +518,13 @@ fn validate_domains(
 /// Callers must run this once at the Agent admission boundary so invalid Web
 /// fields cannot be lost while producing the closed executable configuration.
 pub fn validate_agent_tools(tools: &[AgentTool]) -> Result<(), String> {
+    let custom_tools = tools
+        .iter()
+        .filter_map(|tool| match tool {
+            AgentTool::Custom { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
     for tool in tools {
         let (agent_toolset, configs) = match tool {
             AgentTool::AgentToolset20260401 { configs, .. } => (true, configs),
@@ -535,9 +552,13 @@ pub fn validate_agent_tools(tools: &[AgentTool]) -> Result<(), String> {
             let has_web_fields = config.allowed_domains.is_some()
                 || config.blocked_domains.is_some()
                 || config.max_content_tokens.is_some()
+                || config.url_sources.is_some()
                 || config.user_location.is_some();
             match member {
                 Some(AgentToolsetMember::WebFetch) => {
+                    if let Some(Some(sources)) = &config.url_sources {
+                        sources.validate(&custom_tools)?;
+                    }
                     validate_domains(
                         "web_fetch",
                         config.allowed_domains.as_ref(),
@@ -549,6 +570,9 @@ pub fn validate_agent_tools(tools: &[AgentTool]) -> Result<(), String> {
                     }
                 }
                 Some(AgentToolsetMember::WebSearch) => {
+                    if config.url_sources.is_some() {
+                        return Err("web_search cannot define url_sources".into());
+                    }
                     validate_domains(
                         "web_search",
                         config.allowed_domains.as_ref(),
@@ -636,7 +660,9 @@ fn execution_configuration(config: &AgentToolConfig) -> Option<serde_json::Value
         "web_fetch"
             if config.allowed_domains.is_some()
                 || config.blocked_domains.is_some()
-                || config.max_content_tokens.is_some() =>
+                || config.max_content_tokens.is_some()
+                || config.url_sources.as_ref().is_some_and(Option::is_some) =>
+        // The same compiler owns public and inherited Web policy.
         {
             let mut value = serde_json::Map::from_iter([(
                 "type".to_string(),
@@ -649,6 +675,12 @@ fn execution_configuration(config: &AgentToolConfig) -> Option<serde_json::Value
                 value.insert(
                     "max_content_tokens".to_string(),
                     serde_json::Value::from(max_content_tokens),
+                );
+            }
+            if let Some(Some(sources)) = &config.url_sources {
+                value.insert(
+                    "url_sources".to_owned(),
+                    serde_json::to_value(sources).expect("closed URL source policy serializes"),
                 );
             }
             Some(serde_json::Value::Object(value))
@@ -908,6 +940,17 @@ pub fn resolved_toolsets(policies: &[awaken_agent_contract::ToolsetPolicy]) -> V
                         max_content_tokens: configuration
                             .and_then(|value| value.get("max_content_tokens"))
                             .and_then(serde_json::Value::as_u64),
+                        url_sources: (policy.source == ToolsetSource::Agent
+                            && entry.name == "web_fetch")
+                            .then(|| {
+                                configuration
+                                    .and_then(|value| value.get("url_sources"))
+                                    .filter(|value| !value.is_null())
+                                    .map(|value| {
+                                        serde_json::from_value(value.clone())
+                                            .expect("validated URL source policy")
+                                    })
+                            }),
                         user_location: configuration
                             .and_then(|value| value.get("user_location"))
                             .map(projected_user_location),
@@ -1144,6 +1187,7 @@ mod tests {
                 allowed_domains: None,
                 blocked_domains: None,
                 max_content_tokens: None,
+                url_sources: None,
                 user_location: None,
             }],
             default_config: None,
@@ -1176,6 +1220,7 @@ mod tests {
                 allowed_domains: None,
                 blocked_domains: None,
                 max_content_tokens: None,
+                url_sources: None,
                 user_location: None,
             }],
             default_config: None,
@@ -1373,6 +1418,7 @@ mod tests {
                     allowed_domains: None,
                     blocked_domains: None,
                     max_content_tokens: None,
+                    url_sources: None,
                     user_location: None,
                 }],
                 default_config: Some(AgentToolDefaultConfig {
@@ -1515,4 +1561,81 @@ mod tests {
             "W4"
         );
     }
+}
+#[test]
+fn sdk_url_sources_configuration_projection_decision_table() {
+    // P1 omitted/null -> no execution restriction; a resolved WebFetch
+    // config still emits the SDK-required nullable response key.
+    // P2 shorthand/object -> one normalized closed configuration; P3 every
+    // reference belongs to this publication's custom/server roster.
+    // P4 all-none, wrong member, unknown key/name -> reject before publish.
+    // Existing toolset compiler/projector own both directions, not a second
+    // response serializer. Fingerprinting sees the same canonical policy.
+    let custom: AgentTool = serde_json::from_value(serde_json::json!({
+        "type":"custom","name":"lookup","description":"lookup","input_schema":{"type":"object"}
+    }))
+    .unwrap();
+    let tool: AgentTool = serde_json::from_value(serde_json::json!({
+            "type":"agent_toolset_20260401","configs":[{"name":"web_fetch","url_sources":{
+                "user_input":"none","server_tool_results":"none","client_tool_results":{"type":"only","tools":[{"type":"tool_reference","name":"lookup"}]}
+            }}]
+        })).unwrap();
+    validate_agent_tools(&[tool.clone(), custom]).unwrap();
+    let policies = toolset_policies(&[tool]);
+    let response = serde_json::to_value(resolved_toolsets(&policies)).unwrap();
+    let cfg = response[0]["configs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "web_fetch")
+        .unwrap();
+    assert_eq!(
+        cfg["url_sources"]["user_input"],
+        serde_json::json!({"type":"none"})
+    );
+    assert_eq!(cfg["url_sources"]["client_tool_results"]["type"], "only");
+    for (sources, accepted) in [
+        (serde_json::json!(null), true),
+        (serde_json::json!({}), true),
+        (
+            serde_json::json!({"user_input":"none","server_tool_results":"none","client_tool_results":"none"}),
+            false,
+        ),
+        (
+            serde_json::json!({"client_tool_results":{"type":"only","tools":[{"type":"tool_reference","name":"missing"}]}}),
+            false,
+        ),
+    ] {
+        let tool:AgentTool=serde_json::from_value(serde_json::json!({"type":"agent_toolset_20260401","configs":[{"name":"web_fetch","permission_policy":{"type":"always_ask"},"url_sources":sources}]})).unwrap();
+        assert_eq!(
+            validate_agent_tools(std::slice::from_ref(&tool)).is_ok(),
+            accepted
+        );
+        if accepted {
+            let response =
+                serde_json::to_value(resolved_toolsets(&toolset_policies(&[tool]))).unwrap();
+            let cfg = response[0]["configs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["name"] == "web_fetch")
+                .unwrap();
+            assert!(cfg.as_object().unwrap().contains_key("url_sources"));
+        }
+    }
+    let wrong:AgentTool=serde_json::from_value(serde_json::json!({"type":"agent_toolset_20260401","configs":[{"name":"bash","url_sources":null}]})).unwrap();
+    assert!(validate_agent_tools(&[wrong]).is_err());
+    // P5 a same-named MCP member keeps its own response contract: it cannot
+    // acquire Agent-Web-only fields through the shared toolset projector.
+    let mcp: AgentTool = serde_json::from_value(serde_json::json!({
+        "type":"mcp_toolset", "mcp_server_name":"peer", "configs":[{"name":"web_fetch", "enabled":false}]
+    }))
+    .unwrap();
+    let response = serde_json::to_value(resolved_toolsets(&toolset_policies(&[mcp]))).unwrap();
+    assert!(
+        !response[0]["configs"][0]
+            .as_object()
+            .unwrap()
+            .contains_key("url_sources")
+    );
 }

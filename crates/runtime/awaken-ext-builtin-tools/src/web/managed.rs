@@ -441,6 +441,7 @@ mod tests {
         assert!(
             WebFetchPlugin::new(provider.clone().registry(), None)
                 .with_execution_configuration(Some(WebFetchExecutionConfiguration {
+                    url_sources: None,
                     domains: Some(WebDomainFilter::Allow(vec!["docs.example".into()])),
                     max_content_tokens: None,
                 }))
