@@ -113,13 +113,3 @@ pub trait ClaimedSessionCoordinationControl: Send + Sync {
         command: SessionAgentBoundaryCommand,
     ) -> Result<(), ClaimedSessionControlError>;
 }
-
-pub trait ClaimedSessionControl:
-    ClaimedSessionRealizationControl + ClaimedSessionCoordinationControl
-{
-}
-
-impl<T> ClaimedSessionControl for T where
-    T: ClaimedSessionRealizationControl + ClaimedSessionCoordinationControl + ?Sized
-{
-}
