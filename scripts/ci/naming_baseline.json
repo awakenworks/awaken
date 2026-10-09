@@ -47,11 +47,6 @@
   },
   "turn-noun": {
     "awaken-eval::assistant_turns": 1,
-    "awaken-managed-session-events::EndTurn": 2,
-    "awaken-run-executor-acp::FreePerTurn": 1,
-    "awaken-run-executor-acp::TurnConfig": 1,
-    "awaken-run-executor-acp::TurnEnd": 1,
-    "awaken-run-executor-acp::max_turn_requests": 1,
     "awaken-runtime-examples::turn": 2
   }
 }
