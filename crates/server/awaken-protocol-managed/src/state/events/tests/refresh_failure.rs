@@ -471,3 +471,53 @@ async fn aggregate_usage_reuses_fenced_snapshots_without_independent_accounting_
         }
     }
 }
+
+#[tokio::test]
+async fn session_usage_reads_closed_intervals_only_and_never_the_read_clock() {
+    // Observable change: GET /v1/sessions/{id} `usage.active_seconds` reports
+    // closed runtime intervals only, so it no longer grows while an interval
+    // is open; it advances when the interval closes.
+    // Causes: C1 the Session root holds an open runtime interval and no closed
+    // active time; C2 the same committed prefix is read at two clock instants
+    // 5 s and 65 s after the interval opened, each refresh also checked
+    // against a cold rebuild. Effects: E1 both reads publish byte-identical
+    // usage; E2 active time is the durable closed total (0 s), never an
+    // elapsed reading of the open interval. Rules: R1 C1+C2 => E1+E2.
+    let clock = Arc::new(awaken_lease_testkit::ManualClock::new(1_000_000));
+    let state = ManagedState::from_fixture_parts(
+        Arc::new(LifecycleRuntime::default()),
+        None,
+        awaken_protocol_managed_testkit::ephemeral_session_repository().await,
+        awaken_protocol_managed_testkit::environment_fixture(clock.clone()).execution,
+        clock.clone(),
+    );
+    let session = state
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent": "coder", "environment_id": "env_local"
+            }))
+            .unwrap(),
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
+        )
+        .await
+        .unwrap();
+    let opened = state
+        .application
+        .begin_activity(&SessionId::from(&session.id))
+        .await
+        .unwrap();
+    assert!(opened.running_interval.is_some(), "C1 interval is open");
+    assert_eq!(opened.runtime_active_millis, 0, "C1 no closed active time");
+    let mut reads = Vec::new();
+    for elapsed_ms in [5_000, 60_000] {
+        clock.advance(elapsed_ms);
+        state.refresh_committed_events(&session.id).await.unwrap();
+        reads.push(serde_json::to_value(state.get_session(&session.id).unwrap().usage).unwrap());
+    }
+    assert_eq!(reads[0], reads[1], "R1/E1 the read clock changes nothing");
+    assert_eq!(
+        reads[1]["active_seconds"],
+        serde_json::json!(0),
+        "R1/E2 only closed intervals count"
+    );
+}

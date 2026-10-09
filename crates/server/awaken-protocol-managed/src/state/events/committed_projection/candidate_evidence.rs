@@ -10,7 +10,6 @@
 use super::*;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_managed_session_events::LifecycleAcceptance;
-use awaken_time::WallClockExt as _;
 use std::collections::HashMap;
 
 /// One budget-reach transition whose owning interval has closed, with its
@@ -111,30 +110,7 @@ impl CandidateEvidence {
             ManagedState::assistant_response_coordinates(&snapshot.messages, &run_ids)
         });
         let durable_inbound = durable_inbound_projections(session_id, &persisted.event_batches);
-        // The same frozen snapshots already own per-Thread usage below. Avoid
-        // reopening every Thread and the Session root for the aggregate, which
-        // would read a second accounting prefix only to validate it away later.
-        // Child snapshots are keyed by distinct Thread; root is counted once.
-        // Final source validation and the existing publication CAS still fence
-        // the entire candidate, including this aggregate.
-        let usage = awaken_session_application::SessionApplication::project_session_usage(
-            persisted,
-            root.iter()
-                .chain(
-                    children
-                        .iter()
-                        .filter(|(id, _)| id.as_str() != session_id)
-                        .map(|(_, snapshot)| snapshot),
-                )
-                .map(|snapshot| {
-                    awaken_session_application_contract::session_usage_from_thread_usage(
-                        awaken_runtime_contract::llm::ThreadUsage::from_committed_state(
-                            &snapshot.state,
-                        ),
-                    )
-                }),
-            state.roles.clock.now_ms(),
-        );
+        let usage = committed_session_usage(persisted, session_id, root.as_ref(), &children);
         let primary_thread_usage = usage_projection::project_committed_thread_usage(
             root.as_ref(),
             price_snapshot.as_ref(),
@@ -306,6 +282,45 @@ impl CandidateEvidence {
             usage: &self.child_thread_usage,
         }
     }
+}
+
+/// The Session usage of one committed prefix.
+///
+/// The same frozen snapshots already own per-Thread usage. Avoid reopening
+/// every Thread and the Session root for the aggregate, which would read a
+/// second accounting prefix only to validate it away later. Child snapshots
+/// are keyed by distinct Thread; root is counted once. Final source
+/// validation and the existing publication CAS still fence the entire
+/// candidate, including this aggregate. Active time is the durable closed
+/// total only: an open interval has no committed end, so reading the clock
+/// here would make the same prefix project different usage at different read
+/// times. It advances when the interval closes.
+fn committed_session_usage(
+    persisted: &awaken_session_state_contract::PersistedSession,
+    session_id: &str,
+    root: Option<&RunRecoverySnapshot>,
+    children: &awaken_session_application::ProjectionThreadSnapshots,
+) -> SessionUsage {
+    let mut usage = awaken_session_application::SessionApplication::project_session_usage(
+        persisted,
+        root.into_iter()
+            .chain(
+                children
+                    .iter()
+                    .filter(|(id, _)| id.as_str() != session_id)
+                    .map(|(_, snapshot)| snapshot),
+            )
+            .map(|snapshot| {
+                awaken_session_application_contract::session_usage_from_thread_usage(
+                    awaken_runtime_contract::llm::ThreadUsage::from_committed_state(
+                        &snapshot.state,
+                    ),
+                )
+            }),
+        0,
+    );
+    usage.active_seconds = persisted.runtime_active_millis / 1_000;
+    usage
 }
 
 /// One Thread's usage from its committed state commands up to
