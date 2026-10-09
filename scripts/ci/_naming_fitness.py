@@ -16,7 +16,9 @@ scanned); a type is any `struct`, `enum`, `trait`, `type` or `union` declaration
   anywhere: each word has one qualified meaning (D7.4). Keyed `crate::Name`.
 * `turn-noun`: an identifier with the word `Turn`/`turn` (or its plural) as one
   of its CamelCase or snake_case words outside the protocol adapters
-  (`awaken-protocol-*`): the run loop speaks Thread, Run and Step (ADR-0064 D1).
+  (`awaken-protocol-*`, and the crates that speak an external protocol's own
+  vocabulary: the ACP executor and the Managed session-event projection): the
+  run loop speaks Thread, Run and Step (ADR-0064 D1).
   The letters inside another word (`return`, `Return`) are not the word. Keyed
   `crate::identifier`.
 
@@ -47,6 +49,10 @@ TEST_DOUBLE_PREFIXES = ("Fake", "Mock", "Stub", "Dummy", "Spy", "Test")
 BARE_NAMES = frozenset({"Provider", "Coordinator", "Host"})
 TURN_WORDS = frozenset({"turn", "turns"})
 PROTOCOL_ADAPTER_PREFIX = "awaken-protocol-"
+# Crates outside the prefix whose `turn` words are an external protocol's own
+# vocabulary (ACP `max_turn_requests`, Managed `end_turn`), which ADR-0064 D1
+# allows in protocol DTOs and adapters.
+PROTOCOL_ADAPTER_CRATES = frozenset({"awaken-run-executor-acp", "awaken-managed-session-events"})
 SDK_PRODUCT = "sdk"
 COMPOSITION_LAYER = "bootstrap"
 BINARY_DIRECTORY = "bin"
@@ -95,7 +101,10 @@ def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) 
     for crate in sources:
         mechanism_allowed = composition_root(crate)
         sdk = crate.metadata.get("product") == SDK_PRODUCT
-        adapter = crate.name.startswith(PROTOCOL_ADAPTER_PREFIX)
+        adapter = (
+            crate.name.startswith(PROTOCOL_ADAPTER_PREFIX)
+            or crate.name in PROTOCOL_ADAPTER_CRATES
+        )
         for path, syntax in crate.syntax.items():
             relative = path.relative_to(root) if root in path.parents else path
             for match in _DECLARATION.finditer(syntax):
