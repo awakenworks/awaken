@@ -366,7 +366,7 @@ impl SharedHost {
         match (owner, effect.command.restore_target.as_ref()) {
             (
                 SessionEnvironmentOwner::Restoring(
-                    crate::session_slot::SessionEnvironmentRestoration::Awaiting { request },
+                    crate::environment_owner::SessionEnvironmentRestoration::Awaiting { request },
                 ),
                 Some(expected),
             ) if &request == expected => {

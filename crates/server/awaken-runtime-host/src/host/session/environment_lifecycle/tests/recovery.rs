@@ -645,7 +645,7 @@ async fn legacy_suspending_projection_keeps_exact_binding_provenance_without_fab
                 identity: BoundSessionEnvironmentIdentity::LegacyDirect(
                     LegacyDirectEnvironmentProvenance::DurableBinding {
                         binding,
-                        effect: crate::session_slot::LegacyEnvironmentEffect::Absent,
+                        effect: crate::environment_owner::LegacyEnvironmentEffect::Absent,
                     }
                 ),
                 binding: owner_binding,

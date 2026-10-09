@@ -50,7 +50,7 @@ async fn durable_adoption_without_an_owning_sink_preserves_exact_projected_ident
         let expected = BoundSessionEnvironmentIdentity::LegacyDirect(
             LegacyDirectEnvironmentProvenance::DurableBinding {
                 binding: binding.clone(),
-                effect: crate::session_slot::LegacyEnvironmentEffect::Absent,
+                effect: crate::environment_owner::LegacyEnvironmentEffect::Absent,
             },
         );
         let host = (crate::HostDependencies::ephemeral(

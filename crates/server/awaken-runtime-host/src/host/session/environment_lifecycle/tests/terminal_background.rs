@@ -175,7 +175,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             BoundSessionEnvironmentIdentity::LegacyDirect(
                 LegacyDirectEnvironmentProvenance::DurableBinding {
                     binding: binding.clone(),
-                    effect: crate::session_slot::LegacyEnvironmentEffect::Absent,
+                    effect: crate::environment_owner::LegacyEnvironmentEffect::Absent,
                 },
             )
         };

@@ -168,7 +168,7 @@ impl ManagedHost {
             .session_slots
             .close_mcp_realization_admission(
                 thread,
-                crate::session_slot::McpQuiescenceAdmissionFence::new(
+                awaken_session_mcp::McpQuiescenceAdmissionFence::new(
                     operation,
                     source_effect_id,
                     source_binding,

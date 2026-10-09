@@ -1,8 +1,8 @@
 //! Session environment lifecycle tests, split by topic; shared fixtures live here.
 use super::state::ProjectedEnvironmentOwner;
 use super::*;
+use crate::environment_owner::UnboundSessionEnvironmentOrigin;
 use crate::session_environment::SandboxEnvironmentAccess;
-use crate::session_slot::UnboundSessionEnvironmentOrigin;
 
 mod candidate_adoption;
 mod checkpoint_admission;

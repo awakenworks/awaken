@@ -6,7 +6,7 @@
 //! of these phases is performed under the same Session lifecycle guard.
 
 use super::*;
-use crate::session_slot::{
+use crate::environment_owner::{
     LegacyEnvironmentEffect, SessionEnvironmentRestoration, UnboundSessionEnvironmentOrigin,
 };
 

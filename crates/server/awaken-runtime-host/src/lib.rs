@@ -47,6 +47,7 @@ mod deployment_config;
 mod dispatch_session_runtime;
 mod durable_operations;
 mod environment_continuation;
+mod environment_owner;
 mod frozen_inputs;
 mod host;
 mod host_error;

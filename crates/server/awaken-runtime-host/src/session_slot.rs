@@ -18,15 +18,14 @@ use std::sync::{Arc, Mutex};
 use crate::memory::BoundMemory;
 use crate::staged_resources::StagedResources;
 
-mod environment_owner;
-pub(crate) use environment_owner::*;
+pub(crate) use crate::environment_owner::*;
 mod execution_authority;
 mod projection_receipt;
 pub(crate) use projection_receipt::FrozenProjectionReceipt;
+/// The exclusion every realization phase driver must hold is contract-owned
+/// (`SessionRealizationPermit`); this crate only supplies the Session slot
+/// allocation as its identity.
 mod realization_permit;
-/// The exclusion every realization phase driver must hold is contract-owned;
-/// this crate only supplies the Session slot allocation as its identity.
-pub(crate) use awaken_session_realization_contract::SessionRealizationPermit;
 
 /// Host fixtures use the actual Control-clock coordinate for live replies.
 /// Deliberately rejects expired input: an expiry test must construct and age

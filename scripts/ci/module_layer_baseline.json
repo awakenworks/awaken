@@ -6,9 +6,6 @@
     "environment_continuation -> host": [
       "BoundEnvironmentPreparationMode"
     ],
-    "environment_continuation -> session_slot": [
-      "McpQuiescenceAdmissionFence"
-    ],
     "host::build::environment_capacity -> host::build": [
       "*"
     ],
@@ -16,19 +13,7 @@
       "*"
     ],
     "host::session::environment_lifecycle -> session_slot": [
-      "BoundSessionEnvironment",
-      "BoundSessionEnvironmentIdentity",
-      "LegacyDirectEnvironmentProvenance",
-      "LegacyEnvironmentEffect",
-      "RetiringEnvironmentOwner",
-      "RetiringSessionEnvironment",
-      "SessionEnvironmentOwner",
-      "SessionEnvironmentPreparation",
-      "SessionEnvironmentRestoration",
-      "SessionEnvironmentRetirementCause",
-      "SessionRuntimeSlot",
-      "UnboundSessionEnvironment",
-      "UnboundSessionEnvironmentOrigin"
+      "SessionRuntimeSlot"
     ],
     "host::session::environment_realization -> host::session": [
       "*"
@@ -53,9 +38,6 @@
     ],
     "host::worker_resolver::session_realization -> host::worker_resolver": [
       "*"
-    ],
-    "host::worker_resolver::session_realization -> session_slot": [
-      "SessionRealizationPermit"
     ],
     "managed_resource_projection -> crate": [
       "ManagedHost"

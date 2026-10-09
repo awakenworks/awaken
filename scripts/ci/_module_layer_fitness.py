@@ -67,6 +67,7 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "environment_continuation",
         "terminal_repository_publication",
         "session_environment",
+        "environment_owner",
     )),
     (REALIZER, _LEAF_REASON, (
         "staged_resources",

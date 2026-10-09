@@ -339,7 +339,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         None,
         None,
     );
-    let fence = crate::session_slot::McpQuiescenceAdmissionFence::new(
+    let fence = awaken_session_mcp::McpQuiescenceAdmissionFence::new(
         &operation,
         "source-effect",
         &serde_json::to_string(&environment.lifecycle().handle()).unwrap(),

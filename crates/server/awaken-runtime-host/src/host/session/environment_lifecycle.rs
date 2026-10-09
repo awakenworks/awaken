@@ -8,7 +8,7 @@
 //! each physical wrapper across every fallible or cancellable provider call.
 
 use super::*;
-use crate::session_slot::{
+use crate::environment_owner::{
     BoundSessionEnvironment, BoundSessionEnvironmentIdentity, LegacyDirectEnvironmentProvenance,
     RetiringEnvironmentOwner, RetiringSessionEnvironment, SessionEnvironmentOwner,
     SessionEnvironmentPreparation, SessionEnvironmentRetirementCause, UnboundSessionEnvironment,

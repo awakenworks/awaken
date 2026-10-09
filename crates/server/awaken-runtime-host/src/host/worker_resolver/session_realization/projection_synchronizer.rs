@@ -1146,7 +1146,7 @@ mod tests {
             host.session_slots
                 .read(thread, |slot| {
                     assert!(matches!(&slot.realization.environment_owner,
-                    crate::session_slot::SessionEnvironmentOwner::Retiring(retiring)
+                    crate::environment_owner::SessionEnvironmentOwner::Retiring(retiring)
                     if Arc::ptr_eq(&retiring.owned.environment(), &original)));
                     assert_eq!(slot.realization.authority.lease().unwrap().epoch, 1);
                     assert!(slot.run.runtime.is_none());
@@ -1756,9 +1756,9 @@ mod tests {
                 .read_realization(thread, |r| {
                     matches!(
                         &r.environment_owner,
-                        crate::session_slot::SessionEnvironmentOwner::Retiring(current)
+                        crate::environment_owner::SessionEnvironmentOwner::Retiring(current)
                             if current.cause
-                                == crate::session_slot::SessionEnvironmentRetirementCause::RealizationRevocation
+                                == crate::environment_owner::SessionEnvironmentRetirementCause::RealizationRevocation
                                 && Arc::ptr_eq(&current.owned.environment(), &retiring)
                     )
                 })

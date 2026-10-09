@@ -447,10 +447,10 @@ impl SharedHost {
     pub(super) async fn persist_authorized_environment_before_publish(
         &self,
         thread: &str,
-        candidate: &crate::session_slot::UnboundSessionEnvironment,
+        candidate: &crate::environment_owner::UnboundSessionEnvironment,
         effect: &AuthorizedSessionEnvironmentEffect,
     ) -> Result<
-        crate::session_slot::BoundSessionEnvironmentIdentity,
+        crate::environment_owner::BoundSessionEnvironmentIdentity,
         EnvironmentBindingPersistenceError,
     > {
         if matches!(
@@ -517,7 +517,7 @@ impl SharedHost {
         binding: String,
         effect: &AuthorizedSessionEnvironmentEffect,
     ) -> Result<
-        crate::session_slot::BoundSessionEnvironmentIdentity,
+        crate::environment_owner::BoundSessionEnvironmentIdentity,
         EnvironmentBindingPersistenceError,
     > {
         let receipt = self
@@ -547,8 +547,8 @@ impl SharedHost {
                         })?;
                 }
                 return Ok(
-                    crate::session_slot::BoundSessionEnvironmentIdentity::LegacyDirect(
-                        crate::session_slot::LegacyDirectEnvironmentProvenance::Direct(receipt),
+                    crate::environment_owner::BoundSessionEnvironmentIdentity::LegacyDirect(
+                        crate::environment_owner::LegacyDirectEnvironmentProvenance::Direct(receipt),
                     ),
                 );
             }
@@ -670,10 +670,10 @@ impl SharedHost {
         thread: &str,
     ) -> Result<Option<Arc<crate::session_environment::SessionEnvironment>>, HostError> {
         let revoked_binding = self.session_slots.read_realization(thread, |r| match &r.environment_owner {
-            crate::session_slot::SessionEnvironmentOwner::Retiring(retiring)
-                if retiring.cause == crate::session_slot::SessionEnvironmentRetirementCause::RealizationRevocation =>
+            crate::environment_owner::SessionEnvironmentOwner::Retiring(retiring)
+                if retiring.cause == crate::environment_owner::SessionEnvironmentRetirementCause::RealizationRevocation =>
                 match &retiring.owned {
-                    crate::session_slot::RetiringEnvironmentOwner::Unbound(candidate) => Some(candidate.binding.clone()),
+                    crate::environment_owner::RetiringEnvironmentOwner::Unbound(candidate) => Some(candidate.binding.clone()),
                     _ => None,
                 },
             _ => None,
@@ -731,13 +731,13 @@ impl SharedHost {
             }
         };
         let reconciliation = match &candidate.origin {
-            crate::session_slot::UnboundSessionEnvironmentOrigin::New
-            | crate::session_slot::UnboundSessionEnvironmentOrigin::DurableCreate(_) => {
+            crate::environment_owner::UnboundSessionEnvironmentOrigin::New
+            | crate::environment_owner::UnboundSessionEnvironmentOrigin::DurableCreate(_) => {
                 crate::staged_resources::EnvironmentResourceReconciliation::Fresh
             }
-            crate::session_slot::UnboundSessionEnvironmentOrigin::Adoption
-            | crate::session_slot::UnboundSessionEnvironmentOrigin::AdoptionFrom(_)
-            | crate::session_slot::UnboundSessionEnvironmentOrigin::DurableAdoption(_) => {
+            crate::environment_owner::UnboundSessionEnvironmentOrigin::Adoption
+            | crate::environment_owner::UnboundSessionEnvironmentOrigin::AdoptionFrom(_)
+            | crate::environment_owner::UnboundSessionEnvironmentOrigin::DurableAdoption(_) => {
                 crate::staged_resources::EnvironmentResourceReconciliation::Adopted
             }
         };
