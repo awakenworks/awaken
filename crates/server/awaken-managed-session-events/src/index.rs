@@ -14,6 +14,8 @@
 //!
 //! Consumer: the protocol adapter's canonical sort of one candidate.
 
+mod tool_results;
+
 use std::collections::{HashMap, HashSet};
 
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -259,8 +261,29 @@ impl<'a> OrderIndex<'a> {
     /// The exact occurrence classifier already built for this Thread's
     /// committed snapshot. Coordination reuses it instead of refolding the
     /// same ToolUse/ToolResult prefix behind the ordering index.
+    /// Every accepted Awaiting target of this prefix that needs its
+    /// synthetic tool (see [`crate::synthetic_awaiting_tools`]).
+    pub fn synthetic_awaiting_tools(
+        &self,
+    ) -> Result<Vec<crate::SyntheticAwaitingTool>, crate::ProjectionError> {
+        crate::synthetic_awaiting_tools(
+            self.evidence.lifecycle,
+            self.evidence.historical_pending,
+            |thread_id| self.threads.get(thread_id).map(|thread| thread.snapshot),
+        )
+    }
+
     pub fn transcript_evidence(&self, thread_id: &str) -> Option<&CommittedTranscriptEvidence> {
         self.threads.get(thread_id).map(|thread| &thread.transcript)
+    }
+
+    pub(crate) fn permission_snapshots(&self) -> impl Iterator<Item = &RunRecoverySnapshot> {
+        self.threads.values().map(|thread| thread.snapshot)
+    }
+
+    pub(crate) fn permission_call_sources(&self, thread_id: &str, call_id: &str) -> &[usize] {
+        self.transcript_evidence(thread_id)
+            .map_or(&[], |transcript| transcript.call_message_indices(call_id))
     }
 
     fn retain_earliest<K: std::hash::Hash + Eq>(
@@ -289,15 +312,8 @@ impl<'a> OrderIndex<'a> {
             }) else {
                 continue;
             };
-            let next_terminal_source_commit_cursor = lifecycle
-                .iter()
-                .filter(|event| {
-                    event.thread_id == awaiting.thread_id
-                        && event.run_id == awaiting.run_id
-                        && event.cursor > awaiting.cursor
-                        && SessionAgentRunBoundary::is_boundary(event.kind)
-                })
-                .min_by_key(|event| event.cursor)
+            let next_terminal_source_commit_cursor = self
+                .next_run_boundary(awaiting)
                 .map(|event| event.source_commit_cursor);
             if let Some(order) = historical_pending_projection_order(
                 awaiting.source_commit_cursor,
@@ -316,6 +332,19 @@ impl<'a> OrderIndex<'a> {
             }
         }
         orders
+    }
+
+    fn next_run_boundary(&self, awaiting: &RunLifecycleEvent) -> Option<&RunLifecycleEvent> {
+        self.evidence
+            .lifecycle
+            .iter()
+            .filter(|event| {
+                event.thread_id == awaiting.thread_id
+                    && event.run_id == awaiting.run_id
+                    && event.cursor > awaiting.cursor
+                    && SessionAgentRunBoundary::is_boundary(event.kind)
+            })
+            .min_by_key(|event| event.cursor)
     }
 
     /// Every accepted inbound command, at its immutable admission fence.

@@ -12,15 +12,27 @@ use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_managed_session_events::LifecycleAcceptance;
 use std::collections::HashMap;
 
-/// One budget-reach transition whose owning interval has closed, with its
-/// public usage and limit already priced.
-pub(super) type BudgetReachProjection = (u64, crate::types::Usage, crate::types::BudgetLimit);
+/// Every retained terminal Outcome the root prefix anchors; an invalid one
+/// fails the candidate.
+fn committed_outcomes(
+    terminals: impl IntoIterator<Item = (String, CommittedOutcomeProjection)>,
+    root: Option<&RunRecoverySnapshot>,
+) -> Result<Vec<awaken_managed_session_events::CommittedOutcome>, StateError> {
+    terminals
+        .into_iter()
+        .filter_map(|(outcome_id, terminal)| {
+            awaken_managed_session_events::CommittedOutcome::select(outcome_id, terminal, root)
+                .transpose()
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(projection_error)
+}
 
 pub(super) struct CandidateEvidence {
     pub(super) root: Option<RunRecoverySnapshot>,
     pub(super) links: Vec<CoordinatedThreadLink>,
     pub(super) children: awaken_session_application::ProjectionThreadSnapshots,
-    pub(super) outcomes: Vec<AnchoredOutcomeProjection>,
+    pub(super) outcomes: Vec<awaken_managed_session_events::CommittedOutcome>,
     pub(super) outcome_query_incomplete: bool,
     /// Child transcripts, minus every Thread whose transcript is blocked on a
     /// ticket the prefix does not expose yet.
@@ -35,7 +47,7 @@ pub(super) struct CandidateEvidence {
     pub(super) primary_thread_usage: Option<crate::types::SessionThreadUsage>,
     pub(super) child_thread_usage: HashMap<String, Option<crate::types::SessionThreadUsage>>,
     pub(super) price_snapshot: Option<awaken_session_budget_contract::ManagedListPriceSnapshot>,
-    pub(super) budget_reach: Vec<BudgetReachProjection>,
+    pub(super) budget_reach: Vec<awaken_managed_session_events::BudgetReach>,
     /// The complete accepted lifecycle prefix and its checkpoint cursor.
     pub(super) acceptance: LifecycleAcceptance,
     pub(super) historical_pending: HashMap<RunLifecycleCursor, Pending>,
@@ -44,6 +56,43 @@ pub(super) struct CandidateEvidence {
 }
 
 impl CandidateEvidence {
+    /// Derive both existing domain plans from this one fenced prefix before
+    /// any disposable record is changed. Source failures abort the candidate.
+    pub(super) fn derive_plans(
+        &self,
+        persisted: &awaken_session_state_contract::PersistedSession,
+        index: &OrderIndex<'_>,
+    ) -> Result<
+        (
+            awaken_managed_session_events::AggregatePlan,
+            awaken_managed_session_events::CoordinationEvents,
+        ),
+        StateError,
+    > {
+        let aggregate = awaken_managed_session_events::plan_aggregate(
+            persisted,
+            &self.acceptance.accepted,
+            &self.historical_pending,
+            &self.links,
+        )
+        .map_err(projection_error)?;
+        let coordination = awaken_managed_session_events::derive_coordination_events(
+            &awaken_managed_session_events::CoordinationEvidence {
+                session_id: persisted.session_id.as_str(),
+                root: self.root.as_ref(),
+                root_blocked: self.root_blocked(persisted.session_id.as_str()),
+                root_response_coordinates: &self.root_response_coordinates,
+                links: &self.links,
+                lifecycle: &self.acceptance.accepted,
+                historical_pending: &self.historical_pending,
+                order_index: index,
+            },
+            managed_tool_event_id,
+        )
+        .map_err(projection_error)?;
+        Ok((aggregate, coordination))
+    }
+
     pub(super) async fn read(
         state: &ManagedState,
         session_id: &str,
@@ -83,13 +132,7 @@ impl CandidateEvidence {
                     ))
                 })?;
         }
-        let outcomes = outcome_terminals
-            .into_iter()
-            .map(|(outcome_id, terminal)| validate_durable_outcome_projection(outcome_id, terminal))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .filter_map(|projection| projection.anchor(root.as_ref()))
-            .collect::<Vec<_>>();
+        let outcomes = committed_outcomes(outcome_terminals, root.as_ref())?;
         let mut transcripts = children
             .iter()
             .map(|(thread_id, snapshot)| (thread_id.clone(), snapshot.messages.clone()))
@@ -135,49 +178,14 @@ impl CandidateEvidence {
             lifecycle,
         )
         .map_err(projection_error)?;
-        // Price only the transitions whose public pause is anchored by this
-        // accepted committed prefix. A crossing hidden behind an answerable
-        // ticket cannot be inferred from the current Session status.
-        let budget_reach = persisted
-            .budget
-            .reach_transitions()
-            .iter()
-            .filter(|transition| {
-                awaken_managed_session_events::budget_reach_projection_close_cursor(
-                    persisted,
-                    transition,
-                    &accepted.acceptance.accepted,
-                    &accepted.historical_pending,
-                )
-                .is_some()
-            })
-            .map(|transition| {
-                let mut usage = session_usage_value(
-                    transition
-                        .usage_cursor
-                        .to_session_usage()
-                        .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?,
-                    None,
-                )
-                .map_err(StateError::Run)?;
-                usage.list_cost = transition.public_list_cost_minor().map(|amount| {
-                    crate::types::MonetaryAmount {
-                        amount: amount.to_string(),
-                        currency: crate::types::Currency::USD,
-                    }
-                });
-                Ok((
-                    transition.generation,
-                    usage,
-                    crate::types::BudgetLimit::Limit {
-                        max_list_cost: crate::types::MonetaryAmount {
-                            amount: transition.max_list_cost_minor.to_string(),
-                            currency: crate::types::Currency::USD,
-                        },
-                    },
-                ))
-            })
-            .collect::<Result<Vec<_>, StateError>>()?;
+        // Only the reaches whose public pause this accepted committed prefix
+        // anchors; one hidden behind an answerable ticket stays withheld.
+        let budget_reach = awaken_managed_session_events::BudgetReach::exposed(
+            persisted,
+            &accepted.acceptance.accepted,
+            &accepted.historical_pending,
+        )
+        .map_err(projection_error)?;
         // A Thread's current answerable call is its latest accepted
         // lifecycle commit when that commit is an audited pause.
         let child_pending = accepted.current_pending(children.keys());
@@ -269,8 +277,12 @@ impl CandidateEvidence {
     }
 
     /// The borrowed coordination evidence consumed by the child projector.
-    pub(super) fn delegation(&self) -> DelegationProjectionEvidence<'_> {
+    pub(super) fn delegation<'a>(
+        &'a self,
+        order_index: &'a OrderIndex<'a>,
+    ) -> DelegationProjectionEvidence<'a> {
         DelegationProjectionEvidence {
+            order_index,
             links: &self.links,
             snapshots: &self.children,
             transcripts: &self.transcripts,

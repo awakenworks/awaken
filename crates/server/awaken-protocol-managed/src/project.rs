@@ -10,7 +10,8 @@
 //! a pending built-in tool as `agent.tool_use{ask}`; anything else ran
 //! (`agent.tool_use{allow}`).
 
-use awaken_agent_contract::event::{Fact, ToolDisposition, Transcoder};
+use awaken_agent_contract::event::{Fact, Transcoder};
+use awaken_managed_session_events::{ToolUseFamily, TranscriptFold};
 use awaken_session_application_contract::Pending;
 
 use crate::state::{AgentCapabilities, CustomTool, OutcomeIteration};
@@ -289,116 +290,117 @@ fn mcp_server_name(name: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The Managed Agents transcoder: neutral projection events to public
-/// `OutboundKind`. `RunStarted` is dropped (Managed has no per-step start event);
-/// terminal events become `session.status_idle`. Stateful within one Run: it
-/// remembers `mcp__` tool-use ids so their results project as MCP results too.
-/// The permission a committed transcript can establish on its own.
-///
-/// A call still awaiting a decision is evidence: the committed ticket says a
-/// person was asked. A call with a result is not — a refused call and an
-/// executed call whose tool errored look identical here, so this returns `None`
-/// and the recorded gate decision fills it in. Inferring `allow` from "a result
-/// exists" is what reported refused calls as permitted, and an unrecognized
-/// decision label would have fallen straight back into that inference.
-fn awaited_permission(disposition: &ToolDisposition) -> Option<EvaluatedPermission> {
-    match disposition {
-        ToolDisposition::PendingBuiltin => Some(EvaluatedPermission::Ask),
-        ToolDisposition::PendingClient | ToolDisposition::Executed => None,
-    }
+/// The permission a committed transcript can establish on its own: a call
+/// still awaiting a decision was asked. Anything else is `None` and the
+/// recorded gate decision fills it in — inferring `allow` from "a result
+/// exists" is what reported refused calls as permitted.
+fn awaited_permission(awaiting_decision: bool) -> Option<EvaluatedPermission> {
+    awaiting_decision.then_some(EvaluatedPermission::Ask)
 }
 
+/// The Managed Agents transcoder: neutral projection events to public
+/// `OutboundKind`. `RunStarted` is dropped (Managed has no per-step start event);
+/// terminal events become `session.status_idle`. Each transcript fold's tool
+/// family comes from the timeline domain's one classifier, which is stateful
+/// within one Run: it remembers MCP calls so their results project as MCP
+/// results too.
 #[derive(Default)]
 pub struct ManagedEncoder {
-    mcp_ids: std::collections::HashSet<String>,
+    families: awaken_managed_session_events::ToolFamilies,
+}
+
+impl ManagedEncoder {
+    fn encode_fold(fold: TranscriptFold) -> ProjectedEvent {
+        match fold {
+            // The Step reasoned: a contentless forward-progress marker, before the
+            // answer (`BetaManagedAgentsAgentThinkingEvent` carries no content).
+            TranscriptFold::Thinking => ProjectedEvent::minted(OutboundKind::AgentThinking {}),
+            TranscriptFold::Message { content } => {
+                ProjectedEvent::minted(OutboundKind::AgentMessage { content })
+            }
+            // An MCP tool call (`mcp__server__tool`) is host-executed like a
+            // built-in; project it as the distinct MCP events. Which policy
+            // asked is not in the transcript; the recorded gate decision
+            // fills `evaluation` in.
+            TranscriptFold::ToolUse {
+                call_id,
+                name,
+                input,
+                family: ToolUseFamily::Mcp,
+                awaiting_decision,
+            } => ProjectedEvent::for_tool_call(
+                call_id,
+                OutboundKind::AgentMcpToolUse {
+                    mcp_server_name: mcp_server_name(&name),
+                    name,
+                    input,
+                    evaluated_permission: awaited_permission(awaiting_decision),
+                    evaluation: None,
+                    session_thread_id: None,
+                },
+            ),
+            TranscriptFold::ToolUse {
+                call_id,
+                name,
+                input,
+                family: ToolUseFamily::Client,
+                ..
+            } => ProjectedEvent::for_tool_call(
+                call_id,
+                OutboundKind::AgentCustomToolUse {
+                    name,
+                    input,
+                    session_thread_id: None,
+                },
+            ),
+            TranscriptFold::ToolUse {
+                call_id,
+                name,
+                input,
+                family: ToolUseFamily::Agent,
+                awaiting_decision,
+            } => ProjectedEvent::for_tool_call(
+                call_id,
+                OutboundKind::AgentToolUse {
+                    name,
+                    input,
+                    evaluated_permission: awaited_permission(awaiting_decision),
+                    evaluation: None,
+                    session_thread_id: None,
+                },
+            ),
+            TranscriptFold::ToolResult {
+                call_id,
+                content,
+                is_error,
+                mcp: true,
+            } => ProjectedEvent::minted(OutboundKind::AgentMcpToolResult {
+                mcp_tool_use_id: call_id,
+                content,
+                is_error: Some(is_error),
+            }),
+            TranscriptFold::ToolResult {
+                call_id,
+                content,
+                is_error,
+                mcp: false,
+            } => ProjectedEvent::minted(OutboundKind::AgentToolResult {
+                tool_use_id: call_id,
+                content,
+                is_error: Some(is_error),
+            }),
+        }
+    }
 }
 
 impl Transcoder for ManagedEncoder {
     type Output = ProjectedEvent;
 
     fn fact(&mut self, event: &Fact) -> Vec<ProjectedEvent> {
+        if let Some(fold) = self.families.classify(event) {
+            return vec![Self::encode_fold(fold)];
+        }
         match event {
-            Fact::RunStarted => Vec::new(),
-            // The Step reasoned: a contentless forward-progress marker, before the
-            // answer (`BetaManagedAgentsAgentThinkingEvent` carries no content).
-            Fact::AssistantThinking => {
-                vec![ProjectedEvent::minted(OutboundKind::AgentThinking {})]
-            }
-            Fact::AssistantMessage { content, .. } => {
-                vec![ProjectedEvent::minted(OutboundKind::AgentMessage {
-                    content: content.clone(),
-                })]
-            }
-            // An MCP tool call (`mcp__server__tool`) is host-executed like a
-            // built-in; project it as the distinct MCP events.
-            Fact::ToolCall {
-                id,
-                name,
-                input,
-                disposition,
-            } if awaken_agent_contract::McpToolId::claims_namespace(name) => {
-                self.mcp_ids.insert(id.clone());
-                let evaluated_permission = awaited_permission(disposition);
-                vec![ProjectedEvent::for_tool_call(
-                    id.clone(),
-                    OutboundKind::AgentMcpToolUse {
-                        name: name.clone(),
-                        mcp_server_name: mcp_server_name(name),
-                        input: input.clone(),
-                        evaluated_permission,
-                        // Which policy asked is not in the transcript either;
-                        // the recorded gate decision fills it in.
-                        evaluation: None,
-                        session_thread_id: None,
-                    },
-                )]
-            }
-            Fact::ToolCall {
-                id,
-                name,
-                input,
-                disposition,
-            } => {
-                let kind = match disposition {
-                    ToolDisposition::PendingClient => OutboundKind::AgentCustomToolUse {
-                        name: name.clone(),
-                        input: input.clone(),
-                        session_thread_id: None,
-                    },
-                    ToolDisposition::PendingBuiltin | ToolDisposition::Executed => {
-                        OutboundKind::AgentToolUse {
-                            name: name.clone(),
-                            input: input.clone(),
-                            evaluated_permission: awaited_permission(disposition),
-                            evaluation: None,
-                            session_thread_id: None,
-                        }
-                    }
-                };
-                vec![ProjectedEvent::for_tool_call(id.clone(), kind)]
-            }
-            Fact::ToolResult {
-                id,
-                content,
-                is_error,
-            } if self.mcp_ids.contains(id) => {
-                vec![ProjectedEvent::minted(OutboundKind::AgentMcpToolResult {
-                    mcp_tool_use_id: id.clone(),
-                    content: content.clone(),
-                    is_error: Some(*is_error),
-                })]
-            }
-            Fact::ToolResult {
-                id,
-                content,
-                is_error,
-            } => {
-                vec![ProjectedEvent::minted(OutboundKind::AgentToolResult {
-                    tool_use_id: id.clone(),
-                    content: content.clone(),
-                    is_error: Some(*is_error),
-                })]
-            }
             Fact::Awaiting {
                 pending_tool_use_id,
             } => vec![ProjectedEvent::minted(OutboundKind::SessionStatusIdle {
@@ -427,9 +429,14 @@ impl Transcoder for ManagedEncoder {
                     stop_details: None,
                 })]
             }
-            // A continuation-guard round is an internal audit fact, not an
-            // agent-visible managed wire event; the fold never emits it here.
-            Fact::Continuation { .. } => Vec::new(),
+            // `RunStarted` has no Managed event; a continuation-guard round is
+            // an internal audit fact, not an agent-visible managed wire event.
+            Fact::RunStarted
+            | Fact::Continuation { .. }
+            | Fact::AssistantThinking
+            | Fact::AssistantMessage { .. }
+            | Fact::ToolCall { .. }
+            | Fact::ToolResult { .. } => Vec::new(),
         }
     }
 }
@@ -446,7 +453,7 @@ pub fn project_messages(
         messages,
         pending,
         &std::collections::HashSet::new(),
-        std::iter::empty(),
+        Default::default(),
         &advisor_blocks,
         &[],
     )
@@ -454,7 +461,7 @@ pub fn project_messages(
 
 pub(crate) use awaken_managed_session_events::{
     AdvisorConsultationBlocks, RuntimeToolFollowupAdmission, RuntimeToolProjectionPhase,
-    advisor_consultation_blocks, committed_transcript_evidence,
+    advisor_consultation_blocks,
 };
 
 /// Project a committed transcript delta while retaining MCP call identities
@@ -464,13 +471,11 @@ pub(crate) fn project_messages_with_mcp_ids(
     messages: &[awaken_agent_contract::agent::message::Message],
     pending: Option<&Pending>,
     projected_tool_ids: &std::collections::HashSet<String>,
-    mcp_ids: impl IntoIterator<Item = String>,
+    families: awaken_managed_session_events::ToolFamilies,
     advisor_blocks: &AdvisorConsultationBlocks,
     pending_history: &[&Pending],
 ) -> Vec<ProjectedEvent> {
-    let mut encoder = ManagedEncoder::default();
-    encoder.mcp_ids.extend(mcp_ids);
-    encoder.transcode_facts(&awaken_managed_session_events::fold_transcript(
+    ManagedEncoder { families }.transcode_facts(&awaken_managed_session_events::fold_transcript(
         messages,
         pending,
         projected_tool_ids,
@@ -482,6 +487,56 @@ pub(crate) fn project_messages_with_mcp_ids(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_managed_session_events::committed_transcript_evidence;
+
+    #[test]
+    fn reused_tool_call_ids_keep_the_current_builtin_or_mcp_result_family() {
+        // C1 raw id repeats; C2 the first/second calls are builtin/MCP or
+        // MCP/builtin; C3 each result follows its own call. R1 all C1-C3
+        // rows => each result has its own call's family. A past MCP id must
+        // not permanently classify a later builtin result in this encoder.
+        use awaken_agent_contract::agent::content::ContentBlock;
+        use awaken_agent_contract::agent::message::{Id, Message, Role};
+        for names in [["mcp__srv__echo", "read"], ["read", "mcp__srv__echo"]] {
+            let mut messages = Vec::new();
+            for (step, name) in names.iter().enumerate() {
+                messages.push(Message::new(
+                    Id(format!("assistant-{step}")),
+                    Role::Assistant,
+                    vec![ContentBlock::tool_use(
+                        "reused",
+                        *name,
+                        serde_json::json!({}),
+                    )],
+                ));
+                messages.push(Message::new(
+                    Id(format!("result-{step}")),
+                    Role::Tool,
+                    vec![ContentBlock::tool_result(
+                        "reused",
+                        vec![ContentBlock::text("done")],
+                    )],
+                ));
+            }
+            let events = project_messages(&messages, None);
+            let results = events
+                .iter()
+                .filter_map(|event| match event.kind {
+                    OutboundKind::AgentToolResult { .. } => Some("agent.tool_result"),
+                    OutboundKind::AgentMcpToolResult { .. } => Some("agent.mcp_tool_result"),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let expected = names.map(|name| {
+                if awaken_agent_contract::McpToolId::claims_namespace(name) {
+                    "agent.mcp_tool_result"
+                } else {
+                    "agent.tool_result"
+                }
+            });
+            assert_eq!(results, expected, "R1 {names:?}");
+        }
+    }
 
     #[test]
     fn managed_tool_event_identity_is_stable_qualified_and_reversible() {
@@ -645,7 +700,7 @@ mod tests {
             &[assistant],
             None,
             &std::collections::HashSet::new(),
-            std::iter::empty(),
+            Default::default(),
             &advisor_blocks,
             &[],
         );
@@ -659,7 +714,7 @@ mod tests {
             &[results],
             None,
             &std::collections::HashSet::from(["ordinary-call".into()]),
-            std::iter::empty(),
+            Default::default(),
             &advisor_blocks,
             &[],
         );
@@ -675,7 +730,7 @@ mod tests {
             &[reused_call],
             None,
             &std::collections::HashSet::new(),
-            std::iter::empty(),
+            Default::default(),
             &advisor_blocks,
             &[],
         );
@@ -683,7 +738,7 @@ mod tests {
             &[reused_result],
             None,
             &std::collections::HashSet::from(["advisor-call".into()]),
-            std::iter::empty(),
+            Default::default(),
             &advisor_blocks,
             &[],
         );
@@ -766,7 +821,7 @@ mod tests {
         let prefix = vec![first, first_result, current.clone()];
         let evidence = committed_transcript_evidence(&prefix, Some(&pending));
         let selected =
-            evidence.project_message(&current, &std::collections::HashSet::new(), None, &[]);
+            evidence.project_message(&current, &std::collections::HashSet::new(), None, &[], None);
         assert!(!selected.fully_classified, "F1/E3");
         assert!(
             matches!(
@@ -784,6 +839,7 @@ mod tests {
             &std::collections::HashSet::from([(current.id.0.clone(), "same".to_string())]),
             None,
             &[],
+            None,
         );
         assert!(!selected.fully_classified, "F2/E3");
         assert!(
@@ -805,7 +861,7 @@ mod tests {
         .concat();
         let evidence = committed_transcript_evidence(&completed, None);
         let selected =
-            evidence.project_message(&current, &std::collections::HashSet::new(), None, &[]);
+            evidence.project_message(&current, &std::collections::HashSet::new(), None, &[], None);
         assert!(selected.fully_classified, "F3/E5");
         assert_eq!(
             selected
@@ -868,7 +924,7 @@ mod tests {
                     &messages,
                     None,
                     &std::collections::HashSet::new(),
-                    std::iter::empty(),
+                    Default::default(),
                     &advisor_consultation_blocks(&messages),
                     &order,
                 );
@@ -896,7 +952,7 @@ mod tests {
                 &messages,
                 None,
                 &std::collections::HashSet::new(),
-                std::iter::empty(),
+                Default::default(),
                 &advisor_consultation_blocks(&messages),
                 &[&unrelated],
             );
@@ -957,9 +1013,10 @@ mod tests {
                 is_error: true,
             },
         ];
-        let mut encoder = ManagedEncoder::default();
-        encoder.mcp_ids.insert("mcp".into());
-        let projected = encoder.transcode_facts(&facts);
+        let projected = ManagedEncoder {
+            families: awaken_managed_session_events::ToolFamilies::with_mcp_calls(["mcp".into()]),
+        }
+        .transcode_facts(&facts);
         assert!(matches!(
             &projected[0].kind,
             OutboundKind::AgentToolResult {

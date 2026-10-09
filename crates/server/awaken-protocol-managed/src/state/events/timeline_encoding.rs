@@ -26,12 +26,12 @@ pub(super) fn resolve_stop(
         StopFact::RetriesExhausted => StopReason::RetriesExhausted,
         StopFact::BudgetReached => StopReason::BudgetReached,
         StopFact::RequiresAction { calls } => {
-            let latest = record.projected_tool_index_for(owner_thread_id).latest;
+            let index = record.projected_tool_index_for(owner_thread_id);
             StopReason::RequiresAction {
                 event_ids: calls
                     .iter()
                     .map(|call| {
-                        latest.get(call).cloned().ok_or_else(|| {
+                        index.latest_id(call).ok_or_else(|| {
                             StateError::Run(RunError::internal(
                                 "Managed pending ticket has no answerable public tool event",
                             ))
@@ -143,6 +143,24 @@ pub(super) fn encode_fact(
             });
             OutboundKind::SessionUsage { usage, budget }
         }
+        SessionEventKind::BudgetReachUsage {
+            usage,
+            list_cost_minor,
+            max_list_cost_minor,
+        } => {
+            let usd = |amount: u64| crate::types::MonetaryAmount {
+                amount: amount.to_string(),
+                currency: crate::types::Currency::USD,
+            };
+            let mut usage = session_usage_value(usage.clone(), None).map_err(StateError::Run)?;
+            usage.list_cost = list_cost_minor.map(usd);
+            OutboundKind::SessionUsage {
+                usage,
+                budget: Some(crate::types::BudgetLimit::Limit {
+                    max_list_cost: usd(*max_list_cost_minor),
+                }),
+            }
+        }
         SessionEventKind::ContextCompacted => OutboundKind::ThreadContextCompacted {},
         SessionEventKind::ModelRequestStart => OutboundKind::SpanModelRequestStart {},
         SessionEventKind::ModelRequestEnd {
@@ -169,6 +187,31 @@ pub(super) fn encode_fact(
                 awaken_session_state_contract::SessionExecutionState::ActivationFailed.as_str(),
                 message.clone(),
             ),
+        },
+        SessionEventKind::OutcomeEvaluationStart {
+            outcome_id,
+            iteration,
+        } => OutboundKind::SpanOutcomeEvaluationStart {
+            outcome_id: outcome_id.clone(),
+            iteration: *iteration,
+        },
+        SessionEventKind::OutcomeEvaluationOngoing {
+            outcome_id,
+            iteration,
+        } => OutboundKind::SpanOutcomeEvaluationOngoing {
+            outcome_id: outcome_id.clone(),
+            iteration: *iteration,
+        },
+        SessionEventKind::OutcomeEvaluationEnd(verdict) => OutboundKind::SpanOutcomeEvaluationEnd {
+            outcome_id: verdict.outcome_id.clone(),
+            outcome_evaluation_start_id: record.fact_id(&verdict.start),
+            iteration: verdict.iteration,
+            result: verdict.result.clone(),
+            explanation: verdict.explanation.clone(),
+            usage: verdict.usage.map(SpanModelUsage::from).unwrap_or_default(),
+        },
+        SessionEventKind::OutcomeError { code, message } => OutboundKind::SessionError {
+            error: SessionError::classify(code, message.clone()),
         },
     })
 }

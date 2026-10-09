@@ -322,6 +322,13 @@ impl SessionThreadAgentValue {
         }
     }
 
+    pub(crate) const fn as_advisor(&self) -> Option<&super::agent::AdvisorRosterEntry> {
+        match self {
+            Self::Advisor(advisor) => Some(advisor),
+            Self::Agent(_) => None,
+        }
+    }
+
     #[must_use]
     pub const fn is_advisor(&self) -> bool {
         matches!(self, Self::Advisor(_))

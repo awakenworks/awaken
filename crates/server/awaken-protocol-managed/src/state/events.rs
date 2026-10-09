@@ -3,12 +3,11 @@
 //! the live-inbox surface, and `send_events`/`list_events`.
 
 use super::*;
-use crate::types::{EvaluatedPermission, RecordedPermission, SpanModelUsage};
+use crate::types::{EvaluatedPermission, SpanModelUsage};
 use awaken_agent_contract::RunLifecycleCursor;
 use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
 #[cfg(test)]
 use awaken_managed_session_events::SEND_MESSAGE_TOOL_ID as SEND_MESSAGE;
-use awaken_managed_session_events::{EventIdentity, FactProvenance, ManagedEventType};
 use awaken_runtime_contract::resolved::ADVISOR_FAILURE_NOTICE;
 use awaken_session_application_contract::Pending;
 use awaken_session_event_contract::{
@@ -266,70 +265,12 @@ fn merge_durable_inbound_projections(
     }
 }
 
-/// One terminal Outcome selected by retained Session-root provenance and read
-/// from the extension's exact committed Thread snapshot. This is transient
-/// projector input, not another Outcome record.
-struct DurableOutcomeProjection {
-    outcome_id: String,
-    terminal: CommittedOutcomeProjection,
-}
-
-/// A terminal Outcome paired with the root-Thread commits (from the timeline
-/// domain's [`awaken_managed_session_events::anchor_outcome`]) that make each of
-/// its facts public.
-struct AnchoredOutcomeProjection {
-    outcome_id: String,
-    terminal: CommittedOutcomeProjection,
-    terminal_commit_cursor: u64,
-    evaluation_commit_cursors: std::collections::HashMap<u32, u64>,
-}
-
-impl AnchoredOutcomeProjection {
-    fn owns_failure_run(&self, run_id: &awaken_agent_contract::agent::run::Id) -> bool {
-        awaken_managed_session_events::outcome_owns_failure_run(&self.terminal, run_id)
-    }
-}
-
-impl DurableOutcomeProjection {
-    /// Pair the terminal query with its exact Outcome-owned root commits; a
-    /// terminal the prefix cannot anchor yet stays withheld.
-    fn anchor(
-        self,
-        snapshot: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-    ) -> Option<AnchoredOutcomeProjection> {
-        let awaken_managed_session_events::OutcomeAnchor {
-            terminal_commit_cursor,
-            evaluation_commit_cursors,
-        } = awaken_managed_session_events::anchor_outcome(
-            &self.outcome_id,
-            &self.terminal,
-            snapshot,
-        )?;
-        Some(AnchoredOutcomeProjection {
-            outcome_id: self.outcome_id,
-            terminal: self.terminal,
-            terminal_commit_cursor,
-            evaluation_commit_cursors,
-        })
-    }
-}
-
-fn validate_durable_outcome_projection(
-    outcome_id: String,
-    terminal: CommittedOutcomeProjection,
-) -> Result<DurableOutcomeProjection, StateError> {
-    awaken_managed_session_events::validate_outcome(&outcome_id, &terminal)
-        .map_err(projection_error)?;
-    Ok(DurableOutcomeProjection {
-        outcome_id,
-        terminal,
-    })
-}
-
 /// A committed prefix the timeline domain refuses to project is an internal
 /// Runtime fault, or a damaged prefix only an interrupt settles; either way
 /// the published projection is kept.
-fn projection_error(error: awaken_managed_session_events::ProjectionError) -> StateError {
+pub(super) fn projection_error(
+    error: awaken_managed_session_events::ProjectionError,
+) -> StateError {
     match error {
         awaken_managed_session_events::ProjectionError::Corrupt(message) => {
             StateError::Run(RunError::internal(message))
@@ -360,6 +301,7 @@ struct ChildTranscriptProjection<'a> {
 /// drifting into parallel parameter lists without introducing another owner.
 #[derive(Clone, Copy)]
 struct DelegationProjectionEvidence<'a> {
+    order_index: &'a awaken_managed_session_events::OrderIndex<'a>,
     links: &'a [CoordinatedThreadLink],
     snapshots: &'a std::collections::HashMap<
         String,
@@ -379,90 +321,36 @@ struct DelegationProjectionEvidence<'a> {
 /// Add only Outcome-owned public facts. Root transcript and lifecycle remain
 /// exclusively owned by their existing committed projectors. Stable ids plus
 /// the one Session-record lock make warm replay and active-active refreshes
-/// idempotent without a cursor, receipt, or protocol-side registry.
-fn append_durable_outcome_projections(
+/// idempotent without a cursor, receipt, or protocol-side registry. The
+/// Session object's `outcome_evaluations` mirror each completed iteration.
+fn append_committed_outcomes(
     record: &mut SessionRecord,
-    projections: &[AnchoredOutcomeProjection],
-) {
+    outcomes: &[awaken_managed_session_events::CommittedOutcome],
+) -> Result<(), StateError> {
     let session_id = record.session.id.clone();
-    for projection in projections {
-        match &projection.terminal {
-            CommittedOutcomeProjection::Completed(report) => {
-                for iteration in &report.iterations {
-                    let evaluation = |role| {
-                        EventIdentity::new(
-                            &session_id,
-                            role,
-                            FactProvenance::OutcomeEvaluation {
-                                outcome_id: projection.outcome_id.clone(),
-                                iteration: iteration.iteration,
-                            },
-                        )
-                    };
-                    let start_id =
-                        record.fact_id(&evaluation(ManagedEventType::OutcomeEvaluationStart));
-                    for (role, kind) in [
-                        (
-                            ManagedEventType::OutcomeEvaluationStart,
-                            OutboundKind::SpanOutcomeEvaluationStart {
-                                outcome_id: projection.outcome_id.clone(),
-                                iteration: iteration.iteration,
-                            },
-                        ),
-                        (
-                            ManagedEventType::OutcomeEvaluationOngoing,
-                            OutboundKind::SpanOutcomeEvaluationOngoing {
-                                outcome_id: projection.outcome_id.clone(),
-                                iteration: iteration.iteration,
-                            },
-                        ),
-                        (
-                            ManagedEventType::OutcomeEvaluationEnd,
-                            OutboundKind::SpanOutcomeEvaluationEnd {
-                                outcome_id: projection.outcome_id.clone(),
-                                outcome_evaluation_start_id: start_id.clone(),
-                                iteration: iteration.iteration,
-                                result: iteration.result.clone(),
-                                explanation: iteration.explanation.clone(),
-                                usage: iteration
-                                    .usage
-                                    .map(crate::types::SpanModelUsage::from)
-                                    .unwrap_or_default(),
-                            },
-                        ),
-                    ] {
-                        record.append_fact_once(evaluation(role), kind);
-                    }
-
-                    let evaluation = project::outcome_evaluation(iteration);
-                    if let Some(existing) = record
-                        .session
-                        .outcome_evaluations
-                        .iter_mut()
-                        .find(|existing| existing.outcome_id == evaluation.outcome_id)
-                    {
-                        *existing = evaluation;
-                    } else {
-                        record.session.outcome_evaluations.push(evaluation);
-                    }
-                }
-            }
-            CommittedOutcomeProjection::Errored(failure) => {
-                record.append_fact_once(
-                    EventIdentity::new(
-                        &session_id,
-                        ManagedEventType::OutcomeError,
-                        FactProvenance::Outcome {
-                            outcome_id: projection.outcome_id.clone(),
-                        },
-                    ),
-                    OutboundKind::SessionError {
-                        error: SessionError::classify(&failure.code, failure.message.clone()),
-                    },
-                );
+    for outcome in outcomes {
+        for fact in outcome.facts(&session_id) {
+            let kind = timeline_encoding::encode_fact(record, &fact, None)?;
+            record.append_fact_once(fact.key, kind);
+        }
+        let CommittedOutcomeProjection::Completed(report) = &outcome.terminal else {
+            continue;
+        };
+        for iteration in &report.iterations {
+            let evaluation = project::outcome_evaluation(iteration);
+            if let Some(existing) = record
+                .session
+                .outcome_evaluations
+                .iter_mut()
+                .find(|existing| existing.outcome_id == evaluation.outcome_id)
+            {
+                *existing = evaluation;
+            } else {
+                record.session.outcome_evaluations.push(evaluation);
             }
         }
     }
+    Ok(())
 }
 
 /// Durable provenance of one Managed multiagent event: the timeline domain's
@@ -597,24 +485,20 @@ fn public_child_thread_id(target: &SessionThreadTarget) -> Option<&str> {
 /// results, but cannot distinguish an Agent tool from a custom tool; that wire
 /// constraint therefore remains at this adapter boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProjectedToolUseFamily {
+pub(super) enum ProjectedToolUseFamily {
     Tool,
     Custom,
     Mcp,
 }
 
 impl ProjectedToolUseFamily {
-    fn from_kind(kind: &OutboundKind) -> Option<Self> {
+    pub(super) fn from_kind(kind: &OutboundKind) -> Option<Self> {
         match kind {
             OutboundKind::AgentToolUse { .. } => Some(Self::Tool),
             OutboundKind::AgentCustomToolUse { .. } => Some(Self::Custom),
             OutboundKind::AgentMcpToolUse { .. } => Some(Self::Mcp),
             _ => None,
         }
-    }
-
-    fn from_event(event: &Event) -> Option<Self> {
-        Self::from_kind(&event.kind)
     }
 }
 
