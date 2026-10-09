@@ -36,6 +36,8 @@ pub(super) struct ControlStores {
     pub(super) credentials: Arc<dyn awaken_credential_vault::repo::ManagedCredentialRepository>,
     pub(super) secrets: Arc<dyn awaken_credential_vault::SecretStore>,
     pub(super) mcp_config: Arc<dyn awaken_agent_config::mcp_config::McpConfigurationRepository>,
+    /// Workspace narrowing of the content-capture ceiling (ADR-0050 D3).
+    pub(super) telemetry_config: Arc<dyn awaken_config_resolver::WorkspaceTelemetryRepository>,
     pub(super) profiles: Arc<dyn awaken_config_resolver::InferenceProfileStore>,
     pub(super) resources: Arc<dyn awaken_config_resolver::AgentInputBindingRepository>,
     /// Authored webhook endpoints are an id-addressed config resource beside
@@ -54,6 +56,7 @@ pub(super) struct ControlStores {
 /// Port views over one admin aggregate; no independently opened MCP database.
 pub(super) struct AdminStoreViews {
     pub(super) mcp: Arc<dyn awaken_agent_config::mcp_config::McpConfigurationRepository>,
+    pub(super) telemetry: Arc<dyn awaken_config_resolver::WorkspaceTelemetryRepository>,
     pub(super) profiles: Arc<dyn awaken_config_resolver::InferenceProfileStore>,
     pub(super) resources: Arc<dyn awaken_config_resolver::AgentInputBindingRepository>,
     pub(super) webhooks: Arc<dyn awaken_config_resolver::WebhookStore>,
@@ -62,6 +65,7 @@ impl AdminStoreViews {
     fn from_store<T>(store: T) -> Self
     where
         T: awaken_agent_config::mcp_config::McpConfigurationRepository
+            + awaken_config_resolver::WorkspaceTelemetryRepository
             + awaken_config_resolver::InferenceProfileStore
             + awaken_config_resolver::AgentInputBindingRepository
             + awaken_config_resolver::WebhookStore
@@ -70,6 +74,7 @@ impl AdminStoreViews {
         let store = Arc::new(store);
         Self {
             mcp: store.clone(),
+            telemetry: store.clone(),
             profiles: store.clone(),
             resources: store.clone(),
             webhooks: store,
@@ -675,23 +680,20 @@ pub(super) async fn open_process_stores(
             let (environments, sandbox_policies) =
                 control_environment.expect("Control role opens Environment stores");
             let admin = admin_views.expect("Control role opens admin store");
+            let (data_subjects, erasure_jobs) =
+                data_subject.expect("Control role opens Data Subject store");
             Some(ControlStores {
                 catalog: catalog.expect("Control role opens Catalog"),
                 credentials: credentials.expect("Control role opens CredentialRepo"),
                 secrets: secrets.expect("Control role opens SecretStore"),
                 mcp_config: admin.mcp,
+                telemetry_config: admin.telemetry,
                 profiles: admin.profiles,
                 resources: admin.resources,
                 webhooks: admin.webhooks,
                 config: config.expect("Control role opens Config store"),
-                data_subjects: data_subject
-                    .as_ref()
-                    .expect("Control role opens Data Subject store")
-                    .0
-                    .clone(),
-                erasure_jobs: data_subject
-                    .expect("Control role opens Data Subject store")
-                    .1,
+                data_subjects,
+                erasure_jobs,
                 environments,
                 sandbox_policies,
             })

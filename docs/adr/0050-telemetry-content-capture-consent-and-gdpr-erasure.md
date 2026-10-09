@@ -512,10 +512,12 @@ Build slices (**core** = both builds; **managed** = server-local only):
   `crates/bin/awaken-cli/src/config/runtime_settings.rs:156`). Workspace, Agent
   and Session may only tighten it. D3's "Org fields are required" applies where
   an Org exists.
-- **Lower-layer narrowing is not wired yet.** `TelemetryCeiling`
-  (`crates/control/awaken-config-resolver/src/telemetry.rs`) implements the
-  tighten-only composition but has no caller outside its own tests; wiring the
-  Workspace/Agent/Session chain is planned work.
+- **Lower-layer narrowing.** `TelemetryCeiling` and the lower-layer
+  `TelemetryNarrowing` now live in
+  `crates/contract/awaken-data-governance-contract/src/telemetry.rs`, so the
+  Run boundary composes them without depending on Control. The Workspace layer
+  is wired (see the implementation status below); the Agent and Session layers
+  are not yet.
 - **Consent location (D4).** D4 keeps consent off `trust_grants`, but its entry
   path line says enrollment "lands in `trust_grants[\"telemetry_content\"]`". The
   first rule holds: `DataSubject` keeps `trust_grants` and `consents` as separate
@@ -529,15 +531,26 @@ Implemented:
   (`crates/contract/awaken-runtime-contract/src/capture.rs`) and the text redactor
   `PiiRedactor` (`crates/runtime/awaken-observability/src/redaction.rs:17`);
 - the deployment-level ceiling above;
+- the Workspace layer of the narrowing chain: `GET`/`PUT /v1/config/telemetry`
+  (`crates/control/awaken-control/src/telemetry_policy.rs`) authors a
+  revisioned `content_capture` narrowing per Workspace, rejects a value wider
+  than the deployment ceiling, and persists it in the admin store (SQLite and
+  PostgreSQL, converged migration V3). The Run boundary reads it through
+  `TelemetryNarrowingSource` (locally, or over the private Control boundary for
+  a split Coordinator) and composes `TelemetryCeiling::top(deployment).narrow(workspace)`
+  before consent (`WorkspaceCapturePolicy` in the governance contract); an
+  unreadable narrowing closes the ceiling to `off`;
 - the `DataSubject` aggregate with per-purpose consent grants
   (`awaken-data-subject-application`, `awaken-data-subject-store`),
-  `DataSubjectResolver`/`NullResolver` (`crates/contract/awaken-data-governance-contract/src/lib.rs:73`, `:120`),
+  `DataSubjectResolver`/`NullResolver` (`crates/contract/awaken-data-governance-contract/src/lib.rs:80`, `:127`),
   `RepoDataSubjectResolver`, User Profile routes with enrollment, and
   `POST /v1/user_profiles/{id}/erasure` (`crates/control/awaken-control/src/data_subject.rs:32`).
 
 Not implemented:
 
-- the Org → Workspace → Agent → Session narrowing chain (`TelemetryCeiling` has no caller);
+- the Agent and Session layers of the narrowing chain, and the Org layer in a
+  deployment that has an Org (the cloud); the `capture-decision` projection on
+  `/v1/user_profiles/{id}` still reports the deployment ceiling, not a Workspace's;
 - the Session `content_capture` request field and the read-only decision
   projection on `GET /v1/sessions/:id` (D8): `awaken-protocol-managed` has neither;
 - consent-gated eval recording: `crates/devtools/awaken-eval` can build a case from
@@ -553,5 +566,5 @@ Not implemented:
   [ADR-0061](0061-selectable-identity-and-platform-managed-resource-scopes.md).
   No `awaken-scope` crate exists; tenancy types are in `crates/contract/awaken-tenancy`.
 - `RegexPiiRedactor` → `PiiRedactor`; `DataSubjectErasure` → `ContentEraser`
-  (`crates/contract/awaken-data-governance-contract/src/lib.rs:107`);
+  (`crates/contract/awaken-data-governance-contract/src/lib.rs:114`);
   `foundation/awaken-runtime-contract` → `crates/contract/awaken-runtime-contract`.

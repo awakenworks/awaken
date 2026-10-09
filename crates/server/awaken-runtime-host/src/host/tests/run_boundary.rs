@@ -430,7 +430,12 @@ async fn attributed_run_meets_deployment_capture_with_control_consent() {
         )
         .await
         .with_capture_sink(captured.clone())
-        .with_data_subject_consent_source(Arc::new(SubjectConsent)))
+        .with_capture_policy_sources(
+            awaken_data_governance_contract::CapturePolicySources {
+                consent: Arc::new(SubjectConsent),
+                ..Default::default()
+            },
+        ))
         .build()
         .expect("validated Host dependencies"),
     );
@@ -459,6 +464,129 @@ async fn attributed_run_meets_deployment_capture_with_control_consent() {
         after_granted,
         "R2 consent clamps capture"
     );
+}
+
+#[tokio::test]
+async fn workspace_narrowing_tightens_the_deployment_ceiling_for_each_run() {
+    use awaken_data_governance_contract::{
+        TelemetryNarrowing, TelemetryNarrowingSource, TelemetryPolicyError,
+    };
+    use std::collections::BTreeMap;
+
+    /// Control's authored narrowing per Workspace; `None` = unreadable store.
+    #[derive(Default)]
+    struct WorkspaceNarrowing(std::sync::Mutex<BTreeMap<String, Option<TelemetryNarrowing>>>);
+
+    impl WorkspaceNarrowing {
+        fn set(&self, workspace: &str, value: Option<TelemetryNarrowing>) {
+            self.0.lock().unwrap().insert(workspace.into(), value);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl TelemetryNarrowingSource for WorkspaceNarrowing {
+        async fn workspace_narrowing(
+            &self,
+            workspace: &str,
+        ) -> Result<TelemetryNarrowing, TelemetryPolicyError> {
+            match self.0.lock().unwrap().get(workspace) {
+                None => Ok(TelemetryNarrowing::default()),
+                Some(Some(narrowing)) => Ok(*narrowing),
+                Some(None) => Err(TelemetryPolicyError::StoreUnavailable),
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingCaptureSink(AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::CaptureSink for CountingCaptureSink {
+        async fn record(
+            &self,
+            _subject: &awaken_runtime_contract::DataSubjectId,
+            _purpose: awaken_runtime_contract::Purpose,
+            _kind: awaken_runtime_contract::ContentKind,
+            _content: &str,
+        ) -> Result<(), awaken_runtime_contract::CaptureError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    // Cause/effect decision table. C1 deployment ceiling = Full (the top
+    // layer); C2 the Run's Workspace narrowing: unset, Structured, unreadable;
+    // C3 the subject consent grants Full (NullResolver), so only C1/C2 decide.
+    // | Rule | Workspace (narrowing)    | Effect                              |
+    // | W1   | ws-open (unset)          | prompt + completion captured        |
+    // | W2   | ws-closed (Structured)   | no content row                      |
+    // | W3   | ws-open, now Structured  | next Run of the same Thread: none   |
+    // | W4   | ws-broken (unreadable)   | fail closed: no content row         |
+    // W1 and W2 run concurrently-configured Workspaces of one self-hosted
+    // deployment: each Workspace's narrowing applies only to its own Runs.
+    let mut deployment = crate::DeploymentConfig::ephemeral();
+    deployment.content_capture.level = awaken_runtime_contract::ContentCapture::Full;
+    let captured = Arc::new(CountingCaptureSink::default());
+    let narrowing = Arc::new(WorkspaceNarrowing::default());
+    narrowing.set(
+        "ws-closed",
+        Some(TelemetryNarrowing {
+            content_capture: Some(awaken_runtime_contract::ContentCapture::Structured),
+        }),
+    );
+    narrowing.set("ws-broken", None);
+    let (host, _managed) = dispatch_test_host(
+        (crate::HostDependencies::ephemeral_with_deployment(
+            Arc::new(MemoryHostModel),
+            "stub",
+            deployment,
+        )
+        .await
+        .with_capture_sink(captured.clone())
+        .with_capture_policy_sources(
+            awaken_data_governance_contract::CapturePolicySources {
+                narrowing: narrowing.clone(),
+                ..Default::default()
+            },
+        ))
+        .build()
+        .expect("validated Host dependencies"),
+    );
+    let subject = || Some(awaken_runtime_contract::DataSubjectId("subject".into()));
+    for (thread, workspace) in [
+        ("narrow-open", "ws-open"),
+        ("narrow-closed", "ws-closed"),
+        ("narrow-broken", "ws-broken"),
+    ] {
+        host.register_thread_workspace(thread, workspace);
+    }
+
+    host.run_attributed(None, "narrow-open", user("hello open"), subject())
+        .await
+        .expect("W1 run");
+    let after_open = captured.0.load(Ordering::SeqCst);
+    assert!(after_open >= 2, "W1 prompt and completion captured");
+
+    host.run_attributed(None, "narrow-closed", user("hello closed"), subject())
+        .await
+        .expect("W2 run");
+    assert_eq!(captured.0.load(Ordering::SeqCst), after_open, "W2");
+
+    narrowing.set(
+        "ws-open",
+        Some(TelemetryNarrowing {
+            content_capture: Some(awaken_runtime_contract::ContentCapture::Structured),
+        }),
+    );
+    host.run_attributed(None, "narrow-open", user("hello again"), subject())
+        .await
+        .expect("W3 run");
+    assert_eq!(captured.0.load(Ordering::SeqCst), after_open, "W3");
+
+    host.run_attributed(None, "narrow-broken", user("hello broken"), subject())
+        .await
+        .expect("W4 run");
+    assert_eq!(captured.0.load(Ordering::SeqCst), after_open, "W4");
 }
 
 #[tokio::test]

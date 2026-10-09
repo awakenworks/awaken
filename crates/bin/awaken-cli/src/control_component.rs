@@ -88,6 +88,7 @@ pub(super) async fn control_component_for_process(
         secrets: control.secrets.clone(),
         profiles: control.profiles.clone(),
         mcp_config: control.mcp_config.clone(),
+        telemetry_config: control.telemetry_config.clone(),
         webhook_store: control.webhooks.clone(),
         resource_store: control.resources.clone(),
         config_store: control.config.clone(),
@@ -364,8 +365,7 @@ pub(super) async fn prepare_control_routers(
                 component.vault_state.clone(),
                 component.repository_credentials.clone(),
                 webhook_delivery,
-                component.data_subject_resolver.clone(),
-                component.organization_privacy.clone(),
+                privacy_ports(&component),
                 authenticator,
             )
         }
@@ -381,10 +381,9 @@ pub(super) async fn prepare_control_routers(
         std::time::Duration::from_secs(5),
         &process.service_lifecycle,
     );
-    let admin_tools = component.admin_tools.clone();
     let mcp_export = awaken_coordinator::mcp_export::router(
         awaken_admin_assistant::admin_tool_descriptors(),
-        component.admin_tools,
+        component.admin_tools.clone(),
         process.mcp_bearer_token,
     )?;
     Ok(ProcessRouters::new(
@@ -399,8 +398,20 @@ pub(super) async fn prepare_control_routers(
         Some(component.registration_supervisor),
         process.service_lifecycle,
         None,
-        admin_tools,
+        component.admin_tools,
     ))
+}
+
+/// The privacy ports the private Control boundary projects for a split
+/// Coordinator or hosted compliance orchestration.
+fn privacy_ports(
+    component: &awaken_control::ControlComponent,
+) -> awaken_coordinator::control_service_boundary::PrivacyPorts {
+    awaken_coordinator::control_service_boundary::PrivacyPorts {
+        data_subjects: component.data_subject_resolver.clone(),
+        organization_privacy: component.organization_privacy.clone(),
+        telemetry: component.capture_policy.narrowing.clone(),
+    }
 }
 
 #[cfg(test)]

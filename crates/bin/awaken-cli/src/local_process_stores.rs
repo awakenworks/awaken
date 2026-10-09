@@ -32,6 +32,7 @@ pub(super) async fn in_memory_process_stores() -> ProcessStores {
             secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
             profiles: admin.clone(),
             mcp_config: admin.clone(),
+            telemetry_config: admin.clone(),
             resources: admin.clone(),
             webhooks: admin,
             config: Arc::new(
@@ -97,6 +98,9 @@ pub(super) async fn in_memory_split_coordinator() -> (ProcessStores, ControlServ
         ),
         None,
     );
+    let narrowing = Arc::new(awaken_control::RepositoryTelemetryNarrowing::new(
+        control.telemetry_config,
+    ));
     let consent = Arc::new(
         awaken_data_subject_application::RepoDataSubjectResolver::new(
             control.data_subjects,
@@ -115,7 +119,10 @@ pub(super) async fn in_memory_split_coordinator() -> (ProcessStores, ControlServ
             credentials,
             repository_credentials,
             webhooks,
-            consent,
+            capture_policy: awaken_data_governance_contract::CapturePolicySources {
+                consent,
+                narrowing,
+            },
         },
     )
 }

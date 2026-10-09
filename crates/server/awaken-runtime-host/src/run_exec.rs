@@ -173,28 +173,27 @@ impl RunAttemptExecutor for ArtifactHarvestAttemptExecutor {
 /// The one privacy-context decorator shared by direct and durable attempts.
 ///
 /// Delivery topology may replace commit, cancellation, and ownership wiring,
-/// but it must not replace the request's subject attribution or the deployment
-/// capture policy. Keeping this at the `RunAttemptExecutor` boundary means a
-/// queued/recovered attempt and an inline attempt resolve consent identically.
+/// but it must not replace the request's subject attribution or the capture
+/// policy. Keeping this at the `RunAttemptExecutor` boundary means a queued/recovered
+/// attempt and an inline attempt resolve Workspace narrowing and consent identically.
 pub(crate) struct CaptureContextAttemptExecutor {
     inner: Arc<dyn RunAttemptExecutor>,
     decision: awaken_runtime_contract::CaptureDecision,
     sink: Option<Arc<dyn awaken_runtime_contract::CaptureSink>>,
-    consent: Arc<dyn awaken_data_governance_contract::DataSubjectConsentSource>,
+    policy: awaken_data_governance_contract::WorkspaceCapturePolicy,
 }
 
 impl CaptureContextAttemptExecutor {
     pub(crate) fn new(
         inner: Arc<dyn RunAttemptExecutor>,
-        decision: awaken_runtime_contract::CaptureDecision,
-        sink: Option<Arc<dyn awaken_runtime_contract::CaptureSink>>,
-        consent: Arc<dyn awaken_data_governance_contract::DataSubjectConsentSource>,
+        capture: &crate::host::capability::ContentCaptureCapability,
+        workspace: String,
     ) -> Self {
         Self {
             inner,
-            decision,
-            sink,
-            consent,
+            decision: capture.capture_decision.clone(),
+            sink: capture.capture_sink.clone(),
+            policy: capture.policy_sources.for_workspace(workspace),
         }
     }
 
@@ -203,10 +202,12 @@ impl CaptureContextAttemptExecutor {
         activation: &RunActivation,
         mut context: RuntimeRunContext,
     ) -> RuntimeRunContext {
-        context = context.with_capture(self.decision.clone());
+        let mut decision = self.decision.clone();
+        decision.level = self.policy.ceiling(decision.level).await;
+        context = context.with_capture(decision);
         if let Some(subject) = activation.data_subject_id.clone() {
             let consent = self
-                .consent
+                .policy
                 .consent_ceiling(&subject, awaken_runtime_contract::Purpose::TelemetryContent)
                 .await;
             context.capture.decision.level = context.capture.decision.level.meet(consent);

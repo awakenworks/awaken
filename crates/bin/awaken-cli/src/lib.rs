@@ -156,7 +156,7 @@ struct ControlServices {
     credentials: Arc<dyn awaken_session_application::SessionCredentialSource>,
     repository_credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
     webhooks: Arc<dyn awaken_session_application_contract::LifecycleFactDelivery>,
-    consent: Arc<dyn awaken_data_governance_contract::DataSubjectConsentSource>,
+    capture_policy: awaken_data_governance_contract::CapturePolicySources,
 }
 
 impl ControlServices {
@@ -168,7 +168,10 @@ impl ControlServices {
             credentials: client.clone(),
             repository_credentials: client.clone(),
             webhooks: client.clone(),
-            consent: client,
+            capture_policy: awaken_data_governance_contract::CapturePolicySources {
+                consent: client.clone(),
+                narrowing: client,
+            },
         }
     }
 }
