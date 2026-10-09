@@ -3,6 +3,8 @@
 - Status: Accepted
 - Depends on: ADR-0001
 - Supersedes: none
+- Amended by: ADR-0057 (Phase E: one child-Run delegation path for local and remote targets)
+- Amended: 2026-10-09 (names and references: status of the ADR-0057 Phase E citation)
 
 ## Context
 
@@ -49,3 +51,14 @@ must state what value they resolve.
 - [config-to-run-execution-flow.md](../design/config-to-run-execution-flow.md)
 - [runtime-interface-boundaries.md](../design/runtime-interface-boundaries.md)
 - ADR-0001 D3 (internal vocabulary consistency)
+
+## Amendment 2026-10-09: names and references
+
+- "As amended by ADR-0057 Phase E": [ADR-0057](0057-unified-agent-configuration.md) as a whole is still Proposed, but
+  its Phase E (`authed-remote`) is marked Complete (2026-07-28) and records that
+  direct and durable children select one attempt executor from the published
+  backend. The same rule is Accepted in [ADR-0059](0059-neutral-core-and-leaf-evolution.md) and guardrail G40
+  ([INVARIANTS.md](../INVARIANTS.md)). Code: `RunDelegationService`
+  (`crates/contract/awaken-runtime-contract/src/delegation.rs:268`),
+  `RunAttemptExecutor` / `AttemptExecutorRegistry`
+  (`crates/contract/awaken-runtime-contract/src/execution.rs:231,289`).

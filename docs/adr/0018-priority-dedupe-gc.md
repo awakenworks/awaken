@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-06-30
 - Depends on: ADR-0009, ADR-0015
+- Amended by: ADR-0015 (revised: dead-letter is manual quarantine only), ADR-0023 (time-windowed GC), ADR-0060 (Done leaves a permanent completion tombstone)
 
 ## Context
 
@@ -57,3 +58,12 @@ they need no GC.
 - [INVARIANTS.md](../INVARIANTS.md) — G5/G6 (durable ingress over runtime control).
 - ADR-0009 — the dispatch queue and claim bands.
 - ADR-0015 — the dead-letter state this GC reclaims.
+
+## Amendment 2026-10-09: names and references
+
+- D4: a poison run no longer becomes a dead letter on its own; retry exhaustion
+  commits `Ended(Indeterminate)` and dead-letter is operator quarantine
+  ([ADR-0015](0015-crash-retry-budget-and-dead-letter.md) as revised).
+- D4: Done dispatches are deleted on settle but leave a permanent completion
+  tombstone ([ADR-0060](0060-durable-dispatch-completion-tombstone.md) D2/D3).
+- Consequences: the deferred time-windowed GC was built in [ADR-0023](0023-dead-letter-ttl-gc.md).

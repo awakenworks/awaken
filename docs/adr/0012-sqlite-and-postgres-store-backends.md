@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2026-06-30
 - Depends on: ADR-0006, ADR-0008, ADR-0009
+- Amended by: ADR-0087 (SQLite through sqlx replaces rusqlite in D2/D3)
+- Amended by: ADR-0039 (D3: reads come from committed facts, not an in-memory read projection)
 
 ## Context
 
@@ -91,3 +93,14 @@ The persistence reset deliberately changes no public Managed Agents protocol or
 domain aggregate. Anthropic Managed Agents compatibility remains at the
 contract/admission boundary; persistence has exactly one internal fact for each
 concept.
+
+## Amendment 2026-10-09: names and references
+
+- D2/D3: `awaken-store-sqlite` uses sqlx, not rusqlite, and has no
+  `spawn_blocking` bridge ([ADR-0087](0087-sqlite-through-sqlx.md);
+  `crates/stores/awaken-store-sqlite/Cargo.toml:24`; no `Cargo.toml` in
+  `crates/` depends on rusqlite).
+- D3: reads come from committed facts, not an in-memory projection ([ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md) D4
+  and its 2026-09-25 amendment).
+- `RunStore` / `ThreadReader` are now `CommittedThreadView` (+ `CheckpointReader`);
+  the dispatch ports are `DispatchQueue` / `Inbox` / `Outbox` ([ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md)).

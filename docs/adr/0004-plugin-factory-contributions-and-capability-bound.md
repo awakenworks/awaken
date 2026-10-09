@@ -10,6 +10,7 @@
   retained). The separate `PluginConfigValidator` *implementation* collapses into
   one `validate_section` home (D3); the trait survives only as the thin
   runtime↔server DI seam that calls it (Amendment A1).
+- Amended: 2026-10-09 (names and references: manifest location, bound axes, removed validator names, closed open item)
 
 ## Context
 
@@ -253,3 +254,23 @@ the reference implementation:
   path), G14 (development-ready rule), G30 (contribution bound).
 - Key design decisions D11 (state/effects/extension seams), D21 (activation data
   versus runtime context).
+
+## Amendment 2026-10-09: names and references
+
+The decisions stand; these names and locations changed in code:
+
+- D3: `PluginManifest` lives in `awaken-runtime-contract`, not
+  `awaken-agent-contract` (`crates/contract/awaken-runtime-contract/src/plugin/capability.rs:92`).
+  Its config field is `config_sections`.
+- D3 / Supersedes / A1.6: `validate_section` and `PluginConfigValidator` no longer
+  exist anywhere in `crates/`. The declared sections are `PluginManifest.config_sections`,
+  and the schema is projected as `PluginCapability.config_schema`
+  (`crates/contract/awaken-executable-agent-contract/src/capability.rs`).
+- D4 / A1.2: the bound axes in code are `tools`, `state_keys`, `phase_hooks`,
+  `action_kinds` (scheduled-action kinds, [ADR-0027](0027-scheduled-action-kind-axis.md)), `run_end_guards`,
+  `tool_gates` and `tool_constraints`, all but `phase_hooks` being `IdBound`s
+  (`capability.rs:70-87`). There is no `effects` axis and no `tool_gate` /
+  `transforms` flag; tool gates are bounded by id.
+- "Still open": done. `CapabilityBound` derives `Serialize`/`Deserialize`
+  (`capability.rs:69`), and `PluginCapability.bound` carries it to the catalog
+  (`crates/contract/awaken-executable-agent-contract/src/capability.rs:43`).

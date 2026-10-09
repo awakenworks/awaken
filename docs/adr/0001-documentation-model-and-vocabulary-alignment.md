@@ -5,6 +5,7 @@
 - Supersedes: the heavyweight meta-process model (readiness / document-class /
   role-catalog-coverage tables, standalone coverage matrix) in `README.md` and
   `STATUS.md`; refines the `docs/wiki/` retrieval layer to link-only (see D5)
+- Amended: 2026-10-09 (names and references: the pre-ADR log is D1..D22)
 
 ## Context
 
@@ -166,3 +167,9 @@ checks structure only.
   decision log (D6).
 - The `goal` worktree is a reference for the decision-first pattern only; its
   ADR numbers and crate paths are not authoritative here (Context).
+
+## Amendment 2026-10-09: names and references
+
+- D6 says `key-design-decisions.md` holds `D1..D20`. It holds `D1..D22`
+  ([key-design-decisions.md](../design/key-design-decisions.md) has `## D21` and
+  `## D22`; ADR-0004 D7 cites D21). The rule in D6 is unchanged.

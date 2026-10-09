@@ -4,6 +4,7 @@
 - Depends on: ADR-0001
 - Amended by: ADR-0076 for the narrow Session-owned background-tool execution
   capability; the prohibition on a generic deferred-work umbrella remains.
+- Amended: 2026-10-09 (names and references: D2 covers four mechanisms)
 
 ## Context
 
@@ -65,3 +66,9 @@ new command with a new correlation/idempotency identity.
 
 - ADR-0001 D3 (the retired `BackgroundTask` invention).
 - INVARIANTS G5 (ingress delivery semantics), G13 (single-source commit).
+
+## Amendment 2026-10-09: names and references
+
+- D2 says "these three". Since [ADR-0076](0076-session-owned-background-tool-execution.md) added background tool execution to
+  the D1 table, D2's rule ("no new deferred/background type may re-implement
+  these") covers all four mechanisms in the D1 table.

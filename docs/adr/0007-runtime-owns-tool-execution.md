@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-06-29
 - Depends on: ADR-0001
+- Amended by: ADR-0044 (out-of-process tool execution through the `ToolExecutor` seam; this is the future ADR D3 deferred to), ADR-0073 (the Session Environment owns hand placement)
 
 ## Context
 

@@ -7,6 +7,8 @@
   outcome* (`RunOutcome`) as a field, the flat `Lifecycle`
   (`Pending/Running/Awaiting/Completed/Failed/Cancelled`) status enum, and the
   free-form failure-reason string carried only in the lifecycle event payload.
+- Amended by: ADR-0026 (`EndCause::Stopped`)
+- Amended: 2026-10-09 (names and references: current `RunState`, `EndCause` and `Failure` variants)
 
 ## Context
 
@@ -116,3 +118,16 @@ It bounds the response at that event's source commit and checks the original
 Run's output identity. Missing or malformed evidence still fails closed.
 This extends the existing committed-step proof; it adds no status, receipt,
 store, queue, or protocol-specific recovery path.
+
+## Amendment 2026-10-09: names and references
+
+D1/D2 list the original variants. The single-authority rule is unchanged; the
+closed sets in code are now (`crates/contract/awaken-agent-contract/src/agent/run.rs:22-87`):
+
+- `RunState = Running | Awaiting | Ended(EndCause)`. `Running` is committed at
+  step boundaries; [ADR-0054](0054-safe-loop-boundary-shared-seam-and-pause-as-durable-await.md) relies on this set.
+- `EndCause = NaturalEnd | MaxSteps | Cancelled | Stopped(String) | Error(Failure) | Indeterminate`.
+  `Stopped` comes from [ADR-0026](0026-stop-policy.md). `Indeterminate` (outcome cannot be
+  determined; never projected as success) is used by [ADR-0015](0015-crash-retry-budget-and-dead-letter.md),
+  [ADR-0024](0024-daemon-lease-renewal.md) and [ADR-0044](0044-remote-hand-tool-executor-over-a-channel.md); no ADR introduced it on its own.
+- `Failure = Inference { code, message } | CapabilityBound | StateConflict`.

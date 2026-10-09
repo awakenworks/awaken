@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-06-30
 - Depends on: ADR-0009, ADR-0011, ADR-0015
+- Amended by: ADR-0024 (renewal scheduling and exact-claim ownership), ADR-0028 (NATS wake signal is live-tested; closes the D4 deferral)
 
 ## Context
 

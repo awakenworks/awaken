@@ -5,6 +5,7 @@
   history, but it is a refinement, not an independent decision (ADR-0001 bar).
 - Date: 2026-06-30
 - Depends on: ADR-0015, ADR-0018
+- Amended by: ADR-0060 (Done dispatches leave a permanent completion tombstone, so dead-letters are not the only retained rows)
 
 ## Context
 
