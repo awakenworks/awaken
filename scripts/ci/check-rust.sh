@@ -70,9 +70,17 @@ step() {
     echo "✗ $label"
     printf '%s\n' "$out" | grep -Ev "$NOISE"
     echo ""
-    echo "→ fix: $fix"
+    if [ "$rc" -eq 75 ]; then
+      echo "→ restore: host resource qualification; this command was not admitted"
+    else
+      echo "→ fix: $fix"
+    fi
   } >&2
   fail=1
+  if [ "$rc" -eq 75 ]; then
+    echo "resource qualification unavailable; remaining Rust checks were not started" >&2
+    exit 75
+  fi
   return "$rc"
 }
 
@@ -107,8 +115,8 @@ fi
 # A full run builds the whole workspace plus every test binary. When the target
 # filesystem cannot hold that, the first symptom is a linker or codegen error on
 # an arbitrary crate, which reads as a source defect. Check the named cause.
-if [ "$mode" = "--full" ] && ! python3 scripts/ci/gate_tools.py disk --stage rust-full; then
-  exit 1
+if [ "$mode" = "--full" ]; then
+  python3 scripts/ci/gate_tools.py disk --stage rust-full || exit $?
 fi
 
 step "dependency-sources" "use an allowlisted HTTPS Git repository and pin a full 40-character rev" \

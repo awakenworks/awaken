@@ -132,6 +132,27 @@ Disk is checked the same way. Each long stage declares a minimum in the manifest
 naming the stage, the filesystem, the shortfall, the reason, and the directories
 that are safe to delete.
 
+The recorded full gate also requires the named self-hosted resource contract.
+`awaken-build-admission` exposes the same host policy used by Cargo; the tool
+reader validates that observation without copying memory or disk thresholds.
+The full entrypoint submits the complete job through the existing Cargo
+external-command/deadline adapter, so its execution clock begins after host
+admission and its Python, Java and container stages share that execution lane.
+Nested Cargo avoids reacquiring the parent lock but rechecks actual capacity.
+The source candidate is captured before admission and retained through the
+logged re-entry. Ordinary developer runners retain their declared stage minima.
+
+Check timings preserve the exact exit code and failure kind. Resource refusal
+75 stops dependent work; execution timeout 124 and ordinary failures remain
+distinct. All non-passing results still block the full receipt. Formal's
+existing resource-bound evidence remains its exact subject/deadline-bound 124
+contract; a host refusal cannot impersonate a semantic counterexample.
+
+The shared `deadline.py` controls TERM/INT and timeout cleanup, including a
+signal arriving while the child is being constructed and repeated signals
+during cleanup. Parallel static workers delegate to that same control and
+write the returned status. No caller owns a second cancellation policy.
+
 ### 5. Build space is reclaimed by policy, not by hand
 
 Disk is a prerequisite like any other, and this machine ran out of it twice in
@@ -140,39 +161,24 @@ against roughly 1.1G of source each; the shared cargo intermediates had grown to
 1.4T; a stale tree held another 129G. Reclaiming 1.85T by hand lost nothing,
 because build output is derived.
 
-`scripts/ci/reclaim_build_space.py` makes those rules executable. It reports by
-default and removes only under `--apply`. Its thresholds, roots and safety rules
-live in the `build_space_reclamation` section of `scripts/ci/gate_tools.json`,
-beside the disk minimums the stages precheck against, because they are one policy
-seen from two ends: how much room a stage needs, and where room comes from.
+The host's `awaken-worktree-gc` command is the sole deletion owner. It owns
+candidate discovery, age thresholds, pressure reserves, process/FD references,
+container binds, mounts, Git ownership, Cargo locks and final identity checks.
+It removes only admitted compiler subtrees and preserves outer targets, final
+binaries, gate evidence, source trees, container volumes and sccache.
 
-**Safe to delete** — and this tool's business:
+As amended on 2026-10-09, `scripts/ci/reclaim_build_space.py` is a thin adapter
+to that command. Default, `--summary` and `--verbose` request its dry-run report;
+`--apply` delegates actual mutation to the same owner. The retired repository
+7/7/3-day rules and whole-target deletion algorithm are removed. The adapter
+never scans or classifies host paths and has no fallback deletion. If the host
+owner is unavailable, it reports that condition explicitly. Other machines
+must provide their resource owner rather than borrowing an incomplete local
+filesystem policy. The command is located through the existing tool manifest.
 
-| Category | What | Idle threshold |
-|---|---|---|
-| `worktree-target` | the in-tree `target/` of a git checkout | 7 days |
-| `detached-target` | a cargo target directory under a declared target root | 7 days |
-| `shared-intermediate` | one entry of a shared cargo-intermediates root | 3 days |
-
-**Never touched**: a checkout, a `.git` directory or file, a bare repository, any
-source tree, anything outside a declared root, and anything in use. A path is in
-use when a live process has its cwd at or inside it, or names it in
-`CARGO_TARGET_DIR` or `CARGO_BUILD_BUILD_DIR`; liveness is read from
-`/proc/<pid>/cwd` and `/proc/<pid>/environ`, never from a process-name pattern,
-because a pattern matches the shell asking the question as readily as the build
-it is asking about.
-
-**Needs a decision instead** — not this tool's business:
-
-- A worktree holding unmerged commits or uncommitted changes. Its build output is
-  still reclaimable under the rules above; whether the checkout itself should go
-  is a person's call.
-- The sccache disk cache. It is already capped by `cache.disk size` in
-  `~/.config/sccache/config`, so it is bounded rather than leaking. `doctor.sh`
-  reports its configured cap and current usage and nothing reclaims it.
-
-`doctor.sh` reports free space per filesystem and what the tool could reclaim, so
-the warning arrives before a stage dies rather than after.
+`doctor.sh` renders the owner's observed free space and plan. A planned byte
+count is not guaranteed headroom: protected or recently changed candidates may
+remain, and the host admission owner must recheck actual capacity before work.
 
 ### 6. The manifest is proved against the machine
 

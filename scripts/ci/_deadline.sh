@@ -3,6 +3,11 @@
 # policy; this helper returns 124 on timeout, matching GNU coreutils `timeout`.
 
 run_with_deadline() (
+  local admitted_job=0
+  if [ "${1:-}" = --admit ]; then
+    admitted_job=1
+    shift
+  fi
   local seconds=$1
   shift
   local deadline_dir
@@ -16,7 +21,7 @@ run_with_deadline() (
       return
       ;;
   esac
-  if [ "${1:-}" = cargo ]; then
+  if [ "$admitted_job" -eq 1 ] || [ "${1:-}" = cargo ]; then
     # Cargo admission owns the wait and capacity preflight. Its external-command
     # protocol then enters this same deadline owner; nested Cargo inherits the
     # admitted job. Only actual execution spends the caller's unchanged budget.

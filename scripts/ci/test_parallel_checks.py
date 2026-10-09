@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -108,6 +109,54 @@ test -s results || exit 55
                 self.assertNotEqual(json.loads(receipt.read_text())["status"], 0)
                 with self.assertRaises(ProcessLookupError):
                     os.kill(int(marker.read_text()), 0)
+
+    def test_resource_refusal_stops_dependent_gate_work_with_exact_evidence(self):
+        # G1 a selected sequential gate returns 75 => preserve 75 and its
+        # failure kind; zero later browser execution and no full receipt.
+        # G2 full-gate host observation refuses before admission => 75, zero
+        # Cargo/body calls. G3 the Rust full artifact/host preflight refuses ->
+        # 75 survives both entrypoints and starts no build. These run the actual
+        # manifest over owned stubs;
+        # they prove failure composition, not passing product qualification.
+        for mode in ('frontend', 'full', 'rust'):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                scripts = root / 'scripts/ci'; scripts.mkdir(parents=True)
+                for name in ('check-all.sh', '_provider_environment.sh', '_parallel_checks.sh',
+                             'parallel_check.py', 'deadline.py', '_deadline.sh',
+                             'check-rust.sh', '_cargo_target.sh'):
+                    shutil.copyfile(ROOT / 'scripts/ci' / name, scripts / name)
+                (scripts / 'check-rust.sh').chmod(0o755)
+                (root / 'Cargo.toml').write_text('[workspace]\nmembers=[]\n')
+                tools = scripts / 'gate_tools.py'
+                tools.write_text('import sys\nraise SystemExit(75 if any(x in sys.argv for x in ("resources", "disk")) else 0)\n')
+                gate = scripts / 'check-frontend.sh'
+                gate.write_text('#!/bin/sh\necho fixture-resource-refusal >&2\nexit 75\n')
+                gate.chmod(0o755)
+                binary = root / 'bin'; binary.mkdir()
+                for name, body in {
+                        'git': '#!/bin/sh\nprintf "%040d\\n" 1\n',
+                        'pnpm': '#!/bin/sh\ntouch "$FORBIDDEN_BODY"\n',
+                        'cargo': '#!/bin/sh\ntouch "$FORBIDDEN_BODY"\n'}.items():
+                    path = binary / name; path.write_text(body); path.chmod(0o755)
+                env = dict(os.environ, PATH=str(binary)+os.pathsep+os.environ['PATH'],
+                           FORBIDDEN_BODY=str(root/'unexpected'),
+                           AWAKEN_TEST_TIMINGS_FILE=str(root/'timings.tsv'))
+                for name in ('AWAKEN_CARGO_ADMITTED', 'AWAKEN_FULL_GATE_CANDIDATE', 'AWAKEN_FULL_GATE_LOG'):
+                    env.pop(name, None)
+                args = ['--full-gate', '--record'] if mode == 'full' else ['--group', mode]
+                result = subprocess.run(['bash', str(scripts/'check-all.sh'), *args],
+                                        env=env, capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 75, result.stdout+result.stderr)
+                self.assertFalse((root/'unexpected').exists())
+                self.assertFalse((scripts/'gate_record.json').exists())
+                if mode != 'full':
+                    import csv
+                    with (root/'timings.tsv').open() as stream:
+                        rows = list(csv.DictReader(stream, delimiter='\t'))
+                    self.assertEqual(len(rows), 1)
+                    self.assertEqual((rows[0]['exit_code'], rows[0]['failure_kind']),
+                                     ('75', 'resource-unavailable'))
 
 
 if __name__ == "__main__":

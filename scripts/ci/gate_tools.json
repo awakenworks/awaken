@@ -50,47 +50,35 @@
       "reason": "Container image layers for the database and the object store, plus their volumes."
     }
   ],
-  "build_space_reclamation": {
-    "comment": [
-      "Reclaimable build space, and the rules that make reclaiming it safe.",
-      "scripts/ci/reclaim_build_space.py is the only reader; docs/adr/0080 states the policy.",
-      "",
-      "The machine filled up twice in one session. 152 of 219 checkouts carried an",
-      "in-tree target/ totalling 509G against ~1.1G of source each, the shared cargo",
-      "intermediates had grown to 1.4T, and a stale /data tree held another 129G.",
-      "A full filesystem does not announce itself: it reached CBMC as os error 28,",
-      "truncated a GOTO binary, and crashed the backend with SIGABRT.",
-      "",
-      "Build output is derived. A checkout, its history and its uncommitted changes",
-      "are not, and nothing here may touch them."
-    ],
-    "worktree_target_idle_days": 7,
-    "detached_target_idle_days": 7,
-    "shared_intermediate_idle_days": 3,
-    "worktree_roots": ["/build/scratch", "$HOME/Codes", "$HOME/Codes/worktrees", "$HOME/Codes/*-worktrees", "/data/$USER"],
-    "detached_target_roots": ["/build/targets"],
-    "shared_intermediate_roots": ["/build/targets/cargo-intermediates"],
-    "safety_rules": [
-      "Only a build-output directory is ever removed: an in-tree `target/` of a git checkout, a cargo target directory directly under a declared target root, or one entry of a shared cargo-intermediates root.",
-      "A checkout, a `.git` directory or file, a bare repository and any source tree are never touched, whatever their age.",
-      "A path is in use when a live process has its cwd at or inside it, or names it in CARGO_TARGET_DIR or CARGO_BUILD_BUILD_DIR. In-use paths are kept regardless of age. Liveness is read from /proc/<pid>/cwd and /proc/<pid>/environ, never from a process-name pattern.",
-      "A path outside every declared root is never a candidate, so a typo cannot widen the scope.",
-      "Age is the newest modification time within the first two levels of the directory, so an active build is young even when its root directory is not."
-    ],
-    "needs_a_decision_instead": [
-      "A worktree holding unmerged commits or uncommitted changes: its build output is still reclaimable, but the checkout itself is a person's decision, not this tool's.",
-      "The sccache disk cache: it is already capped by cache.disk size in ~/.config/sccache/config, so it is bounded rather than leaking. Report its size, do not reclaim it."
-    ]
-  },
   "cleanup_suggestions": [
-    "$CARGO_TARGET_DIR/debug/incremental - rebuilt on demand, always safe to delete",
-    "target/test-timings - gate telemetry only; check-all.sh recreates it",
-    "target/formal-artifacts - previous formal diagnostics; a new run writes its own",
-    "docker image prune -f and docker container prune -f - reclaims stopped gate substrates",
-    "$HOME/.cargo/registry/cache - re-downloaded on demand",
-    "scripts/ci/reclaim_build_space.py - reports and reclaims idle build output across every checkout"
+    "scripts/ci/reclaim_build_space.py --summary - preview the canonical host GC; review its plan before --apply",
+    "The host GC preserves sources, active outputs, outer targets, final binaries, gate evidence, container volumes and sccache"
   ],
   "tools": [
+    {
+      "name": "awaken-build-admission",
+      "locate": "path",
+      "env_override": "AWAKEN_HOST_ADMISSION",
+      "gates": ["static"],
+      "requirement": "optional",
+      "skip": "host resource observations on ordinary developer runners; recorded full gates require the named host contract",
+      "version": {
+        "command": ["awaken-build-admission", "--version"],
+        "contains": "awaken-build-admission 1 sha256=",
+        "mismatch": "hard-error",
+        "owner": "scripts/ci/gate_tools.py HOST_ADMISSION_VERSION"
+      },
+      "install": "Install the same committed cargo_admission.py as cargo and awaken-build-admission on the qualified Linux runner."
+    },
+    {
+      "name": "awaken-worktree-gc",
+      "locate": "path",
+      "env_override": "AWAKEN_HOST_GC",
+      "gates": ["static"],
+      "requirement": "optional",
+      "skip": "host-wide build-output reclamation diagnostics; there is no fallback deletion",
+      "install": "Install the host's canonical awaken-worktree-gc command; ADR-0080 defines the repository adapter boundary."
+    },
     {
       "name": "cargo",
       "locate": "path",
