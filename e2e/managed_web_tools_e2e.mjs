@@ -64,12 +64,17 @@ async function publishAgent(baseURL, id, body) {
   assert.equal(response.body.installed, true, `${id} installed into the live catalog`);
 }
 
-async function runToolTurn(client, agent, prompt, expectedTool) {
+async function runToolTurn(client, agent, prompt, expectedTool, expectedSources) {
   const session = await client.beta.sessions.create({
     agent,
     environment_id: 'env_local',
     betas: BETAS,
   });
+  if (expectedSources) {
+    const config = session.agent.tools.flatMap((tool) => tool.configs ?? [])
+      .find(({ name }) => name === 'web_fetch');
+    assert.deepEqual(config.url_sources, expectedSources, 'one resolved SDK response normalizes source policy');
+  }
   const receipt = await client.beta.sessions.events.send(session.id, {
     events: [{ type: 'user.message', content: [{ type: 'text', text: prompt }] }],
     betas: BETAS,
@@ -169,7 +174,7 @@ async function main() {
       assert.equal(credential.status, 201, JSON.stringify(credential.body));
       assert.ok(!JSON.stringify(credential.body).includes(SEARCH_SECRET), 'credential response is secret-free');
 
-      await publishAgent(baseURL, 'web-fetch-allow', {
+      const fetchDefinition = {
         name: 'Allowed Web fetch',
         system: 'Execute the requested Web tool and report its result.',
         max_steps: 4,
@@ -185,7 +190,14 @@ async function main() {
         }],
         plugins: ['web_fetch'],
         plugin_config: {},
-      });
+      };
+      const fetchWithSources = (url_sources) => ({ ...fetchDefinition, tools: [{
+        ...fetchDefinition.tools[0], configs: [{ ...fetchDefinition.tools[0].configs[0], url_sources }],
+      }] });
+      const userSources = { client_tool_results: 'none', server_tool_results: 'none', user_input: 'all' };
+      const blockedUserSources = { client_tool_results: 'all', server_tool_results: 'none', user_input: 'none' };
+      await publishAgent(baseURL, 'web-fetch-allow', fetchWithSources(userSources));
+      await publishAgent(baseURL, 'web-fetch-source-deny', fetchWithSources(blockedUserSources));
       await publishAgent(baseURL, 'web-policy-block-search', {
         name: 'Blocked fetch and configured search',
         system: 'Execute the requested Web tool and report its result.',
@@ -236,6 +248,7 @@ async function main() {
         'web-fetch-allow',
         `web-fetch ${fixture.baseURL}/text`,
         'web_fetch',
+        { client_tool_results: { type: 'none' }, server_tool_results: { type: 'none' }, user_input: { type: 'all' } },
       );
       assert.equal(fixture.requests.length, beforeText + 1, 'F1/E1 exact HTTP side effect');
       assert.equal(fixture.requests.at(-1), '/text', 'F1 allowed target reached');
@@ -267,6 +280,16 @@ async function main() {
       assert.match(eventText(blockedFetch.result), /outside the combined domain policy/u, 'F3 policy cause');
       assert.match(eventText(blockedFetch.message), /^web-error:/u, 'F3 model consumes the error and ends');
       pass('F1/F2/F3: allowed, capped, PDF, and pre-I/O blocked WebFetch execute end to end');
+
+      // F4 same allowed host and visible user URL, but only client results may
+      // authorize -> source refusal with zero HTTP. F1 above is the matching
+      // positive user-source rule through the identical production pipeline.
+      const beforeSource = fixture.requests.length;
+      const sourceDenied = await runToolTurn(client, 'web-fetch-source-deny',
+        `web-fetch ${fixture.baseURL}/source-denied`, 'web_fetch');
+      assert.equal(sourceDenied.result.is_error, true, 'F4 source refusal is durable');
+      assert.match(eventText(sourceDenied.result), /url_not_allowed/u, 'F4 source cause');
+      assert.equal(fixture.requests.length, beforeSource, 'F4 zero physical HTTP');
 
       // Search cause/effect graph:
       // C5 selected paid provider is in the process registry; C6 the described

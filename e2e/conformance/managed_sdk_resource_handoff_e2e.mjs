@@ -268,6 +268,20 @@ await withScenarioServer(
         `${version} GA Models shape`);
       assert.equal((await gaClient.models.retrieve('fake-haiku')).id, 'fake-haiku',
         `${version} GA Models retrieve`);
+      // M3 one locally executable publication -> active, with unknown vendor
+      // lifecycle dates/line/capabilities explicitly null; M4 inactive filters
+      // -> empty on the same inventory; M5 active filter -> the same identity.
+      // All anchors tolerate the additive response, and the candidate's actual
+      // generated query serializer exercises the new lifecycle[] admission.
+      for (const resource of [gaClient.models, gaClient.beta.models]) {
+        const model = await resource.retrieve('fake-haiku');
+        assert.equal(model.lifecycle, 'active', `${version} M3 executable lifecycle`);
+        for (const field of ['line', 'deprecated_at', 'retires_at', 'capabilities']) {
+          assert.equal(model[field], null, `${version} M3 ${field} is explicit unknown`);
+        }
+        assert.deepEqual((await drain(resource.list({ lifecycle: ['retired', 'deprecated'] }))), [], `${version} M4 inactive`);
+        assert.ok((await drain(resource.list({ lifecycle: ['active'], limit: 1 }))).some(({ id }) => id === model.id), `${version} M5 active`);
+      }
     }
     pass(`Models list/retrieve decode identically in SDK ${QUALIFIED_VERSIONS}`);
   },
