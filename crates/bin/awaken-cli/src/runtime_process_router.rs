@@ -13,6 +13,8 @@ mod startup;
 mod surfaces;
 
 #[cfg(test)]
+mod route_inventory;
+#[cfg(test)]
 mod tests;
 
 fn broker_router(

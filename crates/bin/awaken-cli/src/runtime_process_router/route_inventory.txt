@@ -1,0 +1,622 @@
+# Route inventory of the runtime process; see route_inventory.rs.
+# Columns: path | all-in-one public | all-in-one private | secured all-in-one public
+#          | coordinator public | coordinator private
+# Cell: TRACE status, `allow=` methods on 405, `h=` response header names.
+/ | 404 | 404 | 404 | 404 | 404
+/admin/drain | 404 | 404 | 404 | 404 | 404
+/admin/refresh-observations | 404 | 404 | 404 | 404 | 404
+/admin/session-event-batch-cutover-validation | 404 | 404 | 404 | 404 | 404
+/apis/authentication.k8s.io/v1/tokenreviews | 404 | 404 | 404 | 404 | 404
+/api/v1/namespaces/workers/pods/worker-a | 404 | 404 | 404 | 404 | 404
+/assets/{*path} | 404 | 404 | 404 | 404 | 404
+/business | 404 | 404 | 404 | 404 | 404
+/effect | 404 | 404 | 404 | 404 | 404
+/enroll/{token} | 405 allow=GET,HEAD h=content-length | 404 | 405 allow=GET,HEAD h=content-length | 404 | 404
+/enroll/{token}/grant | 405 allow=POST h=content-length | 404 | 405 allow=POST h=content-length | 404 | 404
+/extendedAgentCard | 405 allow=GET,HEAD h=content-length | 404 | 403 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=content-length | 404
+/generated | 404 | 404 | 404 | 404 | 404
+/hidden | 404 | 404 | 404 | 404 | 404
+/hook | 404 | 404 | 404 | 404 | 404
+/internal/v1/control/audit/commit | 404 | 404 | 404 | 404 | 404
+/internal/v1/control/audit/get | 404 | 404 | 404 | 404 | 404
+/internal/v1/control/audit/record | 404 | 404 | 404 | 404 | 404
+/internal/v1/control/credentials/access | 404 | 404 | 404 | 404 | 404
+/internal/v1/control/credentials/mcp-access | 404 | 404 | 404 | 404 | 404
+/internal/v1/control/credentials/mcp-source | 404 | 404 | 404 | 404 | 404
+/internal/v1/control/credentials/repository-admission | 404 | 404 | 404 | 404 | 404
+/internal/v1/control/credentials/vault-exists | 404 | 404 | 404 | 404 | 404
+/internal/v1/control/data-subjects/consent-ceiling | 404 | 404 | 404 | 404 | 404
+/internal/v1/control/data-subjects/erase | 404 | 404 | 404 | 404 | 404
+/internal/v1/control/privacy/organizations/erase | 404 | 404 | 404 | 404 | 404
+/internal/v1/control/privacy/organizations/export | 404 | 404 | 404 | 404 | 404
+/internal/v1/control/webhooks/deliver | 404 | 404 | 404 | 404 | 404
+/internal/v1/data-subjects/erase | 404 | 404 | 404 | 404 | 404
+/internal/v1/executable-agents/register | 404 | 404 | 404 | 404 | 404
+/internal/v1/executable-agents/withdraw | 404 | 404 | 404 | 404 | 404
+/internal/v1/executable-environments/register | 404 | 404 | 404 | 404 | 404
+/internal/v1/executable-environments/withdraw | 404 | 404 | 404 | 404 | 404
+/internal/v1/managed-credential-rollouts | 404 | 404 | 404 | 404 | 404
+/internal/v1/workers/domain | 404 | 404 | 404 | 404 | 404
+/internal/v1/workers/mcp-relay-destination | 404 | 404 | 404 | 404 | 404
+/internal/v1/workers/observations | 404 | 404 | 404 | 404 | 404
+/join | 404 | 404 | 404 | 404 | 404
+/livez | 404 | 404 | 404 | 404 | 404
+/mcp | 404 | 404 | 404 | 404 | 404
+/message:send | 405 allow=POST h=content-length | 404 | 403 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/message:stream | 405 allow=POST h=content-length | 404 | 403 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/metrics | 404 | 404 | 404 | 404 | 404
+/owned | 404 | 404 | 404 | 404 | 404
+/p | 404 | 404 | 404 | 404 | 404
+/private/workers/register | 404 | 404 | 404 | 404 | 404
+/private/workers/settle | 404 | 404 | 404 | 404 | 404
+/readyz | 404 | 404 | 404 | 404 | 404
+/receipt | 404 | 404 | 404 | 404 | 404
+/redirect/{code} | 404 | 404 | 404 | 404 | 404
+/__scenario/invocations/{marker} | 404 | 404 | 404 | 404 | 404
+/__scenario/invocations/{marker}/release | 404 | 404 | 404 | 404 | 404
+/{session}/{attachment}/{generation}/{capability} | 404 | 404 | 404 | 404 | 404
+/target | 404 | 404 | 404 | 404 | 404
+/{task_id}/pushNotificationConfigs | 404 | 404 | 404 | 404 | 404
+/{task_id}/pushNotificationConfigs/{config_id} | 404 | 404 | 404 | 404 | 404
+/tasks | 405 allow=GET,HEAD h=content-length | 404 | 403 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=content-length | 404
+/tasks/probe:cancel | 400 h=content-length,content-type | 404 | 403 h=content-length,content-type,request-id | 400 h=content-length,content-type | 404
+/tasks/{task_id}/pushNotificationConfigs | 405 allow=GET,HEAD,POST h=content-length | 404 | 403 allow=GET,HEAD,POST h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST h=content-length | 404
+/tasks/{task_id}/pushNotificationConfigs/{config_id} | 405 allow=GET,HEAD,DELETE h=content-length | 404 | 403 allow=GET,HEAD,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,DELETE h=content-length | 404
+/{tenant}/extendedAgentCard | 405 allow=GET,HEAD h=content-length | 404 | 403 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=content-length | 404
+/{tenant}/message:send | 405 allow=POST h=content-length | 404 | 403 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/{tenant}/message:stream | 405 allow=POST h=content-length | 404 | 403 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/{tenant}/tasks | 405 allow=GET,HEAD h=content-length | 404 | 403 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=content-length | 404
+/{tenant}/tasks/{task_action} | 405 allow=GET,HEAD,POST h=content-length | 404 | 403 allow=GET,HEAD,POST h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST h=content-length | 404
+/{tenant}/tasks/{task_id}/pushNotificationConfigs | 405 allow=GET,HEAD,POST h=content-length | 404 | 403 allow=GET,HEAD,POST h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST h=content-length | 404
+/{tenant}/tasks/{task_id}/pushNotificationConfigs/{config_id} | 405 allow=GET,HEAD,DELETE h=content-length | 404 | 403 allow=GET,HEAD,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,DELETE h=content-length | 404
+/token | 404 | 404 | 404 | 404 | 404
+/unrelated | 404 | 404 | 404 | 404 | 404
+/unscoped | 404 | 404 | 404 | 404 | 404
+/v1/a2a | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/a2a @ws | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/a2a/agent-card | 405 allow=GET,HEAD h=content-length | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=content-length | 404
+/v1/a2a/agent-card @ws | 405 allow=GET,HEAD h=content-length | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=content-length | 404
+/v1/a2a/agents/{agent_id}/message:send | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/a2a/agents/{agent_id}/message:send @ws | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/a2a/agents/{agent_id}/message:stream | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/a2a/agents/{agent_id}/message:stream @ws | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/a2a/message:send | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/a2a/message:send @ws | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/a2a/message:stream | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/a2a/message:stream @ws | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/a2a/tasks/{task_id} | 405 allow=GET,HEAD h=content-length | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=content-length | 404
+/v1/a2a/tasks/{task_id} @ws | 405 allow=GET,HEAD h=content-length | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=content-length | 404
+/v1/a2a/tasks/{task_id}/cancel | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/a2a/tasks/{task_id}/cancel @ws | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/a2a/tasks/{task_id}/pushNotificationConfigs | 405 allow=GET,HEAD,POST h=content-length | 404 | 401 allow=GET,HEAD,POST h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST h=content-length | 404
+/v1/a2a/tasks/{task_id}/pushNotificationConfigs @ws | 405 allow=GET,HEAD,POST h=content-length | 404 | 401 allow=GET,HEAD,POST h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST h=content-length | 404
+/v1/a2a/tasks/{task_id}/pushNotificationConfigs/{config_id} | 405 allow=GET,HEAD,DELETE h=content-length | 404 | 401 allow=GET,HEAD,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,DELETE h=content-length | 404
+/v1/a2a/tasks/{task_id}/pushNotificationConfigs/{config_id} @ws | 405 allow=GET,HEAD,DELETE h=content-length | 404 | 401 allow=GET,HEAD,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,DELETE h=content-length | 404
+/v1/a2a/tasks/{task_id}/subscribe | 405 allow=GET,HEAD,POST h=content-length | 404 | 401 allow=GET,HEAD,POST h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST h=content-length | 404
+/v1/a2a/tasks/{task_id}/subscribe @ws | 405 allow=GET,HEAD,POST h=content-length | 404 | 401 allow=GET,HEAD,POST h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST h=content-length | 404
+/v1/agents | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/agents @ws | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/agents/{id} | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST h=content-length,content-type,request-id | 404 | 404
+/v1/agents/{id} @ws | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/agents/{id}/archive | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/agents/{id}/archive @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/agents/{id}/versions | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/agents/{id}/versions @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/ag-ui | 401 allow=POST h=content-length,content-type | 404 | 401 allow=POST h=content-length,content-type | 401 allow=POST h=content-length,content-type | 404
+/v1/ag-ui @ws | 401 allow=POST h=content-length,content-type | 404 | 401 allow=POST h=content-length,content-type | 401 allow=POST h=content-length,content-type | 404
+/v1/ag-ui/agents/{agent_id} | 401 allow=POST h=content-length,content-type | 404 | 401 allow=POST h=content-length,content-type | 401 allow=POST h=content-length,content-type | 404
+/v1/ag-ui/agents/{agent_id} @ws | 401 allow=POST h=content-length,content-type | 404 | 401 allow=POST h=content-length,content-type | 401 allow=POST h=content-length,content-type | 404
+/v1/ag-ui/threads/{thread_id}/messages | 401 allow=GET,HEAD h=content-length,content-type | 404 | 401 allow=GET,HEAD h=content-length,content-type | 401 allow=GET,HEAD h=content-length,content-type | 404
+/v1/ag-ui/threads/{thread_id}/messages @ws | 401 allow=GET,HEAD h=content-length,content-type | 404 | 401 allow=GET,HEAD h=content-length,content-type | 401 allow=GET,HEAD h=content-length,content-type | 404
+/v1/ag-ui/threads/{thread_id}/runs | 401 allow=DELETE h=content-length,content-type | 404 | 401 allow=DELETE h=content-length,content-type | 401 allow=DELETE h=content-length,content-type | 404
+/v1/ag-ui/threads/{thread_id}/runs @ws | 401 allow=DELETE h=content-length,content-type | 404 | 401 allow=DELETE h=content-length,content-type | 401 allow=DELETE h=content-length,content-type | 404
+/v1/ag-ui/threads/{thread}/messages | 401 allow=GET,HEAD h=content-length,content-type | 404 | 401 allow=GET,HEAD h=content-length,content-type | 401 allow=GET,HEAD h=content-length,content-type | 404
+/v1/ag-ui/threads/{thread}/messages @ws | 401 allow=GET,HEAD h=content-length,content-type | 404 | 401 allow=GET,HEAD h=content-length,content-type | 401 allow=GET,HEAD h=content-length,content-type | 404
+/v1/ag-ui/threads/{thread}/runs | 401 allow=DELETE h=content-length,content-type | 404 | 401 allow=DELETE h=content-length,content-type | 401 allow=DELETE h=content-length,content-type | 404
+/v1/ag-ui/threads/{thread}/runs @ws | 401 allow=DELETE h=content-length,content-type | 404 | 401 allow=DELETE h=content-length,content-type | 401 allow=DELETE h=content-length,content-type | 404
+/v1/ai-sdk/agents/{agent_id}/runs | 401 allow=POST h=content-length,content-type | 404 | 401 allow=POST h=content-length,content-type | 401 allow=POST h=content-length,content-type | 404
+/v1/ai-sdk/agents/{agent_id}/runs @ws | 401 allow=POST h=content-length,content-type | 404 | 401 allow=POST h=content-length,content-type | 401 allow=POST h=content-length,content-type | 404
+/v1/ai-sdk/chat | 401 allow=POST h=content-length,content-type | 404 | 401 allow=POST h=content-length,content-type | 401 allow=POST h=content-length,content-type | 404
+/v1/ai-sdk/chat @ws | 401 allow=POST h=content-length,content-type | 404 | 401 allow=POST h=content-length,content-type | 401 allow=POST h=content-length,content-type | 404
+/v1/ai-sdk/threads/{thread_id}/messages | 401 allow=GET,HEAD h=content-length,content-type | 404 | 401 allow=GET,HEAD h=content-length,content-type | 401 allow=GET,HEAD h=content-length,content-type | 404
+/v1/ai-sdk/threads/{thread_id}/messages @ws | 401 allow=GET,HEAD h=content-length,content-type | 404 | 401 allow=GET,HEAD h=content-length,content-type | 401 allow=GET,HEAD h=content-length,content-type | 404
+/v1/ai-sdk/threads/{thread_id}/runs | 401 allow=POST,DELETE h=content-length,content-type | 404 | 401 allow=POST,DELETE h=content-length,content-type | 401 allow=POST,DELETE h=content-length,content-type | 404
+/v1/ai-sdk/threads/{thread_id}/runs @ws | 401 allow=POST,DELETE h=content-length,content-type | 404 | 401 allow=POST,DELETE h=content-length,content-type | 401 allow=POST,DELETE h=content-length,content-type | 404
+/v1/ai-sdk/threads/{thread}/messages | 401 allow=GET,HEAD h=content-length,content-type | 404 | 401 allow=GET,HEAD h=content-length,content-type | 401 allow=GET,HEAD h=content-length,content-type | 404
+/v1/ai-sdk/threads/{thread}/messages @ws | 401 allow=GET,HEAD h=content-length,content-type | 404 | 401 allow=GET,HEAD h=content-length,content-type | 401 allow=GET,HEAD h=content-length,content-type | 404
+/v1/ai-sdk/threads/{thread}/runs | 401 allow=POST,DELETE h=content-length,content-type | 404 | 401 allow=POST,DELETE h=content-length,content-type | 401 allow=POST,DELETE h=content-length,content-type | 404
+/v1/ai-sdk/threads/{thread}/runs @ws | 401 allow=POST,DELETE h=content-length,content-type | 404 | 401 allow=POST,DELETE h=content-length,content-type | 401 allow=POST,DELETE h=content-length,content-type | 404
+/v1/application-access-tokens | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/application-access-tokens @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/application-access-tokens/{id} | 405 allow=DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=DELETE h=content-length,content-type,request-id | 405 allow=DELETE h=anthropic-workspace-id,content-length,request-id | 404
+/v1/application-access-tokens/{id} @ws | 405 allow=DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=DELETE h=content-length,content-type,request-id | 405 allow=DELETE h=anthropic-workspace-id,content-length,request-id | 404
+/v1/authorize | 404 | 404 | 404 | 404 | 404
+/v1/authorize @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/awaken/environments | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/awaken/environments @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/awaken/environments/{id}/sandbox-execution-policy | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST h=content-length,content-type,request-id | 404 | 404
+/v1/awaken/environments/{id}/sandbox-execution-policy @ws | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/awaken/memory-stores/{id}/copy-conflicts | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/memory-stores/{id}/copy-conflicts @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/memory-stores/{id}/dream-policy | 405 allow=GET,HEAD,PUT h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,PUT h=content-length,content-type,request-id | 405 allow=GET,HEAD,PUT h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/memory-stores/{id}/dream-policy @ws | 405 allow=GET,HEAD,PUT h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,PUT h=content-length,content-type,request-id | 405 allow=GET,HEAD,PUT h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/repositories | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/repositories @ws | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/repositories/{id} | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/repositories/{id} @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sandbox-execution-policies | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/awaken/sandbox-execution-policies @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/awaken/sandbox-execution-policies/{id}/versions | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/awaken/sandbox-execution-policies/{id}/versions @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/awaken/sandbox-execution-policies/{id}/versions/{version} | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/awaken/sandbox-execution-policies/{id}/versions/{version} @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/awaken/sessions | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions/{id}/event-admissions/close | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions/{id}/event-admissions/close @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions/{id}/execution-evidence | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions/{id}/execution-evidence @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions/{id}/live-inbox | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions/{id}/live-inbox @ws | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions/{id}/live-inbox/{msg} | 405 allow=PUT,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=PUT,DELETE h=content-length,content-type,request-id | 405 allow=PUT,DELETE h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions/{id}/live-inbox/{msg} @ws | 405 allow=PUT,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=PUT,DELETE h=content-length,content-type,request-id | 405 allow=PUT,DELETE h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions/{id}/live-inbox/order | 405 allow=PUT h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=PUT h=content-length,content-type,request-id | 405 allow=PUT h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions/{id}/live-inbox/order @ws | 405 allow=PUT h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=PUT h=content-length,content-type,request-id | 405 allow=PUT h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions/{id}/release | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions/{id}/release @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions/{id}/resources | 405 allow=PUT h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=PUT h=content-length,content-type,request-id | 405 allow=PUT h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions/{id}/resources @ws | 405 allow=PUT h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=PUT h=content-length,content-type,request-id | 405 allow=PUT h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions/{id}/runs | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions/{id}/runs @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions/{id}/runs/{run}/events | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions/{id}/runs/{run}/events @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions/{id}/runs/{run}/resume | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/awaken/sessions/{id}/runs/{run}/resume @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/capabilities | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/capabilities @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/card | 405 allow=GET,HEAD h=content-length | 404 | 403 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=content-length | 404
+/v1/card @ws | 405 allow=GET,HEAD h=content-length | 404 | 403 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=content-length | 404
+/v1/config/agent-previews/{preview_id} | 405 allow=POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,DELETE h=content-length,content-type,request-id | 404 | 404
+/v1/config/agent-previews/{preview_id} @ws | 405 allow=POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,DELETE h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/agents | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/agents @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/agents/__admin_assistant/ensure | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/config/agents/__admin_assistant/ensure @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/agents/{agent_id}/resources | 405 allow=PUT,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=PUT,GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/agents/{agent_id}/resources @ws | 405 allow=PUT,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=PUT,GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/agents/{id} | 405 allow=GET,HEAD,PUT h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,PUT h=content-length,content-type,request-id | 404 | 404
+/v1/config/agents/{id} @ws | 405 allow=GET,HEAD,PUT h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,PUT h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/agents/{id}/publish | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/config/agents/{id}/publish @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/agents/{id}/validate | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/config/agents/{id}/validate @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/application-mcp-credentials | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/config/application-mcp-credentials @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/brokered-models/refresh | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/config/brokered-models/refresh @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/capabilities | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/capabilities @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/catalog | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/catalog @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/cloud-login | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 403 allow=GET,HEAD,POST,DELETE h=content-length,content-type,request-id | 404 | 404
+/v1/config/cloud-login @ws | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 403 allow=GET,HEAD,POST,DELETE h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/credential-pools/{id} | 405 allow=PUT,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=PUT,GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/credential-pools/{id} @ws | 405 allow=PUT,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=PUT,GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/credential-pools/{id}/eligible | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/credential-pools/{id}/eligible @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/credentials | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/credentials @ws | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/credentials/{id} | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/credentials/{id} @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/credentials/{id}/archive | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/config/credentials/{id}/archive @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/credentials/{id}/availability | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/credentials/{id}/availability @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/credentials/{id}/cooldown | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/config/credentials/{id}/cooldown @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/credentials/{id}/rotate | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/config/credentials/{id}/rotate @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/credentials/{id}/validate | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/config/credentials/{id}/validate @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/executable-models | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/executable-models @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/iam/tokens | 404 | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/iam/tokens @ws | 404 h=content-length | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/iam/tokens/{id} | 404 | 404 | 401 allow=DELETE h=content-length,content-type,request-id | 404 | 404
+/v1/config/iam/tokens/{id} @ws | 404 h=content-length | 404 | 401 allow=DELETE h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/inference-profiles/{id} | 405 allow=PUT,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=PUT,GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/inference-profiles/{id} @ws | 405 allow=PUT,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=PUT,GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/inference-profiles/{id}/resolve | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/config/inference-profiles/{id}/resolve @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/inference-profiles/{id}/resolve-candidates | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/config/inference-profiles/{id}/resolve-candidates @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/inference/resolve | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/config/inference/resolve @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/mcp-catalog/source | 405 allow=PUT h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=PUT h=content-length,content-type,request-id | 404 | 404
+/v1/config/mcp-catalog/source @ws | 405 allow=PUT h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=PUT h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/mcp-catalog/sync | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/config/mcp-catalog/sync @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/mcp-servers | 405 allow=GET,HEAD,PUT h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,PUT h=content-length,content-type,request-id | 404 | 404
+/v1/config/mcp-servers @ws | 405 allow=GET,HEAD,PUT h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,PUT h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/mcp-servers/credential-inventory | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/mcp-servers/credential-inventory @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/mcp-servers/credentials | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/mcp-servers/credentials @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/mcp-servers/{key}/credentials | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/mcp-servers/{key}/credentials @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/mcp-servers/{key}/default-credential | 405 allow=PUT h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=PUT h=content-length,content-type,request-id | 404 | 404
+/v1/config/mcp-servers/{key}/default-credential @ws | 405 allow=PUT h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=PUT h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/mcp-servers/{key}/inspect | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/config/mcp-servers/{key}/inspect @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/mcp-servers/{key}/prepare | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/config/mcp-servers/{key}/prepare @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/mcp-servers/{key}/remove | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/config/mcp-servers/{key}/remove @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/model-attributes/{model_id} | 405 allow=PUT h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=PUT h=content-length,content-type,request-id | 404 | 404
+/v1/config/model-attributes/{model_id} @ws | 405 allow=PUT h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=PUT h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/provider-connections | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/provider-connections @ws | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/provider-descriptors | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/provider-descriptors @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/publications/{fingerprint} | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/publications/{fingerprint} @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/publications/{fingerprint}/export | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/publications/{fingerprint}/export @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/webhook-subscriptions | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/webhook-subscriptions @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/webhook-subscriptions/{id} | 405 allow=PUT,GET,HEAD,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=PUT,GET,HEAD,DELETE h=content-length,content-type,request-id | 404 | 404
+/v1/config/webhook-subscriptions/{id} @ws | 405 allow=PUT,GET,HEAD,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=PUT,GET,HEAD,DELETE h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/config/workspace-context | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/config/workspace-context @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/deployment_runs | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/deployment_runs @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/deployment_runs/{id} | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/deployment_runs/{id} @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/deployments | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/deployments @ws | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/deployments/{id} | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/deployments/{id} @ws | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/deployments/{id}/archive | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/deployments/{id}/archive @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/deployments/{id}/pause | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/deployments/{id}/pause @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/deployments/{id}/run | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/deployments/{id}/run @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/deployments/{id}/unpause | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/deployments/{id}/unpause @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/dreams | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/dreams @ws | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/dreams/{id} | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/dreams/{id} @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/dreams/{id}/archive | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/dreams/{id}/archive @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/dreams/{id}/cancel | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/dreams/{id}/cancel @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/durable/threads/{thread}/cancel | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/durable/threads/{thread}/cancel @ws | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/durable/threads/{thread}/dead-letters | 405 allow=GET,HEAD h=content-length | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=content-length | 404
+/v1/durable/threads/{thread}/dead-letters @ws | 405 allow=GET,HEAD h=content-length | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=content-length | 404
+/v1/durable/threads/{thread}/dead-letters/purge | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/durable/threads/{thread}/dead-letters/purge @ws | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/durable/threads/{thread}/dead-letters/{run_id}/requeue | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/durable/threads/{thread}/dead-letters/{run_id}/requeue @ws | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/durable/threads/{thread}/deliver | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/durable/threads/{thread}/deliver @ws | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/durable/threads/{thread}/dispatches | 405 allow=GET,HEAD h=content-length | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=content-length | 404
+/v1/durable/threads/{thread}/dispatches @ws | 405 allow=GET,HEAD h=content-length | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=content-length | 404
+/v1/durable/threads/{thread}/messages | 405 allow=GET,HEAD h=content-length | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=content-length | 404
+/v1/durable/threads/{thread}/messages @ws | 405 allow=GET,HEAD h=content-length | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=content-length | 404
+/v1/durable/threads/{thread}/pause | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/durable/threads/{thread}/pause @ws | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/durable/threads/{thread}/quarantine-retry-exhausted | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/durable/threads/{thread}/quarantine-retry-exhausted @ws | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/durable/threads/{thread}/reconcile | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/durable/threads/{thread}/reconcile @ws | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/durable/threads/{thread}/resume | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/durable/threads/{thread}/resume @ws | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/durable/threads/{thread}/submit_background | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/durable/threads/{thread}/submit_background @ws | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/durable/threads/{thread}/supersede | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/durable/threads/{thread}/supersede @ws | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/durable/threads/{thread}/superseded | 405 allow=GET,HEAD h=content-length | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=content-length | 404
+/v1/durable/threads/{thread}/superseded @ws | 405 allow=GET,HEAD h=content-length | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=content-length | 404
+/v1/durable/threads/{thread}/wake | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/durable/threads/{thread}/wake @ws | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/environments | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/environments @ws | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/environments/{id} | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST,DELETE h=content-length,content-type,request-id | 404 | 404
+/v1/environments/{id} @ws | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST,DELETE h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/environments/{id}/archive | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/environments/{id}/archive @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/environments/{id}/work | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/environments/{id}/work @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/environments/{id}/work/poll | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/environments/{id}/work/poll @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/environments/{id}/work/stats | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/environments/{id}/work/stats @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/environments/{id}/work/{wid} | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/environments/{id}/work/{wid} @ws | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/environments/{id}/work/{wid}/ack | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/environments/{id}/work/{wid}/ack @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/environments/{id}/work/{wid}/heartbeat | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/environments/{id}/work/{wid}/heartbeat @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/environments/{id}/work/{wid}/stop | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/environments/{id}/work/{wid}/stop @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/files | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/files @ws | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/files/{id} | 405 allow=GET,HEAD,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,DELETE h=anthropic-workspace-id,content-length,request-id | 404
+/v1/files/{id} @ws | 405 allow=GET,HEAD,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,DELETE h=anthropic-workspace-id,content-length,request-id | 404
+/v1/files/{id}/content | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/files/{id}/content @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/memory_stores | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/memory_stores @ws | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/memory_stores/{id} | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404
+/v1/memory_stores/{id} @ws | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404
+/v1/memory_stores/{id}/archive | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/memory_stores/{id}/archive @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/memory_stores/{id}/memories | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/memory_stores/{id}/memories @ws | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/memory_stores/{id}/memories/{mid} | 405 allow=GET,HEAD,POST,PATCH,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST,PATCH,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST,PATCH,DELETE h=anthropic-workspace-id,content-length,request-id | 404
+/v1/memory_stores/{id}/memories/{mid} @ws | 405 allow=GET,HEAD,POST,PATCH,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST,PATCH,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST,PATCH,DELETE h=anthropic-workspace-id,content-length,request-id | 404
+/v1/memory_stores/{id}/memory_versions | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/memory_stores/{id}/memory_versions @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/memory_stores/{id}/memory_versions/{vid} | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/memory_stores/{id}/memory_versions/{vid} @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/memory_stores/{id}/memory_versions/{vid}/redact | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/memory_stores/{id}/memory_versions/{vid}/redact @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/messages | 404 | 404 | 404 | 404 | 404
+/v1/messages @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/message:send | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/message:send @ws | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/message:stream | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/message:stream @ws | 405 allow=POST h=content-length | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=content-length | 404
+/v1/models | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/models @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/models/{*id} | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/models/{*id} @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/mutate | 404 | 404 | 404 | 404 | 404
+/v1/mutate @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/organizations/tunnels | 404 | 404 | 404 | 404 | 404
+/v1/organizations/tunnels @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/organizations/tunnels/{tunnel_id} | 404 | 404 | 404 | 404 | 404
+/v1/organizations/tunnels/{tunnel_id} @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/organizations/tunnels/{tunnel_id}/archive | 404 | 404 | 404 | 404 | 404
+/v1/organizations/tunnels/{tunnel_id}/archive @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/organizations/tunnels/{tunnel_id}/certificates | 404 | 404 | 404 | 404 | 404
+/v1/organizations/tunnels/{tunnel_id}/certificates @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/organizations/tunnels/{tunnel_id}/certificates/{certificate_id} | 404 | 404 | 404 | 404 | 404
+/v1/organizations/tunnels/{tunnel_id}/certificates/{certificate_id} @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/organizations/tunnels/{tunnel_id}/certificates/{certificate_id}/archive | 404 | 404 | 404 | 404 | 404
+/v1/organizations/tunnels/{tunnel_id}/certificates/{certificate_id}/archive @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/organizations/tunnels/{tunnel_id}/reveal_token | 404 | 404 | 404 | 404 | 404
+/v1/organizations/tunnels/{tunnel_id}/reveal_token @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/organizations/tunnels/{tunnel_id}/rotate_token | 404 | 404 | 404 | 404 | 404
+/v1/organizations/tunnels/{tunnel_id}/rotate_token @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/probe | 404 | 404 | 404 | 404 | 404
+/v1/probe @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/scenario/session-run/reserve | 404 | 404 | 404 | 404 | 404
+/v1/scenario/session-run/reserve @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/session | 404 | 404 | 404 | 404 | 404
+/v1/session @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/sessions | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions @ws | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id} | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id} @ws | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id}/archive | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id}/archive @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id}/events | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id}/events @ws | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id}/events/stream | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id}/events/stream @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id}/resources | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id}/resources @ws | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id}/resources/{rid} | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id}/resources/{rid} @ws | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id}/threads | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id}/threads @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id}/threads/{tid} | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id}/threads/{tid} @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id}/threads/{tid}/archive | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id}/threads/{tid}/archive @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id}/threads/{tid}/events | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id}/threads/{tid}/events @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id}/threads/{tid}/stream | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/{id}/threads/{tid}/stream @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/sesn_1 | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404
+/v1/sessions/sesn_1 @ws | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404
+/v1/skills | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/skills @ws | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/skills/{id} | 405 allow=GET,HEAD,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,DELETE h=anthropic-workspace-id,content-length,request-id | 404
+/v1/skills/{id} @ws | 405 allow=GET,HEAD,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,DELETE h=anthropic-workspace-id,content-length,request-id | 404
+/v1/skills/{id}/versions | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/skills/{id}/versions @ws | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/skills/{id}/versions/{version} | 405 allow=GET,HEAD,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,DELETE h=anthropic-workspace-id,content-length,request-id | 404
+/v1/skills/{id}/versions/{version} @ws | 405 allow=GET,HEAD,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,DELETE h=anthropic-workspace-id,content-length,request-id | 404
+/v1/skills/{id}/versions/{version}/content | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/skills/{id}/versions/{version}/content @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/skills/{id}/versions/{version}/files/{*path} | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/skills/{id}/versions/{version}/files/{*path} @ws | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/tasks/probe:cancel | 405 allow=GET,HEAD,POST h=content-length | 404 | 403 allow=GET,HEAD,POST h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST h=content-length | 404
+/v1/tasks/probe:cancel @ws | 405 allow=GET,HEAD,POST h=content-length | 404 | 403 allow=GET,HEAD,POST h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST h=content-length | 404
+/v1/tasks/{task_id}/pushNotificationConfigs | 405 allow=GET,HEAD,POST h=content-length | 404 | 403 allow=GET,HEAD,POST h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST h=content-length | 404
+/v1/tasks/{task_id}/pushNotificationConfigs @ws | 405 allow=GET,HEAD,POST h=content-length | 404 | 403 allow=GET,HEAD,POST h=content-length,content-type,request-id | 405 allow=GET,HEAD,POST h=content-length | 404
+/v1/tasks/{task_id}/pushNotificationConfigs/{config_id} | 405 allow=GET,HEAD,DELETE h=content-length | 404 | 403 allow=GET,HEAD,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,DELETE h=content-length | 404
+/v1/tasks/{task_id}/pushNotificationConfigs/{config_id} @ws | 405 allow=GET,HEAD,DELETE h=content-length | 404 | 403 allow=GET,HEAD,DELETE h=content-length,content-type,request-id | 405 allow=GET,HEAD,DELETE h=content-length | 404
+/v1/tunnels | 404 | 404 | 404 | 404 | 404
+/v1/tunnels @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/tunnels/{tunnel_id} | 404 | 404 | 404 | 404 | 404
+/v1/tunnels/{tunnel_id} @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/tunnels/{tunnel_id}/archive | 404 | 404 | 404 | 404 | 404
+/v1/tunnels/{tunnel_id}/archive @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/tunnels/{tunnel_id}/certificates | 404 | 404 | 404 | 404 | 404
+/v1/tunnels/{tunnel_id}/certificates @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/tunnels/{tunnel_id}/certificates/{certificate_id} | 404 | 404 | 404 | 404 | 404
+/v1/tunnels/{tunnel_id}/certificates/{certificate_id} @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/tunnels/{tunnel_id}/certificates/{certificate_id}/archive | 404 | 404 | 404 | 404 | 404
+/v1/tunnels/{tunnel_id}/certificates/{certificate_id}/archive @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/tunnels/{tunnel_id}/reveal_token | 404 | 404 | 404 | 404 | 404
+/v1/tunnels/{tunnel_id}/reveal_token @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/tunnels/{tunnel_id}/rotate_token | 404 | 404 | 404 | 404 | 404
+/v1/tunnels/{tunnel_id}/rotate_token @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/user_profiles | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/user_profiles @ws | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/user_profiles/{id} | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST h=content-length,content-type,request-id | 404 | 404
+/v1/user_profiles/{id} @ws | 405 allow=GET,HEAD,POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/user_profiles/{id}/capture-decision | 405 allow=GET,HEAD h=content-length | 404 | 405 allow=GET,HEAD h=content-length | 404 | 404
+/v1/user_profiles/{id}/capture-decision @ws | 405 allow=GET,HEAD h=content-length | 404 | 405 allow=GET,HEAD h=content-length | 404 h=content-length | 404
+/v1/user_profiles/{id}/consent | 405 allow=POST,GET,HEAD h=content-length | 404 | 405 allow=POST,GET,HEAD h=content-length | 404 | 404
+/v1/user_profiles/{id}/consent @ws | 405 allow=POST,GET,HEAD h=content-length | 404 | 405 allow=POST,GET,HEAD h=content-length | 404 h=content-length | 404
+/v1/user_profiles/{id}/enroll | 405 allow=POST h=content-length | 404 | 405 allow=POST h=content-length | 404 | 404
+/v1/user_profiles/{id}/enroll @ws | 405 allow=POST h=content-length | 404 | 405 allow=POST h=content-length | 404 h=content-length | 404
+/v1/user_profiles/{id}/enrollment_url | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/user_profiles/{id}/enrollment_url @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/user_profiles/{id}/erasure | 405 allow=POST h=content-length | 404 | 405 allow=POST h=content-length | 404 | 404
+/v1/user_profiles/{id}/erasure @ws | 405 allow=POST h=content-length | 404 | 405 allow=POST h=content-length | 404 h=content-length | 404
+/v1/vaults | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/vaults @ws | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/vaults/{id} | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST,DELETE h=content-length,content-type,request-id | 404 | 404
+/v1/vaults/{id} @ws | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST,DELETE h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/vaults/{id}/archive | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/vaults/{id}/archive @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/vaults/{vault_id}/credentials | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 404 | 404
+/v1/vaults/{vault_id}/credentials @ws | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/vaults/{vault_id}/credentials/{id} | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST,DELETE h=content-length,content-type,request-id | 404 | 404
+/v1/vaults/{vault_id}/credentials/{id} @ws | 405 allow=GET,HEAD,POST,DELETE h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=GET,HEAD,POST,DELETE h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/vaults/{vault_id}/credentials/{id}/archive | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/vaults/{vault_id}/credentials/{id}/archive @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/vaults/{vault_id}/credentials/{id}/mcp_oauth_validate | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 | 404
+/v1/vaults/{vault_id}/credentials/{id}/mcp_oauth_validate @ws | 405 allow=POST h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST h=content-length,content-type,request-id | 404 h=content-length | 404
+/v1/worker/checkpoint/delete | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/checkpoint/delete @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/checkpoint/get | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/checkpoint/get @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/checkpoint/put | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/checkpoint/put @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/commit-claimed | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/commit-claimed @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/deregister | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/deregister @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/dispatch/attempt/begin | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/dispatch/attempt/begin @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/dispatch/attempt/close | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/dispatch/attempt/close @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/dispatch/attempt/finish | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/dispatch/attempt/finish @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/dispatch/attempt/handoff | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/dispatch/attempt/handoff @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/dispatch/bind_sandbox | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/dispatch/bind_sandbox @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/dispatch/claim | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/dispatch/claim @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/dispatch/claim_is_current | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/dispatch/claim_is_current @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/dispatch/claim_new_run | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/dispatch/claim_new_run @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/dispatch/claim_retry_exhausted | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/dispatch/claim_retry_exhausted @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/dispatch/claim_run | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/dispatch/claim_run @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/dispatch/credential_delivery/refresh | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/dispatch/credential_delivery/refresh @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/dispatch/credential_realization | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/dispatch/credential_realization @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/dispatch/deliver_and_claim | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/dispatch/deliver_and_claim @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/dispatch/enqueue | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/dispatch/enqueue @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/dispatch/relinquish | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/dispatch/relinquish @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/dispatch/renew | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/dispatch/renew @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/dispatch/reservation/resolve | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/dispatch/reservation/resolve @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/dispatch/settle | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/dispatch/settle @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/dispatch/stream | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/dispatch/stream @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/drain | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/drain @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/environment/warmups | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/environment/warmups @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/heartbeat | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/heartbeat @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/k8s/create | 404 | 404 | 404 | 404 | 404
+/v1/worker/k8s/create @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/k8s/create/seal | 404 | 404 | 404 | 404 | 404
+/v1/worker/k8s/create/seal @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/quiesced | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/quiesced @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/recovery/snapshot | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/recovery/snapshot @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/register | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/register @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/resources/files/artifacts | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/resources/files/artifacts @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/resources/files/artifacts/capture | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/resources/files/artifacts/capture @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/resources/files/artifacts/recovery | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/resources/files/artifacts/recovery @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/resources/files/content | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/resources/files/content @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/resources/memory/operation | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/resources/memory/operation @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/resources/repositories/verify | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/resources/repositories/verify @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/resources/skills/bundle | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/resources/skills/bundle @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/agents/list | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/agents/list @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/agents/send | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/agents/send @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/agents/settle | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/agents/settle @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/cleanup/claim-next | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/cleanup/claim-next @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/cleanup/disposal/authorize | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/cleanup/disposal/authorize @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/cleanup/disposal/record | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/cleanup/disposal/record @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/cleanup/poll | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/cleanup/poll @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/cleanup/preparation/authorize | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/cleanup/preparation/authorize @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/cleanup/preparation/record | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/cleanup/preparation/record @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/cleanup/repository-publication/complete | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/cleanup/repository-publication/complete @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/cleanup/repository-publication/poll | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/cleanup/repository-publication/poll @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/cleanup/repository-publication/reject | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/cleanup/repository-publication/reject @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/environment/authorize | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/environment/authorize @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/environment/persist | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/environment/persist @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/model-request/admit | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/model-request/admit @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/preparation/claim-next | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/preparation/claim-next @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/realization/acknowledge | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/realization/acknowledge @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/realization/activate | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/realization/activate @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/realization/fail | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/realization/fail @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/realization/renew | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/realization/renew @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/resume | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/resume @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/worker/session/run-activity/admit | 404 | 401 allow=POST h=content-length,content-type | 404 | 404 | 401 allow=POST h=content-length,content-type
+/v1/worker/session/run-activity/admit @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/workers/readiness | 405 allow=GET,HEAD h=content-length | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=content-length | 404
+/v1/workers/readiness @ws | 405 allow=GET,HEAD h=content-length | 404 | 401 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=content-length | 404
+/v1/workspaces/default/memory_stores | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/workspaces/default/memory_stores @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/workspaces/default/sessions | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404 | 401 allow=POST,GET,HEAD h=content-length,content-type,request-id | 405 allow=POST,GET,HEAD h=anthropic-workspace-id,content-length,request-id | 404
+/v1/workspaces/default/sessions @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/workspaces/{ws}/{*rest} | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/v1/workspaces/{ws}/{*rest} @ws | 404 h=content-length | 404 | 404 h=content-length | 404 h=content-length | 404
+/.well-known/agent-card.json | 405 allow=GET,HEAD h=content-length | 404 | 403 allow=GET,HEAD h=content-length,content-type,request-id | 405 allow=GET,HEAD h=content-length | 404
+/.well-known/awaken-suite-navigation | 404 | 404 | 404 | 404 | 404
+/.well-known/jwks.json | 404 | 404 | 404 | 404 | 404
+/w/{*path} | 404 | 404 | 404 | 404 | 404
