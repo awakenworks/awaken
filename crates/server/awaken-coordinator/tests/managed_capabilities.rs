@@ -57,7 +57,10 @@ async fn create_session(app: &Router) -> serde_json::Value {
 /// E4=the direct-only Skill is absent from Managed capabilities.
 /// R1(C1,C3)->E1 covers read/glob/grep and therefore emits no override;
 /// R2(C1,C2)->E2 covers bash/write/edit;
-/// R3(C4)->E3 covers WebFetch and WebSearch;
+/// R3(C4)->E3 covers WebFetch and WebSearch. Omitted WebFetch source policy
+/// projects the required nullable `url_sources` even while disabled; WebSearch
+/// retains its distinct shape. The protocol boundary owns the full wire laws;
+/// this case proves the real Host catalogue reaches that same projector.
 /// R4(C5, no versioned catalog record)->E4 covers profile convergence.
 /// Constraints/invariants: one neutral `SessionToolConfiguration` owns policy;
 /// the Managed projector is the only wire owner, Web providers use the unified
@@ -86,12 +89,13 @@ async fn managed_session_folds_builtins_into_the_agent_toolset() {
             // as the `BetaManagedAgentsAgentToolConfig` SDK type requires; only
             // deviations from `default_config` are listed. Legacy perception
             // members inherit always_allow, controlled modifications require
-            // confirmation, and unavailable Web members flip only `enabled`.
+            // confirmation, and unavailable Web members are disabled. WebFetch
+            // still carries its SDK-required nullable source configuration.
             "configs": [
                 { "name": "bash", "type": "bash", "enabled": true, "permission_policy": { "type": "always_ask" } },
                 { "name": "write", "type": "write", "enabled": true, "permission_policy": { "type": "always_ask" } },
                 { "name": "edit", "type": "edit", "enabled": true, "permission_policy": { "type": "always_ask" } },
-                { "name": "web_fetch", "type": "web_fetch", "enabled": false, "permission_policy": { "type": "always_allow" } },
+                { "name": "web_fetch", "type": "web_fetch", "enabled": false, "permission_policy": { "type": "always_allow" }, "url_sources": null },
                 { "name": "web_search", "type": "web_search", "enabled": false, "permission_policy": { "type": "always_allow" } }
             ],
             "default_config": { "enabled": true, "permission_policy": { "type": "always_allow" } }

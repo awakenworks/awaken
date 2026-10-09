@@ -149,6 +149,17 @@ mod tests {
             json!({"client_tool_results":"none","server_tool_results":"none"}),
         )
         .unwrap();
+        // R5's dependency is a registered provider-server fetch, witnessed by
+        // the unconfigured positive control. An unknown provider error cannot
+        // substitute for refusal of an unenforceable source restriction.
+        let server_config = json!({"provider_id":OPENROUTER_PROVIDER_ID,"options":{}});
+        let (server_descriptor, _) = WebFetchPlugin::new(registry.clone(), None)
+            .configured_tool(Some(&server_config))
+            .unwrap();
+        assert!(
+            server_descriptor.provider_server_tool.is_some(),
+            "R5 registered control"
+        );
         let plugin = WebFetchPlugin::new(registry, None)
             .with_tool_source_catalogue(&[])
             .with_execution_configuration(Some(WebFetchExecutionConfiguration {
@@ -159,12 +170,15 @@ mod tests {
         let config = json!({"provider_id":"fetch-probe","options":{}});
         // R5 a provider-server realization cannot consume this transcript
         // view: reject its configuration rather than dropping provenance.
+        let refusal = plugin
+            .configured_tool(Some(&server_config))
+            .err()
+            .expect("R5 source policy refuses server realization");
         assert!(
-            plugin
-                .configured_tool(Some(
-                    &json!({"provider_id":ANTHROPIC_PROVIDER_ID,"options":{}})
-                ))
-                .is_err()
+            refusal
+                .to_string()
+                .contains("cannot enforce the Agent WebFetch execution policy"),
+            "R5 policy cause: {refusal}"
         );
         let contributions = plugin.resolve_configured(Some(&config)).unwrap();
         assert!(

@@ -253,6 +253,43 @@ function managedTypesV131Fixture(enabled) {
   }`;
 }
 
+function managedTypesV132Fixture(enabled) {
+  if (!enabled) return '';
+  // T7 nullable closed URL sources accept shorthand only on input, responses
+  // require normalized objects; T8 Models lifecycle is required and nonnull,
+  // while dates/line are required nullable facts and lifecycle[] is a query.
+  // Exact candidate declarations own both directions; no casts or local DTOs.
+  return `
+  {
+  type AgentAPI = typeof import('@anthropic-ai/sdk/resources/beta/agents/agents');
+  type Fetch = import('@anthropic-ai/sdk/resources/beta/agents/agents').BetaManagedAgentsWebFetchToolConfig;
+  type Required<T, K extends keyof T> = {} extends Pick<T, K> ? never : true;
+  const sources: import('@anthropic-ai/sdk/resources/beta/agents/agents').BetaManagedAgentsWebFetchURLSourcesParams = {
+    user_input: 'none', server_tool_results: { type: 'only', tools: [{ type: 'tool_reference', name: 'web_search' }] },
+    client_tool_results: { type: 'except', tools: [{ type: 'tool_reference', name: 'lookup' }] },
+  };
+  const fetchInput: import('@anthropic-ai/sdk/resources/beta/agents/agents').BetaManagedAgentsWebFetchToolConfigParams = { name: 'web_fetch', url_sources: sources };
+  const response: Fetch['url_sources'] = { user_input: { type: 'none' }, server_tool_results: null, client_tool_results: { type: 'all' } };
+  const sourcesRequired: Required<Fetch, 'url_sources'> = true;
+  type Model = import('@anthropic-ai/sdk/resources/models').ModelInfo;
+  type BetaModel = import('@anthropic-ai/sdk/resources/beta/models').BetaModelInfo;
+  const lifecycleRequired: Required<Model, 'lifecycle'> = true;
+  const lifecycleNonNull: null extends Model['lifecycle'] ? never : true = true;
+  const betaLifecycleRequired: Required<BetaModel, 'lifecycle'> = true;
+  const lineRequired: Required<Model, 'line'> = true;
+  const deprecatedAtRequired: Required<Model, 'deprecated_at'> = true;
+  const retiresAtRequired: Required<Model, 'retires_at'> = true;
+  const serverTools: NonNullable<Model['capabilities']>['server_tools'] = { supported: false, web_search: { supported: false }, code_execution: { supported: false } };
+  const thinkingDisabled: NonNullable<BetaModel['capabilities']>['thinking']['types']['disabled'] = { supported: true };
+  await client.models.list({ lifecycle: ['active', 'deprecated', 'retired'] });
+  await client.beta.models.list({ lifecycle: ['active'] });
+  const documentedOwners: [AgentAPI, Fetch, Model, BetaModel] | undefined = undefined;
+  void fetchInput; void response; void sourcesRequired; void lifecycleRequired;
+  void lifecycleNonNull; void betaLifecycleRequired; void lineRequired;
+  void deprecatedAtRequired; void retiresAtRequired; void serverTools; void thinkingDisabled; void documentedOwners;
+  }`;
+}
+
 export function officialSdkChangePointFixture({
   filesProjection,
   skillsProjection,
@@ -263,6 +300,7 @@ export function officialSdkChangePointFixture({
   managedTypesV127 = false,
   managedTypesV128 = false,
   managedTypesV131 = false,
+  managedTypesV132 = false,
   workspaceRouting = false,
 }) {
   return `// Generated in memory by official_sdk_change_point_compile.mjs.
@@ -308,6 +346,7 @@ ${managedTypesV127 ? `
 ${workspaceRoutingFixture(workspaceRouting)}
 ${managedTypesV128Fixture(managedTypesV128)}
 ${managedTypesV131Fixture(managedTypesV131)}
+${managedTypesV132Fixture(managedTypesV132)}
   client.beta.webhooks.unwrap('{}', { headers: {
     'webhook-id': 'event_compile',
     'webhook-timestamp': '0',

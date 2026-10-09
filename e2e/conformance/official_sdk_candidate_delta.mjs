@@ -237,14 +237,14 @@ export function assertLatestRuntimeOwnsCandidateDelta(delta) {
   if (delta.declarations.added.length > 0 || delta.declarations.removed.length > 0) {
     throw new Error('candidate adds or removes scoped declaration files; review the SDK scope');
   }
-  const supportedDeclaration = /^(?:beta\/.+\.d\.ts|ga\/.+\.d\.ts|managed\/(?:core\/pagination|lib\/(?:sessions\/accumulate|environments\/worker)|tools\/agent-toolset\/(?:fs-util|node(?:\.browser)?|skills))\.d\.ts)$/u;
+  const supportedDeclaration = /^(?:beta\/.+\.d\.ts|ga\/.+\.d\.ts|managed\/(?:core\/pagination|lib\/(?:sessions\/accumulate|environments\/worker)|tools\/agent-toolset\/(?:fs-util|memories|node(?:\.browser)?|skills))\.d\.ts)$/u;
   const unsupportedDeclaration = delta.declarations.changed.find(
     ({ path }) => !supportedDeclaration.test(path),
   );
   if (unsupportedDeclaration) {
     throw new Error(`${unsupportedDeclaration.path} changed outside the latest runtime canary`);
   }
-  const recognizedAddedRuntime = new Set(['internal/node.mjs']);
+  const recognizedAddedRuntime = new Set(['internal/node.mjs', 'lib/internal/toolsets/sanitize.mjs']);
   if (delta.runtime.added.some(({ path }) => !recognizedAddedRuntime.has(path))
     || delta.runtime.removed.length > 0) {
     throw new Error('candidate adds or removes Managed runtime dependencies; add explicit behavior ownership');
@@ -276,6 +276,10 @@ export function assertLatestRuntimeOwnsCandidateDelta(delta) {
     /^resources\/(?:beta\/.+|files|models|skills(?:\/(?:index|skills|versions))?)\.mjs$/u,
     /^tools\/agent-toolset\/(?:fs-util|memories|node|skills)\.mjs$/u,
     /^version\.mjs$/u,
+    // 0.132 exact path admission and the extracted runnable-tool error helper
+    // each have an executable owner; complete source hashes still admit bytes.
+    /^internal\/utils\/path\.mjs$/u,
+    /^lib\/(?:internal\/toolsets\/sanitize|tools\/BetaRunnableTool)\.mjs$/u,
     // Exact 0.128 inline-definition telemetry change, separately exercised by
     // candidate.inline-tool-helper-telemetry and bound to reviewed delta bytes.
     /^internal\/stainless-helper-header\.mjs$/u,

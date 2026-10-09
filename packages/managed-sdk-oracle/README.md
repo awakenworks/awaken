@@ -334,6 +334,17 @@ ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT=/absolute/path/to/node_modules/@anthropic-ai/
   node e2e/conformance/sdk_latest_runtime_canary.mjs
 ```
 
+The exact 0.131.0 → 0.132.1 qualification owns all 19 scoped delta coordinates.
+Its enduring owners compile the new closed Web URL-source and Models lifecycle
+types, execute the candidate's path admission and extracted tool-error helper,
+and lose one real successful Memory update response before reconciling a newer
+local edit or a genuine competing remote edit. The existing resource handoff
+suite owns GA/Beta Models filtering and explicit unknown lifecycle facts; the
+existing Web execution scenario owns normalized Session configuration and
+pre-I/O source refusals. Candidate verification during the release-age window
+keeps the current oracle unchanged; the existing age policy requires promotion
+once the registry release matures.
+
 The runner reads the candidate's generated operation source. For Beta Files and
 Skills it requires every operation to agree on `beta=true` and its endpoint
 capability, derives the historical-Beta or GA wire projection from that request

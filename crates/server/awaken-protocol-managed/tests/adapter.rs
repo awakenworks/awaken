@@ -2503,22 +2503,21 @@ async fn create_session_defaults_to_empty_surface() {
 
 /// Golden wire contract for the created session's agent object: the exact Managed
 /// Agents shapes the SDK parses — one `agent_toolset_20260401` reference (with the
-/// required per-tool 0.120 output discriminant, unregistered tools disabled, and
+/// required per-tool output discriminant and nullable WebFetch sources,
+/// unregistered tools disabled, and
 /// the confirmation-gated ones `always_ask`), a
 /// `custom` tool, a `custom` skill reference, a `coordinator` multiagent roster, and
 /// empty `mcp_servers` / `resources`. A field rename or extra key breaks this.
 #[tokio::test]
 async fn session_capability_objects_match_wire_contract() {
-    // Causes: the fixtures below establish `session capability objects match wire contract` with
-    // the concrete inputs, state, dependencies, and failure triggers used by this case.
-    // Effects: the observable result `all output, state, side-effect, error, and terminal
-    // assertions below hold together` and every asserted state transition or side effect must hold.
-    // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
-    // stores and committed facts remain the single behavior authority.
-    // Coverage rationale: `session capability objects match wire contract` is one independent
-    // branch selecting `all output, state, side-effect, error, and terminal assertions below hold
-    // together`; a multi-row decision table is not applicable, and sibling tests own alternate
-    // causes.
+    // Capability projection decision table for the same frozen catalogue:
+    // R1 registered write + confirmation -> enabled with always_ask.
+    // R2 unregistered Agent member -> disabled with its required type.
+    // R3 R2 + WebFetch + omitted source policy -> required url_sources:null;
+    //    WebSearch has no such field. Disabled execution cannot omit wire keys.
+    // R4 custom tool/Skill/roster -> preserve their own closed SDK shapes.
+    // The existing Session compiler/projector owns every row; this fixture
+    // checks its exact response without introducing another serializer.
     let app = router(support::shared_state(CapableFake).await);
     let s = json_call(
         &app,
@@ -2539,7 +2538,7 @@ async fn session_capability_objects_match_wire_contract() {
                     { "name": "edit", "type": "edit", "enabled": false, "permission_policy": { "type": "always_allow" } },
                     { "name": "glob", "type": "glob", "enabled": false, "permission_policy": { "type": "always_allow" } },
                     { "name": "grep", "type": "grep", "enabled": false, "permission_policy": { "type": "always_allow" } },
-                    { "name": "web_fetch", "type": "web_fetch", "enabled": false, "permission_policy": { "type": "always_allow" } },
+                    { "name": "web_fetch", "type": "web_fetch", "enabled": false, "permission_policy": { "type": "always_allow" }, "url_sources": null },
                     { "name": "web_search", "type": "web_search", "enabled": false, "permission_policy": { "type": "always_allow" } }
                 ],
                 "default_config": { "enabled": true, "permission_policy": { "type": "always_allow" } }

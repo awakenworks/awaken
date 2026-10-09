@@ -189,6 +189,9 @@ const managedTypesV128 = /export type BetaManagedAgentsAgentEvaluatedPermission 
 const managedTypesV131 = /export interface BetaManagedAgentsSessionRefusalStopDetails/u.test(
   readFileSync(resolve(packageRoot, 'resources/beta/sessions/events.d.ts'), 'utf8'),
 );
+const managedTypesV132 = /export interface BetaManagedAgentsWebFetchURLSourcesParams/u.test(
+  readFileSync(resolve(packageRoot, 'resources/beta/agents/agents.d.ts'), 'utf8'),
+);
 const requiredRetainedOwners = new Set(retainedOfficialSdkBehaviorOwners(
   manifest.version,
   qualificationCatalog.qualifications,
@@ -205,6 +208,7 @@ compileOfficialSdkChangePoints(packageRoot, {
   managedTypesV127,
   managedTypesV128,
   managedTypesV131,
+  managedTypesV132,
   workspaceRouting: workspaceRuntimeModules.length > 0,
 });
 completeBehaviorOwner('candidate.typescript-change-points');
@@ -213,6 +217,100 @@ if (managedTypesV125) completeBehaviorOwner('candidate.managed-type-change-point
 if (managedTypesV127) completeBehaviorOwner('candidate.managed-type-change-points-v127');
 if (managedTypesV128) completeBehaviorOwner('candidate.managed-type-change-points-v128');
 if (managedTypesV131) completeBehaviorOwner('candidate.managed-type-change-points-v131');
+if (managedTypesV132) completeBehaviorOwner('candidate.managed-type-change-points-v132');
+
+async function exercisePathAndToolErrorAdmission() {
+  if (requiredRetainedOwners.has('candidate.path-parameter-admission')) {
+    const { path } = await import(pathToFileURL(resolve(packageRoot, 'internal/utils/path.mjs')));
+    // P1 empty or dot path segment -> reject before HTTP; P2 empty query value
+    // -> preserve query; P3 adjacent empty segments -> both diagnostic marks.
+    // Exact generated methods and the candidate's own tag execute the rules.
+    let requests = 0;
+    const client = new Anthropic({ apiKey: 'path-only', // awaken-allow: secret
+      maxRetries: 0, fetch: async () => { requests++; throw new Error('unexpected path I/O'); } });
+    for (const id of ['', '.', '..']) {
+      assert.throws(() => client.beta.files.retrieveMetadata(id), /invalid segments/u);
+    }
+    assert.equal(requests, 0, 'P1 invalid IDs never reach HTTP');
+    assert.equal(path`/items?value=${''}`, '/items?value=', 'P2 query emptiness is valid');
+    assert.throws(() => path`/items/${''}/${''}`, (error) =>
+      /Value ""/u.test(error.message) && error.message.split('\n').at(-1).includes('^^'), 'P3 zero-width marks do not overlap');
+    completeBehaviorOwner('candidate.path-parameter-admission');
+  }
+  if (requiredRetainedOwners.has('candidate.tool-error-sanitization')) {
+    const sanitize = await import(pathToFileURL(resolve(packageRoot, 'lib/internal/toolsets/sanitize.mjs')));
+    const { runRunnableTool } = await import(pathToFileURL(resolve(packageRoot, 'lib/tools/BetaRunnableTool.mjs')));
+    const { ToolError } = await import(pathToFileURL(resolve(packageRoot, 'lib/tools/ToolError.mjs')));
+    // E1 controls/bidi/lone surrogate -> one well-formed line; E2 Unicode
+    // limits count points, not UTF-16; E3 oversized URL cannot parse to a site;
+    // E4 ordinary errors retain their message and explicit ToolError its content.
+    assert.equal(sanitize.oneLine(' a\n\u202eb\ud800 '), 'a b\ufffd', 'E1');
+    assert.equal(sanitize.cutPoints('😀😀x', 2), '😀😀', 'E2');
+    assert.equal(sanitize.boundedTabURL('https://example.com/' + 'x'.repeat(4096)).startsWith('…'), true, 'E3');
+    assert.equal(Array.from(sanitize.errorText(new Error('😀'.repeat(5000)))).length, 4096, 'E2 bounded error');
+    for (const thrown of [new Error('failure'), 'failure', new ToolError('deliberate')]) {
+      const result = await runRunnableTool({ run() { throw thrown; } }, {}, {});
+      assert.deepEqual(result, { content: thrown instanceof ToolError ? thrown.content : 'Error: failure', isError: true }, 'E4');
+    }
+    completeBehaviorOwner('candidate.tool-error-sanitization');
+  }
+}
+
+async function exerciseAmbiguousMemoryUpload(baseURL) {
+  if (!requiredRetainedOwners.has('candidate.memory-ambiguous-upload')) return;
+  // M1 HTTP succeeds durably but its response is lost; M2 another local edit;
+  // M3 a genuine remote writer intervenes. R1 M1+M2+!M3 -> advance from the
+  // sent SHA and upload the new edit; R2 M1+M2+M3 -> pull the remote winner.
+  // Actual generated SDK calls and Memory/CAS repository own every mutation;
+  // the fault consumes one successful response and never fabricates state.
+  const observer = new Anthropic({ apiKey: 'e2e-dummy', baseURL });
+  for (const remoteWriter of [false, true]) {
+    let updates = 0;
+    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL, maxRetries: 0,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const update = request.method === 'POST' && /\/memories\/[^/]+$/u.test(new URL(request.url).pathname);
+        const response = await fetch(request);
+        if (update && ++updates === 1 && response.ok) {
+          await response.arrayBuffer();
+          throw new TypeError('lost response after durable Memory update');
+        }
+        return response;
+      },
+    });
+    const store = await observer.beta.memoryStores.create({ name: `ambiguous-${remoteWriter}` });
+    const memory = await observer.beta.memoryStores.memories.create(store.id, { path: '/sync.md', content: 'base', view: 'full' });
+    const workdir = mkdtempSync(resolve(tmpdir(), 'awaken-candidate-memory-send-'));
+    const helper = new SessionMemoryStores(client, { workdir });
+    try {
+      await helper.download({ resources: [{ type: 'memory_store', memory_store_id: store.id, name: 'candidate', access: 'read_write' }] });
+      const local = resolve(workdir, 'memory/candidate/sync.md');
+      writeFileSync(local, 'sent');
+      await helper.flushWrites();
+      const landed = await observer.beta.memoryStores.memories.retrieve(memory.id, { memory_store_id: store.id, view: 'full' });
+      assert.equal(landed.content, 'sent', 'M1 durable effect exists despite loss');
+      writeFileSync(local, 'new-local');
+      if (remoteWriter) await observer.beta.memoryStores.memories.update(memory.id, {
+        memory_store_id: store.id, content: 'remote-winner', precondition: { type: 'content_sha256', content_sha256: landed.content_sha256 },
+      });
+      await helper.finish();
+      const expected = remoteWriter ? 'remote-winner' : 'new-local';
+      assert.equal((await observer.beta.memoryStores.memories.retrieve(memory.id, { memory_store_id: store.id, view: 'full' })).content, expected);
+      assert.equal(readFileSync(local, 'utf8'), expected);
+      assert.equal(updates, remoteWriter ? 1 : 2, 'R1/R2 exact helper update count');
+      const history = [];
+      for await (const row of observer.beta.memoryStores.memoryVersions.list(store.id)) history.push(row);
+      assert.equal(history.length, 3, 'one create and exactly two committed updates');
+    } finally {
+      await helper.dispose();
+      rmSync(workdir, { recursive: true, force: true });
+      await observer.beta.memoryStores.memories.delete(memory.id, { memory_store_id: store.id });
+      await observer.beta.memoryStores.archive(store.id);
+      await observer.beta.memoryStores.delete(store.id);
+    }
+  }
+  completeBehaviorOwner('candidate.memory-ambiguous-upload');
+}
 
 async function exerciseInlineToolHelperTelemetry() {
   if (!requiredRetainedOwners.has('candidate.inline-tool-helper-telemetry')) return;
@@ -1524,9 +1622,11 @@ await exerciseStreamingBufferViews();
 await exerciseSdkNodeRuntimeFacade();
 await exerciseRefusalFallbackMiddleware();
 await exerciseSdkHelperRuntime();
+await exercisePathAndToolErrorAdmission();
 await exerciseSessionToolRunnerTerminalIdle();
 
 await withRealServer('echo', Number(process.env.E2E_PORT), async (baseURL) => {
+  await exerciseAmbiguousMemoryUpload(baseURL);
   // Cause/effect graph: C0=Session Event send returns one exact durable
   // receipt; C1=the registry-latest generated Session and Memory
   // methods use their default beta/header behavior; C2=the echo topology owns

@@ -83,7 +83,17 @@ test('candidate compile fixtures are projection-complete and contain no escape h
     assert.match(v131, changePoint, 'T5 candidate declaration boundary');
     assert.doesNotMatch(ga, changePoint, 'T6 current anchor omits later types');
   }
-  for (const fixture of [beta, ga, v128, v131]) {
+  // T7/T8 candidate-only Web and Models boundaries compile only when declared;
+  // older anchors keep the existing fixture without a missing import.
+  const v132 = officialSdkChangePointFixture({
+    filesProjection: 'ga', skillsProjection: 'ga', parseUnverified: true,
+    resolveSkillVersion: false, managedTypesV132: true,
+  });
+  for (const changePoint of [/BetaManagedAgentsWebFetchURLSourcesParams/u, /lifecycleNonNull/u, /retiresAtRequired/u]) {
+    assert.match(v132, changePoint, 'T7/T8 candidate declaration boundary');
+    assert.doesNotMatch(ga, changePoint, 'earlier declaration omits later types');
+  }
+  for (const fixture of [beta, ga, v128, v131, v132]) {
     assert.match(fixture, /betaAgentToolset20260401/u, 'Managed helper subpath compiles');
     assert.match(fixture, /accumulateManagedAgentsEvent/u, 'Session accumulator subpath compiles');
     assert.doesNotMatch(fixture, /\bany\b|\sas\s|@ts-/u, 'E4');

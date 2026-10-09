@@ -41,11 +41,12 @@ test('candidate delta ownership fails closed outside exercised change points', (
         { path: 'managed/lib/environments/worker.d.ts' },
         { path: 'managed/tools/agent-toolset/node.d.ts' },
         { path: 'managed/tools/agent-toolset/skills.d.ts' },
+        { path: 'managed/tools/agent-toolset/memories.d.ts' },
       ],
     },
     runtime: {
       ...empty(),
-      added: [{ path: 'internal/node.mjs' }],
+      added: [{ path: 'internal/node.mjs' }, { path: 'lib/internal/toolsets/sanitize.mjs' }],
       changed: [
         { path: 'client.mjs' },
         { path: 'core/streaming.mjs' },
@@ -76,6 +77,8 @@ test('candidate delta ownership fails closed outside exercised change points', (
         { path: 'tools/agent-toolset/memories.mjs' },
         { path: 'tools/agent-toolset/node.mjs' },
         { path: 'version.mjs' },
+        { path: 'internal/utils/path.mjs' },
+        { path: 'lib/tools/BetaRunnableTool.mjs' },
       ],
     },
     exports: {
