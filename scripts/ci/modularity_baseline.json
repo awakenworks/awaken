@@ -51,7 +51,7 @@
     "awaken-run-executor-a2a": 1,
     "awaken-run-executor-acp": 6,
     "awaken-run-ingress": 6,
-    "awaken-run-ingress-contract": 2,
+    "awaken-run-ingress-contract": 1,
     "awaken-run-ingress-http": 2,
     "awaken-runtime": 10,
     "awaken-runtime-host": 39,

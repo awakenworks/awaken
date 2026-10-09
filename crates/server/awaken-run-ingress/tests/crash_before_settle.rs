@@ -27,7 +27,7 @@
 
 mod harness;
 
-use awaken_run_ingress_contract::ControlDispatch;
+use awaken_run_ingress::ControlDispatch;
 use awaken_run_ingress_contract::ControlDispatchQueue;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

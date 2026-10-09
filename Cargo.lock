@@ -3639,6 +3639,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-credential-contract",
+ "awaken-dispatch-erasure",
  "awaken-dispatch-execution",
  "awaken-lease-testkit",
  "awaken-outbound-http",
