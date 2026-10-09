@@ -30,7 +30,6 @@ awaken-session-dream-contract.workspace = true
 awaken-session-event-contract.workspace = true
 awaken-session-mcp-contract.workspace = true
 awaken-session-types.workspace = true
-awaken-session-work-contract.workspace = true
 awaken-worker-contract.workspace = true
 serde_json.workspace = true
 # `join!` drives the concurrent-append case's two commits on one task, portably

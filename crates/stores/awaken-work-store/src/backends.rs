@@ -5,7 +5,7 @@
 // @formal reason: the two durable WorkQueue adapters.
 //! Backend construction and backend-neutral row ownership helpers.
 //!
-//! The [`WorkQueue`](awaken_session_work_contract::WorkQueue) command
+//! The [`WorkQueue`](awaken_worker_contract::WorkQueue) command
 //! implementations remain in the crate root. This module owns only connection
 //! lifecycle, schema admission, idempotent row creation, and owned-row reads for
 //! the two durable adapters.

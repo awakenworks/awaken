@@ -217,7 +217,6 @@
     "awaken-session-state-contract",
     "awaken-session-store",
     "awaken-session-types",
-    "awaken-session-work-contract",
     "awaken-skill-store",
     "awaken-sqlite-pool",
     "awaken-store-conformance",

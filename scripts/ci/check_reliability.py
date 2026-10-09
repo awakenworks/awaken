@@ -367,7 +367,7 @@ esac
                             }
                             self.assertEqual(
                                 test_packages,
-                                {argv[argv.index("--package") + 1], "awaken-session-work-contract"},
+                                {argv[argv.index("--package") + 1], "awaken-worker-contract"},
                                 "D5 shared UTC owner and original Work consumer both execute",
                             )
                     def cleaned_packages(selected_calls: list[str]) -> set[str]:

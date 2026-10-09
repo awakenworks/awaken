@@ -315,7 +315,7 @@ impl WorkerControlClient {
         identity: &WorkerIdentity,
         claim: &RunClaim,
         session_id: &str,
-        session_work_authority: Option<&awaken_session_work_contract::SessionWorkAuthorityReceipt>,
+        session_work_authority: Option<&awaken_worker_contract::SessionWorkAuthorityReceipt>,
         continuation: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> Result<
         Option<awaken_session_realization_contract::SessionRealizationDirective>,

@@ -22,14 +22,14 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_session_work_contract::{
+use awaken_time::WallClock;
+#[cfg(all(test, not(feature = "loom")))]
+use awaken_time::system_clock;
+use awaken_worker_contract::{
     HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats, SessionAccessDigest,
     SessionWorkLease, SessionWorkReleaseAdmission, WorkClaim, WorkItem, WorkMutationResult,
     WorkQueue, WorkQueueError, WorkSessionAccess, session_work_release_admission,
 };
-use awaken_time::WallClock;
-#[cfg(all(test, not(feature = "loom")))]
-use awaken_time::system_clock;
 fn storage(error: impl std::fmt::Display) -> WorkQueueError {
     WorkQueueError::Storage(error.to_string().into())
 }
@@ -1225,7 +1225,7 @@ impl WorkQueue for PostgresWorkQueue {
 mod tests {
     use super::LEASE_TTL_MS;
     use super::*;
-    use awaken_session_work_contract::{WorkPayload, WorkState};
+    use awaken_worker_contract::{WorkPayload, WorkState};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 

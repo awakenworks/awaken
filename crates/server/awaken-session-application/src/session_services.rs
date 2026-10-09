@@ -191,27 +191,24 @@ pub trait SessionEnvironmentSource: Send + Sync {
         &self,
         environment_id: &str,
         session_id: &str,
-    ) -> Result<String, awaken_session_work_contract::WorkQueueError>;
+    ) -> Result<String, awaken_worker_contract::WorkQueueError>;
 
     async fn wake_session_work(
         &self,
         environment_id: &str,
         session_id: &str,
-    ) -> Result<String, awaken_session_work_contract::WorkQueueError>;
+    ) -> Result<String, awaken_worker_contract::WorkQueueError>;
 
     async fn retire_session_work(
         &self,
         environment_id: &str,
         session_id: &str,
-    ) -> Result<
-        Option<awaken_session_work_contract::WorkItem>,
-        awaken_session_work_contract::WorkQueueError,
-    >;
+    ) -> Result<Option<awaken_worker_contract::WorkItem>, awaken_worker_contract::WorkQueueError>;
 
     async fn release_session_work(
         &self,
-        _lease: &awaken_session_work_contract::SessionWorkLease,
-    ) -> Result<bool, awaken_session_work_contract::WorkQueueError> {
+        _lease: &awaken_worker_contract::SessionWorkLease,
+    ) -> Result<bool, awaken_worker_contract::WorkQueueError> {
         Ok(false)
     }
 
@@ -222,14 +219,14 @@ pub trait SessionEnvironmentSource: Send + Sync {
         worker_owner: &str,
         now_ms: u64,
     ) -> Result<
-        Option<awaken_session_work_contract::SessionWorkLease>,
-        awaken_session_work_contract::WorkQueueError,
+        Option<awaken_worker_contract::SessionWorkLease>,
+        awaken_worker_contract::WorkQueueError,
     >;
 
     async fn release_worker_session_work(
         &self,
         _worker_owner: &str,
-    ) -> Result<usize, awaken_session_work_contract::WorkQueueError> {
+    ) -> Result<usize, awaken_worker_contract::WorkQueueError> {
         Ok(0)
     }
 }

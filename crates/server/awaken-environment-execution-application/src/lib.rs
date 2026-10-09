@@ -21,7 +21,7 @@ use awaken_executable_environment_contract::{
     ExecutableEnvironmentRegistrationSource, ExecutableEnvironmentWithdrawal,
     ExecutableEnvironmentWithdrawalOutcome,
 };
-use awaken_session_work_contract::{
+use awaken_worker_contract::{
     ClaimedWork, HeartbeatResult, LeaseHeartbeat, QueueStats, WorkItem, WorkQueue, WorkQueueError,
     WorkSessionAccess,
 };
@@ -375,7 +375,7 @@ impl EnvironmentExecutionApplication {
         environment_id: &str,
         work_id: &str,
         worker_id: &str,
-    ) -> Result<awaken_session_work_contract::WorkMutationResult, EnvironmentExecutionError> {
+    ) -> Result<awaken_worker_contract::WorkMutationResult, EnvironmentExecutionError> {
         self.require_environment(environment_id).await?;
         Ok(self.work.ack(environment_id, work_id, worker_id).await?)
     }
@@ -386,7 +386,7 @@ impl EnvironmentExecutionApplication {
     pub async fn acknowledge_work_with_session_access(
         &self,
         access: &WorkSessionAccess,
-    ) -> Result<awaken_session_work_contract::WorkMutationResult, EnvironmentExecutionError> {
+    ) -> Result<awaken_worker_contract::WorkMutationResult, EnvironmentExecutionError> {
         self.require_environment(&access.environment_id).await?;
         Ok(self.work.ack_with_session_access(access).await?)
     }
@@ -425,7 +425,7 @@ impl EnvironmentExecutionApplication {
         environment_id: &str,
         work_id: &str,
         worker_id: &str,
-    ) -> Result<awaken_session_work_contract::WorkMutationResult, EnvironmentExecutionError> {
+    ) -> Result<awaken_worker_contract::WorkMutationResult, EnvironmentExecutionError> {
         self.require_environment(environment_id).await?;
         Ok(self.work.stop(environment_id, work_id, worker_id).await?)
     }
@@ -434,7 +434,7 @@ impl EnvironmentExecutionApplication {
     pub async fn stop_work_with_session_access(
         &self,
         access: &WorkSessionAccess,
-    ) -> Result<awaken_session_work_contract::WorkMutationResult, EnvironmentExecutionError> {
+    ) -> Result<awaken_worker_contract::WorkMutationResult, EnvironmentExecutionError> {
         self.require_environment(&access.environment_id).await?;
         Ok(self.work.stop_with_session_access(access).await?)
     }
@@ -527,7 +527,7 @@ impl awaken_session_application::SessionEnvironmentSource for EnvironmentExecuti
 
     async fn release_session_work(
         &self,
-        lease: &awaken_session_work_contract::SessionWorkLease,
+        lease: &awaken_worker_contract::SessionWorkLease,
     ) -> Result<bool, WorkQueueError> {
         self.work.release_session(lease).await
     }
@@ -538,7 +538,7 @@ impl awaken_session_application::SessionEnvironmentSource for EnvironmentExecuti
         session_id: &str,
         worker_owner: &str,
         now_ms: u64,
-    ) -> Result<Option<awaken_session_work_contract::SessionWorkLease>, WorkQueueError> {
+    ) -> Result<Option<awaken_worker_contract::SessionWorkLease>, WorkQueueError> {
         self.work
             .acquire_session(
                 environment_id,
@@ -808,8 +808,8 @@ mod tests {
     use awaken_executable_environment_catalog::{
         ExecutableEnvironmentCatalog, LocalExecutableEnvironmentRegistrar,
     };
-    use awaken_session_work_contract::HeartbeatCondition;
     use awaken_work_store::InMemoryWorkQueue;
+    use awaken_worker_contract::HeartbeatCondition;
 
     fn registration(
         id: &str,
@@ -1515,7 +1515,7 @@ mod tests {
             env: &str,
             work: &str,
             worker: &str,
-        ) -> Result<awaken_session_work_contract::WorkMutationResult, WorkQueueError> {
+        ) -> Result<awaken_worker_contract::WorkMutationResult, WorkQueueError> {
             self.inner.ack(env, work, worker).await
         }
         async fn heartbeat(
@@ -1535,7 +1535,7 @@ mod tests {
             env: &str,
             work: &str,
             worker: &str,
-        ) -> Result<awaken_session_work_contract::WorkMutationResult, WorkQueueError> {
+        ) -> Result<awaken_worker_contract::WorkMutationResult, WorkQueueError> {
             self.inner.stop(env, work, worker).await
         }
         async fn retire_session(
@@ -1551,8 +1551,7 @@ mod tests {
             session: &awaken_session_types::SessionId,
             worker: &str,
             now: u64,
-        ) -> Result<Option<awaken_session_work_contract::SessionWorkLease>, WorkQueueError>
-        {
+        ) -> Result<Option<awaken_worker_contract::SessionWorkLease>, WorkQueueError> {
             self.inner.acquire_session(env, session, worker, now).await
         }
         async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {

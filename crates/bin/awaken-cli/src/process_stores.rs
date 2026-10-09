@@ -132,7 +132,7 @@ pub(super) struct CoordinatorStores {
     /// A second view of the exact same captured-content adapter for Control's
     /// authenticated erasure command.
     pub(super) captured_content_eraser: Arc<dyn awaken_data_governance_contract::ContentEraser>,
-    pub(super) environment_work: Arc<dyn awaken_session_work_contract::WorkQueue>,
+    pub(super) environment_work: Arc<dyn awaken_worker_contract::WorkQueue>,
 }
 
 /// Every typed port backed by the one canonical Managed Session repository.
@@ -217,7 +217,7 @@ pub(super) async fn open_environment_work(
     postgres_schema: PostgresSchemaMode,
     clock: Arc<dyn awaken_time::WallClock>,
     postgres_pools: &mut crate::postgres_pools::ProcessPostgresPools,
-) -> Result<Arc<dyn awaken_session_work_contract::WorkQueue>, String> {
+) -> Result<Arc<dyn awaken_worker_contract::WorkQueue>, String> {
     use awaken_control::StoreBackend;
 
     ensure_store_parent(backend)?;

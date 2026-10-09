@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
 use awaken_environment_execution_application::EnvironmentExecutionApplication;
-use awaken_session_work_contract::WorkSessionAccess;
+use awaken_worker_contract::WorkSessionAccess;
 use axum::Json;
 use axum::extract::{Request, State};
 use axum::http::{Method, StatusCode};

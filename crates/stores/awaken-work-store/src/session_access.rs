@@ -10,8 +10,8 @@
 //! the pre-minted digest in the same statement that writes the lease epoch.
 
 use super::*;
-use awaken_session_work_contract::SessionAccessDigest;
 use awaken_time::WallClockExt;
+use awaken_worker_contract::SessionAccessDigest;
 use sqlx::sqlite::SqliteConnection;
 
 // SQL adapters share these exact column shapes. Keeping the aliases beside the
@@ -192,14 +192,14 @@ impl SqliteWorkQueue {
         let Some(current) = Self::owned(&mut tx, env_id, wid).await? else {
             return Ok(HeartbeatResult::NotFound);
         };
-        let admission = awaken_session_work_contract::work_lease_mutation_admission(
+        let admission = awaken_worker_contract::work_lease_mutation_admission(
             true,
             Self::lease_matches(&mut tx, env_id, wid, worker_id, fence).await?,
             heartbeat
                 .condition
                 .permits(current.latest_heartbeat_at.as_deref()),
         );
-        if admission != awaken_session_work_contract::WorkLeaseMutationAdmission::Applied {
+        if admission != awaken_worker_contract::WorkLeaseMutationAdmission::Applied {
             return Ok(HeartbeatResult::PreconditionFailed);
         }
         let extended = current.state.can_extend_lease();
@@ -557,8 +557,8 @@ impl PostgresWorkQueue {
         if owner.as_deref() != Some(worker_id) || !fence.admits(epoch) {
             return Ok(WorkMutationResult::PreconditionFailed);
         }
-        let next = awaken_session_work_contract::WorkState::from_wire(&state)
-            .unwrap_or(awaken_session_work_contract::WorkState::Stopped)
+        let next = awaken_worker_contract::WorkState::from_wire(&state)
+            .unwrap_or(awaken_worker_contract::WorkState::Stopped)
             .after_ack()
             .as_str();
         sqlx::query(
@@ -609,14 +609,14 @@ impl PostgresWorkQueue {
         let epoch = stored_epoch(row.try_get::<i64, _>("lease_epoch").map_err(storage)?)?;
         let refreshed: Option<i64> = row.try_get("lease_refreshed_ms").map_err(storage)?;
         let expires: Option<i64> = row.try_get("lease_expires_ms").map_err(storage)?;
-        let admission = awaken_session_work_contract::work_lease_mutation_admission(
+        let admission = awaken_worker_contract::work_lease_mutation_admission(
             true,
             owner.as_deref() == Some(worker_id) && fence.admits(epoch),
             heartbeat
                 .condition
                 .permits(current.latest_heartbeat_at.as_deref()),
         );
-        if admission != awaken_session_work_contract::WorkLeaseMutationAdmission::Applied {
+        if admission != awaken_worker_contract::WorkLeaseMutationAdmission::Applied {
             return Ok(HeartbeatResult::PreconditionFailed);
         }
         let extended = current.state.can_extend_lease();

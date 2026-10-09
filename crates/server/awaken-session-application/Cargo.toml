@@ -33,7 +33,6 @@ awaken-session-mcp-contract.workspace = true
 awaken-session-resource-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-session-realization-driver.workspace = true
-awaken-session-work-contract.workspace = true
 awaken-worker-contract.workspace = true
 async-trait.workspace = true
 awaken-time.workspace = true

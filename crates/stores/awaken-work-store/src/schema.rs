@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
-use awaken_session_work_contract::{WorkItem, WorkPayload, WorkState, next_heartbeat_receipt};
 use awaken_sqlite_pool::EmbeddedPool;
+use awaken_worker_contract::{WorkItem, WorkPayload, WorkState, next_heartbeat_receipt};
 use sqlx::postgres::PgPool;
 use sqlx::sqlite::SqliteRow;
 

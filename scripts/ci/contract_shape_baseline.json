@@ -164,12 +164,6 @@
     "awaken-session-types": {
       "depth": 0
     },
-    "awaken-session-work-contract": {
-      "depth": 2,
-      "growth_reasons": {
-        "depth": "the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it"
-      }
-    },
     "awaken-tenancy": {
       "depth": 1,
       "growth_reasons": {

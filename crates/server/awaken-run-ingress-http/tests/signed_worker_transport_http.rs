@@ -181,7 +181,7 @@ struct RecordingSessionWorkAuthority {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_work_contract::SessionWorkLeaseAuthority for RecordingSessionWorkAuthority {
+impl awaken_worker_contract::SessionWorkLeaseAuthority for RecordingSessionWorkAuthority {
     fn request_lifecycle_reconciliation(&self) {
         self.reconciliation_requests.fetch_add(1, Ordering::SeqCst);
     }
@@ -191,23 +191,21 @@ impl awaken_session_work_contract::SessionWorkLeaseAuthority for RecordingSessio
         session_id: &SessionId,
         worker_owner: &str,
         now_ms: u64,
-        _acquisition: awaken_session_work_contract::SessionWorkAcquisition,
-    ) -> Result<
-        awaken_session_work_contract::SessionWorkOwnership,
-        awaken_session_work_contract::WorkQueueError,
-    > {
+        _acquisition: awaken_worker_contract::SessionWorkAcquisition,
+    ) -> Result<awaken_worker_contract::SessionWorkOwnership, awaken_worker_contract::WorkQueueError>
+    {
         self.acquisitions.fetch_add(1, Ordering::SeqCst);
         self.acquired_sessions
             .lock()
             .unwrap()
             .push(session_id.to_string());
         if self.retired.load(Ordering::SeqCst) {
-            return Ok(awaken_session_work_contract::SessionWorkOwnership::Unowned);
+            return Ok(awaken_worker_contract::SessionWorkOwnership::Unowned);
         }
         let mut owner = self.owner.lock().unwrap();
         let leased = |owner: &str| {
-            awaken_session_work_contract::SessionWorkOwnership::Leased(
-                awaken_session_work_contract::SessionWorkLease::from_persisted(
+            awaken_worker_contract::SessionWorkOwnership::Leased(
+                awaken_worker_contract::SessionWorkLease::from_persisted(
                     "work-session",
                     "env",
                     session_id.clone(),
@@ -227,8 +225,8 @@ impl awaken_session_work_contract::SessionWorkLeaseAuthority for RecordingSessio
 
     async fn release_session_work(
         &self,
-        lease: &awaken_session_work_contract::SessionWorkLease,
-    ) -> Result<bool, awaken_session_work_contract::WorkQueueError> {
+        lease: &awaken_worker_contract::SessionWorkLease,
+    ) -> Result<bool, awaken_worker_contract::WorkQueueError> {
         self.released_sessions
             .lock()
             .unwrap()
@@ -245,7 +243,7 @@ impl awaken_session_work_contract::SessionWorkLeaseAuthority for RecordingSessio
     async fn release_worker_session_work(
         &self,
         worker_owner: &str,
-    ) -> Result<usize, awaken_session_work_contract::WorkQueueError> {
+    ) -> Result<usize, awaken_worker_contract::WorkQueueError> {
         let mut owner = self.owner.lock().unwrap();
         if owner.as_deref() != Some(worker_owner) {
             return Ok(0);
