@@ -431,7 +431,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         host.session_slots
             .read("semantic-memory", |slot| slot.content_delivery)
             .flatten(),
-        Some(crate::frozen_runtime_projection::ManagedContentDelivery::SemanticTools),
+        Some(crate::frozen_inputs::ManagedContentDelivery::SemanticTools),
         "M6 keeps one delivery path"
     );
     assert!(

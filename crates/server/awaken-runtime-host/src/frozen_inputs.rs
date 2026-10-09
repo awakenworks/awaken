@@ -22,14 +22,13 @@ pub(crate) enum ManagedContentDelivery {
 /// domain value intact avoids a second partial publication/layout projection:
 /// context, provider selection, cold replay, and cleanup all consume the same
 /// immutable coordinates.
-pub(crate) type FrozenBaselineRuntimeProjection =
-    awaken_session_configuration_contract::SessionBaseline;
+pub(crate) type FrozenBaselineInputs = awaken_session_configuration_contract::SessionBaseline;
 
 /// The sole process-local projection of the frozen Environment snapshot.
 /// Native and ACP provisioning both consume this value; no late network or
 /// Sandbox override is stored beside it.
 #[derive(Clone)]
-pub(crate) struct FrozenEnvironmentRuntimeProjection {
+pub(crate) struct FrozenEnvironmentInputs {
     pub fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint,
     pub network: awaken_provisioning_contract::NetworkPolicy,
     pub packages: awaken_provisioning_contract::PackageRequirements,
@@ -42,7 +41,7 @@ pub(crate) struct FrozenEnvironmentRuntimeProjection {
 /// keeps one `Arc` of it and every change publishes a complete replacement, so
 /// no reader observes a partly installed value; removing the slot drops it.
 #[derive(Clone, Default)]
-pub(crate) struct FrozenSessionRuntimeProjection {
+pub(crate) struct FrozenSessionInputs {
     pub workspace: Option<String>,
     /// Exact Agent identity from the frozen baseline. History/recovery calls
     /// carry no wire Agent and resolve the publication through it.
@@ -55,14 +54,14 @@ pub(crate) struct FrozenSessionRuntimeProjection {
     /// validated against the immutable publication before runtime construction.
     pub backend_ref: Option<String>,
     /// Exact Environment projection shared by Native and ACP realization.
-    pub environment_projection: Option<FrozenEnvironmentRuntimeProjection>,
+    pub environment_projection: Option<FrozenEnvironmentInputs>,
     /// Original secret-free Control snapshot retained solely for durable
     /// dispatch to another Worker. Runtime provisioning consumes the decoded
     /// projection above; this value is never a second configuration authority.
     pub environment_snapshot: Option<awaken_session_configuration_contract::EnvironmentSnapshot>,
     /// Exact Control-frozen baseline projected for realization. It is never
     /// authored or mutated locally.
-    pub baseline: Option<FrozenBaselineRuntimeProjection>,
+    pub baseline: Option<FrozenBaselineInputs>,
     /// Exact published delegation targets projected by a managed Session.
     pub delegates: Vec<String>,
     /// Complete Session-local tool replacement; `None` inherits publication.
@@ -72,14 +71,14 @@ pub(crate) struct FrozenSessionRuntimeProjection {
     pub request_context: Vec<awaken_agent_contract::agent::message::Message>,
 }
 
-impl FrozenSessionRuntimeProjection {
+impl FrozenSessionInputs {
     /// The one lowering of validated `SessionInit` coordinates into the next
     /// value, shared by the legacy preparation entrance and complete fenced
     /// projection publication.
     pub(crate) fn lower_session_init(
         &mut self,
         init: &awaken_session_configuration_contract::SessionInit,
-        environment: FrozenEnvironmentRuntimeProjection,
+        environment: FrozenEnvironmentInputs,
     ) {
         self.lower_environment(&init.environment, environment);
         self.workspace = Some(init.workspace_id.clone());
@@ -99,7 +98,7 @@ impl FrozenSessionRuntimeProjection {
     pub(crate) fn lower_environment(
         &mut self,
         snapshot: &awaken_session_configuration_contract::EnvironmentSnapshot,
-        projection: FrozenEnvironmentRuntimeProjection,
+        projection: FrozenEnvironmentInputs,
     ) {
         self.environment_projection.get_or_insert(projection);
         self.environment_snapshot = Some(snapshot.clone());

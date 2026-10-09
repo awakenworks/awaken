@@ -55,7 +55,7 @@ pub(crate) fn resource_mount_is_create_time(mount: &pc::MountRequirement) -> boo
 /// overlay so authored mounts cannot bypass the same consistency policy.
 fn project_memory_write_consistency(
     mounts: &mut [pc::MountRequirement],
-    environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+    environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
 ) {
     for mount in mounts {
         if let pc::MountSource::MemoryStore {
@@ -75,7 +75,7 @@ fn project_memory_write_consistency(
 /// so a Worker cannot claim requirements different from those it materializes.
 pub(crate) fn project_environment(
     environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
-) -> crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection {
+) -> crate::frozen_inputs::FrozenEnvironmentInputs {
     let network = match &environment.network {
         awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted => {
             pc::NetworkPolicy::Unrestricted
@@ -114,7 +114,7 @@ pub(crate) fn project_environment(
             reference: image.clone(),
         });
     }
-    crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection {
+    crate::frozen_inputs::FrozenEnvironmentInputs {
         fingerprint: environment.config_fingerprint.clone(),
         network,
         packages,
@@ -239,7 +239,7 @@ fn sandbox_spec_from_projection(
     scope: &str,
     mounts: Vec<pc::MountRequirement>,
     env: Vec<pc::EnvVar>,
-    environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+    environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
     provider_enforces_network_isolation: bool,
 ) -> pc::SandboxSpec {
     let projected_network = environment
@@ -332,9 +332,8 @@ pub(crate) struct ProjectedSandboxLayout<'a> {
     pub(crate) has_repositories: bool,
     pub(crate) baseline_mounts: Option<&'a [pc::MountRequirement]>,
     pub(crate) baseline_env: Option<&'a [pc::EnvVar]>,
-    pub(crate) content_delivery: Option<crate::frozen_runtime_projection::ManagedContentDelivery>,
-    pub(crate) environment:
-        Option<&'a crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+    pub(crate) content_delivery: Option<crate::frozen_inputs::ManagedContentDelivery>,
+    pub(crate) environment: Option<&'a crate::frozen_inputs::FrozenEnvironmentInputs>,
     pub(crate) network_isolation: bool,
 }
 
@@ -1367,14 +1366,12 @@ impl SharedHost {
 pub(crate) fn project_session_mounts(
     mut resources: Vec<awaken_provisioning_contract::MountRequirement>,
     baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
-    content_delivery: Option<crate::frozen_runtime_projection::ManagedContentDelivery>,
+    content_delivery: Option<crate::frozen_inputs::ManagedContentDelivery>,
 ) -> Vec<awaken_provisioning_contract::MountRequirement> {
     if let Some(baseline_mounts) = baseline_mounts {
         resources.extend_from_slice(baseline_mounts);
     }
-    if content_delivery
-        == Some(crate::frozen_runtime_projection::ManagedContentDelivery::SemanticTools)
-    {
+    if content_delivery == Some(crate::frozen_inputs::ManagedContentDelivery::SemanticTools) {
         resources.retain(|mount| {
             !matches!(
                 mount.source,

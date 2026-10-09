@@ -71,7 +71,7 @@ impl crate::host::SharedHost {
 
     pub(crate) fn register_thread_backend_projection(&self, thread: &str, backend_ref: &str) {
         self.session_slots.replace_frozen_with(thread, |next| {
-            next.backend_ref = crate::frozen_runtime_projection::backend_projection(backend_ref);
+            next.backend_ref = crate::frozen_inputs::backend_projection(backend_ref);
         });
     }
 }

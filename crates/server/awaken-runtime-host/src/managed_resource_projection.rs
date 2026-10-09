@@ -999,7 +999,7 @@ impl crate::SharedHost {
         scope: ManagedLayoutValidationScope<'_>,
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
-        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
     ) -> Result<(), crate::host::HostError> {
         let (resident_baseline, content_delivery, resident_environment, live_environment) = self
             .session_slots
@@ -1097,7 +1097,7 @@ impl crate::SharedHost {
         provider: &crate::session_environment::SessionEnvironmentProvider,
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
-        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
     ) -> Result<(), crate::host::HostError> {
         self.validate_managed_layout_inputs(
             thread,
@@ -1118,7 +1118,7 @@ impl crate::SharedHost {
         resources: &awaken_session_resource_contract::ResolvedSessionResources,
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
-        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
     ) -> Result<(), crate::host::HostError> {
         self.validate_managed_layout_inputs(
             thread,
@@ -1140,7 +1140,7 @@ impl crate::SharedHost {
         provider: &crate::session_environment::SessionEnvironmentProvider,
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
-        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
     ) -> Result<(), crate::host::HostError> {
         self.validate_managed_layout_inputs(
             thread,
@@ -1158,7 +1158,7 @@ impl crate::SharedHost {
         resources: &[awaken_resource_contract::InputBinding],
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
-        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
     ) -> Result<(), crate::host::HostError> {
         self.validate_managed_layout_inputs(
             thread,
@@ -1248,7 +1248,7 @@ impl crate::ManagedHost {
             u64,
             &awaken_session_resource_contract::SessionRealizationLease,
         )>,
-        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
     ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
         let authority = if let (Some((session_id, resource_revision, lease)), true) = (
             realization,
@@ -1328,7 +1328,7 @@ impl crate::ManagedHost {
             u64,
             &awaken_session_resource_contract::SessionRealizationLease,
         )>,
-        environment: Option<&crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection>,
+        environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
     ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
         use awaken_session_resource_contract::ResolvedInputSource;
         use awaken_session_types::RunError;

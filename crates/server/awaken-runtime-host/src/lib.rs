@@ -47,7 +47,7 @@ mod deployment_config;
 mod dispatch_session_runtime;
 mod durable_operations;
 mod environment_continuation;
-mod frozen_runtime_projection;
+mod frozen_inputs;
 mod host;
 mod hub;
 mod inference_routing;

@@ -26,7 +26,7 @@ pub(super) struct ContextResources {
     pub(super) has_published_advisor: bool,
     pub(super) managed_coordination: bool,
     pub(super) coordination_endpoint: Option<crate::coordination::CoordinationEndpoint>,
-    pub(super) content_delivery: crate::frozen_runtime_projection::ManagedContentDelivery,
+    pub(super) content_delivery: crate::frozen_inputs::ManagedContentDelivery,
     pub(super) session_tools:
         Option<awaken_session_configuration_contract::SessionToolConfiguration>,
     pub(super) toolsets: Vec<awaken_runtime_contract::agent_bindings::ToolsetPolicy>,

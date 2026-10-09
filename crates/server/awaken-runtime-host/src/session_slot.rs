@@ -8,7 +8,7 @@
 //! projection materialized from it so registration and terminal cleanup share one
 //! lifecycle boundary instead of coordinating parallel maps.
 
-use crate::frozen_runtime_projection::{FrozenSessionRuntimeProjection, ManagedContentDelivery};
+use crate::frozen_inputs::{FrozenSessionInputs, ManagedContentDelivery};
 use crate::staged_resources::EnvironmentResourceReconciliation;
 pub(crate) use awaken_session_mcp::McpQuiescenceAdmissionFence;
 use awaken_session_mcp::SessionMcpState;
@@ -259,7 +259,7 @@ pub(crate) struct SessionRuntimeSlot {
     pub(crate) frozen_projection_receipt: Option<FrozenProjectionReceipt>,
     /// The Session's frozen inputs, held whole. Install and every later change
     /// replace this one value; nothing amends a field of it in place.
-    pub(crate) frozen: Arc<FrozenSessionRuntimeProjection>,
+    pub(crate) frozen: Arc<FrozenSessionInputs>,
     pub runtime: Option<Arc<crate::host::SessionCtx>>,
     /// Sole live Environment owner. Every state transition is driven through
     /// `host/session/environment_lifecycle.rs`; other modules may only inspect
@@ -344,10 +344,7 @@ impl SessionRuntimeSlot {
     /// and publish it whole; readers holding the previous `Arc` keep it. The
     /// runtime context is assembled once with its request prefix, so a changed
     /// prefix drops only that cached context.
-    pub(crate) fn replace_frozen_with(
-        &mut self,
-        build: impl FnOnce(&mut FrozenSessionRuntimeProjection),
-    ) {
+    pub(crate) fn replace_frozen_with(&mut self, build: impl FnOnce(&mut FrozenSessionInputs)) {
         let mut next = self.frozen.as_ref().clone();
         build(&mut next);
         if self.frozen.request_context != next.request_context {
@@ -605,14 +602,14 @@ impl SessionRuntimeSlots {
     pub(crate) fn replace_frozen_with(
         &self,
         session: &str,
-        build: impl FnOnce(&mut FrozenSessionRuntimeProjection),
+        build: impl FnOnce(&mut FrozenSessionInputs),
     ) {
         self.update(session, |slot| slot.replace_frozen_with(build));
     }
 
     /// The Session's current frozen inputs, taken out of the lock as one
     /// value. An unknown Session reads as the empty projection.
-    pub(crate) fn frozen(&self, session: &str) -> Arc<FrozenSessionRuntimeProjection> {
+    pub(crate) fn frozen(&self, session: &str) -> Arc<FrozenSessionInputs> {
         self.read(session, |slot| slot.frozen.clone())
             .unwrap_or_default()
     }

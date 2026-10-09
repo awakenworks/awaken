@@ -218,7 +218,7 @@ impl crate::session_slot::SessionRuntimeSlot {
     fn validate_environment_projection(
         &self,
         thread: &str,
-        projection: &crate::frozen_runtime_projection::FrozenEnvironmentRuntimeProjection,
+        projection: &crate::frozen_inputs::FrozenEnvironmentInputs,
     ) -> Result<(), crate::HostError> {
         if self
             .frozen
@@ -1128,7 +1128,7 @@ impl crate::SharedHost {
 
 pub(crate) fn baseline_projection(
     baseline: &awaken_session_configuration_contract::SessionBaseline,
-) -> crate::frozen_runtime_projection::FrozenBaselineRuntimeProjection {
+) -> crate::frozen_inputs::FrozenBaselineInputs {
     baseline.clone()
 }
 

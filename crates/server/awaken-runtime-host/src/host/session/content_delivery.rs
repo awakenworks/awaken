@@ -175,7 +175,7 @@ impl SharedHost {
         thread: &str,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         skill_evidence: SkillDeliveryEvidence<'_>,
-    ) -> Result<crate::frozen_runtime_projection::ManagedContentDelivery, HostError> {
+    ) -> Result<crate::frozen_inputs::ManagedContentDelivery, HostError> {
         let managed_session = self
             .session_slots
             .read(thread, |slot| slot.session_dispatch)
@@ -233,8 +233,7 @@ impl SharedHost {
             .flatten()
         {
             if managed_has_skill
-                && existing
-                    != crate::frozen_runtime_projection::ManagedContentDelivery::ManagedFilesystem
+                && existing != crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem
             {
                 return Err(HostError::bad_request(
                     "Managed Agent Skills require filesystem progressive disclosure, but this Session disables every filesystem tool",
@@ -249,11 +248,11 @@ impl SharedHost {
             ));
         }
         let delivery = if allows_filesystem {
-            crate::frozen_runtime_projection::ManagedContentDelivery::ManagedFilesystem
+            crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem
         } else {
-            crate::frozen_runtime_projection::ManagedContentDelivery::SemanticTools
+            crate::frozen_inputs::ManagedContentDelivery::SemanticTools
         };
-        if delivery == crate::frozen_runtime_projection::ManagedContentDelivery::SemanticTools
+        if delivery == crate::frozen_inputs::ManagedContentDelivery::SemanticTools
             && self
                 .session_slots
                 .read(thread, |slot| {
@@ -268,7 +267,7 @@ impl SharedHost {
                 "MemoryStore instructions reference a filesystem path, but this Session disables filesystem delivery",
             ));
         }
-        if delivery == crate::frozen_runtime_projection::ManagedContentDelivery::SemanticTools
+        if delivery == crate::frozen_inputs::ManagedContentDelivery::SemanticTools
             && !managed_session
         {
             let frozen_requires_filesystem =
