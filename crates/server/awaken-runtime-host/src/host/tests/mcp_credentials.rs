@@ -347,7 +347,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     assert_eq!(
         host.session_slots
-            .read("mcp-exact", |slot| slot.mcp.projection_count()),
+            .read_realization("mcp-exact", |r| r.mcp.projection_count()),
         Some(1),
         "H22 no duplicate tombstone"
     );
@@ -440,7 +440,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     assert_eq!(
         host.session_slots
-            .read("mcp-removed-renewal", |slot| slot.mcp.projection_count()),
+            .read_realization("mcp-removed-renewal", |r| r.mcp.projection_count()),
         Some(1),
         "H28 one projection"
     );
@@ -449,9 +449,9 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         awaken_session_mcp::McpProjectionState::Staged,
         "H28 staged, not published"
     );
-    host.session_slots.modify("mcp-exact", |slot| {
-        slot.mcp.projections_mut()[0].state = awaken_session_mcp::McpProjectionState::Staging;
-        slot.mcp.projections_mut()[0].staging =
+    host.session_slots.modify_realization("mcp-exact", |r| {
+        r.mcp.projections_mut()[0].state = awaken_session_mcp::McpProjectionState::Staging;
+        r.mcp.projections_mut()[0].staging =
             Some(awaken_session_mcp::McpStagingActivity::default());
     });
     assert_eq!(
@@ -463,9 +463,9 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "mcp_generation_staging",
         "H25"
     );
-    host.session_slots.modify("mcp-exact", |slot| {
-        slot.mcp.projections_mut()[0].state = awaken_session_mcp::McpProjectionState::Staged;
-        slot.mcp.projections_mut()[0].staging = None;
+    host.session_slots.modify_realization("mcp-exact", |r| {
+        r.mcp.projections_mut()[0].state = awaken_session_mcp::McpProjectionState::Staged;
+        r.mcp.projections_mut()[0].staging = None;
     });
     let mut expired = request("mcp-expired", "workspace-a", 1);
     expired.generation = expired.generation.expiring_at(0);
@@ -517,7 +517,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     assert_eq!(
         host.session_slots
-            .read("mcp-conflict", |slot| slot.mcp.projection_count()),
+            .read_realization("mcp-conflict", |r| r.mcp.projection_count()),
         Some(1),
         "H10"
     );

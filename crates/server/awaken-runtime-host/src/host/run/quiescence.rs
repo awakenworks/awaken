@@ -56,7 +56,7 @@ impl SharedHost {
         // configuration merely to tear the Session down.
         let resident = self
             .session_slots
-            .read(thread, |slot| slot.runtime.clone())
+            .read_run(thread, |run| run.runtime.clone())
             .flatten();
         let mut coordinated_thread_ids = std::collections::HashSet::new();
         if let Ok(store) = self.dispatch_store() {

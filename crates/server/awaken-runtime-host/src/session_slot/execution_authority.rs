@@ -92,8 +92,8 @@ impl SessionExecutionAuthority {
             worker: worker.cloned(),
             slots: Arc::downgrade(&slots.0),
             session: session.into(),
-            realization: slot.realization.clone(),
-            lifecycle: slot.lifecycle.clone(),
+            realization: slot.realization.realization.clone(),
+            lifecycle: slot.realization.lifecycle.clone(),
             asserted: asserted.clone(),
             target,
         }
@@ -120,8 +120,8 @@ impl SessionExecutionAuthority {
         let slots = self.slots.upgrade().ok_or_else(denied)?;
         let slots = slots.lock().map_err(|_| denied())?;
         let slot = slots.get(&self.session).ok_or_else(denied)?;
-        if !Arc::ptr_eq(&self.realization, &slot.realization)
-            || !Arc::ptr_eq(&self.lifecycle, &slot.lifecycle)
+        if !Arc::ptr_eq(&self.realization, &slot.realization.realization)
+            || !Arc::ptr_eq(&self.lifecycle, &slot.realization.lifecycle)
         {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -133,6 +133,7 @@ impl SessionExecutionAuthority {
             SessionEffectTarget::Execution(expected) => {
                 let environment = expected.upgrade().ok_or_else(denied)?;
                 let owned = slot
+                    .realization
                     .environment_owner
                     .execution_environment()
                     .ok_or_else(denied)?;
@@ -142,7 +143,7 @@ impl SessionExecutionAuthority {
             }
             SessionEffectTarget::Provider(_) => {}
         }
-        let Some(session_remaining) = slot.realization_authority.remaining_for(&self.asserted)
+        let Some(session_remaining) = slot.realization.authority.remaining_for(&self.asserted)
         else {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -155,7 +156,7 @@ impl SessionExecutionAuthority {
         // Provider conversion anchors BOOTTIME before this callback, so a
         // wait for either mutex cannot mint additional physical lifetime.
         effect(
-            slot.realization_authority.lease().ok_or_else(denied)?,
+            slot.realization.authority.lease().ok_or_else(denied)?,
             remaining,
         )
     }
@@ -172,7 +173,7 @@ impl SessionRuntimeSlots {
         worker: Option<&Arc<dyn CurrentExecutionAuthority>>,
     ) -> Result<impl CurrentExecutionAuthority + use<>, crate::HostError> {
         self.read(session, |slot| {
-            let lease = slot.realization_authority.lease().ok_or_else(|| {
+            let lease = slot.realization.authority.lease().ok_or_else(|| {
                 crate::HostError::internal("Session realization proof is no longer live")
             })?;
             let current = lease
@@ -203,7 +204,7 @@ impl SessionRuntimeSlots {
             .lock()
             .expect("session runtime slots mutex poisoned")
             .values()
-            .filter_map(|slot| slot.environment_owner.execution_environment())
+            .filter_map(|slot| slot.realization.environment_owner.execution_environment())
             .filter(|environment| environment.scoped_execution().is_some())
             .cloned()
             .collect()
@@ -226,7 +227,7 @@ impl SessionRuntimeSlots {
         if !scoped.needs_execution_authority() {
             return Ok(());
         }
-        let Some(asserted) = slot.realization_authority.lease() else {
+        let Some(asserted) = slot.realization.authority.lease() else {
             return Ok(());
         };
         scoped
@@ -285,17 +286,17 @@ mod tests {
                 expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms()
                     + 60_000,
             };
-            let authority = slots.update("session", |slot| {
-                slot.realization_authority = SessionRealizationAuthority::Live(
+            let authority = slots.update_realization("session", |r| {
+                r.authority = SessionRealizationAuthority::Live(
                     crate::session_slot::test_observed_lease(asserted.clone()),
                 );
-                slot.environment_owner = Self::candidate(environment.clone());
+                r.environment_owner = Self::candidate(environment.clone());
                 Arc::new(SessionExecutionAuthority {
                     worker: Some(worker.clone()),
                     slots: Arc::downgrade(&slots.0),
                     session: "session".into(),
-                    realization: slot.realization.clone(),
-                    lifecycle: slot.lifecycle.clone(),
+                    realization: r.realization.clone(),
+                    lifecycle: r.lifecycle.clone(),
                     asserted,
                     target: SessionEffectTarget::Execution(Arc::downgrade(&environment)),
                 })
@@ -384,20 +385,20 @@ mod tests {
                 }
                 "slot_aba" => {
                     let old = f.slots.remove("session").unwrap();
-                    f.slots.update("session", |slot| {
-                        slot.realization_authority = old.realization_authority;
-                        slot.environment_owner = old.environment_owner;
+                    f.slots.update_realization("session", |r| {
+                        r.authority = old.realization.authority;
+                        r.environment_owner = old.realization.environment_owner;
                     });
                 }
-                _ => f.slots.update("session", |slot| {
+                _ => f.slots.update_realization("session", |r| {
                     let mut lease = f.authority.asserted.clone();
                     match rule {
                         "uninstalled" => {
-                            slot.realization_authority = SessionRealizationAuthority::Uninstalled;
+                            r.authority = SessionRealizationAuthority::Uninstalled;
                             return;
                         }
                         "closed" => {
-                            slot.close_realization_authority(None);
+                            r.close_authority(None);
                             return;
                         }
                         "expired" => lease.expires_at_unix_ms = 0,
@@ -407,12 +408,9 @@ mod tests {
                         "expiry_regression" => lease.expires_at_unix_ms -= 1,
                         "renew_session" => lease.expires_at_unix_ms += 10_000,
                         "resident" => {
-                            let candidate = slot
-                                .environment_owner
-                                .unpublished_candidate()
-                                .unwrap()
-                                .clone();
-                            slot.environment_owner =
+                            let candidate =
+                                r.environment_owner.unpublished_candidate().unwrap().clone();
+                            r.environment_owner =
                                 SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
                                     identity: BoundSessionEnvironmentIdentity::LegacyDirect(
                                         LegacyDirectEnvironmentProvenance::DurableBinding {
@@ -425,12 +423,9 @@ mod tests {
                                 });
                         }
                         "retiring" => {
-                            let candidate = slot
-                                .environment_owner
-                                .unpublished_candidate()
-                                .unwrap()
-                                .clone();
-                            slot.environment_owner =
+                            let candidate =
+                                r.environment_owner.unpublished_candidate().unwrap().clone();
+                            r.environment_owner =
                                 SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
                                     cause: SessionEnvironmentRetirementCause::UnpublishedCandidate,
                                     owned: RetiringEnvironmentOwner::Unbound(candidate),
@@ -442,7 +437,7 @@ mod tests {
                             else {
                                 unreachable!()
                             };
-                            slot.environment_owner = Fixture::candidate(Arc::new(
+                            r.environment_owner = Fixture::candidate(Arc::new(
                                 SandboxEnvironment::Workdir {
                                     sandbox: sandbox.clone(),
                                     hand: None,
@@ -450,9 +445,9 @@ mod tests {
                                 .into_session_environment(),
                             ));
                         }
-                        "vacant" => slot.environment_owner = SessionEnvironmentOwner::Vacant,
+                        "vacant" => r.environment_owner = SessionEnvironmentOwner::Vacant,
                         "pending" => {
-                            slot.environment_owner = SessionEnvironmentOwner::Preparing(
+                            r.environment_owner = SessionEnvironmentOwner::Preparing(
                                 SessionEnvironmentPreparation::AwaitingAdoption {
                                     identity: BoundSessionEnvironmentIdentity::LegacyDirect(
                                         LegacyDirectEnvironmentProvenance::DurableBinding {
@@ -467,12 +462,11 @@ mod tests {
                         "ok" | "short_session" => {}
                         _ => unreachable!(),
                     }
-                    slot.realization_authority =
-                        SessionRealizationAuthority::Live(if rule == "expired" {
-                            crate::session_slot::test_expired_observed_lease(lease)
-                        } else {
-                            crate::session_slot::test_observed_lease(lease)
-                        });
+                    r.authority = SessionRealizationAuthority::Live(if rule == "expired" {
+                        crate::session_slot::test_expired_observed_lease(lease)
+                    } else {
+                        crate::session_slot::test_observed_lease(lease)
+                    });
                 }),
             }
             let mut calls = 0;
@@ -591,8 +585,8 @@ mod tests {
         });
         assert_eq!(failure.unwrap_err().to_string(), "provider effect failed");
         assert_eq!(calls, 1);
-        f.slots.update("session", |slot| {
-            slot.environment_owner = SessionEnvironmentOwner::Vacant
+        f.slots.update_realization("session", |r| {
+            r.environment_owner = SessionEnvironmentOwner::Vacant
         });
         assert!(f.current().is_err());
         assert_eq!(provider.current_effect_fence(&initial).unwrap(), initial);

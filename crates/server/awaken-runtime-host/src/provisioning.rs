@@ -463,23 +463,22 @@ impl SharedHost {
     ) -> pc::SandboxSpec {
         let (create_time_mounts, has_repositories) = self
             .session_slots
-            .read(thread, |slot| {
-                let create_time_mounts = slot
+            .read_realization(thread, |r| {
+                let create_time_mounts = r
                     .resources
                     .mounts
                     .iter()
                     .filter(|mount| resource_mount_is_create_time(mount))
                     .cloned()
                     .collect();
-                let has_repositories =
-                    slot.resource_transition.as_ref().is_some_and(|transition| {
-                        transition.desired().resources.inputs().iter().any(|input| {
-                            matches!(
-                                input.source,
-                                awaken_session_resource_contract::ResolvedInputSource::Repository { .. }
-                            )
-                        })
-                    });
+                let has_repositories = r.resource_transition.as_ref().is_some_and(|transition| {
+                    transition.desired().resources.inputs().iter().any(|input| {
+                        matches!(
+                            input.source,
+                            awaken_session_resource_contract::ResolvedInputSource::Repository { .. }
+                        )
+                    })
+                });
                 (create_time_mounts, has_repositories)
             })
             .unwrap_or_default();
@@ -589,7 +588,7 @@ impl SharedHost {
             .read(thread, |slot| {
                 (
                     slot.frozen.baseline.clone(),
-                    slot.content_delivery,
+                    slot.realization.content_delivery,
                     slot.frozen.environment_projection.clone(),
                 )
             })
@@ -671,7 +670,7 @@ impl SharedHost {
     #[cfg(test)]
     pub(crate) fn register_thread_resources(&self, thread: &str, staged: StagedResources) {
         self.session_slots
-            .update(thread, |slot| slot.resources = staged);
+            .update_realization(thread, |r| r.resources = staged);
     }
 
     pub(crate) fn register_thread_resource_manifest(
@@ -680,7 +679,7 @@ impl SharedHost {
         manifest: awaken_session_resource_contract::SessionResourceManifest,
     ) {
         self.session_slots
-            .update(thread, |slot| slot.manifest = Some(manifest));
+            .update_realization(thread, |r| r.manifest = Some(manifest));
     }
 
     pub(crate) fn thread_resource_manifest(
@@ -688,13 +687,13 @@ impl SharedHost {
         thread: &str,
     ) -> Option<awaken_session_resource_contract::SessionResourceManifest> {
         self.session_slots
-            .read(thread, |slot| slot.manifest.clone())
+            .read_realization(thread, |r| r.manifest.clone())
             .flatten()
     }
 
     pub(crate) fn thread_resources_snapshot(&self, thread: &str) -> StagedResources {
         self.session_slots
-            .read(thread, |slot| slot.resources.clone())
+            .read_realization(thread, |r| r.resources.clone())
             .unwrap_or_default()
     }
 
@@ -704,7 +703,7 @@ impl SharedHost {
     #[cfg(test)]
     pub(crate) fn thread_repository_activations(&self, thread: &str) -> Vec<RepositoryActivation> {
         self.session_slots
-            .read(thread, |slot| slot.resources.repositories.clone())
+            .read_realization(thread, |r| r.resources.repositories.clone())
             .unwrap_or_default()
     }
 
@@ -1096,7 +1095,7 @@ impl ArtifactHarvester {
         thread: &str,
     ) -> Option<awaken_run_ingress_contract::RunClaim> {
         self.session_slots
-            .read(thread, |slot| slot.dispatch_claim.clone())
+            .read_run(thread, |run| run.dispatch_claim.clone())
             .flatten()
     }
 
@@ -1207,7 +1206,7 @@ impl ArtifactHarvester {
         }
         let projected_environment = exact_environment.cloned().or_else(|| {
             self.session_slots
-                .read(thread, |slot| slot.environment_owner.resident())
+                .read_realization(thread, |r| r.environment_owner.resident())
                 .flatten()
         });
         let Some(env) = projected_environment else {

@@ -89,7 +89,7 @@ pub(super) async fn prepare(
     // direct-compatibility catalog.
     let session_dispatch = host
         .session_slots
-        .read(thread, |slot| slot.session_dispatch)
+        .read_run(thread, |run| run.session_dispatch)
         .unwrap_or(false);
     // Direct protocol Sessions have no aggregate Resource projection, but
     // Environment realization still consumes the same exact transition as
@@ -106,9 +106,9 @@ pub(super) async fn prepare(
         let transition =
             awaken_session_resource_contract::SessionResourceTransition::new(empty.clone(), empty)
                 .map_err(|error| HostError::internal(error.to_string()))?;
-        host.session_slots.update(thread, |slot| {
-            if slot.resource_transition.is_none() {
-                slot.resource_transition = Some(transition);
+        host.session_slots.update_realization(thread, |r| {
+            if r.resource_transition.is_none() {
+                r.resource_transition = Some(transition);
             }
         });
     }
@@ -119,7 +119,7 @@ pub(super) async fn prepare(
     // support files after the sandbox-free decision has already been made.
     let frozen_skill_versions = host
         .session_slots
-        .read(thread, |slot| slot.skills.clone())
+        .read_realization(thread, |r| r.skills.clone())
         .flatten();
     // Reservation is metadata-only on a cold Coordinator. The aggregate
     // Resource transition already owns the exact immutable Skill pins,
@@ -128,8 +128,8 @@ pub(super) async fn prepare(
     let deferred_skill_bindings = (force_defer_environment && frozen_skill_versions.is_none())
         .then(|| {
             host.session_slots
-                .read(thread, |slot| {
-                    slot.resource_transition
+                .read_realization(thread, |r| {
+                    r.resource_transition
                         .as_ref()
                         .map(|transition| transition.desired().resources.skills().to_vec())
                 })

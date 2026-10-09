@@ -496,8 +496,8 @@ mod acp_context_tests {
         );
         // Construction happens before the claim-fenced frozen projection is
         // accepted; realization installs the one authoritative slot later.
-        slots.update("session-1", |slot| {
-            slot.resources.prompts = vec!["frozen session prompt".into()];
+        slots.update_realization("session-1", |r| {
+            r.resources.prompts = vec!["frozen session prompt".into()];
         });
         let durable = activation("genai");
         let mut context = awaken_runtime_contract::RuntimeRunContext::default();
@@ -558,8 +558,8 @@ mod acp_context_tests {
             "session-1",
             awaken_time::system_clock(),
         );
-        slots.update("session-1", |slot| {
-            slot.resources.prompts = vec!["resource revision one".into()]
+        slots.update_realization("session-1", |r| {
+            r.resources.prompts = vec!["resource revision one".into()]
         });
         let durable = activation("genai");
         let mut first = awaken_runtime_contract::RuntimeRunContext::default();
@@ -571,8 +571,8 @@ mod acp_context_tests {
             "C1"
         );
 
-        slots.update("session-1", |slot| {
-            slot.resources.prompts = vec!["resource revision two".into()]
+        slots.update_realization("session-1", |r| {
+            r.resources.prompts = vec!["resource revision two".into()]
         });
         let mut second = awaken_runtime_contract::RuntimeRunContext::default();
         let projected = executor.project(durable.clone(), &mut second).unwrap();
@@ -602,8 +602,8 @@ mod acp_context_tests {
         // never a mixed R1/R2 vector. The barrier makes the interleaving exact:
         // the reader starts only after the writer owns the publication lock.
         let slots = crate::session_slot::SessionRuntimeSlots::default();
-        slots.update("session-1", |slot| {
-            slot.resources.prompts = vec!["r1-a".into(), "r1-b".into()]
+        slots.update_realization("session-1", |r| {
+            r.resources.prompts = vec!["r1-a".into(), "r1-b".into()]
         });
         let executor = Arc::new(SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
@@ -619,7 +619,7 @@ mod acp_context_tests {
             writer_slots.update("session-1", |slot| {
                 writer_locked_tx.send(()).unwrap();
                 writer_release.wait();
-                slot.resources.prompts = vec!["r2-a".into(), "r2-b".into()];
+                slot.realization.resources.prompts = vec!["r2-a".into(), "r2-b".into()];
             });
         });
         writer_locked_rx.recv().unwrap();

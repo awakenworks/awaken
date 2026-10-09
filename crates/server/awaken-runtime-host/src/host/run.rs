@@ -346,7 +346,7 @@ impl SharedHost {
         // authorities for cold Managed Sessions.
         let resident = self
             .session_slots
-            .read(thread, |slot| slot.runtime.clone())
+            .read_run(thread, |run| run.runtime.clone())
             .flatten();
         let active_run = resident.as_ref().and_then(|ctx| {
             ctx.active_run
@@ -363,8 +363,8 @@ impl SharedHost {
             if let Some(ctx) = resident.as_ref() {
                 let run_id = active_run.or_else(|| {
                     self.session_slots
-                        .read(thread, |slot| {
-                            slot.dispatch_claim
+                        .read_run(thread, |run| {
+                            run.dispatch_claim
                                 .as_ref()
                                 .map(|claim| claim.run_id.clone())
                         })
@@ -553,7 +553,7 @@ impl SharedHost {
         if ingress_scope == RunIngressScope::HostCommand
             && self
                 .session_slots
-                .read(thread, |slot| slot.session_dispatch)
+                .read_run(thread, |run| run.session_dispatch)
                 .unwrap_or(false)
         {
             return Err(HostError::bad_request(

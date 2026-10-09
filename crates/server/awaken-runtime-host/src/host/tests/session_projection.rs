@@ -426,7 +426,7 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
             credential_pin: None,
         };
     host.session_slots.update("repository-policy", |slot| {
-        slot.session_dispatch = true;
+        slot.run.session_dispatch = true;
         slot.replace_frozen_with(|next| {
             next.tools = Some(
                 awaken_session_configuration_contract::SessionToolConfiguration {
@@ -442,7 +442,7 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
                 },
             )
         });
-        slot.resources.repositories.extend([
+        slot.realization.resources.repositories.extend([
             repository("repo-a", "/workspace/repo-a"),
             repository("legacy-repo", "legacy-repo"),
         ]);
@@ -502,7 +502,7 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
     );
 
     host.session_slots
-        .update("repository-policy", |slot| slot.session_dispatch = false);
+        .update_run("repository-policy", |run| run.session_dispatch = false);
     assert_eq!(
         host.session_skill_source_roots(
             "repository-policy",
@@ -591,8 +591,8 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         "M1/E2"
     );
 
-    host.session_slots.update("managed-filesystem", |slot| {
-        slot.session_dispatch = true;
+    host.session_slots.update_run("managed-filesystem", |run| {
+        run.session_dispatch = true;
     });
     assert_eq!(
         host.select_content_delivery(
@@ -606,7 +606,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     );
 
     host.session_slots.update("managed-denied", |slot| {
-        slot.session_dispatch = true;
+        slot.run.session_dispatch = true;
         slot.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
     });
     let denied = host
@@ -627,7 +627,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         .build()
         .expect("validated Host dependencies");
     empty_host.session_slots.update("managed-no-skill", |slot| {
-        slot.session_dispatch = true;
+        slot.run.session_dispatch = true;
         slot.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
     });
     assert_eq!(
@@ -661,9 +661,9 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     empty_host
         .session_slots
         .update("managed-memory-path", |slot| {
-            slot.session_dispatch = true;
+            slot.run.session_dispatch = true;
             slot.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
-            slot.resources.resource_prompts.push(
+            slot.realization.resources.resource_prompts.push(
                 crate::managed_input_layout::ResourcePromptProjection::try_from_input(
                     &memory_with_path,
                 )
@@ -686,8 +686,8 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
 
     empty_host
         .session_slots
-        .update("managed-missing-freeze", |slot| {
-            slot.session_dispatch = true;
+        .update_run("managed-missing-freeze", |run| {
+            run.session_dispatch = true;
         });
     let selected_snapshot =
         awaken_runtime_contract::ExecutableAgentSnapshot::builder("managed-selected-skill")
@@ -745,9 +745,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     };
     empty_host
         .session_slots
-        .update("managed-deferred-freeze", |slot| {
-            slot.session_dispatch = true
-        });
+        .update_run("managed-deferred-freeze", |run| run.session_dispatch = true);
     assert_eq!(
         empty_host
             .select_content_delivery(
@@ -775,8 +773,8 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
             .build();
     empty_host
         .session_slots
-        .update("managed-deferred-mismatch", |slot| {
-            slot.session_dispatch = true
+        .update_run("managed-deferred-mismatch", |run| {
+            run.session_dispatch = true
         });
     let mismatch = empty_host
         .select_content_delivery(
@@ -819,9 +817,10 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
         !host.session_allows_filesystem_tools("filesystem-session", Some(&restricted)),
         "CD2 auxiliary snapshot would independently derive semantic delivery"
     );
-    host.session_slots.update("filesystem-session", |slot| {
-        slot.content_delivery = Some(ManagedContentDelivery::ManagedFilesystem)
-    });
+    host.session_slots
+        .update_realization("filesystem-session", |r| {
+            r.content_delivery = Some(ManagedContentDelivery::ManagedFilesystem)
+        });
     assert_eq!(
         host.select_content_delivery(
             "filesystem-session",
@@ -834,7 +833,7 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
     );
 
     host.session_slots.update("semantic-session", |slot| {
-        slot.content_delivery = Some(ManagedContentDelivery::SemanticTools);
+        slot.realization.content_delivery = Some(ManagedContentDelivery::SemanticTools);
         slot.replace_frozen_with(|next| {
             next.tools = Some(
                 awaken_session_configuration_contract::SessionToolConfiguration {
@@ -1571,7 +1570,7 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
         .expect("P1 installs the frozen projection");
     assert!(
         host.session_slots
-            .read("late-projection", |slot| slot.runtime.is_none())
+            .read_run("late-projection", |run| run.runtime.is_none())
             .unwrap_or(false),
         "P1 stale context must not survive the authority transition"
     );
@@ -1640,8 +1639,8 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
         .expect("P4 reuses the immutable active projection");
     let retained = host
         .session_slots
-        .read("active-frozen-projection", |slot| {
-            Arc::ptr_eq(slot.runtime.as_ref().expect("P4 runtime"), &frozen_active)
+        .read_run("active-frozen-projection", |run| {
+            Arc::ptr_eq(run.runtime.as_ref().expect("P4 runtime"), &frozen_active)
         })
         .unwrap_or(false);
     assert!(retained, "P4 keeps the one resident Runtime");

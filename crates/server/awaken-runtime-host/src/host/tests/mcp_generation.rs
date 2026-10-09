@@ -665,7 +665,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     assert!(
         runtime_host
             .session_slots
-            .read(runtime_thread, |slot| slot
+            .read_run(runtime_thread, |run| run
                 .runtime
                 .as_ref()
                 .is_some_and(|owner| Arc::ptr_eq(owner, &runtime)))
@@ -694,7 +694,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     assert!(
         runtime_host
             .session_slots
-            .read(runtime_thread, |slot| slot
+            .read_run(runtime_thread, |run| run
                 .runtime
                 .as_ref()
                 .is_some_and(|owner| Arc::ptr_eq(owner, &runtime)))
@@ -732,7 +732,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     assert!(
         runtime_host
             .session_slots
-            .read(runtime_thread, |slot| slot
+            .read_run(runtime_thread, |run| run
                 .runtime
                 .as_ref()
                 .is_some_and(|owner| Arc::ptr_eq(owner, &runtime)))
@@ -1090,9 +1090,8 @@ async fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epo
                 crate::session_slot::test_observed_lease(lease)
             };
             host.session_slots
-                .update(expired.session_id().as_str(), |slot| {
-                    slot.realization_authority =
-                        crate::session_slot::SessionRealizationAuthority::Live(proof);
+                .update_realization(expired.session_id().as_str(), |r| {
+                    r.authority = crate::session_slot::SessionRealizationAuthority::Live(proof);
                 });
         }
         assert_eq!(
@@ -1184,8 +1183,8 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
             McpProjectionState::Draining,
         ] {
             host.session_slots
-                .modify(old_generation.session_id().as_str(), |slot| {
-                    slot.mcp.projections_mut()[0].state = live_state
+                .modify_realization(old_generation.session_id().as_str(), |r| {
+                    r.mcp.projections_mut()[0].state = live_state
                 });
             assert!(
                 !host.forget_replayable_removed_mcp_projection(&renewed),
@@ -1197,8 +1196,8 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
             );
         }
         host.session_slots
-            .modify(old_generation.session_id().as_str(), |slot| {
-                slot.mcp.projections_mut()[0].state = state
+            .modify_realization(old_generation.session_id().as_str(), |r| {
+                r.mcp.projections_mut()[0].state = state
             });
         host.install_session_realization_lease(
             old_generation.session_id().as_str(),
@@ -1229,9 +1228,9 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
         );
         assert_eq!(
             host.session_slots
-                .read(renewed.generation.session_id().as_str(), |slot| slot
-                    .mcp
-                    .projection_count()),
+                .read_realization(renewed.generation.session_id().as_str(), |r| {
+                    r.mcp.projection_count()
+                }),
             Some(1),
             "{rule}/E2"
         );

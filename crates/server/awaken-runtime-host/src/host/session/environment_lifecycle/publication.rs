@@ -50,7 +50,10 @@ impl SharedHost {
         kind: awaken_session_state_contract::SessionEnvironmentEffectKind,
     ) -> Result<UnboundSessionEnvironment, HostError> {
         self.session_slots.update(thread, |slot| {
-            let candidate = slot.environment_owner.begin_preparing(environment, kind)?;
+            let candidate = slot
+                .realization
+                .environment_owner
+                .begin_preparing(environment, kind)?;
             #[cfg(target_os = "linux")]
             self.session_slots.bind_execution_authority(
                 thread,
@@ -68,8 +71,8 @@ impl SharedHost {
         candidate: &UnboundSessionEnvironment,
         identity: BoundSessionEnvironmentIdentity,
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, HostError> {
-        self.session_slots.update(thread, |slot| {
-            slot.environment_owner.publish_prepared(candidate, identity)
+        self.session_slots.update_realization(thread, |r| {
+            r.environment_owner.publish_prepared(candidate, identity)
         })
     }
 
@@ -79,8 +82,8 @@ impl SharedHost {
         candidate: &UnboundSessionEnvironment,
         identity: BoundSessionEnvironmentIdentity,
     ) -> Result<UnboundSessionEnvironment, HostError> {
-        self.session_slots.update(thread, |slot| {
-            slot.environment_owner
+        self.session_slots.update_realization(thread, |r| {
+            r.environment_owner
                 .retain_committed_candidate(candidate, identity)
         })
     }
@@ -91,7 +94,7 @@ impl SharedHost {
         thread: &str,
     ) -> Option<UnboundSessionEnvironment> {
         self.session_slots
-            .read(thread, |slot| match &slot.environment_owner {
+            .read_realization(thread, |r| match &r.environment_owner {
                 SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(
                     candidate,
                 )) => Some(candidate.clone()),
@@ -109,7 +112,7 @@ impl SharedHost {
     ) -> Result<(), HostError> {
         let retirement = self
             .session_slots
-            .read(thread, |slot| match &slot.environment_owner {
+            .read_realization(thread, |r| match &r.environment_owner {
                 SessionEnvironmentOwner::Retiring(retiring)
                     if retiring.cause
                         == SessionEnvironmentRetirementCause::UnpublishedCandidate =>

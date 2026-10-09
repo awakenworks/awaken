@@ -35,11 +35,12 @@ fn claimed_realization_continuation(
     slot: &crate::session_slot::SessionRuntimeSlot,
     claim: &awaken_run_ingress_contract::RunClaim,
 ) -> Option<awaken_session_resource_contract::SessionRealizationLease> {
-    slot.dispatch_claim
+    slot.run
+        .dispatch_claim
         .as_ref()
         .filter(|previous| previous.run_id == claim.run_id && previous.owner == claim.owner)
-        .and_then(|_| slot.realization_authority.remaining())
-        .and_then(|_| slot.realization_authority.lease())
+        .and_then(|_| slot.realization.authority.remaining())
+        .and_then(|_| slot.realization.authority.lease())
         .filter(|lease| lease.runtime_incarnation == claim.owner)
         .cloned()
 }
@@ -120,7 +121,7 @@ pub(super) async fn install_claimed_session_projection(
             .read(&thread_id.0, |slot| {
                 local_claimed_projection_is_ready(
                     slot.frozen.baseline.is_some(),
-                    slot.session_dispatch,
+                    slot.run.session_dispatch,
                 )
             })
             .unwrap_or(false);
@@ -284,8 +285,14 @@ mod tests {
             ] {
                 let expected = exact_claim && live_exact_proof;
                 let slot = SessionRuntimeSlot {
-                    dispatch_claim: previous.clone(),
-                    realization_authority: authority,
+                    realization: crate::session_slot::SessionRealizationState {
+                        authority,
+                        ..Default::default()
+                    },
+                    run: crate::session_slot::SessionRunState {
+                        dispatch_claim: previous.clone(),
+                        ..Default::default()
+                    },
                     ..Default::default()
                 };
                 assert_eq!(
@@ -514,7 +521,7 @@ mod tests {
             let (first, ()) = host
                 .session_slots
                 .acquire_realization_with("shared-session", |slot| {
-                    slot.dispatch_claim = Some(old.clone());
+                    slot.run.dispatch_claim = Some(old.clone());
                 })
                 .await;
             let second_entered = Arc::new(AtomicBool::new(false));
@@ -526,7 +533,7 @@ mod tests {
                     let (guard, ()) = host
                         .session_slots
                         .acquire_realization_with("shared-session", |slot| {
-                            slot.dispatch_claim = Some(claim.clone());
+                            slot.run.dispatch_claim = Some(claim.clone());
                         })
                         .await;
                     entered.store(true, Ordering::SeqCst);
@@ -537,7 +544,7 @@ mod tests {
             assert!(!second_entered.load(Ordering::SeqCst), "R1");
             assert_eq!(
                 host.session_slots
-                    .read("shared-session", |slot| slot.dispatch_claim.clone())
+                    .read_run("shared-session", |run| run.dispatch_claim.clone())
                     .flatten(),
                 Some(old),
                 "R1"
@@ -546,14 +553,14 @@ mod tests {
                 host.session_slots.remove("shared-session");
             } else {
                 host.session_slots
-                    .update("shared-session", |slot| slot.dispatch_claim = None);
+                    .update_run("shared-session", |run| run.dispatch_claim = None);
             }
             drop(first);
             let second = waiting.await.expect("next admission joins");
             assert!(second_entered.load(Ordering::SeqCst), "R2/R3");
             assert_eq!(
                 host.session_slots
-                    .read("shared-session", |slot| slot.dispatch_claim.clone())
+                    .read_run("shared-session", |run| run.dispatch_claim.clone())
                     .flatten(),
                 Some(new),
                 "R2/R3"

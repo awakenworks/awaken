@@ -247,7 +247,7 @@ async fn root_terminal_cleanup_effect(
 ) {
     let environment = host
         .session_slots
-        .read(session_id, |slot| slot.environment_owner.resident())
+        .read_realization(session_id, |r| r.environment_owner.resident())
         .flatten()
         .expect("terminal test requires a resident Environment");
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
@@ -1686,10 +1686,8 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .unwrap();
     assert!(
         host.session_slots
-            .read("session-artifacts", |slot| {
-                slot.environment_owner
-                    .terminal_bound_environment()
-                    .is_some()
+            .read_realization("session-artifacts", |r| {
+                r.environment_owner.terminal_bound_environment().is_some()
             })
             .unwrap_or(false),
         "R3 exact owner remains Retiring until aggregate-authorized Disposal"
@@ -1835,9 +1833,10 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         "H1"
     );
 
-    host.session_slots.update("artifact-response-loss", |slot| {
-        slot.environment_owner = crate::session_slot::SessionEnvironmentOwner::Vacant;
-    });
+    host.session_slots
+        .update_realization("artifact-response-loss", |r| {
+            r.environment_owner = crate::session_slot::SessionEnvironmentOwner::Vacant;
+        });
     let recovered = host
         .artifact_harvester()
         .harvest_with_fence(
@@ -2399,10 +2398,8 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
     assert!(error.message.contains("injected catalog failure"));
     assert!(
         host.session_slots
-            .read("session-harvest-failure", |slot| {
-                slot.environment_owner
-                    .terminal_bound_environment()
-                    .is_some()
+            .read_realization("session-harvest-failure", |r| {
+                r.environment_owner.terminal_bound_environment().is_some()
             })
             .unwrap_or(false),
         "R4 exact terminal owner remains hidden and retryable"

@@ -129,7 +129,7 @@ pub(super) async fn assemble(
     if content_delivery == crate::frozen_inputs::ManagedContentDelivery::SemanticTools {
         let bindings = host
             .session_slots
-            .read(thread, |slot| slot.memory_bindings.clone())
+            .read_realization(thread, |r| r.memory_bindings.clone())
             .unwrap_or_default();
         if let Some(wiring) = crate::session_memory_tools::SessionMemoryTools::new(bindings) {
             if installed.is_some() && !is_acp {
@@ -411,7 +411,7 @@ pub(super) async fn assemble(
         Some(environment.agent_tools().tool_executor())
     } else {
         host.session_slots
-            .read(thread, |slot| slot.deferred_executor.clone())
+            .read_run(thread, |run| run.deferred_executor.clone())
             .flatten()
     };
     // Cause/effect rules: terminal observers and Session plugins
@@ -436,7 +436,7 @@ pub(super) async fn assemble(
         );
     let dispatch_claim = host
         .session_slots
-        .read(thread, |slot| slot.dispatch_claim.clone())
+        .read_run(thread, |run| run.dispatch_claim.clone())
         .flatten();
     let mut run_context = run_context.with_model_content_materializer(Arc::new(
         crate::model_content_materializer::ResourceModelContentMaterializer::new(

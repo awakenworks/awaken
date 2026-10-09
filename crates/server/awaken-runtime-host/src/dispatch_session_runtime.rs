@@ -80,17 +80,17 @@ impl DispatchSessionRuntime {
         let resource_projection = managed
             .host
             .session_slots
-            .update(thread, |slot| slot.resource_projection.clone());
+            .update_realization(thread, |r| r.resource_projection.clone());
         let _resource_projection = resource_projection.lock().await;
         let active = managed.host.thread_resource_manifest(thread);
         let live_environment = managed.host.session_environment(thread).await;
         let (expected_binding, projected_transition) = managed
             .host
             .session_slots
-            .read(thread, |slot| {
+            .read_realization(thread, |r| {
                 (
-                    slot.environment_owner.durable_binding().is_some(),
-                    slot.resource_transition.clone(),
+                    r.environment_owner.durable_binding().is_some(),
+                    r.resource_transition.clone(),
                 )
             })
             .unwrap_or_default();
@@ -167,9 +167,9 @@ impl DispatchSessionRuntime {
         // No resident or durable binding exists, so Empty→desired is proven
         // rather than inferred from a cache. Persist only the command projection;
         // the active manifest remains absent until physical realization succeeds.
-        managed.host.session_slots.update(thread, |slot| {
-            if slot.resource_transition.is_none() {
-                slot.resource_transition = Some(proven_transition);
+        managed.host.session_slots.update_realization(thread, |r| {
+            if r.resource_transition.is_none() {
+                r.resource_transition = Some(proven_transition);
             }
         });
         Ok(())

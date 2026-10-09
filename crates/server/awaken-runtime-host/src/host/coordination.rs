@@ -1027,7 +1027,7 @@ mod tests {
             .build()
             .expect("validated Host dependencies");
             host.session_slots.update(&session_id, |slot| {
-                slot.session_dispatch = true;
+                slot.run.session_dispatch = true;
                 slot.replace_frozen_with(|next| {
                     next.baseline = Some(baseline);
                     // This resource-generation fixture explicitly supplies the
@@ -1035,8 +1035,8 @@ mod tests {
                     // not evidence of an unrestricted parent.
                     next.tools = Some(Default::default());
                 });
-                slot.manifest = active.clone();
-                slot.resource_transition = transition;
+                slot.realization.manifest = active.clone();
+                slot.realization.resource_transition = transition;
             });
             let mut snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
                 .model(awaken_runtime_contract::resolved::ModelBinding::new(

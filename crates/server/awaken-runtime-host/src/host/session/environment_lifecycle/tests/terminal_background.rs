@@ -27,8 +27,8 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     .await)
         .build()
         .expect("validated Host dependencies");
-    host.session_slots.update(thread, |slot| {
-        slot.environment_owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
+    host.session_slots.update_realization(thread, |r| {
+        r.environment_owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
             identity: BoundSessionEnvironmentIdentity::Durable {
                 effect_id: format!("effect-{thread}"),
                 generation: durable_generation.clone(),
@@ -197,8 +197,8 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             generation: durable.then(|| durable_generation.clone()),
             idle_since_unix_ms: None,
         };
-        host.session_slots.update(thread, |slot| {
-            slot.environment_owner = SessionEnvironmentOwner::Resident(owned.clone());
+        host.session_slots.update_realization(thread, |r| {
+            r.environment_owner = SessionEnvironmentOwner::Resident(owned.clone());
         });
 
         let output = root
@@ -249,7 +249,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             let _realization = realization.lock().await;
             let lifecycle = host
                 .session_slots
-                .read(thread, |slot| slot.lifecycle.clone())
+                .read_realization(thread, |r| r.lifecycle.clone())
                 .unwrap();
             let _lifecycle = lifecycle.lock().await;
             assert!(
@@ -356,7 +356,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         );
         let retained = host
             .session_slots
-            .read(thread, |slot| slot.environment_owner.clone())
+            .read_realization(thread, |r| r.environment_owner.clone())
             .unwrap();
         assert!(
             matches!(
@@ -595,7 +595,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     assert!(output.exists(), "U1 Preparation cannot delete");
     let retained = host
         .session_slots
-        .read(thread, |slot| slot.environment_owner.clone())
+        .read_realization(thread, |r| r.environment_owner.clone())
         .unwrap();
     let SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
         owned: RetiringEnvironmentOwner::Unbound(ref candidate),
@@ -624,7 +624,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     )];
     for wrong in &rejected_owners {
         host.session_slots
-            .update(thread, |slot| slot.environment_owner = wrong.clone());
+            .update_realization(thread, |r| r.environment_owner = wrong.clone());
         host.prepare_terminal_cleanup_effect(effect.clone(), authorization.clone())
             .await
             .expect_err("U6 wrong ownership cannot prepare");
@@ -634,7 +634,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         );
     }
     host.session_slots
-        .update(thread, |slot| slot.environment_owner = retained.clone());
+        .update_realization(thread, |r| r.environment_owner = retained.clone());
     let mut stale = effect.clone();
     stale.lease.epoch += 1;
     let stale_authorization =
@@ -655,7 +655,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     assert_eq!(first, preparation, "U2 stable receipt");
     let same_owner = || {
         host.session_slots
-            .read(thread, |slot| match &slot.environment_owner {
+            .read_realization(thread, |r| match &r.environment_owner {
                 SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
                     owned: RetiringEnvironmentOwner::Unbound(current),
                     ..
@@ -699,14 +699,14 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     // predecessor; neither a valid receipt nor its fingerprint relabels it.
     for wrong in rejected_owners.drain(..) {
         host.session_slots
-            .update(thread, |slot| slot.environment_owner = wrong);
+            .update_realization(thread, |r| r.environment_owner = wrong);
         host.dispose_terminal_cleanup_effect(disposal.clone())
             .await
             .expect_err("U6 wrong ownership cannot dispose");
         assert!(output.exists(), "U6 rejected Disposal keeps physical bytes");
     }
     host.session_slots
-        .update(thread, |slot| slot.environment_owner = retained.clone());
+        .update_realization(thread, |r| r.environment_owner = retained.clone());
     let mut stale_disposal = disposal.clone();
     stale_disposal.lease.epoch += 1;
     host.dispose_terminal_cleanup_effect(stale_disposal)

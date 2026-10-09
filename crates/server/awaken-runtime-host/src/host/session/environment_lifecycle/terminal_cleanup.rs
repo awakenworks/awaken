@@ -40,8 +40,8 @@ impl SharedHost {
         }
         let root_realization = self
             .session_slots
-            .read(effect.command.session_id.as_str(), |slot| {
-                slot.realization.clone()
+            .read_realization(effect.command.session_id.as_str(), |r| {
+                r.realization.clone()
             })
             .ok_or_else(|| {
                 HostError::unavailable_classified(
@@ -50,10 +50,10 @@ impl SharedHost {
                 )
             })?;
         let _root_realization = root_realization.lock().await;
-        let lifecycle = self
+        let _lifecycle = self
             .session_slots
-            .update(&effect.command.thread_id, |slot| slot.lifecycle.clone());
-        let _lifecycle = lifecycle.lock().await;
+            .lock_lifecycle(&effect.command.thread_id)
+            .await;
         let effect_fence = self.terminal_cleanup_effect_fence(&effect)?;
 
         let root_environment = if effect.command.thread_id == effect.command.session_id {
@@ -92,14 +92,14 @@ impl SharedHost {
             .transpose()?;
 
         self.session_slots
-            .update(&effect.command.thread_id, |slot| {
-                slot.terminal_cleanup_root = Some(effect.command.session_id.to_string());
+            .update_realization(&effect.command.thread_id, |r| {
+                r.terminal_cleanup_root = Some(effect.command.session_id.to_string());
             });
 
         let primary_active = self
             .session_slots
-            .read(&effect.command.thread_id, |slot| {
-                slot.runtime.as_ref().is_some_and(|runtime| {
+            .read_run(&effect.command.thread_id, |run| {
+                run.runtime.as_ref().is_some_and(|runtime| {
                     runtime
                         .active_run
                         .lock()
@@ -115,8 +115,8 @@ impl SharedHost {
             run.status.occupies_parallel_slot()
                 && self
                     .session_slots
-                    .read(&run.run_id.0, |slot| {
-                        slot.runtime.as_ref().is_some_and(|runtime| {
+                    .read_run(&run.run_id.0, |run| {
+                        run.runtime.as_ref().is_some_and(|runtime| {
                             runtime
                                 .active_run
                                 .lock()
@@ -134,8 +134,8 @@ impl SharedHost {
         }
         if let Some(owned) = self
             .session_slots
-            .read(&effect.command.thread_id, |slot| {
-                slot.environment_owner.terminal_bound_environment()
+            .read_realization(&effect.command.thread_id, |r| {
+                r.environment_owner.terminal_bound_environment()
             })
             .flatten()
         {
@@ -158,8 +158,8 @@ impl SharedHost {
             }
             let retained = self
                 .session_slots
-                .read(&effect.command.thread_id, |slot| {
-                    slot.environment_owner
+                .read_realization(&effect.command.thread_id, |r| {
+                    r.environment_owner
                         .terminal_bound_environment()
                         .is_some_and(|current| current.exact_matches(&owned))
                 })
@@ -319,7 +319,7 @@ impl SharedHost {
         let session_id = &effect.command.session_id;
         let root_realization = self
             .session_slots
-            .read(session_id.as_str(), |slot| slot.realization.clone())
+            .read_realization(session_id.as_str(), |r| r.realization.clone())
             .ok_or_else(|| {
                 HostError::unavailable_classified(
                     "session_terminal_cleanup_projection_missing",
@@ -328,10 +328,7 @@ impl SharedHost {
             })?;
         let _root_realization = root_realization.lock().await;
         self.terminal_cleanup_disposal_authorization(&effect)?;
-        let lifecycle = self
-            .session_slots
-            .update(session_id.as_str(), |slot| slot.lifecycle.clone());
-        let _lifecycle = lifecycle.lock().await;
+        let _lifecycle = self.session_slots.lock_lifecycle(session_id.as_str()).await;
         let authorization = self.terminal_cleanup_disposal_authorization(&effect)?;
         let prepared_environment = if effect.command.restore_target.is_none() {
             // Disposal decision table TD0. Causes: C1 the aggregate has
@@ -359,7 +356,7 @@ impl SharedHost {
             .is_some_and(|prepared| prepared.environment.environment.is_none());
         let owner = self
             .session_slots
-            .read(session_id.as_str(), |slot| slot.environment_owner.clone())
+            .read_realization(session_id.as_str(), |r| r.environment_owner.clone())
             .ok_or_else(|| {
                 HostError::unavailable_classified(
                     "session_terminal_cleanup_projection_missing",
@@ -377,8 +374,8 @@ impl SharedHost {
                     self.projected_session_environment_provider(session_id.as_str(), None)?;
                 let previous_resources = self
                     .session_slots
-                    .read(session_id.as_str(), |slot| {
-                        slot.resource_transition
+                    .read_realization(session_id.as_str(), |r| {
+                        r.resource_transition
                             .as_ref()
                             .map(|transition| transition.previous().resources.clone())
                     })
@@ -481,8 +478,8 @@ impl SharedHost {
             }
         }
         self.session_slots.update(session_id.as_str(), |slot| {
-            slot.runtime = None;
-            slot.environment_resource_reconciliation =
+            slot.run.runtime = None;
+            slot.realization.environment_resource_reconciliation =
                 crate::staged_resources::EnvironmentResourceReconciliation::None;
         });
         self.terminal_cleanup_disposal_authorization(&effect)?;
@@ -542,7 +539,7 @@ impl SharedHost {
     ) -> bool {
         let projected_terminal = self
             .session_slots
-            .read(session_id, |slot| slot.terminal_environment_state.is_some())
+            .read_realization(session_id, |r| r.terminal_environment_state.is_some())
             .unwrap_or(false);
         if !projected_terminal {
             return false;
@@ -559,15 +556,15 @@ impl SharedHost {
     ) -> bool {
         let Some(root_realization) = self
             .session_slots
-            .read(session_id, |slot| slot.realization.clone())
+            .read_realization(session_id, |r| r.realization.clone())
         else {
             return false;
         };
         let _root_realization = root_realization.lock().await;
         let authorized = self
             .session_slots
-            .read(session_id, |slot| {
-                slot.realization_authority.lease().is_some_and(|current| {
+            .read_realization(session_id, |r| {
+                r.authority.lease().is_some_and(|current| {
                     awaken_session_realization_contract::realization_lease_generation_authorizes(
                         current, lease,
                     )
@@ -586,8 +583,8 @@ impl SharedHost {
                     thread_id == session_id
                         || self
                             .session_slots
-                            .read(thread_id, |slot| {
-                                slot.terminal_cleanup_root.as_deref() == Some(session_id)
+                            .read_realization(thread_id, |r| {
+                                r.terminal_cleanup_root.as_deref() == Some(session_id)
                             })
                             .unwrap_or(false)
                 })
@@ -602,13 +599,13 @@ impl SharedHost {
         for thread_id in targets {
             let target_lifecycle = self
                 .session_slots
-                .read(&thread_id, |slot| slot.lifecycle.clone());
+                .read_realization(&thread_id, |r| r.lifecycle.clone());
             if let Some(lifecycle) = target_lifecycle {
                 let _target_lifecycle = lifecycle.lock().await;
                 let authorized = self
                     .session_slots
-                    .read(session_id, |slot| {
-                        slot.realization_authority.lease().is_some_and(|current| {
+                    .read_realization(session_id, |r| {
+                        r.authority.lease().is_some_and(|current| {
                             awaken_session_realization_contract::realization_lease_generation_authorizes(
                                 current, lease,
                             )
@@ -621,8 +618,8 @@ impl SharedHost {
                 let belongs_to_operation = thread_id == session_id
                     || self
                         .session_slots
-                        .read(&thread_id, |slot| {
-                            slot.terminal_cleanup_root.as_deref() == Some(session_id)
+                        .read_realization(&thread_id, |r| {
+                            r.terminal_cleanup_root.as_deref() == Some(session_id)
                         })
                         .unwrap_or(false);
                 if !belongs_to_operation {
@@ -634,8 +631,8 @@ impl SharedHost {
             }
             let authorized = self
                 .session_slots
-                .read(session_id, |slot| {
-                    slot.realization_authority.lease().is_some_and(|current| {
+                .read_realization(session_id, |r| {
+                    r.authority.lease().is_some_and(|current| {
                         awaken_session_realization_contract::realization_lease_generation_authorizes(
                             current, lease,
                         )
@@ -648,8 +645,8 @@ impl SharedHost {
             let belongs_to_operation = thread_id == session_id
                 || self
                     .session_slots
-                    .read(&thread_id, |slot| {
-                        slot.terminal_cleanup_root.as_deref() == Some(session_id)
+                    .read_realization(&thread_id, |r| {
+                        r.terminal_cleanup_root.as_deref() == Some(session_id)
                     })
                     .unwrap_or(false);
             if !belongs_to_operation {
