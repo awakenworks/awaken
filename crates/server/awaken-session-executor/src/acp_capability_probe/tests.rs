@@ -66,7 +66,7 @@ async fn probe_negotiator(
         crate::session_environment::SandboxEnvironmentProvider::workdir(base)
             .into_session_provider();
     SessionAcpCapabilityNegotiator::new(
-        Arc::new(SharedHost::from(dependencies)),
+        (dependencies).build().expect("validated Host dependencies"),
         Duration::from_secs(30),
         handshake,
     )

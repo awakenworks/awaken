@@ -161,13 +161,13 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
         ),
         None,
     );
-    awaken_coordinator::install_managed_lifecycle_delivery_with_deployments(
+    awaken_coordinator::prepare_managed_lifecycle_delivery(
         &state,
         &state.session_application(),
         Some(delivery),
-        deployments.as_ref(),
-        &service_lifecycle,
+        Some(deployments.as_ref()),
     )
+    .map(|prepared| prepared.start(&service_lifecycle))
     .expect("W1 bind the sole lifecycle notifier before traffic");
     let crud = awaken_control::webhook_authoring::webhook_config_router_loopback(store, secrets);
     let crud = crud.layer(axum::middleware::from_fn(stamp_local));

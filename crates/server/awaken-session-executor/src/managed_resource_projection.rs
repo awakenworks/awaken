@@ -6,8 +6,6 @@
 //! from being reimplemented by individual Sandbox adapters.
 use std::sync::Arc;
 
-use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialMaterializer};
-use awaken_resource_contract::RepositoryBindingVerifier;
 use awaken_session_types::RunError;
 
 use crate::managed_input_layout::{
@@ -62,32 +60,6 @@ fn resource_requirement_effect_key(
 }
 
 impl crate::ManagedHost {
-    /// Wire the live resource-invariant port used at activation and Memory use.
-    /// Configuration was already selected by the Session control plane; this port
-    /// only validates trusted Workspace ownership, lifecycle state, and the frozen
-    /// config version. It does not make an authorization decision.
-    #[must_use]
-    pub fn with_resource_validator(
-        mut self,
-        validator: Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>,
-    ) -> Self {
-        self.resource_validator = Some(validator);
-        self
-    }
-
-    /// Install the Repository-specific live binding guard used by a distributed
-    /// Worker without granting it Resource Registry database access.
-    #[must_use]
-    pub fn with_repository_binding_verifier(
-        mut self,
-        verifier: Arc<
-            dyn RepositoryBindingVerifier<awaken_dispatch_contract::ResourceOperationFence>,
-        >,
-    ) -> Self {
-        self.repository_binding_verifier = Some(verifier);
-        self
-    }
-
     /// Realize an already-resolved, secret-free manifest. The pinned Memory/
     /// Repository configuration in `inputs` remains authoritative; the per-item
     /// validation in `stage_resolved_input` checks only current ownership/state
@@ -188,7 +160,9 @@ impl crate::ManagedHost {
             None
         } else {
             Some(
-                self.resource_validator
+                self.host
+                    .session_execution
+                    .resource_validator
                     .as_ref()
                     .ok_or_else(|| {
                         RunError::bad_request(
@@ -458,23 +432,20 @@ impl crate::ManagedHost {
                 ResourceBindingCheck::MemoryStore {
                     memory_store_id,
                     config_version,
-                } => self
-                    .resource_validator
-                    .as_ref()
-                    .ok_or_else(|| {
-                        RunError::bad_request(
-                            "memory resources require a configured resource binding validator",
-                        )
-                    })?
-                    .verify_memory_binding(&workspace, &memory_store_id, config_version)
-                    .await
-                    .map_err(|error| RunError::bad_request(error.to_string()))?,
+                } => {
+                    self.host
+                        .session_execution
+                        .verify_memory_binding(&workspace, &memory_store_id, config_version)
+                        .await?
+                }
                 ResourceBindingCheck::Repository {
                     repository_id,
                     config_version,
                     authority,
                     ..
                 } => self
+                    .host
+                    .session_execution
                     .repository_binding_verifier
                     .as_ref()
                     .ok_or_else(|| {
@@ -494,75 +465,6 @@ impl crate::ManagedHost {
             }
         }
         Ok(())
-    }
-
-    /// Wire runtime credential injection for the already-frozen Session bindings
-    /// and Repository realization, in this crate's own unit tests. Other
-    /// compositions install the materializer they built from their Vault.
-    #[cfg(test)]
-    #[must_use]
-    pub fn with_credentials(
-        self,
-        credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
-        secrets: Arc<dyn awaken_credential_vault::SecretStore>,
-    ) -> Self {
-        self.with_credential_materializer(PinnedCredentialMaterializer::new(
-            Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
-                credentials,
-                secrets,
-                awaken_time::system_clock(),
-            )),
-            awaken_time::system_clock(),
-        ))
-    }
-
-    /// Reuse the process startup's canonical exact materializer for MCP and
-    /// Repository realization instead of constructing a peer over the same stores.
-    #[must_use]
-    pub fn with_credential_materializer(
-        mut self,
-        materializer: PinnedCredentialMaterializer,
-    ) -> Self {
-        self.credentials = Some(materializer);
-        self
-    }
-
-    /// Install the credential adapter's exact OAuth refresh port. The Host
-    /// retains only this factory and never receives Credential/Secret Store
-    /// handles.
-    #[must_use]
-    pub fn with_credential_refresh_factory(
-        mut self,
-        factory: Arc<dyn CredentialRefreshFactory>,
-    ) -> Self {
-        self.credential_refresh_factory = Some(factory);
-        self
-    }
-
-    /// Install the hosted deployment's platform MCP egress mediator.
-    ///
-    /// Without it, a Platform-held MCP credential is refused: the Host never
-    /// falls back to resolving upstream material it is not authorized to hold.
-    #[must_use]
-    pub fn with_platform_mcp_egress_provisioner(
-        mut self,
-        provisioner: Arc<dyn awaken_credential_materializer::PlatformMcpEgressProvisioner>,
-    ) -> Self {
-        self.platform_mcp_egress = Some(provisioner);
-        self
-    }
-
-    /// Replace the local Host MCP realization adapter with one downstream
-    /// implementation of the same exact-generation Session port. This is the
-    /// sole injection seam used by durable Worker commands; desired state and
-    /// credential selection remain outside the implementation.
-    #[must_use]
-    pub fn with_mcp_attachment_realizer(
-        mut self,
-        realizer: Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>,
-    ) -> Self {
-        self.mcp_realizer = Some(realizer);
-        self
     }
 
     pub(crate) async fn apply_session_inputs_with_context(
@@ -1430,6 +1332,7 @@ impl crate::ManagedHost {
         use awaken_session_resource_contract::ResolvedInputSource;
         use awaken_session_types::RunError;
 
+        let execution = &self.host.session_execution;
         let claim = resource_authority.and_then(|authority| match authority {
             awaken_dispatch_contract::ResourceOperationFence::Run(claim) => Some(claim),
             _ => None,
@@ -1550,15 +1453,9 @@ impl crate::ManagedHost {
                     (false, _, _) => None,
                 };
                 if materialization_reference.is_none() {
-                    let validator = self.resource_validator.as_ref().ok_or_else(|| {
-                        RunError::bad_request(
-                            "memory resources require a configured resource binding validator",
-                        )
-                    })?;
-                    validator
+                    execution
                         .verify_memory_binding(workspace, memory_store_id.as_str(), config.version)
-                        .await
-                        .map_err(|error| RunError::bad_request(error.to_string()))?;
+                        .await?;
                     staged.binding_checks.push(
                         crate::staged_resources::ResourceBindingCheck::MemoryStore {
                             memory_store_id: memory_store_id.to_string(),
@@ -1612,7 +1509,7 @@ impl crate::ManagedHost {
                         false,
                     ) => Ok(awaken_resource_contract::RepositoryTransport::Direct),
                     (authority, _) => {
-                        self.repository_binding_verifier
+                        execution.repository_binding_verifier
                             .as_ref()
                             .ok_or_else(|| {
                                 RunError::bad_request(

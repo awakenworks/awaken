@@ -25,80 +25,100 @@ pub struct HostProcess {
     pub clock: Arc<dyn awaken_time::WallClock>,
 }
 
-impl From<HostDependencies> for SharedHost {
+impl HostDependencies {
     /// The one Host constructor: validate the selected dependencies once and
     /// assemble the Host's runtime state around them. It performs no I/O; every
     /// dependency was acquired while the composition filled `dependencies`.
-    fn from(dependencies: HostDependencies) -> Self {
-        let HostDependencies {
-            local_workspace,
-            deployment,
-            clock,
-            store_dir,
-            authority,
-            execution_authority,
-            environment_binding_sink,
-            hub,
-            agent,
-            exec,
-            worker,
-            env,
-            tools,
-            resources,
-            mcp,
-            dispatch,
-            capture,
-            session_application,
-        } = dependencies;
-        assert!(
-            !local_workspace.trim().is_empty(),
-            "local workspace must not be empty"
-        );
-        let session_slots = crate::session_slot::SessionRuntimeSlots::default();
-        let memory = Arc::new(crate::memory::MemoryRuntime::new(
-            agent.llm.clone(),
-            env.auxiliary_sandboxes.provider("mem"),
-            Arc::new(BackgroundRuns::new()),
-            resources.extraction_repository.clone(),
-            clock.clone(),
-            agent.inference_materializer.clone(),
-        ));
-        let background_supervisor =
-            Arc::new(awaken_ext_background_task::BackgroundTaskSupervisor::new(
-                awaken_runtime_contract::content_fingerprint(&(
-                    "background-worker-v1",
-                    std::process::id(),
-                    uuid::Uuid::new_v4().simple().to_string(),
-                ))
-                .expect("background worker identity serializes"),
-                clock.clone(),
-            ));
-        Self {
-            agent: capability::AgentExecution::new(agent, session_slots.clone()),
-            exec,
-            worker,
-            env,
-            tools,
-            resources: capability::ResourcePorts::new(resources, memory),
-            mcp,
-            dispatch: capability::DispatchCapability::new(dispatch),
-            capture,
-            local_workspace,
-            session_slots,
-            execution_authority,
-            hub: hub.clone(),
-            store_dir,
-            deployment,
-            authority,
-            clock,
-            background_supervisor,
-            completion: Arc::new(CompletionRegistry::new(
-                hub,
-                session_application.committed_progress.clone(),
-            )),
-            session_application,
-            environment_binding_sink: std::sync::RwLock::new(environment_binding_sink),
+    pub fn build(self) -> Result<Arc<SharedHost>, HostError> {
+        let dependencies = self;
+        if dependencies.local_workspace.trim().is_empty() {
+            return Err(HostError::bad_request("local workspace must not be empty"));
         }
+        if dependencies
+            .dispatch
+            .dispatch_pool_sizing
+            .registered()
+            .is_some()
+            && (dependencies.authority.hosts_session_application()
+                || dependencies.deployment.disable_local_pool)
+        {
+            return Err(HostError::bad_request(
+                "registered Worker capacity requires upstream authority and a local execution pool",
+            ));
+        }
+        Ok(Arc::new_cyclic(|host| {
+            assemble_host(dependencies, host.clone())
+        }))
+    }
+}
+
+fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHost>) -> SharedHost {
+    let HostDependencies {
+        local_workspace,
+        deployment,
+        clock,
+        store_dir,
+        authority,
+        execution_authority,
+        environment_binding_sink,
+        hub,
+        agent,
+        exec,
+        worker,
+        env,
+        tools,
+        resources,
+        mcp,
+        dispatch,
+        capture,
+        session_application,
+        session_execution,
+    } = dependencies;
+    let session_slots = crate::session_slot::SessionRuntimeSlots::default();
+    let memory = Arc::new(crate::memory::MemoryRuntime::new(
+        agent.llm.clone(),
+        env.auxiliary_sandboxes.provider("mem"),
+        Arc::new(BackgroundRuns::new()),
+        resources.extraction_repository.clone(),
+        clock.clone(),
+        agent.inference_materializer.clone(),
+    ));
+    let background_supervisor =
+        Arc::new(awaken_ext_background_task::BackgroundTaskSupervisor::new(
+            awaken_runtime_contract::content_fingerprint(&(
+                "background-worker-v1",
+                std::process::id(),
+                uuid::Uuid::new_v4().simple().to_string(),
+            ))
+            .expect("background worker identity serializes"),
+            clock.clone(),
+        ));
+    SharedHost {
+        agent: capability::AgentExecution::new(agent, session_slots.clone()),
+        exec,
+        worker,
+        env,
+        tools,
+        resources: capability::ResourcePorts::new(resources, memory),
+        mcp,
+        dispatch: capability::DispatchCapability::new(dispatch, host),
+        capture,
+        local_workspace,
+        session_slots,
+        execution_authority,
+        hub: hub.clone(),
+        store_dir,
+        deployment,
+        authority,
+        clock,
+        background_supervisor,
+        completion: Arc::new(CompletionRegistry::new(
+            hub,
+            session_application.lifecycle_wakeup_binding(),
+        )),
+        session_application,
+        session_execution,
+        environment_binding_sink: std::sync::RwLock::new(environment_binding_sink),
     }
 }
 
@@ -207,7 +227,7 @@ impl SharedHost {
     /// The edges back into the Session application built over this Host. The
     /// composition root binds each once, after it built that application.
     #[must_use]
-    pub fn session_application_ports(&self) -> &SessionApplicationPorts {
+    pub fn session_application_bindings(&self) -> &SessionApplicationBindings {
         &self.session_application
     }
 
@@ -311,7 +331,7 @@ mod startup_tests {
                 .await
                 .expect("test extraction repository"),
         );
-        let host = SharedHost::from(HostDependencies::for_coordinator(
+        let host = (HostDependencies::for_coordinator(
             Arc::new(crate::NoModelConfiguredExecutor),
             crate::UNCONFIGURED_MODEL_REF,
             Arc::new(awaken_resource_contract::UnavailableFileContentSource),
@@ -324,7 +344,12 @@ mod startup_tests {
                 deployment: crate::DeploymentConfig::ephemeral(),
                 clock: awaken_time::system_clock(),
             },
-        ));
+            Arc::new(crate::EphemeralRuntimeAuthority::new(
+                awaken_time::system_clock(),
+            )),
+        ))
+        .build()
+        .expect("validated Host dependencies");
 
         assert!(
             Arc::ptr_eq(&expected, &host.resources.memory.extraction_repository()),
@@ -335,11 +360,12 @@ mod startup_tests {
     #[tokio::test]
     async fn constructor_selects_worker_role_without_a_transport_marker() {
         // C1 constructor={database-less Worker, Coordinator-local}; C2 both
-        // receive the same File/Memory content ports; C3 claimed-commit port
-        // is absent and no Runtime authority is installed. R1 Worker => remote
-        // commit boundary and fail-closed missing claimed commit; R2
-        // Coordinator => local commit boundary (fail-closed until its Runtime
-        // authority is installed) and no remote commit request. A content port
+        // receive the same File/Memory content ports; C3 all required Worker
+        // connections and registered capacity are supplied. R0 missing C3
+        // refuses before construction; R1 Worker => remote boundary and selected commit;
+        // R2 Coordinator => selected local commit and no remote request. R3 a
+        // local replacement requested on Worker dependencies => typed refusal
+        // before construction, never a role change. A content port
         // cannot choose C1, and a Worker's transports exist only inside its
         // upstream authority; commit_ingest W1-W3 covers the port combinations.
         let file: Arc<
@@ -358,22 +384,50 @@ mod startup_tests {
             deployment: crate::DeploymentConfig::ephemeral(),
             clock: awaken_time::system_clock(),
         };
-        let worker = SharedHost::from(HostDependencies::for_worker(
+        assert!(
+            HostDependencies::for_worker(
+                Arc::new(crate::NoModelConfiguredExecutor),
+                "stub",
+                file.clone(),
+                memory.clone(),
+                process(),
+                crate::UpstreamAuthority::default(),
+                awaken_dispatch_contract::RegisteredCapacity::of(
+                    &awaken_dispatch_contract::WorkerManifest::default()
+                )
+                .unwrap(),
+            )
+            .is_err(),
+            "R0 missing required upstream connections"
+        );
+        let worker = (HostDependencies::for_worker(
             Arc::new(crate::NoModelConfiguredExecutor),
             "stub",
             file.clone(),
             memory.clone(),
             process(),
-            crate::UpstreamAuthority::default(),
-        ));
-        let coordinator = SharedHost::from(HostDependencies::for_coordinator(
+            crate::host::test_upstream_authority(),
+            awaken_dispatch_contract::RegisteredCapacity::of(
+                &awaken_dispatch_contract::WorkerManifest::default(),
+            )
+            .unwrap(),
+        )
+        .expect("complete Worker connections"))
+        .build()
+        .expect("validated Host dependencies");
+        let coordinator = (HostDependencies::for_coordinator(
             Arc::new(crate::NoModelConfiguredExecutor),
             "stub",
             file,
             memory,
             extraction,
             process(),
-        ));
+            Arc::new(crate::EphemeralRuntimeAuthority::new(
+                awaken_time::system_clock(),
+            )),
+        ))
+        .build()
+        .expect("validated Host dependencies");
         assert!(
             matches!(
                 worker.authority.open_commit("role").await,
@@ -382,16 +436,39 @@ mod startup_tests {
             "R1 remote commit boundary"
         );
         assert!(
-            worker.authority.claimed_commit().is_err(),
-            "R1 missing port"
+            worker.authority.claimed_commit().unwrap().is_some(),
+            "R1 selected required port"
         );
         assert!(
-            coordinator.authority.open_commit("role").await.is_err(),
-            "R2 local commit boundary without an installed Runtime authority"
+            coordinator.authority.open_commit("role").await.is_ok(),
+            "R2 selected local commit boundary"
         );
         assert!(
             coordinator.authority.claimed_commit().unwrap().is_none(),
             "R2"
+        );
+        let worker_dependencies = HostDependencies::for_worker(
+            Arc::new(crate::NoModelConfiguredExecutor),
+            "stub",
+            Arc::new(awaken_resource_contract::UnavailableFileContentSource),
+            Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
+                awaken_time::system_clock(),
+            )),
+            process(),
+            crate::host::test_upstream_authority(),
+            awaken_dispatch_contract::RegisteredCapacity::of(
+                &awaken_dispatch_contract::WorkerManifest::default(),
+            )
+            .unwrap(),
+        )
+        .expect("complete Worker connections");
+        assert!(
+            worker_dependencies
+                .with_runtime_authority(Arc::new(crate::EphemeralRuntimeAuthority::new(
+                    awaken_time::system_clock()
+                ),))
+                .is_err(),
+            "R3 Worker authority cannot become local",
         );
     }
 }

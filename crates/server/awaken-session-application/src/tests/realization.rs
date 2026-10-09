@@ -610,16 +610,6 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingResource
             .invalidate_session_realization_lease(thread, lease)
             .await
     }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Install the durable callback used at the exact sandbox creation boundary.
-    fn install_environment_binding_sink(
-        &self,
-        sink: std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
-    ) {
-        awaken_session_execution_contract::NeutralRuntime.install_environment_binding_sink(sink)
-    }
 }
 
 #[async_trait::async_trait]
@@ -2449,13 +2439,12 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
     let application = SessionApplication::new_with_configuration(
         runtime.clone(),
         Arc::new(NoopMcpRealizer),
-        repo.clone(),
+        crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
             ..Default::default()
         },
-        awaken_time::system_clock(),
     );
 
     let pending_force = application
@@ -2656,13 +2645,12 @@ async fn restoring_terminal_cleanup_binds_the_exact_target_only_to_the_root() {
     let application = SessionApplication::new_with_configuration(
         coordinator_runtime,
         Arc::new(NoopMcpRealizer),
-        repo.clone(),
+        crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
             ..Default::default()
         },
-        awaken_time::system_clock(),
     );
     application
         .release_terminal_resources("workspace", session_id)

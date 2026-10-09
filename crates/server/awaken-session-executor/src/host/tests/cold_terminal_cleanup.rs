@@ -32,15 +32,15 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
     use awaken_provisioning_contract::SandboxStatus;
 
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_session_realization_control(control.clone())
-            .with_authority(
-                crate::UpstreamAuthority::default().with_terminal_cleanup_control(control.clone()),
-            ),
-    ));
-    let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_session_realization_control(control.clone())
+        .with_authority(
+            crate::UpstreamAuthority::default().with_terminal_cleanup_control(control.clone()),
+        ))
+    .build()
+    .expect("validated Host dependencies");
+    let managed = crate::ManagedHost::new(host.clone());
     let mut projection = remote_terminal_cleanup_projection();
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &managed,
@@ -214,15 +214,15 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
     // | R1 | yes | yes | yes | no | E1 + E2 + E3 |
     // | R2 | yes | renewed | renewed | yes | E4 |
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_session_realization_control(control.clone())
-            .with_authority(
-                crate::UpstreamAuthority::default().with_terminal_cleanup_control(control.clone()),
-            ),
-    ));
-    let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_session_realization_control(control.clone())
+        .with_authority(
+            crate::UpstreamAuthority::default().with_terminal_cleanup_control(control.clone()),
+        ))
+    .build()
+    .expect("validated Host dependencies");
+    let managed = crate::ManagedHost::new(host.clone());
     let now_unix_ms = crate::terminal_repository_publication::runtime_unix_now_ms();
     let expiring_unix_ms = now_unix_ms.saturating_add(5_000);
     // Renewal extends the asserted Control coordinate by one renewal interval;
@@ -421,14 +421,14 @@ async fn cold_terminal_cleanup_replenishes_a_slot_while_one_sibling_is_blocked()
     // | R1 | five | blocked | yes | E1 + E2 + E3 |
     // | R2 | five | released | yes | E4 + E5 |
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_session_realization_control(control.clone())
-            .with_authority(
-                crate::UpstreamAuthority::default().with_terminal_cleanup_control(control.clone()),
-            ),
-    ));
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_session_realization_control(control.clone())
+        .with_authority(
+            crate::UpstreamAuthority::default().with_terminal_cleanup_control(control.clone()),
+        ))
+    .build()
+    .expect("validated Host dependencies");
     let lease = completed_terminal_test_lease();
     let target = terminal_target_for(&lease);
     enqueue_completed_terminal_assignments(&control, &lease, "bounded-terminal", 5);
@@ -487,14 +487,14 @@ async fn cold_terminal_cleanup_never_drives_more_than_four_assignments() {
     // every claimed assignment completes. Rules B1=C1+C2->E1,
     // B2=B1+C3->E2+E3. The gate changes only test I/O timing, not lease truth.
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_session_realization_control(control.clone())
-            .with_authority(
-                crate::UpstreamAuthority::default().with_terminal_cleanup_control(control.clone()),
-            ),
-    ));
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_session_realization_control(control.clone())
+        .with_authority(
+            crate::UpstreamAuthority::default().with_terminal_cleanup_control(control.clone()),
+        ))
+    .build()
+    .expect("validated Host dependencies");
     let lease = completed_terminal_test_lease();
     let target = terminal_target_for(&lease);
     enqueue_completed_terminal_assignments(&control, &lease, "bounded-active", 5);
@@ -559,14 +559,14 @@ async fn cold_terminal_claim_failure_drains_claimed_work_and_retries_the_remaind
     // finishes once on C3, with no replay of E1. Rules P1=C1+C2->E1+E2 and
     // P2=P1+C3->E3. A failed claim never removes an assignment from Control.
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host = SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_session_realization_control(control.clone())
-            .with_authority(
-                crate::UpstreamAuthority::default().with_terminal_cleanup_control(control.clone()),
-            ),
-    );
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_session_realization_control(control.clone())
+        .with_authority(
+            crate::UpstreamAuthority::default().with_terminal_cleanup_control(control.clone()),
+        ))
+    .build()
+    .expect("validated Host dependencies");
     let lease = completed_terminal_test_lease();
     let target = terminal_target_for(&lease);
     enqueue_completed_terminal_assignments(&control, &lease, "partial-claim", 3);
@@ -609,14 +609,14 @@ async fn cold_terminal_recovery_preserves_the_sixty_four_assignment_sweep_cap() 
     // resets the cursor, claims the final assignment, and reaches the empty
     // queue. R1=C1+C2->E1, R2=R1+C3->E2. The cursor grants no ownership.
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host = SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_session_realization_control(control.clone())
-            .with_authority(
-                crate::UpstreamAuthority::default().with_terminal_cleanup_control(control.clone()),
-            ),
-    );
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_session_realization_control(control.clone())
+        .with_authority(
+            crate::UpstreamAuthority::default().with_terminal_cleanup_control(control.clone()),
+        ))
+    .build()
+    .expect("validated Host dependencies");
     let lease = completed_terminal_test_lease();
     let target = terminal_target_for(&lease);
     enqueue_completed_terminal_assignments(&control, &lease, "sweep-cap", 65);
@@ -663,14 +663,14 @@ async fn cold_terminal_recovery_rejects_a_nonadvancing_legacy_cursor_reply() {
     // report protocol nonprogress, drain the first in-flight cleanup once,
     // and never execute a second physical effect under the duplicate lease.
     let control = Arc::new(RemoteTerminalCleanupControl::default());
-    let host = SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_session_realization_control(control.clone())
-            .with_authority(
-                crate::UpstreamAuthority::default().with_terminal_cleanup_control(control.clone()),
-            ),
-    );
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_session_realization_control(control.clone())
+        .with_authority(
+            crate::UpstreamAuthority::default().with_terminal_cleanup_control(control.clone()),
+        ))
+    .build()
+    .expect("validated Host dependencies");
     let lease = completed_terminal_test_lease();
     enqueue_completed_terminal_assignments(&control, &lease, "legacy-cursor", 1);
     let duplicate = control.assignments.lock().unwrap().front().unwrap().clone();
@@ -719,15 +719,15 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
     let authorization_proceed = Arc::new(tokio::sync::Notify::new());
     *control.authorization_barrier.lock().unwrap() =
         Some((authorization_started.clone(), authorization_proceed.clone()));
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_session_realization_control(control.clone())
-            .with_authority(
-                crate::UpstreamAuthority::default().with_terminal_cleanup_control(control.clone()),
-            ),
-    ));
-    let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_session_realization_control(control.clone())
+        .with_authority(
+            crate::UpstreamAuthority::default().with_terminal_cleanup_control(control.clone()),
+        ))
+    .build()
+    .expect("validated Host dependencies");
+    let managed = crate::ManagedHost::new(host.clone());
     let session_id = "cold-terminal-worker";
     let lease = awaken_session_resource_contract::SessionRealizationLease {
         owner: "remote-worker".into(),
@@ -867,11 +867,11 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
             .await
             .expect("archive saga dispatch"),
     );
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_coordinator_dispatch_store(dispatch.clone()),
-    ));
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_ephemeral_coordinator_dispatch(dispatch.clone()))
+    .build()
+    .expect("validated Host dependencies");
     let parent = ThreadId("archive-saga-parent".into());
     let commit = host
         .commit_for_read(&parent.0)

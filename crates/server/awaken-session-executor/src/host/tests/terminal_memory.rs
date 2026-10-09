@@ -191,18 +191,18 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     // | R5 | any | exact | foreign | E4 |
     let events = Arc::new(Mutex::new(Vec::new()));
     let realization_attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_authority(
-                crate::UpstreamAuthority::default().with_memory_reference_encoder(Arc::new(
-                    RecordingTerminalMemoryReferenceEncoder {
-                        events: events.clone(),
-                        realization_attempts: realization_attempts.clone(),
-                    },
-                )),
-            ),
-    ));
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_authority(
+            crate::UpstreamAuthority::default().with_memory_reference_encoder(Arc::new(
+                RecordingTerminalMemoryReferenceEncoder {
+                    events: events.clone(),
+                    realization_attempts: realization_attempts.clone(),
+                },
+            )),
+        ))
+    .build()
+    .expect("validated Host dependencies");
     let managed = crate::ManagedHost::new(host);
     let input = awaken_session_resource_contract::ResolvedInput {
         created_at_unix_ms: None,
@@ -534,14 +534,14 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         scenario: TerminalRecoveryScenario::OrphanClaim,
         fence_refresh_probe: None,
     });
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_session_container_provider(
-                provider,
-                Arc::new(crate::session_environment::UnusedHandExecutorFactory),
-            ),
-    ));
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_session_container_provider(
+            provider,
+            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+        ))
+    .build()
+    .expect("validated Host dependencies");
     let managed = install_test_dispatch_runtime(&host);
     install_test_session_application(&host);
     let thread = "absent-auxiliary-source";
@@ -790,8 +790,9 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
     // both projections; a future UTC expiry plus exhausted proof denies both.
     // R6 closed/uninstalled slots deny even with matching retained lease bytes.
     // These are Host projection decisions, not async Provider commit grants.
-    let host =
-        SharedHost::from(crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await);
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
     let session_id = "terminal-renewed-provider-fence";
     let now_unix_ms = crate::terminal_repository_publication::runtime_unix_now_ms();
     let expired_lease = awaken_session_resource_contract::SessionRealizationLease {
@@ -997,7 +998,9 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
         events: events.clone(),
         reject: Arc::new(AtomicBool::new(false)),
     }));
-    let host = Arc::new(SharedHost::from(raw_host));
+    let host = (crate::host::with_test_resource_validation(raw_host))
+        .build()
+        .expect("validated Host dependencies");
     let managed = managed_with_resource_source(host.clone());
 
     let idle_retention = awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy {
@@ -1210,7 +1213,7 @@ async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
         events: events.clone(),
         receipt: receipt.clone(),
     });
-    let host = Arc::new(SharedHost::from(raw_host));
+    let host = (raw_host).build().expect("validated Host dependencies");
     let managed = install_test_dispatch_runtime(&host);
     install_test_session_application(&host);
     let handle = terminal_fixture_container_handle(thread, &host.sandbox_spec(thread));
@@ -1337,7 +1340,7 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
             expected_id: checkpoint_id.clone(),
             delete_gate: None,
         }));
-    let host = Arc::new(SharedHost::from(raw_host));
+    let host = (raw_host).build().expect("validated Host dependencies");
     let managed = install_test_dispatch_runtime(&host);
     install_test_session_application(&host);
     let handle = terminal_fixture_container_handle(thread, &host.sandbox_spec(thread));
@@ -1483,7 +1486,9 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
         events: events.clone(),
         records: source_records.clone(),
     });
-    let host = Arc::new(SharedHost::from(raw_host));
+    let host = (crate::host::with_test_resource_validation(raw_host))
+        .build()
+        .expect("validated Host dependencies");
     let managed = managed_with_resource_source(host.clone());
 
     let mut projection = terminal_memory_projection();
@@ -1609,14 +1614,16 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
             scenario: TerminalRecoveryScenario::UnavailableAuxiliaryMemory,
             fence_refresh_probe: None,
         });
-        let host = Arc::new(SharedHost::from(
+        let host = (crate::host::with_test_resource_validation(
             crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
                 .await
                 .with_session_container_provider(
                     provider,
                     Arc::new(crate::session_environment::UnusedHandExecutorFactory),
                 ),
-        ));
+        ))
+        .build()
+        .expect("validated Host dependencies");
         let managed = managed_with_resource_source(host.clone());
 
         let mut projection = terminal_memory_projection();
@@ -1767,7 +1774,9 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
         events: events.clone(),
         records: Arc::new(Mutex::new(Vec::new())),
     });
-    let host = Arc::new(SharedHost::from(raw_host));
+    let host = (crate::host::with_test_resource_validation(raw_host))
+        .build()
+        .expect("validated Host dependencies");
     let managed = managed_with_resource_source(host.clone());
 
     let projection = terminal_memory_projection();
@@ -1928,7 +1937,9 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             events: events.clone(),
             reject: reject.clone(),
         }));
-        let host = Arc::new(SharedHost::from(raw_host));
+        let host = (crate::host::with_test_resource_validation(raw_host))
+            .build()
+            .expect("validated Host dependencies");
         let managed = managed_with_resource_source(host.clone());
 
         let mut projection = terminal_memory_projection();

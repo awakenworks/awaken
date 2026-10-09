@@ -7,7 +7,7 @@
 //! Acquiring a dependency may be asynchronous (opening a Store, probing a
 //! sandbox tier); the composition does that while it fills this value. Turning
 //! the value into a Host is the one synchronous constructor
-//! (`SharedHost::from`), which performs no I/O. Nothing installs a dependency
+//! (`HostDependencies::build`), which performs no I/O. Nothing installs a dependency
 //! into a Host after it exists, so no Host is ever observed half-configured.
 //!
 //! The constructors take every dependency a role cannot run without; the
@@ -19,80 +19,34 @@ use crate::host::*;
 mod environment;
 mod tools;
 
-/// One construction-time edge from the Host back into an application that is
-/// itself built over the Host, so the two cannot be constructed in one call.
-///
-/// The port exists from the moment the dependencies are selected; the
-/// composition root binds it exactly once after it built the application, and
-/// a read before that finds nothing and fails closed. This is the only kind of
-/// late binding a Host has, and its type says so. Consumer:
-/// [`SessionApplicationPorts`].
-pub struct CyclicPort<T> {
-    slot: Arc<std::sync::OnceLock<T>>,
-}
+mod session_application;
 
-/// A [`CyclicPort`] was bound a second time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("this composition edge is already bound")]
-pub struct CyclicPortAlreadyBound;
+pub(crate) use session_application::ApplicationPortBinding;
+pub use session_application::{SessionApplicationBindingError, SessionApplicationBindings};
 
-impl<T> CyclicPort<T> {
-    /// Bind the port to the application the composition just built.
-    ///
-    /// # Errors
-    /// [`CyclicPortAlreadyBound`] when the port was already bound; the first
-    /// binding stays.
-    pub fn bind(&self, value: T) -> Result<(), CyclicPortAlreadyBound> {
-        self.slot.set(value).map_err(|_| CyclicPortAlreadyBound)
-    }
-
-    /// The bound application, or `None` before the composition bound it.
-    pub(crate) fn get(&self) -> Option<&T> {
-        self.slot.get()
-    }
-}
-
-impl<T> Clone for CyclicPort<T> {
-    fn clone(&self) -> Self {
-        Self {
-            slot: self.slot.clone(),
-        }
-    }
-}
-
-impl<T> Default for CyclicPort<T> {
-    fn default() -> Self {
-        Self {
-            slot: Arc::new(std::sync::OnceLock::new()),
-        }
-    }
-}
-
-/// The Host's edges back into the Session application built over it. Each is
-/// a weak or notification-only port, so binding one creates no ownership
-/// cycle. Consumer: the composition root, which binds each once after it built
-/// the Session application (`SharedHost::session_application_ports`).
-#[derive(Clone, Default)]
-pub struct SessionApplicationPorts {
-    /// The Session application's sole coordination admission owner. It
-    /// carries no roster, Thread relationship, operation receipt, or lifecycle
-    /// state.
-    pub agent_coordination:
-        CyclicPort<std::sync::Weak<dyn awaken_session_execution_contract::SessionAgentCoordination>>,
-    /// The existing Session Run admission owner. BackgroundTask completion
-    /// uses it only to publish a deterministic same-Thread attention Run; task
-    /// lifecycle and result truth remain in committed Thread State.
-    pub background_runs: CyclicPort<
-        std::sync::Weak<dyn awaken_session_application_contract::SessionRunBackgroundApplication>,
+/// Immutable Session execution ports selected once at process startup.
+/// Managed and claimed dispatch adapters both read this exact Host-owned value.
+#[derive(Default)]
+pub struct SessionExecutionDependencies {
+    pub(crate) credential_refresh_factory: Option<Arc<dyn crate::CredentialRefreshFactory>>,
+    pub(crate) platform_mcp_egress:
+        Option<Arc<dyn awaken_credential_materializer::PlatformMcpEgressProvisioner>>,
+    pub(crate) resource_validator:
+        Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
+    pub(crate) repository_binding_verifier: Option<
+        Arc<
+            dyn awaken_resource_contract::RepositoryBindingVerifier<
+                    awaken_dispatch_contract::ResourceOperationFence,
+                >,
+        >,
     >,
-    /// The process's sole wakeup for committed Run progress. It is
-    /// notification-only; its consumer must reread durable truth.
-    pub committed_progress: CyclicPort<Arc<dyn Fn() + Send + Sync>>,
+    pub(crate) mcp_realizer:
+        Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
 }
 
 /// Every dependency of one [`SharedHost`]. Consumer: the process
 /// compositions (`awaken-cli`, `awaken-worker`, `awaken-coordinator`, the
-/// Scenario host and test fixtures) and `SharedHost::from`.
+/// Scenario host and test fixtures) and `HostDependencies::build`.
 pub struct HostDependencies {
     pub(crate) local_workspace: String,
     pub(crate) deployment: crate::DeploymentConfig,
@@ -115,7 +69,8 @@ pub struct HostDependencies {
     pub(crate) mcp: awaken_session_mcp::McpSessions,
     pub(crate) dispatch: capability::DispatchSelection,
     pub(crate) capture: capability::ContentCaptureCapability,
-    pub(crate) session_application: SessionApplicationPorts,
+    pub(crate) session_application: SessionApplicationBindings,
+    pub(crate) session_execution: SessionExecutionDependencies,
 }
 
 /// Select the role-neutral defaults around one role's required inputs.
@@ -169,7 +124,8 @@ fn select(
         ),
         dispatch: capability::DispatchSelection::default(),
         capture: capability::ContentCaptureCapability::new(&deployment),
-        session_application: SessionApplicationPorts::default(),
+        session_application: SessionApplicationBindings::default(),
+        session_execution: SessionExecutionDependencies::default(),
         local_workspace,
         execution_authority: None,
         environment_binding_sink: None,
@@ -198,8 +154,10 @@ impl HostDependencies {
         memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
         process: HostProcess,
         authority: crate::UpstreamAuthority,
-    ) -> Self {
-        select(
+        capacity: awaken_dispatch_contract::RegisteredCapacity,
+    ) -> Result<Self, HostError> {
+        authority.validate_worker_connections()?;
+        let mut selected = select(
             llm,
             model_ref.into(),
             capability::ResourceInputs {
@@ -213,14 +171,17 @@ impl HostDependencies {
             },
             process,
             Arc::new(authority),
-        )
+        );
+        selected.deployment.durable = true;
+        selected.dispatch.dispatch_pool_sizing =
+            crate::DispatchPoolSizing::Registered(capacity.into_slots());
+        Ok(selected)
     }
 
     /// A Coordinator-local Runtime Host over only its execution data
     /// capability. Resources catalog, File commands, Skill authoring, and
     /// reclamation remain outside and are injected through narrow applications.
-    /// A store-owning composition selects its durable Runtime authority with
-    /// [`Self::with_runtime_authority`].
+    /// The same required authority owns commit, Dispatch and checkpoints.
     pub fn for_coordinator(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
@@ -230,6 +191,7 @@ impl HostDependencies {
         memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
         extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
         process: HostProcess,
+        runtime_authority: Arc<dyn crate::RuntimeAuthority>,
     ) -> Self {
         select(
             llm,
@@ -244,7 +206,7 @@ impl HostDependencies {
                 extraction_repository: Some(extraction_repository),
             },
             process,
-            Arc::new(crate::LocalAuthority::default()),
+            Arc::new(crate::LocalAuthority::new(runtime_authority)),
         )
     }
 
@@ -260,6 +222,7 @@ impl HostDependencies {
         extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
         local_workspace: impl Into<String>,
         deployment: crate::DeploymentConfig,
+        runtime_authority: Arc<dyn crate::RuntimeAuthority>,
     ) -> Self {
         let clock = resources.clock.clone();
         select(
@@ -275,7 +238,7 @@ impl HostDependencies {
                 deployment,
                 clock,
             },
-            Arc::new(crate::LocalAuthority::default()),
+            Arc::new(crate::LocalAuthority::new(runtime_authority)),
         )
     }
 
@@ -322,9 +285,10 @@ impl HostDependencies {
                 deployment,
                 clock: clock.clone(),
             },
-            Arc::new(crate::LocalAuthority::default()),
+            Arc::new(crate::LocalAuthority::new(Arc::new(
+                crate::EphemeralRuntimeAuthority::new(clock),
+            ))),
         )
-        .with_runtime_authority(Arc::new(crate::EphemeralRuntimeAuthority::new(clock)))
     }
 
     /// The typed Deployment these dependencies serve. Compositions read it
@@ -367,10 +331,17 @@ impl HostDependencies {
     /// Select the Coordinator-owned durable capability: the Host then owns
     /// committed truth locally. Only store-owning compositions select it; a
     /// Worker is constructed with its upstream authority instead.
-    #[must_use]
-    pub fn with_runtime_authority(mut self, authority: Arc<dyn crate::RuntimeAuthority>) -> Self {
+    pub fn with_runtime_authority(
+        mut self,
+        authority: Arc<dyn crate::RuntimeAuthority>,
+    ) -> Result<Self, HostError> {
+        if !self.authority.hosts_session_application() {
+            return Err(HostError::bad_request(
+                "a Worker cannot replace its upstream authority with a local Runtime authority",
+            ));
+        }
         self.authority = Arc::new(crate::LocalAuthority::new(authority));
-        self
+        Ok(self)
     }
 
     /// Give a unit-test fixture the authority of the role under test. Product
@@ -554,63 +525,37 @@ impl HostDependencies {
         self
     }
 
-    /// Select the exact durable dispatch transport owned by this host startup.
-    ///
-    /// An explicitly assembled queue is already the authority for ingress, so it
-    /// also enables this host's dispatch pool. Embedders do not need to mutate
-    /// another process-global configuration source to activate a transport they
-    /// supplied directly.
+    /// Select the canonical volatile Runtime authority over an explicit queue
+    /// for a local test or Scenario fixture. Product selects its authority in
+    /// `for_coordinator`; the Host never owns a second queue override.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub fn with_dispatch_store(
+    pub fn with_ephemeral_dispatch(
         mut self,
         store: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
     ) -> Self {
-        self.dispatch.dispatch_store_override = Some(store);
+        assert!(
+            self.authority.hosts_session_application(),
+            "volatile dispatch selection requires a local fixture"
+        );
+        self.authority = Arc::new(crate::LocalAuthority::new(Arc::new(
+            crate::EphemeralRuntimeAuthority::with_dispatch(self.clock.clone(), store),
+        )));
         self.deployment.durable = true;
         self.deployment.disable_local_pool = false;
         self
     }
 
-    /// Select the exact durable dispatch transport for a Coordinator-only Host.
-    ///
-    /// Unlike [`Self::with_dispatch_store`], this topology owns admission and
-    /// completion observation but never drains the queue or realizes a Session
-    /// Environment. A separately registered Worker is the sole physical effect
-    /// owner. Keeping this as one selection prevents call ordering from silently
-    /// re-enabling the local pool after a startup selected remote placement.
+    /// The same local fixture authority, without a co-located execution pool.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub fn with_coordinator_dispatch_store(
-        mut self,
+    pub fn with_ephemeral_coordinator_dispatch(
+        self,
         store: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
     ) -> Self {
-        self.dispatch.dispatch_store_override = Some(store);
-        self.deployment.durable = true;
-        self.deployment.disable_local_pool = true;
-        self
-    }
-
-    /// Select the dispatch service together with the capacity its Worker
-    /// registered. CPU quota governs CPU time, not the number of concurrent
-    /// I/O-bound Session preparations, so the registered manifest — never a
-    /// local guess — is the Worker capacity authority.
-    ///
-    /// The capacity is taken by value: a Worker that reads
-    /// [`RegisteredCapacity::of`] and does not reach this selection gets an
-    /// `unused_must_use` diagnostic instead of a pool that quietly disagrees
-    /// with the registry.
-    ///
-    /// [`RegisteredCapacity::of`]: awaken_dispatch_contract::RegisteredCapacity::of
-    #[must_use]
-    pub fn with_worker_dispatch(
-        mut self,
-        dispatch: Arc<dyn awaken_dispatch_contract::Dispatch>,
-        capacity: awaken_dispatch_contract::RegisteredCapacity,
-    ) -> Self {
-        self.dispatch.dispatch_pool_sizing =
-            crate::DispatchPoolSizing::Registered(capacity.into_slots());
-        self.with_dispatch_store(Arc::new(
-            awaken_dispatch_erasure::AnyDispatchStore::from_dispatch(dispatch),
-        ))
+        let mut selected = self.with_ephemeral_dispatch(store);
+        selected.deployment.disable_local_pool = true;
+        selected
     }
 
     /// Select only the read-only ACP catalog port on a Coordinator that
@@ -790,6 +735,120 @@ impl HostDependencies {
         >,
     ) -> Self {
         self.resources.file_content_source = source;
+        self
+    }
+}
+
+impl SessionExecutionDependencies {
+    /// One live Memory binding verification used at both staging and activation.
+    pub(crate) async fn verify_memory_binding(
+        &self,
+        workspace: &str,
+        id: &str,
+        version: awaken_resource_contract::ConfigVersion,
+    ) -> Result<(), awaken_session_types::RunError> {
+        self.resource_validator
+            .as_ref()
+            .ok_or_else(|| {
+                awaken_session_types::RunError::bad_request(
+                    "memory resources require a configured resource binding validator",
+                )
+            })?
+            .verify_memory_binding(workspace, id, version)
+            .await
+            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))
+    }
+
+    /// Wire the live resource-invariant port used at activation and Memory use.
+    /// Configuration was already selected by the Session control plane; this port
+    /// only validates trusted Workspace ownership, lifecycle state, and the frozen
+    /// config version. It does not make an authorization decision.
+    #[must_use]
+    pub fn with_resource_validator(
+        mut self,
+        validator: Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>,
+    ) -> Self {
+        self.resource_validator = Some(validator);
+        self
+    }
+
+    /// Install the Repository-specific live binding guard used by a distributed
+    /// Worker without granting it Resource Registry database access.
+    #[must_use]
+    pub fn with_repository_binding_verifier(
+        mut self,
+        verifier: Arc<
+            dyn awaken_resource_contract::RepositoryBindingVerifier<
+                    awaken_dispatch_contract::ResourceOperationFence,
+                >,
+        >,
+    ) -> Self {
+        self.repository_binding_verifier = Some(verifier);
+        self
+    }
+
+    /// Install the credential adapter's exact OAuth refresh port. The Host
+    /// retains only this factory and never receives Credential/Secret Store
+    /// handles.
+    #[must_use]
+    pub fn with_credential_refresh_factory(
+        mut self,
+        factory: Arc<dyn crate::CredentialRefreshFactory>,
+    ) -> Self {
+        self.credential_refresh_factory = Some(factory);
+        self
+    }
+
+    /// Install the hosted deployment's platform MCP egress mediator.
+    ///
+    /// Without it, a Platform-held MCP credential is refused: the Host never
+    /// falls back to resolving upstream material it is not authorized to hold.
+    #[must_use]
+    pub fn with_platform_mcp_egress_provisioner(
+        mut self,
+        provisioner: Arc<dyn awaken_credential_materializer::PlatformMcpEgressProvisioner>,
+    ) -> Self {
+        self.platform_mcp_egress = Some(provisioner);
+        self
+    }
+
+    /// Replace the local Host MCP realization adapter with one downstream
+    /// implementation of the same exact-generation Session port. This is the
+    /// sole injection seam used by durable Worker commands; desired state and
+    /// credential selection remain outside the implementation.
+    #[must_use]
+    pub fn with_mcp_attachment_realizer(
+        mut self,
+        realizer: Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>,
+    ) -> Self {
+        self.mcp_realizer = Some(realizer);
+        self
+    }
+}
+
+impl HostDependencies {
+    /// Select a volatile Vault materializer for this crate's unit fixtures.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_credentials(
+        self,
+        credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
+        secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+    ) -> Self {
+        self.with_credential_materializer(crate::PinnedCredentialMaterializer::new(
+            Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
+                credentials,
+                secrets,
+                awaken_time::system_clock(),
+            )),
+            awaken_time::system_clock(),
+        ))
+    }
+
+    /// Select the complete immutable Session execution port group once.
+    #[must_use]
+    pub fn with_session_execution(mut self, execution: SessionExecutionDependencies) -> Self {
+        self.session_execution = execution;
         self
     }
 }

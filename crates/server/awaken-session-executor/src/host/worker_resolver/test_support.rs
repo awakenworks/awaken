@@ -45,22 +45,26 @@ pub(crate) async fn adoption_dependencies_at(
 }
 
 /// A Host over [`adoption_dependencies`].
-pub(crate) async fn adoption_host() -> SharedHost {
-    SharedHost::from(adoption_dependencies().await)
+pub(crate) async fn adoption_host() -> Arc<SharedHost> {
+    (adoption_dependencies().await)
+        .build()
+        .expect("validated Host dependencies")
 }
 
 /// A Host over [`adoption_dependencies`] whose dispatch transport is `store`.
 pub(crate) async fn adoption_host_over(
     store: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
 ) -> Arc<SharedHost> {
-    Arc::new(SharedHost::from(
-        adoption_dependencies().await.with_dispatch_store(store),
-    ))
+    (adoption_dependencies().await.with_ephemeral_dispatch(store))
+        .build()
+        .expect("validated Host dependencies")
 }
 
 /// A Host over [`adoption_dependencies_at`].
-pub(crate) async fn adoption_host_at(dir: impl Into<std::path::PathBuf>) -> SharedHost {
-    SharedHost::from(adoption_dependencies_at(dir).await)
+pub(crate) async fn adoption_host_at(dir: impl Into<std::path::PathBuf>) -> Arc<SharedHost> {
+    (adoption_dependencies_at(dir).await)
+        .build()
+        .expect("validated Host dependencies")
 }
 
 pub(crate) fn test_activation(thread: &str, run: &str) -> RunActivation {
@@ -249,7 +253,6 @@ pub(crate) fn managed_test_host(host: Arc<SharedHost>) -> crate::ManagedHost {
 /// Install the one production composition required by every executable fixture:
 /// DispatchSessionRuntime plus the single Session coordination application.
 pub(super) fn complete_managed_test_host(managed: crate::ManagedHost) -> crate::ManagedHost {
-    let managed = managed.install_dispatch_session_runtime();
     static APPLICATION: std::sync::OnceLock<
         Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
     > = std::sync::OnceLock::new();
@@ -258,9 +261,8 @@ pub(super) fn complete_managed_test_host(managed: crate::ManagedHost) -> crate::
     });
     managed
         .host
-        .session_application_ports()
-        .agent_coordination
-        .bind(Arc::downgrade(application))
+        .session_application_bindings()
+        .bind_agent_coordination(application.clone())
         .expect("install one test Session application authority");
     managed
 }

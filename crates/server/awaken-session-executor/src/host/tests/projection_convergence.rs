@@ -93,9 +93,11 @@ async fn independent_coordinators_converge_after_binding_replacement_and_reject_
 
     let mut hosts = Vec::new();
     for _ in 0..3 {
-        hosts.push(Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await,
-        )));
+        hosts.push(
+            (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await)
+                .build()
+                .expect("validated Host dependencies"),
+        );
     }
     let managed: Vec<_> = hosts
         .iter()

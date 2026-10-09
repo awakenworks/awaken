@@ -112,12 +112,7 @@ macro_rules! neutral_role {
                 Ok(())
             }
 
-            /// Install the durable callback used at the exact sandbox creation boundary.
-            fn install_environment_binding_sink(
-                &self,
-                _sink: Arc<dyn $crate::SessionEnvironmentBindingSink>,
-            ) {
-            }
+
         }
     };
     (CoordinationRuntime for $ty:ty) => {

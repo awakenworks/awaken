@@ -131,26 +131,26 @@ async fn durable_child_run_scenario() {
             ],
         },
     ];
-    let host = Arc::new(awaken_session_executor::SharedHost::from(
-        awaken_runtime_host_testkit::with_durable_store_dir(
-            awaken_scenario_host::build_unmounted_dependencies(
-                Arc::new(ParentChildModel {
-                    parent_calls: AtomicUsize::new(0),
-                    child_calls: AtomicUsize::new(0),
-                }),
-                "stub",
-            )
-            .await
-            .with_dispatch_store(dispatch),
-            storage.path(),
+    let host = (awaken_runtime_host_testkit::with_durable_store_dir(
+        awaken_scenario_host::build_unmounted_dependencies(
+            Arc::new(ParentChildModel {
+                parent_calls: AtomicUsize::new(0),
+                child_calls: AtomicUsize::new(0),
+            }),
+            "stub",
         )
         .await
-        .with_agent_publications(Arc::new(
-            StaticPublishedAgentSnapshots::try_new([assistant, researcher])
-                .expect("valid test Agent publications"),
-        )),
-    ));
-    let _managed = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+        .with_ephemeral_dispatch(dispatch),
+        storage.path(),
+    )
+    .await
+    .with_agent_publications(Arc::new(
+        StaticPublishedAgentSnapshots::try_new([assistant, researcher])
+            .expect("valid test Agent publications"),
+    )))
+    .build()
+    .expect("validated Host dependencies");
+    let _managed = ManagedHost::new(host.clone());
     host.ensure_dispatch_pool();
 
     let awaiting = tokio::time::timeout(

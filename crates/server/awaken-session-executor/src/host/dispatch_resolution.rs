@@ -247,7 +247,6 @@ impl SharedHost {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::NoModelConfiguredExecutor;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_runtime_contract::resolved::ModelBinding;
@@ -271,9 +270,11 @@ mod tests {
         // | R1 | yes | absent at admission | E1 |
         // | R2 | no | V1 empty | E2 |
         // | R3 | no | none | E3 |
-        let host = SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(NoModelConfiguredExecutor), "model").await,
-        );
+        let host =
+            (crate::HostDependencies::ephemeral(Arc::new(NoModelConfiguredExecutor), "model")
+                .await)
+                .build()
+                .expect("validated Host dependencies");
         host.session_slots
             .update("format-root", |slot| slot.session_dispatch = true);
         let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("assistant")

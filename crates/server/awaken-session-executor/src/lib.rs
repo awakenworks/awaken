@@ -121,18 +121,22 @@ pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
 pub use crate::cache_volume::{
     CacheVolumeInitializer, CacheVolumeWarmup, SandboxCacheVolumeInitializer,
 };
+pub(crate) use crate::host::ApplicationPortBinding;
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::host::capability::{LocalResourcePorts, LocalSkillPorts};
 pub use crate::host::{
-    AttemptExecutorDecorator, CyclicPort, CyclicPortAlreadyBound, DispatchPoolSizing,
-    HostDependencies, HostProcess, HostResume, RemoteAttemptInstallation, SessionApplicationPorts,
-    SharedHost, remote_worker_placement, self_hosted_inference_holder,
+    AttemptExecutorDecorator, DispatchPoolSizing, HostDependencies, HostProcess, HostResume,
+    RemoteAttemptInstallation, SessionApplicationBindingError, SessionApplicationBindings,
+    SessionExecutionDependencies, SharedHost, remote_worker_placement,
+    self_hosted_inference_holder,
 };
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
 pub use crate::run_application_host::RunApplicationHost;
 use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialMaterializer};
-use awaken_resource_contract::{FileContentSource, RepositoryBindingVerifier};
+use awaken_resource_contract::FileContentSource;
+#[cfg(test)]
+use awaken_resource_contract::RepositoryBindingVerifier;
 // The root every composition selects its Session environment providers under.
 pub use crate::acp_backend::session_sandbox_base;
 pub use crate::commit_ingest::HostOperationCoordinatorResolver;
@@ -159,15 +163,6 @@ pub(crate) use managed_input_projection::{session_system_message, user_message};
 #[derive(Clone)]
 pub struct ManagedHost {
     host: Arc<SharedHost>,
-    credentials: Option<PinnedCredentialMaterializer>,
-    credential_refresh_factory: Option<Arc<dyn CredentialRefreshFactory>>,
-    platform_mcp_egress:
-        Option<Arc<dyn awaken_credential_materializer::PlatformMcpEgressProvisioner>>,
-    resource_validator: Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
-    repository_binding_verifier: Option<
-        Arc<dyn RepositoryBindingVerifier<awaken_dispatch_contract::ResourceOperationFence>>,
-    >,
-    mcp_realizer: Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
 }
 
 /// Composition failure for the one process-local Session coordination port.
@@ -179,6 +174,8 @@ pub enum AgentCoordinationInstallError {
     DispatchObservationUnavailable,
     #[error("Session dispatch observation source is already installed")]
     DispatchObservationAlreadyInstalled,
+    #[error("Session coordination application is unavailable at composition")]
+    ApplicationUnavailable,
 }
 
 #[async_trait::async_trait]
@@ -390,17 +387,6 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
         self.host
             .invalidate_session_realization_lease(thread, lease);
         Ok(())
-    }
-
-    fn install_environment_binding_sink(
-        &self,
-        sink: Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
-    ) {
-        *self
-            .host
-            .environment_binding_sink
-            .write()
-            .expect("environment binding sink lock poisoned") = Some(sink);
     }
 }
 

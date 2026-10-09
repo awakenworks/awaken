@@ -43,10 +43,13 @@ async fn live_dependencies() -> Option<(awaken_session_executor::HostDependencie
     ))
 }
 
-async fn live_host() -> Option<(SharedHost, String)> {
-    live_dependencies()
-        .await
-        .map(|(dependencies, model)| (SharedHost::from(dependencies), model))
+async fn live_host() -> Option<(Arc<SharedHost>, String)> {
+    live_dependencies().await.map(|(dependencies, model)| {
+        (
+            (dependencies).build().expect("validated Host dependencies"),
+            model,
+        )
+    })
 }
 
 fn user(text: &str) -> Vec<Message> {
@@ -282,11 +285,11 @@ async fn live_judge_grades_a_deliverable_as_a_configurable_agent() {
         .await
         .expect("set KIMI_API_KEY to run this test");
     // The judge is now an ordinary agent resolved by id; grade with a real one.
-    let host = SharedHost::from(
-        dependencies
-            .with_judge("judge")
-            .expect("live host model reference is an executable binding"),
-    );
+    let host = (dependencies
+        .with_judge("judge")
+        .expect("live host model reference is an executable binding"))
+    .build()
+    .expect("validated Host dependencies");
 
     let progress = host
         .define_outcome(
@@ -334,7 +337,9 @@ async fn live_compaction_summarizes_and_the_conversation_continues() {
         .await
         .expect("set KIMI_API_KEY to run this test");
     // Compact once history passes 4 messages, keeping the last 2 verbatim.
-    let host = SharedHost::from(dependencies.with_compaction_tokens(4, 2));
+    let host = (dependencies.with_compaction_tokens(4, 2))
+        .build()
+        .expect("validated Host dependencies");
 
     // Several short Runs to build history past the threshold.
     for i in 0..3 {

@@ -635,7 +635,7 @@ mod tests {
         //
         // This is the type-level half of the "registered but unconsumed"
         // guard: `of` is the only constructor, so a slot count that no manifest
-        // published cannot reach `with_worker_dispatch`, and `into_slots`
+        // published cannot reach the executable Worker constructor, and `into_slots`
         // consumes by value so a registration that is read but never installed
         // is a compiler diagnostic rather than a silent divergence.
         let mut manifest = manifest("capacity-worker", 0).manifest;

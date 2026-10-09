@@ -115,9 +115,9 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
     // | Rule | C1 | C2 Session | C3 | Effect |
     // | R1   | Y  | N          | Y  | E1     |
     // | R2   | Y  | Y          | Y  | E2     |
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
     let sink = Arc::new(BindingOrderSink {
         host: Arc::downgrade(&host),
         authorize_calls: AtomicUsize::new(0),
@@ -128,15 +128,7 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
         owned_session_id: None,
         committed_environment: None,
     });
-    install_test_dispatch_runtime(&host)
-        .realization()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "RealizationRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
-        .install_environment_binding_sink(sink.clone());
+    install_test_dispatch_runtime(&host).install_test_environment_binding_sink(sink.clone());
     let thread = "claimed-ordinary-environment-authority";
     host.session_slots.update(thread, |slot| {
         slot.dispatch_claim = Some(awaken_dispatch_contract::RunClaim {
@@ -185,9 +177,9 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
 
 #[tokio::test]
 async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use_it() {
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
     let sink = Arc::new(BindingOrderSink {
         host: Arc::downgrade(&host),
         authorize_calls: AtomicUsize::new(0),
@@ -198,15 +190,7 @@ async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use
         owned_session_id: None,
         committed_environment: None,
     });
-    install_test_dispatch_runtime(&host)
-        .realization()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "RealizationRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
-        .install_environment_binding_sink(sink.clone());
+    install_test_dispatch_runtime(&host).install_test_environment_binding_sink(sink.clone());
 
     let (left, right) = tokio::join!(
         host.ctx_for("binding-order", None),
@@ -228,20 +212,11 @@ async fn root_response_loss_is_read_back_without_recreating_the_environment() {
     // R2=R1+C4 retries the same idempotent persist, publishes the Store-read
     // identity with no second provider effect, and later context lookup is pure
     // slot reuse.
-    use awaken_session_execution_contract::SessionRuntime;
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
     let sink = Arc::new(ResponseLossBindingSink::default());
-    install_test_dispatch_runtime(&host)
-        .realization()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "RealizationRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
-        .install_environment_binding_sink(sink.clone());
+    install_test_dispatch_runtime(&host).install_test_environment_binding_sink(sink.clone());
 
     let first_error = match host.ctx_for("binding-response-loss", None).await {
         Err(error) => error,
@@ -302,14 +277,13 @@ async fn already_applied_create_adopts_under_the_existing_lifecycle_lock() {
     // or recursive lock acquisition; one idempotent Store read returns the
     // aggregate-generated Resident identity. The shared fixture owns
     // projection/spec/fence construction; this row varies only response loss.
-    use awaken_session_execution_contract::SessionRuntime;
     let storage = tempfile::tempdir().unwrap();
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_store_dir(storage.path())
-            .await,
-    ));
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_store_dir(storage.path())
+        .await)
+        .build()
+        .expect("validated Host dependencies");
     install_test_session_application(&host);
     let thread = "binding-already-applied";
     let activation =
@@ -336,15 +310,7 @@ async fn already_applied_create_adopts_under_the_existing_lifecycle_lock() {
         committed: std::sync::Mutex::new(Some((intent.effect_id().to_string(), binding.clone()))),
         ..Default::default()
     });
-    install_test_dispatch_runtime(&host)
-        .realization()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "RealizationRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
-        .install_environment_binding_sink(sink.clone());
+    install_test_dispatch_runtime(&host).install_test_environment_binding_sink(sink.clone());
 
     let context = tokio::time::timeout(
         std::time::Duration::from_secs(1),
@@ -382,7 +348,8 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     // require its stated effects, including each fail-closed outcome.
     // Cause/effect graph: C1 the Runtime authority is ephemeral or durable; C2
     // this process owns local execution or is coordinator-only. Effects: E1 one
-    // local pool drains accepted ordinary/background child Runs; E2 a
+    // local pool drains accepted ordinary/background child Runs from the exact
+    // authority queue (same Arc, no override); E2 a
     // coordinator-only process never starts a competing claimer. Durability is a
     // persistence axis, not an execution-placement gate: otherwise an ephemeral
     // Managed Session can persist a coordinated child in its authority queue with
@@ -393,9 +360,9 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     // | T1 | ephemeral | yes | E1 |
     // | T2 | durable injected | yes | E1 |
     // | T3 | durable injected | no | E2 |
-    let ephemeral = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
+    let ephemeral = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
     assert!(!ephemeral.deployment.durable, "T1 precondition");
     ephemeral.ensure_dispatch_pool();
     assert!(ephemeral.dispatch.dispatch_pool.get().is_some(), "T1/E1");
@@ -405,11 +372,22 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
             .await
             .unwrap(),
     );
-    let local = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_dispatch_store(local_store),
-    ));
+    let local = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_ephemeral_dispatch(local_store.clone()))
+    .build()
+    .expect("validated Host dependencies");
+    assert!(
+        Arc::ptr_eq(&local_store, &local.dispatch_store().unwrap()),
+        "T2 one selected queue"
+    );
+    assert!(
+        Arc::ptr_eq(
+            &local.dispatch_store().unwrap(),
+            &local.authority.dispatch_store().unwrap()
+        ),
+        "T2 Host reads the sole authority"
+    );
     assert!(local.runs_local_dispatch_pool(), "local");
     local.ensure_dispatch_pool();
     assert!(local.dispatch.dispatch_pool.get().is_some(), "T2/E1");
@@ -419,11 +397,15 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
             .await
             .unwrap(),
     );
-    let coordinator = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_coordinator_dispatch_store(coordinator_store),
-    ));
+    let coordinator = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_ephemeral_coordinator_dispatch(coordinator_store.clone()))
+    .build()
+    .expect("validated Host dependencies");
+    assert!(
+        Arc::ptr_eq(&coordinator_store, &coordinator.dispatch_store().unwrap()),
+        "T3 one selected queue"
+    );
     assert!(!coordinator.runs_local_dispatch_pool(), "coordinator");
     coordinator.ensure_dispatch_pool();
     assert!(coordinator.dispatch.dispatch_pool.get().is_none(), "T3/E2");
@@ -436,14 +418,15 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
     // Coordinator. Effects: R1 local Host retains C1 and reports it as the
     // unregistered branch; R2 Worker installs exactly C2 slots (including I/O
     // concurrency above CPU quota) and reports it as the registered branch; R3
-    // Coordinator owns no pool. Every capacity assertion observes the installed
+    // incompatible Coordinator-only graph is refused before any pool. Every capacity assertion observes the installed
     // pool or the installed sizing — never the manifest it came from.
     // The existing pool_memory concurrent-Run tests own slot/execution bounds;
     // this regression owns the production Host transport-to-capacity wiring.
     let default =
         std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::new(4).unwrap());
-    let local =
-        SharedHost::from(crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await);
+    let local = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
     assert_eq!(
         local.dispatch_pool_sizing(),
         crate::DispatchPoolSizing::LocalParallelism(default),
@@ -459,11 +442,31 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         let registered = awaken_dispatch_contract::RegisteredCapacity::of(&manifest)
             .expect("R2 non-zero registered capacity");
         let store = Arc::new(awaken_dispatch::MemoryDispatchStore::new(system_clock()));
-        let worker = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-                .await
-                .with_worker_dispatch(store, registered),
-        ));
+        let file: Arc<
+            dyn awaken_resource_contract::FileContentSource<
+                    awaken_dispatch_contract::ResourceOperationFence,
+                >,
+        > = Arc::new(awaken_resource_contract::UnavailableFileContentSource);
+        let memory: Arc<dyn awaken_resource_contract::MemoryRepository> = Arc::new(
+            awaken_memory_store::VolatileMemoryRepository::new(system_clock()),
+        );
+        let process = || crate::HostProcess {
+            local_workspace: SharedHost::mint_local_workspace(),
+            deployment: crate::DeploymentConfig::ephemeral(),
+            clock: system_clock(),
+        };
+        let worker = (crate::HostDependencies::for_worker(
+            Arc::new(OkModel),
+            "stub",
+            file.clone(),
+            memory.clone(),
+            process(),
+            crate::host::test_upstream_authority().with_dispatch_transport(store),
+            registered,
+        )
+        .unwrap())
+        .build()
+        .unwrap();
         worker.ensure_dispatch_pool();
         assert_eq!(
             worker.dispatch.dispatch_pool.get().unwrap().concurrency(),
@@ -478,21 +481,22 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
             "R2 registered branch"
         );
         let _local_fence = worker.begin_pool_drain().await;
-        let coordinator = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-                .await
-                .with_worker_dispatch(
-                    Arc::new(awaken_dispatch::MemoryDispatchStore::new(system_clock())),
-                    awaken_dispatch_contract::RegisteredCapacity::of(&manifest).expect("R3"),
-                )
-                .with_coordinator_dispatch_store(Arc::new(
-                    awaken_dispatch::open_sqlite_dispatch_store(":memory:", system_clock())
-                        .await
-                        .unwrap(),
-                )),
-        ));
-        coordinator.ensure_dispatch_pool();
-        assert!(coordinator.dispatch.dispatch_pool.get().is_none(), "R3");
+        let mut incompatible = crate::HostDependencies::for_worker(
+            Arc::new(OkModel),
+            "stub",
+            file,
+            memory,
+            process(),
+            crate::host::test_upstream_authority()
+                .with_dispatch_transport(worker.dispatch_store().unwrap()),
+            awaken_dispatch_contract::RegisteredCapacity::of(&manifest).unwrap(),
+        )
+        .unwrap();
+        incompatible.deployment.disable_local_pool = true;
+        assert!(
+            (incompatible).build().is_err(),
+            "R3 registered execution capacity cannot become a coordinator-only graph"
+        );
     }
     // A manifest that registers no capacity yields no installable registration:
     // the zero can never reach the installer as a silently clamped default.
@@ -511,9 +515,9 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
 /// created under the rejected lease.
 #[tokio::test]
 async fn recovered_environment_waits_for_replacement_realization_before_publish() {
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
     let sink = Arc::new(BindingOrderSink {
         host: Arc::downgrade(&host),
         authorize_calls: AtomicUsize::new(0),
@@ -524,15 +528,7 @@ async fn recovered_environment_waits_for_replacement_realization_before_publish(
         owned_session_id: None,
         committed_environment: None,
     });
-    install_test_dispatch_runtime(&host)
-        .realization()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "RealizationRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
-        .install_environment_binding_sink(sink.clone());
+    install_test_dispatch_runtime(&host).install_test_environment_binding_sink(sink.clone());
 
     let error = match host.ctx_for("binding-restart", None).await {
         Ok(_) => panic!("R1 missing realization reached provider I/O"),
@@ -568,23 +564,15 @@ async fn recovered_environment_waits_for_replacement_realization_before_publish(
 /// without reusing a substrate produced under an older epoch.
 #[tokio::test]
 async fn environment_binding_catches_up_across_multiple_realization_fences() {
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
     let sink = Arc::new(MovingRealizationFenceSink {
         authorize_calls: AtomicUsize::new(0),
         calls: AtomicUsize::new(0),
         accepted_epoch: AtomicU64::new(3),
     });
-    install_test_dispatch_runtime(&host)
-        .realization()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "RealizationRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
-        .install_environment_binding_sink(sink.clone());
+    install_test_dispatch_runtime(&host).install_test_environment_binding_sink(sink.clone());
 
     let first = match host.ctx_for("binding-moving-fence", None).await {
         Ok(_) => panic!("C1 reached provider I/O"),
@@ -635,9 +623,9 @@ async fn environment_binding_catches_up_across_multiple_realization_fences() {
 /// | B3 | present | absent | observe remote Run | env=None, preserve binding |
 #[tokio::test]
 async fn missing_durable_environment_adoption_is_deferred_only_for_coordination() {
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
     host.install_session_environment_owner_projection(
         "binding-corrupt",
         "workspace",
@@ -682,10 +670,9 @@ async fn binding_commit_failure_is_retryable_and_never_publishes_the_environment
     // fails before durable commit; C3 the caller retries. R1=C1+C2 retains one
     // hidden Candidate and returns Unavailable; R2=R1+C3 reuses that exact
     // Candidate, repeats only authorize/persist, and still publishes nothing.
-    use awaken_session_execution_contract::SessionRuntime;
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
     let sink = Arc::new(BindingOrderSink {
         host: Arc::downgrade(&host),
         authorize_calls: AtomicUsize::new(0),
@@ -696,15 +683,7 @@ async fn binding_commit_failure_is_retryable_and_never_publishes_the_environment
         owned_session_id: None,
         committed_environment: None,
     });
-    install_test_dispatch_runtime(&host)
-        .realization()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "RealizationRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
-        .install_environment_binding_sink(sink.clone());
+    install_test_dispatch_runtime(&host).install_test_environment_binding_sink(sink.clone());
 
     let error = match host.ctx_for("binding-failure", None).await {
         Ok(_) => panic!("binding failure must not publish a context"),
@@ -739,9 +718,9 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
     // never one sandbox per caller. Decision rule: release concurrent C1 and
     // require creation cardinality one plus shared identity.
     use awaken_session_configuration_contract::SessionInit;
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
     install_test_session_application(&host);
     let sink = Arc::new(BindingOrderSink {
         host: Arc::downgrade(&host),
@@ -754,15 +733,7 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
         committed_environment: None,
     });
     let managed = install_test_dispatch_runtime(&host);
-    managed
-        .realization()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "RealizationRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
-        .install_environment_binding_sink(sink.clone());
+    managed.install_test_environment_binding_sink(sink.clone());
     managed
         .install_complete_test_session(
             "deferred-hand",
@@ -815,9 +786,9 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
     // Constraint/Invariant: publication follows complete binding and cannot expose
     // a partial sandbox. Rules L5=C1=>E1+E2; L6=L5+C2=>E1+E2+E3.
     use awaken_session_configuration_contract::SessionInit;
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
     install_test_session_application(&host);
     let sink = Arc::new(BindingOrderSink {
         host: Arc::downgrade(&host),
@@ -830,15 +801,7 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
         committed_environment: None,
     });
     let managed = install_test_dispatch_runtime(&host);
-    managed
-        .realization()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "RealizationRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
-        .install_environment_binding_sink(sink.clone());
+    managed.install_test_environment_binding_sink(sink.clone());
     managed
         .install_complete_test_session(
             "deferred-failure",

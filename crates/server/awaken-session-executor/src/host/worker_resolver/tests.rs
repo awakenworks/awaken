@@ -79,11 +79,11 @@ async fn session_run_reservation_repair_skips_execution_realization() {
     assert!(claimed.session_activity_admission_required, "R1/E1");
 
     let storage = tempfile::tempdir().expect("storage");
-    let host = Arc::new(SharedHost::from(
-        adoption_dependencies_at(storage.path())
-            .await
-            .with_dispatch_store(store),
-    ));
+    let host = (adoption_dependencies_at(storage.path())
+        .await
+        .with_ephemeral_dispatch(store))
+    .build()
+    .expect("validated Host dependencies");
     HostWorkerResolver {
         host: Arc::downgrade(&host),
     }
@@ -116,7 +116,7 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
     // | E1 | ephemeral | direct | child != parent, C4 | E1+E2 |
     use awaken_dispatch::{DispatchQueue as _, WorkerResolver as _};
 
-    let host = Arc::new(adoption_host().await);
+    let host = adoption_host().await;
     let managed = managed_test_host(host.clone());
     let parent = awaken_agent_contract::agent::thread::Id("ephemeral-parent".into());
     let child = awaken_agent_contract::agent::thread::Id("ephemeral-child".into());
@@ -181,7 +181,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     // | R3 | durable | no | yes | E4 |
     use awaken_dispatch::{DispatchQueue as _, WorkerResolver as _};
 
-    let ephemeral = Arc::new(adoption_host().await);
+    let ephemeral = adoption_host().await;
     let ephemeral_managed = managed_test_host(ephemeral.clone());
     let session_id = "ephemeral-report-root";
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
@@ -286,11 +286,11 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
             .await
             .expect("R3 dispatch store"),
     );
-    let coordinator = Arc::new(SharedHost::from(
-        adoption_dependencies()
-            .await
-            .with_coordinator_dispatch_store(coordinator_store.clone()),
-    ));
+    let coordinator = (adoption_dependencies()
+        .await
+        .with_ephemeral_coordinator_dispatch(coordinator_store.clone()))
+    .build()
+    .expect("validated Host dependencies");
     let coordinator_thread = "coordinator-only-claimed-root";
     let coordinator_claim = claim(
         &coordinator_store,
@@ -429,8 +429,7 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
             .expect("missing dispatch store"),
     );
     let missing_host = adoption_host_over(missing_store.clone()).await;
-    let _missing_managed =
-        crate::ManagedHost::new(missing_host.clone()).install_dispatch_session_runtime();
+    let _missing_managed = crate::ManagedHost::new(missing_host.clone());
     let missing_resolver = HostWorkerResolver {
         host: Arc::downgrade(&missing_host),
     };
@@ -520,12 +519,12 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
             .await
             .expect("dispatch store"),
     );
-    let host = Arc::new(SharedHost::from(
-        adoption_dependencies()
-            .await
-            .with_dispatch_store(store.clone())
-            .with_agent_publications(Arc::new(catalog)),
-    ));
+    let host = (adoption_dependencies()
+        .await
+        .with_ephemeral_dispatch(store.clone())
+        .with_agent_publications(Arc::new(catalog)))
+    .build()
+    .expect("validated Host dependencies");
     let managed = managed_test_host(host.clone());
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &managed,
@@ -637,7 +636,6 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
 /// represent one attempted mutation plus its authoritative readback replay.
 #[tokio::test]
 async fn durable_deferred_sandbox_publication_decision_table() {
-    use awaken_session_execution_contract::SessionRuntime;
     use ingress::DispatchQueue;
 
     let now = awaken_time::system_clock().now().as_epoch_ms();
@@ -648,26 +646,18 @@ async fn durable_deferred_sandbox_publication_decision_table() {
             .await
             .expect("dispatch store"),
     );
-    let host = Arc::new(SharedHost::from(
-        adoption_dependencies_at(storage.path())
-            .await
-            .with_dispatch_store(store.clone()),
-    ));
+    let host = (adoption_dependencies_at(storage.path())
+        .await
+        .with_ephemeral_dispatch(store.clone()))
+    .build()
+    .expect("validated Host dependencies");
     let sink = Arc::new(ToggleBindingSink {
         fail: std::sync::atomic::AtomicBool::new(false),
         calls: AtomicUsize::new(0),
         binding: std::sync::Mutex::new(None),
     });
     let managed = prepare_deferred_session(host.clone(), "durable-lazy").await;
-    managed
-        .realization()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "RealizationRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
-        .install_environment_binding_sink(sink.clone());
+    managed.install_test_environment_binding_sink(sink.clone());
     let claimed = claim(&store, "durable-lazy", "run-lazy", "worker-a", now, &clock).await;
     let resolver = HostWorkerResolver {
         host: Arc::downgrade(&host),
@@ -724,26 +714,18 @@ async fn durable_deferred_sandbox_publication_decision_table() {
             .await
             .expect("loss dispatch store"),
     );
-    let loss_host = Arc::new(SharedHost::from(
-        adoption_dependencies_at(storage.path().join("response-loss"))
-            .await
-            .with_dispatch_store(loss_store.clone()),
-    ));
+    let loss_host = (adoption_dependencies_at(storage.path().join("response-loss"))
+        .await
+        .with_ephemeral_dispatch(loss_store.clone()))
+    .build()
+    .expect("validated Host dependencies");
     let loss_sink = Arc::new(ToggleBindingSink {
         fail: std::sync::atomic::AtomicBool::new(false),
         calls: AtomicUsize::new(0),
         binding: std::sync::Mutex::new(None),
     });
     let loss_managed = prepare_deferred_session(loss_host.clone(), "durable-loss").await;
-    loss_managed
-        .realization()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "RealizationRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
-        .install_environment_binding_sink(loss_sink.clone());
+    loss_managed.install_test_environment_binding_sink(loss_sink.clone());
     let loss_now = awaken_time::system_clock().now().as_epoch_ms();
     let loss_claim = claim(
         &loss_store,
@@ -830,7 +812,7 @@ struct RecordingSessionControl {
 struct RecordingMcpRealizer {
     calls: std::sync::Mutex<Vec<&'static str>>,
     fail_stage: std::sync::atomic::AtomicBool,
-    required_physical_environment: Option<(std::sync::Weak<SharedHost>, String)>,
+    required_physical_environment: std::sync::OnceLock<(std::sync::Weak<SharedHost>, String)>,
 }
 
 #[async_trait::async_trait]
@@ -841,7 +823,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRe
     ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, awaken_session_types::RunError>
     {
         self.calls.lock().unwrap().push("stage");
-        if let Some((host, thread)) = &self.required_physical_environment {
+        if let Some((host, thread)) = self.required_physical_environment.get() {
             let physical_only = host.upgrade().is_some_and(|host| {
                 host.session_slots
                     .read(thread, |slot| {
@@ -911,15 +893,22 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
             .await
             .expect("dispatch store"),
     );
-    let host = adoption_host_over(store.clone()).await;
     let thread = "cold-stdio-recovery";
-    let realizer = Arc::new(RecordingMcpRealizer {
-        required_physical_environment: Some((Arc::downgrade(&host), thread.into())),
-        ..Default::default()
-    });
-    let managed = complete_managed_test_host(
-        crate::ManagedHost::new(host.clone()).with_mcp_attachment_realizer(realizer.clone()),
-    );
+    let realizer = Arc::new(RecordingMcpRealizer::default());
+    let host = (adoption_dependencies()
+        .await
+        .with_ephemeral_dispatch(store.clone())
+        .with_session_execution(
+            crate::SessionExecutionDependencies::default()
+                .with_mcp_attachment_realizer(realizer.clone()),
+        ))
+    .build()
+    .unwrap();
+    realizer
+        .required_physical_environment
+        .set((Arc::downgrade(&host), thread.into()))
+        .unwrap();
+    let managed = complete_managed_test_host(crate::ManagedHost::new(host.clone()));
     let activation = test_activation(thread, "run-cold-stdio-recovery");
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &managed,
@@ -1201,28 +1190,25 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     let resume_calls = Arc::new(AtomicUsize::new(0));
     let continuations = Arc::new(std::sync::Mutex::new(Vec::new()));
     let projection = Arc::new(std::sync::Mutex::new(Some(ordinary_frozen_projection())));
-    let host = Arc::new(SharedHost::from(
-        adoption_dependencies()
-            .await
-            .with_dispatch_store(dispatch.clone())
-            .with_session_realization_control(Arc::new(RecordingSessionControl {
-                resume_calls: resume_calls.clone(),
-                continuations: continuations.clone(),
-                phases: Arc::new(std::sync::Mutex::new(Vec::new())),
-                projection: projection.clone(),
-                mcp_stage: None,
-                fail_begin: Arc::new(AtomicBool::new(false)),
-            })),
-    ));
+    let host = (adoption_dependencies()
+        .await
+        .with_ephemeral_dispatch(dispatch.clone())
+        .with_session_realization_control(Arc::new(RecordingSessionControl {
+            resume_calls: resume_calls.clone(),
+            continuations: continuations.clone(),
+            phases: Arc::new(std::sync::Mutex::new(Vec::new())),
+            projection: projection.clone(),
+            mcp_stage: None,
+            fail_begin: Arc::new(AtomicBool::new(false)),
+        })))
+    .build()
+    .expect("validated Host dependencies");
     let managed = managed_test_host(host.clone());
-    awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
-        &managed,
-        Arc::new(ToggleBindingSink {
-            fail: AtomicBool::new(false),
-            calls: AtomicUsize::new(0),
-            binding: std::sync::Mutex::new(None),
-        }),
-    );
+    managed.install_test_environment_binding_sink(Arc::new(ToggleBindingSink {
+        fail: AtomicBool::new(false),
+        calls: AtomicUsize::new(0),
+        binding: std::sync::Mutex::new(None),
+    }));
     dispatch
         .enqueue(with_empty_session_resources(
             ingress::RunDispatch::new(test_activation("ordinary-remote", "run-ordinary-remote"))
@@ -1408,19 +1394,19 @@ async fn claimed_resource_conflict_is_terminal_before_realization() {
         }
         let resume_calls = Arc::new(AtomicUsize::new(0));
         let phases = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let host = Arc::new(SharedHost::from(
-            adoption_dependencies()
-                .await
-                .with_dispatch_store(dispatch.clone())
-                .with_session_realization_control(Arc::new(RecordingSessionControl {
-                    resume_calls: resume_calls.clone(),
-                    continuations: Arc::new(std::sync::Mutex::new(Vec::new())),
-                    phases: phases.clone(),
-                    projection: Arc::new(std::sync::Mutex::new(Some(projection))),
-                    mcp_stage: None,
-                    fail_begin: Arc::new(AtomicBool::new(false)),
-                })),
-        ));
+        let host = (adoption_dependencies()
+            .await
+            .with_ephemeral_dispatch(dispatch.clone())
+            .with_session_realization_control(Arc::new(RecordingSessionControl {
+                resume_calls: resume_calls.clone(),
+                continuations: Arc::new(std::sync::Mutex::new(Vec::new())),
+                phases: phases.clone(),
+                projection: Arc::new(std::sync::Mutex::new(Some(projection))),
+                mcp_stage: None,
+                fail_begin: Arc::new(AtomicBool::new(false)),
+            })))
+        .build()
+        .expect("validated Host dependencies");
         dispatch
             .enqueue(with_empty_session_resources(
                 ingress::RunDispatch::new(test_activation("conflict", "conflict-run"))
@@ -1474,7 +1460,7 @@ async fn resource_manifest_must_match_the_durable_execution_scope() {
     // Constraint/Invariant: durable execution scope owns Resource tenancy.
     // Decision rule: exercise the unequal-scope partition and require E1/E2.
     let storage = tempfile::tempdir().expect("storage");
-    let host = Arc::new(adoption_host_at(storage.path()).await);
+    let host = adoption_host_at(storage.path()).await;
     let run = RunId("run-scope-mismatch".to_string());
     let request = ingress::RunDispatch::new(test_activation("thread-scope-mismatch", &run.0))
         .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
@@ -1527,7 +1513,7 @@ async fn malformed_resource_manifest_is_rejected_before_sandbox_creation() {
     // precedes every live effect. Decision rule: exercise malformed input and
     // require fail-closed zero creation.
     let storage = tempfile::tempdir().expect("storage");
-    let host = Arc::new(adoption_host_at(storage.path()).await);
+    let host = adoption_host_at(storage.path()).await;
     let run = RunId("run-malformed-resources".to_string());
     let request = ingress::RunDispatch::new(test_activation("thread-malformed-resources", &run.0))
         .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
@@ -1582,7 +1568,7 @@ async fn malformed_resource_manifest_is_rejected_before_sandbox_creation() {
 )]
 async fn live_file_replacement_requires_the_exact_resource_transition() {
     let storage = tempfile::tempdir().expect("storage");
-    let mut raw_host = adoption_host_at(storage.path()).await;
+    let mut raw_host = adoption_dependencies_at(storage.path()).await;
     // Cause/effect decision table. Causes: C1 the Session is physically empty;
     // C2 the complete Dispatch projection supplies the exact Empty->desired
     // transition; C3 a following desired-only manifest is exact/different; C4
@@ -1610,7 +1596,7 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
             std::time::Duration::ZERO,
         )
         .into_session_provider();
-    let host = Arc::new(raw_host);
+    let host = (raw_host).build().unwrap();
     let managed = managed_test_host(host.clone());
     let bytes = b"frozen worker input".to_vec();
     let file_id = host
@@ -1786,7 +1772,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
     // | R1 | rev1→rev1 | absent | exact rev1 | E1, active absent |
     // | R2 | rev1→rev2 | active rev1 | exact rev2 | E1, active rev1 |
     // | R3 | rev1→rev1 | absent | rev2 | E2 |
-    let host = Arc::new(adoption_host().await);
+    let host = adoption_host().await;
     let managed = managed_test_host(host.clone());
     let revision_one = awaken_session_resource_contract::SessionResourceManifest::at_revision(
         "workspace-a",
@@ -1927,7 +1913,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
 /// substitute for the aggregate transition.
 #[tokio::test]
 async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
-    let host = Arc::new(adoption_host().await);
+    let host = adoption_host().await;
     let managed = managed_test_host(host.clone());
     let claim = ingress::RunClaim {
         run_id: RunId("run-generation-fence".into()),
@@ -2043,8 +2029,8 @@ async fn complete_projection_resource_guard_excludes_desired_only_staging() {
     // | Rule | C1 | C2 | C3 | Effect |
     // | L1 | T | T | F | E1 |
     // | L2 | F | T | T | E2 |
-    let host = Arc::new(adoption_host().await);
-    let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    let host = adoption_host().await;
+    let _managed = crate::ManagedHost::new(host.clone());
     let thread = "resource-projection-guard";
     let manifest = awaken_session_resource_contract::SessionResourceManifest::new(
         host.local_workspace(),
@@ -2113,12 +2099,12 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
     // | P2 | none | T | T | T + C5 | E2+E3 |
     // | P3 | previous/desired | any | F | F | E4 |
     let storage = tempfile::tempdir().expect("Skill storage");
-    let host = Arc::new(SharedHost::from(
-        adoption_dependencies()
-            .await
-            .with_skill_store(storage.path().join("skills")),
-    ));
-    let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    let host = (adoption_dependencies()
+        .await
+        .with_skill_store(storage.path().join("skills")))
+    .build()
+    .expect("validated Host dependencies");
+    let _managed = crate::ManagedHost::new(host.clone());
     let skill = crate::host::tests::frozen_skill_version(
         "cold-recovery",
         "Cold recovery",
@@ -2291,12 +2277,12 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
         }
     }
 
-    let host = Arc::new(SharedHost::from(
-        adoption_dependencies()
-            .await
-            .with_file_content_source(Arc::new(ClaimFileSource)),
-    ));
-    let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    let host = (adoption_dependencies()
+        .await
+        .with_file_content_source(Arc::new(ClaimFileSource)))
+    .build()
+    .expect("validated Host dependencies");
+    let managed = crate::ManagedHost::new(host.clone());
     let manifest = awaken_session_resource_contract::SessionResourceManifest::new(
         "workspace-remote",
         awaken_session_resource_contract::ResolvedSessionResources::try_new(
@@ -2407,14 +2393,14 @@ async fn recovery_mode_controls_the_production_adoption_seam() {
     // aggregation must preserve these existing typed observations and effects.
     let storage = tempfile::tempdir().expect("storage");
     let thread = "thread-adoption";
-    let first = Arc::new(adoption_host_at(storage.path()).await);
+    let first = adoption_host_at(storage.path()).await;
     let projection = empty_frozen_projection(first.local_workspace(), eager_environment());
     let encoded = available_local_environment_binding(&first, thread, &projection).await;
     let handle: awaken_provisioning_contract::SandboxHandle =
         serde_json::from_str(&encoded).expect("A1 exact ready handle");
     drop(first);
 
-    let replacement = Arc::new(adoption_host_at(storage.path()).await);
+    let replacement = adoption_host_at(storage.path()).await;
     let _replacement_managed = managed_test_host(replacement.clone());
     replacement
         .install_frozen_session_projection(thread, projection, None, true, None)
@@ -2512,12 +2498,13 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
     let mut activation = test_activation(thread, "fixture-backend-owned-adoption");
     activation.snapshot.resolved_spec.model_binding = candidate;
 
-    let mut first = adoption_host_at(storage.path()).await;
+    let mut first = adoption_dependencies_at(storage.path()).await;
     first.env.backend_owned_session_provider = Some(
         crate::session_environment::SandboxEnvironmentProvider::workdir(&trusted_root)
             .into_session_provider(),
     );
-    let first = Arc::new(first);
+    let first = (first).build().unwrap();
+
     let projection = empty_frozen_projection_for_snapshot(
         first.local_workspace(),
         eager_environment(),
@@ -2536,12 +2523,13 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
         "A2 ordinary provider root cannot satisfy this handle"
     );
 
-    let mut replacement = adoption_host_at(storage.path()).await;
+    let mut replacement = adoption_dependencies_at(storage.path()).await;
     replacement.env.backend_owned_session_provider = Some(
         crate::session_environment::SandboxEnvironmentProvider::workdir(&trusted_root)
             .into_session_provider(),
     );
-    let replacement = Arc::new(replacement);
+    let replacement = (replacement).build().unwrap();
+
     let _replacement_managed = managed_test_host(replacement.clone());
     replacement
         .install_frozen_session_projection(thread, projection, None, true, None)
@@ -2578,7 +2566,7 @@ async fn a_resident_environment_is_reused_without_a_second_adoption() {
     // resident Environment; matching binding adoption reuses that exact owner.
     let storage = tempfile::tempdir().expect("storage");
     let thread = "thread-resident-adoption";
-    let host = Arc::new(adoption_host_at(storage.path()).await);
+    let host = adoption_host_at(storage.path()).await;
     let _managed = managed_test_host(host.clone());
     let ctx = host.ctx_for(thread, None).await.expect("resident session");
     let handle = ctx
@@ -2614,7 +2602,7 @@ async fn a_dead_resident_environment_fails_continuity_and_is_fenced_before_rebui
     // retained by continuity mode and discarded only by explicit rebuild.
     let storage = tempfile::tempdir().expect("storage");
     let thread = "thread-dead-resident";
-    let host = Arc::new(adoption_host_at(storage.path()).await);
+    let host = adoption_host_at(storage.path()).await;
     let _managed = managed_test_host(host.clone());
     let ctx = host.ctx_for(thread, None).await.expect("resident session");
     let handle = ctx
@@ -2676,7 +2664,7 @@ async fn a_stale_binding_cannot_evict_a_different_resident_environment() {
     // retain both the exact Environment owner and Runtime.
     let storage = tempfile::tempdir().expect("storage");
     let thread = "thread-binding-fence";
-    let host = Arc::new(adoption_host_at(storage.path()).await);
+    let host = adoption_host_at(storage.path()).await;
     let _managed = managed_test_host(host.clone());
     let ctx = host.ctx_for(thread, None).await.expect("resident session");
     let resident = ctx
@@ -2723,7 +2711,7 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
     // remains Resident. A legacy V1 fixture cannot prove C2 and is excluded.
     let storage = tempfile::tempdir().expect("storage");
     let thread = "thread-environment-aba";
-    let host = Arc::new(adoption_host_at(storage.path()).await);
+    let host = adoption_host_at(storage.path()).await;
     let _managed = managed_test_host(host.clone());
     let projection = empty_frozen_projection(host.local_workspace(), eager_environment());
     let binding = available_local_environment_binding(&host, thread, &projection).await;
@@ -2783,7 +2771,7 @@ async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
     // Constraint/Invariant: terminal control does not require execution
     // realization. Decision rule: exercise C1 and require control-only success.
     let storage = tempfile::tempdir().expect("storage");
-    let host = Arc::new(adoption_host_at(storage.path()).await);
+    let host = adoption_host_at(storage.path()).await;
     let thread = ThreadId("thread-control-only".to_string());
     let run = RunId("run-control-only".to_string());
     let fingerprint = CatalogFingerprint("control-only-catalog".to_string());
@@ -2871,28 +2859,25 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
                 .unwrap(),
         );
         let calls = Arc::new(AtomicUsize::new(0));
-        let host = Arc::new(SharedHost::from(
-            adoption_dependencies()
-                .await
-                .with_dispatch_store(dispatch.clone())
-                .with_session_realization_control(Arc::new(RecordingSessionControl {
-                    resume_calls: calls.clone(),
-                    continuations: Arc::new(std::sync::Mutex::new(Vec::new())),
-                    phases: Arc::new(std::sync::Mutex::new(Vec::new())),
-                    projection: Arc::new(std::sync::Mutex::new(Some(frozen.clone()))),
-                    mcp_stage: None,
-                    fail_begin: Arc::new(AtomicBool::new(false)),
-                })),
-        ));
+        let host = (adoption_dependencies()
+            .await
+            .with_ephemeral_dispatch(dispatch.clone())
+            .with_session_realization_control(Arc::new(RecordingSessionControl {
+                resume_calls: calls.clone(),
+                continuations: Arc::new(std::sync::Mutex::new(Vec::new())),
+                phases: Arc::new(std::sync::Mutex::new(Vec::new())),
+                projection: Arc::new(std::sync::Mutex::new(Some(frozen.clone()))),
+                mcp_stage: None,
+                fail_begin: Arc::new(AtomicBool::new(false)),
+            })))
+        .build()
+        .expect("validated Host dependencies");
         let managed = managed_test_host(host.clone());
-        awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
-            &managed,
-            Arc::new(ToggleBindingSink {
-                fail: AtomicBool::new(false),
-                calls: AtomicUsize::new(0),
-                binding: std::sync::Mutex::new(None),
-            }),
-        );
+        managed.install_test_environment_binding_sink(Arc::new(ToggleBindingSink {
+            fail: AtomicBool::new(false),
+            calls: AtomicUsize::new(0),
+            binding: std::sync::Mutex::new(None),
+        }));
         dispatch
             .enqueue(with_empty_session_resources(
                 ingress::RunDispatch::new(activation),
@@ -2969,7 +2954,7 @@ async fn outcome_projection_read_does_not_adopt_worker_owned_environment() {
         generation: None,
         idle_since_unix_ms: None,
     };
-    let host = Arc::new(adoption_host().await);
+    let host = adoption_host().await;
     let managed = managed_test_host(host.clone());
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &managed,

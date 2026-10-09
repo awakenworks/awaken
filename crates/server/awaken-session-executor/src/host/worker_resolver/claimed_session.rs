@@ -491,13 +491,13 @@ mod tests {
         // acquisition on the replacement Arc before publishing. No stale Arc
         // can lend authority to a newly created Session slot.
         for remove_slot in [false, true] {
-            let host = Arc::new(SharedHost::from(
-                crate::HostDependencies::ephemeral(
-                    Arc::new(crate::no_model::NoModelConfiguredExecutor),
-                    "stub",
-                )
-                .await,
-            ));
+            let host = (crate::HostDependencies::ephemeral(
+                Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                "stub",
+            )
+            .await)
+                .build()
+                .expect("validated Host dependencies");
             let old = awaken_dispatch_contract::RunClaim {
                 run_id: awaken_agent_contract::agent::run::Id("run".into()),
                 owner: "old".into(),

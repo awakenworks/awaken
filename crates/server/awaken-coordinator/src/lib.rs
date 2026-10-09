@@ -41,8 +41,8 @@ mod managed_lifecycle;
 pub mod mcp_export;
 pub use managed_application::install_managed_agent_coordination;
 pub use managed_lifecycle::{
-    ManagedLifecycleCompositionError, install_managed_lifecycle_delivery,
-    install_managed_lifecycle_delivery_with_deployments,
+    ManagedLifecycleCompositionError, PreparedManagedLifecycleDelivery,
+    prepare_managed_lifecycle_delivery,
 };
 mod runtime_authority;
 pub mod webhooks;
@@ -289,23 +289,6 @@ pub fn a2a_attempt_executor(
     }
 }
 
-/// An [`InferenceExecutorMaterializer`] mapping a model ref to a labeled executor, so a
-/// session bound to `fast`/`slow` resolves a distinct model — the R1/R2/R5 demo
-/// surface.
-#[cfg(feature = "test-support")]
-pub async fn mount(host: Arc<SharedHost>) -> Router {
-    // The webhook plane (ADR-0048) now lives in the management path
-    // (all-in-one process assembly): subscriptions are a config resource in the admin
-    // store and their secret is sealed in the vault, so a webhook needs the config
-    // plane. The plain mount has neither, so it wires no sink — a bare host emits no
-    // webhooks (identical to an unconfigured plane before).
-    let catalog = ephemeral_resource_registry(host.clock()).await;
-    let state = local_managed_state(host.clone(), catalog.clone()).await;
-    mount_with_managed_and_resource_registry_and_dreams(host, state, catalog, None)
-        .await
-        .0
-}
-
 /// A Scenario composition's Managed adapter together with the one Session
 /// application it narrows. The composition root that built the application
 /// hands it to every other consumer (the lifecycle supervisor, Worker
@@ -313,6 +296,7 @@ pub async fn mount(host: Arc<SharedHost>) -> Router {
 #[cfg(feature = "test-support")]
 #[derive(Clone)]
 pub struct ScenarioManagedState {
+    pub host: Arc<SharedHost>,
     pub managed: Arc<ManagedState>,
     pub sessions: Arc<awaken_session_application::SessionApplication>,
 }
@@ -324,10 +308,10 @@ pub struct ScenarioManagedState {
 /// unaware of principals, API keys, roles, or authorization policy.
 #[cfg(feature = "test-support")]
 pub async fn local_managed_state(
-    host: Arc<SharedHost>,
+    dependencies: HostDependencies,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
 ) -> ScenarioManagedState {
-    local_managed_state_over(host, catalog, None, None, None, None).await
+    local_managed_state_over(dependencies, catalog, None, None, None, None).await
 }
 
 /// Scenario variant with the same Session model-publication resolver used by
@@ -335,11 +319,11 @@ pub async fn local_managed_state(
 /// reference differs from the built-in Agent's deterministic default.
 #[cfg(feature = "test-support")]
 pub async fn local_managed_state_with_model_publication_resolver(
-    host: Arc<SharedHost>,
+    dependencies: HostDependencies,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
 ) -> ScenarioManagedState {
-    local_managed_state_over(host, catalog, None, None, Some(resolver), None).await
+    local_managed_state_over(dependencies, catalog, None, None, Some(resolver), None).await
 }
 
 /// Scenario variant that freezes both the immutable Agent publication and the
@@ -347,13 +331,13 @@ pub async fn local_managed_state_with_model_publication_resolver(
 /// resolver selects a candidate, while the Agent snapshot proves its backend.
 #[cfg(feature = "test-support")]
 pub async fn local_managed_state_with_agent_source_and_model_publication_resolver(
-    host: Arc<SharedHost>,
+    dependencies: HostDependencies,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
 ) -> ScenarioManagedState {
     local_managed_state_over(
-        host,
+        dependencies,
         catalog,
         None,
         Some(agent_source),
@@ -368,11 +352,11 @@ pub async fn local_managed_state_with_agent_source_and_model_publication_resolve
 /// a second authoring plane.
 #[cfg(feature = "test-support")]
 pub async fn local_managed_state_with_agent_source(
-    host: Arc<SharedHost>,
+    dependencies: HostDependencies,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
 ) -> ScenarioManagedState {
-    local_managed_state_over(host, catalog, None, Some(agent_source), None, None).await
+    local_managed_state_over(dependencies, catalog, None, Some(agent_source), None, None).await
 }
 
 /// [`local_managed_state_with_agent_source`] with the exact list-price
@@ -380,13 +364,13 @@ pub async fn local_managed_state_with_agent_source(
 /// installed before sharing, so callers never unwrap or mutate an `Arc`.
 #[cfg(feature = "test-support")]
 pub async fn local_managed_state_with_agent_source_and_list_prices(
-    host: Arc<SharedHost>,
+    dependencies: HostDependencies,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     list_prices: Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>,
 ) -> ScenarioManagedState {
     local_managed_state_over(
-        host,
+        dependencies,
         catalog,
         None,
         Some(agent_source),
@@ -402,24 +386,24 @@ pub async fn local_managed_state_with_agent_source_and_list_prices(
 /// registry that authored them.
 #[cfg(feature = "test-support")]
 pub async fn local_managed_state_with_environments(
-    host: Arc<SharedHost>,
+    dependencies: HostDependencies,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     environments: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
 ) -> ScenarioManagedState {
-    local_managed_state_over(host, catalog, Some(environments), None, None, None).await
+    local_managed_state_over(dependencies, catalog, Some(environments), None, None, None).await
 }
 
 /// Scenario/local variant that installs the same Agent projection
 /// Agent projection used by production before the Managed aggregate starts its supervisors.
 #[cfg(feature = "test-support")]
 pub async fn local_managed_state_with_environments_and_agent_source(
-    host: Arc<SharedHost>,
+    dependencies: HostDependencies,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     environments: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
 ) -> ScenarioManagedState {
     local_managed_state_over(
-        host,
+        dependencies,
         catalog,
         Some(environments),
         Some(agent_source),
@@ -452,7 +436,7 @@ fn volatile_environment_execution(
 
 #[cfg(feature = "test-support")]
 async fn local_managed_state_over(
-    host: Arc<SharedHost>,
+    dependencies: HostDependencies,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     environments: Option<
         Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
@@ -467,7 +451,7 @@ async fn local_managed_state_over(
 ) -> ScenarioManagedState {
     // The Session application runs on the Host's clock, so Session facts and
     // the dispatch they drive share one timeline.
-    let clock = host.clock();
+    let clock = dependencies.clock();
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let vaults = Arc::new(awaken_protocol_managed::VaultState::new(
@@ -480,7 +464,7 @@ async fn local_managed_state_over(
     // extraction repository over that file before construction. The two
     // application SPIs remain separate, while their local durability boundary
     // is shared at this process boundary.
-    let durable_session_repo = match host.storage_dir() {
+    let durable_session_repo = match dependencies.deployment_config().storage_dir.as_deref() {
         Some(root) => {
             std::fs::create_dir_all(root).expect("create durable session repository directory");
             Some(Arc::new(
@@ -503,6 +487,32 @@ async fn local_managed_state_over(
             ),
         };
 
+    let persistence =
+        awaken_session_application::SessionPersistence::new(session_repo, clock.clone());
+    let repository_bindings = Arc::new(
+        awaken_resource_application::RegistryRepositoryBindingVerifier::new(catalog.clone()),
+    );
+    let dependencies = dependencies
+        .with_session_execution(
+            awaken_session_executor::SessionExecutionDependencies::default()
+                .with_resource_validator(catalog.clone())
+                .with_repository_binding_verifier(repository_bindings),
+        )
+        .with_credential_materializer(
+            awaken_credential_materializer::PinnedCredentialMaterializer::new(
+                Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
+                    credentials,
+                    secrets,
+                    clock.clone(),
+                )),
+                clock.clone(),
+            ),
+        );
+
+    let host = (dependencies.with_environment_binding_sink(persistence.environment_binding_sink()))
+        .build()
+        .expect("validated Host dependencies");
+
     // Test/scenario startup must freeze the same topology fact as product
     // startup. Deriving placement from the canonical Host value eliminates
     // the former second path where ManagedState always selected LocalWorker even
@@ -515,35 +525,17 @@ async fn local_managed_state_over(
     let local_realization_owner = host.dispatch_owner().to_string();
     let environments =
         environments.unwrap_or_else(|| volatile_environment_execution(clock.clone()));
-    let repository_bindings = Arc::new(
-        awaken_resource_application::RegistryRepositoryBindingVerifier::new(catalog.clone()),
-    );
-    let runtime = ManagedHost::new(host.clone())
-        .with_resource_validator(catalog.clone())
-        .with_repository_binding_verifier(repository_bindings)
-        .with_credential_materializer(
-            awaken_credential_materializer::PinnedCredentialMaterializer::new(
-                Arc::new(awaken_credential_vault::VaultLocalMaterialAuthority::new(
-                    credentials,
-                    secrets,
-                    clock.clone(),
-                )),
-                clock.clone(),
-            ),
-        );
-    let runtime = runtime.install_dispatch_session_runtime();
-    let runtime = Arc::new(runtime);
+    let runtime = Arc::new(ManagedHost::new(host.clone()));
     let mut application = awaken_session_application::SessionApplication::new_with_configuration(
         runtime.clone(),
         runtime.clone(),
-        session_repo,
+        persistence,
         environments.clone(),
         awaken_session_application::SessionApplicationConfiguration {
             execution_placement,
             local_realization_owner,
             ..Default::default()
         },
-        clock,
     );
     application.set_credential_source(vaults.clone());
     application.set_credential_material_ingress(vaults);
@@ -561,6 +553,7 @@ async fn local_managed_state_over(
     install_managed_agent_coordination(&host, &runtime, &application)
         .expect("scenario Session coordination application binds once");
     ScenarioManagedState {
+        host,
         managed: Arc::new(ManagedState::from_application(
             application.clone(),
             environments,
@@ -630,19 +623,17 @@ async fn scenario_dream_process_store(
 }
 
 #[cfg(feature = "test-support")]
-fn with_scenario_session_lifecycle(
+async fn with_scenario_session_lifecycle(
     router: Router,
     managed_state: ScenarioManagedState,
     host: Arc<SharedHost>,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+    dreams: &Arc<awaken_dream_application::DreamApplication>,
 ) -> Router {
-    install_managed_lifecycle_delivery(
-        &managed_state.managed,
-        &managed_state.sessions,
-        None,
-        &lifecycle,
-    )
-    .expect("scenario Managed lifecycle delivery binds before traffic");
+    prepare_managed_lifecycle_delivery(&managed_state.managed, &managed_state.sessions, None, None)
+        .map(|prepared| prepared.start(&lifecycle))
+        .expect("scenario Managed lifecycle delivery binds before traffic");
+    coordinator_component::start_runtime_services(&host, dreams).await;
     coordinator_component::register_session_lifecycle(&lifecycle, managed_state.sessions);
     coordinator_component::register_runtime_background_drain(&lifecycle, host);
     // The Router owns the same process-lifecycle handle as the Scenario surface.
@@ -801,7 +792,7 @@ pub async fn mount_with_managed_and_application_access_and_models(
     let worker_skill_bundles = Arc::new(awaken_resource_application::StoreSkillBundleSource::new(
         host.skill_store().expect("test-support Skill store"),
     ));
-    let (managed, data, application, worker_private, _) = mount_with_managed_over_and_models(
+    let (managed, data, application, worker_private, dreams) = mount_with_managed_over_and_models(
         host,
         managed_state.managed,
         ApplicationAccessMount::Guarded(application_access),
@@ -839,7 +830,8 @@ pub async fn mount_with_managed_and_application_access_and_models(
         worker_private,
         remote_worker_required,
     );
-    with_scenario_session_lifecycle(public, supervised_state, lifecycle_host, lifecycle)
+    with_scenario_session_lifecycle(public, supervised_state, lifecycle_host, lifecycle, &dreams)
+        .await
 }
 
 /// Router-owned services that must move together into the managed data plane.
@@ -1264,7 +1256,14 @@ async fn mount_with_managed_over(
         remote_worker_required,
     );
     (
-        with_scenario_session_lifecycle(public, supervised_state, lifecycle_host, lifecycle),
+        with_scenario_session_lifecycle(
+            public,
+            supervised_state,
+            lifecycle_host,
+            lifecycle,
+            &dreams,
+        )
+        .await,
         dreams,
     )
 }
@@ -1361,17 +1360,6 @@ async fn mount_with_managed_over_and_models(
                 as Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>,
             None => source,
         });
-    // Spawn the process-level dispatch pool once when durable ingress is enabled
-    // (O2): it is the sole claimer of the shared queue and drives every session's
-    // runs. This is the single seam that owns an `Arc<SharedHost>`, which the pool's
-    // session resolver needs.
-    //
-    // A coordinator-only cell server (`DeploymentConfig::disable_local_pool=1`) skips its
-    // co-located pool so registered remote workers are the sole drainers, claiming
-    // and settling over the dispatch transport.
-    if host.runs_local_dispatch_pool() {
-        host.ensure_dispatch_pool();
-    }
     let dream_worker: Arc<dyn awaken_dream_application::DreamExecutor> =
         Arc::new(dream::BuiltInDreamAgent::new(
             session_application.clone(),
@@ -1441,7 +1429,6 @@ async fn mount_with_managed_over_and_models(
             sessions: session_application.clone(),
         }));
     }
-    dream_application.resume_incomplete().await;
     let dreams = awaken_protocol_managed::dreams_router(dream_application.clone());
     let resource_manifests = awaken_protocol_awaken::session_resource_manifest_router(
         awaken_protocol_managed::replace_resource_manifest,
@@ -1493,10 +1480,12 @@ async fn mount_with_managed_over_and_models(
     let background_runs: Arc<
         dyn awaken_session_application_contract::SessionRunBackgroundApplication,
     > = session_runs.clone();
-    host.session_application_ports()
-        .background_runs
-        .bind(Arc::downgrade(&background_runs))
+    host.session_application_bindings()
+        .bind_background_run_submission(background_runs.clone())
         .expect("Session background Run application binds once");
+    host.session_application_bindings()
+        .require_background_run_submission()
+        .expect("Session Run submission is connected before its routers are mounted");
     let admitted_runs: Arc<dyn RunApplication> = session_runs.clone();
     let ai_sdk = awaken_protocol_ai_sdk::router_with_owner_scope(session_runs.clone());
     let ag_ui = awaken_protocol_ag_ui::router_with_owner_scope(session_runs.clone());
@@ -1542,7 +1531,6 @@ async fn mount_with_managed_over_and_models(
         )
         .map_err(|error| WorkerTransportBuildError::Dispatch(error.to_string()))?;
     }
-    host.ensure_terminal_dispatch_reconciliation();
     // The durable-ingress operations surface (slice E): ADR-0009 follow-on verbs
     // (supersede / reconcile / manual quarantine + GC) over the same shared host.
     let durable_ops = awaken_dispatch_http::durable_ops_router_with_session_admission(

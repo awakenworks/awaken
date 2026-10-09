@@ -116,12 +116,12 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
     let any = Arc::new(AnyDispatchStore::from_dispatch(
         mem.clone() as Arc<dyn Dispatch>
     ));
-    let host = Arc::new(awaken_session_executor::SharedHost::from(
-        awaken_runtime_host_testkit::volatile_dependencies(Arc::new(OkModel), "stub")
-            .await
-            .with_dispatch_store(any),
-    ));
-    let _managed = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    let host = (awaken_runtime_host_testkit::volatile_dependencies(Arc::new(OkModel), "stub")
+        .await
+        .with_ephemeral_dispatch(any))
+    .build()
+    .expect("validated Host dependencies");
+    let _managed = ManagedHost::new(host.clone());
     let router = durable_ops_router(host, awaken_time::system_clock());
     let thread = "t-dur";
     let base = format!("/v1/durable/threads/{thread}");
@@ -270,11 +270,11 @@ async fn monitoring_reads_committed_dispatches_without_materializing_a_session()
     let any = Arc::new(AnyDispatchStore::from_dispatch(
         mem.clone() as Arc<dyn Dispatch>
     ));
-    let host = Arc::new(awaken_session_executor::SharedHost::from(
-        awaken_runtime_host_testkit::volatile_dependencies(Arc::new(OkModel), "stub")
-            .await
-            .with_dispatch_store(any),
-    ));
+    let host = (awaken_runtime_host_testkit::volatile_dependencies(Arc::new(OkModel), "stub")
+        .await
+        .with_ephemeral_dispatch(any))
+    .build()
+    .expect("validated Host dependencies");
     let thread = "cold-monitor";
     mem.enqueue(RunDispatch::new(activation("run-dead", thread)))
         .await
@@ -334,7 +334,7 @@ async fn every_dispatch_read_and_repair_verb_requires_the_one_durable_capability
      * C1=F,C2=repair=>E2. This prevents monitoring from becoming a parallel
      * authority/capability path. */
     let router = durable_ops_router(
-        Arc::new(awaken_runtime_host_testkit::volatile_host(Arc::new(OkModel), "stub").await),
+        awaken_runtime_host_testkit::volatile_host(Arc::new(OkModel), "stub").await,
         awaken_time::system_clock(),
     );
     for (method, path) in [

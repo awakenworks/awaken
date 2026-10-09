@@ -177,14 +177,16 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
     let application = awaken_session_application::SessionApplication::new_with_configuration(
         runtime.clone(),
         Arc::new(mcp_attachment::UnsupportedMcpAttachmentRealizer),
-        repo.clone(),
+        awaken_session_application::SessionPersistence::new(
+            repo.clone(),
+            awaken_time::system_clock(),
+        ),
         environments.clone(),
         awaken_session_application::SessionApplicationConfiguration {
             execution_placement:
                 awaken_session_application::SessionExecutionPlacement::RegisteredWorker,
             ..Default::default()
         },
-        awaken_time::system_clock(),
     );
     let state = ManagedState::from_application(Arc::new(application), environments);
     let created = state
@@ -1812,16 +1814,6 @@ impl awaken_session_execution_contract::RealizationRuntime for EndSessionFailer 
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
             .await
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Install the durable callback used at the exact sandbox creation boundary.
-    fn install_environment_binding_sink(
-        &self,
-        sink: std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
-    ) {
-        awaken_session_execution_contract::NeutralRuntime.install_environment_binding_sink(sink)
     }
 }
 

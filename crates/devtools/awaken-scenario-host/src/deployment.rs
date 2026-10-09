@@ -54,11 +54,14 @@ impl ScenarioPlatform {
     pub(crate) fn into_parts(
         self,
     ) -> (
-        SharedHost,
+        Arc<SharedHost>,
         awaken_resource_application::ResourcesApplication,
     ) {
         let (dependencies, resources) = self.into_dependencies();
-        (SharedHost::from(dependencies), resources)
+        (
+            (dependencies).build().expect("validated Host dependencies"),
+            resources,
+        )
     }
 
     /// Seed deterministic Managed-Agent Skill fixtures through the same
@@ -272,13 +275,18 @@ async fn resource_host_with_selected_runtime(
     let scenario_workspace = std::env::var("AWAKEN_SCENARIO_WORKSPACE")
         .ok()
         .filter(|workspace| !workspace.trim().is_empty());
+    let resource_ports =
+        awaken_runtime_host_testkit::local_resource_ports(&resources.authorities());
+    let authority =
+        select_scenario_runtime_authority(&deployment, resource_ports.clock.clone(), selected);
     let dependencies = HostDependencies::for_local_resources(
         llm,
         model_ref,
-        awaken_runtime_host_testkit::local_resource_ports(&resources.authorities()),
+        resource_ports,
         extraction_repository,
         scenario_workspace.unwrap_or(installation_workspace),
         deployment,
+        authority,
     )
     .with_file_application(
         resources.files(),
@@ -290,7 +298,6 @@ async fn resource_host_with_selected_runtime(
     // Plain deterministic fixtures keep the cheap Workdir adapter; Deployment
     // selection (`runtime_resource_host_with_deployment`) replaces it.
     let dependencies = awaken_execution_composition::with_workdir_fallback(dependencies);
-    let dependencies = bind_scenario_runtime_authority(dependencies, selected);
     ScenarioPlatform {
         dependencies,
         resources,
@@ -300,14 +307,14 @@ async fn resource_host_with_selected_runtime(
 /// Select one Runtime authority at the Scenario composition root. The binary
 /// installs its Coordinator-selected authority before any router is built;
 /// direct in-process fixture callers may select only the local volatile case.
-fn bind_scenario_runtime_authority(
-    dependencies: HostDependencies,
+fn select_scenario_runtime_authority(
+    deployment: &awaken_session_executor::DeploymentConfig,
+    clock: Arc<dyn awaken_time::WallClock>,
     selected: Option<&Arc<dyn awaken_session_executor::RuntimeAuthority>>,
-) -> HostDependencies {
+) -> Arc<dyn awaken_session_executor::RuntimeAuthority> {
     match selected {
-        Some(authority) => dependencies.with_runtime_authority(authority.clone()),
+        Some(authority) => authority.clone(),
         None => {
-            let deployment = dependencies.deployment_config();
             assert!(
                 !deployment.durable
                     && deployment.database_url.is_none()
@@ -316,7 +323,7 @@ fn bind_scenario_runtime_authority(
                     && deployment.wake == awaken_session_executor::Wake::None,
                 "durable or distributed Scenario Runtime requires an installed Coordinator authority"
             );
-            awaken_runtime_host_testkit::with_volatile_runtime_authority(dependencies)
+            awaken_runtime_host_testkit::volatile_runtime_authority(clock)
         }
     }
 }

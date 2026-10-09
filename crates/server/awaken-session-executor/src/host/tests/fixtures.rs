@@ -19,6 +19,23 @@ pub(crate) fn test_resource_validator()
     Arc::new(TestLiveResourceBindingVerifier)
 }
 
+pub(crate) fn test_resource_execution() -> crate::SessionExecutionDependencies {
+    let validator = test_resource_validator();
+    let repository = Arc::new(
+        awaken_resource_application::RegistryRepositoryBindingVerifier::new(validator.clone()),
+    );
+    crate::SessionExecutionDependencies::default()
+        .with_resource_validator(validator)
+        .with_repository_binding_verifier(repository)
+}
+
+/// Prepare the same fixture validation ports before Host publication.
+pub(crate) fn with_test_resource_validation(
+    dependencies: crate::HostDependencies,
+) -> crate::HostDependencies {
+    dependencies.with_session_execution(test_resource_execution())
+}
+
 #[async_trait::async_trait]
 impl awaken_resource_contract::LiveResourceBindingVerifier for TestLiveResourceBindingVerifier {
     async fn verify_memory_binding(
@@ -879,4 +896,58 @@ impl SharedHost {
         }
         provider
     }
+}
+
+/// Connection-selection probe shared by role construction and commit selection.
+/// Calling any effect is a test failure; presence is never remote authorization.
+pub(crate) struct SelectedOnly;
+
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::ClaimedRunCommit for SelectedOnly {
+    async fn commit(
+        &self,
+        _claim: &awaken_dispatch_contract::RunClaim,
+        _commit: awaken_agent_contract::thread::commit::staged::ThreadCommit,
+    ) -> Result<
+        awaken_agent_contract::thread::commit::staged::CommitRecord,
+        awaken_agent_contract::thread::commit::coordinator::Error,
+    > {
+        unreachable!("port selection never commits")
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::ClaimedStreamPublisher for SelectedOnly {
+    async fn publish(
+        &self,
+        _claim: &awaken_dispatch_contract::RunClaim,
+        _event: awaken_agent_contract::stream::event::Event,
+    ) -> Result<(), awaken_agent_contract::stream::sink::Error> {
+        unreachable!("port selection never publishes")
+    }
+}
+
+impl<C> awaken_resource_contract::MemoryMaterializationReferenceEncoder<C> for SelectedOnly {
+    fn encode(
+        &self,
+        _workspace: &str,
+        _store: &str,
+        _version: awaken_resource_contract::ConfigVersion,
+        _access: awaken_resource_contract::ResourceAccess,
+        _fence: &C,
+    ) -> Result<String, awaken_resource_contract::MemoryMaterializationReferenceError> {
+        unreachable!("port selection never materializes Memory")
+    }
+}
+
+pub(crate) fn test_upstream_authority() -> crate::UpstreamAuthority {
+    let ports = Arc::new(SelectedOnly);
+    crate::UpstreamAuthority::default()
+        .with_dispatch_transport(Arc::new(awaken_dispatch::MemoryDispatchStore::new(
+            awaken_time::system_clock(),
+        )))
+        .with_claimed_commit(ports.clone())
+        .with_stream_publisher(ports.clone())
+        .with_memory_reference_encoder(ports)
+        .with_terminal_cleanup_control(Arc::new(RemoteTerminalCleanupControl::default()))
 }

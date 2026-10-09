@@ -105,13 +105,15 @@ async fn pinned_reads_during_concurrent_first_hand_calls_do_not_join_sandbox_sta
     // subsequent physical reads equal the earlier immutable bytes. The gate
     // proves ordering; the timeout only detects a deadlock, not a latency SLO.
     let storage = tempfile::tempdir().unwrap();
-    let host = Arc::new(SharedHost::from(
+    let host = (crate::host::with_test_resource_validation(
         crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_skill_store(storage.path().join("skills"))
             .with_store_dir(storage.path())
             .await,
-    ));
+    ))
+    .build()
+    .expect("validated Host dependencies");
     let managed = managed_with_resource_source(host.clone());
     let version = frozen_skill_version(
         "race",
@@ -147,10 +149,7 @@ async fn pinned_reads_during_concurrent_first_hand_calls_do_not_join_sandbox_sta
         release: Default::default(),
         creates: AtomicUsize::new(0),
     });
-    managed
-        .realization()
-        .unwrap()
-        .install_environment_binding_sink(sink.clone());
+    managed.install_test_environment_binding_sink(sink.clone());
     let executor = Arc::new(crate::lazy_sandbox::DeferredSandboxExecutor::new(
         Arc::downgrade(&host),
         "skill-race",
@@ -221,13 +220,15 @@ async fn cold_resource_replacement_and_revocation_never_return_old_skill_bytes()
     // context. B3 replacement => only v2 bytes; B4 revocation => typed failure;
     // both => no Sandbox, no latest fallback, no physical manifest promotion.
     let storage = tempfile::tempdir().unwrap();
-    let host = Arc::new(SharedHost::from(
+    let host = (crate::host::with_test_resource_validation(
         crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_skill_store(storage.path().join("skills"))
             .with_store_dir(storage.path())
             .await,
-    ));
+    ))
+    .build()
+    .expect("validated Host dependencies");
     let managed = managed_with_resource_source(host.clone());
     let v1 = frozen_skill_version("change", "Change", "change", "OLD-SECRET", &[]);
     install_pinned_managed_skill_session(
@@ -332,13 +333,15 @@ async fn read_disabled_or_awaiting_permission_never_leaks_pinned_content() {
             requests: Mutex::default(),
             paths: vec![".skills/diagnosis/SKILL.md"],
         });
-        let host = Arc::new(SharedHost::from(
+        let host = (crate::host::with_test_resource_validation(
             crate::HostDependencies::ephemeral(model.clone(), "stub")
                 .await
                 .with_skill_store(storage.path().join("skills"))
                 .with_store_dir(storage.path())
                 .await,
-        ));
+        ))
+        .build()
+        .expect("validated Host dependencies");
         let managed = managed_with_resource_source(host.clone());
         let version = frozen_skill_version(
             "diagnosis",
@@ -440,13 +443,15 @@ async fn failed_skill_file_write_blocks_tools_and_repaired_pin_reuses_environmen
     // successful write or merely a cached hash mismatch. Repair changes the
     // authoritative pin; it never mutates bytes under an immutable v1 identity.
     let storage = tempfile::tempdir().unwrap();
-    let host = Arc::new(SharedHost::from(
+    let host = (crate::host::with_test_resource_validation(
         crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_skill_store(storage.path().join("skills"))
             .with_store_dir(storage.path())
             .await,
-    ));
+    ))
+    .build()
+    .expect("validated Host dependencies");
     let managed = managed_with_resource_source(host.clone());
     let bad_name = "a".repeat(4096);
     let v1 = frozen_skill_version(
@@ -568,13 +573,15 @@ async fn managed_on_tool_use_reads_instruction_and_reference_before_reply_withou
     // tool admission, message history and executor all participate.
     let storage = tempfile::tempdir().unwrap();
     let model = Arc::new(PinnedReadModel::default());
-    let host = Arc::new(SharedHost::from(
+    let host = (crate::host::with_test_resource_validation(
         crate::HostDependencies::ephemeral(model.clone(), "stub")
             .await
             .with_skill_store(storage.path().join("skills"))
             .with_store_dir(storage.path())
             .await,
-    ));
+    ))
+    .build()
+    .expect("validated Host dependencies");
     let managed = managed_with_resource_source(host.clone());
     let version = frozen_skill_version(
         "diagnosis",
@@ -657,13 +664,15 @@ async fn pinned_read_path_and_text_decision_table() {
     // P6 !C5 => InvalidArguments. Every row => no Sandbox and no physical
     // manifest promotion. Plain workspace reads are covered by L3/L11.
     let storage = tempfile::tempdir().unwrap();
-    let host = Arc::new(SharedHost::from(
+    let host = (crate::host::with_test_resource_validation(
         crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_skill_store(storage.path().join("skills"))
             .with_store_dir(storage.path())
             .await,
-    ));
+    ))
+    .build()
+    .expect("validated Host dependencies");
     let managed = managed_with_resource_source(host.clone());
     let mut version = frozen_skill_version(
         "files",
@@ -778,7 +787,7 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
     // Missing/corrupt Store bytes at admission use existing S2 registry tests.
     let storage = tempfile::tempdir().unwrap();
     let make_host = || async {
-        Arc::new(SharedHost::from(
+        (crate::host::with_test_resource_validation(
             crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
                 .await
                 .with_skill_store(storage.path().join("skills"))
@@ -786,6 +795,8 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
                 .await
                 .with_local_workspace("workspace-pinned-read"),
         ))
+        .build()
+        .expect("validated Host dependencies")
     };
     let original = make_host().await;
     let managed = managed_with_resource_source(original.clone());
@@ -902,13 +913,15 @@ async fn lazy_skill_installation_reloads_exact_bytes_and_reuses_environment() {
     // the same bound Environment, with no second creation. The process-local
     // projection is not authority and cannot replace persisted pinned bytes.
     let storage = tempfile::tempdir().unwrap();
-    let host = Arc::new(SharedHost::from(
+    let host = (crate::host::with_test_resource_validation(
         crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_skill_store(storage.path().join("skills"))
             .with_store_dir(storage.path())
             .await,
-    ));
+    ))
+    .build()
+    .expect("validated Host dependencies");
     let managed = managed_with_resource_source(host.clone());
     let version = frozen_skill_version(
         "retry",

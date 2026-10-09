@@ -1400,6 +1400,7 @@ impl WorkerNode {
         // Committed truth lives in the Coordinator: the Host reaches it only
         // through these claim-fenced transports.
         let authority = awaken_session_executor::UpstreamAuthority::default()
+            .with_dispatch_transport(dispatch)
             .with_claimed_commit(claimed_commit)
             .with_memory_reference_encoder(Arc::new(
                 awaken_resource_worker_http::HttpMemoryMaterializationReferenceEncoder,
@@ -1417,13 +1418,14 @@ impl WorkerNode {
                 clock: self.clock.clone(),
             },
             authority,
+            registered_capacity,
         )
+        .map_err(std::io::Error::other)?
         .with_auxiliary_sandboxes(awaken_execution_composition::local_auxiliary_sandboxes())
         .with_artifact_publisher(remote_artifacts)
         // Every execution topology installs the same Session MCP adapter.
         // Host permission grants and Environment-bound executors remain owners.
         .with_acp_tool_exporter(Arc::new(awaken_protocol_mcp::SessionToolExporter))
-        .with_worker_dispatch(dispatch, registered_capacity)
         .with_skill_bundle_source(remote_skills)
         .with_web_search_provider_registry(application.web_providers)
         .with_admin_tools(self.admin_tools);
@@ -1502,8 +1504,14 @@ impl WorkerNode {
             }
         }
 
+        let mut execution = awaken_session_executor::SessionExecutionDependencies::default()
+            .with_repository_binding_verifier(remote_repositories);
+        if let Some(realizer) = self.mcp_attachment_realizer {
+            execution = execution.with_mcp_attachment_realizer(realizer);
+        }
+        deps = deps.with_session_execution(execution);
         let authority = Arc::new(lifecycle::WorkerAuthorityProof::default());
-        let host = Arc::new(SharedHost::from(deps.with_execution_authority(authority.clone())));
+        let host = (deps.with_execution_authority(authority.clone())).build().map_err(std::io::Error::other)?;
         host.prepare_container_mcp_relay().await.map_err(|error| {
             std::io::Error::other(format!(
                 "container MCP relay transport failed before Ready: {error}"
@@ -1514,19 +1522,6 @@ impl WorkerNode {
             None => configured_container_acp_capability_source(&deployment, host.clone())
                 .map_err(std::io::Error::other)?,
         };
-        // Install one dispatch-facing Session adapter even when no Resource
-        // validator is present: MCP hot attachment commands have an independent
-        // lifecycle and must not be enabled accidentally by Resource wiring.
-        let mut managed = awaken_session_executor::ManagedHost::new(host.clone())
-            .with_repository_binding_verifier(remote_repositories);
-        if let Some(credentials) = managed_credential_materializer {
-            managed = managed.with_credential_materializer(credentials);
-        }
-        if let Some(realizer) = self.mcp_attachment_realizer {
-            managed = managed.with_mcp_attachment_realizer(realizer);
-        }
-        managed = managed.install_dispatch_session_runtime();
-        drop(managed);
         let observations = Arc::new(WorkerObservationCache::default());
         let lifecycle = Arc::new(WorkerSupervisor {
             authority,

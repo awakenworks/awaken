@@ -156,12 +156,12 @@ mod tests {
                 .await
                 .expect("dispatch store"),
         );
-        let host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
-                .await
-                .with_dispatch_store(store.clone()),
-        ));
-        let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+        let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+            .await
+            .with_ephemeral_dispatch(store.clone()))
+        .build()
+        .expect("validated Host dependencies");
+        let managed = crate::ManagedHost::new(host.clone());
         install_complete_projection_for_snapshot(
             &managed,
             parent_thread,

@@ -89,13 +89,13 @@ async fn conflicting_revocation_preserves_active_worker_relay_until_compatible_d
     let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
-    let host = SharedHost::from(
-        crate::HostDependencies::ephemeral(
-            Arc::new(crate::no_model::NoModelConfiguredExecutor),
-            "stub",
-        )
-        .await,
-    );
+    let host = (crate::HostDependencies::ephemeral(
+        Arc::new(crate::no_model::NoModelConfiguredExecutor),
+        "stub",
+    )
+    .await)
+        .build()
+        .expect("validated Host dependencies");
     host.install_test_resident_session_environment(thread, environment);
     let (relay, mcp_generation) = install_active_worker_relay(&host, thread).await;
     let route_before = relay.route_url(&mcp_generation).unwrap();
@@ -172,13 +172,13 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
     // terminal/revocation retry; E4 retain the open Route/fence and Active MCP
     // owner without an early drain. Rule R19/R20: C1+C2+C3+C4+C5=>E1+E2+E3+E4.
     let thread = "revocation-retains-retry-authority";
-    let host = SharedHost::from(
-        crate::HostDependencies::ephemeral(
-            Arc::new(crate::no_model::NoModelConfiguredExecutor),
-            "stub",
-        )
-        .await,
-    );
+    let host = (crate::HostDependencies::ephemeral(
+        Arc::new(crate::no_model::NoModelConfiguredExecutor),
+        "stub",
+    )
+    .await)
+        .build()
+        .expect("validated Host dependencies");
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("revocation-agent")
         .model(awaken_runtime_contract::resolved::ModelBinding::new(
             "provider", "model", "backend",
@@ -293,13 +293,13 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
-    let host = SharedHost::from(
-        crate::HostDependencies::ephemeral(
-            Arc::new(crate::no_model::NoModelConfiguredExecutor),
-            "stub",
-        )
-        .await,
-    );
+    let host = (crate::HostDependencies::ephemeral(
+        Arc::new(crate::no_model::NoModelConfiguredExecutor),
+        "stub",
+    )
+    .await)
+        .build()
+        .expect("validated Host dependencies");
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("revocation-agent")
         .model(awaken_runtime_contract::resolved::ModelBinding::new(
             "provider", "model", "backend",
@@ -408,7 +408,6 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
         AdoptionModel, BlockingBindingSink, eager_environment,
         empty_frozen_projection_for_snapshot, managed_test_host, test_activation,
     };
-    use awaken_session_execution_contract::SessionRuntime as _;
 
     // Cause/effect decision table: C1 a frozen provider adopts one durable
     // binding; C2 the Future is cancelled inside durable persistence after
@@ -434,24 +433,16 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
         &activation.snapshot,
     );
     projection.agent_publication = Some(activation.snapshot.clone());
-    let first = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
-            .await
-            .with_store_dir(storage.path())
-            .await,
-    ));
+    let first = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+        .await
+        .with_store_dir(storage.path())
+        .await)
+        .build()
+        .expect("validated Host dependencies");
     let first_managed = managed_test_host(first.clone());
     let first_sink = Arc::new(BlockingBindingSink::blocked());
     first_sink.unblock();
-    first_managed
-        .realization()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "RealizationRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
-        .install_environment_binding_sink(first_sink);
+    first_managed.install_test_environment_binding_sink(first_sink);
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
@@ -501,23 +492,15 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
     drop(first_managed);
     drop(first);
 
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
-            .await
-            .with_store_dir(storage.path())
-            .await,
-    ));
+    let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+        .await
+        .with_store_dir(storage.path())
+        .await)
+        .build()
+        .expect("validated Host dependencies");
     let managed = managed_test_host(host.clone());
     let sink = Arc::new(BlockingBindingSink::blocked());
-    managed
-        .realization()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "RealizationRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
-        .install_environment_binding_sink(sink.clone());
+    managed.install_test_environment_binding_sink(sink.clone());
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(

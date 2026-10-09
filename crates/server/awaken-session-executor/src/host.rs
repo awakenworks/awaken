@@ -106,8 +106,10 @@ where
 mod build;
 pub use build::HostProcess;
 mod dependencies;
+pub(crate) use dependencies::ApplicationPortBinding;
 pub use dependencies::{
-    CyclicPort, CyclicPortAlreadyBound, HostDependencies, SessionApplicationPorts,
+    HostDependencies, SessionApplicationBindingError, SessionApplicationBindings,
+    SessionExecutionDependencies,
 };
 pub(crate) mod capability;
 pub use capability::DispatchPoolSizing;
@@ -131,8 +133,9 @@ mod terminal_reconciliation;
 mod tests;
 #[cfg(test)]
 pub(crate) use tests::fixtures::{
-    MemoryHostModel, RemoteTerminalCleanupControl, test_resource_validator,
-    with_test_memory_mounter,
+    MemoryHostModel, RemoteTerminalCleanupControl, SelectedOnly, test_resource_execution,
+    test_resource_validator, test_upstream_authority, with_test_memory_mounter,
+    with_test_resource_validation,
 };
 mod types;
 mod worker_resolver;
@@ -226,6 +229,7 @@ pub struct SharedHost {
     /// Injected into the pool as its `CompletionSink` and into each local Session
     /// worker as its `StreamSink`.
     pub(crate) completion: Arc<CompletionRegistry>,
+    pub(crate) session_execution: dependencies::SessionExecutionDependencies,
     pub(crate) environment_binding_sink: std::sync::RwLock<
         Option<Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>,
     >,
@@ -251,5 +255,5 @@ pub struct SharedHost {
     /// Content capture (ADR-0050): sink, deployment ceiling, consent source.
     pub(crate) capture: capability::ContentCaptureCapability,
     /// The edges back into the Session application built over this Host.
-    pub(crate) session_application: SessionApplicationPorts,
+    pub(crate) session_application: SessionApplicationBindings,
 }

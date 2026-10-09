@@ -1,24 +1,19 @@
 // @formal entrypoint worker_drain.bounded_cleanup_eventually_exits_without_fabricating_quiescence
 // @formal entrypoint worker_drain.grace_expiry_retains_cancellation_observer
-//! DISPATCH capability of [`SharedHost`]: the durable queue transport, the
+//! DISPATCH capability of [`SharedHost`]: the selected authority queue, the
 //! one process-level [`DispatchPool`], the coordinator-side terminal
 //! reconciliation, and the weak Session-application edges the pool's Workers
 //! call back into.
 
 use crate::host::*;
 
-/// Durable dispatch wiring owned by one [`SharedHost`]. Consumer: every
+/// Dispatch views, sizing and pool owned by one [`SharedHost`]. Consumer: every
 /// admission, pool, drain, and terminal-reconciliation path of the Host.
 pub(crate) struct DispatchCapability {
-    /// Explicit Worker-side dispatch transport. Coordinator processes leave this empty
-    /// and resolve the configured durable backend; Workers inject their HTTP
-    /// transport here so no process-global compatibility slot becomes a second
-    /// dispatch authority.
-    pub(crate) dispatch_store_override: Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>>,
     /// Cold-Worker adapter over the configured Session Runtime. It owns only weak
     /// host wiring plus Resource/credential SPIs, so installing it cannot create
     /// an `Arc<SharedHost>` cycle or a second Vault/materialization path.
-    pub(crate) dispatch_session_runtime: std::sync::RwLock<Option<crate::DispatchSessionRuntime>>,
+    pub(crate) dispatch_session_runtime: crate::DispatchSessionRuntime,
     /// The process-level dispatch pool (O2), spawned once by `mount` when durable
     /// ingress is enabled. It is the sole claimer of the one shared queue and drives
     /// every session's runs by routing each claimed run back to the worker that owns
@@ -40,8 +35,6 @@ pub(crate) struct DispatchCapability {
 /// Host exists. Consumer: [`crate::HostDependencies`], which turns it into the
 /// Host's [`DispatchCapability`].
 pub(crate) struct DispatchSelection {
-    /// See [`DispatchCapability::dispatch_store_override`].
-    pub(crate) dispatch_store_override: Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>>,
     /// See [`DispatchCapability::dispatch_pool_sizing`].
     pub(crate) dispatch_pool_sizing: DispatchPoolSizing,
 }
@@ -51,7 +44,6 @@ impl Default for DispatchSelection {
     /// the sizing.
     fn default() -> Self {
         Self {
-            dispatch_store_override: None,
             dispatch_pool_sizing: DispatchPoolSizing::local_parallelism(),
         }
     }
@@ -59,10 +51,12 @@ impl Default for DispatchSelection {
 
 impl DispatchCapability {
     /// The selected transport and sizing, with no pool yet: `mount` spawns it.
-    pub(in crate::host) fn new(selection: DispatchSelection) -> Self {
+    pub(in crate::host) fn new(
+        selection: DispatchSelection,
+        host: std::sync::Weak<SharedHost>,
+    ) -> Self {
         Self {
-            dispatch_store_override: selection.dispatch_store_override,
-            dispatch_session_runtime: std::sync::RwLock::new(None),
+            dispatch_session_runtime: crate::DispatchSessionRuntime { host },
             dispatch_pool: std::sync::OnceLock::new(),
             dispatch_pool_sizing: selection.dispatch_pool_sizing,
             terminal_reconciliation: Default::default(),
@@ -80,7 +74,7 @@ impl DispatchCapability {
 /// because both numbers had the same type. Now the CPU guess is a named branch
 /// that only an unregistered composition produces, and [`Registered`] is
 /// reachable only by moving a [`RegisteredCapacity`] into
-/// [`crate::HostDependencies::with_worker_dispatch`].
+/// [`crate::HostDependencies::for_worker`].
 ///
 /// [`Registered`]: DispatchPoolSizing::Registered
 /// [`RegisteredCapacity`]: awaken_dispatch_contract::RegisteredCapacity
@@ -139,10 +133,7 @@ impl SharedHost {
     pub(crate) fn optional_dispatch_store(
         &self,
     ) -> Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>> {
-        self.dispatch
-            .dispatch_store_override
-            .clone()
-            .or_else(|| self.authority.durable_dispatch_store())
+        self.authority.dispatch_store()
     }
 
     /// Whether this process owns a co-located dispatch pool. Process startup uses
