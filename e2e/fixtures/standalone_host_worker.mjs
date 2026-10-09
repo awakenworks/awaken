@@ -155,18 +155,26 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
     assert.ok(!logs().includes(workerSigning.secret_base64), 'request signer is not logged');
   };
   const waitReady = async () => {
-    const row = await waitForValue(async () => {
+    // W1 cause/effect table: old embedded lease still live + exact standalone
+    // Ready => wait; expired old lease + exact standalone Ready as the sole ACP
+    // claimer => admit; a renewed embedded/foreign ACP claimer or missing new
+    // Worker => bounded failure. The read is one Registry projection, and no
+    // fixture writes or deletes a Worker row to make this condition true.
+    const observation = await waitForValue(async () => {
       if (supervised) assert.notEqual(supervised.status().ActiveState, 'failed', logs());
       else assert.ok(worker.exitCode === null && worker.signalCode === null,
         `production Worker exited during registration: ${output}`);
-      return current();
-    }, (value) => value?.generation > generation && exactAvailable(value),
-    'W1 fresh exact standalone Worker incarnation and material capability', { timeoutMs: 120_000 });
-    generation = row.generation;
-    const eligible = rows().filter((value) => value.state === 'ready' && value.expires_at_ms > Date.now()
-      && JSON.parse(value.manifest_json).capabilities.includes(runtime === 'native' ? 'native-runtime' : `acp:${runtime}`));
-    assert.deepEqual(eligible.map((value) => value.worker_id), [workerId],
-      'W1 no embedded ACP Worker can satisfy the resource mission');
+      const currentRows = rows();
+      const row = currentRows.find((value) => value.worker_id === workerId);
+      const eligibleWorkerIds = currentRows.filter((value) => value.state === 'ready'
+        && value.expires_at_ms > Date.now()
+        && JSON.parse(value.manifest_json).capabilities.includes(runtime === 'native' ? 'native-runtime' : `acp:${runtime}`))
+        .map((value) => value.worker_id);
+      return { generation: row?.generation, available: exactAvailable(row), eligibleWorkerIds };
+    }, (value) => value.generation > generation && value.available
+      && value.eligibleWorkerIds.length === 1 && value.eligibleWorkerIds[0] === workerId,
+    'W1 fresh exact standalone Worker is the sole eligible ACP claimer', { timeoutMs: 120_000 });
+    generation = observation.generation;
     assertCustody();
   };
   const launch = async () => {
