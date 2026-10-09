@@ -66,7 +66,6 @@ awaken-session-state-contract = { path = "crates/contract/awaken-session-state-c
 awaken-session-budget-contract = { path = "crates/contract/awaken-session-budget-contract" }
 awaken-session-dream-contract = { path = "crates/contract/awaken-session-dream-contract" }
 awaken-session-event-contract = { path = "crates/contract/awaken-session-event-contract" }
-awaken-session-work-contract = { path = "crates/contract/awaken-session-work-contract" }
 awaken-session-application = { path = "crates/server/awaken-session-application" }
 awaken-managed-session-events = { path = "crates/server/awaken-managed-session-events" }
 awaken-session-realization-driver = { path = "crates/server/awaken-session-realization-driver" }
@@ -195,7 +194,6 @@ awaken-sandbox-container = { path = "crates/worker/awaken-sandbox-container" }
 awaken-execution-composition = { path = "crates/worker/awaken-execution-composition" }
 awaken-runtime-examples = { path = "crates/devtools/awaken-runtime-examples" }
 awaken-dispatch-contract = { path = "crates/contract/awaken-dispatch-contract" }
-awaken-run-ingress-application-contract = { path = "crates/contract/awaken-run-ingress-application-contract" }
 awaken-dispatch-erasure = { path = "crates/shared/awaken-dispatch-erasure" }
 awaken-dispatch-execution = { path = "crates/shared/awaken-dispatch-execution" }
 awaken-dispatch = { path = "crates/server/awaken-dispatch", default-features = false }

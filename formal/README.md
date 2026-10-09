@@ -39,7 +39,7 @@ The named harnesses in the strict gate invoke production pure functions directly
     exactly terminal truth.
 - `awaken-session-execution-contract`: awaiting outcomes cannot be terminal or failed;
   - ended outcomes carry the only failure authority and no pending tool.
-- `awaken-session-work-contract`: only queued WorkQueue items are claimable;
+- `awaken-worker-contract` (Session work): only queued WorkQueue items are claimable;
   - only active WorkQueue items accept lease extension;
   - Work mutations require a present row, exact owner/epoch authority, and the
     matching command condition through one kernel used by all three backends;

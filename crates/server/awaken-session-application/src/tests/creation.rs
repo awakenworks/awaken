@@ -526,7 +526,7 @@ impl SessionEnvironmentSource for AdmissionEnvironment {
         &self,
         _environment_id: &str,
         _session_id: &str,
-    ) -> Result<String, awaken_session_work_contract::WorkQueueError> {
+    ) -> Result<String, awaken_worker_contract::WorkQueueError> {
         unreachable!("local admission does not dispatch WorkQueue work")
     }
 
@@ -534,7 +534,7 @@ impl SessionEnvironmentSource for AdmissionEnvironment {
         &self,
         _environment_id: &str,
         _session_id: &str,
-    ) -> Result<String, awaken_session_work_contract::WorkQueueError> {
+    ) -> Result<String, awaken_worker_contract::WorkQueueError> {
         unreachable!("local admission does not wake WorkQueue work")
     }
 
@@ -542,10 +542,8 @@ impl SessionEnvironmentSource for AdmissionEnvironment {
         &self,
         _environment_id: &str,
         _session_id: &str,
-    ) -> Result<
-        Option<awaken_session_work_contract::WorkItem>,
-        awaken_session_work_contract::WorkQueueError,
-    > {
+    ) -> Result<Option<awaken_worker_contract::WorkItem>, awaken_worker_contract::WorkQueueError>
+    {
         unreachable!("local admission does not retire WorkQueue work")
     }
 
@@ -556,8 +554,8 @@ impl SessionEnvironmentSource for AdmissionEnvironment {
         _worker_owner: &str,
         _now_ms: u64,
     ) -> Result<
-        Option<awaken_session_work_contract::SessionWorkLease>,
-        awaken_session_work_contract::WorkQueueError,
+        Option<awaken_worker_contract::SessionWorkLease>,
+        awaken_worker_contract::WorkQueueError,
     > {
         Ok(None)
     }

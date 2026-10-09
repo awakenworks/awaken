@@ -4623,9 +4623,9 @@ impl SessionEnvironmentSource for RecordingEnvironmentSource {
         &self,
         _environment_id: &str,
         session_id: &str,
-    ) -> Result<String, awaken_session_work_contract::WorkQueueError> {
+    ) -> Result<String, awaken_worker_contract::WorkQueueError> {
         if self.failures.lock().unwrap().contains(session_id) {
-            return Err(awaken_session_work_contract::WorkQueueError::Storage(
+            return Err(awaken_worker_contract::WorkQueueError::Storage(
                 format!("injected failure for {session_id}").into(),
             ));
         }
@@ -4641,7 +4641,7 @@ impl SessionEnvironmentSource for RecordingEnvironmentSource {
         &self,
         _environment_id: &str,
         session_id: &str,
-    ) -> Result<String, awaken_session_work_contract::WorkQueueError> {
+    ) -> Result<String, awaken_worker_contract::WorkQueueError> {
         self.awakened.lock().unwrap().insert(session_id.to_string());
         Ok(format!("work:{session_id}"))
     }
@@ -4650,10 +4650,8 @@ impl SessionEnvironmentSource for RecordingEnvironmentSource {
         &self,
         _environment_id: &str,
         session_id: &str,
-    ) -> Result<
-        Option<awaken_session_work_contract::WorkItem>,
-        awaken_session_work_contract::WorkQueueError,
-    > {
+    ) -> Result<Option<awaken_worker_contract::WorkItem>, awaken_worker_contract::WorkQueueError>
+    {
         self.retired.lock().unwrap().push(session_id.to_string());
         Ok(None)
     }
@@ -4665,11 +4663,11 @@ impl SessionEnvironmentSource for RecordingEnvironmentSource {
         worker_owner: &str,
         now_ms: u64,
     ) -> Result<
-        Option<awaken_session_work_contract::SessionWorkLease>,
-        awaken_session_work_contract::WorkQueueError,
+        Option<awaken_worker_contract::SessionWorkLease>,
+        awaken_worker_contract::WorkQueueError,
     > {
         Ok(self.awakened.lock().unwrap().contains(session_id).then(|| {
-            awaken_session_work_contract::SessionWorkLease::granted(
+            awaken_worker_contract::SessionWorkLease::granted(
                 format!("work:{session_id}"),
                 environment_id,
                 SessionId::from(session_id),

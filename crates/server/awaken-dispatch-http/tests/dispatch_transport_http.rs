@@ -275,20 +275,18 @@ enum WorkMode {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_work_contract::SessionWorkLeaseAuthority for RecordingSessionWork {
+impl awaken_worker_contract::SessionWorkLeaseAuthority for RecordingSessionWork {
     async fn acquire_session_work(
         &self,
         session_id: &awaken_session_types::SessionId,
         worker_owner: &str,
         now_ms: u64,
-        _acquisition: awaken_session_work_contract::SessionWorkAcquisition,
-    ) -> Result<
-        awaken_session_work_contract::SessionWorkOwnership,
-        awaken_session_work_contract::WorkQueueError,
-    > {
+        _acquisition: awaken_worker_contract::SessionWorkAcquisition,
+    ) -> Result<awaken_worker_contract::SessionWorkOwnership, awaken_worker_contract::WorkQueueError>
+    {
         self.acquisitions.fetch_add(1, Ordering::SeqCst);
         if self.unavailable.load(Ordering::SeqCst) {
-            return Err(awaken_session_work_contract::WorkQueueError::Storage(
+            return Err(awaken_worker_contract::WorkQueueError::Storage(
                 "injected Work authority outage".into(),
             ));
         }
@@ -296,10 +294,10 @@ impl awaken_session_work_contract::SessionWorkLeaseAuthority for RecordingSessio
         let foreign = matches!(mode, WorkMode::Foreign)
             || self.foreign_session.lock().unwrap().as_deref() == Some(session_id.as_str());
         if matches!(mode, WorkMode::Retired) {
-            return Ok(awaken_session_work_contract::SessionWorkOwnership::Unowned);
+            return Ok(awaken_worker_contract::SessionWorkOwnership::Unowned);
         }
-        Ok(awaken_session_work_contract::SessionWorkOwnership::Leased(
-            awaken_session_work_contract::SessionWorkLease::from_persisted(
+        Ok(awaken_worker_contract::SessionWorkOwnership::Leased(
+            awaken_worker_contract::SessionWorkLease::from_persisted(
                 format!("work-{session_id}"),
                 "env",
                 session_id.clone(),
@@ -317,15 +315,15 @@ impl awaken_session_work_contract::SessionWorkLeaseAuthority for RecordingSessio
 
     async fn release_session_work(
         &self,
-        _lease: &awaken_session_work_contract::SessionWorkLease,
-    ) -> Result<bool, awaken_session_work_contract::WorkQueueError> {
+        _lease: &awaken_worker_contract::SessionWorkLease,
+    ) -> Result<bool, awaken_worker_contract::WorkQueueError> {
         self.releases.fetch_add(1, Ordering::SeqCst);
         let mut mode = self.mode.lock().unwrap();
         match *mode {
             WorkMode::ReleaseRace => Ok(false),
             WorkMode::ReleaseResponseLost => {
                 *mode = WorkMode::Retired;
-                Err(awaken_session_work_contract::WorkQueueError::Storage(
+                Err(awaken_worker_contract::WorkQueueError::Storage(
                     "release committed but its response was lost".into(),
                 ))
             }
@@ -337,7 +335,7 @@ impl awaken_session_work_contract::SessionWorkLeaseAuthority for RecordingSessio
     async fn release_worker_session_work(
         &self,
         _worker_owner: &str,
-    ) -> Result<usize, awaken_session_work_contract::WorkQueueError> {
+    ) -> Result<usize, awaken_worker_contract::WorkQueueError> {
         Ok(0)
     }
 }

@@ -84,7 +84,6 @@ awaken-session-application-contract.workspace = true
 awaken-session-repository-contract.workspace = true
 awaken-session-budget-contract.workspace = true
 awaken-session-dream-contract.workspace = true
-awaken-session-work-contract.workspace = true
 awaken-environment-contract.workspace = true
 awaken-service-auth-contract = { workspace = true }
 awaken-session-application.workspace = true

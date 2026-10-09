@@ -512,7 +512,6 @@ dependencies = [
  "awaken-session-state-contract",
  "awaken-session-store",
  "awaken-session-types",
- "awaken-session-work-contract",
  "awaken-sql-storage",
  "awaken-sqlite-pool",
  "awaken-store-inmem",
@@ -696,7 +695,6 @@ dependencies = [
  "awaken-session-repository-contract",
  "awaken-session-resource-contract",
  "awaken-session-state-contract",
- "awaken-session-work-contract",
  "awaken-skill-store",
  "awaken-tenancy",
  "awaken-time",
@@ -862,9 +860,9 @@ dependencies = [
  "awaken-session-resource-contract",
  "awaken-session-state-contract",
  "awaken-session-types",
- "awaken-session-work-contract",
  "awaken-store-inmem",
  "awaken-time",
+ "awaken-worker-contract",
  "awaken-worker-transport-security",
  "axum",
  "reqwest 0.12.28",
@@ -1062,7 +1060,6 @@ dependencies = [
  "awaken-lease-testkit",
  "awaken-observability",
  "awaken-reliability-testkit",
- "awaken-run-ingress-application-contract",
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
@@ -1104,7 +1101,6 @@ dependencies = [
  "awaken-session-realization-contract",
  "awaken-session-resource-contract",
  "awaken-session-state-contract",
- "awaken-session-work-contract",
  "awaken-tenancy",
  "awaken-time",
  "awaken-worker-contract",
@@ -1141,7 +1137,6 @@ dependencies = [
  "awaken-lease-contract",
  "awaken-lease-testkit",
  "awaken-observability",
- "awaken-run-ingress-application-contract",
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-session-execution-contract",
@@ -1185,12 +1180,12 @@ dependencies = [
  "awaken-session-resource-contract",
  "awaken-session-state-contract",
  "awaken-session-types",
- "awaken-session-work-contract",
  "awaken-skill-store",
  "awaken-store-inmem",
  "awaken-store-postgres",
  "awaken-tenancy",
  "awaken-time",
+ "awaken-worker-contract",
  "awaken-worker-registry",
  "awaken-worker-transport-security",
  "axum",
@@ -1310,9 +1305,9 @@ dependencies = [
  "awaken-session-configuration-contract",
  "awaken-session-mcp-contract",
  "awaken-session-types",
- "awaken-session-work-contract",
  "awaken-time",
  "awaken-work-store",
+ "awaken-worker-contract",
  "base64 0.22.1",
  "serde_json",
  "sha2 0.10.9",
@@ -2120,12 +2115,12 @@ dependencies = [
  "awaken-session-state-contract",
  "awaken-session-store",
  "awaken-session-types",
- "awaken-session-work-contract",
  "awaken-skill-store",
  "awaken-tenancy",
  "awaken-time",
  "awaken-tool-contract",
  "awaken-work-store",
+ "awaken-worker-contract",
  "axum",
  "base64 0.22.1",
  "chrono",
@@ -2164,9 +2159,9 @@ dependencies = [
  "awaken-session-execution-contract",
  "awaken-session-repository-contract",
  "awaken-session-store",
- "awaken-session-work-contract",
  "awaken-time",
  "awaken-work-store",
+ "awaken-worker-contract",
 ]
 
 [[package]]
@@ -2414,15 +2409,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "awaken-run-ingress-application-contract"
-version = "1.0.0"
-dependencies = [
- "async-trait",
- "awaken-agent-contract",
- "thiserror",
 ]
 
 [[package]]
@@ -2841,7 +2827,6 @@ dependencies = [
  "awaken-session-state-contract",
  "awaken-session-store",
  "awaken-session-types",
- "awaken-session-work-contract",
  "awaken-time",
  "awaken-worker-contract",
  "awaken-worker-registry",
@@ -3039,7 +3024,6 @@ dependencies = [
  "awaken-resource-contract",
  "awaken-resource-store",
  "awaken-run-executor-acp",
- "awaken-run-ingress-application-contract",
  "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-sandbox-container",
@@ -3062,13 +3046,13 @@ dependencies = [
  "awaken-session-state-contract",
  "awaken-session-store",
  "awaken-session-types",
- "awaken-session-work-contract",
  "awaken-skill-store",
  "awaken-store-inmem",
  "awaken-store-sqlite",
  "awaken-tenancy",
  "awaken-time",
  "awaken-tool-contract",
+ "awaken-worker-contract",
  "awaken-worker-registry",
  "axum",
  "base64 0.22.1",
@@ -3289,22 +3273,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "awaken-session-work-contract"
-version = "1.0.0"
-dependencies = [
- "async-trait",
- "awaken-agent-contract",
- "awaken-lease-contract",
- "awaken-session-types",
- "awaken-time",
- "proptest",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
-]
-
-[[package]]
 name = "awaken-skill-store"
 version = "1.0.0"
 dependencies = [
@@ -3365,7 +3333,6 @@ dependencies = [
  "awaken-session-resource-contract",
  "awaken-session-state-contract",
  "awaken-session-types",
- "awaken-session-work-contract",
  "awaken-time",
  "awaken-worker-contract",
  "serde_json",
@@ -3560,11 +3527,11 @@ dependencies = [
  "awaken-reliability-testkit",
  "awaken-scoped-migration",
  "awaken-session-types",
- "awaken-session-work-contract",
  "awaken-sql-storage",
  "awaken-sqlite-pool",
  "awaken-store-conformance",
  "awaken-time",
+ "awaken-worker-contract",
  "loom",
  "proptest",
  "serde_json",
@@ -3636,14 +3603,19 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-acp-contract",
+ "awaken-agent-contract",
  "awaken-credential-contract",
+ "awaken-lease-contract",
  "awaken-provisioning-contract",
+ "awaken-session-types",
+ "awaken-time",
  "awaken-tool-contract",
  "proptest",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

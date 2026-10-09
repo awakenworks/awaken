@@ -26,7 +26,7 @@ thiserror.workspace = true
 # The WorkQueue port + its neutral vocabulary this crate implements a durable backend
 # for (SQLite embedded / Postgres distributed, at parity).
 awaken-session-types.workspace = true
-awaken-session-work-contract.workspace = true
+awaken-worker-contract.workspace = true
 awaken-sqlite-pool.workspace = true
 awaken-sql-storage = { workspace = true, features = ["postgres"] }
 async-trait.workspace = true

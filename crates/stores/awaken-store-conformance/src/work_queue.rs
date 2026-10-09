@@ -14,17 +14,17 @@
 
 use awaken_lease_testkit::ManualClock;
 use awaken_session_types::SessionId;
-use awaken_session_work_contract::{
-    HeartbeatCondition, HeartbeatResult, LeaseHeartbeat, WorkMutationResult, WorkQueue, WorkState,
-};
 use awaken_time::WallClock;
 use awaken_time::utc::epoch_millis_to_rfc3339;
+use awaken_worker_contract::{
+    HeartbeatCondition, HeartbeatResult, LeaseHeartbeat, WorkMutationResult, WorkQueue, WorkState,
+};
 use std::sync::Arc;
 
 /// Fixture digest for Session access assertions: a deterministic 64-hex value.
 #[must_use]
-pub fn session_access_digest(seed: u64) -> awaken_session_work_contract::SessionAccessDigest {
-    awaken_session_work_contract::SessionAccessDigest::from_hex(format!("{seed:064x}"))
+pub fn session_access_digest(seed: u64) -> awaken_worker_contract::SessionAccessDigest {
+    awaken_worker_contract::SessionAccessDigest::from_hex(format!("{seed:064x}"))
         .expect("fixture digest is hex")
 }
 
@@ -456,7 +456,7 @@ pub async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &
         WorkState::Active,
         "L6/E2 successor remains authoritative"
     );
-    let projection = |work: &awaken_session_work_contract::WorkItem| {
+    let projection = |work: &awaken_worker_contract::WorkItem| {
         (
             work.id.clone(),
             work.environment_id.clone(),
@@ -472,7 +472,7 @@ pub async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &
     };
     let active = q.get("env", &id).await.unwrap().unwrap();
     let with = |work: &str, environment: &str, session: &str, owner: &str, epoch: u64| {
-        awaken_session_work_contract::SessionWorkLease::from_persisted(
+        awaken_worker_contract::SessionWorkLease::from_persisted(
             work,
             environment,
             SessionId::from(session),
@@ -761,7 +761,7 @@ pub async fn observation_timestamps_are_the_injected_clock<Q: WorkQueue>(
     assert_eq!(listed.len(), 3, "R1 fixture");
     for item in &listed {
         let expected = match &item.data {
-            awaken_session_work_contract::WorkPayload::Session { id } if id == &second => LATER,
+            awaken_worker_contract::WorkPayload::Session { id } if id == &second => LATER,
             _ => ACCEPTED,
         };
         assert_eq!(
@@ -884,9 +884,7 @@ pub async fn run_suite<Q: WorkQueue, F: std::future::Future<Output = Q>>(
 pub mod session_access {
     //! The portable capability/metadata sequence formerly covered only PostgreSQL.
     use super::session_access_digest;
-    use awaken_session_work_contract::{
-        HeartbeatResult, LeaseHeartbeat, WorkMutationResult, WorkQueue,
-    };
+    use awaken_worker_contract::{HeartbeatResult, LeaseHeartbeat, WorkMutationResult, WorkQueue};
     use std::collections::BTreeMap;
 
     /// Cause/effect sequence: queued healthcheck + two Sessions => FIFO/cap; an

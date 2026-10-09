@@ -60,7 +60,7 @@ pub struct RecoveryRequest {
     /// revalidated against the canonical WorkQueue before committed Thread
     /// state is read.
     #[serde(default)]
-    pub session_work_authority: Option<awaken_session_work_contract::SessionWorkAuthorityReceipt>,
+    pub session_work_authority: Option<awaken_worker_contract::SessionWorkAuthorityReceipt>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

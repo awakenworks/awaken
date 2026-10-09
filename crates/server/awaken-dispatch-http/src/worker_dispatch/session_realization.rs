@@ -9,7 +9,7 @@ pub(super) struct SessionResumeReq {
     claim: RunClaim,
     identity: WorkerIdentity,
     session_id: String,
-    session_work_authority: Option<awaken_session_work_contract::SessionWorkAuthorityReceipt>,
+    session_work_authority: Option<awaken_worker_contract::SessionWorkAuthorityReceipt>,
     continuation: Option<awaken_session_resource_contract::SessionRealizationLease>,
 }
 
@@ -386,7 +386,7 @@ pub(super) async fn session_resume(
             &awaken_session_types::SessionId::from(&request.session_id),
             &request.identity.lease_owner(),
             authority.now_ms,
-            awaken_session_work_contract::SessionWorkAcquisition::RealizationRenewal,
+            awaken_worker_contract::SessionWorkAcquisition::RealizationRenewal,
         )
         .await
         .map_err(RealizationHttpError::from)?;
@@ -634,7 +634,7 @@ async fn verify_session_realization_authority(
         session_id,
         &identity.lease_owner(),
         authority.now_ms,
-        awaken_session_work_contract::SessionWorkAcquisition::RealizationRenewal,
+        awaken_worker_contract::SessionWorkAcquisition::RealizationRenewal,
     )
     .await?;
     Ok(())
@@ -645,7 +645,7 @@ async fn acquire_session_work_owner(
     session_id: &str,
     worker_owner: &str,
     now_ms: u64,
-    acquisition: awaken_session_work_contract::SessionWorkAcquisition,
+    acquisition: awaken_worker_contract::SessionWorkAcquisition,
 ) -> Result<(), RealizationHttpError> {
     let ownership = session_work_ownership(
         service,
@@ -670,8 +670,8 @@ async fn session_work_ownership(
     session_id: &awaken_session_types::SessionId,
     worker_owner: &str,
     now_ms: u64,
-    acquisition: awaken_session_work_contract::SessionWorkAcquisition,
-) -> Result<awaken_session_work_contract::SessionWorkOwnership, HostError> {
+    acquisition: awaken_worker_contract::SessionWorkAcquisition,
+) -> Result<awaken_worker_contract::SessionWorkOwnership, HostError> {
     let authority = service
         .session_work
         .as_ref()
@@ -761,7 +761,7 @@ pub(super) async fn renew_session_realization(
             &command.session_id,
             &request.identity.lease_owner(),
             authority.now_ms,
-            awaken_session_work_contract::SessionWorkAcquisition::RealizationRenewal,
+            awaken_worker_contract::SessionWorkAcquisition::RealizationRenewal,
         )
         .await
         .map_err(RealizationHttpError::from)?;
@@ -772,13 +772,13 @@ pub(super) async fn renew_session_realization(
             // authority. Preserve the typed lifecycle result so the Worker
             // quietly revokes only its stale process-local projection.
             let failure = match ownership {
-                awaken_session_work_contract::SessionWorkOwnership::Unowned => {
+                awaken_worker_contract::SessionWorkOwnership::Unowned => {
                     awaken_session_realization_contract::SessionRealizationControlFailure::Retired
                 }
-                awaken_session_work_contract::SessionWorkOwnership::Leased(_) => {
+                awaken_worker_contract::SessionWorkOwnership::Leased(_) => {
                     awaken_session_realization_contract::SessionRealizationControlFailure::StaleOwnership
                 }
-                awaken_session_work_contract::SessionWorkOwnership::NotRequired => {
+                awaken_worker_contract::SessionWorkOwnership::NotRequired => {
                     awaken_session_realization_contract::SessionRealizationControlFailure::NotReady
                 }
             };

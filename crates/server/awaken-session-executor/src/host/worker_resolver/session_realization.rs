@@ -563,9 +563,7 @@ mod tests {
             &self,
             _claim: &awaken_dispatch_contract::RunClaim,
             _session_id: &str,
-            _session_work_authority: Option<
-                &awaken_session_work_contract::SessionWorkAuthorityReceipt,
-            >,
+            _session_work_authority: Option<&awaken_worker_contract::SessionWorkAuthorityReceipt>,
             _continuation: Option<&awaken_session_resource_contract::SessionRealizationLease>,
         ) -> Result<
             Option<awaken_session_realization_contract::SessionRealizationDirective>,

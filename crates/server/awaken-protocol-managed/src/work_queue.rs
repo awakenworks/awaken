@@ -2,13 +2,13 @@
 // @formal surface obligation=work.terminal_lease_clear
 // @formal reason: Projects the neutral WorkQueue claim and its one-time Session bearer into the official
 // @formal reason: wire shape without owning lease or token state.
-//! The environment work-queue port now lives in `awaken-session-work-contract` (a
+//! The environment work-queue port now lives in `awaken-worker-contract` (a
 //! contract/ leaf); this module consumes it and owns the neutral→wire projection
 //! (`WorkItem` → the Anthropic `BetaSelfHostedWork`), the one place the wire shape is
 //! named.
 
-use awaken_session_work_contract::WorkState as DomainWorkState;
-pub(crate) use awaken_session_work_contract::*;
+use awaken_worker_contract::WorkState as DomainWorkState;
+pub(crate) use awaken_worker_contract::*;
 
 use crate::types::environment::{Work, WorkData, WorkObjectType, WorkState as WireWorkState};
 

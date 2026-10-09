@@ -20,7 +20,7 @@ pub use awaken_protocol_managed::ManagedState;
 use awaken_provisioning_contract::SandboxExecutionPolicyStore;
 use awaken_session_repository_contract::SessionStore;
 use awaken_session_execution_contract::{CompleteSessionRuntime, McpAttachmentRealizer};
-use awaken_session_work_contract::WorkQueue;
+use awaken_worker_contract::WorkQueue;
 
 /// A fresh in-memory durable Session repository.
 #[must_use]

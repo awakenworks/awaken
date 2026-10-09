@@ -19,7 +19,6 @@ awaken-tool-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-dispatch-contract = { workspace = true }
-awaken-run-ingress-application-contract.workspace = true
 awaken-dispatch-erasure.workspace = true
 awaken-dispatch-execution.workspace = true
 awaken-session-execution-contract.workspace = true

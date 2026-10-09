@@ -52,7 +52,7 @@ TARGET_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
     "awaken-session-configuration-contract": ("Session", ("awaken-session-resource-contract",
                                                           "awaken-session-mcp-contract")),
     "awaken-session-application-contract": ("Session", ()),
-    "awaken-session-execution-contract": ("Session", ("awaken-run-ingress-application-contract",)),
+    "awaken-session-execution-contract": ("Session", ()),
     "awaken-session-realization-contract": ("Session", ("awaken-session-environment-contract",)),
     "awaken-deployment-contract": ("Deployment", ()),
     "awaken-dispatch-contract": ("Dispatch", ()),
@@ -63,7 +63,7 @@ TARGET_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
     "awaken-agent-channel": ("Environment and Worker", ()),
     "awaken-sandbox-control": ("Environment and Worker", ()),
     "awaken-provisioning-contract": ("Environment and Worker", ("awaken-container-contract",)),
-    "awaken-worker-contract": ("Environment and Worker", ("awaken-session-work-contract",)),
+    "awaken-worker-contract": ("Environment and Worker", ()),
     "awaken-credential-contract": ("Access and resources", ()),
     "awaken-tenancy": ("Access and resources", ()),
     "awaken-service-auth-contract": ("Access and resources", ()),
@@ -215,7 +215,7 @@ def selftest() -> None:
     | T1   | contract crate is a target or merges into one                         | accept |
     | T2   | contract crate on neither side of the map                             | error |
     | T3   | crate listed as merging no longer exists                              | error: remove it |
-    | T4   | the map holds 26 targets, `awaken-session-contract` its only new name | holds |
+    | T4   | the map holds 26 targets, `awaken-session-contract` its only new name, at most 12 pending merges | holds |
     | O1   | trait method / inherent method returns `Option<&dyn R>` / `Option<Arc<dyn R>>` | counted as Owner::method |
     | O2   | the same in an `impl Trait for T` block; `Option<&T>`; `Option<Box<dyn R>>` | not counted |
     | B1   | `pub trait` without a method (bundle, marker, associated items only)  | counted |
@@ -228,7 +228,8 @@ def selftest() -> None:
     assert "not on the target map" in target_map_errors({"t", "old", "new"}, pending)[0], "T2"
     assert "remove it from TARGET_MAP" in target_map_errors({"t"}, pending)[0], "T3"
     merging = [crate for _boundary, merged in TARGET_MAP.values() for crate in merged]
-    assert len(TARGET_MAP) == 26 and len(merging) == len(set(merging)) == 12, "T4"
+    # Plan 9.14 listed 12 pending merges; each landed merge removes its entry.
+    assert len(TARGET_MAP) == 26 and len(merging) == len(set(merging)) <= 12, "T4"
     code = (
         "pub trait Session: Send {\n"
         "    fn realization(&self) -> Option<&dyn Realization> { None }\n"

@@ -15,13 +15,13 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use awaken_session_work_contract::{
+use awaken_time::WallClock;
+use awaken_worker_contract::{
     HeartbeatResult, LeaseHeartbeat, LeaseReceipt, QueueStats, SessionAccessDigest,
     SessionWorkLease, SessionWorkReleaseAdmission, WorkClaim, WorkItem, WorkLeaseMutationAdmission,
     WorkMutationResult, WorkPayload, WorkQueue, WorkQueueError, WorkSessionAccess, WorkState,
     session_work_release_admission, work_lease_mutation_admission,
 };
-use awaken_time::WallClock;
 
 use super::{LEASE_TTL_MS, LeaseBook, heartbeat_at};
 use awaken_time::WallClockExt;

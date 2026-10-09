@@ -4,11 +4,11 @@
 // @formal evidence session_execution.one_physical_attempt_per_thread
 //! Protocol-neutral application ports used by Coordinator HTTP adapters.
 
-pub use awaken_run_ingress_application_contract::{
-    ApplicationError, ApplicationErrorKind, ClaimedOperationCoordinatorResolver,
-    DurableDispatchStatus, DurableRunOperations, DurableSupersedeResult,
-};
 use awaken_dispatch_contract::ControlDispatchQueue;
+pub use awaken_session_execution_contract::{
+    ApplicationError, ApplicationErrorKind, DurableDispatchStatus, DurableRunOperations,
+    DurableSupersedeResult,
+};
 use std::sync::Arc;
 
 use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
@@ -651,6 +651,18 @@ async fn persisted_worker_exit(
         unreachable!()
     };
     Ok(Some(exit))
+}
+
+/// Select the existing physical commit owner from the Session Thread identity
+/// already derived from a trusted, claim-guarded dispatch by Coordinator
+/// application. The Coordinator retains the sole write invocation:
+/// [`ClaimedCommitService`] is this port's only caller.
+#[async_trait::async_trait]
+pub trait ClaimedOperationCoordinatorResolver: Send + Sync {
+    async fn resolve(
+        &self,
+        session_thread_id: &awaken_agent_contract::agent::thread::Id,
+    ) -> Result<Arc<dyn OperationCoordinator>, ApplicationError>;
 }
 
 struct FixedOperationCoordinatorResolver(Arc<dyn OperationCoordinator>);
