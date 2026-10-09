@@ -90,6 +90,22 @@ published_port() {
   return 1
 }
 
+# Result-composition decision table: F1 all stages succeed => pass; F2 one
+# stage fails => retain that status; F3 later ordinary failures keep the first
+# status during the evidence sweep; F4 best-effort EXIT cleanup cannot replace
+# that status. F5 resource refusal ends the sweep with 75 and the same cleanup.
+first_failure=0
+record_failure() {
+  local failure="$1"
+  if [ "$first_failure" -eq 0 ]; then
+    first_failure="$failure"
+  fi
+  if [ "$failure" -eq 75 ]; then
+    echo "PostgreSQL resource qualification unavailable; remaining suites were not started" >&2
+    exit 75
+  fi
+}
+
 self_test() {
   # Startup cause/effect decision table:
   # C1 an explicit port is requested; C2 Docker creates the container; C3 the
@@ -120,6 +136,27 @@ self_test() {
   [ "$deadline_status" -eq 23 ] || return 1
   ! pg_run_with_deadline fixture 0 bash -c 'exit 0' || return 1
   [ "$deadline_calls" -eq 2 ] || return 1
+  # F2/F3 ordinary failures retain the first outcome. F5 a later resource
+  # refusal exits 75 before dependent work; the same EXIT hook still executes.
+  (
+    record_failure 23
+    record_failure 31
+    [ "$first_failure" -eq 23 ]
+  ) || return 1
+  local failure_fixture refusal_status=0
+  failure_fixture=$(mktemp -d) || return 1
+  (
+    trap 'touch "$failure_fixture/cleaned"' EXIT
+    record_failure 23
+    record_failure 75
+    touch "$failure_fixture/dependent"
+  ) || refusal_status=$?
+  if [ "$refusal_status" -ne 75 ] || [ ! -f "$failure_fixture/cleaned" ] \
+    || [ -e "$failure_fixture/dependent" ]; then
+    rm -rf -- "$failure_fixture"
+    return 1
+  fi
+  rm -rf -- "$failure_fixture"
   # Gate-completeness rules: P9 every Cargo suite enters pg_test and therefore
   # has a per-command deadline; P10 the recovery drill has its independent
   # stage deadline. A bare command is a false-green/hang path, not compatibility.
@@ -332,7 +369,7 @@ fi
 # "pull access denied", which reads as a permission problem on a private
 # repository. Its volumes need room, so the filesystem is checked too.
 python3 scripts/ci/gate_tools.py require --gate postgres || exit 1
-python3 scripts/ci/gate_tools.py disk --stage postgres || exit 1
+python3 scripts/ci/gate_tools.py disk --stage postgres || exit $?
 
 NAME="awaken-ci-pg-$$"
 OBJECT_NAME="awaken-ci-object-$$"
@@ -521,18 +558,6 @@ fi
 # script exports one, so a connection failure is red. Single-threaded is unnecessary
 # where each test isolates itself in a fresh schema; the Session history matrix is
 # serialized explicitly while it creates and drops its canonical-prefix fixtures.
-# Result-composition decision table: F1 all stages succeed => pass; F2 one
-# stage fails => retain that status; F3 later stages fail after F2 => keep the
-# first status while continuing the evidence sweep; F4 cleanup is best-effort
-# and cannot replace F2/F3. This preserves the causal failure instead of
-# reporting the last diagnostic or a generic successful teardown.
-first_failure=0
-record_failure() {
-  local failure="$1"
-  if [ "$first_failure" -eq 0 ]; then
-    first_failure="$failure"
-  fi
-}
 # P7 run the whole ingress contract in this fixture lifetime, including Worker
 # cancellation/checkpoint regressions; a hand-maintained target list can omit
 # new recovery suites and silently exercise them only without PostgreSQL.

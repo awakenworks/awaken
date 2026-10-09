@@ -14,14 +14,15 @@ LOCAL_PORT="${NATS_WAKE_LOCAL_PORT:-38651}"
 M=12
 
 log() { printf '\n=== %s ===\n' "$*"; }
+nats_wake_now() { printf '%s\n' "$SECONDS"; }
 
 # All three facts come from one Postgres statement/snapshot, not a per-Pod cache.
 # Both live-hint and lost-hint batches call this same oracle.
 wait_batch() {
-  local expected="$1" budget="${2:-120}" deadline remaining last="unobserved"
-  deadline=$((SECONDS + budget))
-  while (( SECONDS < deadline )); do
-    remaining=$((deadline - SECONDS))
+  local expected="$1" budget="${2:-120}" deadline remaining now last="unobserved"
+  deadline=$(nats_wake_now); deadline=$((deadline + budget))
+  while now=$(nats_wake_now) && (( now < deadline )); do
+    remaining=$((deadline - now))
     (( remaining <= 20 )) || remaining=20
     if last=$(run_with_deadline "$remaining" kubectl -n "$NS" exec deploy/postgres -- \
       env PGPASSWORD=test psql -U postgres -d awaken -v ON_ERROR_STOP=1 -tA -F ' ' -c \
@@ -105,8 +106,9 @@ cleanup() {
 # Polling may also drain work; this proves actual NATS publication/delivery,
 # not that every committed Run was causally awakened by its particular hint.
 wait_nats() {
-  local baseline="${1:-}" budget="${2:-30}" deadline=$((SECONDS + ${2:-30}))
-  while (( SECONDS < deadline )); do
+  local baseline="${1:-}" budget="${2:-30}" deadline
+  deadline=$(nats_wake_now); deadline=$((deadline + budget))
+  while (( $(nats_wake_now) < deadline )); do
     if curl --max-time 2 -fsS "http://127.0.0.1:$MONITOR_PORT/varz" > "$RUN_DIR/nats-current.json" \
       && python3 "$REPO_ROOT/e2e/k3d/nats_wake_evidence.py" "$RUN_DIR/nats-current.json" ${baseline:+"$baseline"}; then
       return 0

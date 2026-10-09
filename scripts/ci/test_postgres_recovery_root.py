@@ -12,6 +12,15 @@ import _strict_unittest as strict_unittest
 
 
 DRILL = Path(__file__).resolve().with_name("postgres_recovery_drill.sh")
+DEADLINE = DRILL.with_name("deadline.py")
+
+
+def invoke_fixture(command, **kwargs):
+    # Setup/diagnostics are not subsecond startup SLOs. One shared deadline
+    # bounds the complete fixture and cleans its process group on timeout;
+    # subprocess's longer watchdog diagnoses a failure in that same owner.
+    return subprocess.run([sys.executable, str(DEADLINE), "60", "--", *command],
+                          timeout=75, **kwargs)
 
 
 def write_startup_docker(path):
@@ -54,6 +63,9 @@ if args[0] in ("inspect", "logs"):
 sys.exit(73)
 ''')
     path.chmod(0o755)
+    observer = path.with_name("fixture-resource-observer")
+    observer.write_text('#!/bin/sh\nprintf \'%s\\n\' \'{"schema_version":1,"profile":"cargo","eligible":true,"problems":[]}\'\n')
+    observer.chmod(0o755)
 
 
 class RecoveryRootTests(unittest.TestCase):
@@ -79,14 +91,16 @@ class RecoveryRootTests(unittest.TestCase):
             for selected in (parent, f"{parent}///", alias):
                 with self.subTest(rule="P1/P2", parent=str(selected)):
                     report.unlink(missing_ok=True)
-                    result = subprocess.run(
+                    result = invoke_fixture(
                         ["bash", str(DRILL.with_name("pg_tests.sh")), "--require-docker"],
                         env=dict(os.environ, TMPDIR=str(selected),
                                  PATH=f"{binary}{os.pathsep}{os.environ['PATH']}",
                                  CARGO_TARGET_DIR=str(fixture / "target"),
+                                 AWAKEN_HOST_ADMISSION=str(binary / "fixture-resource-observer"),
+                                 AWAKEN_ADMISSION_PROFILE="cargo",
                                  AWAKEN_RECOVERY_ROOT=str(caller),
                                  AWAKEN_TEST_ALLOCATION=str(report)),
-                        text=True, capture_output=True, timeout=10,
+                        text=True, capture_output=True,
                     )
                     self.assertEqual(result.returncode, 1, result.stderr)
                     self.assertIn("Docker could not create", result.stderr)
@@ -111,6 +125,10 @@ class RecoveryRootTests(unittest.TestCase):
         # This fixture is deliberately volatile; MinIO power-loss persistence
         # is outside this PG PITR and S3 copy/restore test's evidence boundary.
         # No cargo or real Docker is run; invoke the canonical producer itself.
+        # P17 startup and diagnostics keep the producer's normal 30s operation
+        # limit; only the intentionally never-ready poll uses a 1s budget.
+        # Ambient host capacity is a separate cause, fixed eligible by this
+        # fixture; it cannot impersonate one of the four startup failures.
         with tempfile.TemporaryDirectory(prefix="awaken-pg-diagnostics-") as tmp:
             fixture = Path(tmp).resolve()
             binary = fixture / "bin"
@@ -123,16 +141,18 @@ class RecoveryRootTests(unittest.TestCase):
                                         ("object-create", "object-create", 73)):
                 with self.subTest(mode=mode):
                     calls.unlink(missing_ok=True)
-                    result = subprocess.run(
+                    result = invoke_fixture(
                         ["bash", str(DRILL.with_name("pg_tests.sh")), "--require-docker"],
                         env=dict(os.environ, TMPDIR=str(fixture),
                                  PATH=f"{binary}{os.pathsep}{os.environ['PATH']}",
                                  CARGO_TARGET_DIR=str(fixture / "target"),
+                                 AWAKEN_HOST_ADMISSION=str(binary / "fixture-resource-observer"),
+                                 AWAKEN_ADMISSION_PROFILE="cargo",
                                  AWAKEN_TEST_STARTUP_FAILURE=mode,
                                  AWAKEN_TEST_DOCKER_CALLS=str(calls),
                                  AWAKEN_PG_READY_TIMEOUT_SECONDS="1",
-                                 AWAKEN_PG_OPERATION_TIMEOUT_SECONDS="1"),
-                        text=True, capture_output=True, timeout=8,
+                                 AWAKEN_PG_OPERATION_TIMEOUT_SECONDS="30"),
+                        text=True, capture_output=True,
                     )
                     self.assertEqual(result.returncode, 1, result.stderr)
                     self.assertIn(f"stage={phase} event=start", result.stderr)
@@ -152,6 +172,26 @@ class RecoveryRootTests(unittest.TestCase):
                                          "/data:rw,nosuid,nodev,noexec,size=4g", "P16/E5")
                     self.assertNotIn("Config.Env", result.stderr)
                     self.assertFalse(list(fixture.glob("awaken-pg-recovery.*")))
+
+            # P18 a valid host observation explicitly refuses resources -> exact
+            # 75, no container creation/allocation. Unlike P13-P16 this fails
+            # before a substrate exists, so diagnostics/cleanup cannot mask it.
+            observer = binary / "fixture-resource-observer"
+            observer.write_text('#!/bin/sh\nprintf \'%s\\n\' \'{"schema_version":1,"profile":"cargo","eligible":false,"problems":["fixture pressure"]}\'\nexit 75\n')
+            calls.unlink(missing_ok=True)
+            result = invoke_fixture(
+                ["bash", str(DRILL.with_name("pg_tests.sh")), "--require-docker"],
+                env=dict(os.environ, TMPDIR=str(fixture),
+                         PATH=f"{binary}{os.pathsep}{os.environ['PATH']}",
+                         CARGO_TARGET_DIR=str(fixture / "target"),
+                         AWAKEN_HOST_ADMISSION=str(observer), AWAKEN_ADMISSION_PROFILE="cargo",
+                         AWAKEN_TEST_DOCKER_CALLS=str(calls)),
+                text=True, capture_output=True,
+            )
+            self.assertEqual(result.returncode, 75, result.stdout + result.stderr)
+            commands = [json.loads(line) for line in calls.read_text().splitlines()]
+            self.assertFalse(any(command[0] in ("run", "rm", "exec") for command in commands))
+            self.assertFalse(list(fixture.glob("awaken-pg-recovery.*")))
 
     def test_configured_parent_and_exact_owned_leaf_control_admission(self):
         # Causes: C1 the selected TMPDIR (absolute, trailing slash, relative or
@@ -192,9 +232,9 @@ class RecoveryRootTests(unittest.TestCase):
                     AWAKEN_RECOVERY_ROOT=str(root),
                     AWAKEN_TEST_DOCKER_CALLS=str(calls),
                 )
-                return subprocess.run(
+                return invoke_fixture(
                     ["bash", str(DRILL), "fixture-pg", "fixture-objects", "fixture-image"],
-                    cwd=fixture, env=env, text=True, capture_output=True, timeout=10,
+                    cwd=fixture, env=env, text=True, capture_output=True,
                 )
 
             for selected_parent in (parent, f"{parent}/", "configured parent", alias):

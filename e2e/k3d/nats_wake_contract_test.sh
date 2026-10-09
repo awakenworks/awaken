@@ -56,6 +56,13 @@ done
 # total/distinct/per-Thread counts AND successful observation are all required.
 # A permanent unknown or wrong count reaches the bounded failure; a later exact
 # snapshot makes progress. Actual PostgreSQL semantics remain in the live E2E.
+# Polling causes are snapshot values and logical budget exhaustion, not Python
+# cold-start speed. Advance the real runner's clock port only on its requested
+# sleep: eventual convergence and every denial use the unchanged loop. The
+# shared deadline tests separately own real command timeout/tree cleanup.
+nats_fixture_now=0
+nats_wake_now() { printf '%s\n' "$nats_fixture_now"; }
+sleep() { nats_fixture_now=$((nats_fixture_now + $1)); }
 run_with_deadline() {
   [[ "$1" =~ ^[1-9][0-9]*$ && "$*" = *"count(DISTINCT thread_id)"* && "$*" = *"ON_ERROR_STOP=1"* ]] || return 99
   head -1 "$TEST_ROOT/rows"

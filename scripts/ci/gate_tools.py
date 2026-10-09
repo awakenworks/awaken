@@ -579,7 +579,7 @@ def command_disk(manifest: dict, stage: str, path: str | None, override: float |
     )
     for suggestion in manifest["cleanup_suggestions"]:
         print(f"      - {expand(suggestion)}", file=sys.stderr)
-    return 1
+    return 75
 
 
 def command_resources(manifest: dict, profile: str, *, require_host: bool = False,
@@ -885,12 +885,22 @@ def self_test() -> int:
     if not manifest.get("cleanup_suggestions"):
         problems.append("M1 a disk refusal would name nothing that is safe to delete")
 
-    tiny = _quiet(lambda: command_disk(manifest, stages[0], None, 0.000001))
-    if tiny != 0:
-        problems.append("M7 a threshold this machine clears was refused anyway")
-    huge = _quiet(lambda: command_disk(manifest, stages[0], None, 10**9))
-    if huge != 1:
-        problems.append("M7 a threshold no machine clears was accepted")
+    # M7 artifact capacity >=/< stage minimum => delegate once / return 75
+    # before the host query. Ambient pressure is a separate cause owned by the
+    # resource adapter table; it cannot impersonate an artifact-policy failure.
+    from unittest.mock import patch
+    with patch(__name__ + '.free_gigabytes', return_value=100), \
+            patch(__name__ + '.command_resources', return_value=0) as resources:
+        for required in (0.000001, 100):
+            resources.reset_mock()
+            code = _quiet(lambda: command_disk(manifest, stages[0], None, required))
+            if code != 0 or resources.call_count != 1:
+                problems.append("M7 sufficient artifact capacity did not delegate to host qualification")
+        for required in (100.000001, 10**9):
+            resources.reset_mock()
+            code = _quiet(lambda: command_disk(manifest, stages[0], None, required))
+            if code != 75 or resources.called:
+                problems.append("M7 insufficient artifact capacity lost resource refusal or queried the host")
 
     for tool in manifest["tools"]:
         if not tool.get("solver"):

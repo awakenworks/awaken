@@ -115,8 +115,8 @@ fi
 # A full run builds the whole workspace plus every test binary. When the target
 # filesystem cannot hold that, the first symptom is a linker or codegen error on
 # an arbitrary crate, which reads as a source defect. Check the named cause.
-if [ "$mode" = "--full" ] && ! python3 scripts/ci/gate_tools.py disk --stage rust-full; then
-  exit 1
+if [ "$mode" = "--full" ]; then
+  python3 scripts/ci/gate_tools.py disk --stage rust-full || exit $?
 fi
 
 step "dependency-sources" "use an allowlisted HTTPS Git repository and pin a full 40-character rev" \

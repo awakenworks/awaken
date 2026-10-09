@@ -114,17 +114,22 @@ test -s results || exit 55
         # G1 a selected sequential gate returns 75 => preserve 75 and its
         # failure kind; zero later browser execution and no full receipt.
         # G2 full-gate host observation refuses before admission => 75, zero
-        # Cargo/body calls. These run the actual manifest over owned stubs;
+        # Cargo/body calls. G3 the Rust full artifact/host preflight refuses ->
+        # 75 survives both entrypoints and starts no build. These run the actual
+        # manifest over owned stubs;
         # they prove failure composition, not passing product qualification.
-        for mode in ('frontend', 'full'):
+        for mode in ('frontend', 'full', 'rust'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 scripts = root / 'scripts/ci'; scripts.mkdir(parents=True)
                 for name in ('check-all.sh', '_provider_environment.sh', '_parallel_checks.sh',
-                             'parallel_check.py', 'deadline.py', '_deadline.sh'):
+                             'parallel_check.py', 'deadline.py', '_deadline.sh',
+                             'check-rust.sh', '_cargo_target.sh'):
                     shutil.copyfile(ROOT / 'scripts/ci' / name, scripts / name)
+                (scripts / 'check-rust.sh').chmod(0o755)
+                (root / 'Cargo.toml').write_text('[workspace]\nmembers=[]\n')
                 tools = scripts / 'gate_tools.py'
-                tools.write_text('import sys\nraise SystemExit(75 if "resources" in sys.argv else 0)\n')
+                tools.write_text('import sys\nraise SystemExit(75 if any(x in sys.argv for x in ("resources", "disk")) else 0)\n')
                 gate = scripts / 'check-frontend.sh'
                 gate.write_text('#!/bin/sh\necho fixture-resource-refusal >&2\nexit 75\n')
                 gate.chmod(0o755)
@@ -139,13 +144,13 @@ test -s results || exit 55
                            AWAKEN_TEST_TIMINGS_FILE=str(root/'timings.tsv'))
                 for name in ('AWAKEN_CARGO_ADMITTED', 'AWAKEN_FULL_GATE_CANDIDATE', 'AWAKEN_FULL_GATE_LOG'):
                     env.pop(name, None)
-                args = ['--group', 'frontend'] if mode == 'frontend' else ['--full-gate', '--record']
+                args = ['--full-gate', '--record'] if mode == 'full' else ['--group', mode]
                 result = subprocess.run(['bash', str(scripts/'check-all.sh'), *args],
                                         env=env, capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 75, result.stdout+result.stderr)
                 self.assertFalse((root/'unexpected').exists())
                 self.assertFalse((scripts/'gate_record.json').exists())
-                if mode == 'frontend':
+                if mode != 'full':
                     import csv
                     with (root/'timings.tsv').open() as stream:
                         rows = list(csv.DictReader(stream, delimiter='\t'))
