@@ -162,10 +162,14 @@ impl crate::host::SharedHost {
             .iter()
             .any(|id| id == awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID)
         {
-            let plugin = self.web_fetch_plugin(
-                thread,
-                awaken_ext_builtin_tools::web_fetch_execution_configuration(toolsets)
-                    .map_err(crate::HostError::bad_request)?,
+            let plugin = Arc::new(
+                (*self.web_fetch_plugin(
+                    thread,
+                    awaken_ext_builtin_tools::web_fetch_execution_configuration(toolsets)
+                        .map_err(crate::HostError::bad_request)?,
+                ))
+                .clone()
+                .with_tool_source_catalogue(&spec.tool_descriptors),
             );
             if is_acp {
                 Some(

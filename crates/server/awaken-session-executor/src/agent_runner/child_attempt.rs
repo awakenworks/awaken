@@ -80,6 +80,7 @@ pub(crate) fn configure_child_native_runtime(
         runtime = runtime.with_plugin(Arc::new(
             (**plugin)
                 .clone()
+                .with_tool_source_catalogue(&snapshot.resolved_spec.tool_descriptors)
                 .with_inherited_execution_configuration(
                     awaken_ext_builtin_tools::web_fetch_execution_configuration(
                         &snapshot.resolved_spec.plugin_config.agent.toolsets,
@@ -298,9 +299,10 @@ mod tests {
     #[tokio::test]
     async fn direct_and_rebuilt_child_web_use_the_same_frozen_sources_before_network_io() {
         // Causes: N1 caller-only allow; N2 denied target; N3 contradictory
-        // caller lists; N4 no source evidence; N5 activation crosses serde.
+        // caller lists; N4 no inherited evidence; N5 an unseen same-host URL;
+        // N6 activation crosses serde with its configured URL-source policy.
         // Effects: one real HTTP request for N1; no request for N2/N3; N4 is
-        // rejected before execution; N5 reconstructs the same policy through
+        // rejected before execution; N5 refuses before I/O; N6 reconstructs the same policy through
         // the owner also used by recovered_child_worker. Loopback is an internal
         // transport fixture; public hostname admission has separate tests.
         // | Rule | Input | Materialization | Effect |
@@ -308,6 +310,7 @@ mod tests {
         // | N2 | allow loopback, target localhost | serde rebuilt | error, no I/O |
         // | N3 | allow + block loopback | serde rebuilt | error, no I/O |
         // | N4 | missing sources | selected Web | pre-effect refusal |
+        // | N5 | allowed host, URL absent from user input | serde rebuilt | no I/O |
         use awaken_agent_contract::agent::message::Role;
         use awaken_runtime_contract::activation::InheritedToolsets;
         use awaken_runtime_contract::agent_bindings::{
@@ -379,7 +382,7 @@ mod tests {
                     "web_fetch",
                     ToolExecutionPolicy::default(),
                     Some(
-                        serde_json::json!({"type":"web_fetch","domains":{"type":kind,"domains":["127.0.0.1"]}}),
+                        serde_json::json!({"type":"web_fetch","domains":{"type":kind,"domains":["127.0.0.1"]}, "url_sources":{"client_tool_results":"none","server_tool_results":"none"}}),
                     ),
                 )],
             }]
@@ -407,14 +410,20 @@ mod tests {
         );
         for (rule, host, sources, rebuilt, expected_requests) in [
             ("N1", "127.0.0.1", allowed.clone(), false, 1),
-            ("N2", "localhost", allowed, true, 1),
+            ("N2", "localhost", allowed.clone(), true, 1),
             ("N3", "127.0.0.1", blocked, true, 1),
+            ("N5", "127.0.0.1", allowed, true, 1),
         ] {
+            let url = format!("http://{host}:{port}/");
             let activation = RunActivation::new(
                 awaken_agent_contract::agent::run::Id(format!("http-{rule}")),
                 awaken_agent_contract::agent::thread::Id(format!("http-{rule}")),
                 snapshot.clone(),
-                vec![user("fetch")],
+                vec![user(&if rule == "N5" {
+                    format!("fetch {url}unseen")
+                } else {
+                    format!("fetch {url}")
+                })],
             )
             .with_inherited_toolsets(Some(sources));
             let activation: RunActivation = if rebuilt {
@@ -423,9 +432,7 @@ mod tests {
                 activation
             };
             let runtime = super::configure_child_native_runtime(
-                awaken_runtime::Runtime::new().with_llm(Arc::new(FetchModel {
-                    url: format!("http://{host}:{port}/"),
-                })),
+                awaken_runtime::Runtime::new().with_llm(Arc::new(FetchModel { url })),
                 &activation.snapshot,
                 activation.inherited_toolsets(),
                 &adapters,

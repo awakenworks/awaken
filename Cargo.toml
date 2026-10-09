@@ -42,6 +42,7 @@ edition = "2024"
 license = "Apache-2.0"
 
 [workspace.dependencies]
+awaken-web-policy-contract = { path = "crates/contract/awaken-web-policy-contract" }
 awaken-ui-artifact = { git = "https://github.com/awakenworks/awaken-ui.git", rev = "15ab31ef4943042ac4795c27f0e82c78586a214e" }
 awaken-agent-contract = { path = "crates/contract/awaken-agent-contract" }
 awaken-lease-contract = { path = "crates/contract/awaken-lease-contract" }

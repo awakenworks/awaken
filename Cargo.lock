@@ -1507,6 +1507,7 @@ dependencies = [
  "awaken-credential",
  "awaken-runtime-contract",
  "awaken-tool-contract",
+ "awaken-web-policy-contract",
  "cap-std",
  "glob",
  "ignore",
@@ -2894,6 +2895,7 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-session-mcp-contract",
  "awaken-session-resource-contract",
+ "awaken-web-policy-contract",
  "chrono",
  "chrono-tz",
  "http",
@@ -3520,6 +3522,14 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "awaken-web-policy-contract"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

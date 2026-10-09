@@ -103,6 +103,7 @@ async fn domain_filtered_web_fetch_rejects_redirect_before_second_request() {
 
     let plugin = WebFetchPlugin::new(WebSearchProviderRegistry::builtins(), None)
         .with_execution_configuration(Some(WebFetchExecutionConfiguration {
+            url_sources: None,
             domains: Some(WebDomainFilter::Allow(vec!["127.0.0.1".into()])),
             max_content_tokens: None,
         }));
@@ -229,6 +230,7 @@ fn provider_server_web_tools_reject_agent_policy_they_cannot_enforce() {
         (
             "P2",
             WebFetchExecutionConfiguration {
+                url_sources: None,
                 domains: Some(WebDomainFilter::Allow(vec!["docs.example.com".into()])),
                 max_content_tokens: None,
             },
@@ -236,6 +238,7 @@ fn provider_server_web_tools_reject_agent_policy_they_cannot_enforce() {
         (
             "P3",
             WebFetchExecutionConfiguration {
+                url_sources: None,
                 domains: None,
                 max_content_tokens: Some(1024),
             },
