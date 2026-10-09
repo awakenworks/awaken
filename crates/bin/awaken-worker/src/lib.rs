@@ -1585,11 +1585,9 @@ impl WorkerNode {
             "worker",
             remote_files,
             remote_memory,
-            awaken_session_executor::HostProcess {
-                local_workspace,
-                deployment: deployment.clone(),
-                clock: self.clock.clone(),
-            },
+            deployment
+                .host_process(local_workspace, self.clock.clone())
+                .map_err(std::io::Error::other)?,
             authority,
             registered_capacity,
         )
@@ -1635,6 +1633,7 @@ impl WorkerNode {
                 .expect("container provider was validated with a hand factory");
             deps = awaken_execution_composition::install_container_environment_components(
                 deps,
+                &deployment,
                 awaken_execution_composition::ContainerEnvironmentComponents {
                     provider: installed.provider,
                     capacity: installed.capacity,
@@ -1657,6 +1656,7 @@ impl WorkerNode {
         // selects the matching backend and supplies its published provider access.
         deps = awaken_execution_composition::with_session_environment_from_deployment(
             deps,
+            &deployment,
             self.hand_executor_factory,
             &container_policy,
         )
@@ -1664,18 +1664,11 @@ impl WorkerNode {
         .map_err(std::io::Error::other)?;
         deps = awaken_execution_composition::with_acp_from_deployment(
             deps,
+            &deployment,
             self.credential_materializer,
             self.brokered_acp_model_access,
         );
-        if let Some((_, backend)) = &self.prepared_local_sandbox {
-            let installed = deps.installed_session_environment_provider().realizer().capabilities();
-            if installed != self.manifest.sandbox {
-                return Err(std::io::Error::other(format!(
-                    "effective local Session provider changed after Worker registration for {backend}; refusing Ready"
-                ))
-                .into());
-            }
-        }
+        manifest::ensure_registered_local_provider(&self.prepared_local_sandbox, &self.manifest, &deps)?;
 
         let mut execution = awaken_session_executor::SessionExecutionDependencies::default()
             .with_repository_binding_verifier(remote_repositories);

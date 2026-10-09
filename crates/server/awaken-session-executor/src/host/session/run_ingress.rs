@@ -65,7 +65,7 @@ impl SharedHost {
             runtime.clone(),
             store,
             commit,
-            self.deployment.dispatch_owner.clone(),
+            self.dispatch_owner().to_owned(),
         );
         if let Some(checkpoint) = stream_checkpoint {
             worker = worker.with_stream_checkpoint(checkpoint);
@@ -103,7 +103,7 @@ impl SharedHost {
         // with every other, so a claim would grab foreign threads' runs. The
         // process-level `DispatchPool` owns recovery — it claims each crashed run and
         // routes it to the session (this one included) that owns its thread.
-        if self.deployment.durable {
+        if self.durable_ingress() {
             Ok((ForegroundRunDelivery::Durable, claimed_worker))
         } else {
             let direct = Arc::new(DirectAttemptDriver::with_attempt_executor(

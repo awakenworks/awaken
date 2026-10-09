@@ -122,8 +122,8 @@ impl HostDependencies {
     }
 
     /// Container-provider selection for this crate's own tests: the
-    /// canonical container environment over `provider` with these
-    /// dependencies' Deployment Hand settings.
+    /// canonical container environment over `provider` with the default
+    /// Deployment Hand settings.
     #[cfg(test)]
     #[must_use]
     pub(crate) fn with_session_container_provider(
@@ -131,16 +131,16 @@ impl HostDependencies {
         provider: Arc<dyn awaken_container_contract::ContainerEnvironmentProvider>,
         hand_factory: Arc<dyn awaken_session_environment_contract::HandExecutorFactory>,
     ) -> Self {
-        let hand_bin = self.deployment.sandbox.container_hand_bin.clone();
+        let hand = crate::SandboxSettings::default();
         let environment = crate::session_environment::SandboxEnvironmentProvider::
             container_with_capacity_hand_idle_and_residency(
                 provider,
                 None,
                 Vec::new(),
                 hand_factory,
-                hand_bin,
-                std::time::Duration::from_secs(self.deployment.sandbox.container_hand_idle_secs),
-                self.deployment.sandbox.container_hand_residency,
+                hand.container_hand_bin,
+                std::time::Duration::from_secs(hand.container_hand_idle_secs),
+                hand.container_hand_residency,
                 self.clock.clone(),
             )
             .into_session_provider();

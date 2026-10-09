@@ -13,16 +13,21 @@ mod capture;
 mod dispatch;
 mod environment;
 mod execution;
+mod execution_topology;
 mod resources;
 mod tools;
 mod worker;
 
 pub(crate) use agent::{AgentExecution, AgentSelection};
 pub(crate) use capture::ContentCaptureCapability;
-pub use dispatch::DispatchPoolSizing;
-pub(crate) use dispatch::{DispatchCapability, DispatchSelection};
+pub(crate) use dispatch::DispatchCapability;
 pub(crate) use environment::EnvironmentProviders;
+pub use environment::{TrustedHostPolicy, WarmPool};
 pub(crate) use execution::AttemptBackends;
+pub use execution_topology::{
+    DispatchPoolSizing, ExecutionTopology, LeaseOwnerId, LocalExecution, QueueDepthSource,
+    RunIngress,
+};
 #[cfg(test)]
 pub(super) use resources::local_memory_extraction_repository;
 #[cfg(any(test, feature = "test-support"))]

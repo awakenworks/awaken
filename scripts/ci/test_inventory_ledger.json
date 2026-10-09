@@ -18,6 +18,7 @@
     "signed_database_boundary_is_fail_closed": "sql_bigint_codec_boundaries_are_exact",
     "stored_u64_matches_checked_integer_semantics": "sql_bigint_codec_matches_checked_integer_semantics",
     "terminal_cleanup_capacity_counts_distinct_owners_from_one_root_scan": "session_worker_demand_counts_live_affinity_and_terminal_cleanup",
-    "dispatch_session_runtime_requires_explicit_installation": "dispatch_session_runtime_is_constructed_once_with_weak_host_ownership"
+    "dispatch_session_runtime_requires_explicit_installation": "dispatch_session_runtime_is_constructed_once_with_weak_host_ownership",
+    "direct_deployment_poll_interval_has_one_validated_projection": "execution_axes_project_into_one_validated_topology"
   }
 }

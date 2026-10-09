@@ -141,17 +141,21 @@ fn platform_memory_projection(tier: awaken_session_executor::SandboxTier) -> Pla
 
 /// Select the governed MemoryRepository data plane's worker-side mount adapter
 /// over the Host's own Memory content port, unless the composition already
-/// selected one (an explicitly injected Worker adapter is preserved).
+/// selected one (an explicitly injected Worker adapter is preserved). `tier`
+/// is the Session sandbox tier the composition's Deployment selected.
 /// Authorization has already selected workspace/store/access before this adapter
 /// sees an opaque store id; no IAM vocabulary crosses this seam. Every
 /// composition that mounts this Coordinator selects it before building the Host.
 #[must_use]
-pub fn with_platform_memory_data_plane(dependencies: HostDependencies) -> HostDependencies {
+pub fn with_platform_memory_data_plane(
+    dependencies: HostDependencies,
+    tier: awaken_session_executor::SandboxTier,
+) -> HostDependencies {
     if dependencies.has_memory_mounter() {
         return dependencies;
     }
     let repository = dependencies.memory_repository();
-    let mounter = match platform_memory_projection(dependencies.deployment_config().sandbox_tier) {
+    let mounter = match platform_memory_projection(tier) {
         PlatformMemoryProjection::FusePreferred => {
             awaken_sandbox_memoryd::MemoryStoreMounter::new(repository, dependencies.clock())
         }
@@ -465,7 +469,7 @@ async fn local_managed_state_over(
     // extraction repository over that file before construction. The two
     // application SPIs remain separate, while their local durability boundary
     // is shared at this process boundary.
-    let durable_session_repo = match dependencies.deployment_config().storage_dir.as_deref() {
+    let durable_session_repo = match dependencies.storage_dir() {
         Some(root) => {
             std::fs::create_dir_all(root).expect("create durable session repository directory");
             Some(Arc::new(

@@ -112,7 +112,10 @@ pub use dependencies::{
     SessionExecutionDependencies,
 };
 pub(crate) mod capability;
-pub use capability::DispatchPoolSizing;
+pub use capability::{
+    DispatchPoolSizing, ExecutionTopology, LeaseOwnerId, LocalExecution, QueueDepthSource,
+    RunIngress, TrustedHostPolicy, WarmPool,
+};
 mod completion;
 mod coordination;
 mod dispatch_resolution;
@@ -207,10 +210,6 @@ pub struct SharedHost {
     /// `store_dir/<thread>.db`, so an awaiting run survives a process restart. When
     /// `None`, sessions use an in-memory coordinator (ephemeral).
     pub(crate) store_dir: Option<PathBuf>,
-    /// The deployment axes (store/dispatch backend, durable ingress, wake), parsed
-    /// once from the environment at construction. The runtime reads this typed
-    /// config instead of reaching into process env at each call site.
-    pub(crate) deployment: crate::deployment_config::DeploymentConfig,
     /// Where Session truth lives: the Coordinator-owned durable capability
     /// ([`crate::LocalAuthority`]) or a database-less Worker's claim-fenced
     /// upstream transports ([`crate::UpstreamAuthority`]). Every role-dependent

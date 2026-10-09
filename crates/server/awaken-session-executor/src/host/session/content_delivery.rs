@@ -383,7 +383,7 @@ impl SharedHost {
         // A Coordinator-only Host constructs the durable dispatch envelope but
         // never executes it. Creating an eager sandbox here would make the
         // Coordinator a second physical owner beside the registered Worker.
-        if self.deployment.disable_local_pool {
+        if !self.runs_local_dispatch_pool() {
             return true;
         }
         // One deferred-environment decision owns both Coordinator and Worker

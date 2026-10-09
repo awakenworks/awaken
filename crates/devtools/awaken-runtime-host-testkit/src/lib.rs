@@ -124,21 +124,27 @@ pub async fn volatile_dependencies_with_deployment(
 ) -> HostDependencies {
     let resources = volatile_resource_ports().await;
     let authority = volatile_runtime_authority(resources.clock.clone());
-    with_workdir_fallback(HostDependencies::for_local_resources(
-        llm,
-        model_ref,
-        resources,
-        memory_extraction_repository(None).await,
-        SharedHost::mint_local_workspace(),
-        deployment,
-        authority,
-    ))
+    let base = awaken_session_executor::session_sandbox_base(&deployment);
+    with_workdir_fallback(
+        HostDependencies::for_local_resources(
+            llm,
+            model_ref,
+            resources,
+            memory_extraction_repository(None).await,
+            SharedHost::mint_local_workspace(),
+            deployment,
+            authority,
+        ),
+        base,
+    )
 }
 
-/// Select the Workdir adapter under the Deployment's sandbox root as the
-/// non-authoritative fallback Session provider.
-fn with_workdir_fallback(dependencies: HostDependencies) -> HostDependencies {
-    let base = awaken_session_executor::session_sandbox_base(dependencies.deployment_config());
+/// Select the Workdir adapter under the Deployment's sandbox root `base` as
+/// the non-authoritative fallback Session provider.
+fn with_workdir_fallback(
+    dependencies: HostDependencies,
+    base: std::path::PathBuf,
+) -> HostDependencies {
     dependencies.with_fallback_session_environment_provider(
         awaken_session_environment::SandboxEnvironmentProvider::workdir(base)
             .into_session_provider(),

@@ -1170,11 +1170,12 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
         "stub",
         Arc::new(awaken_resource_contract::UnavailableFileContentSource),
         content.clone(),
-        crate::HostProcess {
-            local_workspace: SharedHost::mint_local_workspace(),
-            deployment: crate::DeploymentConfig::ephemeral(),
-            clock: awaken_time::system_clock(),
-        },
+        crate::DeploymentConfig::ephemeral()
+            .host_process(
+                SharedHost::mint_local_workspace(),
+                awaken_time::system_clock(),
+            )
+            .expect("ephemeral process"),
         crate::host::test_upstream_authority(),
         awaken_dispatch_contract::RegisteredCapacity::of(
             &awaken_dispatch_contract::WorkerManifest::default(),

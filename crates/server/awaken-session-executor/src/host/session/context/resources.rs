@@ -141,7 +141,7 @@ pub(super) async fn acquire(
     // dispatch is durable. It must still reject a deterministic substrate
     // mismatch before the Session activity opens; otherwise an impossible
     // mount remains `running` while the queue repeatedly relinquishes it.
-    if force_defer_environment && !host.deployment.disable_local_pool && !a2a_only && !can_defer {
+    if force_defer_environment && host.runs_local_dispatch_pool() && !a2a_only && !can_defer {
         let provider = host.session_environment_provider_for_thread(thread, provisioning)?;
         let spec = host.sandbox_spec_for_provider(thread, provider);
         let _ = host.validate_session_environment_capabilities(provider, &spec)?;

@@ -323,3 +323,29 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
         ..WorkerManifest::default()
     }
 }
+
+/// The local Session provider installed into the Host must still be the one this
+/// Worker registered; a change after registration refuses Ready.
+pub(crate) fn ensure_registered_local_provider(
+    prepared: &Option<(
+        awaken_provisioning_contract::SandboxCapabilities,
+        &'static str,
+    )>,
+    manifest: &awaken_worker_contract::WorkerManifest,
+    deps: &awaken_session_executor::HostDependencies,
+) -> std::io::Result<()> {
+    let Some((_, backend)) = prepared else {
+        return Ok(());
+    };
+    if deps
+        .installed_session_environment_provider()
+        .realizer()
+        .capabilities()
+        != manifest.sandbox
+    {
+        return Err(std::io::Error::other(format!(
+            "effective local Session provider changed after Worker registration for {backend}; refusing Ready"
+        )));
+    }
+    Ok(())
+}

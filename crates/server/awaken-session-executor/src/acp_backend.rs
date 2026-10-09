@@ -76,23 +76,6 @@ impl crate::host::SharedHost {
     }
 }
 
-/// The base dir the Session sandbox roots and per-thread config homes live
-/// under, or a per-process temp dir when unset.
-pub fn session_sandbox_base(deployment: &crate::DeploymentConfig) -> std::path::PathBuf {
-    deployment
-        .sandbox_dir
-        .clone()
-        .or_else(|| {
-            deployment
-                .storage_dir
-                .as_ref()
-                .map(|storage| storage.join("sandboxes"))
-        })
-        .unwrap_or_else(|| {
-            std::env::temp_dir().join(format!("awaken-acp-sbx-{}", std::process::id()))
-        })
-}
-
 /// Install the existing ACP executor's policy/factory port for Host unit tests
 /// that exercise ACP projection without launching a real CLI process.
 #[cfg(test)]
@@ -109,6 +92,7 @@ pub(crate) fn with_fixture_acp(dependencies: crate::HostDependencies) -> crate::
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_sandbox_base;
 
     struct NoLlm;
 
@@ -258,7 +242,7 @@ mod tests {
             with_fixture_acp(crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await);
         let backend_owned = crate::session_environment::SandboxEnvironmentProvider::
             trusted_host_workdir_with_agent_stderr(
-                session_sandbox_base(dependencies.deployment_config()).join("backend-owned"),
+                dependencies.env.sandbox_root.join("backend-owned"),
                 false,
             )
             .into_session_provider();

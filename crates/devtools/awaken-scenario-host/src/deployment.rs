@@ -13,9 +13,18 @@ use awaken_session_executor::{HostDependencies, SharedHost};
 pub(crate) struct ScenarioPlatform {
     dependencies: HostDependencies,
     resources: awaken_resource_application::ResourcesApplication,
+    /// The typed Deployment the dependencies were selected from; Session
+    /// environment, ACP and Memory mount selection read it explicitly.
+    deployment: awaken_session_executor::DeploymentConfig,
 }
 
 impl ScenarioPlatform {
+    /// The typed Deployment this platform was selected from.
+    #[must_use]
+    pub(crate) fn deployment(&self) -> &awaken_session_executor::DeploymentConfig {
+        &self.deployment
+    }
+
     #[must_use]
     pub(crate) fn map_dependencies(
         mut self,
@@ -44,7 +53,10 @@ impl ScenarioPlatform {
         awaken_resource_application::ResourcesApplication,
     ) {
         (
-            awaken_coordinator::with_platform_memory_data_plane(self.dependencies),
+            awaken_coordinator::with_platform_memory_data_plane(
+                self.dependencies,
+                self.deployment.sandbox_tier,
+            ),
             self.resources,
         )
     }
@@ -285,7 +297,7 @@ async fn resource_host_with_selected_runtime(
         resource_ports,
         extraction_repository,
         scenario_workspace.unwrap_or(installation_workspace),
-        deployment,
+        deployment.clone(),
         authority,
     )
     .with_file_application(
@@ -297,10 +309,12 @@ async fn resource_host_with_selected_runtime(
     .with_auxiliary_sandboxes(awaken_execution_composition::local_auxiliary_sandboxes());
     // Plain deterministic fixtures keep the cheap Workdir adapter; Deployment
     // selection (`runtime_resource_host_with_deployment`) replaces it.
-    let dependencies = awaken_execution_composition::with_workdir_fallback(dependencies);
+    let dependencies =
+        awaken_execution_composition::with_workdir_fallback(dependencies, &deployment);
     ScenarioPlatform {
         dependencies,
         resources,
+        deployment,
     }
 }
 
@@ -338,11 +352,13 @@ pub(crate) async fn runtime_resource_host_with_deployment(
     model_ref: impl Into<String>,
     deployment: awaken_session_executor::DeploymentConfig,
 ) -> ScenarioPlatform {
-    resource_host_with_deployment(llm, model_ref, deployment)
-        .await
+    let platform = resource_host_with_deployment(llm, model_ref, deployment).await;
+    let deployment = platform.deployment().clone();
+    platform
         .map_dependencies_async(|dependencies| async move {
             awaken_execution_composition::with_session_environment_from_deployment(
                 dependencies,
+                &deployment,
                 Some(awaken_worker::relay_hand_executor_factory()),
                 &awaken_execution_composition::ContainerTierPolicy::default(),
             )

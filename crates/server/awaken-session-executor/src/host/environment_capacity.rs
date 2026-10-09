@@ -53,9 +53,7 @@ impl SharedHost {
         &self,
         target: usize,
     ) -> Result<usize, awaken_provisioning_contract::SandboxError> {
-        if self.deployment.disable_local_pool
-            || self.deployment.sandbox.warm_pool_size == 0
-            || target == 0
+        if !self.runs_local_dispatch_pool() || self.env.warm_pool.limits().is_none() || target == 0
         {
             return Ok(0);
         }
@@ -97,8 +95,8 @@ impl SharedHost {
         environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
         target: usize,
     ) -> Result<usize, awaken_provisioning_contract::SandboxError> {
-        if self.deployment.disable_local_pool
-            || self.deployment.sandbox.warm_pool_size == 0
+        if !self.runs_local_dispatch_pool()
+            || self.env.warm_pool.limits().is_none()
             || target == 0
             || environment.self_hosted
         {
@@ -123,13 +121,10 @@ impl SharedHost {
     /// default Session shape and current Environment shapes.
     #[must_use]
     pub fn environment_warmup_limits(&self) -> (usize, usize) {
-        if self.deployment.disable_local_pool || self.deployment.sandbox.warm_pool_size == 0 {
+        if !self.runs_local_dispatch_pool() {
             return (0, 0);
         }
-        (
-            self.deployment.sandbox.warm_pool_size,
-            self.deployment.sandbox.warm_pool_total_size,
-        )
+        self.env.warm_pool.limits().unwrap_or((0, 0))
     }
 
     /// Observe actual ready capacity instead of trusting the last reconciliation

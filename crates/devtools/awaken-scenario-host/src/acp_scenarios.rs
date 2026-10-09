@@ -182,11 +182,12 @@ pub async fn build_acp_jsonrpc_router_with_deployment(
     // Namespace/Container.
     let host_publication = publication.clone();
     let platform =
-        resource_host_with_deployment(Arc::new(OversizedToolModel), "awaken", deployment)
+        resource_host_with_deployment(Arc::new(OversizedToolModel), "awaken", deployment.clone())
             .await
             .map_dependencies_async(|host| async move {
                 awaken_execution_composition::with_acp_launch_source(
                     host.with_agent_publications(host_publication),
+                    &deployment,
                     awaken_worker::relay_hand_executor_factory(),
                     launch,
                 )
@@ -481,6 +482,7 @@ pub async fn build_acp_managed_mcp_router() -> Router {
     let fixture_cli = fake_acp_mcp_cli();
     let deployment = scenario_deployment();
     let store_dir = deployment.storage_dir.clone();
+    let installed = deployment.clone();
     awaken_cli::build_all_in_one_router_with_host_customizer(
         Arc::new(McpToolModel),
         ModelBinding::new("scenario", "acp-managed-mcp", "acp:claude"),
@@ -492,7 +494,8 @@ pub async fn build_acp_managed_mcp_router() -> Router {
         // and reopen the process-placement decision.
         move |host| {
             awaken_execution_composition::with_projected_acp(
-                awaken_execution_composition::with_backend_owned_environment(host),
+                awaken_execution_composition::with_backend_owned_environment(host, &installed),
+                &installed,
                 scenario_host_acp_cli(fixture_cli),
                 Arc::new(FixedAcpModel),
                 store_dir,
@@ -514,6 +517,7 @@ pub async fn build_acp_managed_mcp_router() -> Router {
 pub async fn build_acp_real_mcp_router() -> Router {
     let deployment = scenario_deployment();
     let store_dir = deployment.storage_dir.clone();
+    let installed = deployment.clone();
     let cli_id = std::env::var("AWAKEN_ACP_CLI")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -548,7 +552,8 @@ pub async fn build_acp_real_mcp_router() -> Router {
         None,
         move |host| {
             awaken_execution_composition::with_projected_acp_argv(
-                awaken_execution_composition::with_backend_owned_environment(host),
+                awaken_execution_composition::with_backend_owned_environment(host, &installed),
+                &installed,
                 cli,
                 Arc::new(acp_gateway::ScenarioEnvAcpModel),
                 store_dir,
@@ -711,10 +716,12 @@ pub(crate) async fn bind_acp_session_environment(
     source: awaken_execution_composition::LaunchSource,
     secret_broker: Option<Arc<dyn awaken_run_executor_acp::SecretBroker>>,
 ) -> crate::deployment::ScenarioPlatform {
+    let deployment = platform.deployment().clone();
     platform
         .map_dependencies_async(|host| async move {
             let host = awaken_execution_composition::with_acp_launch_source(
                 host,
+                &deployment,
                 awaken_worker::relay_hand_executor_factory(),
                 source,
             )
@@ -856,11 +863,12 @@ pub async fn build_acp_container_router() -> Router {
         (publication, launch, Arc::new(EchoModel))
     };
     let host_publication = publication.clone();
-    let platform = resource_host_with_deployment(model, "awaken", deployment)
+    let platform = resource_host_with_deployment(model, "awaken", deployment.clone())
         .await
         .map_dependencies_async(|host| async move {
             awaken_execution_composition::with_acp_launch_source(
                 host.with_agent_publications(host_publication),
+                &deployment,
                 awaken_worker::relay_hand_executor_factory(),
                 launch,
             )

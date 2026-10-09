@@ -363,7 +363,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     let ephemeral = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
-    assert!(!ephemeral.deployment.durable, "T1 precondition");
+    assert!(!ephemeral.durable_ingress(), "T1 precondition");
     ephemeral.ensure_dispatch_pool();
     assert!(ephemeral.dispatch.dispatch_pool.get().is_some(), "T1/E1");
 
@@ -428,11 +428,10 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         .build()
         .expect("validated Host dependencies");
     assert_eq!(
-        local.dispatch_pool_sizing(),
-        crate::DispatchPoolSizing::LocalParallelism(default),
+        local.dispatch.execution.local,
+        crate::LocalExecution::InProcessPool(crate::DispatchPoolSizing::LocalParallelism(default)),
         "R1"
     );
-    assert_eq!(local.dispatch_pool_sizing().registered(), None, "R1");
     for capacity in [1, default.get(), default.get() + 2] {
         // The only constructor of a `RegisteredCapacity` is the manifest this
         // Worker registers, so the installer cannot be handed a number the
@@ -450,10 +449,10 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         let memory: Arc<dyn awaken_resource_contract::MemoryRepository> = Arc::new(
             awaken_memory_store::VolatileMemoryRepository::new(system_clock()),
         );
-        let process = || crate::HostProcess {
-            local_workspace: SharedHost::mint_local_workspace(),
-            deployment: crate::DeploymentConfig::ephemeral(),
-            clock: system_clock(),
+        let process = || {
+            crate::DeploymentConfig::ephemeral()
+                .host_process(SharedHost::mint_local_workspace(), system_clock())
+                .expect("ephemeral process")
         };
         let worker = (crate::HostDependencies::for_worker(
             Arc::new(OkModel),
@@ -474,27 +473,27 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
             "R2 actual slots"
         );
         assert_eq!(
-            worker.dispatch_pool_sizing(),
-            crate::DispatchPoolSizing::Registered(
+            worker.dispatch.execution.local,
+            crate::LocalExecution::InProcessPool(crate::DispatchPoolSizing::Registered(
                 std::num::NonZeroUsize::new(capacity).expect("R2")
-            ),
+            )),
             "R2 registered branch"
         );
         let _local_fence = worker.begin_pool_drain().await;
-        let mut incompatible = crate::HostDependencies::for_worker(
-            Arc::new(OkModel),
-            "stub",
-            file,
-            memory,
-            process(),
-            crate::host::test_upstream_authority()
-                .with_dispatch_transport(worker.dispatch_store().unwrap()),
-            awaken_dispatch_contract::RegisteredCapacity::of(&manifest).unwrap(),
-        )
-        .unwrap();
-        incompatible.deployment.disable_local_pool = true;
+        let mut coordinator_only = process();
+        coordinator_only.execution.local = crate::LocalExecution::RemoteWorkersOnly;
         assert!(
-            (incompatible).build().is_err(),
+            crate::HostDependencies::for_worker(
+                Arc::new(OkModel),
+                "stub",
+                file,
+                memory,
+                coordinator_only,
+                crate::host::test_upstream_authority()
+                    .with_dispatch_transport(worker.dispatch_store().unwrap()),
+                awaken_dispatch_contract::RegisteredCapacity::of(&manifest).unwrap(),
+            )
+            .is_err(),
             "R3 registered execution capacity cannot become a coordinator-only graph"
         );
     }

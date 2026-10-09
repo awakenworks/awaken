@@ -167,16 +167,16 @@ fn local_tier_provider(
 /// operator-enabled TrustedHost backend is still completed.
 pub async fn select_local_session_environment(
     host: HostDependencies,
+    deployment: &DeploymentConfig,
     hand_factory: Option<Arc<dyn HandExecutorFactory>>,
     namespace_hand_path: PathBuf,
 ) -> Result<HostDependencies, String> {
-    let deployment: DeploymentConfig = host.deployment_config().clone();
     deployment.validate_local_execution()?;
     let explicit = host.session_environment_provider_installed();
     if explicit && !deployment.trusted_host_enabled() {
         return Ok(host);
     }
-    let base = awaken_session_executor::session_sandbox_base(&deployment);
+    let base = awaken_session_executor::session_sandbox_base(deployment);
     let tier = if explicit {
         deployment.sandbox_tier
     } else {
@@ -266,14 +266,16 @@ pub async fn select_local_session_environment(
 /// realize in, unless startup already installed one. Consumers: process
 /// roots that bind ACP without enabling TrustedHost Native execution.
 #[must_use]
-pub fn with_backend_owned_environment(host: HostDependencies) -> HostDependencies {
+pub fn with_backend_owned_environment(
+    host: HostDependencies,
+    deployment: &DeploymentConfig,
+) -> HostDependencies {
     if host
         .installed_backend_owned_environment_provider()
         .is_some()
     {
         return host;
     }
-    let deployment = host.deployment_config();
     let provider = SandboxEnvironmentProvider::trusted_host_workdir_with_agent_stderr(
         awaken_session_executor::session_sandbox_base(deployment).join("backend-owned"),
         deployment.sandbox.inherit_agent_stderr,
@@ -286,8 +288,11 @@ pub fn with_backend_owned_environment(host: HostDependencies) -> HostDependencie
 /// test and Scenario compositions whose deterministic fixtures run without
 /// Deployment selection.
 #[must_use]
-pub fn with_workdir_fallback(host: HostDependencies) -> HostDependencies {
-    let base = awaken_session_executor::session_sandbox_base(host.deployment_config());
+pub fn with_workdir_fallback(
+    host: HostDependencies,
+    deployment: &DeploymentConfig,
+) -> HostDependencies {
+    let base = awaken_session_executor::session_sandbox_base(deployment);
     host.with_fallback_session_environment_provider(
         SandboxEnvironmentProvider::workdir(base).into_session_provider(),
     )
@@ -492,13 +497,14 @@ mod startup_tests {
         let expected = deployment.sandbox_support().0;
 
         let host = select_local_session_environment(
-            host(deployment).await,
+            host(deployment.clone()).await,
+            &deployment,
             Some(Arc::new(NoHandFactory)),
             deployment_test_binary("AWAKEN_TEST_SCOPED_HELPER"),
         )
         .await
         .unwrap();
-        let host = crate::with_acp_from_deployment(host, None, None);
+        let host = crate::with_acp_from_deployment(host, &deployment, None, None);
 
         assert!(host.session_environment_provider_installed());
         assert_eq!(
@@ -535,10 +541,11 @@ mod startup_tests {
                     deployment.sandbox_tier = SandboxTier::Local;
                     deployment.sandbox_dir = Some(base.path().into());
                     deployment.sandbox.trusted_host_scoped_execution = scoped;
-                    let mut host = host(deployment).await;
+                    let mut host = host(deployment.clone()).await;
                     if prior_acp {
                         host = crate::with_projected_acp(
                             host,
+                            &deployment,
                             *awaken_run_executor_acp::acp_cli("claude").unwrap(),
                             Arc::new(FixedModel),
                             None,
@@ -556,6 +563,7 @@ mod startup_tests {
                         .capabilities();
                     let host = select_local_session_environment(
                         host,
+                        &deployment,
                         Some(Arc::new(NoHandFactory)),
                         deployment_test_binary("AWAKEN_TEST_SCOPED_HELPER"),
                     )
@@ -579,6 +587,7 @@ mod startup_tests {
                     assert!(host.session_environment_provider_installed());
                     let reentry = select_local_session_environment(
                         host,
+                        &deployment,
                         Some(Arc::new(NoHandFactory)),
                         deployment_test_binary("AWAKEN_TEST_SCOPED_HELPER"),
                     )
@@ -604,7 +613,8 @@ mod startup_tests {
         let mut deployment = DeploymentConfig::ephemeral();
         deployment.sandbox_tier = SandboxTier::Local;
         let message = select_local_session_environment(
-            host(deployment).await,
+            host(deployment.clone()).await,
+            &deployment,
             None,
             installed_namespace_hand_path(),
         )
@@ -621,7 +631,8 @@ mod startup_tests {
             let mut deployment = DeploymentConfig::ephemeral();
             deployment.sandbox_tier = SandboxTier::Local;
             let error = select_local_session_environment(
-                host(deployment).await,
+                host(deployment.clone()).await,
+                &deployment,
                 Some(Arc::new(NoHandFactory)),
                 artifact,
             )

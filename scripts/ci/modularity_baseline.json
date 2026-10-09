@@ -17,7 +17,7 @@
     },
     "awaken-session-executor::SharedHost": {
       "files": 34,
-      "methods": 281,
+      "methods": 279,
       "reason": "slice H: each of the eleven session-runtime roles gets one owning component (plan 10.3 item 11)"
     },
     "awaken-session-application::SessionApplication": {
@@ -380,7 +380,7 @@
     "awaken-session-store::postgres.rs::commit": 151,
     "awaken-session-store::sqlite.rs::commit": 155,
     "awaken-store-postgres::lib.rs::recovery_snapshot": 194,
-    "awaken-worker::lib.rs::run_until": 575,
+    "awaken-worker::lib.rs::run_until": 568,
     "awaken-worker::lifecycle.rs::renew_registry_authority": 176
   },
   "crate-budget": {

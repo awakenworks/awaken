@@ -704,7 +704,7 @@ impl SharedHost {
     /// store. The queue remains delivery truth; this guard only selects whether
     /// the deployment exposes that authority.
     pub(super) fn require_durable_delivery(&self) -> Result<(), HostError> {
-        if self.deployment.durable {
+        if self.durable_ingress() {
             Ok(())
         } else {
             Err(HostError::bad_request(
@@ -886,7 +886,7 @@ impl SharedHost {
             // Coordinator-only durable server (no local pool): enqueue straight into
             // the shared store so a remote database-less worker drains it over the
             // dispatch transport. Non-durable keeps the original "enable the pool" error.
-            Err(e) if self.deployment.durable => {
+            Err(e) if self.durable_ingress() => {
                 use awaken_dispatch_contract::DispatchQueue;
                 let _ = e;
                 let store = self.dispatch_store()?;

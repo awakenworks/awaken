@@ -12,15 +12,33 @@ mod environment_capacity;
 use awaken_runtime_contract::delegation::RunDelegationService;
 
 /// The process a Host is constructed in: the installation's resolved platform
-/// Workspace, the typed Deployment, and the one process clock. The process
-/// composition resolves all three once; every [`HostDependencies`] constructor
-/// receives them together so none can pair a Workspace or clock from a
-/// different process selection. Consumer: the `HostDependencies` constructors.
+/// Workspace, the process capabilities the composition projected from its
+/// configuration, and the one process clock. The process composition resolves them once;
+/// every [`HostDependencies`] constructor receives them together so none can
+/// pair a Workspace or clock from a different process selection. Consumer: the
+/// `HostDependencies` constructors.
 pub struct HostProcess {
     /// The installation's resolved platform Workspace coordinate.
     pub local_workspace: String,
-    /// The typed Deployment this Host serves.
-    pub deployment: crate::DeploymentConfig,
+    /// This process's part in Run execution, selected by the composition.
+    pub execution: crate::ExecutionTopology,
+    /// The process content-capture ceiling and redactor. Per-request consent
+    /// and the Workspace policy may only narrow it.
+    pub content_capture: crate::ContentCaptureSettings,
+    /// The durable storage root: set selects durable SQLite commit and
+    /// Resource adapters that survive a restart; `None` selects ephemeral ones.
+    pub storage_dir: Option<PathBuf>,
+    /// The root the construction-time Session provider realizes sandboxes
+    /// under until the composition installs its own provider.
+    pub sandbox_root: PathBuf,
+    /// Whether `trusted_host` Environments may be realized on this process.
+    pub trusted_host: crate::TrustedHostPolicy,
+    /// The warm Session capacity this process keeps.
+    pub warm_pool: crate::WarmPool,
+    /// How the Session MCP relay is exposed to container networks, if at all.
+    pub mcp_relay: Option<awaken_session_mcp::ContainerMcpRelayExposure>,
+    /// The exact ACP adapters this process advertises and serves.
+    pub acp_profile: Option<crate::AcpWorkerProfile>,
     /// The process wall clock the Host drives its Workers on.
     pub clock: Arc<dyn awaken_time::WallClock>,
 }
@@ -34,13 +52,20 @@ impl HostDependencies {
         if dependencies.local_workspace.trim().is_empty() {
             return Err(HostError::bad_request("local workspace must not be empty"));
         }
+        dependencies
+            .execution
+            .validate()
+            .map_err(HostError::bad_request)?;
+        // A registered capacity exists only inside an in-process pool, so the
+        // "registered but coordinator-only" graph has no representation; the
+        // remaining contradiction is a registration under a local authority.
         if dependencies
-            .dispatch
-            .dispatch_pool_sizing
-            .registered()
+            .execution
+            .local
+            .pool_sizing()
+            .and_then(crate::DispatchPoolSizing::registered)
             .is_some()
-            && (dependencies.authority.hosts_session_application()
-                || dependencies.deployment.disable_local_pool)
+            && dependencies.authority.hosts_session_application()
         {
             return Err(HostError::bad_request(
                 "registered Worker capacity requires upstream authority and a local execution pool",
@@ -55,7 +80,6 @@ impl HostDependencies {
 fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHost>) -> SharedHost {
     let HostDependencies {
         local_workspace,
-        deployment,
         clock,
         store_dir,
         authority,
@@ -69,7 +93,7 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         tools,
         resources,
         mcp,
-        dispatch,
+        execution,
         capture,
         session_application,
         session_execution,
@@ -101,14 +125,13 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         tools,
         resources: capability::ResourcePorts::new(resources, memory),
         mcp,
-        dispatch: capability::DispatchCapability::new(dispatch, host),
+        dispatch: capability::DispatchCapability::new(execution, host),
         capture,
         local_workspace,
         session_slots,
         execution_authority,
         hub: hub.clone(),
         store_dir,
-        deployment,
         authority,
         clock,
         background_supervisor,
@@ -137,23 +160,6 @@ impl SharedHost {
         // process distinct without reading a clock.
         let nonce = uuid::Uuid::new_v4().simple();
         format!("workspace_local_{:x}_{nonce}", std::process::id())
-    }
-
-    /// The configured Session sandbox tier selected by the authoritative
-    /// [`crate::DeploymentConfig`]. Startup adapters use this read-only view
-    /// when their realization strategy must be compatible with the environment;
-    /// it does not introduce another tier-selection source.
-    #[must_use]
-    pub fn sandbox_tier(&self) -> crate::SandboxTier {
-        self.deployment.sandbox_tier
-    }
-
-    /// The typed Deployment this Host was constructed from. Startup
-    /// compositions read it (they never re-read process configuration) to
-    /// select the environment tier they install.
-    #[must_use]
-    pub fn deployment_config(&self) -> &crate::DeploymentConfig {
-        &self.deployment
     }
 
     /// The process wall clock this Host drives its Workers on.
@@ -277,7 +283,7 @@ impl SharedHost {
                 store: self.dispatch_store()?,
                 commit: commit.clone(),
                 reader: commit,
-                owner: self.deployment.dispatch_owner.clone(),
+                owner: self.dispatch_owner().to_owned(),
                 claimed_commit,
                 recovery_projection,
                 session_resources: self.thread_resource_manifest(thread),
@@ -336,11 +342,12 @@ mod startup_tests {
                 awaken_time::system_clock(),
             )),
             expected.clone(),
-            HostProcess {
-                local_workspace: SharedHost::mint_local_workspace(),
-                deployment: crate::DeploymentConfig::ephemeral(),
-                clock: awaken_time::system_clock(),
-            },
+            crate::DeploymentConfig::ephemeral()
+                .host_process(
+                    SharedHost::mint_local_workspace(),
+                    awaken_time::system_clock(),
+                )
+                .expect("ephemeral process"),
             Arc::new(crate::EphemeralRuntimeAuthority::new(
                 awaken_time::system_clock(),
             )),
@@ -376,10 +383,13 @@ mod startup_tests {
                 .await
                 .expect("test extraction repository"),
         );
-        let process = || HostProcess {
-            local_workspace: SharedHost::mint_local_workspace(),
-            deployment: crate::DeploymentConfig::ephemeral(),
-            clock: awaken_time::system_clock(),
+        let process = || {
+            crate::DeploymentConfig::ephemeral()
+                .host_process(
+                    SharedHost::mint_local_workspace(),
+                    awaken_time::system_clock(),
+                )
+                .expect("ephemeral process")
         };
         assert!(
             HostDependencies::for_worker(
