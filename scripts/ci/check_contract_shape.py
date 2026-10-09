@@ -8,11 +8,13 @@ seam harder to consume and evolve, and every one of them predates this gate:
 1. **Graph** -- contract crates must form a DAG, and a crate's depth (longest
    chain of contract dependencies below it) may not grow. Every level of depth
    is another crate a consumer compiles and another place vocabulary can hide.
-2. **Size** -- a contract that grows without bound stops being a seam. A crate
-   whose production code declares no trait carrying methods is a *types* crate
-   (vocabulary and its laws, budget ``TYPES_LINE_BUDGET``); every other contract
-   crate carries ports (budget ``PORT_LINE_BUDGET``). Growth is free under the
-   budget; above it a crate may not exceed its recorded line count.
+2. **Size** -- a contract module that grows without bound stops being readable.
+   Size is measured per module, one source file (ADR-0091 D3, amending ADR-0081
+   §7): a module whose production code declares a trait carrying methods holds
+   ports (budget ``PORT_LINE_BUDGET``); any other module is vocabulary and its
+   laws (budget ``TYPES_LINE_BUDGET``). Growth is free under the budget; above
+   it a module may not exceed its recorded line count. A crate's total size is
+   not a reason to split it into another crate: the fix is to split the module.
 3. **Backend nouns** -- a type, trait or variant name spelling a backend or
    topology (``Docker``, ``Postgres``, ...) is adapter vocabulary living in the
    neutral core (ADR-0059 §1). Comments and string literals do not count.
@@ -88,7 +90,7 @@ CAPABILITY_VARIANTS = re.compile(r"\b(?:Unsupported|NotImplemented|NotSupported)
 STRING_PAYLOAD = re.compile(r"^\(\s*(?:pub\s+)?(?:(?:std|alloc)::string::)?String\s*,?\s*\)$")
 STRING_FIELD = re.compile(r"^\{\s*(?:pub\s+)?\w+\s*:\s*(?:(?:std|alloc)::string::)?String\s*,?\s*\}$")
 
-RULES = ("depth", "production_lines", "backend_nouns", "catch_all_errors", "capability_defaults")
+RULES = ("depth", "module_lines", "backend_nouns", "catch_all_errors", "capability_defaults")
 INTERFACE_KINDS = ("types", "spi", "api", "remote", "ext")
 PORT_KINDS = frozenset(INTERFACE_KINDS[1:])
 
@@ -103,11 +105,17 @@ class ContractCrate:
     kinds: frozenset[str] | None = None
 
 
+def budget_of(role: str) -> int:
+    return TYPES_LINE_BUDGET if role == "types" else PORT_LINE_BUDGET
+
+
 @dataclass
 class Measurement:
     depth: int = 0
     production_lines: int = 0
     role: str = "types"
+    # relative path -> (production lines, role) of every module of the crate
+    modules: dict[str, tuple[int, str]] = field(default_factory=dict)
     backend_nouns: list[str] = field(default_factory=list)
     catch_all_errors: list[str] = field(default_factory=list)
     capability_defaults: list[str] = field(default_factory=list)
@@ -116,8 +124,9 @@ class Measurement:
         value = getattr(self, rule)
         return value if isinstance(value, int) else len(value)
 
-    def budget(self) -> int:
-        return TYPES_LINE_BUDGET if self.role == "types" else PORT_LINE_BUDGET
+    def over_budget(self) -> dict[str, int]:
+        """Production lines of every module above the budget of its role."""
+        return {rel: lines for rel, (lines, role) in sorted(self.modules.items()) if lines > budget_of(role)}
 
 
 # --------------------------------------------------------------------------- lexing
@@ -192,7 +201,9 @@ def measure_sources(sources: dict[str, str]) -> Measurement:
 
     for relpath, production in sorted(sources.items()):
         syntax = workspace.rust_syntax(production)
-        measurement.production_lines += sum(1 for line in production.splitlines() if line.strip())
+        lines = sum(1 for line in production.splitlines() if line.strip())
+        measurement.production_lines += lines
+        measurement.modules[relpath] = (lines, "types")
 
         for declaration in re.finditer(r"\b(struct|enum|trait|type|union)\s+([A-Z]\w*)", syntax):
             kind, name = declaration.groups()
@@ -206,6 +217,7 @@ def measure_sources(sources: dict[str, str]) -> Measurement:
                     body = syntax[open_index:_balanced(syntax, open_index)]
                     if re.search(r"\bfn\s+\w+", body):
                         measurement.role = "ports"
+                        measurement.modules[relpath] = (lines, "ports")
             noun = next((token for token in BACKEND_NOUNS if token in name), None)
             if noun:
                 measurement.backend_nouns.append(
@@ -378,8 +390,8 @@ def kind_errors(name: str, kinds: frozenset[str] | None, measurement: Measuremen
 
 HOW_TO_FIX = {
     "depth": "depend on the lower contract that owns the vocabulary instead of one that re-exports it",
-    "production_lines": "split cohesive vocabulary into its own crate (ADR-0081 split-facade policy) "
-    "or move behaviour out of the contract",
+    "module_lines": "split the module (ADR-0091 D3: size is measured per module; a crate's total size is "
+    "not a reason to split the crate)",
     "backend_nouns": "move the backend-named type into its provider/adapter crate and keep a neutral "
     "name in the contract (ADR-0059 §1)",
     "catch_all_errors": "give the failure a typed variant the caller can classify instead of a message",
@@ -403,19 +415,19 @@ def compare(measurements: dict[str, Measurement], baseline: dict) -> list[str]:
                 f"{name}: rule depth: contract depth {current.depth} exceeds baseline {base_depth}. "
                 f"Fix: {HOW_TO_FIX['depth']}"
             )
-        # size
-        budget = current.budget()
-        base_lines = entry.get("production_lines")
-        if current.production_lines > budget and (
-            base_lines is None or current.production_lines > base_lines
-        ):
-            limit = budget if base_lines is None else base_lines
-            errors.append(
-                f"{name}: rule production_lines: {current.production_lines} production lines exceed "
-                f"the {current.role} budget {budget} and the baseline {limit}. Fix: "
-                f"{HOW_TO_FIX['production_lines']}; growth that is truly needed is recorded with "
-                "--write-baseline --reason"
-            )
+        # size, per module
+        recorded_modules = entry.get("module_lines", {})
+        for rel, lines in current.over_budget().items():
+            role = current.modules[rel][1]
+            base_lines = recorded_modules.get(rel)
+            if base_lines is None or lines > base_lines:
+                limit = budget_of(role) if base_lines is None else base_lines
+                errors.append(
+                    f"{name}: rule module_lines: {rel} has {lines} production lines, above the {role} "
+                    f"module budget {budget_of(role)} and the baseline {limit}. Fix: "
+                    f"{HOW_TO_FIX['module_lines']}; growth that is truly needed is recorded with "
+                    "--write-baseline --reason"
+                )
         # counted instances
         for rule in RULES[2:]:
             count = current.count(rule)
@@ -451,12 +463,10 @@ def tightenable(measurements: dict[str, Measurement], baseline: dict) -> list[st
             continue
         if current.depth < entry.get("depth", current.depth):
             gains.append(f"{name}.depth: {entry['depth']} -> {current.depth}")
-        base_lines = entry.get("production_lines")
-        if base_lines is not None and (
-            current.production_lines <= current.budget()
-            or base_lines - current.production_lines >= LINE_SLACK
-        ):
-            gains.append(f"{name}.production_lines: {base_lines} -> {current.production_lines}")
+        for rel, base_lines in sorted(entry.get("module_lines", {}).items()):
+            lines, role = current.modules.get(rel, (0, "types"))
+            if lines <= budget_of(role) or base_lines - lines >= LINE_SLACK:
+                gains.append(f"{name}.module_lines[{rel}]: {base_lines} -> {lines}")
         for rule in RULES[2:]:
             if current.count(rule) < entry.get(rule, 0):
                 gains.append(f"{name}.{rule}: {entry[rule]} -> {current.count(rule)}")
@@ -472,30 +482,35 @@ def render_baseline(
     crates: dict[str, dict] = {}
     for name, current in sorted(measurements.items()):
         entry: dict = {"depth": current.depth}
-        if current.production_lines > current.budget():
-            entry["production_lines"] = current.production_lines
+        if current.over_budget():
+            entry["module_lines"] = current.over_budget()
         for rule in RULES[2:]:
             if current.count(rule):
                 entry[rule] = current.count(rule)
         prior = old.get(name, {})
-        reasons = dict(prior.get("growth_reasons", {}))
+        reasons = {rule: text for rule, text in prior.get("growth_reasons", {}).items() if rule in RULES}
         for rule in RULES:
             if rule not in entry:
                 reasons.pop(rule, None)
                 continue
             if rule == "depth":
-                before = prior.get(rule) if name in old else None
-            elif rule == "production_lines":
-                before = prior.get(rule, current.budget())
+                grown = [(rule, prior.get(rule), entry[rule])] if name in old else []
+            elif rule == "module_lines":
+                held = prior.get(rule, {})
+                grown = [
+                    (f"{rule}[{rel}]", held.get(rel, budget_of(current.modules[rel][1])), lines)
+                    for rel, lines in entry[rule].items()
+                ]
             else:
-                before = prior.get(rule, 0)
-            if before is not None and entry[rule] > before:
-                growth.append(f"{name}.{rule}: {before} -> {entry[rule]}")
-                if reason:
-                    # Each growth keeps the reasons recorded for earlier growth:
-                    # the baseline is the history of why a number may be this high.
-                    earlier = reasons.get(rule)
-                    reasons[rule] = reason if not earlier or reason in earlier else f"{earlier}; then: {reason}"
+                grown = [(rule, prior.get(rule, 0), entry[rule])]
+            grown = [(label, before, now) for label, before, now in grown if before is not None and now > before]
+            for label, before, now in grown:
+                growth.append(f"{name}.{label}: {before} -> {now}")
+            if grown and reason:
+                # Each growth keeps the reasons recorded for earlier growth:
+                # the baseline is the history of why a number may be this high.
+                earlier = reasons.get(rule)
+                reasons[rule] = reason if not earlier or reason in earlier else f"{earlier}; then: {reason}"
         if reasons:
             entry["growth_reasons"] = reasons
         crates[name] = entry
@@ -553,7 +568,7 @@ def self_test() -> None:
     """Cause/effect decision table, proven on synthetic crates.
 
     Causes: C1 contract edge closes a cycle; C2 depth above/below baseline;
-    C3 lines above budget and above/below baseline; C4 backend noun in a
+    C3 module lines above its role's budget and above/below baseline; C4 backend noun in a
     declaration name vs only in a comment/literal/function; C5 catch-all
     String variant in an *Error enum vs a typed or identity variant or a
     non-error enum; C6 default body returns Err with capability wording or
@@ -565,11 +580,12 @@ def self_test() -> None:
     | G2   | C2 chain a -> b -> c                             | depths 2/1/0                 |
     | D1   | C2 depth > baseline                              | reject                       |
     | D2   | C2 depth < recorded baseline                     | admit; --tighten records it  |
-    | L1   | C3 ports crate over budget, no baseline          | reject                       |
+    | L1   | C3 ports module over budget, no baseline         | reject, advice: split module |
     | L2   | C3 over budget, <= baseline                      | admit                        |
-    | L3   | C3 shrinks by >= LINE_SLACK / under budget       | admit; --tighten records it  |
+    | L3   | C3 shrinks by >= LINE_SLACK / under budget / gone | admit; --tighten records it |
     | L5   | recorded crate no longer a contract crate        | admit; --tighten drops it    |
-    | L4   | C3 trait-free crate under TYPES budget           | admit, role types            |
+    | L4   | C3 trait-free module under TYPES budget          | admit, role types            |
+    | L6   | C3 crate over a budget in total, every module under | admit (no crate budget)   |
     | N1   | C4 struct/enum/trait/variant names               | counted                      |
     | N2   | C4 comment, string literal, fn, cfg(test) item   | not counted                  |
     | E1   | C5 Storage(String), Backend { message: String }  | counted                      |
@@ -581,6 +597,8 @@ def self_test() -> None:
     | R2   | C7 count < baseline                              | admit; --tighten records it  |
     | W1   | C8 raise without reason                          | growth reported              |
     | W2   | C8 raise with reason                             | reason retained in baseline  |
+    | W4   | C8 module rises above its budget                 | growth reported per module   |
+    | W5   | C8 reason recorded for a rule no longer measured | dropped                      |
     | K1   | C9 no kinds metadata                             | reject                       |
     | K2   | C9 unknown kind                                  | reject                       |
     | K3   | C9 types-only crate holds a port trait           | reject                       |
@@ -610,14 +628,24 @@ def self_test() -> None:
     assert not compare(measured, {"crates": {"a": {"depth": 2}, "b": {"depth": 1}, "c": {"depth": 0}}}), "G2 admits"
 
     port = "pub trait Port {\n    fn call(&self);\n}\n"
-    big = Measurement(depth=0, production_lines=PORT_LINE_BUDGET + 10, role="ports")
-    assert compare({"p": big}, {"crates": {}}), "L1"
-    assert not compare({"p": big}, {"crates": {"p": {"depth": 0, "production_lines": PORT_LINE_BUDGET + 10}}}), "L2"
-    shrunk = {"crates": {"p": {"depth": 0, "production_lines": PORT_LINE_BUDGET + 10 + LINE_SLACK}}}
+    big = Measurement(depth=0, role="ports", modules={"p.rs": (PORT_LINE_BUDGET + 10, "ports")})
+    rejected = compare({"p": big}, {"crates": {}})
+    assert rejected and "p.rs has" in rejected[0] and "split the module" in rejected[0], "L1"
+    recorded = {"crates": {"p": {"depth": 0, "module_lines": {"p.rs": PORT_LINE_BUDGET + 10}}}}
+    assert not compare({"p": big}, recorded), "L2"
+    shrunk = {"crates": {"p": {"depth": 0, "module_lines": {"p.rs": PORT_LINE_BUDGET + 10 + LINE_SLACK}}}}
     assert not compare({"p": big}, shrunk) and tightenable({"p": big}, shrunk), "L3 slack"
-    small = Measurement(depth=0, production_lines=PORT_LINE_BUDGET - 1, role="ports")
-    under = {"crates": {"p": {"depth": 0, "production_lines": PORT_LINE_BUDGET + 5}}}
+    small = Measurement(depth=0, role="ports", modules={"p.rs": (PORT_LINE_BUDGET - 1, "ports")})
+    under = {"crates": {"p": {"depth": 0, "module_lines": {"p.rs": PORT_LINE_BUDGET + 5}}}}
     assert not compare({"p": small}, under) and tightenable({"p": small}, under), "L3 budget"
+    moved = Measurement(depth=0, role="ports", modules={"q.rs": (10, "ports")})
+    assert tightenable({"p": moved}, under) == ["p.module_lines[p.rs]: 2005 -> 0"], "L3 gone"
+    whole = Measurement(depth=0, role="ports", modules={"a.rs": (PORT_LINE_BUDGET, "ports"),
+                                                         "b.rs": (TYPES_LINE_BUDGET, "types")})
+    assert not compare({"w": whole}, {"crates": {}}), "L6 the crate total is not budgeted"
+    mixed = measure_sources({"a.rs": project("pub trait Port {\n    fn call(&self);\n}\n"),
+                             "b.rs": project("pub struct Value;\n")})
+    assert mixed.modules == {"a.rs": (3, "ports"), "b.rs": (1, "types")} and mixed.role == "ports", "L4 per module"
     gone = {"crates": {"p": {"depth": 0}, "retired": {"depth": 1}}}
     assert tightenable({"p": small}, gone) == ["retired: recorded but no longer a contract crate"], "L5"
     assert measure_sources({"x.rs": project(port)}).role == "ports", "L4 ports"
@@ -631,7 +659,7 @@ def self_test() -> None:
     assert kind_errors("k", frozenset({"types", "spi"}), types_measured), "K4"
     assert not kind_errors("k", frozenset({"types", "spi"}), ports_measured), "K5 ports"
     assert not kind_errors("k", frozenset({"types"}), types_measured), "K5 types"
-    vocabulary = Measurement(depth=0, production_lines=PORT_LINE_BUDGET + 10)
+    vocabulary = Measurement(depth=0, modules={"v.rs": (PORT_LINE_BUDGET + 10, "types")})
     marker = "pub trait Marker {}\npub struct Value;\n"
     assert measure_sources({"x.rs": project(marker)}).role == "types", "L4 marker trait is not a port"
     assert not compare({"t": vocabulary}, {"crates": {}}), "L4"
@@ -699,6 +727,13 @@ def self_test() -> None:
     grown = {"crates": {"k": {"depth": 0, "catch_all_errors": 2, "growth_reasons": {"catch_all_errors": "first"}}}}
     document, _ = render_baseline({"k": Measurement(depth=0, catch_all_errors=["x", "y", "z"])}, grown, "second")
     assert document["crates"]["k"]["growth_reasons"] == {"catch_all_errors": "first; then: second"}, "W3 keeps history"
+    oversized = Measurement(depth=0, modules={"x.rs": (PORT_LINE_BUDGET + 10, "ports")})
+    document, growth = render_baseline({"k": oversized}, previous, "module split pending")
+    assert growth == [f"k.module_lines[x.rs]: {PORT_LINE_BUDGET} -> {PORT_LINE_BUDGET + 10}"], f"W4 {growth}"
+    assert document["crates"]["k"]["module_lines"] == {"x.rs": PORT_LINE_BUDGET + 10}, "W4 recorded"
+    legacy = {"crates": {"k": {"depth": 0, "growth_reasons": {"production_lines": "per-crate budget"}}}}
+    assert "growth_reasons" not in render_baseline({"k": Measurement(depth=0)}, legacy, None)[0]["crates"]["k"], \
+        "W5 a reason for a retired rule is dropped"
     lowered, growth = render_baseline({"k": Measurement(depth=0)}, previous, None)
     assert not growth and lowered["crates"]["k"] == {"depth": 0}, "W lowering needs no reason"
     print("check_contract_shape self-test: the decision table holds")
