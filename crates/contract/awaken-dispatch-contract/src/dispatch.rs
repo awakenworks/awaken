@@ -18,8 +18,9 @@
 //!
 //! One concrete store implements both (so a wake can freeze pending input inside
 //! the same claim transaction), but the traits stay split so neither aggregate
-//! reaches into the other's invariants. A blanket [`Dispatch`] bundles them
-//! for the worker and host.
+//! reaches into the other's invariants. The marker bundles over these roles
+//! live where they are composed: `awaken-dispatch-erasure` (Worker/host
+//! `Dispatch`) and `awaken-dispatch-execution` (`ControlDispatch`).
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
@@ -90,9 +91,6 @@ mod model;
 pub use model::*;
 
 include!("dispatch/queue.rs");
-
-mod aggregate;
-pub use aggregate::*;
 
 #[cfg(test)]
 mod tests {

@@ -11,7 +11,7 @@
 //! machine. It keeps process-local serialization and the persisted Dispatch
 //! attempt slot on the one canonical drive path.
 
-use awaken_dispatch_contract::ControlDispatch;
+use crate::ControlDispatch;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;

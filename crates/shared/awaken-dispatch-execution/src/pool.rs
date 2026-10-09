@@ -28,8 +28,8 @@
 //! dropped wake only defers work to the poll fallback; a crash drops the guard and
 //! leaves the lease to expire and be reclaimed.
 
+use crate::ControlDispatch;
 use awaken_lease_contract::fence::SlotToken;
-use awaken_dispatch_contract::ControlDispatch;
 use std::sync::Arc;
 use std::time::Duration;
 

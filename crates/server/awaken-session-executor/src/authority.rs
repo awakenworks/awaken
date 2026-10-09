@@ -720,7 +720,7 @@ impl UpstreamAuthority {
     #[must_use]
     pub fn with_dispatch_transport(
         mut self,
-        dispatch: Arc<dyn awaken_dispatch_contract::Dispatch>,
+        dispatch: Arc<dyn awaken_dispatch_erasure::Dispatch>,
     ) -> Self {
         self.dispatch = Some(Arc::new(
             awaken_dispatch_erasure::AnyDispatchStore::from_dispatch(dispatch),

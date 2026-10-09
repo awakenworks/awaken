@@ -130,7 +130,7 @@ pub fn worker_transports_with_upstream(
     upstream: &WorkerUpstream,
     identity: WorkerIdentity,
 ) -> (
-    Arc<dyn awaken_dispatch_contract::Dispatch>,
+    Arc<dyn awaken_dispatch_erasure::Dispatch>,
     Arc<dyn ClaimedStreamPublisher>,
 ) {
     let transport = dispatch_transport_with_upstream(upstream, identity);

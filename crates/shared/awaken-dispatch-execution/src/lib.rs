@@ -6,6 +6,7 @@
 
 pub mod claimed_stream;
 mod commit_fence;
+mod control_dispatch;
 mod error;
 pub mod execution_capacity;
 mod fenced_checkpoint;
@@ -33,6 +34,7 @@ pub use awaken_dispatch_contract::{
 pub use commit_fence::{
     ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit, validate_commit_dispatch_binding,
 };
+pub use control_dispatch::ControlDispatch;
 pub use error::Error;
 pub use fenced_checkpoint::FencedStreamCheckpointStore;
 pub use live_control::{Error as LiveRunControlError, LiveRunControlService};

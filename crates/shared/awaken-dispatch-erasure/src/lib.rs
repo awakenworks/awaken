@@ -15,6 +15,10 @@
 //! `Send` (a direct enum match over the concrete sqlx store trips the sqlx
 //! higher-ranked "implementation of Send is not general enough" limitation).
 
+mod bundle;
+
+pub use bundle::{Dispatch, DurableDispatch};
+
 use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 
@@ -28,11 +32,10 @@ use awaken_runtime_contract::resume::ResumeResult;
 use awaken_dispatch_contract::RunDispatch;
 use awaken_dispatch_contract::{
     AttemptCredentialBinding, CandidateFingerprint, CasOutcome, Claimed, CommitEpochGuard,
-    CredentialRealizationReceipt, Dispatch, DispatchCompletion, DispatchDepths, DispatchError,
-    DispatchOutcome, DispatchQueue, DispatchSummary, DurableDispatch, Inbox, LeaseRenewalOutcome,
-    Outbox, PendingInput, PendingRecord, RunClaim, SessionChildAdmission,
-    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
-    SettleOutcome, SubmitOptions,
+    CredentialRealizationReceipt, DispatchCompletion, DispatchDepths, DispatchError,
+    DispatchOutcome, DispatchQueue, DispatchSummary, Inbox, LeaseRenewalOutcome, Outbox,
+    PendingInput, PendingRecord, RunClaim, SessionChildAdmission, SessionRunReservationActivation,
+    SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
 };
 use awaken_dispatch_contract::{DispatchCursor, DispatchOperationalFeed, DispatchPage};
 

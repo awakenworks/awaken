@@ -18,6 +18,7 @@ awaken-credential-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-dispatch-contract.workspace = true
 awaken-dispatch-execution.workspace = true
+awaken-dispatch-erasure.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-realization-contract.workspace = true

@@ -30,13 +30,8 @@
   },
   "bundle-trait": {
     "AgentChannel": 1,
-    "ClaimedSessionControl": 1,
     "CompleteSessionRealizationControl": 1,
     "CompleteSessionRuntime": 1,
-    "ControlDispatch": 1,
-    "Dispatch": 1,
-    "DurableControlDispatch": 1,
-    "DurableDispatch": 1,
     "ResourceReclamationRepository": 1,
     "ResourceRegistry": 1,
     "Sealed": 1,
