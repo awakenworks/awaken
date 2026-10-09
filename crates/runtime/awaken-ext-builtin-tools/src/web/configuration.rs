@@ -2,6 +2,7 @@
 
 use awaken_runtime_contract::activation::InheritedToolsets;
 use awaken_runtime_contract::agent_bindings::{ToolsetPolicy, ToolsetSource};
+use awaken_web_policy_contract::WebFetchUrlSources;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -30,6 +31,8 @@ pub enum WebDomainFilter {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WebFetchExecutionConfiguration {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url_sources: Option<WebFetchUrlSources>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domains: Option<WebDomainFilter>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -62,6 +65,7 @@ pub struct WebSearchUserLocation {
 /// the Run's frozen caller sources are folded only at the extension boundary.
 #[derive(Debug, Clone, Default)]
 pub(super) struct EffectiveWebFetchConfiguration {
+    pub url_sources: Vec<WebFetchUrlSources>,
     pub domains: Vec<WebDomainFilter>,
     pub max_content_tokens: Option<u64>,
 }
@@ -75,6 +79,7 @@ pub(super) struct EffectiveWebSearchConfiguration {
 impl From<WebFetchExecutionConfiguration> for EffectiveWebFetchConfiguration {
     fn from(value: WebFetchExecutionConfiguration) -> Self {
         Self {
+            url_sources: value.url_sources.into_iter().collect(),
             domains: value.domains.into_iter().collect(),
             max_content_tokens: value.max_content_tokens,
         }
@@ -99,6 +104,7 @@ pub(super) fn effective_fetch_configuration(
     for toolsets in inherited.sources() {
         if let Some(configuration) = web_fetch_execution_configuration(toolsets)? {
             present = true;
+            effective.url_sources.extend(configuration.url_sources);
             effective.domains.extend(configuration.domains);
             effective.max_content_tokens = effective
                 .max_content_tokens
@@ -179,7 +185,12 @@ pub fn web_fetch_execution_configuration(
     match serde_json::from_value(value.clone())
         .map_err(|error| format!("invalid web_fetch execution configuration: {error}"))?
     {
-        WebExecutionConfiguration::WebFetch(configuration) => Ok(Some(configuration)),
+        WebExecutionConfiguration::WebFetch(configuration) => {
+            if let Some(sources) = &configuration.url_sources {
+                sources.validate_intrinsic()?;
+            }
+            Ok(Some(configuration))
+        }
         WebExecutionConfiguration::WebSearch(_) => {
             Err("web_fetch policy carries web_search execution configuration".to_string())
         }
@@ -430,6 +441,7 @@ mod tests {
             Some(&InheritedToolsets::with_caller(root.clone(), None)),
         );
         let own = WebFetchExecutionConfiguration {
+            url_sources: None,
             domains: Some(allow(&["example.com"])),
             max_content_tokens: Some(100),
         };

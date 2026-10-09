@@ -50,7 +50,9 @@ pub use managed::{
     ManagedWebRouteResolver,
 };
 mod configured_fetch;
+use configured_fetch::{ConfiguredFetchTarget, RoutedWebFetchTool};
 mod providers;
+mod sources;
 pub use providers::AwakenDirectFetchProvider;
 use providers::{
     ProviderServerWebFetchTool, blocking, native_server_search_descriptors,
@@ -859,6 +861,7 @@ pub struct WebFetchPlugin {
     registry: WebSearchProviderRegistry,
     credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
     execution_configuration: Option<EffectiveWebFetchConfiguration>,
+    client_tool_names: Option<Arc<std::collections::BTreeSet<String>>>,
 }
 
 impl WebFetchPlugin {
@@ -870,6 +873,7 @@ impl WebFetchPlugin {
             registry,
             credentials,
             execution_configuration: None,
+            client_tool_names: None,
         }
     }
 
@@ -879,6 +883,22 @@ impl WebFetchPlugin {
         configuration: Option<WebFetchExecutionConfiguration>,
     ) -> Self {
         self.execution_configuration = configuration.map(Into::into);
+        self
+    }
+
+    /// Project only client identity from the existing immutable descriptor catalog.
+    /// No names authored by a model can select their source class.
+    #[must_use]
+    pub fn with_tool_source_catalogue(mut self, descriptors: &[ToolDescriptor]) -> Self {
+        self.client_tool_names = Some(Arc::new(
+            descriptors
+                .iter()
+                .filter(|descriptor| {
+                    descriptor.kind == awaken_runtime_contract::resolved::ToolKind::ClientExecuted
+                })
+                .map(|descriptor| descriptor.id.clone())
+                .collect(),
+        ));
         self
     }
 
@@ -917,7 +937,9 @@ impl WebFetchPlugin {
                 ));
             }
             if self.execution_configuration.as_ref().is_some_and(|policy| {
-                !policy.domains.is_empty() || policy.max_content_tokens.is_some()
+                !policy.domains.is_empty()
+                    || policy.max_content_tokens.is_some()
+                    || !policy.url_sources.is_empty()
             }) {
                 return Err(PluginConfigError::new(
                     WEB_FETCH_PLUGIN_ID,
@@ -1039,6 +1061,8 @@ impl Plugin for WebFetchPlugin {
             config_sections: vec![WEB_FETCH_PLUGIN_ID.into()],
             bound: CapabilityBound {
                 tools: IdBound::Exact(vec![WEB_FETCH_TOOL_ID.into()]),
+                phase_hooks: vec![awaken_runtime_contract::plugin::PhaseHookPoint::BeforeInference],
+                state_keys: IdBound::Exact(vec![sources::STATE_KEY.into()]),
                 ..Default::default()
             },
         }
@@ -1054,84 +1078,19 @@ impl Plugin for WebFetchPlugin {
     ) -> Result<Contributions, PluginConfigError> {
         let (descriptor, tool) = self.configured_tool(config)?;
         let mut contributions = Contributions::new(WEB_FETCH_PLUGIN_ID);
+        if let Some(policy) = &self.execution_configuration
+            && !policy.url_sources.is_empty()
+        {
+            contributions.declare_state_key(sources::STATE_KEY);
+            contributions.register_hook(Arc::new(sources::UrlSourceObserver(
+                self.client_tool_names.clone(),
+            )));
+        }
         contributions.register_dynamic_tool(
             awaken_runtime_contract::plugin::DynamicTool::try_new(descriptor, tool)
                 .map_err(|error| PluginConfigError::new(WEB_FETCH_PLUGIN_ID, error.to_string()))?,
         );
         Ok(contributions)
-    }
-}
-
-struct ConfiguredFetchTarget {
-    provider: Arc<dyn WebFetchProvider>,
-    descriptor: WebFetchProviderDescriptor,
-    config: WebProviderTarget,
-}
-
-struct RoutedWebFetchTool {
-    targets: Vec<ConfiguredFetchTarget>,
-    credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
-    execution_configuration: Option<EffectiveWebFetchConfiguration>,
-}
-
-#[async_trait]
-impl Tool for RoutedWebFetchTool {
-    type Args = WebFetchArgs;
-    type Output = String;
-    const ID: &'static str = WEB_FETCH_TOOL_ID;
-    const DESCRIPTION: &'static str = "Fetch a URL through the configured platform provider";
-
-    async fn call(&self, args: WebFetchArgs) -> Result<String, ToolError> {
-        let configured_url = self
-            .execution_configuration
-            .as_ref()
-            .map(|configuration| {
-                configured_fetch::configured_web_fetch_url(&args.url, configuration)
-            })
-            .transpose()?;
-        let mut last_unavailable = None;
-        for target in &self.targets {
-            let credential = resolve_credential(
-                &target.descriptor.credential,
-                target.config.credential_access.as_ref(),
-                self.credentials.as_ref(),
-                &target.descriptor.id,
-                "web-fetch",
-            )
-            .await?;
-            let request = WebFetchRequest {
-                url: args.url.clone(),
-                options: target.config.options.clone(),
-            };
-            let domain_filters = self
-                .execution_configuration
-                .as_ref()
-                .map_or(&[][..], |configuration| configuration.domains.as_slice());
-            let result = target
-                .provider
-                .fetch(request, credential.as_ref(), domain_filters)
-                .await;
-            match result {
-                Ok(mut body) => {
-                    if let (Some(url), Some(configuration)) = (
-                        configured_url.as_ref(),
-                        self.execution_configuration.as_ref(),
-                    ) && let Some(max_bytes) =
-                        configured_fetch::web_fetch_text_limit(url, configuration)
-                    {
-                        configured_fetch::truncate_text(&mut body, max_bytes);
-                    }
-                    return Ok(body);
-                }
-                Err(error @ ToolError::UnavailableBeforeDispatch(_)) => {
-                    last_unavailable = Some(error)
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        Err(last_unavailable.unwrap_or_else(|| {
-            ToolError::DefinitiveFailure("web-fetch route plan has no targets".into())
-        }))
     }
 }
 
@@ -1253,9 +1212,9 @@ mod tests {
         })
     }
 
-    struct FakeFetchProvider {
-        seen_requests: Mutex<Vec<WebFetchRequest>>,
-        seen_filters: Mutex<Vec<Vec<WebDomainFilter>>>,
+    pub(super) struct FakeFetchProvider {
+        pub(super) seen_requests: Mutex<Vec<WebFetchRequest>>,
+        pub(super) seen_filters: Mutex<Vec<Vec<WebDomainFilter>>>,
     }
 
     #[tokio::test]
@@ -1336,6 +1295,7 @@ mod tests {
         let plugin = WebFetchPlugin::new(registry.clone(), None)
             .with_inherited_execution_configuration(
                 Some(WebFetchExecutionConfiguration {
+                    url_sources: None,
                     domains: Some(WebDomainFilter::Allow(vec!["example.com".into()])),
                     max_content_tokens: None,
                 }),
@@ -1365,6 +1325,7 @@ mod tests {
         let plugin = WebFetchPlugin::new(registry.clone(), None)
             .with_inherited_execution_configuration(
                 Some(WebFetchExecutionConfiguration {
+                    url_sources: None,
                     domains: Some(WebDomainFilter::Allow(vec!["example.net".into()])),
                     max_content_tokens: None,
                 }),
@@ -1729,6 +1690,7 @@ mod tests {
         };
 
         let fetch = WebFetchExecutionConfiguration {
+            url_sources: None,
             domains: Some(WebDomainFilter::Allow(vec!["docs.example.com".into()])),
             max_content_tokens: Some(3),
         };
@@ -1853,6 +1815,7 @@ mod tests {
 
         let zero_plugin = WebFetchPlugin::new(fetch_registry, None).with_execution_configuration(
             Some(WebFetchExecutionConfiguration {
+                url_sources: None,
                 domains: None,
                 max_content_tokens: Some(0),
             }),

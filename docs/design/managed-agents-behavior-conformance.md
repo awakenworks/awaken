@@ -200,6 +200,27 @@ and its executed evidence or states the remaining qualification boundary.
   store this per-Run policy. Current `web_fetch_text_limit` counts bounded UTF-8
   bytes; exact CMA token accounting remains a separate qualification, not a
   claim inferred from the field name.
+
+  SDK 0.132's optional `url_sources` extends this same frozen Web policy. The
+  `awaken-web-policy-contract` owns its closed all/none/only/except vocabulary,
+  shared directly by Session configuration and the Web extension; admission
+  validates exact custom-tool references and rejects an all-none selection.
+  Authored omission/null retain the existing execution behavior, while the
+  resolved WebFetch response includes the required nullable key and normalizes
+  shorthand to objects. Same-named MCP members retain their own response shape.
+  For a configured source restriction, the Native BeforeInference hook derives
+  eligible URLs from the existing transcript into Thread State. Frozen
+  `ToolDescriptor::kind` identifies client tools, including a custom tool named
+  `web_search`; assistant text/arguments, inter-thread reports, unmatched tool
+  results and other server tools contribute no URLs. Persisted observations
+  retain their source class after recovery or a later catalogue change.
+  `RoutedWebFetchTool::call` consumes that read-only view before credential or
+  provider I/O for both configured and direct calls. Missing evidence fails
+  closed; each inherited source selection must permit the exact URL. Provider
+  server execution cannot discard a configured restriction. The contract/source
+  decision tables and the existing direct/rebuilt child loopback test own these
+  claims; ACP/remote calls without this Runtime view cannot claim positive
+  provenance support.
 - **`agent_with_overrides` propagation.** CMA applies session overrides to the
   coordinator and its `self` copies, never to a roster agent referenced by id.
   `project_effective_agent_publication` and `project_session_tool_override`
