@@ -55,15 +55,35 @@ fail=0
 # the build is already broken).
 step() {
   local label="$1" fix="$2"; shift 2
-  local out rc
-  if out=$("$@" 2>&1); then
+  local out="" rc started=$SECONDS
+  if [ -n "${rust_step_evidence:-}" ]; then
+    # Spool while the command is alive: an outer deadline must not discard
+    # its unfinished build/test output with a shell command-substitution buffer.
+    if ! printf '%s\n' "$@" > "$rust_step_evidence/$label.arguments.txt"; then
+      fail=1
+      return 1
+    fi
+    if "$@" > "$rust_step_evidence/$label.log" 2>&1; then
+      rc=0
+    else
+      rc=$?
+    fi
+    if ! printf '%s\t%s\t%s\n' "$label" "$((SECONDS - started))" "$rc" \
+        >> "$rust_step_evidence/timings.tsv"; then
+      echo "ERROR: could not retain Rust step timing evidence" >&2
+      # An evidence fault rejects an otherwise successful command, but cannot
+      # replace an existing failure (especially admission's stop status 75).
+      [ "$rc" -ne 0 ] || rc=1
+    fi
+    [ "$rc" -eq 0 ] || out=$(cat "$rust_step_evidence/$label.log")
+  elif out=$("$@" 2>&1); then
+    rc=0
+  else
+    rc=$?
+  fi
+  if [ "$rc" -eq 0 ]; then
     echo "✓ $label"
     return 0
-  else
-    # Capture the command status while the failed `if` condition is still the
-    # immediately preceding command.  Reading `$?` after the `if` statement
-    # would observe the statement's own zero status and falsely continue.
-    rc=$?
   fi
   {
     echo ""
@@ -108,7 +128,52 @@ if [ "$mode" = "--self-test" ]; then
     echo "check-rust self-test: a failed step lost its status or failure aggregate" >&2
     exit 1
   fi
-  echo "check-rust self-test: success and failure branches are exact"
+  # Evidence decision table: C1 output precedes command completion; C2 the
+  # command exits 23; C3 the timing sink is a directory; C4 admission exits 75.
+  # E1 bytes are already on disk inside the running command; E2 exact status
+  # and aggregate survive; E3 a successful command cannot claim a logged pass;
+  # E4 no dependent command starts. These execute this same step function.
+  mkdir -p "$CARGO_TARGET_DIR/test-timings" || exit 1
+  self_test_evidence=$(mktemp -d "$CARGO_TARGET_DIR/test-timings/rust-step-self-test.XXXXXX") || exit 1
+  if ! (
+    rust_step_evidence="$self_test_evidence/recorded"
+    mkdir -p "$rust_step_evidence"
+    fail=0
+    step "streamed" "not applicable" sh -c \
+      'printf "started\n"; test -s "$1" || exit 1; printf "stderr\n" >&2' \
+      probe "$rust_step_evidence/streamed.log" >/dev/null 2>&1 || exit 1
+    [ "$fail" -eq 0 ] || exit 1
+    grep -Fxq started "$rust_step_evidence/streamed.log" || exit 1
+    grep -Fxq stderr "$rust_step_evidence/streamed.log" || exit 1
+    rc=0
+    step "failed" "not applicable" sh -c 'printf "failure\n" >&2; exit 23' \
+      >/dev/null 2>&1 || rc=$?
+    [ "$rc" -eq 23 ] && [ "$fail" -eq 1 ] || exit 1
+    grep -Fxq failure "$rust_step_evidence/failed.log" || exit 1
+    awk -F '\t' '$1 == "failed" && $3 == 23 { matched=1 } END { exit !matched }' \
+      "$rust_step_evidence/timings.tsv" || exit 1
+    rc=0
+    (step "resource" "not applicable" sh -c 'exit 75' >/dev/null 2>&1
+      touch "$rust_step_evidence/dependent-started") || rc=$?
+    [ "$rc" -eq 75 ] && [ ! -e "$rust_step_evidence/dependent-started" ] || exit 1
+    rust_step_evidence="$self_test_evidence/unwritable"
+    mkdir -p "$rust_step_evidence/timings.tsv"
+    fail=0
+    rc=0
+    step "unrecorded" "not applicable" true >/dev/null 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] && [ "$fail" -eq 1 ] || exit 1
+    rc=0
+    step "unrecorded-failure" "not applicable" sh -c 'exit 23' >/dev/null 2>&1 || rc=$?
+    [ "$rc" -eq 23 ] || exit 1
+    rc=0
+    (step "unrecorded-resource" "not applicable" sh -c 'exit 75' >/dev/null 2>&1
+      touch "$rust_step_evidence/dependent-started") || rc=$?
+    [ "$rc" -eq 75 ] && [ ! -e "$rust_step_evidence/dependent-started" ]
+  ); then
+    echo "check-rust self-test: streamed evidence or refusal lost its boundary" >&2
+    exit 1
+  fi
+  echo "check-rust self-test: success, failure and streamed evidence are exact"
   exit 0
 fi
 
@@ -118,6 +183,16 @@ fi
 if [ "$mode" = "--full" ]; then
   python3 scripts/ci/gate_tools.py disk --stage rust-full || exit $?
 fi
+
+# These are diagnostics, never a full-gate qualification receipt. Every run
+# retains its own source/patch, argv, original output and elapsed/status rows.
+mkdir -p "$CARGO_TARGET_DIR/test-timings" || exit 1
+rust_step_evidence=$(mktemp -d "$CARGO_TARGET_DIR/test-timings/rust-gate.XXXXXX") || exit 1
+git rev-parse HEAD > "$rust_step_evidence/source.txt" || exit 1
+git -c core.fsmonitor=false diff --binary HEAD > "$rust_step_evidence/working-tree.patch" || exit 1
+printf '%s\n' "$mode" > "$rust_step_evidence/mode.txt" || exit 1
+printf 'stage\telapsed_seconds\texit_code\n' > "$rust_step_evidence/timings.tsv" || exit 1
+echo "Rust stage evidence: $rust_step_evidence"
 
 step "dependency-sources" "use an allowlisted HTTPS Git repository and pin a full 40-character rev" \
   python3 scripts/ci/check_dependency_sources.py
@@ -289,8 +364,16 @@ case "$mode" in
       # nextest bounds every test with the deadline in .config/nextest.toml;
       # it does not run doctests, so the doctest target keeps its own step
       # rather than silently going unrun.
-      step "test" "re-run a single failure with: cargo nextest run --workspace -E 'test(<test_name>)' --no-capture" \
-        cargo nextest run --workspace --features "$workspace_features" "${locked[@]}"
+      # Same graph twice, with a warm no-op Cargo build on execution. Separate
+      # the expensive native link from test enumeration/execution, and retain
+      # Cargo's stable HTML build timings without nightly JSON instrumentation.
+      if step "test-build" "fix the test compilation/link errors shown above" \
+        cargo nextest run --workspace --features "$workspace_features" "${locked[@]}" --no-run --timings; then
+        step "test" "re-run a single failure with: cargo nextest run --workspace -E 'test(<test_name>)' --no-capture" \
+          cargo nextest run --workspace --features "$workspace_features" "${locked[@]}"
+      else
+        echo "   (skipping workspace execution until test binaries compile)" >&2
+      fi
       step "doctest" "re-run with: cargo test --workspace --doc <test_name> -- --nocapture" \
         cargo test --workspace --doc --features "$workspace_features" "${locked[@]}"
     else
