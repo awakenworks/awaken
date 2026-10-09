@@ -142,9 +142,11 @@ tool realization, and public events. Each claim below names its current owner
 and its executed evidence or states the remaining qualification boundary.
 
 - **The current official SDKs share one committed event contract.** The
-  TypeScript 0.131.0 and Python 1.11.0 anchors are extracted from exact npm and
-  PyPI packages by `managed-sdk-oracle`; the candidate delta and historical
-  matrices reuse the same Session, Resource, and event owners. Both Session and
+  locked current TypeScript and Python anchors are extracted from exact npm and
+  PyPI packages by [managed-sdk-oracle](../../packages/managed-sdk-oracle/README.md).
+  Its generated oracles own the current versions; this document does not keep
+  another version list. The candidate delta and historical matrices reuse the
+  same Session, Resource, and event owners. Both Session and
   Thread idle now serialize the SDK-required `stop_details` key as `null` for
   every currently produced non-refusal stop. `event_shapes` compares this and
   every other committed event against the generated nested SDK shape, including
