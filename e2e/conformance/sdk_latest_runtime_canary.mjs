@@ -233,6 +233,8 @@ async function exercisePathAndToolErrorAdmission() {
     }
     assert.equal(requests, 0, 'P1 invalid IDs never reach HTTP');
     assert.equal(path`/items?value=${''}`, '/items?value=', 'P2 query emptiness is valid');
+    assert.equal(path`/items#${''}`, '/items#', 'P2 fragment emptiness is valid');
+    assert.equal(path`/items/${'a/b'}`, '/items/a%2Fb', 'P1 valid identity encodes its slash');
     assert.throws(() => path`/items/${''}/${''}`, (error) =>
       /Value ""/u.test(error.message) && error.message.split('\n').at(-1).includes('^^'), 'P3 zero-width marks do not overlap');
     completeBehaviorOwner('candidate.path-parameter-admission');
@@ -243,70 +245,141 @@ async function exercisePathAndToolErrorAdmission() {
     const { ToolError } = await import(pathToFileURL(resolve(packageRoot, 'lib/tools/ToolError.mjs')));
     // E1 controls/bidi/lone surrogate -> one well-formed line; E2 Unicode
     // limits count points, not UTF-16; E3 oversized URL cannot parse to a site;
-    // E4 ordinary errors retain their message and explicit ToolError its content.
+    // E4 ordinary errors retain their message and explicit ToolError its content;
+    // E5 refusal blocks retain only nonempty text with well-formed Unicode.
     assert.equal(sanitize.oneLine(' a\n\u202eb\ud800 '), 'a b\ufffd', 'E1');
     assert.equal(sanitize.cutPoints('😀😀x', 2), '😀😀', 'E2');
-    assert.equal(sanitize.boundedTabURL('https://example.com/' + 'x'.repeat(4096)).startsWith('…'), true, 'E3');
+    assert.equal(sanitize.quotedName(" 'a'   b\n"), 'a b', 'E1 quoted name');
+    assert.equal(Array.from(sanitize.logSafe('😀'.repeat(201))).length, 200, 'E2 log bound');
+    assert.equal(sanitize.boundedTabURL('https://example.com/'), 'https://example.com/', 'E3 below bound');
+    const overflow = sanitize.boundedTabURL('https://example.com/' + '😀'.repeat(4096));
+    assert.equal(overflow.startsWith('…'), true, 'E3 visible overflow');
+    assert.equal(Array.from(overflow).length, 4096, 'E3 code-point bound');
+    assert.throws(() => new URL(overflow), 'E3 truncated text cannot authorize a site');
     assert.equal(Array.from(sanitize.errorText(new Error('😀'.repeat(5000)))).length, 4096, 'E2 bounded error');
-    for (const thrown of [new Error('failure'), 'failure', new ToolError('deliberate')]) {
+    for (const [thrown, content] of [[new Error('failure'), 'Error: failure'], ['failure', 'Error: failure'],
+      [23, 'Error: 23'], [null, 'Error: null'], [new ToolError([{ type: 'text', text: 'deliberate' }]), [{ type: 'text', text: 'deliberate' }]]]) {
       const result = await runRunnableTool({ run() { throw thrown; } }, {}, {});
-      assert.deepEqual(result, { content: thrown instanceof ToolError ? thrown.content : 'Error: failure', isError: true }, 'E4');
+      assert.deepEqual(result, { content, isError: true }, 'E4');
     }
+    assert.equal(sanitize.errorTextContent('\ud800'), '\ufffd', 'E5 string refusal');
+    assert.deepEqual(sanitize.errorTextContent([{ type: 'text', text: '' }, { type: 'image', source: {} },
+      { type: 'text', text: '\ud800', citations: [] }]), [{ type: 'text', text: '\ufffd', citations: [] }], 'E5 block refusal');
     completeBehaviorOwner('candidate.tool-error-sanitization');
   }
 }
 
 async function exerciseAmbiguousMemoryUpload(baseURL) {
   if (!requiredRetainedOwners.has('candidate.memory-ambiguous-upload')) return;
-  // M1 HTTP succeeds durably but its response is lost; M2 another local edit;
-  // M3 a genuine remote writer intervenes. R1 M1+M2+!M3 -> advance from the
-  // sent SHA and upload the new edit; R2 M1+M2+M3 -> pull the remote winner.
-  // Actual generated SDK calls and Memory/CAS repository own every mutation;
-  // the fault consumes one successful response and never fabricates state.
+  // Causes: M1 ack/accepted-lost/rejected-before-HTTP/remote-winner-before-send;
+  // M2 newer/reverted local edit; M3 sync/push-only flush. The 4*2*2 table owns
+  // R1 acknowledged/accepted-lost -> upload the next edit from the sent SHA;
+  // R2 rejected+reverted -> no second write; R3 remote winner -> no caller
+  // overwrite, sync pulls it while flush preserves local bytes. Four extra
+  // cells retain the already-covered remote write AFTER a lost durable reply.
+  // BOM input tests the transmitted UTF-8 SHA, not an on-disk hash replica.
+  // Real generated SDK + durable Memory/CAS own every mutation and version;
+  // faults either drop a request or consume its actual successful response.
   const observer = new Anthropic({ apiKey: 'e2e-dummy', baseURL });
-  for (const remoteWriter of [false, true]) {
+  for (const mode of ['ack', 'accepted-lost', 'rejected-lost', 'remote-winner', 'accepted-lost-remote']) {
+    for (const reverted of [false, true]) for (const pushOnly of [false, true]) {
+    const rule = `${mode}/${reverted}/${pushOnly}`;
+    const store = await observer.beta.memoryStores.create({ name: `ambiguous-${rule}` });
+    const memory = await observer.beta.memoryStores.memories.create(store.id, { path: '/sync.md', content: 'base', view: 'full' });
     let updates = 0;
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL, maxRetries: 0,
       fetch: async (input, init) => {
         const request = new Request(input, init);
         const update = request.method === 'POST' && /\/memories\/[^/]+$/u.test(new URL(request.url).pathname);
+        const first = update && ++updates === 1;
+        if (first && mode === 'remote-winner') await observer.beta.memoryStores.memories.update(memory.id, {
+          memory_store_id: store.id, content: 'remote-winner', precondition: { type: 'content_sha256', content_sha256: memory.content_sha256 },
+        });
+        if (first && ['rejected-lost', 'remote-winner'].includes(mode)) throw new TypeError('lost before Memory HTTP');
         const response = await fetch(request);
-        if (update && ++updates === 1 && response.ok) {
+        if (first && mode.startsWith('accepted-lost') && response.ok) {
           await response.arrayBuffer();
           throw new TypeError('lost response after durable Memory update');
         }
         return response;
       },
     });
-    const store = await observer.beta.memoryStores.create({ name: `ambiguous-${remoteWriter}` });
-    const memory = await observer.beta.memoryStores.memories.create(store.id, { path: '/sync.md', content: 'base', view: 'full' });
     const workdir = mkdtempSync(resolve(tmpdir(), 'awaken-candidate-memory-send-'));
     const helper = new SessionMemoryStores(client, { workdir });
     try {
       await helper.download({ resources: [{ type: 'memory_store', memory_store_id: store.id, name: 'candidate', access: 'read_write' }] });
       const local = resolve(workdir, 'memory/candidate/sync.md');
-      writeFileSync(local, 'sent');
-      await helper.flushWrites();
+      writeFileSync(local, '\ufeffsent');
+      await helper.syncAll(false);
       const landed = await observer.beta.memoryStores.memories.retrieve(memory.id, { memory_store_id: store.id, view: 'full' });
-      assert.equal(landed.content, 'sent', 'M1 durable effect exists despite loss');
-      writeFileSync(local, 'new-local');
-      if (remoteWriter) await observer.beta.memoryStores.memories.update(memory.id, {
+      const sent = mode === 'ack' || mode.startsWith('accepted-lost');
+      assert.equal(landed.content, sent ? 'sent' : mode === 'remote-winner' ? 'remote-winner' : 'base', `${rule} M1 actual first effect`);
+      const next = reverted ? 'base' : 'new-local';
+      writeFileSync(local, next);
+      if (mode === 'accepted-lost-remote') await observer.beta.memoryStores.memories.update(memory.id, {
         memory_store_id: store.id, content: 'remote-winner', precondition: { type: 'content_sha256', content_sha256: landed.content_sha256 },
       });
-      await helper.finish();
-      const expected = remoteWriter ? 'remote-winner' : 'new-local';
+      if (pushOnly) await helper.flushWrites(new AbortController().signal);
+      else await helper.syncAll(false);
+      const rival = mode === 'remote-winner' || mode === 'accepted-lost-remote';
+      const expected = rival ? 'remote-winner' : next;
       assert.equal((await observer.beta.memoryStores.memories.retrieve(memory.id, { memory_store_id: store.id, view: 'full' })).content, expected);
-      assert.equal(readFileSync(local, 'utf8'), expected);
-      assert.equal(updates, remoteWriter ? 1 : 2, 'R1/R2 exact helper update count');
+      assert.equal(readFileSync(local, 'utf8'), rival && !pushOnly ? expected : next, `${rule} R3 local outcome`);
+      assert.equal(updates, rival || (mode === 'rejected-lost' && reverted) ? 1 : 2, `${rule} R1-R3 exact helper attempts`);
       const history = [];
       for await (const row of observer.beta.memoryStores.memoryVersions.list(store.id)) history.push(row);
-      assert.equal(history.length, 3, 'one create and exactly two committed updates');
+      assert.equal(history.length, rival ? (sent ? 3 : 2) : sent ? 3 : reverted ? 1 : 2, `${rule} committed versions exclude duplicate effects`);
     } finally {
       await helper.dispose();
       rmSync(workdir, { recursive: true, force: true });
       await observer.beta.memoryStores.memories.delete(memory.id, { memory_store_id: store.id });
       await observer.beta.memoryStores.archive(store.id);
       await observer.beta.memoryStores.delete(store.id);
+    }
+    }
+  }
+  // R4 two new files land, with both replies lost OR only the second lost,
+  // then all local files vanish. Settle sent SHAs before the wipe check and
+  // recover both files: zero deletes/duplicate creates. Deletions are enabled
+  // and finish waives their wait; the mixed-ack cell exposes a premature
+  // one-file baseline, so the zero-delete assertion cannot pass vacuously.
+  for (const allLost of [false, true]) {
+    const store = await observer.beta.memoryStores.create({ name: `ambiguous-wipe-${allLost}` });
+    let creates = 0, deletes = 0;
+    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL, maxRetries: 0,
+      fetch: async (input, init) => {
+        const request = new Request(input, init), pathname = new URL(request.url).pathname;
+        const create = request.method === 'POST' && /\/memory_stores\/[^/]+\/memories$/u.test(pathname);
+        const body = create ? await request.clone().json() : undefined;
+        if (create) creates++;
+        if (request.method === 'DELETE' && /\/memories\/[^/]+$/u.test(pathname)) deletes++;
+        const response = await fetch(request);
+        if (create && response.ok && (allLost || body.path.endsWith('second.md'))) {
+          await response.arrayBuffer(); throw new TypeError('lost durable Memory create response');
+        }
+        return response;
+      },
+    });
+    const workdir = mkdtempSync(resolve(tmpdir(), 'awaken-candidate-memory-wipe-'));
+    const helper = new SessionMemoryStores(client, { workdir, syncDeletions: 'enabled' });
+    try {
+      await helper.download({ resources: [{ type: 'memory_store', memory_store_id: store.id, name: 'candidate', access: 'read_write' }] });
+      for (const name of ['first.md', 'second.md']) writeFileSync(resolve(workdir, `memory/candidate/${name}`), name);
+      await helper.syncAll(false);
+      const before = await drain(observer.beta.memoryStores.memories.list(store.id, { view: 'full' }));
+      assert.equal(before.length, 2, 'R4 both creates landed');
+      for (const name of ['first.md', 'second.md']) rmSync(resolve(workdir, `memory/candidate/${name}`));
+      await helper.finish();
+      assert.equal(creates, 2, 'R4 no duplicate creates');
+      assert.equal(deletes, 0, 'R4 no physical delete requests');
+      const after = await drain(observer.beta.memoryStores.memories.list(store.id, { view: 'full' }));
+      assert.deepEqual(after.map(({ id }) => id).sort(), before.map(({ id }) => id).sort(), 'R4 preserve exact remote identities');
+      for (const name of ['first.md', 'second.md']) assert.equal(readFileSync(resolve(workdir, `memory/candidate/${name}`), 'utf8'), name);
+      assert.equal((await drain(observer.beta.memoryStores.memoryVersions.list(store.id))).length, 2, 'R4 exactly two committed creates');
+    } finally {
+      await helper.dispose(); rmSync(workdir, { recursive: true, force: true });
+      for await (const row of observer.beta.memoryStores.memories.list(store.id)) await observer.beta.memoryStores.memories.delete(row.id, { memory_store_id: store.id });
+      await observer.beta.memoryStores.archive(store.id); await observer.beta.memoryStores.delete(store.id);
     }
   }
   completeBehaviorOwner('candidate.memory-ambiguous-upload');
