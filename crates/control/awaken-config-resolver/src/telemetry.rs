@@ -1,190 +1,245 @@
-//! Telemetry ceiling and its composition (ADR-0050 D3).
-//!
-//! The Org sets the compliance baseline (`content_capture` cap, `redaction`
-//! floor, `retention` max); Workspace/Agent/Session may only **tighten** it.
-//! [`TelemetryCeiling::tighten`] composes an upper ceiling with a lower layer's
-//! narrowing: capture takes the stricter (lower) level, redaction the stricter
-//! (higher) mode, retention the shorter bound. Because each operation is
-//! monotone, a lower layer can never widen the ceiling — enforced by types, not
-//! validation code.
+// @formal surface requirement=analytics.observability.projection_only
+// @formal reason: Static owner: the authored Workspace narrowing of the content-capture ceiling and its
+// @formal reason: repository admission. Dynamic path: a write is admitted only at the exact successor
+// @formal reason: revision and only when it does not exceed the deployment ceiling; readback rejects a
+// @formal reason: row relabelled to another Workspace. Evidence: analytics.observability.projection_only
+// @formal reason: plus this module's decision tables and both store adapters' CAS tests; a
+// @formal reason: product-requirement classification, not a direct proof claim.
+//! The Workspace layer of the content-capture ceiling (ADR-0050 D3, amended
+//! 2026-10-09): the authored, revisioned [`WorkspaceTelemetryConfiguration`]
+//! and its repository port. Control serves it to the Run boundary through the
+//! governance `TelemetryNarrowingSource` port, where the execution host
+//! composes it with the deployment ceiling.
 
 use awaken_runtime_contract::ContentCapture;
 use serde::{Deserialize, Serialize};
 
-/// How thoroughly recorded content is scrubbed. A total order by strictness
-/// (`None < Regex < Dlp`); composing two takes the **stricter** (higher).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RedactionMode {
-    /// No scrubbing (the open default).
-    #[default]
-    None,
-    /// Regex PII scrubbing (email/ssn/card).
-    Regex,
-    /// External DLP backend (future).
-    Dlp,
-}
-
-impl RedactionMode {
-    /// The stricter (more-scrubbing) of two modes.
-    #[must_use]
-    pub fn stricter(self, other: Self) -> Self {
-        self.max(other)
-    }
-}
-
-/// A telemetry ceiling: the most a layer permits. `retention_days = None` means
-/// unbounded (the least strict). Org's is the compliance baseline; lower layers
-/// tighten it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct TelemetryCeiling {
-    /// The most content this layer permits.
-    pub content_capture: ContentCapture,
-    /// The least scrubbing this layer requires.
-    pub redaction: RedactionMode,
-    /// The longest retention this layer permits (`None` = unbounded).
+/// One Workspace's authored telemetry narrowing. `revision` is the
+/// compare-and-set generation: 0 means never written, every write advances it
+/// by exactly one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceTelemetryConfiguration {
+    pub workspace_id: String,
+    pub revision: u64,
+    /// The most content this Workspace permits; `None` inherits the ceiling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retention_days: Option<u32>,
+    pub content_capture: Option<ContentCapture>,
 }
 
-impl TelemetryCeiling {
-    /// Compose this (upper) ceiling with a `lower` layer's narrowing: capture
-    /// meets (stricter), redaction takes the stricter mode, retention takes the
-    /// shorter bound. Monotone — the result is never looser than either input.
+impl WorkspaceTelemetryConfiguration {
+    /// The unwritten configuration of `workspace_id`: no narrowing.
     #[must_use]
-    pub fn tighten(self, lower: Self) -> Self {
+    pub fn new(workspace_id: String) -> Self {
         Self {
-            content_capture: self.content_capture.meet(lower.content_capture),
-            redaction: self.redaction.stricter(lower.redaction),
-            retention_days: shorter(self.retention_days, lower.retention_days),
+            workspace_id,
+            revision: 0,
+            content_capture: None,
         }
     }
+
+    /// Structural validity of a stored or proposed configuration.
+    pub fn validate(&self) -> Result<(), TelemetryConfigError> {
+        if self.workspace_id.trim().is_empty() {
+            return Err(TelemetryConfigError::Invalid(
+                "telemetry configuration requires a Workspace".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Replace the narrowing for the write that follows `expected`. The new
+    /// level must stay within `ceiling`, the binding top-layer level: a lower
+    /// layer may only tighten, so a wider value is rejected here.
+    pub fn narrowed(
+        &self,
+        expected: u64,
+        content_capture: Option<ContentCapture>,
+        ceiling: ContentCapture,
+    ) -> Result<Self, TelemetryConfigError> {
+        if self.revision != expected {
+            return Err(TelemetryConfigError::Conflict);
+        }
+        if content_capture.is_some_and(|level| level > ceiling) {
+            return Err(TelemetryConfigError::Invalid(format!(
+                "content_capture may only tighten the deployment ceiling `{}`",
+                capture_name(ceiling)
+            )));
+        }
+        let revision = expected
+            .checked_add(1)
+            .ok_or_else(|| TelemetryConfigError::Invalid("revision exhausted".into()))?;
+        Ok(Self {
+            workspace_id: self.workspace_id.clone(),
+            revision,
+            content_capture,
+        })
+    }
 }
 
-/// The shorter of two optional day-bounds, treating `None` as unbounded.
-fn shorter(a: Option<u32>, b: Option<u32>) -> Option<u32> {
-    match (a, b) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (Some(x), None) | (None, Some(x)) => Some(x),
-        (None, None) => None,
+fn capture_name(level: ContentCapture) -> &'static str {
+    match level {
+        ContentCapture::Off => "off",
+        ContentCapture::Structured => "structured",
+        ContentCapture::Full => "full",
     }
+}
+
+/// A Workspace telemetry configuration operation failed.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum TelemetryConfigError {
+    #[error("telemetry configuration revision conflict")]
+    Conflict,
+    #[error("invalid telemetry configuration: {0}")]
+    Invalid(String),
+    #[error("telemetry configuration storage failure: {0}")]
+    Storage(String),
+}
+
+/// Durable store of Workspace telemetry configurations. SQLite and PostgreSQL
+/// adapters implement it in the admin store.
+#[async_trait::async_trait]
+pub trait WorkspaceTelemetryRepository: Send + Sync {
+    /// The configuration `workspace` authored, if any.
+    async fn get_telemetry_configuration(
+        &self,
+        workspace: &str,
+    ) -> Result<Option<WorkspaceTelemetryConfiguration>, TelemetryConfigError>;
+    /// Write `next` iff the stored revision is `expected` (0 = absent).
+    async fn put_telemetry_configuration(
+        &self,
+        expected: u64,
+        next: &WorkspaceTelemetryConfiguration,
+    ) -> Result<(), TelemetryConfigError>;
+}
+
+/// The admission every adapter applies before its compare-and-set: a valid
+/// configuration whose revision is the exact successor of `expected`.
+pub fn validate_telemetry_configuration_write(
+    expected: u64,
+    next: &WorkspaceTelemetryConfiguration,
+) -> Result<(), TelemetryConfigError> {
+    next.validate()?;
+    if expected.checked_add(1) != Some(next.revision) {
+        return Err(TelemetryConfigError::Invalid(
+            "telemetry configuration revision must advance by one".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Validate a row read back from storage against the key it was read by.
+pub fn validate_stored_telemetry_configuration(
+    workspace: &str,
+    revision: u64,
+    stored: &WorkspaceTelemetryConfiguration,
+) -> Result<(), TelemetryConfigError> {
+    stored.validate()?;
+    if stored.workspace_id != workspace || stored.revision != revision || revision == 0 {
+        return Err(TelemetryConfigError::Storage(
+            "telemetry stored scope/revision mismatch".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const LEVELS: [ContentCapture; 3] = [
+        ContentCapture::Off,
+        ContentCapture::Structured,
+        ContentCapture::Full,
+    ];
+
     #[test]
-    fn tighten_takes_stricter_capture_and_redaction_and_shorter_retention() {
-        let org = TelemetryCeiling {
-            content_capture: ContentCapture::Full,
-            redaction: RedactionMode::Regex,
-            retention_days: Some(90),
-        };
-        let workspace = TelemetryCeiling {
-            content_capture: ContentCapture::Structured,
-            redaction: RedactionMode::None,
-            retention_days: Some(30),
-        };
-        let got = org.tighten(workspace);
-        // capture: stricter = Structured; redaction: stricter = Regex; retention: shorter = 30.
-        assert_eq!(got.content_capture, ContentCapture::Structured);
-        assert_eq!(got.redaction, RedactionMode::Regex);
-        assert_eq!(got.retention_days, Some(30));
+    fn narrowed_admits_only_tightening_at_the_expected_revision() {
+        // Causes: C1 expected revision matches; C2 requested level (unset or
+        // each level) within the ceiling (each level). Effects: E1 next
+        // revision carrying the level; E2 Conflict; E3 Invalid (wider than the
+        // ceiling). Rules: C1&C2->E1, !C1->E2, C1&!C2->E3. Exhaustive table.
+        let current = WorkspaceTelemetryConfiguration::new("ws".into());
+        for ceiling in LEVELS {
+            for requested in [
+                None,
+                Some(ContentCapture::Off),
+                Some(ContentCapture::Structured),
+                Some(ContentCapture::Full),
+            ] {
+                let result = current.narrowed(0, requested, ceiling);
+                if requested.is_some_and(|level| level > ceiling) {
+                    assert!(
+                        matches!(result, Err(TelemetryConfigError::Invalid(_))),
+                        "E3"
+                    );
+                } else {
+                    let next = result.expect("E1");
+                    assert_eq!((next.revision, next.content_capture), (1, requested));
+                }
+                assert_eq!(
+                    current.narrowed(1, requested, ceiling),
+                    Err(TelemetryConfigError::Conflict),
+                    "E2"
+                );
+            }
+        }
+        let mut exhausted = current.clone();
+        exhausted.revision = u64::MAX;
+        assert!(matches!(
+            exhausted.narrowed(u64::MAX, None, ContentCapture::Full),
+            Err(TelemetryConfigError::Invalid(_))
+        ));
     }
 
     #[test]
-    fn a_lower_layer_cannot_widen() {
-        let org = TelemetryCeiling {
-            content_capture: ContentCapture::Off,
-            redaction: RedactionMode::Dlp,
-            retention_days: Some(7),
+    fn write_and_readback_admission_tables() {
+        let mut next = WorkspaceTelemetryConfiguration::new("ws".into());
+        next.revision = 1;
+        assert_eq!(validate_telemetry_configuration_write(0, &next), Ok(()));
+        assert!(validate_telemetry_configuration_write(1, &next).is_err());
+        assert!(validate_telemetry_configuration_write(u64::MAX, &next).is_err());
+        let blank = WorkspaceTelemetryConfiguration {
+            workspace_id: " ".into(),
+            revision: 1,
+            content_capture: None,
         };
-        // A lower layer asking for MORE than the Org baseline is clamped down.
-        let greedy = TelemetryCeiling {
-            content_capture: ContentCapture::Full,
-            redaction: RedactionMode::None,
-            retention_days: Some(365),
-        };
-        let got = org.tighten(greedy);
-        assert_eq!(got.content_capture, ContentCapture::Off);
-        assert_eq!(got.redaction, RedactionMode::Dlp);
-        assert_eq!(got.retention_days, Some(7));
-    }
+        assert!(validate_telemetry_configuration_write(0, &blank).is_err());
 
-    #[test]
-    fn none_retention_is_unbounded() {
-        assert_eq!(shorter(None, Some(30)), Some(30));
-        assert_eq!(shorter(Some(30), None), Some(30));
-        assert_eq!(shorter(None, None), None);
-        assert_eq!(shorter(Some(30), Some(7)), Some(7));
-    }
-
-    #[test]
-    fn redaction_stricter_is_a_total_order_none_lt_regex_lt_dlp() {
-        // A10(a): `stricter` is max over the total order None < Regex < Dlp.
-        assert!(RedactionMode::None < RedactionMode::Regex);
-        assert!(RedactionMode::Regex < RedactionMode::Dlp);
         assert_eq!(
-            RedactionMode::None.stricter(RedactionMode::Regex),
-            RedactionMode::Regex
+            validate_stored_telemetry_configuration("ws", 1, &next),
+            Ok(())
+        );
+        assert!(validate_stored_telemetry_configuration("other", 1, &next).is_err());
+        assert!(validate_stored_telemetry_configuration("ws", 2, &next).is_err());
+        next.revision = 0;
+        assert!(validate_stored_telemetry_configuration("ws", 0, &next).is_err());
+    }
+
+    #[test]
+    fn configuration_wire_shape_is_closed() {
+        let config = WorkspaceTelemetryConfiguration::new("ws".into())
+            .narrowed(0, Some(ContentCapture::Off), ContentCapture::Full)
+            .unwrap();
+        let wire = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({"workspace_id": "ws", "revision": 1, "content_capture": "off"})
         );
         assert_eq!(
-            RedactionMode::Regex.stricter(RedactionMode::Dlp),
-            RedactionMode::Dlp
+            serde_json::from_value::<WorkspaceTelemetryConfiguration>(wire).unwrap(),
+            config
         );
-        // Commutative, and the open default never wins over a stricter mode.
+        let inherit = WorkspaceTelemetryConfiguration::new("ws".into());
         assert_eq!(
-            RedactionMode::Dlp.stricter(RedactionMode::None),
-            RedactionMode::Dlp
+            serde_json::to_value(&inherit).unwrap(),
+            serde_json::json!({"workspace_id": "ws", "revision": 0})
         );
-        assert_eq!(
-            RedactionMode::None.stricter(RedactionMode::None),
-            RedactionMode::None
+        assert!(
+            serde_json::from_value::<WorkspaceTelemetryConfiguration>(serde_json::json!({
+                "workspace_id": "ws", "revision": 1, "retention_days": 7
+            }))
+            .is_err()
         );
-    }
-
-    #[test]
-    fn tighten_composes_the_three_axes_independently() {
-        // A10(e): capture/redaction/retention each tighten on their own axis — a layer
-        // that only tightens one leaves the others at the upper ceiling.
-        let org = TelemetryCeiling {
-            content_capture: ContentCapture::Full,
-            redaction: RedactionMode::None,
-            retention_days: Some(90),
-        };
-        // Lower layer tightens ONLY redaction.
-        let only_redaction = TelemetryCeiling {
-            content_capture: ContentCapture::Full,
-            redaction: RedactionMode::Dlp,
-            retention_days: None,
-        };
-        let got = org.tighten(only_redaction);
-        assert_eq!(got.content_capture, ContentCapture::Full);
-        assert_eq!(got.redaction, RedactionMode::Dlp);
-        assert_eq!(got.retention_days, Some(90));
-    }
-
-    #[test]
-    fn tighten_is_associative_over_a_chain() {
-        let org = TelemetryCeiling {
-            content_capture: ContentCapture::Full,
-            redaction: RedactionMode::None,
-            retention_days: Some(90),
-        };
-        let ws = TelemetryCeiling {
-            content_capture: ContentCapture::Full,
-            redaction: RedactionMode::Regex,
-            retention_days: None,
-        };
-        let agent = TelemetryCeiling {
-            content_capture: ContentCapture::Structured,
-            redaction: RedactionMode::None,
-            retention_days: Some(30),
-        };
-        let chained = org.tighten(ws).tighten(agent);
-        assert_eq!(chained.content_capture, ContentCapture::Structured);
-        assert_eq!(chained.redaction, RedactionMode::Regex);
-        assert_eq!(chained.retention_days, Some(30));
     }
 }

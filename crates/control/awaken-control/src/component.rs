@@ -81,6 +81,8 @@ pub struct ControlDependencies {
     pub credentials: Arc<dyn awaken_credential_vault::repo::ManagedCredentialRepository>,
     pub secrets: Arc<dyn SecretStore>,
     pub mcp_config: Arc<dyn awaken_agent_config::mcp_config::McpConfigurationRepository>,
+    /// Authored Workspace narrowing of the content-capture ceiling.
+    pub telemetry_config: Arc<dyn awaken_config_resolver::WorkspaceTelemetryRepository>,
     pub profiles: Arc<dyn InferenceProfileStore>,
     pub webhook_store: Arc<dyn WebhookStore>,
     pub resource_store: Arc<dyn AgentInputBindingRepository>,
@@ -151,9 +153,10 @@ pub struct ControlComponent {
     pub admin_tools: Vec<Arc<dyn RawTool>>,
     pub vault_state: Arc<VaultState>,
     pub repository_credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
-    /// The same Control-owned consent source exposed locally to AllInOne. A
-    /// split Coordinator consumes its authenticated HTTP projection instead.
-    pub data_subject_consent: Arc<dyn awaken_data_governance_contract::DataSubjectConsentSource>,
+    /// The Control-owned consent source and Workspace capture narrowing (over
+    /// the repository `/v1/config/telemetry` authors), exposed locally to
+    /// AllInOne. A split Coordinator consumes their authenticated HTTP projection.
+    pub capture_policy: awaken_data_governance_contract::CapturePolicySources,
     /// The same Control-owned resolver projected through the authenticated
     /// private boundary for hosted compliance orchestration.
     pub data_subject_resolver: Arc<dyn awaken_data_governance_contract::DataSubjectResolver>,
@@ -174,6 +177,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         secrets,
         profiles,
         mcp_config,
+        telemetry_config,
         webhook_store,
         resource_store,
         config_store,
@@ -351,29 +355,23 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         )
         .expect("a derived 32-byte enrollment signing key is valid"),
     );
-    let resolver = RepoDataSubjectResolver::new(data_subjects.clone(), erasure_jobs, clock.clone())
-        .with_target(ErasureTarget::Coordinator, coordinator_content_eraser);
-    let resolver = match resource_content_eraser {
-        Some(eraser) => resolver.with_target(ErasureTarget::Resources, eraser),
-        None => resolver,
-    };
-    let resolver = Arc::new(resolver);
-    let data_subject_consent: Arc<dyn awaken_data_governance_contract::DataSubjectConsentSource> =
-        resolver.clone();
-    let data_subject_resolver: Arc<dyn awaken_data_governance_contract::DataSubjectResolver> =
-        resolver;
-    let organization_privacy: Arc<
-        dyn awaken_data_governance_contract::OrganizationPrivacyResolver,
-    > = Arc::new(RepoOrganizationPrivacyResolver::new(
+    let telemetry_policy =
+        crate::TelemetryPolicyService::new(telemetry_config, content_capture_ceiling);
+    let (capture_policy, data_subject_resolver, organization_privacy) = privacy_ports(
         data_subjects,
-        data_subject_resolver.clone(),
-    ));
+        erasure_jobs,
+        coordinator_content_eraser,
+        resource_content_eraser,
+        &telemetry_policy,
+        clock.clone(),
+    );
     let router = control_router(ControlRouterInput {
         catalog,
         credentials,
         secrets,
         profiles,
         mcp_catalog,
+        telemetry_policy,
         webhook_store,
         resource_store,
         probe: credential_probe,
@@ -421,10 +419,42 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         registration_supervisor,
         admin_tools,
         vault_state,
-        data_subject_consent,
+        capture_policy,
         data_subject_resolver,
         organization_privacy,
     }
+}
+
+/// The Control-owned privacy ports one component exports: the Run-boundary
+/// capture policy (subject consent + Workspace narrowing), the subject erasure
+/// resolver and the organization privacy process manager over it.
+fn privacy_ports(
+    data_subjects: Arc<dyn DataSubjectRepo>,
+    erasure_jobs: Arc<dyn ErasureJobRepo>,
+    coordinator_content_eraser: Arc<dyn awaken_data_governance_contract::ContentEraser>,
+    resource_content_eraser: Option<Arc<dyn awaken_data_governance_contract::ContentEraser>>,
+    telemetry_policy: &crate::TelemetryPolicyService,
+    clock: Arc<dyn awaken_time::WallClock>,
+) -> (
+    awaken_data_governance_contract::CapturePolicySources,
+    Arc<dyn awaken_data_governance_contract::DataSubjectResolver>,
+    Arc<dyn awaken_data_governance_contract::OrganizationPrivacyResolver>,
+) {
+    let resolver = RepoDataSubjectResolver::new(data_subjects.clone(), erasure_jobs, clock)
+        .with_target(ErasureTarget::Coordinator, coordinator_content_eraser);
+    let resolver = Arc::new(match resource_content_eraser {
+        Some(eraser) => resolver.with_target(ErasureTarget::Resources, eraser),
+        None => resolver,
+    });
+    let capture_policy = awaken_data_governance_contract::CapturePolicySources {
+        consent: resolver.clone(),
+        narrowing: telemetry_policy.narrowing_source(),
+    };
+    let organization_privacy = Arc::new(RepoOrganizationPrivacyResolver::new(
+        data_subjects,
+        resolver.clone(),
+    ));
+    (capture_policy, resolver, organization_privacy)
 }
 
 async fn recover_and_supervise_credentials(

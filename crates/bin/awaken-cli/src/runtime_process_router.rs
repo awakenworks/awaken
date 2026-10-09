@@ -479,7 +479,7 @@ pub(super) async fn prepare_runtime_routers(
         repository_credentials,
         deployment_audit_plane,
         local_webhook_stores,
-        data_subject_consent,
+        capture_policy,
         registration_supervisor,
         local_vault_state,
     ) = match control_component {
@@ -505,7 +505,7 @@ pub(super) async fn prepare_runtime_routers(
                     control_stores.webhooks.clone(),
                     control_stores.secrets.clone(),
                 )),
-                component.data_subject_consent,
+                component.capture_policy,
                 Some(component.registration_supervisor),
                 Some(component.vault_state),
             )
@@ -524,7 +524,7 @@ pub(super) async fn prepare_runtime_routers(
                 services.repository_credentials,
                 ManagementAuditPlane::from_repository(services.audit),
                 None,
-                services.consent,
+                services.capture_policy,
                 None,
                 None,
             )
@@ -625,7 +625,7 @@ pub(super) async fn prepare_runtime_routers(
         ))
         .with_agent_publications(executable_agent_catalog.clone())
         .with_capture_sink(capture_sink)
-        .with_data_subject_consent_source(data_subject_consent)
+        .with_capture_policy_sources(capture_policy)
         .with_admin_tools(admin_execs.clone());
     if let Some(credentials) = credential_materializer.clone() {
         host_builder = host_builder.with_credential_materializer(credentials);

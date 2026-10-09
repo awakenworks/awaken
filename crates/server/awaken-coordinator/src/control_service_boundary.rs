@@ -36,6 +36,7 @@ const CREDENTIAL_ACCESS_PATH: &str = "/internal/v1/control/credentials/access";
 const REPOSITORY_ADMISSION_PATH: &str = "/internal/v1/control/credentials/repository-admission";
 const WEBHOOK_DELIVER_PATH: &str = "/internal/v1/control/webhooks/deliver";
 const CONSENT_CEILING_PATH: &str = "/internal/v1/control/data-subjects/consent-ceiling";
+const TELEMETRY_NARROWING_PATH: &str = "/internal/v1/control/telemetry/workspace-narrowing";
 pub const DATA_SUBJECT_ERASE_PATH: &str = "/internal/v1/control/data-subjects/erase";
 pub const ORGANIZATION_ERASE_PATH: &str = "/internal/v1/control/privacy/organizations/erase";
 pub const ORGANIZATION_EXPORT_PATH: &str = "/internal/v1/control/privacy/organizations/export";
@@ -51,6 +52,7 @@ struct ControlServiceState {
     webhooks: Arc<dyn awaken_session_application_contract::LifecycleFactDelivery>,
     data_subjects: Arc<dyn awaken_data_governance_contract::DataSubjectResolver>,
     organization_privacy: Arc<dyn awaken_data_governance_contract::OrganizationPrivacyResolver>,
+    telemetry: Arc<dyn awaken_data_governance_contract::TelemetryNarrowingSource>,
     authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
 }
 
@@ -122,6 +124,12 @@ struct ConsentCeilingCommand {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TelemetryNarrowingCommand {
+    workspace_id: String,
+}
+
+#[derive(Serialize, Deserialize)]
 struct DataSubjectEraseCommand {
     subject: awaken_runtime_contract::DataSubjectId,
 }
@@ -137,13 +145,22 @@ struct OrganizationExportCommand {
     subject: Option<awaken_runtime_contract::DataSubjectId>,
 }
 
+/// The Control-owned privacy ports this private boundary projects: subject
+/// consent and erasure, organization privacy, and the Workspace narrowing of
+/// the content-capture ceiling.
+#[derive(Clone)]
+pub struct PrivacyPorts {
+    pub data_subjects: Arc<dyn awaken_data_governance_contract::DataSubjectResolver>,
+    pub organization_privacy: Arc<dyn awaken_data_governance_contract::OrganizationPrivacyResolver>,
+    pub telemetry: Arc<dyn awaken_data_governance_contract::TelemetryNarrowingSource>,
+}
+
 pub fn router(
     audit: ManagementAuditPlane,
     credentials: Arc<dyn SessionCredentialSource>,
     repository_credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
     webhooks: Arc<dyn awaken_session_application_contract::LifecycleFactDelivery>,
-    data_subjects: Arc<dyn awaken_data_governance_contract::DataSubjectResolver>,
-    organization_privacy: Arc<dyn awaken_data_governance_contract::OrganizationPrivacyResolver>,
+    privacy: PrivacyPorts,
     bearer_token: impl Into<String>,
 ) -> Result<Router, String> {
     Ok(router_with_authenticator(
@@ -151,8 +168,7 @@ pub fn router(
         credentials,
         repository_credentials,
         webhooks,
-        data_subjects,
-        organization_privacy,
+        privacy,
         awaken_service_auth_contract::static_token_authenticator(bearer_token)?,
     ))
 }
@@ -165,8 +181,7 @@ pub fn router_with_authenticator(
     credentials: Arc<dyn SessionCredentialSource>,
     repository_credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
     webhooks: Arc<dyn awaken_session_application_contract::LifecycleFactDelivery>,
-    data_subjects: Arc<dyn awaken_data_governance_contract::DataSubjectResolver>,
-    organization_privacy: Arc<dyn awaken_data_governance_contract::OrganizationPrivacyResolver>,
+    privacy: PrivacyPorts,
     authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
 ) -> Router {
     let state = ControlServiceState {
@@ -174,8 +189,9 @@ pub fn router_with_authenticator(
         credentials,
         repository_credentials,
         webhooks,
-        data_subjects,
-        organization_privacy,
+        data_subjects: privacy.data_subjects,
+        organization_privacy: privacy.organization_privacy,
+        telemetry: privacy.telemetry,
         authenticator,
     };
     Router::new()
@@ -189,6 +205,7 @@ pub fn router_with_authenticator(
         .route(REPOSITORY_ADMISSION_PATH, post(repository_admission))
         .route(WEBHOOK_DELIVER_PATH, post(deliver_webhook))
         .route(CONSENT_CEILING_PATH, post(consent_ceiling))
+        .route(TELEMETRY_NARROWING_PATH, post(telemetry_narrowing))
         .route(DATA_SUBJECT_ERASE_PATH, post(erase_data_subject))
         .route(ORGANIZATION_ERASE_PATH, post(erase_organization))
         .route(ORGANIZATION_EXPORT_PATH, post(export_organization))
@@ -365,6 +382,19 @@ async fn consent_ceiling(
         .data_subjects
         .consent_ceiling(&command.subject, command.purpose)
         .await))
+}
+
+async fn telemetry_narrowing(
+    State(state): State<ControlServiceState>,
+    Json(command): Json<TelemetryNarrowingCommand>,
+) -> axum::response::Response {
+    response(
+        state
+            .telemetry
+            .workspace_narrowing(&command.workspace_id)
+            .await
+            .map_err(|error| error.to_string()),
+    )
 }
 
 async fn erase_data_subject(
@@ -697,6 +727,28 @@ impl awaken_data_governance_contract::DataSubjectConsentSource for HttpControlSe
 }
 
 #[async_trait::async_trait]
+impl awaken_data_governance_contract::TelemetryNarrowingSource for HttpControlServiceClient {
+    async fn workspace_narrowing(
+        &self,
+        workspace: &str,
+    ) -> Result<
+        awaken_data_governance_contract::TelemetryNarrowing,
+        awaken_data_governance_contract::TelemetryPolicyError,
+    > {
+        // An error reaches the Run boundary, which closes the ceiling: an
+        // unavailable Control authority must never widen content capture.
+        self.post(
+            TELEMETRY_NARROWING_PATH,
+            &TelemetryNarrowingCommand {
+                workspace_id: workspace.to_owned(),
+            },
+        )
+        .await
+        .map_err(|_| awaken_data_governance_contract::TelemetryPolicyError::AuthorityUnreachable)
+    }
+}
+
+#[async_trait::async_trait]
 impl awaken_data_governance_contract::DataSubjectResolver for HttpControlServiceClient {
     async fn erase(
         &self,
@@ -765,6 +817,25 @@ mod tests {
     impl awaken_service_auth_contract::ServiceBearerTokenSource for RotatingTokenSource {
         fn current_token(&self) -> Result<Arc<str>, String> {
             Ok(self.0.read().expect("token source read").clone())
+        }
+    }
+
+    /// Control's authored narrowing: `workspace-a` captures no content.
+    struct ClosedWorkspace;
+
+    #[async_trait::async_trait]
+    impl awaken_data_governance_contract::TelemetryNarrowingSource for ClosedWorkspace {
+        async fn workspace_narrowing(
+            &self,
+            workspace: &str,
+        ) -> Result<
+            awaken_data_governance_contract::TelemetryNarrowing,
+            awaken_data_governance_contract::TelemetryPolicyError,
+        > {
+            Ok(awaken_data_governance_contract::TelemetryNarrowing {
+                content_capture: (workspace == "workspace-a")
+                    .then_some(awaken_runtime_contract::ContentCapture::Off),
+            })
         }
     }
 
@@ -843,7 +914,9 @@ mod tests {
         // subject erase reaches the same resolver and returns its stable receipt;
         // R8 rotating the injected source makes router and client accept only
         // the successor token without reconstruction; R9 organization erase and
-        // export use the same authenticated private boundary. These rules cover
+        // export use the same authenticated private boundary; R11 the
+        // Workspace telemetry narrowing crosses it unchanged and R12 a rejected
+        // read is an error, never an open ceiling. These rules cover
         // every boundary authority and the authentication gate.
         let audit = ManagementAuditPlane::new(Arc::new(
             awaken_config_store::SqliteConfigStore::open_in_memory()
@@ -865,8 +938,11 @@ mod tests {
             credentials,
             repository_admission.clone(),
             delivery.clone(),
-            Arc::new(awaken_data_governance_contract::NullResolver),
-            Arc::new(awaken_data_governance_contract::NullResolver),
+            PrivacyPorts {
+                data_subjects: Arc::new(awaken_data_governance_contract::NullResolver),
+                organization_privacy: Arc::new(awaken_data_governance_contract::NullResolver),
+                telemetry: Arc::new(ClosedWorkspace),
+            },
             Arc::new(awaken_service_auth_contract::TokenSourceAuthenticator::new(
                 token_source.clone(),
             )),
@@ -988,6 +1064,27 @@ mod tests {
             "R5"
         );
         assert_eq!(
+            awaken_data_governance_contract::TelemetryNarrowingSource::workspace_narrowing(
+                &client,
+                "workspace-a",
+            )
+            .await
+            .unwrap()
+            .content_capture,
+            Some(awaken_runtime_contract::ContentCapture::Off),
+            "R11 authenticated narrowing read preserves Control's value"
+        );
+        assert_eq!(
+            awaken_data_governance_contract::TelemetryNarrowingSource::workspace_narrowing(
+                &client,
+                "workspace-b",
+            )
+            .await
+            .unwrap(),
+            awaken_data_governance_contract::TelemetryNarrowing::default(),
+            "R11 another Workspace keeps its own narrowing"
+        );
+        assert_eq!(
             awaken_data_governance_contract::DataSubjectResolver::erase(
                 &client,
                 &awaken_runtime_contract::DataSubjectId("dsub-a".into()),
@@ -1043,6 +1140,15 @@ mod tests {
             .await,
             awaken_runtime_contract::ContentCapture::Structured,
             "R6"
+        );
+        assert_eq!(
+            awaken_data_governance_contract::TelemetryNarrowingSource::workspace_narrowing(
+                &rejected,
+                "workspace-a",
+            )
+            .await,
+            Err(awaken_data_governance_contract::TelemetryPolicyError::AuthorityUnreachable),
+            "R12 a rejected narrowing read is an error the Run boundary closes"
         );
         assert!(
             awaken_data_governance_contract::DataSubjectResolver::erase(
