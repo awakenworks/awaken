@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use sqlx::{Connection as _, TransactionManager as _};
 
 use crate::WRITE_WAIT;
 use crate::clock_hold::ClockHold;
@@ -131,6 +132,20 @@ impl EmbeddedSqlite {
             .max_lifetime(None)
             .acquire_timeout(ADMISSION_WAIT)
             .test_before_acquire(false)
+            .after_release(|connection, _| {
+                Box::pin(async move {
+                    // sqlx's custom BEGIN validates its handle after the worker
+                    // acknowledged BEGIN but before a Transaction exists. A
+                    // cancelled constructor can therefore leave depth behind
+                    // without a Transaction Drop to enqueue rollback. Return
+                    // the same connection only after the driver's own rollback
+                    // settles every remaining level; sqlx retires it on error.
+                    while connection.is_in_transaction() {
+                        sqlx::sqlite::SqliteTransactionManager::rollback(connection).await?;
+                    }
+                    Ok(true)
+                })
+            })
             .connect_with(options)
             .await
             .map_err(SqlitePoolError::Open)?;
@@ -663,5 +678,126 @@ mod tests {
         .expect("H4 admission released")
         .unwrap();
         assert_eq!(count, 0, "H4 rollback precedes successor access");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pool_cancelled_custom_begin_never_leaks_transaction_depth() {
+        use std::future::{Future as _, poll_fn};
+        use std::task::Poll;
+
+        // H5 cancellation at the first driver suspension (BEGIN acknowledgement),
+        // H6 cancellation at the second suspension (custom-BEGIN handle validation)
+        // -> E1 the same pool admits the next BEGIN IMMEDIATE at depth zero.
+        // H7 a BEGIN completes before that suspension -> dropping its actual
+        // Transaction has the same E1. E2 the private memory table survives,
+        // proving rollback reused the connection instead of losing the database.
+        // Poll the real public sqlx future, not a
+        // model of its worker; dropping this acquired connection matches the
+        // pool-owned connection dropped by a cancelled Transaction constructor.
+        let pool = memory_pool().await;
+        for boundary in [1, 2] {
+            let mut cancellations = 0;
+            for attempt in 0..32 {
+                let mut connection = pool.acquire().await.unwrap();
+                let cancelled = {
+                    let mut beginning = std::pin::pin!(sqlx::Connection::begin_with(
+                        &mut *connection,
+                        "BEGIN IMMEDIATE"
+                    ));
+                    let mut pending = 0;
+                    poll_fn(|context| match beginning.as_mut().poll(context) {
+                        Poll::Pending => {
+                            pending += 1;
+                            if pending == boundary {
+                                Poll::Ready(true)
+                            } else {
+                                Poll::Pending
+                            }
+                        }
+                        Poll::Ready(result) => {
+                            drop(result.unwrap());
+                            Poll::Ready(false)
+                        }
+                    })
+                    .await
+                };
+                cancellations += usize::from(cancelled);
+                drop(connection);
+                let next = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    pool.begin_with("BEGIN IMMEDIATE"),
+                )
+                .await
+                .expect("H5-H7 next admission must not remain blocked")
+                .unwrap_or_else(|error| panic!("boundary {boundary}, attempt {attempt}: {error}"));
+                next.rollback().await.unwrap();
+                let count: i64 = sqlx::query_scalar("SELECT count(*) FROM evidence")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                assert_eq!(count, 0, "E2 retain the same in-memory database");
+            }
+            assert!(cancellations > 0, "boundary {boundary} actually cancelled");
+        }
+    }
+
+    #[tokio::test]
+    async fn pool_release_settles_nested_depth_or_retires_failed_rollback() {
+        // Release decision table: R1 orphan depth>1 + rollback succeeds =>
+        // rollback every level, retain the memory DB, discard uncommitted write;
+        // R2 tracked depth>0 + SQLite already rolled back => rollback error,
+        // retire that connection and preserve the file's committed authority.
+        // R0 depth=0 reuse is covered by the process-policy/admission cases.
+        // These use the actual driver transaction manager and SQL engine, not
+        // a mock depth counter or a second pool implementation.
+        let memory = memory_pool().await;
+        let mut connection = memory.acquire().await.unwrap();
+        for _ in 0..2 {
+            sqlx::sqlite::SqliteTransactionManager::begin(&mut connection, None)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO evidence VALUES (1)")
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        drop(connection);
+        let next = memory.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        next.rollback().await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM evidence")
+            .fetch_one(&memory)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "R1 all nested uncommitted writes rolled back");
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = EmbeddedSqlite::file(directory.path().join("rollback.db"));
+        let file = store.open().await.unwrap();
+        sqlx::query("CREATE TABLE evidence (id INTEGER); INSERT INTO evidence VALUES (7)")
+            .execute(&file)
+            .await
+            .unwrap();
+        let mut connection = file.acquire().await.unwrap();
+        sqlx::sqlite::SqliteTransactionManager::begin(&mut connection, None)
+            .await
+            .unwrap();
+        sqlx::query("ROLLBACK")
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        assert!(
+            connection.is_in_transaction(),
+            "R2 driver still records depth"
+        );
+        drop(connection);
+        let next = file.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        next.rollback().await.unwrap();
+        let value: i64 = sqlx::query_scalar("SELECT id FROM evidence")
+            .fetch_one(&file)
+            .await
+            .unwrap();
+        assert_eq!(value, 7, "R2 committed file authority survives retirement");
+        file.close().await;
+        store.settled().await;
     }
 }
