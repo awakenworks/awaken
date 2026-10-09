@@ -26,6 +26,10 @@ Counted from production code (comments and `cfg(test)` code are not scanned):
   state gets its own owner, and is held per module at or below the baseline
   instead of being reported item by item. Paths inside those blocks are not
   counted as `upward-edge`.
+
+When an edge or a method goes, lower the baseline with
+`python3 scripts/ci/_module_layer_fitness.py --tighten`; it only removes or
+lowers held entries, never adds or raises one.
 """
 
 from __future__ import annotations
@@ -314,7 +318,8 @@ def layer_errors(edges: dict[str, set[str]], shared_host: dict[str, int], baseli
                 "Move the shared part down into a realizer or leaf module, or take it through a port"
             )
         for item in sorted(was - now):
-            errors.append(f"upward-edge: {pair} no longer names {item}; remove it from {BASELINE.name} in this commit")
+            errors.append(f"upward-edge: {pair} no longer names {item}; lower {BASELINE.name} in this commit "
+                          f"(`{Path(__file__).name} --tighten`)")
     held_impl: dict[str, int] = baseline.get("shared-host-impl", {})
     for module in sorted(set(shared_host) | set(held_impl)):
         now, was = shared_host.get(module, 0), held_impl.get(module, 0)
@@ -323,7 +328,7 @@ def layer_errors(edges: dict[str, set[str]], shared_host: dict[str, int], baseli
                           "realization state its own owner instead of adding host methods")
         elif now < was:
             errors.append(f"shared-host-impl: {module} has {now} SharedHost methods, below the baseline {was}; "
-                          f"lower {BASELINE.name} in this commit")
+                          f"lower {BASELINE.name} in this commit (`{Path(__file__).name} --tighten`)")
     return [f"module-layer: {error}" for error in errors]
 
 
@@ -338,6 +343,27 @@ def check_all(crates: Path, baseline_path: Path = BASELINE) -> list[str]:
         return errors
     edges, shared_host = measure(sources, table)
     return layer_errors(edges, shared_host, json.loads(baseline_path.read_text(encoding="utf-8")))
+
+
+def tightened(edges: dict[str, set[str]], shared_host: dict[str, int], baseline: dict) -> dict:
+    """The baseline lowered to today's measures: entries only shrink or disappear.
+
+    A held pair keeps only the items still named, and goes when none is; a held
+    SharedHost count drops to today's and goes at zero. Nothing is ever added or
+    raised, so `--tighten` cannot admit a new edge or a new method.
+    """
+    held_edges: dict[str, list[str]] = baseline.get("upward-edges", {})
+    kept_edges = {
+        pair: sorted(set(items) & edges.get(pair, set()))
+        for pair, items in held_edges.items()
+    }
+    held_impl: dict[str, int] = baseline.get("shared-host-impl", {})
+    kept_impl = {module: min(was, shared_host.get(module, 0)) for module, was in held_impl.items()}
+    return {
+        **baseline,
+        "upward-edges": {pair: items for pair, items in sorted(kept_edges.items()) if items},
+        "shared-host-impl": {module: count for module, count in sorted(kept_impl.items()) if count > 0},
+    }
 
 
 def summary(crates: Path) -> dict:
@@ -362,6 +388,7 @@ def selftest() -> None:
     | L6   | `use super::*` in a realizer child of a host module                  | edge to `*` of the parent |
     | L7   | path inside `impl SharedHost` / `impl T for SharedHost` in realizer  | counted as methods, not edges |
     | L8   | SharedHost methods above / below / at the baseline                   | error / error (lower) / accept |
+    | L9   | `--tighten`: gone item / gone pair / lower count / new item or more  | drop / drop / lower / never added |
     """
     table = layer_table((
         (REALIZER, "r", ("real", "mix::env")),
@@ -395,9 +422,38 @@ def selftest() -> None:
     assert "no longer names Beta" in layer_errors(shrunk, shared_host, baseline)[0], "L4 gone"
     assert "baseline 4" in layer_errors(edges, {"real": 5}, baseline)[0], "L8 above"
     assert "below the baseline" in layer_errors(edges, {"real": 3}, baseline)[0], "L8 below"
+    now_edges = {"real -> top": {"Alpha", "Zeta"}, "mix::env -> mix::run": {"Delta"}}
+    tight = tightened(now_edges, {"real": 2, "new": 1}, baseline)
+    assert tight["upward-edges"] == {"mix::env -> mix::run": ["Delta"], "real -> top": ["Alpha"]}, "L9 edges"
+    assert tight["shared-host-impl"] == {"real": 2}, "L9 counts"
+    assert tightened(edges, {}, baseline)["shared-host-impl"] == {}, "L9 zero drops the entry"
+    assert layer_errors({"real -> top": {"Alpha"}, "mix::env -> mix::run": {"Delta"}}, {"real": 2}, tight) == [], \
+        "L9 a tightened baseline holds"
     print("_module_layer_fitness selftest: the decision tables hold")
 
 
+def parse(argv: list[str]):
+    import argparse
+    parser = argparse.ArgumentParser(prog="_module_layer_fitness.py", description=__doc__, allow_abbrev=False,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--self-test", action="store_true", help="run the decision tables")
+    parser.add_argument("--tighten", action="store_true",
+                        help=f"lower {BASELINE.name} to today's measures (never raises or adds an entry)")
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
+    import sys
+    args = parse(sys.argv[1:])
     selftest()
+    if args.self_test:
+        raise SystemExit(0)
+    if args.tighten:
+        manifest = _crate_boundary_workspace.crate_manifest(CRATE, _crate_boundary_workspace.CRATES)
+        measured_edges, measured_impl = measure(module_sources(manifest), layer_table())
+        held = json.loads(BASELINE.read_text(encoding="utf-8"))
+        BASELINE.write_text(json.dumps(tightened(measured_edges, measured_impl, held), indent=2) + "\n",
+                            encoding="utf-8")
+        print(f"tightened {BASELINE.name}")
+        raise SystemExit(0)
     print(json.dumps(summary(_crate_boundary_workspace.CRATES), indent=2))
