@@ -8,6 +8,10 @@
 //! the shared Agent Run substrate, fire-and-forget via [`BackgroundRuns`], triggered by
 //! the host after a Run, and reads memories back for recall.
 
+use awaken_credential_contract::{
+    AttemptCredentialBinding, AttemptCredentialRealization, CredentialRealizationProfile,
+    CredentialRealizationReceipt, CredentialRealizationRecordError, CredentialRealizationRecorder,
+};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -96,7 +100,7 @@ struct MemoryExtractionCredentialAuthority {
     intent_id: String,
     owner: String,
     generation: u64,
-    bindings: Vec<awaken_credential_contract::AttemptCredentialBinding>,
+    bindings: Vec<AttemptCredentialBinding>,
 }
 
 impl MemoryExtractionCredentialAuthority {
@@ -131,28 +135,23 @@ impl awaken_runtime_contract::AttemptOwnershipVerifier for MemoryExtractionCrede
 }
 
 #[async_trait]
-impl awaken_credential_contract::CredentialRealizationRecorder
-    for MemoryExtractionCredentialAuthority
-{
+impl CredentialRealizationRecorder for MemoryExtractionCredentialAuthority {
     async fn record(
         &self,
-        receipt: awaken_credential_contract::CredentialRealizationReceipt,
-    ) -> Result<(), awaken_credential_contract::CredentialRealizationRecordError> {
+        receipt: CredentialRealizationReceipt,
+    ) -> Result<(), CredentialRealizationRecordError> {
         awaken_credential_contract::verify_credential_realization_receipt(&self.bindings, &receipt)
-            .map_err(|error| {
-                awaken_credential_contract::CredentialRealizationRecordError(error.to_string())
-            })?;
+            .map_err(|error| CredentialRealizationRecordError(error.to_string()))?;
         // The extraction intent is SDK state; it carries the receipt as an
         // opaque token fenced by claim epoch and candidate (ADR-0086 §7).
         let receipt = serde_json::to_value(&receipt)
             .and_then(awaken_ext_memory::CredentialRealizationToken::new)
-            .map_err(|error| {
-                awaken_credential_contract::CredentialRealizationRecordError(error.to_string())
-            })?;
+            .map_err(|error| CredentialRealizationRecordError(error.to_string()))?;
         for _ in 0..4 {
-            let mut intent = self.current().await.map_err(|error| {
-                awaken_credential_contract::CredentialRealizationRecordError(error.to_string())
-            })?;
+            let mut intent = self
+                .current()
+                .await
+                .map_err(|error| CredentialRealizationRecordError(error.to_string()))?;
             let expected_revision = intent.revision;
             intent
                 .record_credential_realization(
@@ -161,9 +160,7 @@ impl awaken_credential_contract::CredentialRealizationRecorder
                     awaken_time::WallClockExt::now_ms(self.clock.as_ref()),
                     receipt.clone(),
                 )
-                .map_err(|error| {
-                    awaken_credential_contract::CredentialRealizationRecordError(error.to_string())
-                })?;
+                .map_err(|error| CredentialRealizationRecordError(error.to_string()))?;
             if intent.revision == expected_revision {
                 // The aggregate already contains this exact receipt. Its
                 // idempotent command deliberately does not bump revision, so
@@ -179,19 +176,13 @@ impl awaken_credential_contract::CredentialRealizationRecorder
                 Ok(()) => return Ok(()),
                 Err(MemoryExtractionError::RevisionConflict(_)) => continue,
                 Err(error) => {
-                    return Err(
-                        awaken_credential_contract::CredentialRealizationRecordError(
-                            error.to_string(),
-                        ),
-                    );
+                    return Err(CredentialRealizationRecordError(error.to_string()));
                 }
             }
         }
-        Err(
-            awaken_credential_contract::CredentialRealizationRecordError(
-                "Memory extraction credential receipt CAS remained contended".into(),
-            ),
-        )
+        Err(CredentialRealizationRecordError(
+            "Memory extraction credential receipt CAS remained contended".into(),
+        ))
     }
 }
 
@@ -269,9 +260,7 @@ impl MemoryRuntime {
     ) -> Result<(Arc<dyn LlmExecutor>, RuntimeRunContext), String> {
         let snapshot = &intent.extractor;
         if let Some(materializer) = self.inference_materializer.as_ref() {
-            let holder =
-                awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
-                    .inference_holder;
+            let holder = CredentialRealizationProfile::self_hosted_native().inference_holder;
             let model = &snapshot.agent.resolved_spec.model_binding;
             let bindings = awaken_credential_contract::compile_candidate_credential_bindings(
                 &[model],
@@ -295,11 +284,9 @@ impl MemoryRuntime {
             });
             let context = RuntimeRunContext::new()
                 .with_ownership(authority.clone())
-                .with_credential_realization(
-                    awaken_credential_contract::AttemptCredentialRealization::new(
-                        bindings, authority,
-                    ),
-                );
+                .with_credential_realization(AttemptCredentialRealization::new(
+                    bindings, authority,
+                ));
             return materializer
                 .materialize_pinned(model, &context)
                 .map(|executor| (executor, context))
