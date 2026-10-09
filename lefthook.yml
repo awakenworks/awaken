@@ -296,7 +296,7 @@ pre-commit:
     # full CI uses the same owner through check-all.sh's static lane.
     command-deadline:
       # >>> generated glob from test_deadline.py INPUT_GLOBS — do not edit
-      glob: "{scripts/ci/_deadline.sh,scripts/ci/deadline.py,scripts/ci/test_deadline.py}"
+      glob: "{scripts/ci/_deadline.sh,scripts/ci/_native_shell.py,scripts/ci/_windows_job.py,scripts/ci/deadline.py,scripts/ci/test_deadline.py}"
       # <<< generated glob
       run: python3 scripts/ci/test_deadline.py
 

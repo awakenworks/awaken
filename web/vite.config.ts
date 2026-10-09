@@ -20,6 +20,9 @@ const apiProxy = () => ({
 });
 
 export default defineConfig({
+  // Static assets come from imports and the brand plugins. A missing public
+  // directory cannot be a Cargo build input: it makes every build stale.
+  publicDir: false,
   plugins: [react(), brandFaviconPlugin("agents"), brandAppearancePlugin("agents", { legacyStorageKeys: ["awaken.console.theme"] })],
   build: {
     rollupOptions: {

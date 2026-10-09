@@ -32,10 +32,10 @@ pub const DEFAULT_LISTEN: &str = "0.0.0.0:8080";
 /// warm Pod is not reaped before its host has had a chance to dial it.
 pub const DEFAULT_ACCEPT_TIMEOUT: Duration = Duration::from_secs(600);
 
-#[cfg(not(test))]
+// Real process observation uses the production grace on every platform. A
+// test-only 100ms grace races Windows process retirement; timer-only failure
+// fixtures below use paused time instead of changing the lifecycle policy.
 const CHILD_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
-#[cfg(test)]
-const CHILD_EXIT_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// A terminal bridge failure.  In particular, signal termination and failures in
 /// either copy direction are explicit errors and can never become exit code zero.
@@ -389,7 +389,7 @@ mod tests {
         let argv = sleeping_cli_command();
 
         let error = bridge.run(&argv).await.expect_err("must time out");
-        assert!(matches!(error, BridgeError::AcceptTimeout));
+        assert!(matches!(error, BridgeError::AcceptTimeout), "{error:?}");
     }
 
     #[cfg(unix)]
@@ -471,7 +471,10 @@ mod tests {
         drop(socket);
 
         let error = server.await.expect("join").expect_err("must be bounded");
-        assert!(matches!(error, BridgeError::ExitTimeout), "BF4/E1");
+        assert!(
+            matches!(error, BridgeError::ExitTimeout),
+            "BF4/E1: {error:?}"
+        );
     }
 
     #[cfg(unix)]
@@ -652,7 +655,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn unknown_retirement_never_becomes_a_successful_cleanup() {
         struct UnknownProcess(&'static str);
         #[async_trait::async_trait]
@@ -693,7 +696,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_stalled_final_copy_has_a_bounded_drain() {
         // Drain graph: C1=CLI/output task is terminally stalled; C2=drain bound
         // expires; E1=CopyDrainTimeout and task cancellation. Rule BF5=C1+C2=>E1.
@@ -732,10 +735,25 @@ mod tests {
     #[cfg(windows)]
     fn sleeping_cli_command() -> Vec<String> {
         vec![
-            "cmd.exe".into(),
-            "/C".into(),
-            "ping -n 30 127.0.0.1 >NUL".into(),
+            std::env::current_exe().unwrap().to_str().unwrap().into(),
+            "--exact".into(),
+            "bridge::tests::sleeping_cli_child".into(),
+            "--ignored".into(),
+            "--nocapture".into(),
         ]
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "private direct-child participant invoked by bridge lifetime tests"]
+    fn sleeping_cli_child() {
+        // Windows LocalProcess owns the direct child. A cmd -> ping fixture
+        // introduces a descendant that retains nextest's capture pipe for 30s
+        // and falsely broadens this test's termination claim. This participant
+        // ignores stdin EOF and exits only when its real owner terminates it.
+        loop {
+            std::thread::park();
+        }
     }
 
     #[cfg(not(windows))]

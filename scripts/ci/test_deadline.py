@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 import signal
-import shutil
+import socket
 import shlex
 import subprocess
 import sys
@@ -14,6 +14,7 @@ import time
 import unittest
 import _strict_unittest as strict_unittest
 import deadline
+from _native_shell import bash_executable
 
 
 # Actual execution subjects are the input authority; temporary-directory walks
@@ -23,6 +24,7 @@ INPUT_GLOBS: tuple[str, ...] = (
     "scripts/ci/_deadline.sh",
     "scripts/ci/test_deadline.py",
     "scripts/ci/_windows_job.py",
+    "scripts/ci/_native_shell.py",
 )
 ROOT = Path(__file__).resolve().parents[2]
 DEADLINE = ROOT / INPUT_GLOBS[0]
@@ -231,14 +233,7 @@ raise SystemExit(result)
 class WindowsDeadlineTests(unittest.TestCase):
     @staticmethod
     def native_bash():
-        configured = os.environ.get("AWAKEN_NATIVE_BASH")
-        if configured:
-            return configured
-        git = shutil.which("git")
-        candidate = Path(git).resolve().parent.parent / "bin/bash.exe" if git else None
-        if candidate is None or not candidate.is_file():
-            raise RuntimeError("Set AWAKEN_NATIVE_BASH to the native Git Bash executable")
-        return str(candidate)
+        return bash_executable()
 
     def test_native_status_and_literal_arguments(self):
         arguments = ("with spaces", "'quotes'", "$(touch unexpected);`literal`")
@@ -289,7 +284,7 @@ class WindowsDeadlineTests(unittest.TestCase):
         # W1 timeout with a live leader, W2 normal leader exit with a surviving
         # child, W3 deadline-owner death. All must close inherited stdout and
         # terminate the same real child, observed through a retained OS handle.
-        # A file barrier lets this test retain the child handle before effects;
+        # A TCP barrier lets this test retain the child handle before effects;
         # cleanup uses that handle, never a reused PID or unrelated process.
         import ctypes
         from ctypes import wintypes
@@ -303,41 +298,55 @@ class WindowsDeadlineTests(unittest.TestCase):
         kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
         with tempfile.TemporaryDirectory(prefix="awaken-windows-deadline-") as tmp:
             root = Path(tmp)
-            marker, proceed = root / "child-pid", root / "proceed"
             fixture = root / "owned-tree.py"
-            fixture.write_text('''import os, subprocess, sys, time
-from pathlib import Path
-if sys.argv[1] == 'child':
-    marker = Path(sys.argv[2])
-    pending = marker.with_suffix('.pending')
-    pending.write_text(str(os.getpid()))
-    pending.replace(marker)
-    time.sleep(300)
-else:
+            fixture.write_text('''import os, socket, subprocess, sys, time
+role = sys.argv[1]
+if role != 'child':
     subprocess.Popen([sys.executable, __file__, 'child', sys.argv[2]])
-    until = time.monotonic() + 20
-    while not Path(sys.argv[3]).exists():
-        assert time.monotonic() < until, 'parent barrier was not released'
-        time.sleep(0.01)
+host, port = sys.argv[2].rsplit(':', 1)
+witness = socket.create_connection((host, int(port)), timeout=20)
+witness.sendall(f"{role}:{os.getpid()}\\n".encode())
+if role == 'child':
+    # The test retains this connection while checking the process handle. No
+    # fixture exit or PID reuse can precede the owner's termination effect.
+    witness.settimeout(300)
+    witness.recv(1)
+else:
+    assert witness.recv(1) == b'x', 'parent barrier was not released'
     print('ready', flush=True)
-    if sys.argv[1] == 'exit':
+    if role == 'exit':
         raise SystemExit(23)
     time.sleep(300)
 ''', encoding="utf-8")
+            listener = socket.socket()
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(2)
+            address = f"127.0.0.1:{listener.getsockname()[1]}"
             budget = "30" if exit_leader or kill_owner else "10"
             driver = subprocess.Popen(
                 [sys.executable, str(DEADLINE), budget, "--", sys.executable, str(fixture),
-                 "exit" if exit_leader else "wait", str(marker), str(proceed)],
+                 "exit" if exit_leader else "wait", address],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
             child_handle = None
+            participants = {}
             try:
                 until = time.monotonic() + 8
-                while not marker.exists() and driver.poll() is None and time.monotonic() < until:
-                    time.sleep(0.01)
-                self.assertTrue(marker.exists(), "owned native child did not reach its readiness barrier")
-                child_handle = kernel.OpenProcess(0x00100001, False, int(marker.read_text()))
+                for _ in range(2):
+                    listener.settimeout(max(0.001, until - time.monotonic()))
+                    connection, _ = listener.accept()
+                    connection.settimeout(max(0.001, until - time.monotonic()))
+                    line = bytearray()
+                    while not line.endswith(b"\n"):
+                        chunk = connection.recv(1)
+                        self.assertTrue(chunk, "owned participant exited before readiness")
+                        line.extend(chunk)
+                    role, pid = line.decode().strip().split(":")
+                    self.assertNotIn(role, participants)
+                    participants[role] = connection
+                    if role == "child":
+                        child_handle = kernel.OpenProcess(0x00100001, False, int(pid))
                 self.assertTrue(child_handle, "cannot retain the owned child's synchronization/cleanup handle")
-                proceed.touch()
+                participants["exit" if exit_leader else "wait"].sendall(b"x")
                 if kill_owner:
                     driver.kill()
                 output, errors = driver.communicate(timeout=15)
@@ -354,6 +363,9 @@ else:
                         kernel.TerminateProcess(child_handle, 1)
                     kernel.CloseHandle(child_handle)
                 driver.communicate(timeout=5)
+                for connection in participants.values():
+                    connection.close()
+                listener.close()
 
     def test_native_job_reaps_children_on_timeout_and_leader_exit(self):
         for exit_leader in (False, True):

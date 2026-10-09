@@ -5,13 +5,14 @@
 # through their owned secret-file/FD boundary instead.
 
 awaken_unset_ambient_api_keys() {
-  local name normalized
+  local name
   while IFS= read -r name; do
-    # macOS still ships Bash 3.2, which has no `${name^^}` expansion.
-    normalized=$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')
-    if [[ "$normalized" == "API_KEY" || "$normalized" == *_API_KEY ]]; then
-      unset "$name"
-    fi
+    # Match the same case-insensitive names with Bash 3.2 builtins. Spawning
+    # printf/tr for every inherited name makes parallel native Windows probes
+    # spend their admission budget starting unrelated utility processes.
+    case "$name" in
+      [aA][pP][iI]_[kK][eE][yY]|*_[aA][pP][iI]_[kK][eE][yY]) unset "$name" ;;
+    esac
   done < <(compgen -e)
 }
 
@@ -99,9 +100,42 @@ awaken_provider_environment_self_test() {
     echo "provider environment sanitizer self-test failed" >&2
     return 1
   }
+  awaken_provider_name_predicate_self_test || return 1
   awaken_repo_tools_self_test || return 1
   echo "provider environment sanitizer self-test passed"
 }
+
+awaken_provider_name_predicate_self_test() (
+  # Cross all 64 letter-case combinations with exact/prefixed names. Near
+  # misses remain byte-for-byte present; no real credential value is read.
+  local mask index name
+  local upper=(A P I K E Y) lower=(a p i k e y) removed=()
+  local retained=(APIKEY CUSTOMAPI_KEY API_KEY_FILE prefix_API_KEY_SUFFIX)
+  for mask in {0..63}; do
+    name=""
+    for index in {0..5}; do
+      if (( mask & (1 << index) )); then
+        name="${name}${lower[$index]}"
+      else
+        name="${name}${upper[$index]}"
+      fi
+      [ "$index" -ne 2 ] || name="${name}_"
+    done
+    export "$name=fixture" "prefix_$name=fixture"
+    removed+=("$name" "prefix_$name")
+  done
+  for name in "${retained[@]}"; do export "$name=fixture"; done
+  awaken_unset_ambient_api_keys
+  for name in "${removed[@]}"; do
+    if declare -p "$name" >/dev/null 2>&1; then
+      echo "provider name predicate retained a credential name" >&2
+      return 1
+    fi
+  done
+  for name in "${retained[@]}"; do
+    [ "${!name}" = fixture ] || { echo "provider name predicate changed a near miss" >&2; return 1; }
+  done
+)
 
 awaken_repo_tools_self_test() {
   local root present absent before after

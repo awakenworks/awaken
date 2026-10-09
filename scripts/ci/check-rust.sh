@@ -138,8 +138,10 @@ if [ "$mode" = "--full" ] && ! cargo nextest --version >/dev/null 2>&1; then
   exit 1
 fi
 
-step "fmt" "cargo fmt --all" \
-  cargo fmt --all -- --check
+step "fmt-batch-self-test" "fix the native workspace formatting planner" \
+  python3 scripts/ci/check_rustfmt.py --self-test
+step "fmt" "cargo fmt -p <reported-package>" \
+  python3 scripts/ci/check_rustfmt.py
 
 # Cause/effect rule CR1: when Runtime Host is resolved without default
 # features (cause), its neutral credential-refresh port must still compile

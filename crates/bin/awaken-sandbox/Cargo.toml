@@ -93,7 +93,7 @@ awaken-lease-testkit.workspace = true
 async-trait.workspace = true
 awaken-agent-channel.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "test-util"] }
 awaken-tool-relay = { workspace = true, features = ["test-support"] }
 # Hand/scoped tests consume the shared explicit authority fixture. Declare it
 # here so isolated thin/fat package tests do not borrow workspace feature union.
