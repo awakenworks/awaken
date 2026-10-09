@@ -323,7 +323,9 @@ mod tests {
         // error authorizes/projects a frame or invents EOF. Rules: R6=C1+C3 =>
         // E1+E3; R7=C2+C3 => E2+E3. The scalar rows below cross every boundary.
         for oversized in [false, true] {
-            let (mut host, mut peer) = tokio::io::duplex(64);
+            // Still smaller than the outbound frame: both peers really block.
+            // Avoid 262,145 scheduling turns just to deliver the 16MiB boundary.
+            let (mut host, mut peer) = tokio::io::duplex(8 * 1024);
             let remote = tokio::spawn(async move {
                 if oversized {
                     let _ = peer.write_all(&vec![b'x'; MAX_FRAME_BYTES + 1]).await;

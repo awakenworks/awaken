@@ -1547,16 +1547,36 @@ mod twin_registry {
     /// Body of one top-level function, which rustfmt guarantees ends at the
     /// first closing brace in column zero.
     fn body(name: &str) -> &'static str {
+        function_body(dispatch(), name)
+    }
+
+    fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
         let needle = format!("fn {name}(");
-        let dispatch = dispatch();
-        let start = dispatch
+        let start = source
             .find(&needle)
             .unwrap_or_else(|| panic!("registered twin `{name}` is not declared in dispatch.rs"));
-        let end = start
-            + dispatch[start..]
-                .find("\n}\n")
-                .expect("a top-level function closes in column zero");
-        &dispatch[start..end]
+        let tail = &source[start..];
+        let mut offset = 0;
+        for line in tail.split_inclusive('\n') {
+            if line.trim_end_matches(['\r', '\n']) == "}" {
+                return &tail[..offset];
+            }
+            offset += line.len();
+        }
+        panic!("a top-level function closes in column zero")
+    }
+
+    #[test]
+    fn registered_function_boundaries_accept_lf_and_crlf() {
+        // R5 both checkout line endings preserve the same function boundary;
+        // an indented nested brace cannot hide the later kernel invocation,
+        // and a neighboring function cannot supply the missing invocation.
+        let source = "fn first() {\n    if true {\n        nested();\n    }\n    kernel();\n}\nfn next() {\n    unrelated();\n}\n";
+        for source in [source.to_string(), source.replace('\n', "\r\n")] {
+            let first = function_body(&source, "first");
+            assert!(first.contains("kernel();"));
+            assert!(!first.contains("unrelated();"));
+        }
     }
 
     /// Names of every `pub(super) async fn` in this file that carries the

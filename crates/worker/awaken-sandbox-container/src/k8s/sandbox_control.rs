@@ -47,7 +47,9 @@ impl K8sSandboxControlForwarder {
             || image
                 .chars()
                 .any(|character| character.is_whitespace() || character == '\0')
-            || !std::path::Path::new(&executable).is_absolute()
+            // This executable runs inside the Linux Pod, independent of the
+            // Coordinator/Worker host's native path syntax.
+            || !executable.starts_with('/')
             || executable
                 .chars()
                 .any(|character| matches!(character, '\r' | '\n' | '\0'))
@@ -495,6 +497,23 @@ mod tests {
             .is_err(),
             "K1/E2 executable"
         );
+        for executable in [
+            r"C:\bin\awaken-sandbox.exe",
+            r"\\host\share\awaken-sandbox.exe",
+            "/bin/tool\r",
+            "/bin/tool\n",
+            "/bin/tool\0",
+        ] {
+            assert!(
+                K8sSandboxControlForwarder::new(
+                    format!("registry.test/image@sha256:{}", "a".repeat(64)),
+                    executable,
+                    7778,
+                )
+                .is_err(),
+                "K1/E2 executable must be an absolute Unix path without frame delimiters"
+            );
+        }
         assert!(
             K8sSandboxControlForwarder::new(
                 format!("registry.test/image@sha256:{}", "a".repeat(64)),

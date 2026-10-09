@@ -4,7 +4,7 @@
 //! crosses a `--network none` sandbox boundary (C5). The transport primitives and
 //! `serve_hand` are tested elsewhere; this proves the role's compose (bind + accept +
 //! serve loop + tool dispatch) works with the actual binary's wiring.
-#![cfg(feature = "hand")]
+#![cfg(all(feature = "hand", unix))]
 
 use std::time::Duration;
 

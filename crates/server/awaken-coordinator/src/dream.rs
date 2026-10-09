@@ -41,6 +41,16 @@ Your only task is to curate durable memories from the frozen inputs into the des
 // compatibility promise is the typed failure, not an asserted hosted number.
 const DREAM_INPUT_MEMORY_LIMIT_BYTES: usize = 10 * 1024 * 1024;
 
+fn transcript_filename(session_id: &str) -> String {
+    // Session identities are opaque and may contain `:` or path separators.
+    // The JSONL retains the original identity; its filesystem name must be one
+    // stable, portable leaf on every provider.
+    format!(
+        "{}.jsonl",
+        awaken_resource_contract::content_id(session_id.as_bytes())
+    )
+}
+
 fn validate_input_memory_size(files: &[Memory], limit: usize) -> Result<(), DreamFailure> {
     let total = files.iter().try_fold(0_usize, |total, memory| {
         let size = memory.content.as_deref().map_or(0, str::len);
@@ -132,7 +142,7 @@ impl BuiltInDreamAgent {
                 })?;
             let bytes = SessionTranscriptJsonlExporter::encode(session_id.as_str(), &messages)
                 .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
-            let filename = format!("{session_id}.jsonl");
+            let filename = transcript_filename(session_id.as_str());
             exports.push((filename, bytes));
         }
         Ok(exports)
@@ -630,6 +640,38 @@ mod tests {
         assert!(validate_input_memory_size(&at_limit, 5).is_ok(), "S1/E1");
         let error = validate_input_memory_size(&at_limit, 4).expect_err("S2/E2");
         assert_eq!(error.kind, "input_memory_store_too_large", "S2/E2");
+    }
+
+    #[test]
+    fn transcript_names_are_portable_and_preserve_opaque_identity_distinctions() {
+        // Causes: N1 opaque identities contain Windows punctuation, separators,
+        // device names, Unicode, or a long value; N2 distinct identities would
+        // collide under character replacement. Effects: E1 one bounded ASCII
+        // leaf; E2 deterministic replay; E3 distinct names, with no lossy
+        // sanitization. Rules N1 -> E1+E2; N2 -> E3.
+        let long = "session".repeat(100);
+        let identities = [
+            "sesn_fnv1a64:1234",
+            "a/b",
+            r"a\b",
+            "a:b",
+            "a_b",
+            "CON",
+            "会话",
+            &long,
+        ];
+        let mut names = std::collections::BTreeSet::new();
+        for id in identities {
+            let name = transcript_filename(id);
+            let digest = name.strip_suffix(".jsonl").expect("JSONL extension");
+            assert_eq!(digest.len(), 64, "E1 {id}");
+            assert!(
+                digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                "E1 {id}"
+            );
+            assert_eq!(name, transcript_filename(id), "E2 {id}");
+            assert!(names.insert(name), "E3 {id}");
+        }
     }
 
     #[test]
