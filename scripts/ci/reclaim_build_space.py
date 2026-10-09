@@ -92,6 +92,19 @@ raise SystemExit(STATUS)
         owner.chmod(0o700)
         return owner
 
+    def fixture_runner(self, owner: Path):
+        # The external-owner protocol owns argv/report/status; Unix shebang
+        # discovery is not a precondition of those cases. Launch this exact
+        # owned Python fixture explicitly on every OS, retaining a real child.
+        # Production invoke_owner still executes its declared command directly.
+        original_run = subprocess.run
+
+        def launch(command, **kwargs):
+            self.assertEqual(command[0], str(owner))
+            return original_run([sys.executable, *command], **kwargs)
+
+        return patch.object(subprocess, "run", side_effect=launch)
+
     def test_only_canonical_owner_receives_preview_or_apply(self):
         for apply in (False, True):
             with self.subTest(apply=apply), tempfile.TemporaryDirectory() as tmp:
@@ -101,6 +114,7 @@ raise SystemExit(STATUS)
                 owner = self.fixture(root)
                 with patch.object(gate_tools, "locate",
                                   return_value=gate_tools.Found("present", str(owner))), \
+                        self.fixture_runner(owner), \
                         redirect_stdout(io.StringIO()):
                     self.assertEqual(invoke_owner(apply=apply, summary=True, verbose=False), 0)
                 args = json.loads((root / "calls").read_text())
@@ -119,6 +133,7 @@ raise SystemExit(STATUS)
                 owner = self.fixture(Path(tmp), status=status, report=report)
                 with patch.object(gate_tools, "locate",
                                   return_value=gate_tools.Found("present", str(owner))), \
+                        self.fixture_runner(owner), \
                         redirect_stderr(io.StringIO()):
                     self.assertEqual(invoke_owner(apply=False, summary=False, verbose=False), expected)
 
