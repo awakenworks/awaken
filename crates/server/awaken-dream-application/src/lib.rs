@@ -1336,7 +1336,7 @@ mod product_readiness_tests {
         // Default/all-feature compiler checks complete T1/T2; this fitness test
         // locks the feature selector and both source gates against silent drift.
         let manifest = include_str!("../Cargo.toml");
-        let source = include_str!("lib.rs");
+        let source = include_str!("lib.rs").replace("\r\n", "\n");
         assert!(manifest.contains("test-support = []"), "T2 selector");
         assert!(!manifest.contains("default = [\"test-support\"]"), "T1");
         assert!(

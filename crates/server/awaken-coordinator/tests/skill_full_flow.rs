@@ -209,7 +209,7 @@ impl LlmExecutor for FullFlowModel {
         let advertised = |suffix: &str| {
             system
                 .split('`')
-                .find(|part| part.ends_with(suffix))
+                .find(|part| part.ends_with(suffix) || part.ends_with(&suffix.replace('/', r"\")))
                 .map(str::to_string)
         };
         let output = match last.role {
@@ -269,15 +269,16 @@ async fn discover_read_author_and_use_authored_skill_end_to_end() {
     // its prompt path; C3 authoring
     // invokes approval-gated bash and the client confirms it; C4 a
     // confirmed Run explicitly reads the authored file without registering a
-    // second Managed Skill. Effects: E1 `read` returns the
+    // second Managed Skill; C5 archive retires that Session's shell. Effects: E1 `read` returns the
     // frozen body with no semantic tools; E2 approval names the exact public
     // bash Event; E3 `.claude/skills/notes/SKILL.md` is readable through the same
-    // sandbox boundary; E4 its body reaches the final reply.
+    // sandbox boundary; E4 its body reaches the final reply; E5 archive reaches
+    // the committed terminal boundary before the test Runtime shuts down.
     // Constraints/invariants: every observation is anchored to its accepted
     // receipt and committed terminal Event; Session/Run remains the sole driver,
     // and one canonical read-only wait helper performs no execution or retry.
     // Decision rules: F1=C1+C2 -> E1; F2=F1+C3 -> E2;
-    // F3=F2+C4 -> E3+E4.
+    // F3=F2+C4 -> E3+E4; F4=F3+C5 -> E5.
     let greet = SkillSpec::new("greet", "Greet", "say hello", "GREETING for $ARGUMENTS");
     let app =
         build_router_with_managed_skills(Arc::new(FullFlowModel), "scripted", vec![greet]).await;
@@ -316,4 +317,19 @@ async fn discover_read_author_and_use_authored_skill_end_to_end() {
         messages(&done)
     );
     assert_eq!(tool_uses(&done), ["read", "bash", "read"]);
+    // A successful Bash call owns a persistent shell until Session retirement.
+    // Retire through the public lifecycle before dropping the test Runtime;
+    // Windows pipe readers may otherwise keep its blocking pool alive.
+    let archived = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        json_call(
+            &app,
+            "POST",
+            &format!("/v1/sessions/{id}/archive"),
+            serde_json::Value::Null,
+        ),
+    )
+    .await
+    .expect("the Skill Session retires its persistent shell before runtime shutdown");
+    assert_eq!(archived["status"], "terminated");
 }

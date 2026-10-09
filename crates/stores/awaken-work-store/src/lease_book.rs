@@ -333,7 +333,7 @@ mod tests {
         // consumes the SAME coherent snapshot; port conformance owns execution.
         // Reuse the volatile_queue_is_opt_in_and_its_export_is_feature_gated
         // boundary, not another feature, snapshot, or compatibility wrapper.
-        let source = include_str!("lease_book.rs");
+        let source = include_str!("lease_book.rs").replace("\r\n", "\n");
         let gate = "#[cfg(any(test, feature = \"test-support\"))]";
         assert!(
             source.contains(&format!("{gate}\npub(crate) struct LeaseAuthoritySnapshot")),

@@ -1925,7 +1925,7 @@ mod product_readiness_tests {
         // the all-features conformance suite. This source-level fitness assertion
         // prevents either selector from being silently removed or made default.
         let manifest = include_str!("../Cargo.toml");
-        let source = include_str!("lib.rs");
+        let source = include_str!("lib.rs").replace("\r\n", "\n");
         assert!(manifest.contains("test-support = []"), "T2 selector");
         assert!(
             !manifest.contains("default = [\"test-support\"]"),

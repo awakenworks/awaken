@@ -149,7 +149,9 @@ impl LlmExecutor for SkillUserModel {
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                let skill_path = system.split('`').find(|part| part.ends_with("/SKILL.md"));
+                let skill_path = system
+                    .split('`')
+                    .find(|part| part.ends_with("/SKILL.md") || part.ends_with(r"\SKILL.md"));
                 if skill_path.is_none() {
                     return Ok(ChatResponse {
                         output: AssistantOutput::text("NO_SKILL_ADVERTISED"),

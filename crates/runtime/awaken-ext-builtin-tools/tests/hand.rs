@@ -813,9 +813,9 @@ async fn bash_persists_cwd_and_environment_and_restart_clears_both() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("nested")).unwrap();
     let bash = tool_at("bash", dir.path());
-    bash.invoke(call(
+    let initial = bash.invoke(call(
         "bash",
-        serde_json::json!({ "command": "cd nested; export AWAKEN_TEST_VALUE=kept" }),
+        serde_json::json!({ "command": "printf '%s' \"$PWD\"; cd nested; export AWAKEN_TEST_VALUE=kept" }),
     ))
     .await
     .unwrap();
@@ -833,17 +833,21 @@ async fn bash_persists_cwd_and_environment_and_restart_clears_both() {
             "bash",
             serde_json::json!({
                 "restart": true,
-                "command": "printf '%s:%s' \"$PWD\" \"$AWAKEN_TEST_VALUE\""
+                "command": "printf reset > restarted-workdir; printf '%s:%s' \"$PWD\" \"$AWAKEN_TEST_VALUE\""
             }),
         ))
         .await
         .unwrap();
-    let canonical_workdir = std::fs::canonicalize(dir.path()).unwrap();
     assert_eq!(
         restarted.text(),
-        format!("{}:", canonical_workdir.display()),
+        format!("{}:", initial.text()),
         "restart returns to the same physical workdir and clears shell state"
     );
+    assert_eq!(
+        std::fs::read(dir.path().join("restarted-workdir")).unwrap(),
+        b"reset"
+    );
+    assert!(!dir.path().join("nested/restarted-workdir").exists());
 }
 
 #[tokio::test]
@@ -1007,12 +1011,6 @@ async fn read_and_edit_reject_oversized_files() {
     }
 }
 
-#[cfg(windows)]
-fn failing_shell_command() -> &'static str {
-    "echo out-line & echo err-line 1>&2 & cmd /D /C exit 7"
-}
-
-#[cfg(not(windows))]
 fn failing_shell_command() -> &'static str {
     "echo out-line; echo err-line >&2; false"
 }

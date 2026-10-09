@@ -221,12 +221,10 @@ pub async fn build_acp_permission_router_with_deployment(
 
 /// Embed the fixture module graph for its deployment-owned `--eval` launch.
 fn embedded_acp_tool_bridge_fixture() -> String {
-    let fixture = include_str!(concat!(
+    let fixture = node_module_without_shebang(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../../e2e/fixtures/acp_awaken_tool_bridge_fixture.mjs"
-    ))
-    .strip_prefix("#!/usr/bin/env node\n")
-    .unwrap_or_else(|| panic!("ACP tool bridge fixture must retain its canonical Node shebang"));
+    )));
     // --eval has no fixture directory inside the Namespace. Import the same
     // canonical client bytes as a self-contained module, preserving its exports
     // rather than copying its transport implementation or exposing host files.
@@ -244,6 +242,18 @@ fn embedded_acp_tool_bridge_fixture() -> String {
             "const {{ mcpRequest, mcpNotify }} = await import('data:text/javascript,' + encodeURIComponent({client}));"
         ),
     )
+}
+
+fn node_module_without_shebang(source: &str) -> &str {
+    let (header, module) = source
+        .split_once('\n')
+        .expect("ACP tool bridge fixture must retain its canonical Node shebang");
+    assert_eq!(
+        header.strip_suffix('\r').unwrap_or(header),
+        "#!/usr/bin/env node",
+        "ACP tool bridge fixture must retain its canonical Node shebang"
+    );
+    module
 }
 
 /// Product-composed ACP tool bridge fixture. Unlike `acp-permission`, the
@@ -865,6 +875,26 @@ pub async fn build_acp_container_router() -> Router {
 
 #[cfg(test)]
 mod embedded_fixture_tests {
+    #[test]
+    fn embedded_node_header_accepts_checkout_line_endings_and_preserves_module_bytes() {
+        // N1 LF/CRLF headers -> identical byte-preserving module selection;
+        // N2 missing/foreign headers -> refuse, never remove executable code.
+        for newline in ["\n", "\r\n"] {
+            let module = format!("console.log('中文');{newline}// exact trailing bytes");
+            let source = format!("#!/usr/bin/env node{newline}{module}");
+            assert_eq!(super::node_module_without_shebang(&source), module);
+        }
+        for source in [
+            "console.log('first');\n",
+            "#!/bin/sh\nbody",
+            "#!/usr/bin/env node",
+        ] {
+            assert!(
+                std::panic::catch_unwind(|| super::node_module_without_shebang(source)).is_err()
+            );
+        }
+    }
+
     #[test]
     fn embedded_tool_bridge_initializes_without_host_fixture_files() {
         // C1 the production Scenario --eval source imports the shared MCP
