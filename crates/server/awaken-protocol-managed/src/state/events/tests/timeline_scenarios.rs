@@ -1367,12 +1367,13 @@ async fn root_and_child_replays_keep_first_public_message_and_reject_conflicting
 async fn recorded_permissions_keep_each_reused_call_on_warm_and_cold_wire_histories() {
     // C1 provider call id repeats at different steps; C2 repeats in a later
     // Run on the same Thread; C3 builtin/MCP tool families share that raw id;
-    // C4 incremental refresh or cold reconstruction; C5 conflicting audits
-    // claim one occurrence. R1 C1/C2/C3 with exact
-    // Message/commit coordinates => every public id keeps its own decision
-    // and its paired result keeps that occurrence's builtin/MCP family;
-    // R2 C4 => byte-equal complete history, including previously issued ids;
-    // R3 C5 => both readers refuse and the warm published frame is unchanged.
+    // C4 incremental refresh or cold reconstruction; C5 a later audit
+    // re-decides one occurrence (the gate re-audits a call it still holds).
+    // R1 C1/C2/C3 with exact Message/commit coordinates => every public id
+    // keeps its own decision and its paired result keeps that occurrence's
+    // builtin/MCP family; R2 C4 => byte-equal complete history, including
+    // previously issued ids; R3 C5 => both readers keep the first decision
+    // and agree.
     // This exercises the production candidate, qualification and wire codec;
     // it does not infer permission from the completed ToolResult.
     let mut timeline = RootTimeline::new(&[Step::Legacy(0), Step::Legacy(1)]).await;
@@ -1458,8 +1459,7 @@ async fn recorded_permissions_keep_each_reused_call_on_warm_and_cold_wire_histor
         refresh(&cold, &timeline.session_id, false).await.unwrap();
         assert_eq!(durable_history(&cold, &timeline.session_id), warm, "R2");
     }
-    let before = timeline.warm.sessions.lock().unwrap()[&timeline.session_id].clone();
-    let mut conflict = timeline
+    let last = timeline
         .runtime
         .audit_events
         .lock()
@@ -1467,33 +1467,32 @@ async fn recorded_permissions_keep_each_reused_call_on_warm_and_cold_wire_histor
         .last()
         .unwrap()
         .clone();
-    conflict.sequence = encode_run_lifecycle_cursor(timeline.cursor, 1).unwrap().0;
-    conflict.payload["decision"] = serde_json::json!("deny");
-    timeline.runtime.audit_events.lock().unwrap().push(conflict);
-    assert!(
-        timeline
-            .warm
-            .refresh_committed_events(&timeline.session_id)
-            .await
-            .is_err(),
-        "R3 warm"
-    );
-    let after = timeline.warm.sessions.lock().unwrap()[&timeline.session_id].clone();
+    let mut redecided = last;
+    redecided.sequence = encode_run_lifecycle_cursor(timeline.cursor, 1).unwrap().0;
+    redecided.payload["decision"] = serde_json::json!("deny");
+    timeline
+        .runtime
+        .audit_events
+        .lock()
+        .unwrap()
+        .push(redecided);
+    refresh(&timeline.warm, &timeline.session_id, false)
+        .await
+        .unwrap();
+    let warm = durable_history(&timeline.warm, &timeline.session_id);
+    let (redecided_id, _, _) = expected.last().unwrap();
     assert_eq!(
-        after.cache_revision, before.cache_revision,
-        "R3 no publication"
+        warm.iter()
+            .find(|event| &event.0 == redecided_id)
+            .map(|event| event.1["evaluated_permission"].clone()),
+        Some(serde_json::json!("allow")),
+        "R3 warm keeps the issued decision"
     );
-    assert!(
-        after.same_projected_content(&before).unwrap(),
-        "R3 complete frame"
-    );
-    assert!(
-        timeline
-            .cold()
-            .await
-            .refresh_committed_events(&timeline.session_id)
-            .await
-            .is_err(),
+    let cold = timeline.cold().await;
+    refresh(&cold, &timeline.session_id, false).await.unwrap();
+    assert_eq!(
+        durable_history(&cold, &timeline.session_id),
+        warm,
         "R3 cold"
     );
 }

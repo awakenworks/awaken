@@ -129,10 +129,22 @@ pub fn recorded_tool_permissions(
                     entry.insert((event, recorded));
                 }
                 std::collections::hash_map::Entry::Occupied(entry) if entry.get().0 == event => {}
-                std::collections::hash_map::Entry::Occupied(_) => {
-                    return Err(ProjectionError::corrupt(
-                        "multiple permission decisions claim one ToolUse occurrence",
-                    ));
+                // The gate re-audits an occurrence it still holds: a batch
+                // resumed past one confirmed call re-audits each sibling that
+                // is still pending. The occurrence keeps the decision it was
+                // first published with, so a re-audit cannot rewrite an issued
+                // event and warm and cold readers agree. Two different
+                // decisions at one audit position cannot be ordered.
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    let first = entry.get().0;
+                    if first.sequence == event.sequence && first != event {
+                        return Err(ProjectionError::corrupt(
+                            "multiple permission decisions claim one ToolUse occurrence",
+                        ));
+                    }
+                    if event.sequence < first.sequence {
+                        entry.insert((event, recorded));
+                    }
                 }
             }
         }
@@ -329,10 +341,13 @@ mod tests {
     #[test]
     fn permission_replay_is_idempotent_but_conflicting_audits_are_rejected() {
         // C1 byte-equal Message/audit replay; C2 distinct audits claim one
-        // occurrence; C3 Message role is User/System; C4 audit has no source
-        // commit or exceeds its prefix. R1 C1 => one identical index entry;
-        // R2 C2 => refusal even for equal decision labels; R3 C3 => no Message
-        // attribution; R4 C4 => refusal, never a synthetic permission grant.
+        // occurrence, at a later audit position (the gate re-audits a sibling
+        // still pending after a resumed batch) or at the same one; C3 Message
+        // role is User/System; C4 audit has no source commit or exceeds its
+        // prefix. R1 C1 => one identical index entry; R2 C2 => the first
+        // decision stands, while two at one position are refused; R3 C3 =>
+        // no Message attribution; R4 C4 => refusal, never a synthetic
+        // permission grant.
         let mut evidence = snapshot("thread");
         append(&mut evidence, "run", 1, "deny");
         let expected = permissions([&evidence].into_iter()).unwrap();
@@ -343,12 +358,31 @@ mod tests {
         replay.store_cursor = 2;
         assert_eq!(permissions([&replay].into_iter()).unwrap(), expected, "R1");
         for decision in ["deny", "allow"] {
-            let mut conflict = evidence.clone();
-            let mut audit = conflict.events[0].clone();
+            let mut redecided = evidence.clone();
+            let mut audit = redecided.events[0].clone();
             audit.sequence = encode_run_lifecycle_cursor(1, 1).unwrap().0;
             audit.payload["decision"] = serde_json::json!(decision);
-            conflict.events.push(audit);
-            assert!(permissions([&conflict].into_iter()).is_err(), "R2");
+            redecided.events.push(audit.clone());
+            assert_eq!(
+                permissions([&redecided].into_iter()).unwrap(),
+                expected,
+                "R2 a later audit of one occurrence keeps its first decision"
+            );
+            redecided.events.reverse();
+            assert_eq!(
+                permissions([&redecided].into_iter()).unwrap(),
+                expected,
+                "R2 independent of audit read order"
+            );
+            let mut same_position = evidence.clone();
+            audit.sequence = same_position.events[0].sequence;
+            same_position.events.push(audit);
+            // An equal row at the same position is the R1 replay.
+            assert_eq!(
+                permissions([&same_position].into_iter()).is_err(),
+                decision != "deny",
+                "R2 two decisions at one audit position"
+            );
         }
         for role in [Role::User, Role::System] {
             let mut spoofed = evidence.clone();
