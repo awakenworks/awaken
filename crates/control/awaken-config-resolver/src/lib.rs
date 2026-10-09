@@ -43,7 +43,8 @@ pub use executable_models::{
 /// Read ports for authored aggregates. The runtime host reads through these
 /// application contracts without depending on the authoring HTTP crate.
 pub mod stores;
-/// Telemetry ceiling composition (ADR-0050 D3): Org baseline tightened by lower layers.
+/// The Workspace layer of the content-capture ceiling (ADR-0050 D3): the
+/// authored configuration and its repository port.
 pub mod telemetry;
 #[cfg(any(test, feature = "test-support"))]
 pub use reference_stores::{
@@ -57,7 +58,10 @@ pub use stores::{
     plan_agent_input_write, put_workspace_profile, validate_stored_agent_inputs,
     workspace_profile_key,
 };
-pub use telemetry::{RedactionMode, TelemetryCeiling};
+pub use telemetry::{
+    TelemetryConfigError, WorkspaceTelemetryConfiguration, WorkspaceTelemetryRepository,
+    validate_stored_telemetry_configuration, validate_telemetry_configuration_write,
+};
 
 /// The resolved execution unit: *(model × credential-identity × provider ×
 /// dialect)*. Mirrors awaken-management-contract's `InferenceTriple`.

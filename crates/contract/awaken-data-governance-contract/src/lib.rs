@@ -5,7 +5,8 @@
 //! that gives a subject meaning — the consent ceiling, erasure across content
 //! stores and organization-wide privacy export — is Platform governance and
 //! lives here (ADR-0086 §2). The consent port is consulted at the Run boundary,
-//! never on the inference hot path.
+//! never on the inference hot path, and so is the Workspace layer of the
+//! telemetry ceiling ([`TelemetryNarrowingSource`]).
 
 #![warn(unreachable_pub)]
 
@@ -13,6 +14,12 @@ use async_trait::async_trait;
 use awaken_runtime_contract::ContentCapture;
 use awaken_runtime_contract::data_subject::{DataSubjectId, Purpose};
 use serde::{Deserialize, Serialize};
+
+mod telemetry;
+pub use telemetry::{
+    CapturePolicySources, RedactionMode, TelemetryCeiling, TelemetryNarrowing,
+    TelemetryNarrowingSource, TelemetryPolicyError, WorkspaceCapturePolicy,
+};
 
 /// Receipt of a right-to-erasure (GDPR Art. 17) fan-out.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,6 +135,17 @@ impl DataSubjectConsentSource for NullResolver {
 }
 
 #[async_trait]
+impl TelemetryNarrowingSource for NullResolver {
+    async fn workspace_narrowing(
+        &self,
+        _workspace: &str,
+    ) -> Result<TelemetryNarrowing, TelemetryPolicyError> {
+        // No configuration plane ⇒ no Workspace narrowing; the top ceiling decides.
+        Ok(TelemetryNarrowing::default())
+    }
+}
+
+#[async_trait]
 impl DataSubjectResolver for NullResolver {
     async fn erase(&self, _subject: &DataSubjectId) -> Result<ErasureReceipt, ErasureError> {
         Ok(ErasureReceipt::default())
@@ -165,6 +183,10 @@ mod tests {
             ContentCapture::Full
         );
         assert_eq!(r.erase(&s).await.unwrap(), ErasureReceipt::default());
+        assert_eq!(
+            r.workspace_narrowing("ws").await.unwrap(),
+            TelemetryNarrowing::default()
+        );
     }
 
     #[test]

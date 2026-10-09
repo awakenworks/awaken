@@ -467,3 +467,81 @@ async fn postgres_mcp_configuration_cas_and_restart() {
             .is_none()
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn postgres_telemetry_configuration_cas_restart_and_scope() {
+    // P1 real Postgres + two same-revision writers -> one commit; P2 reconnect
+    // without DDL -> exact current narrowing; P3 other Workspace -> absent;
+    // P4 stale insert -> Conflict; P5 relabelled scope -> error. Same domain
+    // write predicate as SQLite; SQL owns the final compare-and-swap race.
+    use awaken_config_resolver::{
+        TelemetryConfigError, WorkspaceTelemetryConfiguration, WorkspaceTelemetryRepository,
+    };
+    use awaken_runtime_contract::ContentCapture;
+    use std::sync::Arc;
+    let Some(url) = schema_url("t_admin_telemetry_config").await else {
+        return;
+    };
+    let store = Arc::new(PostgresAdminStore::connect(&url).await.unwrap());
+    let first = WorkspaceTelemetryConfiguration::new("w".into())
+        .narrowed(0, Some(ContentCapture::Structured), ContentCapture::Full)
+        .unwrap();
+    store.put_telemetry_configuration(0, &first).await.unwrap();
+    assert_eq!(
+        store.put_telemetry_configuration(0, &first).await,
+        Err(TelemetryConfigError::Conflict),
+        "P4"
+    );
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let writers = [ContentCapture::Off, ContentCapture::Structured]
+        .into_iter()
+        .map(|level| {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            let next = first
+                .narrowed(1, Some(level), ContentCapture::Full)
+                .unwrap();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                store.put_telemetry_configuration(1, &next).await
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut results = Vec::new();
+    for writer in writers {
+        results.push(writer.await.unwrap());
+    }
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "P1");
+    let current = store
+        .get_telemetry_configuration("w")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.revision, 2);
+    let reopened = PostgresAdminStore::connect_existing(&url).await.unwrap();
+    assert_eq!(
+        reopened.get_telemetry_configuration("w").await.unwrap(),
+        Some(current),
+        "P2"
+    );
+    assert!(
+        reopened
+            .get_telemetry_configuration("other")
+            .await
+            .unwrap()
+            .is_none(),
+        "P3"
+    );
+    let raw = PgPool::connect(&url).await.unwrap();
+    sqlx::query(
+        "UPDATE admin_telemetry_configuration \
+         SET data = jsonb_set(data::jsonb, '{workspace_id}', '\"wrong\"')",
+    )
+    .execute(&raw)
+    .await
+    .unwrap();
+    assert!(
+        reopened.get_telemetry_configuration("w").await.is_err(),
+        "P5"
+    );
+}
