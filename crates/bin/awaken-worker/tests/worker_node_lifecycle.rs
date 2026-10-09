@@ -10,8 +10,7 @@ use awaken_worker_transport_security::{
     SignedWorkerRequestAuthorizer, WorkerSigningCredential, WorkerUpstream,
 };
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -60,16 +59,22 @@ fn free_port() -> u16 {
         .port()
 }
 
-fn http_status(address: &str, method: &str, path: &str) -> Option<u16> {
-    let mut stream = TcpStream::connect(address).ok()?;
-    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
-    write!(
-        stream,
-        "{method} {path} HTTP/1.1\r\nhost: {address}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
-    )
-    .ok()?;
-    let mut response = String::new();
-    stream.read_to_string(&mut response).ok()?;
+async fn http_status(address: &str, method: &str, path: &str) -> Option<u16> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // A refused Windows connect can consume seconds. An admin observation
+    // must yield to the same runtime's startup/heartbeat tasks, not block them.
+    let response = tokio::time::timeout(Duration::from_secs(2), async {
+        let mut stream = tokio::net::TcpStream::connect(address).await.ok()?;
+        let request = format!(
+            "{method} {path} HTTP/1.1\r\nhost: {address}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes()).await.ok()?;
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.ok()?;
+        Some(response)
+    })
+    .await
+    .ok()??;
     response
         .lines()
         .next()?
@@ -81,7 +86,7 @@ fn http_status(address: &str, method: &str, path: &str) -> Option<u16> {
 
 async fn poll_status(address: &str, method: &str, path: &str, expected: u16) -> bool {
     for _ in 0..300 {
-        if http_status(address, method, path) == Some(expected) {
+        if http_status(address, method, path).await == Some(expected) {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1482,7 +1487,13 @@ async fn expired_initial_heartbeat_cannot_start_dispatch() {
     // be installed. This HTTP row owns timeout/withdrawal ordering, not receipt
     // arithmetic (the WorkerAuthorityProof decision table owns that boundary).
     for cancelled in [false, true] {
-        let upstream = FakeWorkerUpstream::start_with_expired_initial_receipt();
+        // H1 owns a genuinely expired receipt; H2 owns cancellation while a
+        // still-valid response remains held. Do not race both causes in H2.
+        let upstream = if cancelled {
+            FakeWorkerUpstream::start()
+        } else {
+            FakeWorkerUpstream::start_with_expired_initial_receipt()
+        };
         upstream.block_initial_heartbeat(cancelled);
         let result = tokio::time::timeout(
             Duration::from_secs(5),
@@ -1501,7 +1512,6 @@ async fn expired_initial_heartbeat_cannot_start_dispatch() {
                     }
                     // The response was held until this shutdown branch wins;
                     // no scheduler-speed assumption chooses the interleaving.
-                    upstream.block_initial_heartbeat(false);
                     return Ok(WorkerShutdown::Prompt);
                 }
                 std::future::pending().await
@@ -1778,7 +1788,11 @@ async fn transient_heartbeat_failure_pauses_then_resumes_claim_admission() {
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        assert_eq!(http_status(&admin_addr, "GET", "/readyz"), Some(503), "H1");
+        assert_eq!(
+            http_status(&admin_addr, "GET", "/readyz").await,
+            Some(503),
+            "H1"
+        );
         recovery_release.store(true, Ordering::Release);
         assert!(poll_status(&admin_addr, "GET", "/readyz", 200).await, "H2");
         Ok(WorkerShutdown::Prompt)
@@ -1885,8 +1899,9 @@ async fn drain_closes_local_admission_before_control_acknowledges() {
             );
 
             let drain_addr = admin_addr.clone();
-            let drain_request = std::thread::spawn(move || {
+            let drain_request = tokio::spawn(async move {
                 http_status(&drain_addr, "POST", "/admin/drain")
+                    .await
                     .expect("admin drain returns an HTTP response")
             });
             for _ in 0..300 {
@@ -1897,7 +1912,7 @@ async fn drain_closes_local_admission_before_control_acknowledges() {
                 {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(10));
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
             assert!(
                 upstream
@@ -1907,7 +1922,7 @@ async fn drain_closes_local_admission_before_control_acknowledges() {
                 "Control receives the drain mutation"
             );
             assert_eq!(
-                http_status(&admin_addr, "GET", "/readyz"),
+                http_status(&admin_addr, "GET", "/readyz").await,
                 Some(503),
                 "local claim admission closes before the blocked Control response returns"
             );
@@ -1928,7 +1943,7 @@ async fn drain_closes_local_admission_before_control_acknowledges() {
             );
 
             drain_release.store(true, Ordering::Release);
-            assert_eq!(drain_request.join().expect("drain request joins"), 200);
+            assert_eq!(drain_request.await.expect("drain request joins"), 200);
             Ok(WorkerShutdown::Prompt)
         })
         .await

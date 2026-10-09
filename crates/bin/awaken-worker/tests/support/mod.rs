@@ -21,6 +21,7 @@ pub struct FakeWorkerUpstream {
     heartbeat_sequences: Arc<Mutex<Vec<u64>>>,
     applied_heartbeat_sequence: Arc<AtomicU64>,
     next_lease_ttl_ms: Arc<AtomicU64>,
+    accepted_connections: Arc<AtomicUsize>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -152,6 +153,8 @@ impl FakeWorkerUpstream {
         let applied_heartbeat_sequence = Arc::new(AtomicU64::new(0));
         let next_lease_ttl_ms = Arc::new(AtomicU64::new(registry_ttl_ms));
         let thread_next_lease_ttl_ms = next_lease_ttl_ms.clone();
+        let accepted_connections = Arc::new(AtomicUsize::new(0));
+        let thread_accepted_connections = accepted_connections.clone();
         let thread_stop = stop.clone();
         let thread_requests = requests.clone();
         let thread_request_headers = request_headers.clone();
@@ -165,16 +168,29 @@ impl FakeWorkerUpstream {
         let thread_recovery_release = recovery_release;
         let heartbeat_count = AtomicUsize::new(0);
         let thread = std::thread::spawn(move || {
-            while !thread_stop.load(Ordering::Acquire) {
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        if thread_stop.load(Ordering::Acquire) {
-                            break;
+            std::thread::scope(|scope| {
+                let mut handlers: Vec<std::thread::ScopedJoinHandle<'_, ()>> = Vec::new();
+                let mut failure = None;
+                while !thread_stop.load(Ordering::Acquire) {
+                    for index in (0..handlers.len()).rev() {
+                        if handlers[index].is_finished()
+                            && let Err(error) = handlers.swap_remove(index).join()
+                        {
+                            thread_stop.store(true, Ordering::Release);
+                            failure.get_or_insert(error);
                         }
-                        stream.set_nonblocking(false).unwrap();
-                        handle(
-                            stream,
-                            HandleContext {
+                    }
+                    if thread_stop.load(Ordering::Acquire) {
+                        break;
+                    }
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            if thread_stop.load(Ordering::Acquire) {
+                                break;
+                            }
+                            stream.set_nonblocking(false).unwrap();
+                            thread_accepted_connections.fetch_add(1, Ordering::Release);
+                            let context = HandleContext {
                                 requests: &thread_requests,
                                 request_headers: &thread_request_headers,
                                 stop: &thread_stop,
@@ -191,15 +207,31 @@ impl FakeWorkerUpstream {
                                 deregistration_response: &thread_deregistration_response,
                                 registration_protocol: &thread_registration_protocol,
                                 registration_state: &thread_registration_state,
-                            },
-                        );
+                            };
+                            // An accepted, idle socket cannot hold unrelated
+                            // registration/heartbeat requests behind its deadline.
+                            // The scope owns and joins every connection handler.
+                            handlers.push(scope.spawn(move || handle(stream, context)));
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(error) => {
+                            thread_stop.store(true, Ordering::Release);
+                            panic!("fake worker upstream accept failed: {error}");
+                        }
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(2));
-                    }
-                    Err(error) => panic!("fake worker upstream accept failed: {error}"),
                 }
-            }
+                for handler in handlers {
+                    if let Err(error) = handler.join() {
+                        thread_stop.store(true, Ordering::Release);
+                        failure.get_or_insert(error);
+                    }
+                }
+                if let Some(error) = failure {
+                    std::panic::resume_unwind(error);
+                }
+            });
         });
         Self {
             url: format!("http://{addr}"),
@@ -214,6 +246,7 @@ impl FakeWorkerUpstream {
             initial_heartbeat_blocked,
             applied_heartbeat_sequence,
             next_lease_ttl_ms,
+            accepted_connections,
             thread: Some(thread),
         }
     }
@@ -269,11 +302,13 @@ impl FakeWorkerUpstream {
 impl Drop for FakeWorkerUpstream {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        if let Some(addr) = self.url.strip_prefix("http://") {
-            let _ = TcpStream::connect(addr);
-        }
-        if let Some(thread) = self.thread.take() {
-            thread.join().unwrap();
+        if let Some(thread) = self.thread.take()
+            && let Err(error) = thread.join()
+            && !std::thread::panicking()
+        {
+            // Keep a fixture fault fatal, but never abort the test process
+            // with a second panic while its original failure unwinds.
+            std::panic::resume_unwind(error);
         }
     }
 }
@@ -535,11 +570,30 @@ fn read_request(stream: &mut TcpStream) -> RequestRead {
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
+    read_request_bytes(stream)
+}
+
+fn read_request_bytes(reader: &mut impl Read) -> RequestRead {
     let mut request = Vec::new();
     let mut chunk = [0_u8; 4096];
     let mut complete_shape = None;
     loop {
-        let read = stream.read(&mut chunk).unwrap();
+        let read = match reader.read(&mut chunk) {
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error)
+                if request.is_empty()
+                    && matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+            {
+                // A cancelled client can leave an accepted, idle connection.
+                // Unix and Windows report read deadlines with different kinds.
+                return RequestRead::PeerClosedBeforeCompleteRequest;
+            }
+            Err(error) => panic!("fake worker upstream request read failed: {error}"),
+        };
         if read == 0 {
             return RequestRead::PeerClosedBeforeCompleteRequest;
         }
@@ -573,6 +627,115 @@ fn read_request(stream: &mut TcpStream) -> RequestRead {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_connection_cannot_block_a_live_control_request() {
+        // F9 an idle accepted connection remains live while a second complete
+        // request succeeds inside one second, below the unchanged two-second
+        // read deadline. A serial listener is a negative control for this row.
+        let fixture = FakeWorkerUpstream::start();
+        let address = fixture.url().strip_prefix("http://").unwrap();
+        let idle = TcpStream::connect(address).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while fixture.accepted_connections.load(Ordering::Acquire) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "F9 idle socket accepted"
+            );
+            std::thread::yield_now();
+        }
+        let mut live = TcpStream::connect(address).unwrap();
+        live.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        live.write_all(b"GET /v1/worker/environment/warmups HTTP/1.1\r\nHost: fixture\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        live.read_to_string(&mut response).expect("F9 live request");
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+        assert!(response.contains("\"warmups\":[]"), "{response}");
+        assert_eq!(fixture.requests(), ["/v1/worker/environment/warmups"]);
+        drop(idle);
+    }
+
+    #[test]
+    fn fixture_drop_keeps_the_original_fault_without_a_second_unwind() {
+        // F7 a failed server is joined and remains fatal during ordinary Drop;
+        // F8 parent failure + failed server -> join, preserve the parent panic,
+        // never abort the process with a destructor panic during unwinding.
+        for parent_failed in [false, true] {
+            let mut fixture = FakeWorkerUpstream::start();
+            fixture.stop.store(true, Ordering::Release);
+            fixture.thread.take().unwrap().join().unwrap();
+            fixture.thread = Some(std::thread::spawn(|| panic!("server fault")));
+            let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _fixture = fixture;
+                if parent_failed {
+                    panic!("parent fault");
+                }
+            }))
+            .unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<&str>().copied(),
+                Some(if parent_failed {
+                    "parent fault"
+                } else {
+                    "server fault"
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn idle_read_deadline_retires_only_an_empty_connection() {
+        // F4 no request bytes + either native timeout kind -> retire the idle
+        // connection; F5 partial headers/body + timeout -> fail, never dispatch
+        // incomplete input. F6 another I/O fault remains a fixture failure.
+        struct DeadlineReader {
+            prefix: std::io::Cursor<Vec<u8>>,
+            error: std::io::ErrorKind,
+        }
+        impl Read for DeadlineReader {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                let read = self.prefix.read(bytes)?;
+                if read == 0 {
+                    Err(self.error.into())
+                } else {
+                    Ok(read)
+                }
+            }
+        }
+        for error in [std::io::ErrorKind::WouldBlock, std::io::ErrorKind::TimedOut] {
+            let mut reader = DeadlineReader {
+                prefix: std::io::Cursor::new(Vec::new()),
+                error,
+            };
+            assert!(matches!(
+                read_request_bytes(&mut reader),
+                RequestRead::PeerClosedBeforeCompleteRequest
+            ));
+            for prefix in [
+                b"GET / HTTP/1.1\r\n".as_slice(),
+                b"POST / HTTP/1.1\r\nContent-Length: 2\r\n\r\n{",
+            ] {
+                let failure = std::panic::catch_unwind(|| {
+                    read_request_bytes(&mut DeadlineReader {
+                        prefix: std::io::Cursor::new(prefix.to_vec()),
+                        error,
+                    })
+                });
+                assert!(failure.is_err(), "F5 partial request must fail");
+            }
+        }
+        assert!(
+            std::panic::catch_unwind(|| {
+                read_request_bytes(&mut DeadlineReader {
+                    prefix: std::io::Cursor::new(Vec::new()),
+                    error: std::io::ErrorKind::PermissionDenied,
+                })
+            })
+            .is_err(),
+            "F6 unexpected fault must fail"
+        );
+    }
 
     struct FailingWriter(std::io::ErrorKind);
 

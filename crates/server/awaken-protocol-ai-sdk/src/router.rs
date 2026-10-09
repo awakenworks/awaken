@@ -641,7 +641,9 @@ mod tests {
         // neutral Runtime and committed facts remain the single execution authority.
         // Decision rule: evaluate every labeled cause partition in this test; each matching rule
         // selects only its stated effect and preserves the authority constraint.
-        struct DelayedSilent;
+        struct DelayedSilent {
+            complete: Arc<tokio::sync::Notify>,
+        }
         #[async_trait::async_trait]
         impl RunApplication for DelayedSilent {
             async fn run(
@@ -660,9 +662,10 @@ mod tests {
                 _thread: &str,
                 _agent: Option<String>,
                 _messages: Vec<Message>,
-                _sink: Arc<dyn StreamSink>,
+                sink: Arc<dyn StreamSink>,
             ) -> Result<StepOutcome, RunApplicationError> {
-                tokio::time::sleep(std::time::Duration::from_millis(18)).await;
+                drop(sink);
+                self.complete.notified().await;
                 Ok(StepOutcome::ended(
                     vec![Message::text(
                         awaken_agent_contract::agent::message::Id("a1".into()),
@@ -696,8 +699,11 @@ mod tests {
             }
         }
 
+        let complete = Arc::new(tokio::sync::Notify::new());
         let response = stream_turn_with_keep_alive(
-            Arc::new(DelayedSilent),
+            Arc::new(DelayedSilent {
+                complete: complete.clone(),
+            }),
             "operation-1".into(),
             "thread-1".into(),
             None,
@@ -716,10 +722,30 @@ mod tests {
             response.headers().get(header::CACHE_CONTROL).unwrap(),
             "no-cache, no-transform"
         );
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body = String::from_utf8(body.to_vec()).unwrap();
+        use http_body_util::BodyExt as _;
+        let mut stream = response.into_body();
+        let mut prefix = Vec::new();
+        // Observe three actual comments while the authoritative turn is held,
+        // then release it. Timer granularity cannot decide how many fit in 18ms.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while String::from_utf8_lossy(&prefix)
+                .matches(": keep-alive\n\n")
+                .count()
+                < 3
+            {
+                let frame = stream.frame().await.expect("live SSE").unwrap();
+                if let Ok(bytes) = frame.into_data() {
+                    prefix.extend_from_slice(&bytes);
+                }
+            }
+        })
+        .await
+        .expect("closed detail sink must leave the live SSE responsive");
+        assert!(!String::from_utf8_lossy(&prefix).contains("\"type\":\"finish\""));
+        complete.notify_one();
+        let body = axum::body::to_bytes(stream, usize::MAX).await.unwrap();
+        prefix.extend_from_slice(&body);
+        let body = String::from_utf8(prefix).unwrap();
         assert!(body.matches(": keep-alive\n\n").count() >= 3, "{body}");
         assert!(body.contains("\"type\":\"text-delta\""), "{body}");
         assert!(body.contains("\"type\":\"finish\""), "{body}");

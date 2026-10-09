@@ -39,7 +39,13 @@ async fn continuation_handle_kind_is_rejected_before_kubernetes_io() {
     );
 
     let host_bind = crate::ContainerContinuationHandle::HostBindRestoration(
-        crate::HostBindRestorationHandle::for_restore("/tmp/awaken-acp-stage-k8s-reject").unwrap(),
+        crate::HostBindRestorationHandle::for_restore(
+            std::env::temp_dir()
+                .join("awaken-acp-stage-k8s-reject")
+                .to_string_lossy()
+                .into_owned(),
+        )
+        .unwrap(),
     );
     assert!(
         runtime_contract::deletion_incarnation(Some(&host_bind))

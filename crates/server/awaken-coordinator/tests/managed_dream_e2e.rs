@@ -57,7 +57,18 @@ async fn terminal_dream(app: &Router, id: &str) -> Value {
         last = value;
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
-    panic!("Dream remained non-terminal: {last}")
+    let session_id = last["session_id"].as_str().unwrap();
+    let session = call(app, "GET", &format!("/v1/sessions/{session_id}"), None).await;
+    let events = call(
+        app,
+        "GET",
+        &format!("/v1/sessions/{session_id}/events"),
+        None,
+    )
+    .await;
+    panic!(
+        "Dream remained non-terminal: {last}; auxiliary Session: {session:?}; events: {events:?}"
+    )
 }
 
 #[test]
@@ -283,14 +294,18 @@ fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_plane(
         assert_eq!(auxiliary["metadata"]["awaken.session.origin"], "dream");
 
         let files = ok(&app, "GET", "/v1/files", None).await;
+        let transcript_name = format!(
+            "{}.jsonl",
+            awaken_resource_contract::content_id(session_id.as_bytes())
+        );
         let transcript = files["data"]
             .as_array()
             .unwrap()
             .iter()
             .find(|file| {
-                file["filename"]
-                    .as_str()
-                    .is_some_and(|name| name == format!("{session_id}.jsonl"))
+                file["filename"].as_str().is_some_and(|name| {
+                    name == transcript_name || name == format!("{session_id}.jsonl")
+                })
             })
             .cloned();
         assert!(
@@ -305,7 +320,8 @@ fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_plane(
         assert!(
             all_records
                 .iter()
-                .all(|file| file.filename != format!("{session_id}.jsonl")),
+                .all(|file| file.filename != transcript_name
+                    && file.filename != format!("{session_id}.jsonl")),
             "Dream must not create a duplicate transcript File, even if later deleted"
         );
     });

@@ -243,7 +243,9 @@ impl FileContext {
         pattern: &str,
         selected_root: Option<&str>,
     ) -> Result<(ConfinedPath, String), ToolError> {
-        if !Path::new(pattern).is_absolute() {
+        // A rooted logical path such as /managed is absolute in the Agent's
+        // vocabulary even when Windows requires a drive for native absolutes.
+        if !Path::new(pattern).has_root() {
             let normalized = lexical_normalize(Path::new(pattern));
             if selected_root.is_none()
                 && let Some((logical, _)) = self.projection_for(&normalized)
@@ -273,7 +275,11 @@ impl FileContext {
         logical_roots.push(lexical_absolute(&self.0.workdir)?);
         logical_roots.push(canonicalize_or_absolute(&self.0.workdir)?);
         for (logical, physical) in &self.0.path_projections {
-            logical_roots.push(lexical_absolute(logical)?);
+            logical_roots.push(if logical.has_root() {
+                lexical_normalize(logical)
+            } else {
+                lexical_absolute(logical)?
+            });
             logical_roots.push(canonicalize_or_absolute(physical)?);
         }
         for allowed in &self.0.allowed_roots {
