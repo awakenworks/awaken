@@ -33,6 +33,7 @@ mod prefix;
 mod role;
 mod stop;
 mod transcript;
+mod transcript_fold;
 mod transcript_plan;
 mod usage;
 
@@ -86,6 +87,9 @@ pub use transcript::{
     RuntimeToolFollowupAdmission, RuntimeToolProjectionPhase, ToolResultSource,
     advisor_consultation_blocks, assistant_response_coordinates, committed_transcript_evidence,
     fold_transcript, validate_committed_message_identities,
+};
+pub use transcript_fold::{
+    ToolFamilies, ToolUseFamily, TranscriptFold, is_public_user_input, transcript_fact_identity,
 };
 pub use transcript_plan::{
     ChildTranscript, ChildTranscriptPlan, ChildTranscriptStep, MessageFold, plan_child_transcript,

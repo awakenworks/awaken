@@ -28,7 +28,7 @@ impl ManagedState {
                 &[],
                 Some(&tool.pending),
                 &std::collections::HashSet::new(),
-                std::iter::empty(),
+                Default::default(),
                 &Default::default(),
                 &[&tool.pending],
             );

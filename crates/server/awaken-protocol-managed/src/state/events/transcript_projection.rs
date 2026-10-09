@@ -53,7 +53,7 @@ pub(super) fn project_committed_message(
         std::slice::from_ref(&selected.message),
         None,
         &tools.all,
-        project::mcp_result_call_ids(&sources),
+        awaken_managed_session_events::ToolFamilies::for_result_sources(&sources),
         transcript.advisor_blocks(),
         &pending_history,
     );
