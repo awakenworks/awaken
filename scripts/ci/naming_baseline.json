@@ -1,0 +1,57 @@
+{
+  "$comment": "Shrink-only ratchet of scripts/ci/_naming_fitness.py (ADR-0091). Numbers may only fall; write it with `python3 scripts/ci/_naming_fitness.py --write-baseline`; raising one needs --reason, kept in growth_reasons.",
+  "mechanism-name": {
+    "AcpModelSelectionSupport": 1,
+    "AgentBindings": 1,
+    "AllowedHost": 1,
+    "AwakenMcpHost": 1,
+    "ChildExecutionAdapters": 1,
+    "CommittedPrefixBase": 1,
+    "ExecutionWiring": 1,
+    "HostAcpAdapters": 1,
+    "HostDependencies": 1,
+    "HttpShared": 1,
+    "LocalResourcePorts": 1,
+    "LocalSkillPorts": 1,
+    "ManagedHost": 1,
+    "McpInputHost": 1,
+    "McpManager": 1,
+    "McpToolHost": 1,
+    "McpWiring": 1,
+    "MemoryCopyBase": 1,
+    "MemoryWiring": 1,
+    "OAuthHelper": 1,
+    "RegisteredDispatchDependencies": 1,
+    "ResourcePorts": 1,
+    "RunApplicationHost": 1,
+    "SessionApplicationBindings": 1,
+    "SessionExecutionDependencies": 1,
+    "Shared": 1,
+    "SharedHost": 1,
+    "SkillWiring": 1,
+    "StagedMountsParts": 1,
+    "TaskSupport": 1,
+    "UserProfileCore": 1,
+    "WorkerContentAdapters": 1
+  },
+  "bare-runtime": {
+    "awaken-protocol-a2a::Runtime": 1,
+    "awaken-protocol-ag-ui::Runtime": 1,
+    "awaken-protocol-ai-sdk::Runtime": 1,
+    "awaken-session-executor::Runtime": 1,
+    "awaken-session-mcp::Runtime": 1
+  },
+  "bare-name": {
+    "awaken-agent-contract::Coordinator": 1,
+    "awaken-model-catalog::Provider": 1
+  },
+  "turn-noun": {
+    "awaken-eval::assistant_turns": 1,
+    "awaken-managed-session-events::EndTurn": 2,
+    "awaken-run-executor-acp::FreePerTurn": 1,
+    "awaken-run-executor-acp::TurnConfig": 1,
+    "awaken-run-executor-acp::TurnEnd": 1,
+    "awaken-run-executor-acp::max_turn_requests": 1,
+    "awaken-runtime-examples::turn": 2
+  }
+}

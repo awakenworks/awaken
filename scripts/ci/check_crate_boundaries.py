@@ -18,13 +18,16 @@ from functools import lru_cache
 from pathlib import Path
 
 import _arch_fitness
+import _architecture_ratchet
 import _bounded_context_fitness
 import _cancel_safety_fitness
 import _context_map_fitness
+import _contract_map_fitness
 import _crate_separation_fitness
 import _dependency_use_fitness
 import _modularity_fitness
 import _module_layer_fitness
+import _naming_fitness
 import _coordinator_authority_fitness
 import _crate_dependency_fitness
 import _execution_ownership_fitness
@@ -38,6 +41,7 @@ import _runtime_secret_boundary
 import _session_effect_fitness
 import _session_state_ownership_fitness
 import _service_data_ownership_fitness
+import _single_owner_fitness
 import _store_pool_fitness
 import _wire_closure_fitness
 import _crate_boundary_workspace
@@ -1692,6 +1696,10 @@ def main() -> int:
     _dependency_use_fitness.selftest()
     _modularity_fitness.selftest()
     _module_layer_fitness.selftest()
+    _architecture_ratchet.selftest()
+    _single_owner_fitness.selftest()
+    _contract_map_fitness.selftest()
+    _naming_fitness.selftest()
     _arch_fitness.selftest()
     _coordinator_authority_fitness.selftest()
     _migration_fitness.selftest()
@@ -1725,6 +1733,9 @@ def main() -> int:
         + _dependency_use_fitness.check_all(CRATES)
         + _modularity_fitness.check_all(CRATES)
         + _module_layer_fitness.check_all(CRATES)
+        + _single_owner_fitness.check_all(CRATES)
+        + _contract_map_fitness.check_all(CRATES)
+        + _naming_fitness.check_all(CRATES)
         + check_neutral_code_boundaries()
         + check_builtin_tool_ownership()
         + check_background_task_is_state_only()
