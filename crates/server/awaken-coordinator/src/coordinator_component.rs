@@ -453,7 +453,7 @@ async fn start_coordinator_services(
     // One timer drives the exact DeploymentApplication and DreamApplication mounted above;
     // no scheduler may reconstruct either aggregate beside this component.
     register_deployment_dream_scheduler(
-        &service_lifecycle,
+        service_lifecycle,
         deployment_application,
         dream_application,
         clock,
