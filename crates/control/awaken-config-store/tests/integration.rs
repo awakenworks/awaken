@@ -134,6 +134,7 @@ async fn sqlite_audit_identity_legacy_replay_and_cross_connection_begin() {
             .business_committed
     );
     drop((first, second));
+    EmbeddedSqlite::file(&path).settled().await;
     std::fs::remove_file(path).unwrap();
 }
 
@@ -165,6 +166,7 @@ async fn sqlite_config_cas_missing_row_and_revision_decision_table() {
     let scope = ScopeId::from("cas-concurrent");
     let before_reopen = revision_cas::frame(first.as_ref(), &scope, "race").await;
     drop((first, second));
+    EmbeddedSqlite::file(&path).settled().await;
     let reopened = SqliteConfigStore::open(path.to_str().unwrap())
         .await
         .unwrap();
@@ -174,6 +176,7 @@ async fn sqlite_config_cas_missing_row_and_revision_decision_table() {
         "R6 reopen preserves complete winner and history"
     );
     drop(reopened);
+    EmbeddedSqlite::file(&path).settled().await;
     std::fs::remove_file(path).unwrap();
 }
 
@@ -204,6 +207,7 @@ async fn sqlite_config_cas_exhaustion_preserves_reopenable_truth() {
     raw.close().await;
     revision_cas::exhausted(&store, &config).await;
     drop(store);
+    EmbeddedSqlite::file(&path).settled().await;
     let reopened = SqliteConfigStore::open(path.to_str().unwrap())
         .await
         .unwrap();
@@ -215,6 +219,7 @@ async fn sqlite_config_cas_exhaustion_preserves_reopenable_truth() {
     assert_eq!(row.revision, i64::MAX as u64);
     assert_eq!(row.config, config);
     drop(reopened);
+    EmbeddedSqlite::file(&path).settled().await;
     std::fs::remove_file(path).unwrap();
 }
 
@@ -241,6 +246,7 @@ async fn sqlite_config_history_insert_failure_rolls_back_all_write_paths() {
     revision_cas::history_failure_rolls_back(&store).await;
     conn.close().await;
     drop(store);
+    EmbeddedSqlite::file(&path).settled().await;
     std::fs::remove_file(path).unwrap();
 }
 
@@ -1515,6 +1521,7 @@ async fn list_published_warm_load_latest_per_agent_is_deterministic_on_sqlite() 
     }
     assert_eq!(warm.get("dup"), Some(&v3.fingerprint));
     drop(store);
+    EmbeddedSqlite::file(&path).settled().await;
     std::fs::remove_file(path).expect("remove task-owned SQLite fixture");
 }
 

@@ -48,6 +48,9 @@ async fn sqlite_agent_input_rollback_replay_and_corrupt_key_readback() {
         }
     }).await;
     drop(store);
+    awaken_sqlite_pool::EmbeddedSqlite::file(&path)
+        .settled()
+        .await;
     let store = awaken_admin_config_api::SqliteAdminStore::open(path.to_str().unwrap())
         .await
         .unwrap();
@@ -75,5 +78,8 @@ async fn sqlite_agent_input_rollback_replay_and_corrupt_key_readback() {
     assert!(store.list_agent_inputs("retry-workspace").await.is_err());
     control.close().await;
     drop(store);
+    awaken_sqlite_pool::EmbeddedSqlite::file(&path)
+        .settled()
+        .await;
     std::fs::remove_file(path).unwrap();
 }
