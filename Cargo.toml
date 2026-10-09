@@ -234,5 +234,14 @@ proptest = "1"
 unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
+# Ordinary builds retain source locations for failures without generating
+# type/variable debug records for every independently linked test executable.
+# An interactive debugger can opt back in with CARGO_PROFILE_{DEV,TEST}_DEBUG=2.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
 [profile.release]
 strip = "symbols"
