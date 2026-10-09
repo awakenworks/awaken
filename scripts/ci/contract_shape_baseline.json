@@ -8,8 +8,7 @@
       }
     },
     "awaken-agent-channel": {
-      "depth": 0,
-      "catch_all_errors": 1
+      "depth": 0
     },
     "awaken-agent-contract": {
       "depth": 0,
