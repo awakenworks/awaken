@@ -324,6 +324,28 @@ impl SharedHost {
     ) -> Option<Arc<dyn awaken_resource_contract::ResourceReclamationRepository>> {
         self.resources.resource_reclamation.clone()
     }
+
+    /// The content-addressed blob store (Files API, file-resource mounts, artifacts).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn file_store(&self) -> Arc<dyn FileStore> {
+        self.resources.file_store.clone()
+    }
+
+    /// The sole durable logical-file catalog. Public Files identities resolve
+    /// through this catalog before their private content-addressed blob is read.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn file_catalog(&self) -> Arc<dyn FileCatalog> {
+        self.resources.file_catalog.clone()
+    }
+
+    /// The sole Resources-owned logical-File command application. Database-less
+    /// Workers deliberately return `None`; they may only use `FileContentSource`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn file_application(
+        &self,
+    ) -> Option<Arc<dyn awaken_resource_contract::FileApplicationService>> {
+        self.resources.file_application.clone()
+    }
 }
 
 /// The local extraction repository of this crate's own unit-test Hosts: the

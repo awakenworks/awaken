@@ -46,6 +46,6 @@
     "host::session::environment_realization": 25,
     "host::terminal_reconciliation": 1,
     "managed_resource_projection": 5,
-    "provisioning": 21
+    "provisioning": 15
   }
 }

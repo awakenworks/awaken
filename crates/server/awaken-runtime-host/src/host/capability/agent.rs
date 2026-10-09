@@ -108,4 +108,28 @@ impl SharedHost {
             .inference_routing
             .model_ref(thread, &self.agent.model_ref)
     }
+
+    /// The default Agent's published delegation targets in one Workspace.
+    pub fn delegate_ids_in(&self, workspace: &str) -> Vec<String> {
+        self.agent
+            .agent_publications
+            .as_ref()
+            .and_then(|source| {
+                source.current(
+                    workspace,
+                    &awaken_runtime_contract::snapshot::AgentId("assistant".into()),
+                )
+            })
+            .map(|snapshot| {
+                snapshot
+                    .resolved_spec
+                    .plugin_config
+                    .agent
+                    .delegates
+                    .into_iter()
+                    .map(|binding| binding.agent_id.0)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }

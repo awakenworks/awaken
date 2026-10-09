@@ -12,11 +12,8 @@ use std::sync::Arc;
 use crate::host::SharedHost;
 use awaken_provisioning_contract as pc;
 use awaken_resource_contract::{ArtifactPublicationError, RepositoryBindingVerifierError};
-#[cfg(any(test, feature = "test-support"))]
-use awaken_resource_contract::{FileCatalog, FileStore};
 #[cfg(test)]
-use awaken_resource_contract::{FileCatalogError, FileRecord};
-use awaken_runtime_contract::resolved::ToolDescriptor;
+use awaken_resource_contract::{FileCatalog, FileCatalogError, FileRecord};
 
 #[derive(Debug)]
 pub(crate) enum RepositoryPublicationActivationError {
@@ -710,28 +707,6 @@ impl SharedHost {
             .unwrap_or_default()
     }
 
-    /// The content-addressed blob store (Files API, file-resource mounts, artifacts).
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn file_store(&self) -> Arc<dyn FileStore> {
-        self.resources.file_store.clone()
-    }
-
-    /// The sole durable logical-file catalog. Public Files identities resolve
-    /// through this catalog before their private content-addressed blob is read.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn file_catalog(&self) -> Arc<dyn FileCatalog> {
-        self.resources.file_catalog.clone()
-    }
-
-    /// The sole Resources-owned logical-File command application. Database-less
-    /// Workers deliberately return `None`; they may only use `FileContentSource`.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn file_application(
-        &self,
-    ) -> Option<Arc<dyn awaken_resource_contract::FileApplicationService>> {
-        self.resources.file_application.clone()
-    }
-
     /// Realize a thread's resolved Repository inputs into its freshly-created
     /// environment. The narrow port receives only a secret-free plan and an ephemeral
     /// transport credential after authorization/config resolution. A failure aborts
@@ -1314,49 +1289,6 @@ impl ArtifactHarvester {
         };
         let receipts = self.publisher.recover(recovery).await?;
         Ok(HarvestedArtifacts { receipts })
-    }
-}
-
-impl SharedHost {
-    /// The registered built-in tools advertised on a managed session's agent object:
-    /// each hand-tool id and whether its calls require confirmation. Folded into the
-    /// public `agent_toolset` by the adapter. Deterministic from host config.
-    pub fn builtin_tools(&self) -> Vec<(String, bool)> {
-        crate::config::builtin_hand_tools()
-    }
-
-    /// The client-executed (custom) tools advertised on a managed session: their
-    /// descriptors, so the adapter can shape each as a `custom` tool definition.
-    pub fn custom_tools(&self) -> Vec<ToolDescriptor> {
-        self.tools
-            .client_tools
-            .iter()
-            .map(|id| crate::config::client_tool_descriptor(id))
-            .collect()
-    }
-
-    /// The default Agent's published delegation targets in one Workspace.
-    pub fn delegate_ids_in(&self, workspace: &str) -> Vec<String> {
-        self.agent
-            .agent_publications
-            .as_ref()
-            .and_then(|source| {
-                source.current(
-                    workspace,
-                    &awaken_runtime_contract::snapshot::AgentId("assistant".into()),
-                )
-            })
-            .map(|snapshot| {
-                snapshot
-                    .resolved_spec
-                    .plugin_config
-                    .agent
-                    .delegates
-                    .into_iter()
-                    .map(|binding| binding.agent_id.0)
-                    .collect()
-            })
-            .unwrap_or_default()
     }
 }
 
