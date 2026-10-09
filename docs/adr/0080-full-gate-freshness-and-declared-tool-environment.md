@@ -5,6 +5,8 @@
 - Implementation: complete — `scripts/ci/gate_tools.json`, `scripts/ci/gate_tools.py`,
   `scripts/ci/check_gate_freshness.py`, `scripts/ci/reclaim_build_space.py`, and the
   stage prechecks in `check_formal.sh`, `check-rust.sh` and `pg_tests.sh`
+- Amended: 2026-10-09 (§5 and Consequences: the host `awaken-worktree-gc` command
+  owns build-space reclaim)
 
 ## Context
 
@@ -210,3 +212,14 @@ inside a proof hours later.
   by whoever notices the disk first. The rule is deliberately conservative: it
   keeps anything in use and anything young, so an unnecessary keep costs disk
   while an unnecessary delete would cost a rebuild at best.
+
+## Amendment 2026-10-09: build-space consequence follows §5
+
+The last Consequences bullet ("reclaimed by a rule anyone can read and re-run … it
+keeps anything in use and anything young") describes the retired repository rule.
+Since the §5 change of 2026-10-09 the repository owns no reclaim rule: the host's
+`awaken-worktree-gc` command decides and deletes, and
+`scripts/ci/reclaim_build_space.py` only requests its dry-run report or delegates
+`--apply` to it (`scripts/ci/reclaim_build_space.py:29`,
+`scripts/ci/gate_tools.json:74`). Without that command, reclaim is reported as
+unavailable; there is no fallback deletion.

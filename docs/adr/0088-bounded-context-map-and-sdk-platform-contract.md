@@ -6,6 +6,14 @@
   public surface; ADR-0087 SQLite through sqlx.
 - Affects: crate `bounded_context` metadata, the crate-boundary guards, and
   awaken-cloud only through later renames (none in this ADR).
+- Amended by: ADR-0089 (Proposed: decision 2, the realization driver merges into
+  Execution's `awaken-session-realizer`)
+- Amended by: ADR-0091 (Proposed: the 2026-10-07 amendment sentence on not merging
+  the small Session contracts)
+- Amended: 2026-10-09 (reconciled with ADR-0081: public-API snapshots are an
+  `api_snapshot` opt-in)
+- Amended: 2026-10-09 (reconciled with ADR-0086: credential vocabulary lives in
+  `awaken-agent-contract`)
 
 ## Context
 
@@ -194,3 +202,21 @@ changing it amends this ADR.
   they adapt two external protocols that evolve independently. Seven functions
   (46 lines) are identical; that does not justify a shared module binding them.
 
+## Amendment 2026-10-09: reconciled with ADR-0081
+
+The change-control row of decision 4 does not mean every publishable SDK crate has a
+snapshot today. [ADR-0081](0081-contract-layering-and-ratchet-guardrails.md) §9
+(amended 2026-09-28) decides that the public-API gate snapshots only crates whose
+manifest sets `[package.metadata.awaken] api_snapshot = true`. Five crates opt in
+today (`awaken-agent-contract`, `awaken-tool-contract`, `awaken-runtime-contract`,
+`awaken-mcp-wire`, `awaken-runtime`; `public-api/` holds those five files). The
+row is reached when every publishable SDK crate opts in; that is planned work (W6).
+
+## Amendment 2026-10-09: reconciled with ADR-0086
+
+Decision 4 places the credential reference vocabulary in `awaken-credential`. The
+2026-10-08 amendment of [ADR-0086](0086-runtime-sdk-public-surface.md) moved it into
+the `credential` module of `awaken-agent-contract` and removed `awaken-credential`.
+The code follows ADR-0086: `crates/contract/awaken-agent-contract/src/lib.rs:7`
+(`pub mod credential;`); no `awaken-credential` crate exists. Read the row as
+"credential reference vocabulary in `awaken-agent-contract::credential`".
