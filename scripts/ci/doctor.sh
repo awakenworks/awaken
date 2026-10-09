@@ -40,7 +40,7 @@ report() {
   echo ""
   echo "run scripts/ci/check-all.sh --list-groups to see every group."
   echo "run scripts/ci/gate_tools.py require --gate <group> to precheck one group."
-  echo "run scripts/ci/reclaim_build_space.py to see every reclaimable path, --apply to free them."
+  echo "run scripts/ci/reclaim_build_space.py to preview the host GC; review its plan before --apply."
 }
 
 self_test() {
@@ -78,7 +78,7 @@ self_test() {
   }
   # | T6 | the report names disk headroom | the reclamation tool's own proof passes |
   python3 scripts/ci/reclaim_build_space.py --self-test >/dev/null || {
-    echo "T6 the build-space report cannot decide what is safe to reclaim" >&2
+    echo "T6 the build-space adapter cannot delegate to the canonical owner" >&2
     return 1
   }
   echo "doctor self-test: every tool row names a group and a way to get it"

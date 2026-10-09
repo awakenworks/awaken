@@ -75,6 +75,7 @@ REQUIREMENTS = {"required", "optional", "fetched"}
 SOLVER_USABLE = 0
 SOLVER_ABSENT = 3
 SOLVER_REFUSED = 4
+HOST_ADMISSION_VERSION = "awaken-build-admission 1 sha256="
 
 # Defaults the repository's own scripts already apply, so an unset variable
 # resolves to the same directory here as it does there.
@@ -568,7 +569,7 @@ def command_disk(manifest: dict, stage: str, path: str | None, override: float |
     free = free_gigabytes(target)
     if free >= required:
         print(f"disk: {free:.1f}G free at {target} (stage '{stage}' needs {required:.0f}G)")
-        return 0
+        return command_resources(manifest, os.environ.get('AWAKEN_ADMISSION_PROFILE', 'cargo'))
     print(
         f"ERROR: not enough free disk for the {stage} stage: {free:.1f}G free at {target}, "
         f"{required:.0f}G required\n"
@@ -578,7 +579,74 @@ def command_disk(manifest: dict, stage: str, path: str | None, override: float |
     )
     for suggestion in manifest["cleanup_suggestions"]:
         print(f"      - {expand(suggestion)}", file=sys.stderr)
-    return 1
+    return 75
+
+
+def command_resources(manifest: dict, profile: str, *, require_host: bool = False,
+                      observe: bool = False) -> int:
+    """Delegate resource eligibility; the repository owns no host thresholds."""
+    tool = find_tool(manifest, 'awaken-build-admission')
+    found = locate(tool) if tool else Found('absent')
+    if not found.usable or not found.where:
+        if require_host:
+            print('full gate requires the canonical awaken-build-admission command', file=sys.stderr)
+            return 75
+        print('host resource observation unavailable; runner must supply its resource contract')
+        return 0
+    try:
+        result = subprocess.run([found.where, '--status' if observe else '--require',
+                                 '--profile', profile], capture_output=True, text=True, timeout=30)
+        report = json.loads(result.stdout)
+        if (type(report.get('schema_version')) is not int or report.get('schema_version') != 1
+                or report.get('profile') != profile
+                or type(report.get('eligible')) is not bool
+                or not isinstance(report.get('problems'), list)
+                or result.returncode != (0 if observe or report['eligible'] else 75)):
+            raise ValueError('inconsistent host resource observation')
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, AttributeError) as error:
+        print(f'host resource qualification unavailable: {error}', file=sys.stderr)
+        return 75
+    print('host resources: ' + json.dumps(report, sort_keys=True))
+    if result.stderr:
+        print(result.stderr, file=sys.stderr, end='')
+    return result.returncode
+
+
+def _host_resource_problems() -> list[str]:
+    # Resource adapter C/E table: R1 exact protocol/profile+eligible+zero -> run;
+    # R2 unavailable+75 -> refusal; R3 status-only may observe R2 before canonical
+    # admission tries GC; R4 malformed/inconsistent response -> 75; R5 required
+    # host absent -> 75. No percentages/floors or fallback GC are defined here.
+    from unittest.mock import patch
+    errors = []
+    row = {'name': 'awaken-build-admission', 'locate': 'path'}
+    fixture = {'tools': [row]}
+    for eligible, status, observe, expected in (
+            (True, 0, False, 0), (False, 75, False, 75),
+            (False, 0, True, 0), (False, 0, False, 75), (True, 75, False, 75)):
+        report = {'schema_version': 1, 'profile': 'qualification',
+                  'eligible': eligible, 'problems': [] if eligible else ['pressure']}
+        with patch(__name__ + '.locate', return_value=Found('present', '/fixture/observer')), \
+                patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess(
+                    [], status, json.dumps(report), '')) as child:
+            code = _quiet(lambda: command_resources(fixture, 'qualification',
+                                                    require_host=True, observe=observe))
+            if code != expected:
+                errors.append('host resource response was classified incorrectly')
+            if child.call_args.args[0] != ['/fixture/observer', '--status' if observe else '--require',
+                                           '--profile', 'qualification']:
+                errors.append('host resource request did not preserve exact profile/mode')
+    with patch(__name__ + '.locate', return_value=Found('absent')), \
+            patch.object(subprocess, 'run') as child:
+        if _quiet(lambda: command_resources(fixture, 'qualification', require_host=True)) != 75:
+            errors.append('missing host admitted full gate')
+        child.assert_not_called()
+    for response in ('not-json', '[]', '{"schema_version":true,"profile":"qualification","eligible":true,"problems":[]}'):
+        with patch(__name__ + '.locate', return_value=Found('present', '/fixture/observer')), \
+                patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, response, '')):
+            if _quiet(lambda: command_resources(fixture, 'qualification', require_host=True)) != 75:
+                errors.append('invalid resource evidence admitted full gate')
+    return errors
 
 
 # ---------------------------------------------------------------- self-test
@@ -601,7 +669,7 @@ def _declared_tool_homes() -> set[str]:
 
 
 def _owner_literal(owner: str) -> tuple[str, str] | None:
-    """The shell constant a version pin names, as ``(where, value)``.
+    """The literal constant a version pin names, as ``(where, value)``.
 
     A pin is written twice on purpose: the gate script states it as a shell
     constant its own tests exercise, and the manifest states it so one file
@@ -617,7 +685,7 @@ def _owner_literal(owner: str) -> tuple[str, str] | None:
     if not path.is_file():
         return None
     match = re.search(
-        rf'^\s*(?:readonly\s+)?{re.escape(variable)}="([^"]*)"',
+        rf'^\s*(?:readonly\s+)?{re.escape(variable)}\s*=\s*"([^"]*)"',
         path.read_text(encoding="utf-8"),
         re.MULTILINE,
     )
@@ -817,12 +885,22 @@ def self_test() -> int:
     if not manifest.get("cleanup_suggestions"):
         problems.append("M1 a disk refusal would name nothing that is safe to delete")
 
-    tiny = _quiet(lambda: command_disk(manifest, stages[0], None, 0.000001))
-    if tiny != 0:
-        problems.append("M7 a threshold this machine clears was refused anyway")
-    huge = _quiet(lambda: command_disk(manifest, stages[0], None, 10**9))
-    if huge != 1:
-        problems.append("M7 a threshold no machine clears was accepted")
+    # M7 artifact capacity >=/< stage minimum => delegate once / return 75
+    # before the host query. Ambient pressure is a separate cause owned by the
+    # resource adapter table; it cannot impersonate an artifact-policy failure.
+    from unittest.mock import patch
+    with patch(__name__ + '.free_gigabytes', return_value=100), \
+            patch(__name__ + '.command_resources', return_value=0) as resources:
+        for required in (0.000001, 100):
+            resources.reset_mock()
+            code = _quiet(lambda: command_disk(manifest, stages[0], None, required))
+            if code != 0 or resources.call_count != 1:
+                problems.append("M7 sufficient artifact capacity did not delegate to host qualification")
+        for required in (100.000001, 10**9):
+            resources.reset_mock()
+            code = _quiet(lambda: command_disk(manifest, stages[0], None, required))
+            if code != 75 or resources.called:
+                problems.append("M7 insufficient artifact capacity lost resource refusal or queried the host")
 
     for tool in manifest["tools"]:
         if not tool.get("solver"):
@@ -834,6 +912,7 @@ def self_test() -> int:
         problems.append("M8 an undeclared solver was admitted instead of refused")
 
     problems.extend(_third_outcome_problems())
+    problems.extend(_host_resource_problems())
 
     if problems:
         print("gate_tools self-test:", file=sys.stderr)
@@ -856,6 +935,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--path")
     parser.add_argument("--minimum-gigabytes", type=float)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--profile", choices=('cargo', 'qualification'), default='cargo')
+    parser.add_argument("--require-host", action="store_true")
+    parser.add_argument("--observe", action="store_true")
     arguments = parser.parse_args(argv)
 
     manifest = load()
@@ -888,6 +970,9 @@ def main(argv: list[str]) -> int:
             manifest, arguments.stage or arguments.name or "", arguments.path,
             arguments.minimum_gigabytes,
         )
+    if action == 'resources':
+        return command_resources(manifest, arguments.profile, require_host=arguments.require_host,
+                                 observe=arguments.observe)
     parser.print_usage(sys.stderr)
     return 2
 

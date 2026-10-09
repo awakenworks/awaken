@@ -30,10 +30,36 @@ ROOT = Path(__file__).resolve().parents[2]
 DEADLINE = ROOT / INPUT_GLOBS[0]
 HELPER = ROOT / INPUT_GLOBS[1]
 
+GROUP_CODE = """
+import json, os, signal, sys, time
+from pathlib import Path
+Path(sys.argv[1]).write_text(str(os.getpid()))
+ready_read, ready_write = os.pipe()
+child = os.fork()
+if child == 0:
+    os.close(ready_read)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN if sys.argv[3] == '1' else signal.SIG_DFL)
+    os.write(ready_write, b'R')
+    os.close(ready_write)
+else:
+    os.close(ready_write)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN if sys.argv[2] == '1' else signal.SIG_DFL)
+    assert os.read(ready_read, 1) == b'R'
+    os.close(ready_read)
+    Path(sys.argv[1] + '.ready').write_text(json.dumps({'leader':os.getpid(),'child':child}))
+    print('ready', flush=True)
+while True:
+    time.sleep(1)
+"""
+
 
 @unittest.skipIf(os.name == "nt", "POSIX process groups and Cargo admission are owned by Linux/macOS")
 class DeadlineTests(unittest.TestCase):
-    def cargo_fixture(self, root, command, *, status=0, delay=0.4, arguments=(), ready=False):
+    def group_command(self, coordinate, leader_ignores, child_ignores):
+        return [sys.executable, "-c", GROUP_CODE, str(coordinate),
+                str(int(leader_ignores)), str(int(child_ignores))]
+
+    def cargo_fixture(self, root, command, *, status=0, delay=0.4, arguments=(), admit=False, ready=False):
         # This fixture owns only admission and Cargo's documented argv protocol;
         # it delegates execution/cleanup to the actual shared deadline owner.
         cargo = root / "cargo"
@@ -58,7 +84,8 @@ esac
         environment.pop("FIXTURE_ADMITTED", None)
         result = subprocess.run(
             ["bash", "-c", 'source "$1"; shift; run_with_deadline "$@"',
-             "deadline-fixture", str(HELPER), "0.25", "cargo", "fixture",
+             "deadline-fixture", str(HELPER), *(["--admit"] if admit else []), "0.25",
+             *([] if admit else ["cargo", "fixture"]),
              *command, *arguments],
             env=environment, capture_output=True, text=True, timeout=8,
         )
@@ -96,6 +123,20 @@ esac
                 status=75, arguments=(str(marker),),
             )
             self.assertEqual(result.returncode, 75, result.stderr)
+            self.assertFalse(marker.exists())
+
+    def test_non_cargo_job_uses_the_existing_admission_and_deadline(self):
+        # J1 an explicit whole job uses the same external Cargo entry: admission
+        # lasts longer than its execution budget; non-Cargo argv/status remains
+        # exact. J2 refusal emits 75 and starts no job. No new execution path.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = self.cargo_fixture(root, ['bash', '-c',
+                'printf "%s" "$FIXTURE_ADMITTED"; exit 23'], admit=True)
+            self.assertEqual((result.returncode, result.stdout), (23, '1'))
+            marker = root / 'executed'
+            result = self.cargo_fixture(root, ['touch', str(marker)], status=75, admit=True)
+            self.assertEqual(result.returncode, 75)
             self.assertFalse(marker.exists())
 
     def test_cargo_execution_still_times_out_after_admission(self):
@@ -141,47 +182,36 @@ esac
                     with self.subTest(leader=leader_ignores, child=child_ignores):
                         coordinate = Path(tmp) / "group"
                         coordinate.unlink(missing_ok=True)
-                        code = """
-import os, signal, sys, time
-from pathlib import Path
-Path(sys.argv[1]).write_text(str(os.getpid()))
-ready_read, ready_write = os.pipe()
-child = os.fork()
-if child == 0:
-    os.close(ready_read)
-    signal.signal(signal.SIGTERM, signal.SIG_IGN if sys.argv[3] == '1' else signal.SIG_DFL)
-    os.write(ready_write, b'R')
-    os.close(ready_write)
-else:
-    os.close(ready_write)
-    signal.signal(signal.SIGTERM, signal.SIG_IGN if sys.argv[2] == '1' else signal.SIG_DFL)
-    assert os.read(ready_read, 1) == b'R'
-    os.close(ready_read)
-    print('ready', flush=True)
-while True:
-    time.sleep(1)
-"""
                         # Shorten only cleanup grace in this isolated Python
                         # invocation; production's five-second grace is unchanged.
                         driver = """
-import importlib.util, subprocess, sys
+import importlib.util, selectors, subprocess, sys
+from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('deadline', sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 m.KILL_GRACE_SECONDS = 0.15
 process = subprocess.Popen(sys.argv[2:], start_new_session=True, stdout=subprocess.PIPE)
-ready = process.stdout.readline()
-assert ready == b'ready\\n', 'both signal dispositions must be installed before timing'
-result = m._wait_posix(process, 0.5)
-assert process.stdout.read() == b'', 'all descendant output handles must close'
-sys.stdout.buffer.write(ready)
-raise SystemExit(result)
+try:
+    ready = selectors.DefaultSelector()
+    ready.register(process.stdout, selectors.EVENT_READ)
+    assert ready.select(10), 'D1-D4 fixture startup did not become ready'
+    assert process.stdout.readline() == b'ready\\n'
+    print('ready', flush=True)
+    # Setup and execution are distinct causes: the actual process group is
+    # ready before the tested execution clock. No cold-start SLO is claimed.
+    with patch.object(m.subprocess, 'Popen', return_value=process) as spawn:
+        result = m.run(0.5, sys.argv[2:])
+    spawn.assert_called_once_with(sys.argv[2:], start_new_session=True)
+    process.communicate(timeout=2)
+    raise SystemExit(result)
+finally:
+    m.terminate_group(process)
 """
                         try:
                             result = subprocess.run(
                                 [sys.executable, "-c", driver, str(DEADLINE),
-                                 sys.executable, "-c", code, str(coordinate),
-                                 str(int(leader_ignores)), str(int(child_ignores))],
+                                 *self.group_command(coordinate, leader_ignores, child_ignores)],
                                 capture_output=True, text=True, timeout=15,
                             )
                             self.assertEqual(result.returncode, 124, result.stderr)
@@ -192,6 +222,105 @@ raise SystemExit(result)
                                     os.killpg(int(coordinate.read_text()), signal.SIGKILL)
                                 except ProcessLookupError:
                                     pass
+
+    def test_driver_cancellation_reaps_the_same_ready_group(self):
+        # C/E table S1 TERM or INT reaches the driver, after both actual group
+        # members install their handlers. Cross all D1-D4 handler pairs: exact
+        # 128+signal, closed inherited pipes, no live leader/child. Repeated TERM
+        # during grace cannot restart cleanup or overwrite the first signal.
+        # Setup uses a bounded readiness barrier, not subsecond startup timing.
+        driver = """
+import importlib.util, sys
+spec=importlib.util.spec_from_file_location('deadline', sys.argv[1])
+m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.KILL_GRACE_SECONDS=0.15
+raise SystemExit(m.run(60,sys.argv[2:]))
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            for number in (signal.SIGTERM, signal.SIGINT):
+                for leader_ignores in (False, True):
+                    for child_ignores in (False, True):
+                        with self.subTest(signal=number, leader=leader_ignores, child=child_ignores):
+                            coordinate = Path(tmp) / 'group'
+                            ready = Path(str(coordinate) + '.ready')
+                            coordinate.unlink(missing_ok=True)
+                            ready.unlink(missing_ok=True)
+                            process = subprocess.Popen(
+                                [sys.executable, '-c', driver, str(DEADLINE),
+                                 *self.group_command(coordinate, leader_ignores, child_ignores)],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                            try:
+                                until = time.monotonic() + 10
+                                while not ready.exists() and time.monotonic() < until:
+                                    time.sleep(0.01)
+                                self.assertTrue(ready.exists(), 'S1 fixture startup')
+                                members = json.loads(ready.read_text())
+                                process.send_signal(number)
+                                time.sleep(0.03)
+                                if process.poll() is None:
+                                    process.send_signal(signal.SIGTERM)
+                                out, err = process.communicate(timeout=5)
+                                self.assertEqual(process.returncode, 128 + number, err)
+                                self.assertEqual(out.strip(), 'ready')
+                                for pid in members.values():
+                                    stat = Path(f'/proc/{pid}/stat')
+                                    self.assertTrue(not stat.exists() or stat.read_text().split()[2] == 'Z',
+                                                    'S1 no surviving live member')
+                            finally:
+                                if coordinate.exists():
+                                    try: os.killpg(int(coordinate.read_text()), signal.SIGKILL)
+                                    except ProcessLookupError: pass
+                                if process.poll() is None: process.kill()
+                                process.communicate(timeout=5)
+
+    def test_nonfinite_or_nonpositive_deadline_starts_nothing(self):
+        # V1 zero/negative/NaN/infinity is not a finite execution deadline:
+        # reject with 2 before any child effect. Valid deadlines retain D5.
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / 'executed'
+            for seconds in ('0', '-1', 'nan', 'inf'):
+                result = subprocess.run([sys.executable, str(DEADLINE), seconds,
+                                         '--', 'touch', str(marker)], capture_output=True, timeout=5)
+                self.assertEqual(result.returncode, 2)
+                self.assertFalse(marker.exists())
+
+    def test_cancellation_during_spawn_retains_and_reaps_child(self):
+        # S2 TERM arrives inside actual Popen construction, before run() retains
+        # its returned handle => defer, retain the exact group, clean it, 143.
+        # Prior handlers are restored after S3 ordinary completion. The bounded
+        # isolated driver and final cleanup address only this fixture's group.
+        driver = """
+import importlib.util, os, signal, subprocess, sys
+from pathlib import Path
+from unittest.mock import patch
+spec=importlib.util.spec_from_file_location('deadline',sys.argv[1])
+m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+m.KILL_GRACE_SECONDS=0.15
+before={number:signal.getsignal(number) for number in (signal.SIGTERM,signal.SIGINT)}
+real=subprocess.Popen
+def spawn(*args,**kwargs):
+    child=real(*args,**kwargs)
+    Path(sys.argv[2]).write_text(str(child.pid))
+    os.kill(os.getpid(),signal.SIGTERM)
+    return child
+with patch.object(m.subprocess,'Popen',side_effect=spawn):
+    status=m.run(60,['sleep','60'])
+assert all(signal.getsignal(number)==value for number,value in before.items())
+assert m.run(2,['bash','-c','exit 0'])==0
+assert all(signal.getsignal(number)==value for number,value in before.items())
+raise SystemExit(status)
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            coordinate = Path(tmp) / 'group'
+            try:
+                result = subprocess.run([sys.executable, '-c', driver, str(DEADLINE), str(coordinate)],
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 143, result.stderr)
+                self.assertFalse(Path(f'/proc/{coordinate.read_text()}/stat').exists())
+            finally:
+                if coordinate.exists():
+                    try: os.killpg(int(coordinate.read_text()),signal.SIGKILL)
+                    except ProcessLookupError: pass
 
     def test_success_and_failure_preserve_command_status(self):
         # D5: command returns before deadline, with zero/nonzero status => exact

@@ -51,10 +51,12 @@ assert isinstance(r['duration_seconds'],(int,float)) and r['duration_seconds']>=
 print(r['duration_seconds'])
 PY
   ); then duration="$observation"; else status=1; fi
-  parallel_checks_result "${parallel_labels[$index]}" "$status" "$duration" \
-    "${parallel_commands[$index]}" "$parallel_directory/$index.log"
+  # Retire the reaped PID before callbacks can cancel the remaining workers.
+  # A callback must never signal a PID whose ownership was already released.
   parallel_head=$((parallel_head + 1))
   unset 'parallel_pids[index]'
+  parallel_checks_result "${parallel_labels[$index]}" "$status" "$duration" \
+    "${parallel_commands[$index]}" "$parallel_directory/$index.log"
 }
 
 parallel_checks_drain() {
