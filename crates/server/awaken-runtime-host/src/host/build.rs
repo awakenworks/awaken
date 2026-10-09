@@ -21,6 +21,8 @@ pub struct HostProcess {
     pub local_workspace: String,
     /// The typed Deployment this Host serves.
     pub deployment: crate::DeploymentConfig,
+    /// This process's part in Run execution, selected by the composition.
+    pub execution: crate::ExecutionTopology,
     /// The process wall clock the Host drives its Workers on.
     pub clock: Arc<dyn awaken_time::WallClock>,
 }
@@ -34,13 +36,20 @@ impl HostDependencies {
         if dependencies.local_workspace.trim().is_empty() {
             return Err(HostError::bad_request("local workspace must not be empty"));
         }
+        dependencies
+            .execution
+            .validate()
+            .map_err(HostError::bad_request)?;
+        // A registered capacity exists only inside an in-process pool, so the
+        // "registered but coordinator-only" graph has no representation; the
+        // remaining contradiction is a registration under a local authority.
         if dependencies
-            .dispatch
-            .dispatch_pool_sizing
-            .registered()
+            .execution
+            .local
+            .pool_sizing()
+            .and_then(crate::DispatchPoolSizing::registered)
             .is_some()
-            && (dependencies.authority.hosts_session_application()
-                || dependencies.deployment.disable_local_pool)
+            && dependencies.authority.hosts_session_application()
         {
             return Err(HostError::bad_request(
                 "registered Worker capacity requires upstream authority and a local execution pool",
@@ -69,7 +78,7 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         tools,
         resources,
         mcp,
-        dispatch,
+        execution,
         capture,
         session_application,
         session_execution,
@@ -101,7 +110,7 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         tools,
         resources: capability::ResourcePorts::new(resources, memory),
         mcp,
-        dispatch: capability::DispatchCapability::new(dispatch, host),
+        dispatch: capability::DispatchCapability::new(execution, host),
         capture,
         local_workspace,
         session_slots,
@@ -277,7 +286,7 @@ impl SharedHost {
                 store: self.dispatch_store()?,
                 commit: commit.clone(),
                 reader: commit,
-                owner: self.deployment.dispatch_owner.clone(),
+                owner: self.dispatch_owner().to_owned(),
                 claimed_commit,
                 recovery_projection,
                 session_resources: self.thread_resource_manifest(thread),
@@ -336,11 +345,12 @@ mod startup_tests {
                 awaken_time::system_clock(),
             )),
             expected.clone(),
-            HostProcess {
-                local_workspace: SharedHost::mint_local_workspace(),
-                deployment: crate::DeploymentConfig::ephemeral(),
-                clock: awaken_time::system_clock(),
-            },
+            crate::DeploymentConfig::ephemeral()
+                .host_process(
+                    SharedHost::mint_local_workspace(),
+                    awaken_time::system_clock(),
+                )
+                .expect("ephemeral process"),
             Arc::new(crate::EphemeralRuntimeAuthority::new(
                 awaken_time::system_clock(),
             )),
@@ -376,10 +386,13 @@ mod startup_tests {
                 .await
                 .expect("test extraction repository"),
         );
-        let process = || HostProcess {
-            local_workspace: SharedHost::mint_local_workspace(),
-            deployment: crate::DeploymentConfig::ephemeral(),
-            clock: awaken_time::system_clock(),
+        let process = || {
+            crate::DeploymentConfig::ephemeral()
+                .host_process(
+                    SharedHost::mint_local_workspace(),
+                    awaken_time::system_clock(),
+                )
+                .expect("ephemeral process")
         };
         assert!(
             HostDependencies::for_worker(

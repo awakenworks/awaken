@@ -550,11 +550,7 @@ async fn assemble_execution_host(
             resources.resource_application.file_content_source(),
             resources.resource_authorities.memory_repository(),
             execution.memory_extractions.clone(),
-            awaken_runtime_host::HostProcess {
-                local_workspace: base.stores.platform_workspace.clone(),
-                deployment,
-                clock: clock.clone(),
-            },
+            deployment.host_process(base.stores.platform_workspace.clone(), clock.clone())?,
             runtime_authority.clone(),
         ),
         #[cfg(any(test, feature = "test-support"))]

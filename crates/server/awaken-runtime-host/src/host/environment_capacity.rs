@@ -53,7 +53,7 @@ impl SharedHost {
         &self,
         target: usize,
     ) -> Result<usize, awaken_provisioning_contract::SandboxError> {
-        if self.deployment.disable_local_pool
+        if !self.runs_local_dispatch_pool()
             || self.deployment.sandbox.warm_pool_size == 0
             || target == 0
         {
@@ -97,7 +97,7 @@ impl SharedHost {
         environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
         target: usize,
     ) -> Result<usize, awaken_provisioning_contract::SandboxError> {
-        if self.deployment.disable_local_pool
+        if !self.runs_local_dispatch_pool()
             || self.deployment.sandbox.warm_pool_size == 0
             || target == 0
             || environment.self_hosted
@@ -123,7 +123,7 @@ impl SharedHost {
     /// default Session shape and current Environment shapes.
     #[must_use]
     pub fn environment_warmup_limits(&self) -> (usize, usize) {
-        if self.deployment.disable_local_pool || self.deployment.sandbox.warm_pool_size == 0 {
+        if !self.runs_local_dispatch_pool() || self.deployment.sandbox.warm_pool_size == 0 {
             return (0, 0);
         }
         (

@@ -171,13 +171,13 @@ impl SharedHost {
         // Any carried manifest still needs capability admission: an explicit empty
         // successor can be the operation that removes a prior projection.
         let worker_local = !worker_local_credentials(&activation.snapshot.resolved_spec).is_empty();
-        let placement = (self.deployment.disable_local_pool || resources.is_some() || worker_local)
+        let placement = (!self.runs_local_dispatch_pool() || resources.is_some() || worker_local)
             .then(|| {
                 remote_worker_placement(
                     &activation.snapshot.resolved_spec,
                     environment_snapshot,
                     resources.as_ref(),
-                    self.deployment.disable_local_pool,
+                    !self.runs_local_dispatch_pool(),
                 )
             });
         let mut request = RunDispatch::new(activation)

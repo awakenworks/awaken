@@ -67,7 +67,8 @@ pub struct HostDependencies {
     pub(crate) tools: capability::ToolOffering,
     pub(crate) resources: capability::ResourceSelection,
     pub(crate) mcp: awaken_session_mcp::McpSessions,
-    pub(crate) dispatch: capability::DispatchSelection,
+    /// This process's part in Run execution; see [`crate::ExecutionTopology`].
+    pub(crate) execution: crate::ExecutionTopology,
     pub(crate) capture: capability::ContentCaptureCapability,
     pub(crate) session_application: SessionApplicationBindings,
     pub(crate) session_execution: SessionExecutionDependencies,
@@ -84,6 +85,7 @@ fn select(
     let HostProcess {
         local_workspace,
         deployment,
+        execution,
         clock,
     } = process;
     // Process startup parses the deployment axes once from the environment
@@ -122,7 +124,7 @@ fn select(
             deployment.sandbox.container_mcp_relay.clone(),
             clock.clone(),
         ),
-        dispatch: capability::DispatchSelection::default(),
+        execution,
         capture: capability::ContentCaptureCapability::new(&deployment),
         session_application: SessionApplicationBindings::default(),
         session_execution: SessionExecutionDependencies::default(),
@@ -157,6 +159,11 @@ impl HostDependencies {
         capacity: awaken_run_ingress_contract::RegisteredCapacity,
     ) -> Result<Self, HostError> {
         authority.validate_worker_connections()?;
+        if !process.execution.local.runs_local_pool() {
+            return Err(HostError::bad_request(
+                "registered Worker capacity requires upstream authority and a local execution pool",
+            ));
+        }
         let mut selected = select(
             llm,
             model_ref.into(),
@@ -172,9 +179,12 @@ impl HostDependencies {
             process,
             Arc::new(authority),
         );
-        selected.deployment.durable = true;
-        selected.dispatch.dispatch_pool_sizing =
-            crate::DispatchPoolSizing::Registered(capacity.into_slots());
+        // A Worker exists to drain the durable queue with exactly the capacity
+        // it registered; its composition cannot select anything else.
+        selected.execution.ingress = crate::RunIngress::Durable;
+        selected.execution.local = crate::LocalExecution::InProcessPool(
+            crate::DispatchPoolSizing::Registered(capacity.into_slots()),
+        );
         Ok(selected)
     }
 
@@ -233,11 +243,9 @@ impl HostDependencies {
                 worker_content: None,
                 extraction_repository: Some(extraction_repository),
             },
-            HostProcess {
-                local_workspace: local_workspace.into(),
-                deployment,
-                clock,
-            },
+            deployment
+                .host_process(local_workspace.into(), clock)
+                .expect("a local fixture selects a valid process"),
             Arc::new(crate::LocalAuthority::new(runtime_authority)),
         )
     }
@@ -280,11 +288,9 @@ impl HostDependencies {
                 worker_content: None,
                 extraction_repository: Some(extraction_repository),
             },
-            HostProcess {
-                local_workspace: SharedHost::mint_local_workspace(),
-                deployment,
-                clock: clock.clone(),
-            },
+            deployment
+                .host_process(SharedHost::mint_local_workspace(), clock.clone())
+                .expect("a unit-test fixture selects a valid process"),
             Arc::new(crate::LocalAuthority::new(Arc::new(
                 crate::EphemeralRuntimeAuthority::new(clock),
             ))),
@@ -316,16 +322,6 @@ impl HostDependencies {
     #[must_use]
     pub fn memory_repository(&self) -> Arc<dyn awaken_resource_contract::MemoryRepository> {
         self.resources.memory_stores.fs_handle()
-    }
-
-    /// Test-support replacement of a volatile fixture's deployment value.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn with_deployment_config(mut self, deployment: crate::DeploymentConfig) -> Self {
-        self.mcp
-            .set_relay_exposure(deployment.sandbox.container_mcp_relay.clone());
-        self.deployment = deployment;
-        self
     }
 
     /// Select the Coordinator-owned durable capability: the Host then owns
@@ -541,8 +537,8 @@ impl HostDependencies {
         self.authority = Arc::new(crate::LocalAuthority::new(Arc::new(
             crate::EphemeralRuntimeAuthority::with_dispatch(self.clock.clone(), store),
         )));
-        self.deployment.durable = true;
-        self.deployment.disable_local_pool = false;
+        self.execution.ingress = crate::RunIngress::Durable;
+        self.execution.local = crate::LocalExecution::in_process_pool();
         self
     }
 
@@ -554,7 +550,7 @@ impl HostDependencies {
         store: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
     ) -> Self {
         let mut selected = self.with_ephemeral_dispatch(store);
-        selected.deployment.disable_local_pool = true;
+        selected.execution.local = crate::LocalExecution::RemoteWorkersOnly;
         selected
     }
 

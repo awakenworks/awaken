@@ -355,11 +355,9 @@ async fn runtime_constructor_installs_the_exact_file_content_source() {
             .expect("open test Memory repository"),
         ),
         SharedHost::test_memory_extraction_repository(None).await,
-        crate::HostProcess {
-            local_workspace: SharedHost::mint_local_workspace(),
-            deployment: crate::DeploymentConfig::ephemeral(),
-            clock: system_clock(),
-        },
+        crate::DeploymentConfig::ephemeral()
+            .host_process(SharedHost::mint_local_workspace(), system_clock())
+            .expect("ephemeral process"),
         Arc::new(crate::EphemeralRuntimeAuthority::new(system_clock())),
     ))
     .build()

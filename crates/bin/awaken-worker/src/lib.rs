@@ -1585,11 +1585,9 @@ impl WorkerNode {
             "worker",
             remote_files,
             remote_memory,
-            awaken_runtime_host::HostProcess {
-                local_workspace,
-                deployment: deployment.clone(),
-                clock: self.clock.clone(),
-            },
+            deployment
+                .host_process(local_workspace, self.clock.clone())
+                .map_err(std::io::Error::other)?,
             authority,
             registered_capacity,
         )

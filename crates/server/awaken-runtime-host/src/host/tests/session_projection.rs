@@ -1541,7 +1541,7 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
     let mut host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
         .await
         .with_agent_publications(Arc::new(publications));
-    host.deployment.disable_local_pool = true;
+    host.execution.local = crate::LocalExecution::RemoteWorkersOnly;
     let host = (host).build().expect("validated Host dependencies");
     install_test_session_application(&host);
 

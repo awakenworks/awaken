@@ -1171,7 +1171,7 @@ async fn terminal_quiescence_fences_ephemeral_children_before_cold_link_enrichme
     // require its stated effects, including each fail-closed outcome.
     // Cause/effect graph: C1 the Session has no resident Runtime or recoverable
     // current publication; C2 an ephemeral runtime authority owns a parent-affined
-    // child row; C3 deployment.durable is false; C4 terminal quiescence starts.
+    // child row; C3 ingress is direct; C4 terminal quiescence starts.
     // C5 the child Worker observes the cancellation bit and settles its exact
     // epoch. E1 the authority-backed queue cancellation fence precedes settlement;
     // E2 the logical child Thread is frozen into cleanup after its row disappears;
@@ -1183,7 +1183,7 @@ async fn terminal_quiescence_fences_ephemeral_children_before_cold_link_enrichme
     let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
-    assert!(!host.deployment.durable, "R1/C3");
+    assert!(!host.durable_ingress(), "R1/C3");
     let dispatch = host
         .dispatch_store()
         .expect("R1 ephemeral dispatch authority");

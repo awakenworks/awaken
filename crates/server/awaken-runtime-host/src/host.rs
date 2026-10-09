@@ -112,7 +112,10 @@ pub use dependencies::{
     SessionExecutionDependencies,
 };
 pub(crate) mod capability;
-pub use capability::DispatchPoolSizing;
+pub use capability::{
+    DispatchPoolSizing, ExecutionTopology, LeaseOwnerId, LocalExecution, QueueDepthSource,
+    RunIngress,
+};
 mod completion;
 mod coordination;
 mod dispatch_resolution;

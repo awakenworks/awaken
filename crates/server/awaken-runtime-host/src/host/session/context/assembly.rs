@@ -63,7 +63,7 @@ pub(super) async fn assemble(
     if has_published_multiagent
         && !managed_coordination
         && env.is_none()
-        && !host.deployment.disable_local_pool
+        && host.runs_local_dispatch_pool()
     {
         return Err(HostError::internal(
             "remote-only execution cannot host local delegate targets",

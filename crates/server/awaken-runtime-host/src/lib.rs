@@ -125,8 +125,9 @@ pub(crate) use crate::host::ApplicationPortBinding;
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::host::capability::{LocalResourcePorts, LocalSkillPorts};
 pub use crate::host::{
-    AttemptExecutorDecorator, DispatchPoolSizing, HostDependencies, HostProcess, HostResume,
-    RemoteAttemptInstallation, SessionApplicationBindingError, SessionApplicationBindings,
+    AttemptExecutorDecorator, DispatchPoolSizing, ExecutionTopology, HostDependencies, HostProcess,
+    HostResume, LeaseOwnerId, LocalExecution, QueueDepthSource, RemoteAttemptInstallation,
+    RunIngress, SessionApplicationBindingError, SessionApplicationBindings,
     SessionExecutionDependencies, SharedHost, remote_worker_placement,
     self_hosted_inference_holder,
 };

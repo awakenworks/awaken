@@ -156,7 +156,6 @@ REDUNDANT_ADMIN_STORE_REEXPORT = re.compile(
 VOLATILE_RUNTIME_HOST_APIS = (
     "ephemeral",
     "ephemeral_with_deployment",
-    "with_deployment_config",
     "for_local_resources",
     "with_skill_store",
     "with_skill_store_backend",
