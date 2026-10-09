@@ -515,13 +515,13 @@ impl HostDependencies {
         self
     }
 
-    /// Select the Control-owned consent read port used once per attributed Run.
+    /// Select the Control-owned consent and Workspace-narrowing ports read once per Run.
     #[must_use]
-    pub fn with_data_subject_consent_source(
+    pub fn with_capture_policy_sources(
         mut self,
-        source: Arc<dyn awaken_data_governance_contract::DataSubjectConsentSource>,
+        sources: awaken_data_governance_contract::CapturePolicySources,
     ) -> Self {
-        self.capture.data_subject_consent = source;
+        self.capture.policy_sources = sources;
         self
     }
 

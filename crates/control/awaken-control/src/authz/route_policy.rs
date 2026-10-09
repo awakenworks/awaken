@@ -113,6 +113,13 @@ pub(super) const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
         },
     ),
     RoutePolicyDescriptor::control(
+        "/v1/config/telemetry",
+        RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    ),
+    RoutePolicyDescriptor::control(
         "/v1/config/application-mcp-credentials",
         RouteFamilyPolicy::Scoped {
             read: APIKEY_READ,
@@ -360,5 +367,21 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn telemetry_narrowing_is_workspace_configuration() {
+        // Reading and tightening the Workspace capture narrowing use the
+        // Workspace configuration authority, never a credential or IAM one.
+        use axum::http::Method;
+        for (method, action) in [
+            (Method::GET, WORKSPACE_READ),
+            (Method::PUT, WORKSPACE_WRITE),
+        ] {
+            assert!(matches!(
+                action_for(&method, "/v1/config/telemetry"),
+                Some(RouteAuthz::Scoped { action: found, .. }) if found == action
+            ));
+        }
     }
 }

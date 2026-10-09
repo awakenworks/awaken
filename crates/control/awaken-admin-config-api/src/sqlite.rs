@@ -23,6 +23,7 @@ use awaken_sqlite_pool::EmbeddedSqlite;
 use crate::schema::{BUNDLE_ID, converged_admin_bundle, selected_admin_bundle};
 
 mod mcp;
+mod telemetry;
 
 /// The admin component's table namespace (its bundle prefix).
 pub(crate) const NS: &str = "admin";

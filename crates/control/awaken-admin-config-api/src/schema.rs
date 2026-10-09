@@ -205,6 +205,11 @@ pub(crate) fn converged_admin_bundle() -> Result<MigrationBundle, MigrationError
                 "Workspace MCP authoring configuration",
                 include_str!("migrations/V0002__workspace_mcp_configuration.sql").trim(),
             )?,
+            Migration::new(
+                3,
+                "Workspace telemetry narrowing beneath the deployment capture ceiling",
+                include_str!("migrations/V0003__workspace_telemetry_configuration.sql").trim(),
+            )?,
         ],
     )
 }

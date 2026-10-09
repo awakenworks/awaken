@@ -351,13 +351,11 @@ pub(super) async fn assemble(
     // Privacy attribution is an attempt concern, not a delivery-topology
     // concern. This one decorator therefore wraps the final executor used by
     // both direct and claimed durable attempts (including recovered runs).
-    let capture_sink = host.capture.capture_sink.clone();
     let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
         Arc::new(crate::run_exec::CaptureContextAttemptExecutor::new(
             attempt_executor,
-            host.capture.capture_decision.clone(),
-            capture_sink,
-            host.capture.data_subject_consent.clone(),
+            &host.capture,
+            host.thread_workspace(thread),
         ));
     // This is the one post-attempt output edge. Because it wraps the final
     // executor shared by direct delivery and the durable Worker, claimed

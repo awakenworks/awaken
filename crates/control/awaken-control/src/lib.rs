@@ -40,6 +40,8 @@ mod managed_agents;
 pub mod model_discovery;
 pub mod model_publication;
 mod registration_supervisor;
+mod telemetry_policy;
+pub use telemetry_policy::{RepositoryTelemetryNarrowing, TelemetryPolicyService};
 pub mod webhook_authoring;
 pub mod worker_stores;
 
@@ -322,6 +324,8 @@ pub struct ControlRouterInput {
     pub secrets: Arc<dyn SecretStore>,
     /// Workspace MCP configuration and inspection over the same Vault owner.
     pub mcp_catalog: mcp_catalog::McpCatalogService,
+    /// Workspace narrowing of the deployment content-capture ceiling.
+    pub telemetry_policy: TelemetryPolicyService,
     /// Authored inference profiles (admin aggregate).
     pub profiles: Arc<dyn InferenceProfileStore>,
     /// Authored webhook endpoints (admin aggregate).
@@ -432,6 +436,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         secrets,
         profiles,
         mcp_catalog,
+        telemetry_policy,
         webhook_store,
         resource_store,
         probe,
@@ -507,8 +512,6 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     let webhook_crud = webhook_authoring::webhook_config_router(webhook_store, secrets.clone());
     let admin = admin.merge(webhook_crud);
     let application_mcp_credentials = application_mcp_credentials_router(vault_state.clone());
-    let mcp = mcp_catalog::router(mcp_catalog);
-    let vaults = vault_router(vault_state);
     let presentation_org = data_subject_org.clone();
     let user_profiles = user_profiles_router(data_subject_application, data_subject_org);
     // The config authoring plane (`/v1/config/agents/*`): the console authors the
@@ -576,8 +579,9 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     // are merged before the layer so the guard authenticates them first.
     let mut mgmt = admin
         .merge(application_mcp_credentials)
-        .merge(mcp)
-        .merge(vaults)
+        .merge(mcp_catalog::router(mcp_catalog))
+        .merge(telemetry_policy::router(telemetry_policy))
+        .merge(vault_router(vault_state))
         .merge(user_profiles)
         .merge(agents)
         .merge(config_plane)

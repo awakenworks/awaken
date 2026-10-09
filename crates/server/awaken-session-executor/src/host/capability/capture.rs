@@ -3,7 +3,7 @@
 // @formal reason: per-request consent may only narrow it.
 //! CAPTURE capability of [`SharedHost`] (ADR-0050): the Host-owned
 //! subject-tagged content sink, the deployment-resolved capture ceiling, and
-//! the Control consent read port.
+//! the Control consent and Workspace-narrowing read ports.
 
 use crate::host::*;
 
@@ -16,10 +16,9 @@ pub(crate) struct ContentCaptureCapability {
     /// Deployment-resolved capture ceiling/redactor. Per-request consent and
     /// subject attribution may only narrow or activate this value.
     pub(crate) capture_decision: awaken_runtime_contract::CaptureDecision,
-    /// Read-only Control consent service. The default null source preserves open
-    /// standalone behavior; a managed process replaces it explicitly.
-    pub(crate) data_subject_consent:
-        Arc<dyn awaken_data_governance_contract::DataSubjectConsentSource>,
+    /// Read-only Control consent and Workspace-narrowing ports. The default null
+    /// sources preserve open standalone behavior; a managed process replaces them.
+    pub(crate) policy_sources: awaken_data_governance_contract::CapturePolicySources,
 }
 
 impl ContentCaptureCapability {
@@ -28,7 +27,7 @@ impl ContentCaptureCapability {
         Self {
             capture_sink: None,
             capture_decision: crate::redact::capture_decision(deployment.content_capture, false),
-            data_subject_consent: Arc::new(awaken_data_governance_contract::NullResolver),
+            policy_sources: awaken_data_governance_contract::CapturePolicySources::default(),
         }
     }
 }
