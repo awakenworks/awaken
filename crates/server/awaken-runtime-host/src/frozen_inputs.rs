@@ -72,6 +72,24 @@ pub(crate) struct FrozenSessionInputs {
 }
 
 impl FrozenSessionInputs {
+    /// A Session keeps the Agent publication it was frozen with; a different
+    /// one is refused rather than replacing it.
+    pub(crate) fn validate_publication(
+        &self,
+        publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+    ) -> Result<(), crate::host_error::HostError> {
+        if publication.is_some_and(|publication| {
+            self.published_snapshot
+                .as_ref()
+                .is_some_and(|retained| retained != publication)
+        }) {
+            return Err(crate::host_error::HostError::internal(
+                "Session cannot replace its immutable Agent publication",
+            ));
+        }
+        Ok(())
+    }
+
     /// The one lowering of validated `SessionInit` coordinates into the next
     /// value, shared by the legacy preparation entrance and complete fenced
     /// projection publication.

@@ -9,25 +9,6 @@ use super::*;
 #[cfg(test)]
 mod fence_source_tests;
 
-impl crate::session_slot::SessionRuntimeSlot {
-    pub(crate) fn validate_session_publication(
-        &self,
-        publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> Result<(), HostError> {
-        if publication.is_some_and(|publication| {
-            self.frozen
-                .published_snapshot
-                .as_ref()
-                .is_some_and(|retained| retained != publication)
-        }) {
-            return Err(HostError::internal(
-                "Session cannot replace its immutable Agent publication",
-            ));
-        }
-        Ok(())
-    }
-}
-
 impl SharedHost {
     /// Resolve one Session publication and its exact model candidate from
     /// explicit frozen coordinates. This is the sole selector used by cold
@@ -301,7 +282,7 @@ impl SharedHost {
         publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
     ) -> Result<(), HostError> {
         self.session_slots.update(thread, |slot| {
-            slot.validate_session_publication(publication)?;
+            slot.frozen.validate_publication(publication)?;
             if let Some(publication) = publication {
                 slot.replace_frozen_with(|next| {
                     next.published_snapshot = Some(publication.clone())

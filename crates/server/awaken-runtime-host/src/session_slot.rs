@@ -145,6 +145,18 @@ impl SessionRealizationAuthority {
 }
 
 impl SessionRuntimeSlot {
+    /// Install a projected Environment owner and, in the same slot lock, let
+    /// the canonical projection reopen MCP admission when the run layer holds
+    /// no local effect.
+    pub(crate) fn install_projected_environment_owner(
+        &mut self,
+        owner: SessionEnvironmentOwner,
+        state: &awaken_session_state_contract::SessionEnvironmentState,
+    ) {
+        self.realization.environment_owner = owner;
+        self.reopen_mcp_realization_admission_from_projection(state);
+    }
+
     /// Select the one Resource manifest carried by a newly authored durable
     /// Run dispatch. A prepared Session carries the aggregate's desired
     /// generation so a cold Worker can realize that exact transition; legacy

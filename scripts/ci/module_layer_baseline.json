@@ -9,14 +9,8 @@
     "host::session::environment_lifecycle -> host::session": [
       "*"
     ],
-    "host::session::environment_lifecycle -> session_slot": [
-      "SessionRuntimeSlot"
-    ],
     "host::session::environment_realization -> host::session": [
       "*"
-    ],
-    "host::session::environment_realization -> session_slot": [
-      "SessionRuntimeSlot"
     ],
     "host::terminal_reconciliation -> host": [
       "*"
