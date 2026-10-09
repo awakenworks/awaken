@@ -6,6 +6,14 @@
   `declared_hand`/deployment `hand_connections` configuration
 - Amends: ADR-0044; its `ToolExecutor` and relay remain reusable mechanisms, but
   a production Session obtains a Hand only from its realized Environment
+- Amends: ADR-0007 D1 (Sandbox-target tools run through the Session Environment's
+  `ToolExecutor`, not necessarily in the loop's process), ADR-0035 D1 (a Hand comes
+  only from the realized Session Environment, not from a per-Run
+  `SandboxProvider::create`), ADR-0056 §1/§6 (Worker claim placement, not a
+  `HandRegistry`, decides where a Hand runs) and ADR-0062 (`ToolExecutorProvider` is
+  no longer the remote tool placement port) (recorded 2026-10-09)
+- Amended by: ADR-0074 (clarifies that `SessionEnvironment` stays the sole live
+  environment owner; Hand process hibernation is an orthogonal local optimization)
 - Depends on: ADR-0065, ADR-0066, ADR-0071, ADR-0072
 
 ## Context

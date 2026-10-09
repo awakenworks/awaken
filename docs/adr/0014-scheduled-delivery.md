@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-06-30
 - Depends on: ADR-0011, ADR-0013
+- Amended: 2026-10-09 (reconciled with ADR-0024: PostgreSQL due checks use database time)
 
 ## Context
 
@@ -60,3 +61,12 @@ wake. No separate scheduling path is needed.
 - [INVARIANTS.md](../INVARIANTS.md) — G5 (`RunIngressCapabilities`).
 - ADR-0011 — the `Clock` port the schedule is compared against.
 - ADR-0013 — the outbox a delayed cross-thread delivery reuses.
+
+## Amendment 2026-10-09: reconciled with ADR-0024
+
+- D2 holds for Memory and SQLite only. PostgreSQL compares `available_at` with
+  database time sampled in the claim transaction, not the caller's clock
+  ([ADR-0024](0024-daemon-lease-renewal.md); `crates/server/awaken-dispatch/src/postgres/claim.rs:114,258,381,442`,
+  `postgres_helpers.rs:16-25`). The column stays epoch-millis `BIGINT`.
+- `RunIngressCapabilities.scheduled_wake` no longer exists (2026-09-01
+  amendment of [ADR-0009](0009-durable-run-ingress-slice.md)).

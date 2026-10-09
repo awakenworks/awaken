@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-07-01
 - Depends on: ADR-0010 (resume), ADR-0030 (permission axis), ADR-0032 (RunnableConfig)
+- Amended: 2026-10-09 (names and references: the resume citation)
 
 ## Context
 
@@ -75,3 +76,13 @@ snapshots) is the one real path.
 - [INVARIANTS.md](../INVARIANTS.md) — G5/G28 (resume validation), G6.
 - ADR-0030 — the permission axis whose `Ask` awaits the run this drives.
 - ADR-0010 — resume; this drives its loop in-process.
+
+## Amendment 2026-10-09: names and references
+
+"ADR-0010 (resume)" points at the wrong record for the loop this driver runs.
+[ADR-0010](0010-idempotent-pending-consumption.md) covers only idempotent
+consumption of pending resume input. The resume-ticket mechanism is
+[ADR-0003](0003-deferred-work-mechanism-selection.md) (`ResumeTicket`,
+`crates/contract/awaken-agent-contract/src/agent/awaiting.rs:228`), and durable
+resume through ingress is [ADR-0009](0009-durable-run-ingress-slice.md). Read the
+header and References citation as ADR-0003/ADR-0009.

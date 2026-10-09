@@ -5,6 +5,8 @@
 - Supersedes the mode axis introduced with: ADR-0030 permission policy axis
 - Preserves: ADR-0037 managed capability advertisement, ADR-0069 ACP capability
   configuration lifecycle
+- Amended: 2026-10-09 (reconciled with ADR-0076: the baseline also admits
+  delegation and background-task management; the `auto` ordering is decided)
 
 ## Context
 
@@ -77,3 +79,28 @@ rather than an implementation:
   ingest. Admission compares a requested policy against the authored one and
   rejects anything weaker; `auto` is neither weaker nor stronger than ask, so
   that comparison needs a defined answer before the variant is added.
+
+## Amendment 2026-10-09: reconciled with ADR-0076
+
+"Only the read-only management tools are pre-authorized outright" is no longer the
+whole list. The 2026-09-13 amendment of
+[ADR-0076](0076-session-owned-background-tool-execution.md) admits all four
+background-task management tools (`run_in_background`, `list_background_tasks`,
+`get_background_task`, `cancel_background_task`); the target tool is still
+authorized on its own. The baseline also allows `agent_run` (delegation), the
+advisor tool, `list_skills`, `Skill`, `list_memories` and `read_memory`
+(`crates/server/awaken-session-executor/src/config.rs:59-102`). It still never grants a
+controlled-modification member of the Agent toolset or an MCP tool.
+
+The open item "`auto` needs an ordering decision first" is closed in code: `auto`
+sits strictly between ask and allow on the `GrantedAutonomy` axis
+(`crates/contract/awaken-agent-contract/src/toolset.rs:95-145`), and
+`AgentToolPermissionPolicy::Auto` exists
+(`crates/contract/awaken-session-configuration-contract/src/agent_config.rs:75`).
+
+## Amendment 2026-10-09: names and references
+
+- Header "the mode axis introduced with ADR-0030": ADR-0030 itself defines no
+  `mode`. The four-valued `mode` belonged to the Claude-Code-style rule policy that
+  [ADR-0030](0030-permission-policy-axis.md) places in `awaken-ext-permission`
+  (its Consequences). This ADR retires that `mode`; ADR-0030's gate and verdicts stand.

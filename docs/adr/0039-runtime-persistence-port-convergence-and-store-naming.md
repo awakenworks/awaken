@@ -8,6 +8,11 @@
   (axis model), [ADR-0038](0038-managed-resource-injection-and-store-organization.md)
   (three resource aggregates, one descriptor spine)
 - Relates to: G1, G2, G5, G6, G13, G16, G18
+- Amends: [ADR-0008](0008-durable-postgres-commit-backend.md) D4 and
+  [ADR-0012](0012-sqlite-and-postgres-store-backends.md) D3 (the in-memory read
+  projection is replaced by reads from committed facts, D4; recorded 2026-10-09)
+- Amended: 2026-10-09 (reconciled with ADR-0036 and ADR-0019/0024: the
+  `File`/`SkillRegistry`/`Signal` renames are withdrawn)
 - Supersedes: the **port names** in ADR-0038 D1/D3 (`FileStore` → `File`,
   `SkillStore` → `SkillRegistry`; `MemoryStore` kept). The aggregate structure and
   co-location rule of ADR-0038 are unchanged.
@@ -237,3 +242,24 @@ in the original D4 wording.
   [ADR-0038](0038-managed-resource-injection-and-store-organization.md).
 - [INVARIANTS.md](../INVARIANTS.md) — G1, G2, G5, G6, G13, G18.
 - [commit-fact-projection-taxonomy.md](../design/commit-fact-projection-taxonomy.md).
+
+## Amendment 2026-10-09: reconciled with ADR-0036 and ADR-0019/0024
+
+Three renames in this ADR were never applied, and later ADRs and the code use the
+old names. They are withdrawn; the other renames stand.
+
+- `FileStore` → `File` (port `Files`): withdrawn. The ports are `FileStore` and
+  `FileCatalog` (`crates/contract/awaken-resource-contract/src/lib.rs:337`, `:287`),
+  as ADR-0038 A4 uses them.
+- `SkillStore` → `SkillRegistry`: withdrawn. `SkillStore` is the durable Skill
+  repository (`awaken-resource-contract/src/lib.rs:651`); `SkillRegistry` is a
+  different trait, the runtime skill lookup owned by `awaken-ext-skills`
+  (`crates/runtime/awaken-ext-skills/src/registry.rs:19`), as
+  [ADR-0036](0036-skills-as-runtime-extension-single-tool.md) D4 decides.
+- wake hint → `Signal`: withdrawn. The seam stays `WakeSignal`
+  (`crates/shared/awaken-dispatch-execution/src/wake.rs:31`), as ADR-0019 and
+  ADR-0024 use it.
+
+Also: no type named `MemoryStore` exists; the memory port is `MemoryRepository`
+(`awaken-resource-contract/src/lib.rs:982`). The 2026-07-04 amendment to D2 already
+allows a plain `*Store` suffix, so these names need no exception.

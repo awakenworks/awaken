@@ -2,9 +2,17 @@
 
 - Status: Proposed
 - Date: 2026-10-09
-- Builds on: ADR-0088 (Session is a core subdomain); ADR-0089 (realization has one
-  owner); the runtime-host split plan, work items W14 (state convergence), W21
-  (`SessionApplication` by use case) and W20.
+- Revised: 2026-10-09 (after the ADR consistency review: plan references described
+  inline; relation to ADR-0089 restated)
+- Builds on: [ADR-0088](0088-bounded-context-map-and-sdk-platform-contract.md) (Session
+  is a core subdomain); [ADR-0066](0066-session-service-binding-and-realization.md),
+  [ADR-0074](0074-session-environment-suspension-and-checkpointed-continuation.md) and
+  [ADR-0075](0075-unified-managed-session-worker-execution.md) (the aggregate and its
+  root CAS are the only durable Session authority);
+  [ADR-0081](0081-contract-layering-and-ratchet-guardrails.md) §9 (resource activation
+  and terminal cleanup remain with the aggregate);
+  [ADR-0089](0089-session-realization-single-owner.md) (realization decisions in the
+  aggregate, effects in one executor).
 - Affects: `awaken-session-state-contract`, `awaken-session-application`,
   `awaken-protocol-managed`, `awaken-session-executor`, `awaken-session-store`; wire shapes
   are unchanged.
@@ -40,18 +48,21 @@ by construction.
    legal combinations are listed in one table next to that function, and combinations
    that are cheap to make unrepresentable are made so.
 
-2. **One mutation entry point.** In the use-case split of `SessionApplication` (W21),
-   the core `SessionMutations` is the only caller of the transition function: load,
+2. **One mutation entry point.** When `SessionApplication` is split by use case
+   (lifecycle, inputs, resources, credentials, realization, runs, queries), the core `SessionMutations` is the only caller of the transition function: load,
    transition, commit with the fence, append outbox events. Use-case services build
    commands; they never set a sub-state.
 
-3. **The environment sub-state is fed by realization observations only.** Under
-   ADR-0089 the realizer reports what happened; the Session records it through the
+3. **The environment sub-state changes only through the transition function.** Under
+   ADR-0089 the aggregate decides each realization transition and the realizer reports
+   what its effects did; both commands and those observations enter through the
    transition function. runtime-host stops constructing `SessionEnvironmentState`.
 
 4. **Projections are pure.** `SessionPublicStatus`, the Managed `SessionStatus` and
    `SessionThreadStatus`, and the budget view are pure functions of the aggregate and the
-   committed facts. Protocol adapters never decide state.
+   committed facts. Protocol adapters never decide state. Whether Managed session
+   events are derived when read or materialized at commit is a separate decision; this
+   ADR only requires that either way they are a pure function of committed facts.
 
 5. **Remove the duplicate.** `SessionEnvironmentPhase` merges into
    `SessionEnvironmentState`; the stored strings are identical, so the persisted shape
@@ -70,16 +81,18 @@ by construction.
 - **One flat enum for the whole lifecycle.** Readable at first, but the product of the
   sub-states is large and most combinations are legal; sub-states with a documented
   table are smaller and keep the existing wire.
-- **Converge state at the end (W14 as planned).** W21 would first spread today's
+- **Converge state after the use-case split.** The split would first spread today's
   transition code over seven services, making the later convergence harder.
 - **Event-source the Session.** A larger change than the problem requires; the outbox
   already gives durable events, and the aggregate stays the source of truth.
 
 ## Consequences
 
-- One place answers whether a Session may move from one state to another; the W21
-  services become thin, and W20's protocol adapter keeps no lifecycle logic.
+- One place answers whether a Session may move from one state to another; the
+  use-case services become thin, and the Managed protocol adapter keeps no lifecycle
+  logic.
 - runtime-host and protocol-managed lose their state decisions (41 and 12 construction
-  sites), which also shrinks the slot work in slices F and S.
+  sites), which also shrinks the work of layering the runtime-host per-Session slot.
 - Persisted data and public wire shapes are unchanged.
-- Order: this ADR before W21; the environment part lands with ADR-0089's slice R.
+- Order: this ADR lands before the use-case split of `SessionApplication`; the
+  environment part lands with ADR-0089's move of realization out of runtime-host.

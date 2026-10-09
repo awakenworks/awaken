@@ -2,6 +2,7 @@
 
 - Status: Proposed
 - Date: 2026-07-28
+- Amended by: ADR-0085 (ACP instruction channels declared by the existing ACP catalog)
 - Implemented foundation (2026-07-28): the repository has one reusable
   local-ACP application service, one adapter catalog, atomic expiring Worker
   observations, prompt-free capability negotiation, generated Agent option

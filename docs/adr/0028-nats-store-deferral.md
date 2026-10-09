@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-06-30
 - Depends on: ADR-0019
+- Amended: 2026-10-09 (names and references: ADR-0039 port names)
 
 ## Context
 
@@ -59,3 +60,16 @@ running server.
 
 - [INVARIANTS.md](../INVARIANTS.md) — G6 (durable ingress over runtime control).
 - ADR-0019 — the `WakeSignal` seam and the distributed-claim argument.
+
+## Amendment 2026-10-09: names and references
+
+D3 uses the port names that [ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md)
+later renamed. Current names, all in `crates/contract/awaken-dispatch-contract/src/dispatch/`:
+
+- `DispatchStore` / `RunDispatch` → `DispatchQueue` (`queue.rs:13`);
+- `PendingInbox` → `Inbox` (`delivery.rs:69`);
+- `MessageOutbox` → `Outbox` (`delivery.rs:105`).
+
+The wake seam is still `WakeSignal` (`crates/shared/awaken-dispatch-execution/src/wake.rs:31`).
+This ADR closes the live-test deferral that ADR-0019 D4 recorded; ADR-0019 does
+not yet point here.

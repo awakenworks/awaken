@@ -1,7 +1,9 @@
 # ADR-0058: One Neutral Event Vocabulary (`journal::AgentEvent`) — Message-Sourced Truth, a Single `classify()` That Routes to Transport Channels, Two-Tier Protocol Projection (Lifecycle Exhaustive / Detail Opt-In), and Engine-Owned Increment Normalization
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-16
+- Implemented: `crates/contract/awaken-agent-contract/src/event/` (`AgentEvent` at `agent.rs:52`,
+  `classify` at `classify.rs:46`, two-tier `Transcoder` at `fold.rs:32`); names differ, see Amendment 2026-10-09
 - Builds on: the message transcript as content truth + the audit event log that is
   explicitly *not* truth (`awaken-store-schema`, `{prefix}_message` vs
   `{prefix}_event`); the commit fence / phase authority (`{prefix}_commit`, G31/G32);
@@ -302,3 +304,18 @@ segmenter. Keep the thinking channel, re-expressed as `Detail::ThinkingDelta`.
   it must land as its own sequence (steps 0–5), not folded into unrelated work.
 - **Deferred.** ProtocolReplayLog + fidelity dial (Axes 5, 7) — build only if byte-identical
   reconnect is required.
+
+## Amendment 2026-10-09: names and references
+
+The decision is implemented under different names
+(`crates/contract/awaken-agent-contract/src/event/`):
+
+- module `journal::` → `event::`; `journal::AgentEvent` → `event::AgentEvent` (`agent.rs:52`);
+- tiers Lifecycle / `Detail` → `Fact` (`agent.rs:64`) / `Delta` (`agent.rs:108`);
+- `Transcoder::{lifecycle, detail}` → `Transcoder::{fact, delta}` (`fold.rs:32`);
+  `project_*` → `fold_*` (`fold.rs`);
+- Axis 11: `stream::Kind` is deleted as planned, but the `stream/` module stays: `stream::Event`
+  now carries an `AgentEvent` (`stream/event.rs:19`) and `stream::Sink` was not moved
+  (`stream/sink.rs:14`).
+
+Axis 7 (fidelity dial) remains deferred, as the ADR says.

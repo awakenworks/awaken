@@ -293,7 +293,7 @@ The lifecycle roles remain separate:
 | Role | Boundary | Authority |
 |---|---|---|
 | `PhaseHook` | one declared Step phase | return staged state/messages; cannot commit directly |
-| `ContinuationGuard` | natural end before terminal commit | decide Complete/Continue; replay must reuse its verdict |
+| `RunEndGuard` | natural end before terminal commit | decide Complete/Continue; replay must reuse its verdict |
 | `RunTerminalObserver` | after an `Ended` fact commits | at-least-once reaction; cannot change `RunResult` |
 
 Lifecycle guidance:
@@ -305,7 +305,7 @@ Lifecycle guidance:
 - hook output is data that the runtime validates and commits or rejects;
 - product-facing labels stay outside the hook contract.
 - `StepEnd` is not Run termination and cannot drive terminal reactions;
-- `ContinuationGuard` is not a post-Run notification and covers natural end only;
+- `RunEndGuard` is not a post-Run notification and covers natural end only;
 - cancel and stop are commands, not Hook points;
 - terminal-observer failure never rolls back or rewrites a committed Run;
 - terminal observers create stable durable intents before asynchronous side
@@ -605,7 +605,7 @@ authority, extension activation, or replay-sensitive decisions.
 | `EventRecord` | committed event record | neutral event record visible only after commit succeeds | event drafts, committed facts, commit coordinator | public protocol status, independent durable truth | projection has no committed event source | G10, G13; event projection tests |
 | `DurableEventSink` | event capture adapter | tee live stream output into durable event drafts for commit staging | stream sink, normalizer, durable event stager | commit authority, protocol naming, durable visibility | capture path treats live output as committed before checkpoint | G1, G10, G13; durable capture tests |
 | `EventReader` / `EventSubscriber` | durable event read/subscription port | read or subscribe to committed durable event records for downstream projection | committed event records, cursors, replay/projection adapter | live stream delivery, commit authority, protocol naming | downstream observes an event before its commit | G1, G10, G13; durable event subscription tests |
-| `ContinuationGuard` | replay-sensitive decision hook | decide whether natural-end execution completes or continues before terminal commit | committed context, selected config, recorded verdicts | product outcome semantics, post-commit reaction, re-grading during replay | replay diverges from original continuation decision | G11; continuation replay tests |
+| `RunEndGuard` | replay-sensitive decision hook | decide whether natural-end execution completes or continues before terminal commit | committed context, selected config, recorded verdicts | product outcome semantics, post-commit reaction, re-grading during replay | replay diverges from original continuation decision | G11; continuation replay tests |
 | `RunTerminalObserver` | committed-terminal extension observer | react at least once after `RunState::Ended` commits | committed Run/Thread facts, stable extension intent and receipt | changing `RunResult`, observing Awaiting as terminal, non-idempotent direct side effects | crash gap loses work or duplicate delivery repeats an effect | G12, G13; all-EndCause, Awaiting-negative, crash-gap, and duplicate-intent tests |
 | `ScheduledAction` | committed deferred-work request | typed request for future runtime work, validated and committed before any durable wake; carries a correlation/idempotency key, run/thread binding, and descriptor fingerprint | hook/tool output, `StateCommand`, `ThreadCommit`, durable ingress; contributed by a runtime extension `Plugin` (first-party bundle: `awaken-ext-builtin-tools`) | timer durability, direct process spawn, product job status, public DTO | background work becomes untracked truth, or a result resumes the wrong run | G1, G5, G13; committed-request, correlation, and wake/idempotency tests |
 | `ContextCompaction` | context projection role | append-only summary facts with lineage | committed messages/facts, selected policy | deleting source facts, product UI summary state | replay or audit cannot reconstruct context | G1, G13; compaction lineage tests |

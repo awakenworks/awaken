@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2026-06-30
 - Depends on: ADR-0009, ADR-0011
+- Amends: ADR-0018 D4 (a poison run is no longer dead-lettered automatically; recorded 2026-10-09)
+- Amended: 2026-10-09 (records that D2/D3 and the title were revised in place)
 
 ## Context
 
@@ -78,3 +80,15 @@ Quarantine is dispatch operations state, not a terminal Run outcome.
 - ADR-0011 — the recovery this bounds.
 - [run-ingress-message-delivery.md](../design/run-ingress-message-delivery.md) —
   the dispatch failure/recovery boundary.
+
+## Amendment 2026-10-09: in-place revision recorded
+
+- D2, D3 and the title were revised in place after 2026-06-30 without a dated
+  note. The original D2 moved a run past its budget to `DeadLetter`
+  automatically. The current text is authoritative: retry exhaustion commits
+  `Ended(Indeterminate)`, and `DeadLetter` is only an explicit operator
+  quarantine (`claim_retry_exhausted` / `quarantine_retry_exhausted`,
+  `crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs:146,317`).
+- Stale text elsewhere that still assumes automatic dead-lettering: the
+  `DispatchState::DeadLetter` comment (`.../dispatch/model.rs:383`) and
+  [ADR-0018](0018-priority-dedupe-gc.md) D4.

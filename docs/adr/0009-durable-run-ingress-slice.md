@@ -8,6 +8,8 @@
   `RunDispatch` plus `DispatchPool`/`DispatchWorker`. The historical decision below
   records the incremental slice that introduced those durable authorities.
 - Depends on: ADR-0006, ADR-0008
+- Amended by: ADR-0039 (port names; the D1 `awaken-dispatch-contract` split was done in its slice 2.1)
+- Amended: 2026-10-09 (names and references)
 
 ## Context
 
@@ -96,3 +98,15 @@ settle. `RunIngressCapabilities` reports `scheduled_wake = false` accordingly.
   the dispatch/server boundary, role catalog, and message lifecycle this realizes.
 - ADR-0006 — the commit contract the worker reads as authority.
 - ADR-0008 — the durable commit backend this persists run truth through.
+
+## Amendment 2026-10-09: names and references
+
+- D1: the contract split is no longer deferred. The ports live in
+  `crates/contract/awaken-dispatch-contract` ([ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md) slice 2.1).
+- D2: the delivery-opportunity port is `DispatchQueue`
+  (`crates/contract/awaken-dispatch-contract/src/dispatch/queue.rs:13`);
+  `PendingInbox` is `Inbox` (`.../dispatch/delivery.rs:69`). `RunDispatch` now
+  names only the serializable record (`.../src/run_dispatch.rs:164`). Backend
+  types keep the `*DispatchStore` names (for example `SqliteDispatchStore`).
+- `RunIngressCapabilities`, `DurableRunIngress` and `DirectRunIngress` were removed
+  by the 2026-09-01 amendment above; none exists in `crates/`.

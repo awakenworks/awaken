@@ -6,6 +6,8 @@
   ratchet guardrails (the depth baseline and the bounded-context ratchet).
 - Leaves unchanged: ADR-0050 content capture and GDPR semantics; ADR-0051 tenancy
   semantics. This ADR decides where their types live, not what they mean.
+- Amended: 2026-10-09 (names and references: `awaken-credential` removed; ADR-0051
+  superseded by ADR-0063)
 
 ## Context
 
@@ -246,3 +248,17 @@ Order: the explicit re-export list replaces the glob first; then the moves above
 reviewable series; the series that empties `sdk-standalone` removes the rule's entry from
 `bounded_context_baseline.json`.
 
+## Amendment 2026-10-09: names and references
+
+- `awaken-credential` → removed. The Context lists it as an SDK leaf, and the
+  Consequences say it "grows from a three-item port crate". The 2026-10-08 amendment
+  (item 1) moved the vocabulary and the three port items into the `credential` module
+  of `awaken-agent-contract` instead (`crates/contract/awaken-agent-contract/src/lib.rs:7`).
+  No public-API snapshot for `awaken-credential` is added; the moved items are covered
+  by the `awaken-agent-contract` snapshot.
+- Item 7 has landed: `awaken-runtime-contract` no longer depends on
+  `awaken-credential-contract`, and the `sdk-standalone` baseline is empty
+  (`scripts/ci/bounded_context_baseline.json:45`).
+- "ADR-0051 tenancy semantics" (header) → ADR-0051 is Superseded by
+  [ADR-0063](0063-resource-input-identity-configuration-pinning-and-lifecycle.md);
+  this ADR leaves the tenancy semantics of ADR-0063 unchanged.
