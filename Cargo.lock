@@ -326,8 +326,6 @@ dependencies = [
 name = "awaken-agent-channel"
 version = "1.0.0"
 dependencies = [
- "async-trait",
- "thiserror",
  "tokio",
 ]
 
