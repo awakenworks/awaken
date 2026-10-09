@@ -8,6 +8,12 @@ use awaken_runtime_examples::prelude::*;
 
 #[tokio::test]
 async fn direct_runtime_example_runs_to_completion() {
+    // Causes: C1 a hand-built snapshot offers echo; C2 the canonical policy
+    // allows it; C3 the scripted model requests it then terminates; C4 one
+    // MemoryCommitCoordinator is the only durable write port. Rule R1 all =>
+    // NaturalEnd plus the committed tool result. The independent SDK consumer
+    // compiles this exact case outside the Platform workspace; no second
+    // Runtime, dispatcher, credential authority or fixture implementation exists.
     let config = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("demo", "stub", "stub"))
         .tool(ToolDescriptor::pinned(

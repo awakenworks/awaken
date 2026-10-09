@@ -42,7 +42,7 @@ pub(crate) struct AgentSelection {
     pub(crate) remote_attempt_executor:
         Option<Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>>,
     pub(crate) remote_credential_realization:
-        awaken_runtime_contract::CredentialRealizationCapabilities,
+        awaken_credential_contract::CredentialRealizationCapabilities,
     pub(crate) judge_snapshot: Option<ExecutableAgentSnapshot>,
     pub(crate) agent_publications:
         Option<Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>>,
