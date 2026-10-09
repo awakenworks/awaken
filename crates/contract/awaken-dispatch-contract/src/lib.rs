@@ -45,8 +45,7 @@ pub use awaken_worker_contract::{
 };
 pub use claimed_commit::ClaimedRunCommit;
 pub use claimed_session::{
-    ClaimedSessionControl, ClaimedSessionControlError, ClaimedSessionCoordinationControl,
-    ClaimedSessionRealizationControl,
+    ClaimedSessionControlError, ClaimedSessionCoordinationControl, ClaimedSessionRealizationControl,
 };
 pub use claimed_stream::ClaimedStreamPublisher;
 pub use dispatch::{

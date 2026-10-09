@@ -4,7 +4,7 @@
 //! Both adapters route through the Session application's existing authority. A
 //! co-located Host holds only its weak application edge; a database-less Worker
 //! uses the current dispatch claim and the existing authenticated
-//! [`awaken_dispatch_contract::ClaimedSessionControl`] transport.
+//! [`awaken_dispatch_contract::ClaimedSessionCoordinationControl`] transport.
 
 use std::sync::{Arc, Weak};
 

@@ -20,7 +20,6 @@ awaken-runtime-contract.workspace = true
 awaken-session-budget-contract.workspace = true
 awaken-session-event-contract.workspace = true
 awaken-session-types.workspace = true
-awaken-session-work-contract.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -17,9 +17,6 @@ pub(crate) use awaken_session_event_contract::{
 };
 pub(crate) use awaken_session_types::{RunError, RunErrorKind};
 pub(crate) use awaken_session_types::{SessionId, SessionRevision};
-pub mod work_queue {
-    pub use awaken_session_work_contract::*;
-}
 
 pub use event_admission::{
     SessionEventAdmission, event_admission_closed, event_admission_conflict,
