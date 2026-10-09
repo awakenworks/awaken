@@ -96,6 +96,28 @@ share the existing whole-gate budget.
 
 ## Reduce total time without losing evidence
 
+Ordinary dev/test profiles use `line-tables-only`: failures retain backtrace
+filenames/lines without emitting type and variable records into every native
+test binary's PDB. Debug assertions, overflow checks, optimization and test
+selection retain their existing defaults. For interactive variable inspection,
+set `CARGO_PROFILE_DEV_DEBUG=2` and `CARGO_PROFILE_TEST_DEBUG=2`; changing profile
+settings deliberately requires a fresh compatible build once.
+
+The quality workflow enables workspace-crate caching in the existing pinned
+Rust cache action, whose keys include the toolchain, OS/architecture, compiler
+environment and manifests. Cargo still decides source freshness and all selected
+tests execute on every run; a cache hit is never execution evidence. Measure
+cache restore/save cost and retained artifact size alongside build time.
+
+`check-rust.sh` retains each stage's live output, exact argv, status and elapsed
+seconds under `target/test-timings/rust-gate.*/`. Its `test-build` stage uses the
+same canonical feature graph with `nextest --no-run --timings`; `test` then
+executes that graph under the existing per-test deadline. Cargo's HTML timeline
+in `target/cargo-timings/` separates the dependency path and native linking from
+test enumeration/runtime. Preserve both cold and warm runs before attributing
+a speedup to concurrency or caching. These artifacts are diagnostic records,
+not a full-gate receipt.
+
 1. Measure first. Preserve `target/test-timings` logs, build/test durations,
    slow cases, selected packages/features, and the source identity. Compare
    cold build, warm build, and test runtime separately under the same OS and
@@ -173,8 +195,8 @@ for a resource-constrained Windows machine, from PowerShell:
 $env:CARGO_TARGET_DIR = "$PWD/target"
 $env:CARGO_BUILD_BUILD_DIR = $env:CARGO_TARGET_DIR
 $env:CARGO_BUILD_JOBS = '1'
-$env:CARGO_PROFILE_DEV_DEBUG = '0'
-$env:CARGO_PROFILE_TEST_DEBUG = '0'
+$env:CARGO_PROFILE_DEV_DEBUG = 'line-tables-only'
+$env:CARGO_PROFILE_TEST_DEBUG = 'line-tables-only'
 & 'C:\Program Files\Git\bin\bash.exe' scripts/ci/check-trusted-host-portability.sh
 if ($LASTEXITCODE -ne 0) { throw 'Native portability validation failed' }
 ```

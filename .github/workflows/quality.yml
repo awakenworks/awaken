@@ -42,6 +42,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: trusted-host-${{ runner.os }}
+          cache-workspace-crates: true
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
@@ -99,6 +100,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: full-quality
+          cache-workspace-crates: true
       - name: Bind evidence to the exact workflow SHA
         shell: bash
         run: |
@@ -144,6 +146,7 @@ jobs:
           name: quality-${{ github.sha }}-${{ github.run_attempt }}
           path: |
             target/test-timings/
+            target/cargo-timings/
             web/test-results/
             scripts/ci/gate_record.json
           if-no-files-found: error
