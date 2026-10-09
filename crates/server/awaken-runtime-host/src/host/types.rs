@@ -9,6 +9,7 @@
 //! run results, resume commands, host errors, and outcome reports.
 
 use super::*;
+pub use crate::host_error::{HostError, HostErrorKind};
 
 /// Proof that one Host step was read back from the authoritative ThreadCommit
 /// prefix. Public protocols may inspect the projected result fields, but cannot
@@ -124,72 +125,6 @@ pub enum HostResume {
 impl HostResume {
     pub(crate) fn wants_client(&self) -> bool {
         matches!(self, HostResume::ClientResult { .. })
-    }
-}
-
-/// A host failure classified by fault: `BadRequest` is the caller's (bad id,
-/// wrong binding, no await), `Internal` is the runtime's. Each adapter maps this
-/// to its own public error shape.
-#[derive(Debug, thiserror::Error)]
-#[error("{message}")]
-pub struct HostError {
-    pub message: String,
-    pub kind: HostErrorKind,
-    /// Stable neutral classification. Protocol adapters project this value and
-    /// never infer fault identity from human-readable text.
-    pub code: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HostErrorKind {
-    Internal,
-    BadRequest,
-    Conflict,
-    Unavailable,
-}
-
-impl HostError {
-    pub fn internal(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            kind: HostErrorKind::Internal,
-            code: "internal".into(),
-        }
-    }
-    pub fn bad_request(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            kind: HostErrorKind::BadRequest,
-            code: "invalid_request".into(),
-        }
-    }
-    pub fn conflict(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            kind: HostErrorKind::Conflict,
-            code: "conflict".into(),
-        }
-    }
-    pub fn unavailable(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            kind: HostErrorKind::Unavailable,
-            code: "unavailable".into(),
-        }
-    }
-    pub fn unavailable_classified(code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            kind: HostErrorKind::Unavailable,
-            code: code.into(),
-        }
-    }
-    pub fn classified(code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            kind: HostErrorKind::Internal,
-            code: code.into(),
-        }
     }
 }
 

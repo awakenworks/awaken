@@ -10,7 +10,8 @@ use std::time::Duration;
 
 use awaken_session_types::RunError;
 
-use crate::{ManagedHost, to_run_error};
+use crate::ManagedHost;
+use crate::host_error::to_run_error;
 
 /// The Runtime Host is the sole adapter from aggregate checkpoint intent to
 /// provider byte-custody input. Ordinary suspension and terminal takeover both

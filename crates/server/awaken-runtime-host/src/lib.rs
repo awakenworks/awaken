@@ -49,6 +49,7 @@ mod durable_operations;
 mod environment_continuation;
 mod frozen_inputs;
 mod host;
+mod host_error;
 mod hub;
 mod inference_routing;
 mod judge;

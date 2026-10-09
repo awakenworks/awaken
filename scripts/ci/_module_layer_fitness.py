@@ -73,6 +73,9 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "managed_input_layout",
         "frozen_inputs",
     )),
+    (REALIZER, "the error vocabulary realization and the run path both return; the host re-exports it", (
+        "host_error",
+    )),
     (HOST, _MIXED_REASON, (
         "host",
         "host::build",

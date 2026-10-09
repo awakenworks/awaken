@@ -15,7 +15,8 @@ use awaken_session_state_contract::{
 };
 use awaken_session_types::RunError;
 
-use crate::{ManagedHost, managed_adapter_error::to_run_error};
+use crate::ManagedHost;
+use crate::host_error::to_run_error;
 
 impl ManagedHost {
     /// Execute one aggregate-derived terminal Repository publication without

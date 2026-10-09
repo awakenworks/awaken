@@ -21,25 +21,27 @@ use awaken_runtime_contract::resolved::ToolDescriptor;
 #[derive(Debug)]
 pub(crate) enum RepositoryPublicationActivationError {
     Rejected(pc::RepositoryPublicationRejection),
-    Failed(crate::host::HostError),
+    Failed(crate::host_error::HostError),
 }
 
-fn repository_binding_host_error(error: RepositoryBindingVerifierError) -> crate::host::HostError {
+fn repository_binding_host_error(
+    error: RepositoryBindingVerifierError,
+) -> crate::host_error::HostError {
     let message = error.to_string();
     match error {
         RepositoryBindingVerifierError::InvalidRequest { .. }
         | RepositoryBindingVerifierError::Denied { .. } => {
-            crate::host::HostError::bad_request(message)
+            crate::host_error::HostError::bad_request(message)
         }
         RepositoryBindingVerifierError::Conflict { .. } => {
-            crate::host::HostError::conflict(message)
+            crate::host_error::HostError::conflict(message)
         }
         RepositoryBindingVerifierError::AuthorityUnavailable { .. }
         | RepositoryBindingVerifierError::Indeterminate { .. } => {
-            crate::host::HostError::unavailable(message)
+            crate::host_error::HostError::unavailable(message)
         }
         RepositoryBindingVerifierError::CorruptAuthority { .. } => {
-            crate::host::HostError::internal(message)
+            crate::host_error::HostError::internal(message)
         }
     }
 }
@@ -650,17 +652,17 @@ impl SharedHost {
         spec: &pc::SandboxSpec,
         repository_paths: &[&str],
         historical_owned_paths: &[&str],
-    ) -> Result<pc::SandboxSpec, crate::host::HostError> {
+    ) -> Result<pc::SandboxSpec, crate::host_error::HostError> {
         let effective = provider
             .realizer()
             .effective_spec(spec)
-            .map_err(|error| crate::host::HostError::internal(error.to_string()))?;
+            .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?;
         pc::validate_repository_sandbox_adoption_layout(
             repository_paths,
             &effective,
             historical_owned_paths,
         )
-        .map_err(|error| crate::host::HostError::internal(error.to_string()))?;
+        .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?;
         Ok(effective)
     }
 
@@ -738,7 +740,7 @@ impl SharedHost {
         &self,
         thread: &str,
         realizer: &dyn pc::RepositoryRealizer,
-    ) -> Result<(), crate::host::HostError> {
+    ) -> Result<(), crate::host_error::HostError> {
         let resources = self.thread_resources_snapshot(thread);
         for repository in &resources.repositories {
             self.realize_repository_activation(
@@ -760,18 +762,18 @@ impl SharedHost {
         repository: &RepositoryActivation,
         binding_checks: &[ResourceBindingCheck],
         realizer: &dyn pc::RepositoryRealizer,
-    ) -> Result<(), crate::host::HostError> {
+    ) -> Result<(), crate::host_error::HostError> {
         repository
             .plan
             .validate_mount_path()
-            .map_err(|error| crate::host::HostError::internal(error.to_string()))?;
+            .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?;
         let credential = self
             .repository_operation_credential(thread, repository, binding_checks, None)
             .await?;
         realizer
             .realize_repository(&repository.plan, credential.as_ref())
             .await
-            .map_err(|error| crate::host::HostError::internal(error.to_string()))
+            .map_err(|error| crate::host_error::HostError::internal(error.to_string()))
     }
 
     /// Materialize only the credential required by this Git effect. A direct
@@ -789,7 +791,7 @@ impl SharedHost {
             awaken_session_state_contract::SessionRepositoryPublicationCommand,
             awaken_session_resource_contract::SessionRealizationLease,
         )>,
-    ) -> Result<Option<pc::RepositoryHttpBasicCredential>, crate::host::HostError> {
+    ) -> Result<Option<pc::RepositoryHttpBasicCredential>, crate::host_error::HostError> {
         let pin = repository.credential_pin.as_ref();
         if pin.is_none() && publication_fence.is_none() {
             return Ok(None);
@@ -811,26 +813,26 @@ impl SharedHost {
         });
         let Some((config_version, remote_url, credential_binding, authority)) = matching.next()
         else {
-            return Err(crate::host::HostError::internal(
+            return Err(crate::host_error::HostError::internal(
                 "protected Repository has no exact binding check",
             ));
         };
         if matching.next().is_some() {
-            return Err(crate::host::HostError::internal(
+            return Err(crate::host_error::HostError::internal(
                 "protected Repository has ambiguous binding checks",
             ));
         }
         if let Some(pin) = pin {
             let credential_binding = credential_binding.ok_or_else(|| {
-                crate::host::HostError::internal(
+                crate::host_error::HostError::internal(
                     "protected Repository credential pin has no authored binding",
                 )
             })?;
             pin.validate_for_repository(credential_binding, remote_url)
-                .map_err(|error| crate::host::HostError::internal(error.to_string()))?;
+                .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?;
         }
         if repository.plan.source_remote_url != remote_url {
-            return Err(crate::host::HostError::internal(
+            return Err(crate::host_error::HostError::internal(
                 "Repository changed its frozen source URL",
             ));
         }
@@ -850,7 +852,7 @@ impl SharedHost {
                     .repository_binding_verifier
                     .clone()
                     .ok_or_else(|| {
-                        crate::host::HostError::internal(
+                        crate::host_error::HostError::internal(
                             "terminal Repository publication has no binding verifier",
                         )
                     })?;
@@ -880,12 +882,12 @@ impl SharedHost {
                     Ok(None)
                 }
                 Some(awaken_resource_contract::RepositoryTransport::Direct) => {
-                    Err(crate::host::HostError::internal(
+                    Err(crate::host_error::HostError::internal(
                         "direct Repository changed its frozen transport URL",
                     ))
                 }
                 Some(awaken_resource_contract::RepositoryTransport::GatewayMediated { .. }) => {
-                    Err(crate::host::HostError::internal(
+                    Err(crate::host_error::HostError::internal(
                         "Repository has a mediated transport without a credential pin",
                     ))
                 }
@@ -894,7 +896,7 @@ impl SharedHost {
         };
         match pin.selected_plaintext_holder.boundary {
             awaken_runtime_contract::PlaintextBoundary::Worker => {
-                Err(crate::host::HostError::internal(
+                Err(crate::host_error::HostError::internal(
                     "Runtime Host or Worker cannot hold a Repository transport credential",
                 ))
             }
@@ -905,17 +907,17 @@ impl SharedHost {
                         awaken_resource_contract::RepositoryTransport::Direct
                     )
                 }) {
-                    return Err(crate::host::HostError::internal(
+                    return Err(crate::host_error::HostError::internal(
                         "Sandbox-held Repository credential cannot use a mediated transport",
                     ));
                 }
                 if repository.plan.transport_url != remote_url {
-                    return Err(crate::host::HostError::internal(
+                    return Err(crate::host_error::HostError::internal(
                         "direct Repository changed its frozen transport URL",
                     ));
                 }
                 let materializer = self.exec.credential_materializer.as_ref().ok_or_else(|| {
-                    crate::host::HostError::internal(
+                    crate::host_error::HostError::internal(
                         "repository credential requires a configured credential materializer",
                     )
                 })?;
@@ -929,11 +931,11 @@ impl SharedHost {
                         &(&repository.plan.repository_id, config_version),
                     )
                     .await
-                    .map_err(|error| crate::host::HostError::internal(error.to_string()))?
+                    .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?
                     .material;
                 repository_http_basic_credential(material)
                     .map(Some)
-                    .map_err(crate::host::HostError::internal)
+                    .map_err(crate::host_error::HostError::internal)
             }
             awaken_runtime_contract::PlaintextBoundary::Platform => {
                 let workspace = self.thread_workspace(thread);
@@ -945,7 +947,7 @@ impl SharedHost {
                             .repository_binding_verifier
                             .clone()
                             .ok_or_else(|| {
-                            crate::host::HostError::internal(
+                            crate::host_error::HostError::internal(
                                 "Gateway-mediated Repository has no binding verifier",
                             )
                         })?;
@@ -971,12 +973,12 @@ impl SharedHost {
                         )))
                     }
                     awaken_resource_contract::RepositoryTransport::GatewayMediated { .. } => {
-                        Err(crate::host::HostError::internal(
+                        Err(crate::host_error::HostError::internal(
                             "Gateway-mediated Repository changed its frozen remote URL",
                         ))
                     }
                     awaken_resource_contract::RepositoryTransport::Direct => {
-                        Err(crate::host::HostError::internal(
+                        Err(crate::host_error::HostError::internal(
                             "Gateway-mediated Repository cannot fall back to direct credentials",
                         ))
                     }
@@ -1003,18 +1005,18 @@ impl SharedHost {
         )>,
     ) -> Result<pc::RepositoryPublicationReceipt, RepositoryPublicationActivationError> {
         repository.plan.validate_mount_path().map_err(|error| {
-            RepositoryPublicationActivationError::Failed(crate::host::HostError::internal(
+            RepositoryPublicationActivationError::Failed(crate::host_error::HostError::internal(
                 error.to_string(),
             ))
         })?;
         expectation.validate().map_err(|error| {
-            RepositoryPublicationActivationError::Failed(crate::host::HostError::internal(
+            RepositoryPublicationActivationError::Failed(crate::host_error::HostError::internal(
                 error.to_string(),
             ))
         })?;
         if repository.plan.access == pc::MountAccess::ReadOnly {
             return Err(RepositoryPublicationActivationError::Failed(
-                crate::host::HostError::internal("read-only repository cannot be published"),
+                crate::host_error::HostError::internal("read-only repository cannot be published"),
             ));
         }
         let credential = self
@@ -1030,7 +1032,7 @@ impl SharedHost {
                 }
                 pc::RepositoryPublicationError::Unavailable(error) => {
                     RepositoryPublicationActivationError::Failed(
-                        crate::host::HostError::unavailable_classified(
+                        crate::host_error::HostError::unavailable_classified(
                             "repository_publication_transport_unavailable",
                             error.to_string(),
                         ),
@@ -1040,9 +1042,9 @@ impl SharedHost {
         receipt
             .verify(&repository.plan, expectation)
             .map_err(|error| {
-                RepositoryPublicationActivationError::Failed(crate::host::HostError::internal(
-                    error.to_string(),
-                ))
+                RepositoryPublicationActivationError::Failed(
+                    crate::host_error::HostError::internal(error.to_string()),
+                )
             })?;
         Ok(receipt)
     }

@@ -401,7 +401,7 @@ impl SharedHost {
             Some(sink) => sink
                 .authorize(&intent)
                 .await
-                .map_err(crate::managed_adapter_error::from_run_error)?,
+                .map_err(crate::host_error::from_run_error)?,
             None if intent.realization().is_none() => {
                 awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned
             }
@@ -584,7 +584,7 @@ impl SharedHost {
         let committed = sink
             .persist(receipt.clone())
             .await
-            .map_err(crate::managed_adapter_error::from_run_error)
+            .map_err(crate::host_error::from_run_error)
             .map_err(|error| EnvironmentBindingPersistenceError {
                 error,
                 committed_identity: None,

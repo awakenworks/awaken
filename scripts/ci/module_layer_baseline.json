@@ -1,8 +1,7 @@
 {
   "upward-edges": {
     "environment_continuation -> crate": [
-      "ManagedHost",
-      "to_run_error"
+      "ManagedHost"
     ],
     "environment_continuation -> host": [
       "BoundEnvironmentPreparationMode"
@@ -55,9 +54,6 @@
     "host::worker_resolver::session_realization -> host::worker_resolver": [
       "*"
     ],
-    "host::worker_resolver::session_realization -> managed_adapter_error": [
-      "to_run_error"
-    ],
     "host::worker_resolver::session_realization -> session_slot": [
       "SessionRealizationPermit"
     ],
@@ -66,9 +62,6 @@
     ],
     "managed_resource_projection -> host": [
       "CanonicalSessionProjection"
-    ],
-    "managed_resource_projection -> managed_adapter_error": [
-      "to_run_error"
     ],
     "managed_resource_projection -> memory": [
       "BoundMemory"
@@ -84,7 +77,6 @@
       "materialize_delivered_skill"
     ],
     "provisioning -> host": [
-      "HostError",
       "SharedHost"
     ],
     "provisioning -> session_slot": [
@@ -95,9 +87,6 @@
     ],
     "terminal_repository_publication -> host": [
       "BoundEnvironmentPreparationMode"
-    ],
-    "terminal_repository_publication -> managed_adapter_error": [
-      "to_run_error"
     ]
   },
   "shared-host-impl": {

@@ -179,7 +179,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
                     published_snapshot.cloned(),
                     Some(projection.resources.skills()),
                 )
-                .map_err(crate::managed_adapter_error::to_run_error)?;
+                .map_err(crate::host_error::to_run_error)?;
             let a2a_only = canonical_publication.as_ref().is_some_and(|publication| {
                 !crate::host::completion::requires_local_environment(&publication.resolved_spec)
             });
@@ -210,14 +210,14 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
                         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
                     )
                 }
-                .map_err(crate::managed_adapter_error::to_run_error)?;
+                .map_err(crate::host_error::to_run_error)?;
                 self.host
                     .rebuild_claimed_legacy_environment_after_revocation(
                         session_id.as_str(),
                         provider,
                     )
                     .await
-                    .map_err(crate::managed_adapter_error::to_run_error)?;
+                    .map_err(crate::host_error::to_run_error)?;
             }
         }
         // A claim authorizes live Resource revalidation. A preparation Stage
@@ -249,7 +249,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
                 Some(lease.clone()),
             )
             .await
-            .map_err(crate::managed_adapter_error::to_run_error)?;
+            .map_err(crate::host_error::to_run_error)?;
         // A Control-synchronized projection is the same complete Managed
         // Session authority as a co-located SessionRuntime installation. Mark
         // that existing ownership only after every frozen fact is installed;
@@ -293,7 +293,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
             let provider = self
                 .host
                 .projected_session_environment_provider(session_id.as_str(), None)
-                .map_err(crate::managed_adapter_error::to_run_error)?;
+                .map_err(crate::host_error::to_run_error)?;
             self.host
                 .adopt_bound_session_environment(
                     session_id.as_str(),
@@ -303,7 +303,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
                     self.rebuild_unavailable_environment,
                 )
                 .await
-                .map_err(crate::managed_adapter_error::to_run_error)?
+                .map_err(crate::host_error::to_run_error)?
         } else {
             crate::host::session::SessionEnvironmentAdoptionDisposition::NoBinding
         };
@@ -337,7 +337,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
             self.host
                 .session_child_execution_substrate(session_id.as_str(), published_snapshot.as_ref())
                 .await
-                .map_err(crate::managed_adapter_error::to_run_error)?;
+                .map_err(crate::host_error::to_run_error)?;
             true
         } else {
             false
