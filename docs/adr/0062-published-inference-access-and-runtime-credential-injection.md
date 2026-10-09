@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-07-20
+- Amended by: ADR-0073 (a production Session gets its Hand only from its realized Environment; see Amendment 2026-10-09)
+- Amended: 2026-10-09 (reconciled with ADR-0073: no `ToolExecutorProvider` placement port)
 - Builds on: ADR-0031, ADR-0032, ADR-0057, ADR-0061
 - Supersedes ADR-0043 sections 1-3 for inference wherever they describe a
   materialized credential inside `ExecutableAgentSnapshot`; the authoritative
@@ -375,3 +377,12 @@ closed instead of choosing the first. A pool-capable adapter overrides
 `materialize` and exact-matches each `ChatRequest.model_binding` against the
 ordered published pool. This preserves same-model, cross-account fallback
 without allowing the convenience path to become a second routing authority.
+
+## Amendment 2026-10-09: reconciled with ADR-0073
+
+The static view's sentence "the independently named `ToolExecutorProvider` remains the
+placement port for remote tool execution" is no longer true. [ADR-0073](0073-session-environment-owned-hand-and-worker-capability-placement.md) retired the
+per-Run `ToolExecutorProvider` placement: a production Session gets its Hand only from its
+realized Environment, and durable Worker placement is the only placement authority.
+`ToolExecutorProvider` has no hits in `crates/`. The rest of the sentence holds: tool
+placement does not take part in model access or credential handling.

@@ -2,6 +2,10 @@
 
 - Status: Accepted
 - Date: 2026-07-15
+- Amended by: ADR-0063 (memory mount truth is the Workspace `MemoryRepository`, not a harvested copy)
+- Amended by: ADR-0073 (Hand placement: durable Worker claim plus the Session Environment; no `HandRegistry`)
+- Amended by: ADR-0074 (Session Environment suspension and checkpointed continuation)
+- Amended: 2026-10-09 (reconciled with ADR-0073 and this ADR's 2026-10-06 amendment)
 - Implemented: 2026-07-22 — `CacheVolume` remains the product-owned opaque
   storage seam; `SessionEnvironmentProvider` is the production worker-plane
   owner for Workdir, namespace, Docker, Podman, and Kubernetes environments;
@@ -441,3 +445,18 @@ Decision:
    G-Down and G-Pure apply from that point.
 3. Until then, work that slims `awaken-provisioning-contract` excludes these items.
 
+## Amendment 2026-10-09: reconciled with ADR-0073
+
+- §1 and §6 name a `HandRegistry` that chooses the Hand and prefers the node holding a
+  Cache Volume. No `HandRegistry` exists in `crates/`. [ADR-0073](0073-session-environment-owned-hand-and-worker-capability-placement.md) decides placement:
+  a production Session gets its Hand only from its realized Environment, and the
+  durable Worker claim is the only placement authority. Any Cache-Volume node affinity
+  is an input to that Worker placement.
+- §3's memory mount "harvested back" is superseded by [ADR-0063](0063-resource-input-identity-configuration-pinning-and-lifecycle.md) D7: the mount's
+  truth is the Workspace `MemoryRepository`; FUSE writes through and the copy fallback
+  reconciles per path with CAS ([ADR-0053](0053-memory-store-fuse-mount.md)).
+- §4's bullet calling `reconcile_adoption` "the sole cross-restart disposal decision" is
+  not current. Per the 2026-10-06 amendment it has no production caller (only
+  `crates/contract/awaken-provisioning-contract/src/lease.rs` and its re-export); each
+  provider owns its referenced-set reconciliation today. [ADR-0074](0074-session-environment-suspension-and-checkpointed-continuation.md)'s gap table
+  repeats the old claim.

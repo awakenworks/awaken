@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-19
+- Amends: ADR-0018 D4 and ADR-0023 Consequences (a Done dispatch now leaves a permanent completion tombstone; recorded 2026-10-09)
 - Depends on: ADR-0009, ADR-0010, ADR-0012, ADR-0022
 
 ## Context

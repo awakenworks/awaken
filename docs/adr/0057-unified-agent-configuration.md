@@ -2,6 +2,11 @@
 
 - Status: Proposed
 - Date: 2026-07-16
+- Amended by: ADR-0069 (ACP capability and configuration lifecycle, especially the backend-owned trusted-host amendment)
+- Amended by: ADR-0091 (Proposed; enforcement of the "Assembly" section)
+- Implemented: partially — see Amendment 2026-10-09
+- Amends: ADR-0002 `RunDelegationService` (Phase E: local and remote children are one ordinary child-Run path; recorded 2026-10-09)
+- Amended: 2026-10-09 (reconciled with ADR-0066: ACP MCP credential delivery)
 - Amended 2026-09-13: the implemented flat Agent configuration has an optional
   `max_steps`, defaulting to no additional ceiling. Existing finite publications
   retain their exact limit. See [Managed defaults](../design/anthropic-alignment-and-sessions.md#defaults-outside-the-managed-vocabulary).
@@ -1126,3 +1131,32 @@ ownership of the Agent aggregate, mutually exclusive `Provider | BackendOwned`
 provisioning union and secret-free publication boundary. Keeping the detailed
 ACP lifecycle only in ADR-0069 prevents two normative descriptions of
 discovery, observation, placement and launch revalidation from drifting.
+
+## Amendment 2026-10-09: implementation status
+
+Rollout phases 0, A–I are complete as recorded above (F was later retired by
+[ADR-0073](0073-session-environment-owned-hand-and-worker-capability-placement.md)). D1/D3 are not implemented: there is no stored kind discriminant and no
+`NativeSpec`/`AcpSpec`/`A2aSpec`. `AgentKind` exists only as a derived, unstored view of
+`backend_ref` (`crates/control/awaken-agent-config/src/config.rs:262-275`), which is
+what phase B delivered; the 2026-07-23 amendment keeps the flat `AgentConfig`. The
+status stays Proposed for D1/D3 only.
+
+## Amendment 2026-10-09: reconciled with ADR-0066
+
+The concept table's credential-lifecycle row (family 4) says "ACP receives no MCP
+credential channel" and credits "ADR 67" with removing it. [ADR-0066](0066-session-service-binding-and-realization.md) (2026-08-16
+amendment) decides otherwise: authenticated MCP freezes one delivery mode per
+attachment, and `ClientInjection` places material in the process-private ACP
+`session/new` field (`McpCredentialDelivery::ClientInjection`,
+`crates/contract/awaken-credential-contract/src/realization_capabilities.rs:46`; ACP use at
+`crates/server/awaken-run-executor-acp/src/subprocess.rs:529`). [ADR-0067](0067-credential-custody-model-exposure-and-secret-delivery.md) makes no
+such removal; only the former reference/inline exits are gone.
+
+## Amendment 2026-10-09: names and references
+
+- D3a's `tools: ToolSelection … OUR catalog (ADR-0053)`: ADR-0053 is the Memory FUSE
+  mount. The scope-keyed tool catalog is [ADR-0052](0052-management-assistant-ordinary-agent-in-a-reserved-scope.md) D3 (`ToolCatalogSource`).
+- [ADR-0002](0002-resolver-role-demarcation.md) cites "ADR-0057 Phase E" for one child-Run delegation path. Phase E's
+  completion evidence is that decision: remote children select the one `A2aRunExecutor`
+  from the published backend, and `RemoteAgent*`/`with_remote_agent` are gone;
+  `RunDelegationService` is at `crates/contract/awaken-runtime-contract/src/delegation.rs:268`.

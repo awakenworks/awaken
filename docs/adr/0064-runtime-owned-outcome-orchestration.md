@@ -339,3 +339,10 @@ All containment is fail-closed. Resume mismatches are rejected before side
 effects; persistence, execution, and parsing faults remain typed infrastructure
 errors; and no mitigation introduces a second status, transcript, cursor,
 Outcome repository, or fallback snapshot.
+
+## Amendment 2026-10-09: names and references
+
+- `ContinuationGuard` (D2) → `RunEndGuard`, the name [ADR-0055](0055-typed-state-kernel-loop-actions-as-state.md) §4 gives it
+  (`crates/contract/awaken-runtime-contract/src/plugin/guard.rs:51`). No
+  `ContinuationGuard` type exists. `RunTerminalObserver` is at
+  `crates/contract/awaken-runtime-contract/src/terminal.rs:39`.

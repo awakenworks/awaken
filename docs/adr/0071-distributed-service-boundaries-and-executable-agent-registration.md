@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-30
+- Amended by: ADR-0072 (supersedes D6 only where it makes the mutable Environment definition and public CRUD Coordinator-owned)
 - Amended: 2026-08-01 — static Environment ownership, Resources application
   composition, registration supervision, and durable projection high-water marks
 - Amended: 2026-08-13 — projection degradation no longer removes a healthy

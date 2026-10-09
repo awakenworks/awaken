@@ -2,6 +2,9 @@
 
 - Status: Accepted
 - Date: 2026-07-21
+- Supersedes: ADR-0051 (its `ScopedRepo` mechanism; see the ADR-0051 supersession note; recorded 2026-10-09)
+- Amended by: ADR-0075 (supersedes the late Worker-authored Session-input path)
+- Amended: 2026-10-09 (reconciled with ADR-0069: resource databases come from typed deployment configuration)
 - Amended: 2026-08-01 — logical File identity and canonical Resources application
 - Amended: 2026-08-10 — typed application-contributed Session inputs
 - Amended: 2026-08-12 — one front-door IAM enforcement path
@@ -761,3 +764,14 @@ or cleanup state is added. New rejection bytes require the Session application,
 Runtime Host, Worker, and ingress/control roles to run one aligned contract
 revision before this effect is admitted during rollout. The previous remote
 absent/third-ref CAS rules and success replay remain unchanged.
+
+## Amendment 2026-10-09: reconciled with ADR-0069
+
+D6 says the resource backends are "selected together once by
+`AWAKEN_RESOURCE_DATABASE_URL`", with `AWAKEN_RESOURCE_LIFECYCLE_DB` as an alias.
+[ADR-0069](0069-acp-capability-configuration-lifecycle.md) D12 (product configuration is typed, not ambient) and [ADR-0061](0061-selectable-identity-and-platform-managed-resource-scopes.md)
+(retired process-environment aliases do not participate) decide it: the selection is the
+typed deployment field `resource_database_url`
+(`crates/bin/awaken-cli/src/config/file_schema.rs:69`, validated in `deployment.rs:150`).
+Neither environment variable is read in `crates/`. The one-bundle selection rule is
+unchanged.

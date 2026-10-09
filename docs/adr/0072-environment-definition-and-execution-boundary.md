@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-08-01
+- Amended by: ADR-0083 (Cloud Managed create returns after the durable root; realization follows through the supervisor)
 - Depends on: ADR-0041, ADR-0066, ADR-0071
 - Supersedes: ADR-0071 D6 only where it makes the mutable Environment
   definition and public CRUD Coordinator-owned

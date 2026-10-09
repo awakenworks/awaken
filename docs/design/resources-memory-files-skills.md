@@ -1069,7 +1069,7 @@ preserves every non-File input and exact Skill pin before it commits.
 - a physical-identity fence serializes zero-reference proof with every new
   reference across processes; SQLite and Postgres implement the same port;
 - the complete resource persistence family is selected once at composition by
-  `AWAKEN_RESOURCE_DATABASE_URL`, independently of IAM/authentication mode;
+  the typed deployment field `resource_database_url`, independently of IAM/authentication mode;
 - File bytes, Memory content/history, Skill bundles, and lifecycle fences cannot
   silently mix shared and node-local backends in a multi-node deployment;
 - File GC checks every Workspace ownership/reference before deleting shared bytes;
