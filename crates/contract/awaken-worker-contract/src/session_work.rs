@@ -13,7 +13,7 @@
 //! in its signatures. The in-memory reference backend and the shared lease
 //! bookkeeping live outward in `awaken-work-store`, beside the sqlite/postgres
 //! siblings. The Managed wire adapter owns the neutral→wire projection
-//! (`WorkItem` → `BetaSelfHostedWork`); this crate names no wire type.
+//! (`WorkItem` → `BetaSelfHostedWork`); this module names no wire type.
 
 use std::collections::BTreeMap;
 

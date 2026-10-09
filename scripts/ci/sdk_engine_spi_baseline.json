@@ -58,9 +58,6 @@
       "awaken_runtime_contract::model_operation": 2,
       "awaken_runtime_contract::resume": 4
     },
-    "awaken-run-ingress-application-contract": {
-      "awaken_agent_contract::thread::commit": 1
-    },
     "awaken-dispatch-contract": {
       "awaken_agent_contract::stream::checkpoint": 2,
       "awaken_agent_contract::stream::sink": 1,

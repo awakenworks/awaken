@@ -178,7 +178,6 @@
     "awaken-run-executor-a2a",
     "awaken-run-executor-acp",
     "awaken-dispatch",
-    "awaken-run-ingress-application-contract",
     "awaken-dispatch-contract",
     "awaken-dispatch-http",
     "awaken-dispatch-testkit",
@@ -217,7 +216,6 @@
     "awaken-session-state-contract",
     "awaken-session-store",
     "awaken-session-types",
-    "awaken-session-work-contract",
     "awaken-skill-store",
     "awaken-sqlite-pool",
     "awaken-store-conformance",
@@ -258,7 +256,7 @@
     "awaken-control::credential_refresh.rs::run_exchange": 162,
     "awaken-control::lib.rs::control_router": 181,
     "awaken-control::webhook_authoring.rs::put_subscription": 157,
-    "awaken-coordinator::lib.rs::mount_with_managed_over_and_models": 410,
+    "awaken-coordinator::lib.rs::mount_with_managed_over_and_models": 408,
     "awaken-credential-store::postgres.rs::commit_managed_mutation": 275,
     "awaken-credential-store::sqlite/managed.rs::commit_managed_mutation": 244,
     "awaken-dispatch-execution::worker.rs::drive_claimed_inner": 597,
@@ -391,7 +389,7 @@
   "crate-budget": {
     "awaken-session-executor": {
       "lines": 71937,
-      "deps": 48,
+      "deps": 47,
       "reason": "runtime-host split (plan 10.4 slices F, S, T, R, H): new behavior lands in its future crate; target < 20000 lines, about 26-28 dependencies"
     }
   }

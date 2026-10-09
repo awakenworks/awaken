@@ -25,17 +25,9 @@ pub struct Lease {
     pub epoch: u64,
 }
 
-/// Durable execution authority for one claimed Run.
-///
-/// Keeping the run, owner, and fencing epoch together prevents commit, settle,
-/// and cancellation code from accidentally mixing fields from different claims.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunClaim {
-    pub run_id: RunId,
-    pub owner: String,
-    #[serde(deserialize_with = "awaken_lease_contract::fence::Epoch::deserialize_u64")]
-    pub epoch: u64,
-}
+/// The Coordinator↔Worker claim lives in `awaken-worker-contract`; dispatch
+/// mints it from a [`Lease`] and keeps this path for its callers.
+pub use awaken_worker_contract::RunClaim;
 
 impl From<&Lease> for RunClaim {
     fn from(lease: &Lease) -> Self {
@@ -69,7 +61,7 @@ pub struct Claimed {
     /// for this claim. Registered remote Session attempts require it before any
     /// committed Thread read; ordinary and colocated attempts omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_work_authority: Option<awaken_session_work_contract::SessionWorkAuthorityReceipt>,
+    pub session_work_authority: Option<awaken_worker_contract::SessionWorkAuthorityReceipt>,
     /// Exact credential decisions atomically committed with this lease epoch.
     /// Cancellation carries only the selected authenticated remote A2A
     /// transport binding; anonymous and non-remote cancellation remains empty.

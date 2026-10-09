@@ -38,7 +38,7 @@ if [ "${1:-}" = "--session-observations" ]; then
     -p awaken-session-application-contract -p awaken-session-execution-contract \
     -p awaken-session-realization-contract -p awaken-session-state-contract \
     -p awaken-session-repository-contract \
-    -p awaken-session-resource-contract -p awaken-session-work-contract \
+    -p awaken-session-resource-contract -p awaken-worker-contract \
     -p awaken-session-application \
     -p awaken-store-inmem -p awaken-store-fs -p awaken-store-sqlite -p awaken-protocol-managed
   cargo test --locked -p awaken-session-executor --lib projection_convergence::
@@ -185,7 +185,7 @@ cargo mutants --package awaken-session-realization-contract \
   --timeout 60 --no-times -- --lib
 python3 scripts/ci/check_reliability.py --mutants "$mutation_evidence/session-realization-observations/mutants.out"
 cargo mutants --package awaken-time \
-  --test-package awaken-time --test-package awaken-session-work-contract \
+  --test-package awaken-time --test-package awaken-worker-contract \
   --output "$mutation_evidence/session-work-observations" \
   --file crates/runtime/awaken-time/src/utc.rs \
   --re 'bounded_rfc3339_nanos' \

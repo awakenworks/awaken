@@ -3176,7 +3176,7 @@ async fn session_work_authority_classifies_scope_before_queue_access() {
     // | W3 | present | self-hosted/nonterminal | stopped | wake + Leased |
     // | W4 | present | self-hosted/terminal | stopped | Unowned; no wake |
     // | W5 | present | self-hosted/nonterminal renewal | stopped | Unowned; no wake |
-    use awaken_session_work_contract::{
+    use awaken_worker_contract::{
         SessionWorkAcquisition, SessionWorkLeaseAuthority, SessionWorkOwnership,
     };
 

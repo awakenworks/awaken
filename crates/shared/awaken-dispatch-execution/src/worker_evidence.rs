@@ -1,7 +1,7 @@
 //! Exact closed-idle Worker retirement port for the process maintenance scan.
 
-use awaken_run_ingress_application_contract::ApplicationError;
 use awaken_dispatch_contract::{ControlDispatchQueue, WorkerDirectory, WorkerIdentity};
+use awaken_session_execution_contract::ApplicationError;
 
 /// The Host scans and expires Registry records; Coordinator Ingress retains the
 /// sole physical-stop and exact evidence-release implementation. This port

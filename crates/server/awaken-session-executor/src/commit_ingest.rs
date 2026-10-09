@@ -14,54 +14,32 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
-use awaken_run_ingress_application_contract::{
-    ApplicationError, ClaimedOperationCoordinatorResolver,
-};
+use awaken_session_execution_contract::ApplicationError;
 
-use crate::host::HostError;
 use crate::host::SharedHost;
-/// Resolves the Session's existing commit owner from the trusted dispatch.
-/// Coordinator composition installs this port in its sole ClaimedCommitService.
-pub struct HostOperationCoordinatorResolver(Arc<SharedHost>);
 
-impl HostOperationCoordinatorResolver {
-    #[must_use]
-    pub fn new(host: Arc<SharedHost>) -> Self {
-        Self(host)
-    }
-}
-
-#[async_trait::async_trait]
-impl ClaimedOperationCoordinatorResolver for HostOperationCoordinatorResolver {
-    async fn resolve(
-        &self,
-        session_thread: &awaken_agent_contract::agent::thread::Id,
-    ) -> Result<Arc<dyn OperationCoordinator>, ApplicationError> {
-        // Physical commit authority is Session-scoped. A child keeps its logical
-        // Thread identity in the operation, while the guarded dispatch selects
-        // the parent Session partition. This adapter can only resolve the
-        // existing Coordinator; ClaimedCommitService remains the sole caller of
-        // its authoritative write method.
-        self.0
-            .commit_for_read(&session_thread.0)
-            .await
-            .map(|coordinator| coordinator as Arc<dyn OperationCoordinator>)
-            .map_err(map_host_error)
-    }
-}
-
-fn map_host_error(error: HostError) -> ApplicationError {
-    match error.kind {
-        crate::HostErrorKind::BadRequest => ApplicationError::invalid(error.message),
-        crate::HostErrorKind::Conflict => ApplicationError::conflict(error.message),
-        crate::HostErrorKind::Internal => ApplicationError::internal(error.message),
-        crate::HostErrorKind::Unavailable => ApplicationError::unavailable(error.message),
-    }
+/// Resolve the Session's existing commit owner for a claim-guarded remote
+/// commit. Coordinator composition installs this in its sole
+/// `ClaimedCommitService`, which remains the only caller of the owner's
+/// authoritative write method.
+pub async fn session_commit_owner(
+    host: &SharedHost,
+    session_thread: &awaken_agent_contract::agent::thread::Id,
+) -> Result<Arc<dyn OperationCoordinator>, ApplicationError> {
+    // Physical commit authority is Session-scoped. A child keeps its logical
+    // Thread identity in the operation, while the guarded dispatch selects
+    // the parent Session partition. This only resolves the existing owner;
+    // it never opens a second one.
+    host.commit_for_read(&session_thread.0)
+        .await
+        .map(|coordinator| coordinator as Arc<dyn OperationCoordinator>)
+        .map_err(crate::durable_operations::application_error)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::HostError;
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
     use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -81,6 +59,20 @@ mod tests {
     use awaken_dispatch_contract::{RunClaim, RunDispatch};
     use awaken_runtime_contract::RunActivation;
     use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ResolvedModelCandidate};
+
+    /// The Coordinator composition's resolver, rebuilt here over the same
+    /// Host method so these tests drive the real claimed-commit service.
+    struct SessionCommitOwner(Arc<SharedHost>);
+
+    #[async_trait::async_trait]
+    impl awaken_dispatch::ClaimedOperationCoordinatorResolver for SessionCommitOwner {
+        async fn resolve(
+            &self,
+            session_thread: &ThreadId,
+        ) -> Result<Arc<dyn OperationCoordinator>, ApplicationError> {
+            session_commit_owner(&self.0, session_thread).await
+        }
+    }
 
     const MEMORY_BINDING_ID: &str = "claimed-memory-binding";
     const PRIMARY_MODEL_REF: &str = "claimed-primary-model";
@@ -719,7 +711,7 @@ mod tests {
             .expect("child dispatch is claimable");
         let service = ClaimedCommitService::with_coordinator_resolver(
             queue.clone(),
-            Arc::new(HostOperationCoordinatorResolver::new(host.clone())),
+            Arc::new(SessionCommitOwner(host.clone())),
         );
         let identity = WorkerIdentity::new("remote-child-worker", "boot", 1);
 

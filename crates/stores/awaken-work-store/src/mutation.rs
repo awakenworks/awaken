@@ -5,8 +5,8 @@
 use std::collections::BTreeMap;
 
 use awaken_lease_contract::fence::Epoch;
-use awaken_session_work_contract::{WorkQueueError, WorkQueueError::Storage};
 use awaken_sql_storage::StoredU64;
+use awaken_worker_contract::{WorkQueueError, WorkQueueError::Storage};
 
 pub(super) fn apply_metadata_patch(
     metadata: &mut BTreeMap<String, String>,

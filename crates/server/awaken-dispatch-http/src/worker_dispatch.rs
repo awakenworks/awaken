@@ -173,7 +173,7 @@ pub struct WorkerDispatchService {
         Option<Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>,
     session_coordination:
         Option<Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>>,
-    session_work: Option<Arc<dyn awaken_session_work_contract::SessionWorkLeaseAuthority>>,
+    session_work: Option<Arc<dyn awaken_worker_contract::SessionWorkLeaseAuthority>>,
     local_credential_capabilities: awaken_credential_contract::CredentialRealizationCapabilities,
     credential_deliveries:
         Option<Arc<dyn awaken_credential_contract::AttemptCredentialDeliverySource>>,
@@ -328,7 +328,7 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn with_session_work_authority(
         mut self,
-        authority: Arc<dyn awaken_session_work_contract::SessionWorkLeaseAuthority>,
+        authority: Arc<dyn awaken_worker_contract::SessionWorkLeaseAuthority>,
     ) -> Self {
         self.session_work = Some(authority);
         self
@@ -493,7 +493,7 @@ pub struct RegisteredDispatchDependencies {
     pub session_environment_bindings:
         Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
     pub coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
-    pub session_work: Arc<dyn awaken_session_work_contract::SessionWorkLeaseAuthority>,
+    pub session_work: Arc<dyn awaken_worker_contract::SessionWorkLeaseAuthority>,
     pub authenticator: Arc<dyn WorkerRequestAuthenticator>,
     pub recovery: Arc<dyn RunRecoverySource>,
     pub completion: Arc<dyn CompletionSink>,
@@ -823,12 +823,12 @@ async fn bind_claimed_session_work_authority(
         .session_work
         .as_ref()
         .ok_or_else(|| HostError::internal("Session Work authority is not configured"))?;
-    let receipt = awaken_session_work_contract::acquire_session_work_receipt(
+    let receipt = awaken_worker_contract::acquire_session_work_receipt(
         work.as_ref(),
         &awaken_session_types::SessionId::from(session_id),
         &authority.owner,
         authority.now_ms,
-        awaken_session_work_contract::SessionWorkAcquisition::ClaimedRun,
+        awaken_worker_contract::SessionWorkAcquisition::ClaimedRun,
     )
     .await;
     let receipt = match receipt {
@@ -1043,7 +1043,7 @@ async fn recovery_snapshot(
                         &awaken_session_types::SessionId::from(&session.0),
                         &authority.owner,
                         authority.now_ms,
-                        awaken_session_work_contract::SessionWorkAcquisition::RealizationRenewal,
+                        awaken_worker_contract::SessionWorkAcquisition::RealizationRenewal,
                     )
                     .await
                     .map_err(|error| HostError::unavailable(error.to_string()))?;
@@ -1664,28 +1664,28 @@ async fn settle(
                     &awaken_session_types::SessionId::from(session_thread_id.0),
                     &claim.owner,
                     authority.now_ms,
-                    awaken_session_work_contract::SessionWorkAcquisition::RealizationRenewal,
+                    awaken_worker_contract::SessionWorkAcquisition::RealizationRenewal,
                 )
                 .await
                 .map_err(|error| {
                     RealizationHttpError::from(HostError::internal(error.to_string()))
                 })? {
-                awaken_session_work_contract::SessionWorkOwnership::NotRequired => None,
-                awaken_session_work_contract::SessionWorkOwnership::Leased(lease)
+                awaken_worker_contract::SessionWorkOwnership::NotRequired => None,
+                awaken_worker_contract::SessionWorkOwnership::Leased(lease)
                     if lease.owner() == claim.owner =>
                 {
                     Some(lease)
                 }
-                awaken_session_work_contract::SessionWorkOwnership::Unowned
-                | awaken_session_work_contract::SessionWorkOwnership::Leased(_)
+                awaken_worker_contract::SessionWorkOwnership::Unowned
+                | awaken_worker_contract::SessionWorkOwnership::Leased(_)
                     if committed_terminal =>
                 {
                     // No Work mutation is authorized by another owner's lease.
                     // The subsequent Dispatch settle still checks its own epoch.
                     None
                 }
-                awaken_session_work_contract::SessionWorkOwnership::Unowned
-                | awaken_session_work_contract::SessionWorkOwnership::Leased(_) => {
+                awaken_worker_contract::SessionWorkOwnership::Unowned
+                | awaken_worker_contract::SessionWorkOwnership::Leased(_) => {
                     return Err(RealizationHttpError::from(HostError::bad_request(
                         "Session Work ownership was lost before Run settlement",
                     )));

@@ -1,7 +1,7 @@
 {
   "$comment": "Shrink-only ratchet of scripts/ci/_contract_map_fitness.py (ADR-0091). Numbers may only fall; write it with `python3 scripts/ci/_contract_map_fitness.py --write-baseline`; raising one needs --reason, kept in growth_reasons.",
   "contract-crates": {
-    "contract crates": 37
+    "contract crates": 35
   },
   "optional-role": {
     "AcpToolExporter::attached_channels": 1,

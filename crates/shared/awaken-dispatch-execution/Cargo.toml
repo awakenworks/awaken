@@ -15,7 +15,6 @@ authority = "dispatch-execution"
 awaken-credential-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-dispatch-contract.workspace = true
-awaken-run-ingress-application-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-runtime.workspace = true

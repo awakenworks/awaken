@@ -41,7 +41,7 @@ awaken-session-mcp-contract.workspace = true
 awaken-session-mcp.workspace = true
 awaken-session-resource-contract.workspace = true
 awaken-session-types.workspace = true
-awaken-session-work-contract.workspace = true
+awaken-worker-contract.workspace = true
 awaken-environment-contract.workspace = true
 # The topology-neutral Session realization and terminal-cleanup drivers over
 # contract ports; the Session application and this Host's Workers both call them.
@@ -67,7 +67,6 @@ awaken-sandbox-control.workspace = true
 awaken-provisioning-contract = { workspace = true }
 awaken-tenancy = { workspace = true }
 awaken-dispatch-contract.workspace = true
-awaken-run-ingress-application-contract.workspace = true
 awaken-dispatch-erasure.workspace = true
 awaken-dispatch-execution.workspace = true
 awaken-acp-contract = { workspace = true }

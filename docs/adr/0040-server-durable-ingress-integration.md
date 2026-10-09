@@ -161,6 +161,6 @@ D1–D3 are history; these names no longer match the code:
   (`durable_ops_router_with_session_admission`).
 - `RunIngress` / `DurableRunIngress` were removed by the 2026-09-01 amendment to
   [ADR-0009](0009-durable-run-ingress-slice.md); the operations port is
-  `DurableRunOperations` (`crates/contract/awaken-run-ingress-application-contract/src/lib.rs:81`).
+  `DurableRunOperations` (`crates/contract/awaken-session-execution-contract/src/durable_run_operations.rs`).
 - `awaken-coordinator-local` is now `awaken-coordinator`; the SQLite suite is
   `crates/server/awaken-dispatch/tests/sqlite_dispatch.rs`.

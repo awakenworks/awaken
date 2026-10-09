@@ -20,9 +20,9 @@
 //! The suite itself lives in `awaken_store_conformance::work_queue` so a closed
 //! backend can run the identical checks; this file only supplies the backends.
 
-use awaken_session_work_contract::WorkQueue;
 use awaken_store_conformance::work_queue::run_suite;
 use awaken_work_store::{InMemoryWorkQueue, LEASE_TTL_MS, PostgresWorkQueue, SqliteWorkQueue};
+use awaken_worker_contract::WorkQueue;
 
 fn block<F: std::future::Future>(f: F) -> F::Output {
     // The SQLite backend's pool admission is a timed wait, so the runtime needs
