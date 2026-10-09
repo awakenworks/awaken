@@ -49,7 +49,6 @@
     "WorkerSessionRealizationControl": 1
   },
   "unimplemented-trait": {
-    "AgentTransport": 1,
     "CredentialExtensionConsumer": 1,
     "CredentialMaterialCustodian": 1,
     "ManagedListPriceProvider": 1,
