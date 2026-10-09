@@ -250,7 +250,10 @@ async function main() {
       // Web-tool configuration cause/effect graph: the discriminated input
       // config is validated once, normalized beside its ToolPolicyOverride,
       // persisted in the Agent revision, and projected with required output
-      // `type`. Invalid combinations stop before repository mutation.
+      // `type` and WebFetch's required nullable `url_sources`. Omitted source
+      // input resolves to null through the same persisted policy projector;
+      // retrieve must return that exact shape. WebSearch owns no source field.
+      // Invalid combinations stop before repository mutation.
       //
       // Decision table:
       // | Rule | tool/type | domains | specific setting | effect |
@@ -291,6 +294,7 @@ async function main() {
         permission_policy: { type: 'always_allow' },
         allowed_domains: ['docs.example.com'],
         max_content_tokens: 4096,
+        url_sources: null,
       }, {
         name: 'web_search',
         type: 'web_search',

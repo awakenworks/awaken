@@ -643,6 +643,78 @@
           ]
         }
       ]
+    },
+    {
+      "baseline_version": "0.131.0",
+      "candidate_version": "0.132.1",
+      "module": "@anthropic-ai/sdk-candidate",
+      "package_integrity": "sha512-Dg+Rd0effi+4FyNwgEx6JXl9COefsZ3C7BOPSKYIWboQOEIi9HXtu1WBdND0DIgMF7Qt1vuCSjsbs7sjUkzJuQ==",
+      "delta_fingerprint": "5dbfc2a942527d48cf474c61dfc7a74226df5cfcc0419edba358731f6567351b",
+      "evidence_groups": [
+        {
+          "owner": "candidate.managed-type-change-points-v132",
+          "coordinates": [
+            "declarations:changed:beta/agents/agents.d.ts",
+            "declarations:changed:beta/agents/index.d.ts",
+            "declarations:changed:beta/models.d.ts",
+            "declarations:changed:ga/models.d.ts",
+            "declarations:changed:beta/sessions/events.d.ts",
+            "declarations:changed:beta/sessions/sessions.d.ts",
+            "declarations:changed:beta/sessions/threads/events.d.ts",
+            "declarations:changed:beta/sessions/threads/threads.d.ts",
+            "declarations:changed:beta/vaults/credentials.d.ts"
+          ],
+          "witnesses": {
+            "declarations:changed:beta/agents/agents.d.ts": "export interface BetaManagedAgentsWebFetchURLSourcesParams",
+            "declarations:changed:beta/agents/index.d.ts": "BetaManagedAgentsWebFetchURLSources",
+            "declarations:changed:beta/models.d.ts": "lifecycle: 'active' \\| 'deprecated' \\| 'retired';",
+            "declarations:changed:ga/models.d.ts": "lifecycle: 'active' \\| 'deprecated' \\| 'retired';",
+            "declarations:changed:beta/sessions/events.d.ts": "BetaManagedAgentsSessionEvent",
+            "declarations:changed:beta/sessions/sessions.d.ts": "BetaManagedAgentsSession",
+            "declarations:changed:beta/sessions/threads/events.d.ts": "EventListParams",
+            "declarations:changed:beta/sessions/threads/threads.d.ts": "BetaManagedAgentsSessionThread",
+            "declarations:changed:beta/vaults/credentials.d.ts": "BetaManagedAgentsCredential"
+          }
+        },
+        {
+          "owner": "candidate.memory-ambiguous-upload",
+          "coordinates": [
+            "declarations:changed:managed/tools/agent-toolset/memories.d.ts",
+            "runtime:changed:tools/agent-toolset/memories.mjs"
+          ],
+          "witnesses": {
+            "declarations:changed:managed/tools/agent-toolset/memories.d.ts": "an upload whose response never arrives"
+          }
+        },
+        {
+          "owner": "candidate.tool-error-sanitization",
+          "coordinates": [
+            "runtime:added:lib/internal/toolsets/sanitize.mjs",
+            "runtime:changed:lib/tools/BetaRunnableTool.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.path-parameter-admission",
+          "coordinates": [
+            "runtime:changed:internal/utils/path.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.generated-module-loadability",
+          "coordinates": [
+            "runtime:changed:resources/beta/sessions/sessions.mjs",
+            "runtime:changed:resources/beta/sessions/threads/events.mjs",
+            "runtime:changed:resources/beta/sessions/threads/threads.mjs",
+            "runtime:changed:resources/beta/vaults/credentials.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.core-transport",
+          "coordinates": [
+            "runtime:changed:version.mjs"
+          ]
+        }
+      ]
     }
   ]
 }
