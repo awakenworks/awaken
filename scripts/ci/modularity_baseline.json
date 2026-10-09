@@ -389,5 +389,12 @@
     "awaken-store-postgres::lib.rs::recovery_snapshot": 194,
     "awaken-worker::lib.rs::run_until": 575,
     "awaken-worker::lifecycle.rs::renew_registry_authority": 176
+  },
+  "crate-budget": {
+    "awaken-session-executor": {
+      "lines": 71937,
+      "deps": 49,
+      "reason": "runtime-host split (plan 10.4 slices F, S, T, R, H): new behavior lands in its future crate; target < 20000 lines, about 26-28 dependencies"
+    }
   }
 }
