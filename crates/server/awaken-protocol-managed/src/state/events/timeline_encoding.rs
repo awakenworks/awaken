@@ -143,6 +143,24 @@ pub(super) fn encode_fact(
             });
             OutboundKind::SessionUsage { usage, budget }
         }
+        SessionEventKind::BudgetReachUsage {
+            usage,
+            list_cost_minor,
+            max_list_cost_minor,
+        } => {
+            let usd = |amount: u64| crate::types::MonetaryAmount {
+                amount: amount.to_string(),
+                currency: crate::types::Currency::USD,
+            };
+            let mut usage = session_usage_value(usage.clone(), None).map_err(StateError::Run)?;
+            usage.list_cost = list_cost_minor.map(usd);
+            OutboundKind::SessionUsage {
+                usage,
+                budget: Some(crate::types::BudgetLimit::Limit {
+                    max_list_cost: usd(*max_list_cost_minor),
+                }),
+            }
+        }
         SessionEventKind::ContextCompacted => OutboundKind::ThreadContextCompacted {},
         SessionEventKind::ModelRequestStart => OutboundKind::SpanModelRequestStart {},
         SessionEventKind::ModelRequestEnd {

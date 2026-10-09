@@ -110,11 +110,69 @@ fn budget_reach_uses_the_first_closed_interval_whose_cumulative_usage_crossed_it
         budget_reach_projection_close_cursor(
             &persisted,
             &transition,
-            &[permission_pause, budget_pause],
+            &[permission_pause.clone(), budget_pause],
             &historical,
         ),
         Some(30),
         "B6/E3 the public pause, not the earlier approval interval, owns the pair"
+    );
+    // B7: the domain publishes exactly the exposed reaches, each counted at
+    // its crossing cursor and priced by the transition's own numerator; B8:
+    // a reach the prefix withholds publishes nothing.
+    persisted.budget = awaken_session_budget_contract::SessionBudgetState::Active {
+        max_list_cost_minor: 1,
+        consumed_numerator: transition.consumed_numerator,
+        usage_cursor: usage(8),
+        snapshot: awaken_session_budget_contract::ManagedListPriceSnapshot {
+            snapshot_id: "budget-snapshot".into(),
+            version: 1,
+            effective_at_unix_ms: 0,
+            arithmetic_version: 1,
+            model_rates: Default::default(),
+            runtime_rates: Default::default(),
+            fingerprint: "budget-snapshot".into(),
+        },
+        reach_transitions: vec![transition.clone()],
+    };
+    let reaches =
+        awaken_managed_session_events::BudgetReach::exposed(&persisted, &[], &Default::default())
+            .unwrap();
+    assert_eq!(
+        reaches,
+        vec![awaken_managed_session_events::BudgetReach {
+            generation: 1,
+            usage: usage(5).to_session_usage().unwrap(),
+            list_cost_minor: Some(1),
+            max_list_cost_minor: 1,
+        }],
+        "B7 exposed reach"
+    );
+    let [reach_usage, reach_idle] = reaches[0].facts("budget-root");
+    assert_eq!(
+        (reach_usage.key.role, reach_idle.key.role),
+        (
+            awaken_managed_session_events::ManagedEventType::BudgetReachUsage,
+            awaken_managed_session_events::ManagedEventType::BudgetReachStatusIdle,
+        ),
+        "B7 one usage/idle pair"
+    );
+    assert_eq!(
+        reach_idle.kind,
+        awaken_managed_session_events::SessionEventKind::SessionIdle {
+            stop: awaken_managed_session_events::StopFact::BudgetReached,
+            calls_owner: "budget-root".into(),
+        },
+        "B7 budget idle"
+    );
+    assert_eq!(
+        awaken_managed_session_events::BudgetReach::exposed(
+            &persisted,
+            &[permission_pause.clone()],
+            &historical,
+        )
+        .unwrap(),
+        Vec::new(),
+        "B8 withheld reach"
     );
     persisted.closed_runtime_intervals.truncate(1);
     assert_eq!(
@@ -307,6 +365,43 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
         1,
         "B2/E2 one aggregate budget pause authority"
     );
+    // B2/E2 wire pin: the transition's own counted usage, rounded list cost
+    // and cap, and its budget idle, each published exactly once. Event ids
+    // are omitted because the Session id is minted per run.
+    let wire = final_warm
+        .iter()
+        .map(|event| {
+            let mut value = serde_json::to_value(event).unwrap();
+            value.as_object_mut().unwrap().remove("id");
+            value
+        })
+        .collect::<Vec<_>>();
+    for expected in [
+        serde_json::json!({
+            "type": "session.usage",
+            "usage": {
+                "active_seconds": 0, "input_tokens": 5, "output_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "cache_creation": {"ephemeral_5m_input_tokens": 0},
+                "list_cost": {"amount": "1", "currency": "USD"},
+                "server_tool_use": {"web_fetch_requests": 0, "web_search_requests": 0}
+            },
+            "budget": {"type": "limit", "max_list_cost": {"amount": "1", "currency": "USD"}},
+            "processed_at": null
+        }),
+        serde_json::json!({
+            "type": "session.status_idle",
+            "stop_reason": {"type": "budget_reached"},
+            "stop_details": null,
+            "processed_at": null
+        }),
+    ] {
+        assert_eq!(
+            wire.iter().filter(|value| **value == expected).count(),
+            1,
+            "B2/E2 byte-identical budget-reach wire {expected}"
+        );
+    }
 
     let cold = ManagedState::new(runtime)
         .await

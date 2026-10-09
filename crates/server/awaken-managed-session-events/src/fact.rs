@@ -42,6 +42,13 @@ pub enum SessionEventKind {
     SessionTerminated,
     /// The usage one admitted interval closed with.
     IntervalUsage(crate::IntervalUsage),
+    /// The usage a budget reach was counted at, its rounded public list cost
+    /// and the cap it crossed.
+    BudgetReachUsage {
+        usage: awaken_session_budget_contract::SessionUsage,
+        list_cost_minor: Option<u64>,
+        max_list_cost_minor: u64,
+    },
     ContextCompacted,
     ModelRequestStart,
     ModelRequestEnd {

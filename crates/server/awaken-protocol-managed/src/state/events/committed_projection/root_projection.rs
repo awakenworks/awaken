@@ -8,7 +8,7 @@
 //! Consumer: the candidate builder, before the delegation projector and the
 //! aggregate close.
 
-use super::candidate_evidence::{BudgetReachProjection, CandidateEvidence};
+use super::candidate_evidence::CandidateEvidence;
 use super::*;
 use awaken_managed_session_events::{
     EventIdentity, FactProvenance, ManagedEventType, TranscriptRole,
@@ -41,8 +41,8 @@ fn transcript_user_input(
 
 /// What the root reduction decided that the aggregate close reuses.
 pub(super) struct RootProjection {
-    /// Budget-reach transitions not yet projected by an earlier refresh.
-    pub(super) projected_budget_reach: Vec<BudgetReachProjection>,
+    /// Budget reaches not yet projected by an earlier refresh.
+    pub(super) projected_budget_reach: Vec<awaken_managed_session_events::BudgetReach>,
 }
 
 /// The public id family of one transcript fold: an assistant response when the
@@ -117,9 +117,7 @@ impl ManagedState {
         let projected_budget_reach = evidence
             .budget_reach
             .iter()
-            .filter(|(generation, _, _)| {
-                *generation > record.checkpoint.source.budget_reach_generation
-            })
+            .filter(|reach| reach.generation > record.checkpoint.source.budget_reach_generation)
             .cloned()
             .collect::<Vec<_>>();
         if evidence.acceptance.cursor > record.checkpoint.source.lifecycle_cursor {

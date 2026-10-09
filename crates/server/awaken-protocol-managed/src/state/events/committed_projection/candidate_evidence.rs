@@ -12,10 +12,6 @@ use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_managed_session_events::LifecycleAcceptance;
 use std::collections::HashMap;
 
-/// One budget-reach transition whose owning interval has closed, with its
-/// public usage and limit already priced.
-pub(super) type BudgetReachProjection = (u64, crate::types::Usage, crate::types::BudgetLimit);
-
 /// Every retained terminal Outcome the root prefix anchors; an invalid one
 /// fails the candidate.
 fn committed_outcomes(
@@ -51,7 +47,7 @@ pub(super) struct CandidateEvidence {
     pub(super) primary_thread_usage: Option<crate::types::SessionThreadUsage>,
     pub(super) child_thread_usage: HashMap<String, Option<crate::types::SessionThreadUsage>>,
     pub(super) price_snapshot: Option<awaken_session_budget_contract::ManagedListPriceSnapshot>,
-    pub(super) budget_reach: Vec<BudgetReachProjection>,
+    pub(super) budget_reach: Vec<awaken_managed_session_events::BudgetReach>,
     /// The complete accepted lifecycle prefix and its checkpoint cursor.
     pub(super) acceptance: LifecycleAcceptance,
     pub(super) historical_pending: HashMap<RunLifecycleCursor, Pending>,
@@ -182,49 +178,14 @@ impl CandidateEvidence {
             lifecycle,
         )
         .map_err(projection_error)?;
-        // Price only the transitions whose public pause is anchored by this
-        // accepted committed prefix. A crossing hidden behind an answerable
-        // ticket cannot be inferred from the current Session status.
-        let budget_reach = persisted
-            .budget
-            .reach_transitions()
-            .iter()
-            .filter(|transition| {
-                awaken_managed_session_events::budget_reach_projection_close_cursor(
-                    persisted,
-                    transition,
-                    &accepted.acceptance.accepted,
-                    &accepted.historical_pending,
-                )
-                .is_some()
-            })
-            .map(|transition| {
-                let mut usage = session_usage_value(
-                    transition
-                        .usage_cursor
-                        .to_session_usage()
-                        .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?,
-                    None,
-                )
-                .map_err(StateError::Run)?;
-                usage.list_cost = transition.public_list_cost_minor().map(|amount| {
-                    crate::types::MonetaryAmount {
-                        amount: amount.to_string(),
-                        currency: crate::types::Currency::USD,
-                    }
-                });
-                Ok((
-                    transition.generation,
-                    usage,
-                    crate::types::BudgetLimit::Limit {
-                        max_list_cost: crate::types::MonetaryAmount {
-                            amount: transition.max_list_cost_minor.to_string(),
-                            currency: crate::types::Currency::USD,
-                        },
-                    },
-                ))
-            })
-            .collect::<Result<Vec<_>, StateError>>()?;
+        // Only the reaches whose public pause this accepted committed prefix
+        // anchors; one hidden behind an answerable ticket stays withheld.
+        let budget_reach = awaken_managed_session_events::BudgetReach::exposed(
+            persisted,
+            &accepted.acceptance.accepted,
+            &accepted.historical_pending,
+        )
+        .map_err(projection_error)?;
         // A Thread's current answerable call is its latest accepted
         // lifecycle commit when that commit is an audited pause.
         let child_pending = accepted.current_pending(children.keys());
