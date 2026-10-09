@@ -18,7 +18,7 @@ use std::collections::HashMap;
 pub(super) struct CanonicalizationEvidence<'a> {
     pub(super) outcome_projections: &'a [awaken_managed_session_events::CommittedOutcome],
     pub(super) index: &'a OrderIndex<'a>,
-    pub(super) coordination: &'a awaken_managed_session_events::CommittedProjection,
+    pub(super) coordination: &'a awaken_managed_session_events::CoordinationEvents,
 }
 
 /// The committed identity behind one projected event, decoded from the

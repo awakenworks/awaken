@@ -252,7 +252,7 @@ def projection_input_boundary_violations(
         errors.append("Managed candidate reads durable projection fields from its warm record")
     if re.search(r"\bself\.owner_scope\s*\(", entrypoint):
         errors.append("Managed candidate reads owner scope from its warm map, not the durable root")
-    domain_call = "awaken_managed_session_events::project("
+    domain_call = "awaken_managed_session_events::derive_coordination_events("
     direct_count = entrypoint.count(domain_call)
     delegated_count = len(re.findall(r"\bevidence\s*\.\s*derive_plans\s*\(", entrypoint))
     evidence_sources = [
@@ -453,7 +453,7 @@ fn build_committed_projection_candidate() {
     read_persisted_session_projection(session_id); record.into_delivery_memo();
 }
 fn build_committed_projection_candidate_over(base: CommittedPrefixBase) {}
-fn plan() { awaken_managed_session_events::project(); }
+fn plan() { awaken_managed_session_events::derive_coordination_events(); }
 """
     record = """
 struct ProjectionDeliveryMemo {
@@ -505,19 +505,19 @@ fn into_delivery_memo(self) {
         entry, record, {}, rendered_feedback
     ), "P8/E2 rendered feedback"
     assert projection_input_boundary_violations(
-        entry.replace("awaken_managed_session_events::project()", "reuse_rendered_events()"),
+        entry.replace("awaken_managed_session_events::derive_coordination_events()", "reuse_rendered_events()"),
         record, {},
     ), "P9/E2 missing domain plan"
     # C10 selection is delegated to the existing evidence owner; C11 that
     # owner is missing or selects twice; C12 direct and delegated paths coexist.
     # P10 C10 alone => pass; P11 C11/C12 => reject. The move keeps one selector
     # and cannot turn a helper name alone into proof of a committed-prefix plan.
-    delegated_entry = entry.replace("awaken_managed_session_events::project()", "evidence.derive_plans()")
-    evidence_owner = {"candidate_evidence.rs": "fn derive_plans() { awaken_managed_session_events::project(); }"}
+    delegated_entry = entry.replace("awaken_managed_session_events::derive_coordination_events()", "evidence.derive_plans()")
+    evidence_owner = {"candidate_evidence.rs": "fn derive_plans() { awaken_managed_session_events::derive_coordination_events(); }"}
     assert projection_input_boundary_violations(delegated_entry, record, evidence_owner) == [], "P10"
     assert projection_input_boundary_violations(delegated_entry, record, {}), "P11 missing owner"
     duplicate_owner = {"candidate_evidence.rs": evidence_owner["candidate_evidence.rs"].replace(
-        "project();", "project(); awaken_managed_session_events::project();")}
+        "derive_coordination_events();", "derive_coordination_events(); awaken_managed_session_events::derive_coordination_events();")}
     assert projection_input_boundary_violations(delegated_entry, record, duplicate_owner), "P11 duplicate selector"
     assert projection_input_boundary_violations(entry + " fn extra() { evidence.derive_plans(); }", record, evidence_owner), "P11 parallel paths"
     assert projection_input_boundary_violations(

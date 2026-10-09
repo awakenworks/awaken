@@ -1,4 +1,6 @@
-//! Coordination facts selected directly from one committed Thread prefix.
+//! Coordination events derived directly from one committed root Thread
+//! prefix: each message a parent sent to a coordinated child, and where each
+//! sits in the canonical order.
 //!
 //! The Managed adapter supplies only its existing public tool-id codec. Tool
 //! visibility, receipt selection and ordering stay in this pure domain fold;
@@ -18,8 +20,8 @@ use crate::{
     coordination_orders, cross_posts, is_coordination_send, plan_folds,
 };
 
-/// Borrowed committed evidence used to select one coordination plan.
-pub struct CommittedPrefix<'a> {
+/// Borrowed committed evidence the coordination events are derived from.
+pub struct CoordinationEvidence<'a> {
     pub session_id: &'a str,
     pub root: Option<&'a RunRecoverySnapshot>,
     pub root_blocked: bool,
@@ -30,8 +32,11 @@ pub struct CommittedPrefix<'a> {
     pub order_index: &'a OrderIndex<'a>,
 }
 
-/// One immutable plan reused by child activity and final canonical ordering.
-pub struct CommittedProjection {
+/// The coordination events of one committed prefix: the messages sent to
+/// coordinated children and the canonical position of each coordination
+/// call and result. Derived once; reused by child activity and the final
+/// canonical ordering.
+pub struct CoordinationEvents {
     pub cross_posts: Vec<DerivedSessionEvent>,
     pub coordination_orders: HashMap<EventIdentity, EventPosition>,
 }
@@ -52,13 +57,13 @@ enum SourceEvent {
     },
 }
 
-/// Project the coordination slice once from committed source evidence.
+/// Derive the coordination events once from committed source evidence.
 /// `public_tool_id` is the Managed adapter's existing identity codec; changing
 /// its bytes would change previously issued coordination FactKeys.
-pub fn project(
-    prefix: &CommittedPrefix<'_>,
+pub fn derive_coordination_events(
+    prefix: &CoordinationEvidence<'_>,
     public_tool_id: impl Fn(&str, &str, &str) -> String,
-) -> Result<CommittedProjection, crate::ProjectionError> {
+) -> Result<CoordinationEvents, crate::ProjectionError> {
     let mut source_events = Vec::new();
     let mut orders = HashMap::new();
     let mut projected_sources = std::collections::HashSet::<(String, String)>::new();
@@ -201,7 +206,7 @@ pub fn project(
         .iter()
         .map(|(id, order)| (id.as_str(), *order))
         .collect();
-    Ok(CommittedProjection {
+    Ok(CoordinationEvents {
         cross_posts: cross_posts(&events, prefix.links),
         coordination_orders: coordination_orders(
             prefix.order_index,
@@ -213,7 +218,7 @@ pub fn project(
 }
 
 fn append_result_events(
-    prefix: &CommittedPrefix,
+    prefix: &CoordinationEvidence,
     message: &awaken_agent_contract::agent::message::Message,
     projected_sources: &std::collections::HashSet<(String, String)>,
     source_events: &mut Vec<SourceEvent>,
@@ -379,8 +384,8 @@ mod tests {
                 outcomes: &[],
                 historical_pending: &historical_pending,
             });
-            let projected = project(
-                &CommittedPrefix {
+            let projected = derive_coordination_events(
+                &CoordinationEvidence {
                     session_id: "session",
                     root: Some(&root),
                     root_blocked: blocked,
@@ -490,8 +495,8 @@ mod tests {
             outcomes: &[],
             historical_pending: &historical_pending,
         });
-        let plan = project(
-            &CommittedPrefix {
+        let plan = derive_coordination_events(
+            &CoordinationEvidence {
                 session_id: "session",
                 root: Some(&root),
                 root_blocked: false,

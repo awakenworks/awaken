@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
 use crate::{
-    CommittedProjection, EventIdentity, EventPosition, FactProvenance, ManagedEventType, OrderIndex,
+    CoordinationEvents, EventIdentity, EventPosition, FactProvenance, ManagedEventType, OrderIndex,
 };
 
 /// The committed identity one projected event was minted from.
@@ -103,7 +103,7 @@ fn keyed_order(
 #[must_use]
 pub fn position_events<Id: Clone + Eq + Hash>(
     index: &OrderIndex<'_>,
-    coordination: &CommittedProjection,
+    coordination: &CoordinationEvents,
     events: &[AnchoredEvent<'_, Id>],
 ) -> HashMap<Id, EventPosition> {
     let inbound =

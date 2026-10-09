@@ -14,8 +14,8 @@ mod accepted_prefix;
 mod activation;
 mod aggregate;
 mod budget;
-mod committed_project;
 mod coordination;
+mod coordination_events;
 mod error;
 mod fact;
 mod fault;
@@ -48,10 +48,12 @@ pub use aggregate::{
     IntervalUsage, interval_hold, plan_aggregate,
 };
 pub use budget::BudgetReach;
-pub use committed_project::{CommittedPrefix, CommittedProjection, project};
 pub use coordination::{
     CoordinationReceipts, IssuedToolEvent, SEND_MESSAGE_TOOL_ID, coordination_orders, cross_posts,
     is_coordination_send, link_facts, project_child_activity,
+};
+pub use coordination_events::{
+    CoordinationEvents, CoordinationEvidence, derive_coordination_events,
 };
 pub use error::ProjectionError;
 pub use fact::{DerivedSessionEvent, OutcomeVerdict, SessionEventKind};

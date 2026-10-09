@@ -65,7 +65,7 @@ impl CandidateEvidence {
     ) -> Result<
         (
             awaken_managed_session_events::AggregatePlan,
-            awaken_managed_session_events::CommittedProjection,
+            awaken_managed_session_events::CoordinationEvents,
         ),
         StateError,
     > {
@@ -76,8 +76,8 @@ impl CandidateEvidence {
             &self.links,
         )
         .map_err(projection_error)?;
-        let coordination = awaken_managed_session_events::project(
-            &awaken_managed_session_events::CommittedPrefix {
+        let coordination = awaken_managed_session_events::derive_coordination_events(
+            &awaken_managed_session_events::CoordinationEvidence {
                 session_id: persisted.session_id.as_str(),
                 root: self.root.as_ref(),
                 root_blocked: self.root_blocked(persisted.session_id.as_str()),

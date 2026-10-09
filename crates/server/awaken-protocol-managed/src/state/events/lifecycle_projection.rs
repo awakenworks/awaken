@@ -16,7 +16,7 @@ impl ManagedState {
             String,
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
         >,
-        plan: &awaken_managed_session_events::CommittedProjection,
+        plan: &awaken_managed_session_events::CoordinationEvents,
     ) -> Result<
         (
             awaken_managed_session_events::ChildLifecycle,
@@ -96,7 +96,7 @@ impl ManagedState {
         &self,
         record: &mut SessionRecord,
         evidence: DelegationProjectionEvidence<'_>,
-        plan: &awaken_managed_session_events::CommittedProjection,
+        plan: &awaken_managed_session_events::CoordinationEvents,
     ) -> Result<Vec<CoordinatedThread>, StateError> {
         let DelegationProjectionEvidence {
             order_index,
