@@ -3,7 +3,9 @@
 Plan 9.12 / W22. A module is a boundary only when it owns its state and the
 other modules reach it through a narrow surface. Six ways to lose that, each
 counted from production code (comments and `cfg(test)` code are not scanned)
-and held at or below `modularity_baseline.json`:
+and held at or below `modularity_baseline.json` (lower it after a shrink with
+`python3 scripts/ci/_modularity_fitness.py --tighten`, which never raises or
+adds an entry):
 
 * `impl-spread`: one type's inherent `impl` blocks spread over more than
   `MAX_IMPL_FILES` files, or more than `MAX_IMPL_METHODS` methods in total.
@@ -282,14 +284,63 @@ def modularity_errors(measures: dict[str, dict], baseline: dict) -> list[str]:
     return [f"modularity: {error}" for error in errors]
 
 
-def check_all(crates: Path, baseline_path: Path = BASELINE) -> list[str]:
+def tightened(measures: dict[str, dict], baseline: dict) -> dict:
+    """The baseline lowered to today's measures: entries only shrink or disappear.
+
+    Nothing is ever added or raised, so `--tighten` cannot admit growth; the
+    crate budget keeps its reason and drops to today's line count only when the
+    guard would demand it (a fall of the slack or more).
+    """
+    out = json.loads(json.dumps(baseline))
+    spread = {}
+    for key, held in baseline.get("impl-spread", {}).items():
+        crate, _, ty = key.partition("::")
+        now = measures.get(crate, {}).get("impl-spread", {}).get(ty)
+        if now is not None:
+            spread[key] = {**held, "files": min(held["files"], now[0]), "methods": min(held["methods"], now[1])}
+    out["impl-spread"] = spread
+    for rule in ("super-glob", "module-cycle"):
+        out[rule] = {
+            crate: min(was, measures[crate].get(rule, 0))
+            for crate, was in baseline.get(rule, {}).items()
+            if crate in measures and min(was, measures[crate].get(rule, 0)) > 0
+        }
+    out["unreachable-pub-pending"] = [
+        crate for crate in baseline.get("unreachable-pub-pending", [])
+        if crate in measures and not measures[crate]["unreachable-pub"]
+    ]
+    long_held = {}
+    for key, was in baseline.get("long-function", {}).items():
+        crate, _, function = key.partition("::")
+        now = measures.get(crate, {}).get("long-function", {}).get(function)
+        if now is not None:
+            long_held[key] = min(was, now)
+    out["long-function"] = long_held
+    budget = {}
+    for crate, held in baseline.get("crate-budget", {}).items():
+        measure = measures.get(crate)
+        if measure is None:
+            continue
+        lines, deps = measure.get("lines", 0), len(measure.get("workspace-deps", ()))
+        budget[crate] = {**held,
+                         "lines": lines if lines <= held["lines"] - BUDGET_LINE_SLACK else held["lines"],
+                         "deps": min(held["deps"], deps)}
+    out["crate-budget"] = budget
+    return out
+
+
+def workspace_measures(crates: Path) -> dict[str, dict]:
     measures = {
         _crate_boundary_workspace.package_name(_crate_boundary_workspace.load_manifest(path)): crate_measures(path)
         for path in _crate_boundary_workspace.crate_manifests(crates)
     }
     for measure in measures.values():
         measure["workspace-deps"] = frozenset(measure.get("deps", ())) & set(measures)
-    return modularity_errors(measures, json.loads(baseline_path.read_text(encoding="utf-8")))
+    return measures
+
+
+def check_all(crates: Path, baseline_path: Path = BASELINE) -> list[str]:
+    return modularity_errors(workspace_measures(crates), json.loads(baseline_path.read_text(encoding="utf-8")))
 
 
 def selftest() -> None:
@@ -351,4 +402,44 @@ def selftest() -> None:
     assert "lower" in modularity_errors(sized(5000 - BUDGET_LINE_SLACK, 3), budget)[0], "M8 fall"
     assert "workspace dependencies, budget" in modularity_errors(sized(5000, 4), budget)[0], "M8 deps grow"
     assert "below the budget" in modularity_errors(sized(5000, 2), budget)[0], "M8 deps shrink"
+    # M9 `--tighten`: lowers or removes held entries, never adds or raises one.
+    held = {"impl-spread": {"c::T": {"files": 10, "methods": 100, "reason": "r"}, "c::Gone": {"files": 9,
+            "methods": 90, "reason": "r"}}, "super-glob": {"c": 3}, "module-cycle": {"c": 2},
+            "unreachable-pub-pending": ["c", "gone"], "long-function": {"c::a.rs::big": 200, "c::a.rs::gone": 300},
+            "crate-budget": {"c": {"lines": 5000, "deps": 3, "reason": "split"}}}
+    now = {"c": {**measure({"T": (8, 120)}, globs=1, cycle=4, adopted=True, long={"a.rs::big": 180}),
+                 "lines": 5000 - BUDGET_LINE_SLACK, "workspace-deps": frozenset({"d0", "d1"})}}
+    tight = tightened(now, held)
+    assert tight["impl-spread"] == {"c::T": {"files": 8, "methods": 100, "reason": "r"}}, "M9 spread"
+    assert tight["super-glob"] == {"c": 1} and tight["module-cycle"] == {"c": 2}, "M9 counts never rise"
+    assert tight["unreachable-pub-pending"] == [], "M9 pending"
+    assert tight["long-function"] == {"c::a.rs::big": 180}, "M9 long-function"
+    assert tight["crate-budget"]["c"] == {"lines": 5000 - BUDGET_LINE_SLACK, "deps": 2, "reason": "split"}, "M9 budget"
+    assert modularity_errors({"c": {**now["c"], "impl-spread": {"T": (8, 100)}, "module-cycle": 2}}, tight) == [], \
+        "M9 a tightened baseline holds"
     print("_modularity_fitness selftest: the decision tables hold")
+
+
+def parse(argv: list[str]):
+    import argparse
+    parser = argparse.ArgumentParser(prog="_modularity_fitness.py", description=__doc__, allow_abbrev=False)
+    parser.add_argument("--self-test", action="store_true", help="run the decision tables")
+    parser.add_argument("--tighten", action="store_true",
+                        help=f"lower {BASELINE.name} to today's measures (never raises or adds an entry)")
+    return parser.parse_args(argv)
+
+
+if __name__ == "__main__":
+    args = parse(sys.argv[1:])
+    if args.self_test:
+        selftest()
+        raise SystemExit(0)
+    if args.tighten:
+        baseline = json.loads(BASELINE.read_text(encoding="utf-8"))
+        BASELINE.write_text(json.dumps(tightened(workspace_measures(_crate_boundary_workspace.CRATES), baseline),
+                                       indent=2) + "\n", encoding="utf-8")
+        print(f"tightened {BASELINE.name}")
+        raise SystemExit(0)
+    errors = check_all(_crate_boundary_workspace.CRATES)
+    print("\n".join(errors) if errors else "OK - modularity ratchets hold.")
+    raise SystemExit(1 if errors else 0)
