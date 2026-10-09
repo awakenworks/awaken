@@ -587,35 +587,12 @@ async fn postgres_session_capacity_reference_and_indexed_observation() {
 
 #[test]
 fn root_cas_postgres_fixture_absence_and_configured_failure_are_distinct() {
-    // Cause/effect table: F1 no URL -> visible SKIPPED with no fallback;
-    // F2 explicit empty or unreachable URL -> failed backend process, never
-    // a passing skip. The actual CAS backend case runs in a child to avoid
-    // changing process-global environment for another Session test.
-    let run = |url: Option<&str>| {
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
-        child.args([
-            "postgres_root_cas_conforms_to_the_same_decision_table",
-            "--exact",
-            "--nocapture",
-        ]);
-        child.env_remove("AWAKEN_TEST_DATABASE_URL");
-        if let Some(url) = url {
-            child.env("AWAKEN_TEST_DATABASE_URL", url);
-        }
-        child.output().expect("Session fixture rule child")
-    };
-    let absent = run(None);
-    assert!(absent.status.success(), "F1");
-    assert!(
-        String::from_utf8_lossy(&absent.stderr).contains("SKIPPED PostgreSQL fixture"),
-        "F1 visible skip"
+    // Child rule table against the exact Session CAS backend: R1 optional
+    // missing => visible skip; R2 required missing => failure; R3 required
+    // empty/unreachable => failure without skip; R4 required live => success
+    // under the PostgreSQL gate. The shared testkit isolates both inherited
+    // inputs; the domain-owned schema and CAS assertions remain in the child.
+    awaken_reliability_testkit::assert_postgres_fixture_child_contract(
+        "postgres_root_cas_conforms_to_the_same_decision_table",
     );
-    for url in ["", "postgres://127.0.0.1:1/unreachable"] {
-        let bad = run(Some(url));
-        assert!(!bad.status.success(), "F2 configured failure");
-        assert!(
-            !String::from_utf8_lossy(&bad.stderr).contains("SKIPPED PostgreSQL fixture"),
-            "F2 no false skip"
-        );
-    }
 }

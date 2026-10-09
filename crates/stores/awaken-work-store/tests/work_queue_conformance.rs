@@ -89,32 +89,12 @@ async fn postgres_backend_conforms() {
 
 #[test]
 fn fixture_absence_and_configured_failure_are_distinct() {
-    // F1 no URL -> visible skip without a fallback DB; F2 explicit empty or
-    // unreachable URL -> failed backend test, never a passing skip. The actual
-    // backend case runs in a subprocess, avoiding process-global env races.
-    let run = |url: Option<&str>| {
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
-        child.args(["postgres_backend_conforms", "--exact", "--nocapture"]);
-        child.env_remove("AWAKEN_TEST_DATABASE_URL");
-        if let Some(url) = url {
-            child.env("AWAKEN_TEST_DATABASE_URL", url);
-        }
-        child.output().expect("Work fixture rule child")
-    };
-    let absent = run(None);
-    assert!(absent.status.success(), "F1");
-    assert!(
-        String::from_utf8_lossy(&absent.stderr).contains("SKIPPED PostgreSQL fixture"),
-        "F1 visible skip"
-    );
-    for url in ["", "postgres://127.0.0.1:1/unreachable"] {
-        let bad = run(Some(url));
-        assert!(!bad.status.success(), "F2 configured failure");
-        assert!(
-            !String::from_utf8_lossy(&bad.stderr).contains("SKIPPED PostgreSQL fixture"),
-            "F2 no false skip"
-        );
-    }
+    // Child rule table against this exact Work backend: R1 optional+missing
+    // => visible skip; R2 required+missing => failure; R3 required+empty or
+    // unreachable => failure, never skip; R4 required+live => backend success
+    // when the gate supplies its URL. The shared testkit resets both inherited
+    // inputs before each child, so parent gate configuration cannot change R1.
+    awaken_reliability_testkit::assert_postgres_fixture_child_contract("postgres_backend_conforms");
 }
 
 #[tokio::test]

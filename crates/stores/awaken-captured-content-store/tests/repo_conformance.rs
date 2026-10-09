@@ -219,41 +219,14 @@ mod postgres {
 
     #[test]
     fn postgres_fixture_absence_and_configured_failure_have_distinct_outcomes() {
-        // Fixture cause/effect table: F1 no explicit URL -> visible canonical SKIPPED
-        // without contacting any second/default database; F2 explicit but
-        // unreachable loopback URL -> child test fails, never successful skip.
-        // Run the actual backend case in isolated processes so environment
-        // choices never race the parent harness or another fixture consumer.
-        let run = |configured: Option<&str>| {
-            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
-            child.args([
-                "postgres::postgres_captured_content_conforms",
-                "--exact",
-                "--nocapture",
-            ]);
-            child.env_remove("AWAKEN_TEST_DATABASE_URL");
-            if let Some(url) = configured {
-                child.env("AWAKEN_TEST_DATABASE_URL", url);
-            }
-            child.output().expect("fixture rule child")
-        };
-        let absent = run(None);
-        assert!(absent.status.success(), "F1");
-        assert!(
-            String::from_utf8_lossy(&absent.stderr).contains("SKIPPED PostgreSQL fixture"),
-            "F1 explicit skip"
+        // Child rule table against the actual CapturedContent backend: R1
+        // optional missing => visible skip; R2 required missing => failure;
+        // R3 required empty/unreachable => failure without skip; R4 required
+        // live => success under the gate. Shared testkit isolates the parent's
+        // inputs while this backend keeps ownership of its schema and rows.
+        awaken_reliability_testkit::assert_postgres_fixture_child_contract(
+            "postgres::postgres_captured_content_conforms",
         );
-        for url in ["postgres://127.0.0.1:1/unreachable", ""] {
-            let configured = run(Some(url));
-            assert!(
-                !configured.status.success(),
-                "F2 explicit failure must fail"
-            );
-            assert!(
-                !String::from_utf8_lossy(&configured.stderr).contains("SKIPPED PostgreSQL fixture"),
-                "F2 no skip"
-            );
-        }
     }
 
     #[tokio::test]

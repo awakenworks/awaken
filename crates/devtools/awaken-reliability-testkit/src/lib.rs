@@ -6,7 +6,7 @@
 //! marker, schema and behavioral assertions.
 
 mod fixture;
-pub use fixture::postgres_fixture_url;
+pub use fixture::{assert_postgres_fixture_child_contract, postgres_fixture_url};
 
 #[cfg(feature = "postgres")]
 mod postgres_crash;
