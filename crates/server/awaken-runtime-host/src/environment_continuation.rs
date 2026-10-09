@@ -387,7 +387,7 @@ impl ManagedHost {
                 source_binding,
                 &effect_fence,
                 Some(&resources.resources),
-                crate::host::BoundEnvironmentPreparationMode::LiveSource,
+                crate::session_environment::BoundEnvironmentPreparationMode::LiveSource,
             )
             .await
             .map_err(to_run_error)?;

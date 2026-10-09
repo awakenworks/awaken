@@ -744,7 +744,7 @@ impl crate::SharedHost {
             .update(thread, |slot| slot.validate_projection_receipt(&receipt))?;
         let (publication, model_candidate) = self.resolve_canonical_session_projection(
             &projection.workspace_id,
-            crate::host::CanonicalSessionProjection::Baseline(&projection.baseline),
+            crate::session_environment::CanonicalSessionProjection::Baseline(&projection.baseline),
             projection.agent_publication.clone(),
             Some(projection.resources.skills()),
         )?;

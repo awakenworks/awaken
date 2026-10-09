@@ -859,7 +859,7 @@ impl awaken_session_runtime_contract::EnvironmentRuntime for ManagedHost {
             .adopt_bound_session_environment(thread, Some(binding), provider, None, false)
             .await
             .map_err(to_run_error)?;
-        if disposition != crate::host::SessionEnvironmentAdoptionDisposition::Ready {
+        if disposition != crate::session_environment::SessionEnvironmentAdoptionDisposition::Ready {
             return Err(RunError::internal(
                 "durable Session Environment adoption did not publish a ready binding",
             ));

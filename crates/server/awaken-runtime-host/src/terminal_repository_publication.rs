@@ -111,7 +111,7 @@ impl ManagedHost {
                 binding,
                 &effect_fence,
                 resolved_resources.as_ref(),
-                crate::host::BoundEnvironmentPreparationMode::TerminalRepositoryPublication,
+                crate::session_environment::BoundEnvironmentPreparationMode::TerminalRepositoryPublication,
             )
             .await
             .map_err(to_run_error)?;

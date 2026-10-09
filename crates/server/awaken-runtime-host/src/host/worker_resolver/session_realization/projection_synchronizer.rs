@@ -7,6 +7,10 @@
 //! `WorkerProjectionSynchronizer` and the existing Host MCP effects.
 
 use super::*;
+use crate::host_error::to_run_error;
+use crate::session_environment::{
+    CanonicalSessionProjection, SessionEnvironmentAdoptionDisposition, requires_local_environment,
+};
 
 pub(super) struct WorkerProjectionSynchronizer<'a> {
     pub(super) host: &'a SharedHost,
@@ -175,14 +179,14 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
                 .host
                 .resolve_canonical_session_projection(
                     &projection.workspace_id,
-                    crate::host::CanonicalSessionProjection::Baseline(&projection.baseline),
+                    CanonicalSessionProjection::Baseline(&projection.baseline),
                     published_snapshot.cloned(),
                     Some(projection.resources.skills()),
                 )
-                .map_err(crate::host_error::to_run_error)?;
-            let a2a_only = canonical_publication.as_ref().is_some_and(|publication| {
-                !crate::host::completion::requires_local_environment(&publication.resolved_spec)
-            });
+                .map_err(to_run_error)?;
+            let a2a_only = canonical_publication
+                .as_ref()
+                .is_some_and(|publication| !requires_local_environment(&publication.resolved_spec));
             let has_local_environment_owner = self
                 .host
                 .session_slots
@@ -210,14 +214,14 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
                         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
                     )
                 }
-                .map_err(crate::host_error::to_run_error)?;
+                .map_err(to_run_error)?;
                 self.host
                     .rebuild_claimed_legacy_environment_after_revocation(
                         session_id.as_str(),
                         provider,
                     )
                     .await
-                    .map_err(crate::host_error::to_run_error)?;
+                    .map_err(to_run_error)?;
             }
         }
         // A claim authorizes live Resource revalidation. A preparation Stage
@@ -249,7 +253,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
                 Some(lease.clone()),
             )
             .await
-            .map_err(crate::host_error::to_run_error)?;
+            .map_err(to_run_error)?;
         // A Control-synchronized projection is the same complete Managed
         // Session authority as a co-located SessionRuntime installation. Mark
         // that existing ownership only after every frozen fact is installed;
@@ -293,7 +297,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
             let provider = self
                 .host
                 .projected_session_environment_provider(session_id.as_str(), None)
-                .map_err(crate::host_error::to_run_error)?;
+                .map_err(to_run_error)?;
             self.host
                 .adopt_bound_session_environment(
                     session_id.as_str(),
@@ -303,12 +307,11 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
                     self.rebuild_unavailable_environment,
                 )
                 .await
-                .map_err(crate::host_error::to_run_error)?
+                .map_err(to_run_error)?
         } else {
-            crate::host::session::SessionEnvironmentAdoptionDisposition::NoBinding
+            SessionEnvironmentAdoptionDisposition::NoBinding
         };
-        let rebuild_binding = adoption
-            == crate::host::session::SessionEnvironmentAdoptionDisposition::RebuildRequired;
+        let rebuild_binding = adoption == SessionEnvironmentAdoptionDisposition::RebuildRequired;
         if rebuild_binding {
             // The only admissible replacement path is the claim-bound recovery
             // decision above. Clear the process-local expectation only after the
@@ -321,8 +324,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
                 "terminated recovery owner clears its durable binding"
             );
         }
-        let adopted_ready =
-            adoption == crate::host::session::SessionEnvironmentAdoptionDisposition::Ready;
+        let adopted_ready = adoption == SessionEnvironmentAdoptionDisposition::Ready;
         // Synchronization is the single ordering boundary between Control's
         // frozen projection and MCP effects. A first-use Environment has no
         // durable binding to adopt yet, but its stage still needs the exact Run
@@ -337,7 +339,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
             self.host
                 .session_child_execution_substrate(session_id.as_str(), published_snapshot.as_ref())
                 .await
-                .map_err(crate::host_error::to_run_error)?;
+                .map_err(to_run_error)?;
             true
         } else {
             false

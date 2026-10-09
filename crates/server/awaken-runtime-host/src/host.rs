@@ -126,10 +126,6 @@ mod placement;
 pub(crate) use credential_capabilities::acp_mcp_client_injection_capabilities;
 mod run;
 mod session;
-pub(crate) use session::{
-    BoundEnvironmentPreparationMode, CanonicalSessionProjection,
-    SessionEnvironmentAdoptionDisposition,
-};
 mod session_ctx;
 mod terminal_reconciliation;
 #[cfg(test)]

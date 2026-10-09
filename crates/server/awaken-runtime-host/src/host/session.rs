@@ -17,6 +17,11 @@ mod run_ingress;
 use super::*;
 pub(super) use crate::config::{SessionToolsetProjection, project_session_tool_override};
 use crate::host::session_ctx::{RuntimeContextPurpose, runtime_context_cache_reuse_admitted};
+pub(crate) use crate::session_environment::{
+    AuthorizedSessionEnvironmentEffect, BoundEnvironmentPreparationMode,
+    CanonicalSessionProjection, EnvironmentBindingPersistenceError,
+    SessionEnvironmentAdoptionDisposition, SessionEnvironmentUnavailablePolicy,
+};
 pub(crate) use content_delivery::SkillDeliveryEvidence;
 pub(super) use input_projection::{ManagedCoordinationRole, project_managed_coordination_surface};
 
@@ -29,128 +34,6 @@ struct SessionOpenRequest {
     claimed_attempt: Option<ClaimedRuntimeInput>,
     force_defer_environment: bool,
     recover_revoked_legacy: bool,
-}
-
-pub(crate) struct EnvironmentBindingPersistenceError {
-    pub(crate) error: HostError,
-    /// Store-read proof that the root binding committed before a later
-    /// derivative dispatch-cache edge failed. The lifecycle owner consumes
-    /// this only to retain the same hidden Candidate under durable identity.
-    pub(crate) committed_identity: Option<crate::session_slot::BoundSessionEnvironmentIdentity>,
-}
-
-pub(crate) struct AuthorizedSessionEnvironmentEffect {
-    pub(crate) intent: awaken_session_state_contract::SessionEnvironmentEffectIntent,
-    pub(crate) authorization: awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
-    pub(crate) provider_fence: Option<awaken_provisioning_contract::SandboxEffectFence>,
-    /// Captured before provider I/O; renewal can advance expiry but cannot
-    /// lend this operation another slot allocation or Worker generation.
-    pub(crate) provider_authority:
-        Option<Arc<dyn awaken_provisioning_contract::CurrentExecutionAuthority>>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SessionEnvironmentAdoptionDisposition {
-    NoBinding,
-    Ready,
-    RebuildRequired,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SessionEnvironmentUnavailablePolicy {
-    Reject,
-    Rebuild,
-}
-
-/// Select which side of the single bound-Environment recovery seam may run.
-/// A live source effect may only adopt a `Ready` provider without changing its
-/// lifecycle marker; terminal recovery may reconstruct the provider's closed
-/// cleanup owner. Keeping the choice explicit prevents a pre-delete source
-/// effect from accidentally entering terminal takeover.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BoundEnvironmentPreparationMode {
-    LiveSource,
-    /// The aggregate's terminal Repository command may reuse its exact bound
-    /// terminal-retiring owner while the provider is still Ready. It never
-    /// reopens ordinary execution. A validated terminal/absent source may only
-    /// produce negative publication evidence, never Git I/O; disposing stays
-    /// refused without inventing an outcome of an earlier publication.
-    TerminalRepositoryPublication,
-    Terminal,
-    /// Re-observe/reconstruct only the physical owner after the aggregate has
-    /// durably admitted terminal Preparation. An existing terminal Retiring
-    /// owner stays under its original preparation fence; this mode adds no
-    /// source-dependent work and exists only for the Disposal boundary.
-    TerminalDisposal,
-}
-
-impl BoundEnvironmentPreparationMode {
-    fn requires_live_source(self) -> bool {
-        matches!(self, Self::LiveSource | Self::TerminalRepositoryPublication)
-    }
-}
-
-/// Borrowed coordinates consumed by the one Session publication/provider
-/// selector. Baseline, prospective layout, and genuinely legacy callers differ
-/// only in where these immutable facts are stored; selection policy must not.
-pub(crate) enum CanonicalSessionProjection<'a> {
-    Baseline(&'a awaken_session_configuration_contract::SessionBaseline),
-    Layout(&'a awaken_session_configuration_contract::SessionSandboxLayout),
-    LegacyAgent(&'a str),
-}
-
-impl CanonicalSessionProjection<'_> {
-    fn agent(&self) -> &str {
-        match self {
-            Self::Baseline(baseline) => &baseline.agent_id,
-            Self::Layout(layout) => &layout.agent_id,
-            Self::LegacyAgent(agent) => agent,
-        }
-    }
-
-    fn agent_revision(&self) -> Option<u64> {
-        match self {
-            Self::Baseline(baseline) => baseline.agent_revision,
-            Self::Layout(layout) => layout.agent_revision,
-            Self::LegacyAgent(_) => None,
-        }
-    }
-
-    fn model_override(
-        &self,
-    ) -> Option<&awaken_session_configuration_contract::SessionModelOverride> {
-        match self {
-            Self::Baseline(baseline) => baseline.model_override.as_ref(),
-            Self::Layout(layout) => layout.model_override.as_ref(),
-            Self::LegacyAgent(_) => None,
-        }
-    }
-
-    fn publication_decision(
-        &self,
-        publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> awaken_session_realization_contract::FrozenAgentPublicationDecision {
-        match self {
-            Self::Baseline(baseline) => {
-                awaken_session_realization_contract::frozen_agent_publication_decision(
-                    baseline,
-                    publication,
-                )
-            }
-            Self::Layout(layout) => {
-                awaken_session_realization_contract::frozen_sandbox_layout_publication_decision(
-                    layout,
-                    publication,
-                )
-            }
-            Self::LegacyAgent(agent) => {
-                awaken_session_realization_contract::legacy_agent_publication_decision(
-                    agent,
-                    publication,
-                )
-            }
-        }
-    }
 }
 
 impl SharedHost {

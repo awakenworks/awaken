@@ -1181,7 +1181,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
                 binding,
                 &publication_fence,
                 Some(&resources),
-                crate::host::BoundEnvironmentPreparationMode::LiveSource,
+                crate::session_environment::BoundEnvironmentPreparationMode::LiveSource,
             )
             .await;
         assert!(

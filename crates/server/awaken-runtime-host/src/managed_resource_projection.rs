@@ -1174,7 +1174,7 @@ impl crate::ManagedHost {
             .host
             .resolve_canonical_session_projection(
                 &layout.workspace_id,
-                crate::host::CanonicalSessionProjection::Layout(layout),
+                crate::session_environment::CanonicalSessionProjection::Layout(layout),
                 None,
                 None,
             )

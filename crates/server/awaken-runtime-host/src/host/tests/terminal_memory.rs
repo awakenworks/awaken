@@ -2019,7 +2019,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 &binding,
                 &warm_fence,
                 Some(&resources),
-                crate::host::BoundEnvironmentPreparationMode::LiveSource,
+                crate::session_environment::BoundEnvironmentPreparationMode::LiveSource,
             )
             .await
             .unwrap_or_else(|error| panic!("{} prepares resident owner: {error}", rule.name));
@@ -2156,7 +2156,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                     &binding,
                     &effect.sandbox_effect_fence().unwrap(),
                     Some(&resources),
-                    crate::host::BoundEnvironmentPreparationMode::LiveSource,
+                    crate::session_environment::BoundEnvironmentPreparationMode::LiveSource,
                 )
                 .await
                 .err()
