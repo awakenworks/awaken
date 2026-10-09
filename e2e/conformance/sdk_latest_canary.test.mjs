@@ -66,58 +66,30 @@ const candidateDependencies = Object.freeze({
   '@anthropic-ai/sdk-candidate': 'npm:@anthropic-ai/sdk@0.121.0',
 });
 
-test('empty-value request variances require one exact omission witness', () => {
-  // Metamorphic decision table: preserve method/path/headers and remove exactly
-  // one empty query pair or multipart text part -> derive Python's omission
-  // authority. Any second wire mutation or non-empty value -> no exception.
-  // This keeps the cross-language gate fail-closed without a 72-row hand ledger.
-  const empty = {
-    method: 'GET',
-    path: '/v1/items',
-    headers: { accept: 'application/json' },
-    query: [['filter', '']],
-    body: { kind: 'empty' },
-  };
-  const omitted = { ...empty, query: [] };
-  assert.deepEqual(
-    requestContractInternals.pythonEmptyOmission(empty, omitted, 'filter'),
-    { expected: omitted, field: 'filter', wire_kind: 'query' },
-  );
-  assert.equal(
-    requestContractInternals.pythonEmptyOmission(
-      { ...empty, query: [['filter', 'value']] },
-      omitted,
-      'filter',
-    ),
-    null,
-  );
-
-  const multipartEmpty = {
-    ...empty,
-    method: 'POST',
-    query: [],
-    body: { kind: 'multipart', parts: [{ name: 'display_name', text: '' }] },
-  };
-  const multipartOmitted = {
-    ...multipartEmpty,
-    body: { kind: 'multipart', parts: [] },
-  };
-  assert.deepEqual(
-    requestContractInternals.pythonEmptyOmission(
-      multipartEmpty,
-      multipartOmitted,
-      'display_name',
-    ),
-    { expected: multipartOmitted, field: 'display_name', wire_kind: 'multipart' },
-  );
-  assert.equal(
-    requestContractInternals.pythonEmptyOmission(
-      { ...multipartEmpty, path: '/v1/other' },
-      multipartOmitted,
-      'display_name',
-    ),
-    null,
-  );
+test('empty path admission uses actual SDK diagnostics for positional and grouped identities', async () => {
+  // C1 empty positional/grouped path id -> actual SDK refusal, zero HTTP,
+  // Python ValueError projection; C2 body/query empty without that diagnostic
+  // -> no exception; C3 two empty ids -> reject the one-factor witness.
+  // The generated SDK owns binding, not a second path-parameter mapper.
+  const root = resolveSdkPackage('@anthropic-ai/sdk-current').root;
+  const { default: Anthropic } = await import(pathToFileURL(resolve(root, 'index.mjs')));
+  let requests = 0;
+  const client = new Anthropic({ apiKey: 'path-contract', // awaken-allow: secret
+    maxRetries: 0, fetch: async () => { requests++; throw new Error('unexpected path I/O'); } });
+  const classify = requestContractInternals.pythonEmptyPathRejection;
+  for (const [invoke, args, field] of [
+    [() => client.beta.agents.archive(''), [['agentID', '']], 'agentID'],
+    [() => client.beta.environments.work.ack('work', { environment_id: '' }), [['workID', 'work'], ['environment_id', '']], 'environment_id'],
+  ]) {
+    assert.throws(invoke, (error) => {
+      assert.deepEqual(classify(args, error, { id: field }), { error_class: 'ValueError', field }); return true;
+    });
+  }
+  assert.equal(requests, 0, 'C1 zero transport');
+  assert.equal(classify([['title', '']], new Error('body rejected'), { id: 'body' }), null, 'C2');
+  assert.throws(() => client.beta.environments.work.ack('', { environment_id: '' }), (error) => {
+    assert.throws(() => classify([['workID', ''], ['environment_id', '']], error, { id: 'ack' }), /one-factor empty path/u); return true;
+  });
 });
 
 test('registry latest reuses the generated current oracle only when all versions agree', () => {
@@ -396,9 +368,6 @@ test('the release canary reaches both official TypeScript and Python SDK oracles
     'KNOWN_NULL_QUERY_VARIANCES',
     'observed_variances == KNOWN_NULL_QUERY_VARIANCES',
     'actual == expected_without_empty_field',
-    'python_empty_omission',
-    'observed_empty_omissions == expected_empty_omissions',
-    'actual == omission["expected"]',
     'exercise_declared_request_witnesses(',
     'exercise_sync(bundle)',
     'exercise_async(bundle)',
