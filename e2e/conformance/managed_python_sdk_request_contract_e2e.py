@@ -6,13 +6,14 @@ import inspect
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import parse_qs
 
 import anthropic
 import httpx2
 
 from managed_python_sdk_wire import normalized_name, semantic_request
-from managed_python_sdk_request_contract import exercise_declared_request_witnesses
+from managed_python_sdk_request_contract import _call_session_create, _declared_invocations, exercise_declared_request_witnesses
 
 DISCOVER_VARIANCES = os.environ.get("AWAKEN_MANAGED_REQUEST_DISCOVER_VARIANCES") == "1"
 
@@ -162,57 +163,6 @@ def assert_request(
     )
 
 
-def empty_omission_coordinates(bundle: dict[str, Any]) -> frozenset[tuple[str, str, str]]:
-    coordinates = [
-        (
-            witness["python_operation_id"],
-            omission["field"],
-            omission["wire_kind"],
-        )
-        for witness in bundle["witnesses"]
-        if (omission := witness["python_empty_omission"]) is not None
-    ]
-    assert len(coordinates) == len(set(coordinates)), (
-        "each derived Python empty-value omission has one causal witness"
-    )
-    return frozenset(coordinates)
-
-
-def assert_witness_request(
-    actual: dict[str, Any],
-    witness: dict[str, Any],
-    observed_null_variances: set[tuple[str, str]],
-    observed_empty_omissions: set[tuple[str, str, str]],
-    unexpected_variances: list[dict[str, Any]],
-) -> None:
-    operation_id = witness["python_operation_id"]
-    omission = witness["python_empty_omission"]
-    if omission is not None:
-        # Metamorphic oracle: the official TS serializer proves both the
-        # one-empty-field request and the otherwise identical omission request.
-        # Python must equal the latter exactly. This admits no global empty-value
-        # normalization and automatically fails closed when either SDK changes.
-        assert actual == omission["expected"], (
-            f"{operation_id}: Python {omission['wire_kind']} empty-value omission differs "
-            "from the official TypeScript omission witness\n"
-            f"field={omission['field']}\n"
-            f"expected={json.dumps(omission['expected'], sort_keys=True, ensure_ascii=False)}\n"
-            f"actual={json.dumps(actual, sort_keys=True, ensure_ascii=False)}"
-        )
-        observed_empty_omissions.add(
-            (operation_id, omission["field"], omission["wire_kind"])
-        )
-        return
-    assert_request(
-        actual,
-        witness["expected"],
-        operation_id,
-        witness["arguments"],
-        observed_null_variances,
-        unexpected_variances,
-    )
-
-
 def assert_empty_path_rejection(
     error: BaseException,
     rejection: dict[str, str],
@@ -253,7 +203,6 @@ def exercise_sync(bundle: dict[str, Any]) -> tuple[int, int]:
     requests = []
     invocations = 0
     observed_variances: set[tuple[str, str]] = set()
-    observed_empty_omissions: set[tuple[str, str, str]] = set()
     unexpected_variances: list[dict[str, Any]] = []
 
     def respond(request: object) -> object:
@@ -284,12 +233,9 @@ def exercise_sync(bundle: dict[str, Any]) -> tuple[int, int]:
             )
             assert response.status_code == 200
             assert len(requests) == before + 1, f"{operation_id}: exact sync request count"
-            assert_witness_request(
-                semantic_request(requests[-1]),
-                witness,
-                observed_variances,
-                observed_empty_omissions,
-                unexpected_variances,
+            assert_request(
+                semantic_request(requests[-1]), witness["expected"], operation_id,
+                witness["arguments"], observed_variances, unexpected_variances,
             )
         # The official TS declaration admits `display_name: null` for multipart
         # Skill creation, but its own serializer rejects before fetch. Python
@@ -318,12 +264,6 @@ def exercise_sync(bundle: dict[str, Any]) -> tuple[int, int]:
         f"missing={sorted(KNOWN_NULL_QUERY_VARIANCES - observed_variances)}, "
         f"added={sorted(observed_variances - KNOWN_NULL_QUERY_VARIANCES)}"
     )
-    expected_empty_omissions = empty_omission_coordinates(bundle)
-    assert observed_empty_omissions == expected_empty_omissions, (
-        "sync official-SDK empty-value omission set changed: "
-        f"missing={sorted(expected_empty_omissions - observed_empty_omissions)}, "
-        f"added={sorted(observed_empty_omissions - expected_empty_omissions)}"
-    )
     if DISCOVER_VARIANCES:
         print("SYNC REQUEST VARIANCES " + json.dumps(
             [variance_summary(variance) for variance in unexpected_variances],
@@ -340,7 +280,6 @@ async def exercise_async(bundle: dict[str, Any]) -> tuple[int, int]:
     requests = []
     invocations = 0
     observed_variances: set[tuple[str, str]] = set()
-    observed_empty_omissions: set[tuple[str, str, str]] = set()
     unexpected_variances: list[dict[str, Any]] = []
 
     async def respond(request: object) -> object:
@@ -371,12 +310,9 @@ async def exercise_async(bundle: dict[str, Any]) -> tuple[int, int]:
             )
             assert response.status_code == 200
             assert len(requests) == before + 1, f"{operation_id}: exact async request count"
-            assert_witness_request(
-                semantic_request(requests[-1]),
-                witness,
-                observed_variances,
-                observed_empty_omissions,
-                unexpected_variances,
+            assert_request(
+                semantic_request(requests[-1]), witness["expected"], operation_id,
+                witness["arguments"], observed_variances, unexpected_variances,
             )
         for rejection in bundle["upstream_rejections"]:
             operation_id = rejection["python_operation_id"]
@@ -400,12 +336,6 @@ async def exercise_async(bundle: dict[str, Any]) -> tuple[int, int]:
         f"missing={sorted(KNOWN_NULL_QUERY_VARIANCES - observed_variances)}, "
         f"added={sorted(observed_variances - KNOWN_NULL_QUERY_VARIANCES)}"
     )
-    expected_empty_omissions = empty_omission_coordinates(bundle)
-    assert observed_empty_omissions == expected_empty_omissions, (
-        "async official-SDK empty-value omission set changed: "
-        f"missing={sorted(expected_empty_omissions - observed_empty_omissions)}, "
-        f"added={sorted(observed_empty_omissions - expected_empty_omissions)}"
-    )
     if DISCOVER_VARIANCES:
         print("ASYNC REQUEST VARIANCES " + json.dumps(
             [variance_summary(variance) for variance in unexpected_variances],
@@ -413,6 +343,49 @@ async def exercise_async(bundle: dict[str, Any]) -> tuple[int, int]:
             ensure_ascii=False,
         ))
     return invocations, len(requests)
+
+
+def exercise_declaration_order_invariance() -> None:
+    # D1 reordered Literal members -> identical baseline + complete causal
+    # corpus; D2 an extra member -> different corpus. This guards the shared
+    # generator against both order-only false failures and lost branch coverage.
+    def first(speed: Literal["standard", "fast"]) -> None:
+        pass
+
+    def reordered(speed: Literal["fast", "standard"]) -> None:
+        pass
+
+    def extended(speed: Literal["fast", "standard", "extra"]) -> None:
+        pass
+
+    assert _declared_invocations(first) == _declared_invocations(reordered), "D1 order is not semantics"
+    assert _declared_invocations(first) != _declared_invocations(extended), "D2 preserve extra branch"
+
+
+async def exercise_current_query_parameters() -> None:
+    # Q1 scalar empty -> retain; Q2 None -> omit; Q3 repeated empty-first and
+    # duplicate values -> retain every ordered value; Q4 zero/False -> exact
+    # primitive strings; Q5 request timeout=0 overrides client=3. Cross
+    # sync/async over the existing recording fixture:
+    # exactly one generated Session request, no query normalizer or new client
+    # factory. Q1/Q3 specifically fail with the pre-1.12 truthiness omission.
+    for asynchronous in (False, True):
+        requests = []
+
+        def respond(request: object) -> object:
+            requests.append(request)
+            return httpx2.Response(200, json={})
+
+        await _call_session_create(anthropic, httpx2, respond, asynchronous=asynchronous,
+            max_retries=0, raw=True, operation="list", client_options={"timeout": 3.0},
+            call_arguments={"timeout": 0.0, "extra_query": {
+                "empty": "", "absent": None, "tag": ["", "next", "next"], "zero": 0, "false": False,
+            }})
+        assert len(requests) == 1, "Q1-Q4 exact request count"
+        assert requests[0].extensions["timeout"]["read"] == 0.0, "Q5 zero is an explicit timeout"
+        assert parse_qs(requests[0].url.query.decode(), keep_blank_values=True) == {
+            "beta": ["true"], "empty": [""], "tag[]": ["", "next", "next"], "zero": ["0"], "false": ["false"],
+        }, "Q1-Q4 exact query values"
 
 
 async def exercise_client_header_parameters() -> None:
@@ -468,9 +441,11 @@ def main() -> None:
     assert bundle["python_version"] == anthropic.__version__
     assert bundle["operation_count"] == 127
     assert len({witness["python_operation_id"] for witness in bundle["witnesses"]}) == 127
+    exercise_declaration_order_invariance()
     sync_invocations, sync_requests = exercise_sync(bundle)
     async_invocations, async_requests = asyncio.run(exercise_async(bundle))
     asyncio.run(exercise_client_header_parameters())
+    asyncio.run(exercise_current_query_parameters())
     # Version-axis rule V1: the current wheel must pass the same declaration-
     # derived serializer partitions as a historical anchor. Promotion/demotion
     # changes its role, never whether malformed multipart/path/header witnesses
@@ -485,9 +460,6 @@ def main() -> None:
     empty_path_rejections = sum(
         witness["python_rejection"] is not None for witness in bundle["witnesses"]
     )
-    empty_omissions = empty_omission_coordinates(bundle)
-    query_empty_omissions = sum(kind == "query" for _, _, kind in empty_omissions)
-    multipart_empty_omissions = sum(kind == "multipart" for _, _, kind in empty_omissions)
     expected_requests = expected_invocations - empty_path_rejections
     assert sync_invocations == async_invocations == expected_invocations
     assert sync_requests == async_requests == expected_requests
@@ -496,8 +468,6 @@ def main() -> None:
         "PYTHON REQUEST CONTRACT PASS: "
         f"{bundle['operation_count']} operations, {bundle['witness_count']} MC/DC parity witnesses "
         f"+ {len(KNOWN_NULL_QUERY_VARIANCES)} exact null-query variances "
-        f"+ {query_empty_omissions} derived empty-query omissions "
-        f"+ {multipart_empty_omissions} derived empty-multipart omissions "
         f"+ {empty_path_rejections} exact Python empty-path rejections "
         f"+ {len(bundle['upstream_rejections'])} exact upstream rejections per client mode, "
         f"{declared_witnesses} current-wheel declaration witnesses, "

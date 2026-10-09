@@ -47,7 +47,7 @@ WORKSPACE_RESPONSE_CONTEXT_VERSIONS = frozenset({
     "1.8.0",
     "1.9.0",
     "1.10.0",
-    "1.11.0",
+    "1.12.1",
 })
 CREDENTIAL_PROVIDER_VERSIONS = MANAGED_SDK_ANCHOR_VERSIONS - {"0.92.0"}
 ENVIRONMENT_HELPER_VERSIONS = MANAGED_SDK_ANCHOR_VERSIONS - {"0.92.0", "0.100.0"}
@@ -94,9 +94,9 @@ UNICODE_WORKER_HEADER_REJECTING_VERSIONS = frozenset(
         "0.125.0",
     }
 )
-MULTIPART_HEADER_NAME_REJECTING_VERSIONS = frozenset({"1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.7.0", "1.8.0", "1.9.0", "1.10.0", "1.11.0"})
-ASYNC_CREDENTIAL_PROVIDER_VERSIONS = frozenset({"1.7.0", "1.8.0", "1.9.0", "1.10.0", "1.11.0"})
-FULL_RETRY_AFTER_VERSIONS = frozenset({"1.7.0", "1.8.0", "1.9.0", "1.10.0", "1.11.0"})
+MULTIPART_HEADER_NAME_REJECTING_VERSIONS = frozenset({"1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.7.0", "1.8.0", "1.9.0", "1.10.0", "1.12.1"})
+ASYNC_CREDENTIAL_PROVIDER_VERSIONS = frozenset({"1.7.0", "1.8.0", "1.9.0", "1.10.0", "1.12.1"})
+FULL_RETRY_AFTER_VERSIONS = frozenset({"1.7.0", "1.8.0", "1.9.0", "1.10.0", "1.12.1"})
 HTTP_FIELD_NAME = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+\Z")
 
 
@@ -206,7 +206,9 @@ def _unwrap(annotation: object) -> object:
 
 
 def _baseline_type_value(annotation: object, stack: tuple[object, ...] = ()) -> object:
-    values = _type_witnesses(annotation, stack)
+    # Literal/Union order is not input semantics and Python may reuse aliases
+    # with another order. One existing causal identity chooses the baseline.
+    values = sorted(_type_witnesses(annotation, stack), key=lambda value: repr(_identity(value)))
     assert values, f"request type has no constructible branch: {annotation!r}"
     def preferred(value: object) -> bool:
         if value is None:
@@ -438,7 +440,7 @@ def _declared_invocations(method: object) -> list[tuple[object, list[object], di
 
     baseline_identity = ("required-only", _identity(baseline_values))
     assert any(identity == baseline_identity for identity, _, _ in invocations)
-    return invocations
+    return sorted(invocations, key=lambda invocation: repr(invocation[0]))
 
 
 def _assert_path_template(operation: dict[str, Any], actual_path: str) -> None:
@@ -584,6 +586,9 @@ def exercise_declared_request_witnesses(
     # literal/nested/collection/map/upload branch changes one cause at a time.
     # Unknown annotation, missing async branch, serializer rejection, duplicate
     # request, or method/path/query/header/body drift fails closed.
+    # Baselines and independent case order use the same canonical input key;
+    # each mode still derives its own complete declaration corpus. Reordered
+    # equal Literals pass; missing/extra inputs or changed effects still fail.
     expected: list[tuple[str, object, dict[str, Any]]] = []
     sync_requests = []
 
@@ -1248,7 +1253,7 @@ async def _exercise_error_and_retry_contract_for_mode(
     # P1 exact later wheels retain the one-shot preparation owner; P2 an
     # earlier reviewed anchor does not expose it. E1 request inputs remain
     # prepared once across retries/pagination; E2 unreviewed drift fails here.
-    assert supports_preparation is (anthropic_module.__version__ in {"1.8.0", "1.9.0", "1.10.0", "1.11.0"}), "unreviewed preparation change point"
+    assert supports_preparation is (anthropic_module.__version__ in {"1.8.0", "1.9.0", "1.10.0", "1.12.1"}), "unreviewed preparation change point"
     if supports_preparation:
         await exercise_request_preparation(
             anthropic_module, transport_module, _call_session_create, asynchronous=asynchronous,
@@ -1388,6 +1393,10 @@ async def _exercise_credential_provider_contract_for_mode(
     # | derived client       | token cache | provider calls | wire token       |
     # | with_options(timeout)| shared      | one total      | parent-provider  |
     # | with_options(provider)| isolated   | one replacement| override-provider|
+    # Timeout rules T1 explicit parent=3 -> read=3; T2 clone=1 -> read=1;
+    # T3 public setter=2 + omitted clone option -> both read=2; T4 request=None
+    # overrides parent=3. Assert actual transport extensions in both modes,
+    # alongside the same token-cache/header/query facts; no second factory.
     parent_calls = []
     override_calls = []
     derived_requests = []
@@ -1417,6 +1426,7 @@ async def _exercise_credential_provider_contract_for_mode(
         "max_retries": 0,
         "default_headers": {"x-managed-parent": "preserved"},
         "default_query": {"inherited_query": "preserved"},
+        "timeout": 3.0,
     }
     arguments = {"agent": "fixture", "environment_id": "fixture"}
     if asynchronous:
@@ -1434,7 +1444,11 @@ async def _exercise_credential_provider_contract_for_mode(
                 overridden = parent.with_options(credentials=override_credentials)
                 await parent.beta.sessions.create(**arguments)
                 await clone.beta.sessions.create(**arguments)
-                await overridden.beta.sessions.create(**arguments)
+                clone.timeout = 2.0
+                inherited = clone.with_options()
+                await inherited.beta.sessions.create(**arguments)
+                await clone.beta.sessions.create(**arguments)
+                await overridden.beta.sessions.create(**arguments, timeout=None)
     else:
         with transport_module.Client(
             transport=transport_module.MockTransport(accept_derived)
@@ -1447,12 +1461,19 @@ async def _exercise_credential_provider_contract_for_mode(
                 overridden = parent.with_options(credentials=override_credentials)
                 parent.beta.sessions.create(**arguments)
                 clone.beta.sessions.create(**arguments)
-                overridden.beta.sessions.create(**arguments)
+                clone.timeout = 2.0
+                inherited = clone.with_options()
+                inherited.beta.sessions.create(**arguments)
+                clone.beta.sessions.create(**arguments)
+                overridden.beta.sessions.create(**arguments, timeout=None)
 
     assert parent_calls == [False]
     assert override_calls == [False]
-    assert len(derived_requests) == 3
+    assert len(derived_requests) == 5
+    assert [request.extensions["timeout"]["read"] for request in derived_requests] == [3.0, 1.0, 2.0, 2.0, None]
     assert [request.headers["authorization"] for request in derived_requests] == [
+        "Bearer parent-provider",
+        "Bearer parent-provider",
         "Bearer parent-provider",
         "Bearer parent-provider",
         "Bearer override-provider",

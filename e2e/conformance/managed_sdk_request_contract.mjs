@@ -60,57 +60,19 @@ function serializedPythonArguments(contract, invocation) {
   return arguments_;
 }
 
-function pythonEmptyPathRejection(arguments_, expected, operation) {
-  const fields = arguments_
-    .filter(([, value]) => value === '')
-    .map(([name]) => name);
-  if (fields.length === 0) return null;
-  const emptyPath = expected.path.includes('//')
-    || (operation.path.endsWith('{}') && expected.path.endsWith('/'));
-  if (!emptyPath) return null;
+function pythonEmptyPathRejection(arguments_, error, operation) {
+  // The actual generated SDK owns path binding, including Environment ids
+  // extracted from params. Its exact path diagnostic plus the one-factor
+  // argument projection identifies the rejected field; body/query emptiness
+  // alone admits nothing. No path mapper or fictitious HTTP request is needed.
+  if (!/^Path parameters result in path with invalid segments:[\s\S]*Value "" can't be safely passed as a path parameter[\s\S]*\^/u.test(error.message)) return null;
+  assert.equal(error.constructor.name, 'AnthropicError', `${operation.id}: exact empty-path error`);
+  const fields = arguments_.filter(([, value]) => value === '').map(([name]) => name);
   assert.equal(fields.length, 1, `${operation.id}: one-factor empty path witness`);
   return {
     error_class: 'ValueError',
     field: fields[0],
   };
-}
-
-function normalizedFieldName(name) {
-  return name.replaceAll(/[^a-z0-9]/giu, '').toLowerCase();
-}
-
-function oneEmptyScalarField(arguments_) {
-  const fields = arguments_
-    .filter(([, value]) => value === '' || (Array.isArray(value) && value.length === 1 && value[0] === ''))
-    .map(([name]) => name);
-  return fields.length === 1 ? fields[0] : null;
-}
-
-function pythonEmptyOmission(original, omitted, field) {
-  if (JSON.stringify(original.headers) !== JSON.stringify(omitted.headers)
-    || original.method !== omitted.method
-    || original.path !== omitted.path) return null;
-
-  const queryWithoutField = original.query.filter(([name, value]) => !(
-    value === '' && normalizedFieldName(name) === normalizedFieldName(field)
-  ));
-  if (original.query.length === omitted.query.length + 1
-    && JSON.stringify(queryWithoutField) === JSON.stringify(omitted.query)
-    && JSON.stringify(original.body) === JSON.stringify(omitted.body)) {
-    return { expected: omitted, field, wire_kind: 'query' };
-  }
-
-  if (original.body.kind === 'multipart' && omitted.body.kind === 'multipart'
-    && JSON.stringify(original.query) === JSON.stringify(omitted.query)) {
-    const partsWithoutField = original.body.parts.filter((part) => !(
-      part.text === '' && normalizedFieldName(part.name) === normalizedFieldName(field)
-    ));
-    if (original.body.parts.length === omitted.body.parts.length + 1
-      && JSON.stringify(partsWithoutField) === JSON.stringify(omitted.body.parts)) {
-      return { expected: omitted, field, wire_kind: 'multipart' };
-    }
-  }
-  return null;
 }
 
 function sortedQuery(url) {
@@ -183,8 +145,11 @@ export async function buildRequestWitnessBundle({ packageRoot, operations, contr
   //   -> official SDK method + APIPromise.asResponse()
   //   -> WHATWG Request (path/query/header/JSON/multipart)
   //
-  // Decision rules: every operation and every finite branch must emit exactly
-  // one request; data: capability probes are not API requests; RequestOptions
+  // Decision rules: every admitted finite branch emits exactly one request;
+  // an empty path identity is rejected before transport in both runtimes;
+  // a nullable multipart field retains its exact reviewed SDK variance.
+  // Synchronous method construction and async response failures share this
+  // rejection boundary. Data: capability probes are not API requests; RequestOptions
   // are orthogonal client transport controls; values are retained only in the
   // ephemeral bundle consumed by the exact Python wheel. This tests the public
   // developer call surface and the complete official transform/serialization
@@ -213,17 +178,23 @@ export async function buildRequestWitnessBundle({ packageRoot, operations, contr
     const method = resourceMethod(client, operation.id);
     for (const invocation of requestInvocationWitnesses(contract)) {
       const before = captured.length;
-      const promise = method(...invocation.map(materialize));
-      assert.equal(typeof promise.asResponse, 'function', `${operation.id}: APIPromise raw response`);
+      const arguments_ = serializedPythonArguments(contract, invocation);
       let response;
       try {
+        const promise = method(...invocation.map(materialize));
+        assert.equal(typeof promise.asResponse, 'function', `${operation.id}: APIPromise raw response`);
         response = await promise.asResponse();
       } catch (error) {
-        const arguments_ = serializedPythonArguments(contract, invocation);
+        assert.equal(captured.length, before, `${operation.id}: rejected before transport`);
+        const pathRejection = pythonEmptyPathRejection(arguments_, error, operation);
+        if (pathRejection) {
+          witnesses.push({ arguments: arguments_, expected: null, operation_id: operation.id,
+            python_rejection: pathRejection });
+          continue;
+        }
         const nullFields = arguments_
           .filter(([, value]) => value === null)
           .map(([name]) => `${operation.id}\0${name}`);
-        assert.equal(captured.length, before, `${operation.id}: rejected before transport`);
         assert.equal(nullFields.length, 1, `${operation.id}: exact rejected null field`);
         assert.ok(
           DECLARED_RUNTIME_REJECTIONS.has(nullFields[0]),
@@ -248,13 +219,11 @@ export async function buildRequestWitnessBundle({ packageRoot, operations, contr
       assert.equal(captured.length, before + 1, `${operation.id}: exact API request count`);
       const expected = captured.at(-1);
       assert.equal(expected.method, operation.method, `${operation.id}: method`);
-      const arguments_ = serializedPythonArguments(contract, invocation);
       witnesses.push({
         arguments: arguments_,
         expected,
         operation_id: operation.id,
-        python_empty_omission: null,
-        python_rejection: pythonEmptyPathRejection(arguments_, expected, operation),
+        python_rejection: null,
       });
     }
   }
@@ -271,32 +240,12 @@ export async function buildRequestWitnessBundle({ packageRoot, operations, contr
     DECLARED_RUNTIME_REJECTIONS,
     'the exact reviewed upstream declaration/runtime rejection set',
   );
-  const witnessByInvocation = new Map(witnesses.map((witness) => [
-    `${witness.operation_id}\0${JSON.stringify(witness.arguments)}`,
-    witness,
-  ]));
-  for (const witness of witnesses) {
-    if (witness.python_rejection) continue;
-    const field = oneEmptyScalarField(witness.arguments);
-    if (!field) continue;
-    const omittedArguments = witness.arguments.filter(([name]) => name !== field);
-    const omission = witnessByInvocation.get(
-      `${witness.operation_id}\0${JSON.stringify(omittedArguments)}`,
-    );
-    if (!omission) continue;
-    witness.python_empty_omission = pythonEmptyOmission(
-      witness.expected,
-      omission.expected,
-      field,
-    );
-  }
   return { upstream_rejections: upstreamRejections, witnesses };
 }
 
 export const requestContractInternals = Object.freeze({
   materialize,
-  oneEmptyScalarField,
-  pythonEmptyOmission,
+  pythonEmptyPathRejection,
   semanticHeaders,
   serializedPythonArguments,
 });

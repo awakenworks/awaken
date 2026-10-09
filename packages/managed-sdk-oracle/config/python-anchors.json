@@ -22,6 +22,6 @@
     { "version": "1.8.0", "role": "protocol_change_point", "reason": "prepare one-shot request inputs once across retries and pagination, shared Managed tool-permission enum, safe stream finalization, claude-opus-5-5 model literal" },
     { "version": "1.9.0", "role": "protocol_change_point", "reason": "typed Managed event-list filter and updated Managed declarations" },
     { "version": "1.10.0", "role": "protocol_change_point", "reason": "refusal stop details, repository error types, and unnamed multipart file transport" },
-    { "version": "1.11.0", "role": "current_oracle", "reason": "retains Managed 1.10 contracts with exact current wheel and Organization spend-limits surface" }
+    { "version": "1.12.1", "role": "current_oracle", "reason": "WebFetch URL sources, Models lifecycle, preserved empty queries, and well-formed Session tool results" }
   ]
 }

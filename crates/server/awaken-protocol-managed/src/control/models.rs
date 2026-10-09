@@ -41,14 +41,14 @@ pub(crate) struct ModelListQuery {
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ModelLifecycle {
+pub(crate) enum ModelLifecycle {
     Active,
     Deprecated,
     Retired,
 }
 
 impl ModelListQuery {
-    fn from_query(raw: &str) -> Result<(Self, Vec<ModelLifecycle>), String> {
+    pub(crate) fn from_query(raw: &str) -> Result<(Self, Vec<ModelLifecycle>), String> {
         let query = split_array_query(raw, "lifecycle")?;
         if query.values.len() > 3 {
             return Err("lifecycle accepts at most 3 values".into());

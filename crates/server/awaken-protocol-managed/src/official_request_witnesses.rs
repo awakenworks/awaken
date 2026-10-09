@@ -286,7 +286,10 @@ fn skills_bundle(witness: &Witness) -> Result<(), String> {
 
 fn models_list(witness: &Witness) -> Result<(), String> {
     surface(witness, ManagedCapability::ManagedAgents)?;
-    stripped::<crate::control::models::ModelListQuery>(witness)
+    crate::control::models::ModelListQuery::from_query(&without_beta_selector(Some(
+        &witness.raw_query(),
+    )))
+    .map(drop)
 }
 
 fn session_events_list(witness: &Witness) -> Result<(), String> {
@@ -749,6 +752,12 @@ fn witness<'a>(artifact: &'a Artifact, operation: &str, id: &str) -> &'a Witness
 
 #[test]
 fn every_official_request_shape_decodes_into_its_route_type() {
+    // Models query rules: SDK GA/Beta scalar cursors + repeated lifecycle[]
+    // must use the route's actual from_query decoder after its beta selector.
+    // The generated maximal/enum-variant witnesses cover active/deprecated/
+    // retired; generic serde over the cursor-only struct was a stale second
+    // test path and rejected all six new array witnesses. Production owns the
+    // three-value/closed-member limits and its existing negative decision table.
     let artifact = artifact();
     let registry: BTreeMap<&str, (Decode, Decode)> = REGISTRY
         .iter()

@@ -191,7 +191,8 @@ async function writePythonRequestContracts(temporary) {
   // One declaration and one executable authority: the current TS oracle
   // supplies both its finite request graph and generated serializer.
   // Python operation ids are an injective spelling projection only; every
-  // witness retains the TS-emitted semantic Request as its expected result.
+  // admitted witness retains the TS-emitted semantic Request as its expected
+  // result; a rejected path retains the actual SDK refusal with no wire body.
   // A newer TS candidate remains on its own qualification axis.
   const module = JSON.parse(readFileSync(
     resolve(REPO, 'contracts/anthropic-managed/upstream-oracle.generated.json'),

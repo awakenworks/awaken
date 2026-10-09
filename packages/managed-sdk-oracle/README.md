@@ -131,9 +131,10 @@ evidence from drifting from the external expectation:
   Managed claim.
 - `e2e/conformance/run_managed_sdk_behavior_owners.mjs` executes every distinct
   real-process owner and records successful 2xx official-SDK HTTP exchanges.
-  It projects the same owner graph over all 99/114/127 HTTP operations exposed
-  by the exact 0.105/0.117.1/0.121/0.122 anchors, and replays all 127 operations
-  plus that exact SDK's four or five generated helpers. A package-selection hook resolves
+  It projects the same owner graph over every HTTP operation exposed by the
+  configured historical and current anchors, including each exact SDK's
+  generated helpers. The generated ledger owns those counts and versions.
+  A package-selection hook resolves
   unchanged canonical imports inside the selected exact package root; each
   receipt must carry that package's exact `x-stainless-package-version`, method,
   route, Beta/GA selector, and capabilities. Operation-local capabilities
@@ -215,11 +216,11 @@ evidence from drifting from the external expectation:
   sweep does not copy their resource state machines.
 - `managed_python_sdk_response_contract_e2e.py` closes the response half of
   that all-operation chain without introducing a second fixture authority. It
-  projects every Python operation onto the reviewed TypeScript 0.122
+  projects every Python operation onto the current TypeScript oracle's
   declaration, then automatically generates one-at-a-time MC/DC witnesses for
   every nested union branch, optional-field omission, closed field, finite
   literal, array item, map value, nullable response, page, binary body, and SSE
-  wrapper. All 3,827 witnesses traverse both the real synchronous and
+  wrapper. Every generated witness traverses both the real synchronous and
   asynchronous current Python generated clients, `httpx2` transport, media
   dispatcher, and response converter. The return annotation's Pydantic JSON
   Schema is independently normalized and compared property-for-property, so
@@ -286,6 +287,16 @@ supplies runtime classification without a hand-maintained union. The JSON oracle
 feeds the exact Session-response gate. The standalone E2E package's
 `@anthropic-ai/sdk` dependency is an executable mirror only: `generate` and
 `check` reject it unless it exactly matches the current oracle version.
+
+The current TypeScript/Python anchors are 0.132.1/1.12.1. Python's empty query
+and multipart text values now match the original TypeScript request witnesses;
+the retired empty-value omission exception has been removed. Empty positional
+or grouped path identities retain actual pre-HTTP SDK rejection evidence,
+without manufacturing a wire request. The existing Python helper tests own
+well-formed surrogate/text-block results, `None` output, bounded ordinary errors
+and uncut deliberate errors. Declaration-derived cases use their existing
+causal identity for stable baselines and order while each client mode still
+derives and executes its complete corpus independently.
 
 ## Updating an SDK anchor
 
