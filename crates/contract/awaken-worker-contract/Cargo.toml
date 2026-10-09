@@ -15,6 +15,8 @@ authority = "worker-placement"
 separation = "contract"
 
 [dependencies]
+awaken-agent-contract.workspace = true
+awaken-lease-contract.workspace = true
 awaken-tool-contract.workspace = true
 awaken-acp-contract.workspace = true
 awaken-credential-contract.workspace = true

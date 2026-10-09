@@ -22,6 +22,7 @@ mod placement;
 mod registry;
 mod relay_route;
 mod requirements;
+mod run_claim;
 
 pub use awaken_credential_contract::{
     CredentialObservationState as WorkerCredentialState, CredentialRef as WorkerCredentialRevision,
@@ -64,6 +65,7 @@ pub use requirements::{
     ExecutionLocation, Incompatibility, PlacementRequirements, WorkerRecoveryMode, can_claim,
     can_claim_locally, manifest_recovery_matches_installed, sandbox_tool_recovery_is_compatible,
 };
+pub use run_claim::RunClaim;
 
 #[cfg(test)]
 use awaken_acp_contract::{AcpCapabilityObservation, AcpCapabilityObservationState};
