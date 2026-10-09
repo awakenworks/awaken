@@ -33,8 +33,6 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
 
 #[tokio::test]
 async fn durable_adoption_without_an_owning_sink_preserves_exact_projected_identity() {
-    use awaken_session_execution_contract::SessionRuntime as _;
-
     // Cause/effect decision table: C1 a legacy durable Resident projection
     // supplies one exact binding identity; C2 provider adoption returns the
     // matching hidden candidate; C3 the binding sink is absent; C4 a configured
@@ -55,13 +53,13 @@ async fn durable_adoption_without_an_owning_sink_preserves_exact_projected_ident
                 effect: crate::session_slot::LegacyEnvironmentEffect::Absent,
             },
         );
-        let host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(
-                Arc::new(crate::no_model::NoModelConfiguredExecutor),
-                "stub",
-            )
-            .await,
-        ));
+        let host = (crate::HostDependencies::ephemeral(
+            Arc::new(crate::no_model::NoModelConfiguredExecutor),
+            "stub",
+        )
+        .await)
+            .build()
+            .expect("validated Host dependencies");
         host.install_session_environment_owner_projection(
             &thread,
             "workspace",
@@ -75,14 +73,7 @@ async fn durable_adoption_without_an_owning_sink_preserves_exact_projected_ident
         .expect("C1 exact durable projection");
         if install_non_owner {
             crate::ManagedHost::new(host.clone())
-                .realization()
-                .ok_or_else(|| {
-                    awaken_session_types::RunError::unavailable(
-                        "RealizationRuntime is unsupported by this runtime",
-                    )
-                })
-                .expect("runtime role")
-                .install_environment_binding_sink(Arc::new(NonOwningEnvironmentBindingSink));
+                .install_test_environment_binding_sink(Arc::new(NonOwningEnvironmentBindingSink));
         }
         let candidate = host
             .begin_session_environment_adoption(&thread, environment)
@@ -123,13 +114,13 @@ async fn ordinary_candidate_without_a_sink_gets_an_explicit_direct_receipt() {
     ] {
         let environment = environment(&provider, thread).await;
         let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
-        let host = SharedHost::from(
-            crate::HostDependencies::ephemeral(
-                Arc::new(crate::no_model::NoModelConfiguredExecutor),
-                "stub",
-            )
-            .await,
-        );
+        let host = (crate::HostDependencies::ephemeral(
+            Arc::new(crate::no_model::NoModelConfiguredExecutor),
+            "stub",
+        )
+        .await)
+            .build()
+            .expect("validated Host dependencies");
         let candidate = match kind {
             awaken_session_state_contract::SessionEnvironmentEffectKind::Create => host
                 .begin_session_environment_preparation(thread, environment)
@@ -172,13 +163,13 @@ async fn durable_projection_cannot_publish_a_hidden_candidate() {
     let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
-    let host = SharedHost::from(
-        crate::HostDependencies::ephemeral(
-            Arc::new(crate::no_model::NoModelConfiguredExecutor),
-            "stub",
-        )
-        .await,
-    );
+    let host = (crate::HostDependencies::ephemeral(
+        Arc::new(crate::no_model::NoModelConfiguredExecutor),
+        "stub",
+    )
+    .await)
+        .build()
+        .expect("validated Host dependencies");
     let candidate = host
         .begin_session_environment_preparation(thread, environment.clone())
         .expect("C1 Candidate");
@@ -232,13 +223,13 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
         let environment = environment(&provider, thread).await;
         let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
         let source = identity(thread);
-        let host = SharedHost::from(
-            crate::HostDependencies::ephemeral(
-                Arc::new(crate::no_model::NoModelConfiguredExecutor),
-                "stub",
-            )
-            .await,
-        );
+        let host = (crate::HostDependencies::ephemeral(
+            Arc::new(crate::no_model::NoModelConfiguredExecutor),
+            "stub",
+        )
+        .await)
+            .build()
+            .expect("validated Host dependencies");
         host.install_session_environment_owner_projection(
             thread,
             "workspace",
@@ -336,7 +327,7 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
 async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identity() {
     use crate::host::worker_resolver::test_support::{BlockingBindingSink, claim};
     use awaken_dispatch_contract::DispatchQueue;
-    use awaken_session_execution_contract::{SessionEnvironmentBindingSink, SessionRuntime};
+    use awaken_session_execution_contract::SessionEnvironmentBindingSink;
     // Boundary decision table B: C1 source root receipt A; C2 owning sink
     // commits Adopt B; C3 SQLite dispatch claim current/stale; C4 retry count.
     // B1 C1+C2+stale => dispatch_claim_stale (never internal), same Arc hidden
@@ -359,25 +350,17 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
                 .await
                 .unwrap(),
         );
-        let host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(
-                Arc::new(crate::no_model::NoModelConfiguredExecutor),
-                "stub",
-            )
-            .await
-            .with_dispatch_store(store.clone()),
-        ));
+        let host = (crate::HostDependencies::ephemeral(
+            Arc::new(crate::no_model::NoModelConfiguredExecutor),
+            "stub",
+        )
+        .await
+        .with_ephemeral_dispatch(store.clone()))
+        .build()
+        .expect("validated Host dependencies");
         let sink = Arc::new(BlockingBindingSink::blocked());
         sink.unblock();
-        crate::ManagedHost::new(host.clone())
-            .realization()
-            .ok_or_else(|| {
-                awaken_session_types::RunError::unavailable(
-                    "RealizationRuntime is unsupported by this runtime",
-                )
-            })
-            .expect("runtime role")
-            .install_environment_binding_sink(sink.clone());
+        crate::ManagedHost::new(host.clone()).install_test_environment_binding_sink(sink.clone());
         let source_intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
             thread,
             awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
@@ -509,13 +492,13 @@ async fn committed_hidden_create_candidate_is_terminally_retired_without_publica
     let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
-    let host = SharedHost::from(
-        crate::HostDependencies::ephemeral(
-            Arc::new(crate::no_model::NoModelConfiguredExecutor),
-            "stub",
-        )
-        .await,
-    );
+    let host = (crate::HostDependencies::ephemeral(
+        Arc::new(crate::no_model::NoModelConfiguredExecutor),
+        "stub",
+    )
+    .await)
+        .build()
+        .expect("validated Host dependencies");
     let candidate = host
         .begin_session_environment_preparation(thread, environment.clone())
         .expect("C1 hidden Create Candidate");
@@ -772,13 +755,13 @@ async fn unacknowledged_candidate_adoption_requires_aggregate_authority() {
         .into_session_provider();
     let thread = "unacknowledged-no-authority";
     let environment = environment(&provider, thread).await;
-    let host = SharedHost::from(
-        crate::HostDependencies::ephemeral(
-            Arc::new(crate::no_model::NoModelConfiguredExecutor),
-            "stub",
-        )
-        .await,
-    );
+    let host = (crate::HostDependencies::ephemeral(
+        Arc::new(crate::no_model::NoModelConfiguredExecutor),
+        "stub",
+    )
+    .await)
+        .build()
+        .expect("validated Host dependencies");
     let candidate = host
         .begin_session_environment_preparation(thread, environment.clone())
         .unwrap();
@@ -830,13 +813,13 @@ async fn stale_unmaterialized_projection_cannot_unbind_a_candidate_or_resident()
     let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
     let environment = environment(&provider, thread).await;
-    let host = SharedHost::from(
-        crate::HostDependencies::ephemeral(
-            Arc::new(crate::no_model::NoModelConfiguredExecutor),
-            "stub",
-        )
-        .await,
-    );
+    let host = (crate::HostDependencies::ephemeral(
+        Arc::new(crate::no_model::NoModelConfiguredExecutor),
+        "stub",
+    )
+    .await)
+        .build()
+        .expect("validated Host dependencies");
     let candidate = host
         .begin_session_environment_preparation(thread, environment.clone())
         .expect("S1 Candidate");

@@ -14,7 +14,7 @@ use awaken_authz_enforce::{EnforceEngine, TokenSpec, guard};
 use awaken_config_resolver::{
     InMemoryWebhookStore, WebhookEndpointDef, WebhookMutationIntent, WebhookStore,
 };
-use awaken_coordinator::{install_managed_lifecycle_delivery, webhooks};
+use awaken_coordinator::{prepare_managed_lifecycle_delivery, webhooks};
 use awaken_credential_vault::{InMemorySecretStore, SecretRef, SecretStore};
 use awaken_protocol_managed::ManagedState;
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor};
@@ -123,20 +123,22 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
         ),
         None,
     );
-    let host = Arc::new(awaken_scenario_host::SharedHost::from(
-        awaken_scenario_host::build_unmounted_dependencies(Arc::new(DeadModel), "test").await,
-    ));
+    let host = (awaken_scenario_host::build_unmounted_dependencies(Arc::new(DeadModel), "test")
+        .await)
+        .build()
+        .expect("validated Host dependencies");
     let managed = Arc::new(
-        ManagedState::new(ManagedHost::new(host).install_dispatch_session_runtime())
+        ManagedState::new(ManagedHost::new(host))
             .await
             .with_session_repo(sessions),
     );
-    install_managed_lifecycle_delivery(
+    prepare_managed_lifecycle_delivery(
         &managed,
         &managed.session_application(),
         Some(delivery),
-        &service_lifecycle,
+        None,
     )
+    .map(|prepared| prepared.start(&service_lifecycle))
     .expect("L1 bind the sole lifecycle notifier before traffic");
     let engine = Arc::new(EnforceEngine::seeded(awaken_time::system_clock()));
     let token = engine

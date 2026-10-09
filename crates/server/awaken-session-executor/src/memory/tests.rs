@@ -1023,13 +1023,13 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
             .await
             .expect("R2 reopen extraction repository"),
     );
-    let recovered_host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(ExtractorModel), "stub")
-            .await
-            .with_memory_extraction_repository(Arc::new(FailFirstRecoverableRead::new(
-                recovered_repository.clone(),
-            ))),
-    ));
+    let recovered_host = (crate::HostDependencies::ephemeral(Arc::new(ExtractorModel), "stub")
+        .await
+        .with_memory_extraction_repository(Arc::new(FailFirstRecoverableRead::new(
+            recovered_repository.clone(),
+        ))))
+    .build()
+    .expect("validated Host dependencies");
     let parent_commit = Arc::new(HostCommit::Local(Arc::new(
         crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
             awaken_time::system_clock(),
@@ -1165,7 +1165,7 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
     let content = Arc::new(awaken_memory_store::VolatileMemoryRepository::new(
         awaken_time::system_clock(),
     ));
-    let host = Arc::new(SharedHost::from(crate::HostDependencies::for_worker(
+    let host = (crate::HostDependencies::for_worker(
         Arc::new(ExtractorModel),
         "stub",
         Arc::new(awaken_resource_contract::UnavailableFileContentSource),
@@ -1175,8 +1175,15 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
             deployment: crate::DeploymentConfig::ephemeral(),
             clock: awaken_time::system_clock(),
         },
-        crate::UpstreamAuthority::default(),
-    )));
+        crate::host::test_upstream_authority(),
+        awaken_dispatch_contract::RegisteredCapacity::of(
+            &awaken_dispatch_contract::WorkerManifest::default(),
+        )
+        .unwrap(),
+    )
+    .expect("complete Worker connections"))
+    .build()
+    .expect("validated Host dependencies");
     assert!(
         !host.authority.observes_terminal_memory_locally(),
         "the Worker constructor alone gives the Host its upstream authority"

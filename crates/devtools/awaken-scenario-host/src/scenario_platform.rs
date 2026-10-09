@@ -13,7 +13,7 @@ use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
 use awaken_runtime_contract::{PublishedAgentSnapshotSource, StaticPublishedAgentSnapshots};
 use axum::Router;
 
-use super::{EchoModel, SharedHost, resource_host};
+use super::{EchoModel, HostDependencies, SharedHost, resource_host};
 use crate::deployment::ScenarioPlatform;
 
 pub(super) const SCENARIO_MEMORY_STORE_ID: &str = "memstore_scenario_memory";
@@ -36,14 +36,14 @@ pub(super) async fn mount_on_lifecycle(
     platform: ScenarioPlatform,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Router {
-    let (host, resources) = platform.into_parts();
-    mount_parts_on_lifecycle(Arc::new(host), resources, lifecycle).await
+    let (host, resources) = platform.into_dependencies();
+    mount_parts_on_lifecycle(host, resources, lifecycle).await.0
 }
 
 pub(super) async fn mount_parts(
-    host: Arc<SharedHost>,
+    host: HostDependencies,
     resources: awaken_resource_application::ResourcesApplication,
-) -> Router {
+) -> (Router, Arc<SharedHost>) {
     mount_parts_on_lifecycle(
         host,
         resources,
@@ -53,41 +53,49 @@ pub(super) async fn mount_parts(
 }
 
 async fn mount_parts_on_lifecycle(
-    host: Arc<SharedHost>,
+    host: HostDependencies,
     resources: awaken_resource_application::ResourcesApplication,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
-) -> Router {
+) -> (Router, Arc<SharedHost>) {
     let catalog = resources.authorities().resource_registry();
-    let managed = awaken_coordinator::local_managed_state(host.clone(), catalog.clone()).await;
-    awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
-        host, managed, catalog, lifecycle, None,
-    )
-    .await
-    .0
+    let managed = awaken_coordinator::local_managed_state(host, catalog.clone()).await;
+    let host = managed.host.clone();
+    let router =
+        awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
+            host.clone(),
+            managed,
+            catalog,
+            lifecycle,
+            None,
+        )
+        .await
+        .0;
+    (router, host)
 }
 
 pub(super) async fn mount_parts_with_model_publication_resolver(
-    host: Arc<SharedHost>,
+    host: HostDependencies,
     resources: awaken_resource_application::ResourcesApplication,
     resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
     dream_executor_decorator: Option<awaken_coordinator::ScenarioDreamExecutorDecorator>,
-) -> Router {
+) -> (Router, Arc<SharedHost>) {
     let catalog = resources.authorities().resource_registry();
     let managed = awaken_coordinator::local_managed_state_with_model_publication_resolver(
-        host.clone(),
+        host,
         catalog.clone(),
         resolver.clone(),
     )
     .await;
+    let host = managed.host.clone();
     let (router, dreams) = awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams(
-        host,
+        host.clone(),
         managed,
         catalog,
         dream_executor_decorator,
     )
     .await;
     dreams.bind_model_readiness(Arc::new(ScenarioDreamModelReadiness { resolver }));
-    router
+    (router, host)
 }
 
 struct ScenarioDreamModelReadiness {
@@ -134,29 +142,37 @@ pub(super) async fn mount_with_agent_source_on_lifecycle(
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> Router {
-    let (host, resources) = platform.into_parts();
-    let host = Arc::new(host);
-    mount_parts_with_agent_source_on_lifecycle(host, resources, agent_source, lifecycle).await
+    let (host, resources) = platform.into_dependencies();
+    mount_parts_with_agent_source_on_lifecycle(host, resources, agent_source, lifecycle)
+        .await
+        .0
 }
 
 pub(super) async fn mount_parts_with_agent_source_on_lifecycle(
-    host: Arc<SharedHost>,
+    host: HostDependencies,
     resources: awaken_resource_application::ResourcesApplication,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     lifecycle: awaken_service_lifecycle::ServiceLifecycle,
-) -> Router {
+) -> (Router, Arc<SharedHost>) {
     let catalog = resources.authorities().resource_registry();
     let managed = awaken_coordinator::local_managed_state_with_agent_source(
-        host.clone(),
+        host,
         catalog.clone(),
         agent_source,
     )
     .await;
-    awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
-        host, managed, catalog, lifecycle, None,
-    )
-    .await
-    .0
+    let host = managed.host.clone();
+    let router =
+        awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
+            host.clone(),
+            managed,
+            catalog,
+            lifecycle,
+            None,
+        )
+        .await
+        .0;
+    (router, host)
 }
 
 /// Scenario platform with the Environment API and the same Resource Registry,
@@ -169,8 +185,7 @@ pub(super) async fn mount_with_environments_and_agent_source(
     platform: ScenarioPlatform,
     agent_source: Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>>,
 ) -> Router {
-    let (host, resources) = platform.into_parts();
-    let host = Arc::new(host);
+    let (host, resources) = platform.into_dependencies();
     let local_workspace = host.local_workspace().to_owned();
     let catalog = resources.authorities().resource_registry();
     let (environment_authoring, environment_execution) =
@@ -178,7 +193,7 @@ pub(super) async fn mount_with_environments_and_agent_source(
     let managed = match agent_source {
         Some(source) => {
             awaken_coordinator::local_managed_state_with_environments_and_agent_source(
-                host.clone(),
+                host,
                 catalog.clone(),
                 environment_execution.clone(),
                 source,
@@ -187,13 +202,14 @@ pub(super) async fn mount_with_environments_and_agent_source(
         }
         None => {
             awaken_coordinator::local_managed_state_with_environments(
-                host.clone(),
+                host,
                 catalog.clone(),
                 environment_execution.clone(),
             )
             .await
         }
     };
+    let host = managed.host.clone();
     let work_session_access = awaken_protocol_managed::ManagedWorkSessionAccess::new(
         environment_execution.clone(),
         managed.managed.clone(),

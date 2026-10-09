@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use awaken_session_executor::{
-    AgentCoordinationInstallError, CyclicPortAlreadyBound, ManagedHost, SharedHost,
+    AgentCoordinationInstallError, ManagedHost, SessionApplicationBindingError, SharedHost,
 };
 use awaken_session_application::SessionApplication;
 
@@ -21,10 +21,13 @@ pub fn install_managed_agent_coordination(
         .map_err(|_| AgentCoordinationInstallError::DispatchObservationAlreadyInstalled)?;
     let coordination: Arc<dyn awaken_session_execution_contract::SessionAgentCoordination> =
         application.clone();
-    host.session_application_ports()
-        .agent_coordination
-        .bind(Arc::downgrade(&coordination))
-        .map_err(|_| AgentCoordinationInstallError::AlreadyInstalled)
+    let bindings = host.session_application_bindings();
+    bindings
+        .bind_agent_coordination(coordination)
+        .map_err(|_| AgentCoordinationInstallError::AlreadyInstalled)?;
+    bindings
+        .require_agent_coordination()
+        .map_err(|_| AgentCoordinationInstallError::ApplicationUnavailable)
 }
 
 /// Bind `host`'s sole committed-progress wakeup to the Session application's
@@ -33,11 +36,10 @@ pub fn install_managed_agent_coordination(
 pub(crate) fn bind_committed_progress_wakeup(
     host: &SharedHost,
     application: &Arc<SessionApplication>,
-) -> Result<(), CyclicPortAlreadyBound> {
+) -> Result<(), SessionApplicationBindingError> {
     let application = Arc::downgrade(application);
-    host.session_application_ports()
-        .committed_progress
-        .bind(Arc::new(move || {
+    host.session_application_bindings()
+        .bind_lifecycle_reconciliation_wakeup(Arc::new(move || {
             if let Some(application) = application.upgrade() {
                 application.request_lifecycle_reconciliation();
             }

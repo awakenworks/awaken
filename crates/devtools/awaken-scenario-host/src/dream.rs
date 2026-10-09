@@ -34,8 +34,7 @@ pub async fn build_dream_runtime_router() -> Router {
         crate::scenario_deployment(),
     )
     .await;
-    let (host, resources) = platform.into_parts();
-    let host = Arc::new(host);
+    let (host, resources) = platform.into_dependencies();
     let barrier = std::env::var_os("AWAKEN_TEST_DREAM_PRE_EXECUTE_BARRIER_DIR").map(|directory| {
         Arc::new(move |inner: Arc<dyn DreamExecutor>| {
             Arc::new(PreparedDreamBarrier {
@@ -47,7 +46,8 @@ pub async fn build_dream_runtime_router() -> Router {
     let router = crate::scenario_platform::mount_parts_with_model_publication_resolver(
         host, resources, resolver, barrier,
     )
-    .await;
+    .await
+    .0;
     router.merge(dream_auxiliary_routes())
 }
 

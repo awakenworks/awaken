@@ -22,7 +22,6 @@ mod tests {
         eager_environment, install_complete_projection_for_snapshot, managed_test_host,
         test_activation, with_empty_session_resources,
     };
-    use awaken_session_execution_contract::RealizationRuntime;
     use std::sync::{Arc, Mutex};
 
     /// Legacy raw-claim merge cause/effect graph: C1 the durable Environment
@@ -142,11 +141,11 @@ mod tests {
                 .await
                 .expect("dispatch store"),
         );
-        let host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
-                .await
-                .with_dispatch_store(store.clone()),
-        ));
+        let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+            .await
+            .with_ephemeral_dispatch(store.clone()))
+        .build()
+        .expect("validated Host dependencies");
         let managed = managed_test_host(host.clone());
         let resolver = HostWorkerResolver {
             host: Arc::downgrade(&host),
@@ -243,7 +242,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingMcpRealizer {
         calls: Mutex<Vec<&'static str>>,
-        required_environment: Option<(std::sync::Weak<SharedHost>, String)>,
+        required_environment: std::sync::OnceLock<(std::sync::Weak<SharedHost>, String)>,
         stage_entered: Option<Arc<tokio::sync::Notify>>,
         release_stage: Option<Arc<tokio::sync::Notify>>,
     }
@@ -272,7 +271,7 @@ mod tests {
             }
             let resident = self
                 .required_environment
-                .as_ref()
+                .get()
                 .is_none_or(|(host, thread)| {
                     host.upgrade().is_some_and(|host| {
                         host.session_slots
@@ -841,10 +840,10 @@ mod tests {
         use awaken_session_realization_contract::SessionProjectionSynchronizer as _;
 
         let thread = "resident-renewal-resources";
-        let host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await,
-        ));
-        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+        let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await)
+            .build()
+            .expect("validated Host dependencies");
+        let _managed = crate::ManagedHost::new(host.clone());
         let resident = frozen_projection();
         host.install_frozen_session_projection(thread, resident.clone(), None, true, None)
             .await
@@ -938,10 +937,10 @@ mod tests {
         use awaken_session_realization_contract::SessionProjectionSynchronizer as _;
 
         let thread = "dynamic-publication-renewal";
-        let host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await,
-        ));
-        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+        let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await)
+            .build()
+            .expect("validated Host dependencies");
+        let _managed = crate::ManagedHost::new(host.clone());
         let mut projection = frozen_projection();
         projection.baseline.agent_revision = Some(7);
         projection.baseline.runtime = Some("acp:claude".into());
@@ -1162,14 +1161,16 @@ mod tests {
             release_stage: Some(release_stage.clone()),
             ..Default::default()
         });
-        let host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
-                .await
-                .with_session_realization_control(control.clone()),
-        ));
-        let _managed = crate::ManagedHost::new(host.clone())
-            .with_mcp_attachment_realizer(realizer.clone())
-            .install_dispatch_session_runtime();
+        let host = ((crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+            .await
+            .with_session_realization_control(control.clone()))
+        .with_session_execution(
+            crate::SessionExecutionDependencies::default()
+                .with_mcp_attachment_realizer(realizer.clone()),
+        ))
+        .build()
+        .expect("validated Host dependencies");
+        let _managed = crate::ManagedHost::new(host.clone());
         let directive = awaken_session_realization_contract::SessionRealizationDirective {
             projection,
             authority: crate::session_slot::test_lease_receipt(lease),
@@ -1269,14 +1270,16 @@ mod tests {
             repeat_stage_without_progress: false,
         });
         let realizer = Arc::new(RecordingMcpRealizer::default());
-        let host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
-                .await
-                .with_session_realization_control(control.clone()),
-        ));
-        let _managed = crate::ManagedHost::new(host.clone())
-            .with_mcp_attachment_realizer(realizer.clone())
-            .install_dispatch_session_runtime();
+        let host = ((crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+            .await
+            .with_session_realization_control(control.clone()))
+        .with_session_execution(
+            crate::SessionExecutionDependencies::default()
+                .with_mcp_attachment_realizer(realizer.clone()),
+        ))
+        .build()
+        .expect("validated Host dependencies");
+        let _managed = crate::ManagedHost::new(host.clone());
         drive_test_session_realization(
             &host,
             control.as_ref(),
@@ -1314,14 +1317,16 @@ mod tests {
             repeat_stage_without_progress: true,
         });
         let realizer = Arc::new(RecordingMcpRealizer::default());
-        let host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
-                .await
-                .with_session_realization_control(control.clone()),
-        ));
-        let _managed = crate::ManagedHost::new(host.clone())
-            .with_mcp_attachment_realizer(realizer.clone())
-            .install_dispatch_session_runtime();
+        let host = ((crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+            .await
+            .with_session_realization_control(control.clone()))
+        .with_session_execution(
+            crate::SessionExecutionDependencies::default()
+                .with_mcp_attachment_realizer(realizer.clone()),
+        ))
+        .build()
+        .expect("validated Host dependencies");
+        let _managed = crate::ManagedHost::new(host.clone());
         let error = drive_test_session_realization(
             &host,
             control.as_ref(),
@@ -1391,12 +1396,12 @@ mod tests {
             epoch: 1,
             expires_at_unix_ms: u64::MAX,
         };
-        let original = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
-                .await
-                .with_store_dir(storage.path())
-                .await,
-        ));
+        let original = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+            .await
+            .with_store_dir(storage.path())
+            .await)
+            .build()
+            .expect("validated Host dependencies");
         let original_managed = managed_test_host(original.clone());
         let mut frozen = frozen_projection();
         let mut original_projection = frozen.clone();
@@ -1404,10 +1409,7 @@ mod tests {
         let original_control = RecoveryControl::fixed(original_projection.clone());
         let original_binding_sink =
             Arc::new(RecoveryEnvironmentBindingSink::new(&original_control));
-        awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
-            &original_managed,
-            original_binding_sink.clone(),
-        );
+        original_managed.install_test_environment_binding_sink(original_binding_sink.clone());
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
             &original_managed,
             thread,
@@ -1471,24 +1473,25 @@ mod tests {
             },
         };
         let control = RecoveryControl::fixed(frozen.clone());
-        let host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
-                .await
-                .with_store_dir(storage.path())
-                .await,
-        ));
-        let realizer = Arc::new(RecordingMcpRealizer {
-            required_environment: Some((Arc::downgrade(&host), thread.into())),
-            ..Default::default()
-        });
-        let managed = super::test_support::complete_managed_test_host(
-            crate::ManagedHost::new(host.clone()).with_mcp_attachment_realizer(realizer.clone()),
-        );
+        let realizer = Arc::new(RecordingMcpRealizer::default());
+        let host = ((crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+            .await
+            .with_store_dir(storage.path())
+            .await)
+            .with_session_execution(
+                crate::SessionExecutionDependencies::default()
+                    .with_mcp_attachment_realizer(realizer.clone()),
+            ))
+        .build()
+        .expect("validated Host dependencies");
+        realizer
+            .required_environment
+            .set((Arc::downgrade(&host), thread.into()))
+            .unwrap();
+        let managed =
+            super::test_support::complete_managed_test_host(crate::ManagedHost::new(host.clone()));
         let binding_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&control));
-        awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
-            &managed,
-            binding_sink,
-        );
+        managed.install_test_environment_binding_sink(binding_sink);
         HostWorkerResolver::realize_session(
             &host,
             &control,
@@ -1728,22 +1731,27 @@ mod tests {
                     mcp_stages: vec![first_use_stage],
                 },
             };
-        let first_use_host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+        let first_use_realizer = Arc::new(RecordingMcpRealizer::default());
+        let first_use_host =
+            ((crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
                 .await
                 .with_store_dir(storage.path())
-                .await,
-        ));
-        let first_use_realizer = Arc::new(RecordingMcpRealizer {
-            required_environment: Some((Arc::downgrade(&first_use_host), first_use_thread.into())),
-            ..Default::default()
-        });
+                .await)
+                .with_session_execution(
+                    crate::SessionExecutionDependencies::default()
+                        .with_mcp_attachment_realizer(first_use_realizer.clone()),
+                ))
+            .build()
+            .expect("validated Host dependencies");
+        first_use_realizer
+            .required_environment
+            .set((Arc::downgrade(&first_use_host), first_use_thread.into()))
+            .unwrap();
         let first_use_control = RecoveryControl::fixed(first_use_projection);
         let first_use_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&first_use_control));
-        let first_use_managed = crate::ManagedHost::new(first_use_host.clone())
-            .with_mcp_attachment_realizer(first_use_realizer.clone());
-        first_use_managed.install_environment_binding_sink(first_use_sink.clone());
-        let _managed = first_use_managed.install_dispatch_session_runtime();
+        let first_use_managed = crate::ManagedHost::new(first_use_host.clone());
+        first_use_managed.install_test_environment_binding_sink(first_use_sink.clone());
+        let _managed = first_use_managed;
         HostWorkerResolver::realize_session(
             &first_use_host,
             &first_use_control,
@@ -1771,24 +1779,24 @@ mod tests {
             "R7 Store-read identity remains Resident"
         );
 
-        let unpinned_host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
-                .await
-                .with_store_dir(storage.path())
-                .await,
-        ));
         let unpinned_realizer = Arc::new(RecordingMcpRealizer::default());
-        let unpinned_managed = crate::ManagedHost::new(unpinned_host.clone())
-            .with_mcp_attachment_realizer(unpinned_realizer.clone())
-            .install_dispatch_session_runtime();
-        awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
-            &unpinned_managed,
-            Arc::new(ToggleBindingSink {
-                fail: std::sync::atomic::AtomicBool::new(false),
-                calls: std::sync::atomic::AtomicUsize::new(0),
-                binding: Mutex::new(None),
-            }),
-        );
+        let unpinned_host = ((crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+            .await
+            .with_store_dir(storage.path())
+            .await)
+            .with_session_execution(
+                crate::SessionExecutionDependencies::default()
+                    .with_mcp_attachment_realizer(unpinned_realizer.clone()),
+            ))
+        .build()
+        .expect("validated Host dependencies");
+
+        let unpinned_managed = crate::ManagedHost::new(unpinned_host.clone());
+        unpinned_managed.install_test_environment_binding_sink(Arc::new(ToggleBindingSink {
+            fail: std::sync::atomic::AtomicBool::new(false),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            binding: Mutex::new(None),
+        }));
         let error = HostWorkerResolver::realize_session(
             &unpinned_host,
             &RecoveryControl::fixed(frozen_projection()),
@@ -1816,12 +1824,12 @@ mod tests {
             "R8/E6: no unpinned Runtime may be installed"
         );
 
-        let cold = SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
-                .await
-                .with_store_dir(storage.path())
-                .await,
-        );
+        let cold = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+            .await
+            .with_store_dir(storage.path())
+            .await)
+            .build()
+            .expect("validated Host dependencies");
         let error = HostWorkerResolver::realize_session(
             &cold,
             &control,
@@ -1840,12 +1848,13 @@ mod tests {
 
         let rebuild_thread = "cold-missing-environment";
         let rebuild_activation = test_activation(rebuild_thread, "run-cold-missing-environment");
-        let rebuild_fixture_host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+        let rebuild_fixture_host =
+            (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
                 .await
                 .with_store_dir(storage.path())
-                .await,
-        ));
+                .await)
+                .build()
+                .expect("validated Host dependencies");
         let mut rebuild_frozen = frozen_projection();
         rebuild_frozen.agent_publication = Some(rebuild_activation.snapshot.clone());
         let missing =
@@ -1872,20 +1881,16 @@ mod tests {
             ),
             action: awaken_session_realization_contract::SessionRealizationAction::Complete,
         };
-        let rebuild_host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
-                .await
-                .with_store_dir(storage.path())
-                .await,
-        ));
-        let rebuild_managed =
-            crate::ManagedHost::new(rebuild_host.clone()).install_dispatch_session_runtime();
+        let rebuild_host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+            .await
+            .with_store_dir(storage.path())
+            .await)
+            .build()
+            .expect("validated Host dependencies");
+        let rebuild_managed = crate::ManagedHost::new(rebuild_host.clone());
         let rebuild_control = RecoveryControl::fixed(rebuild_frozen.clone());
         let rebuild_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&rebuild_control));
-        awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
-            &rebuild_managed,
-            rebuild_sink,
-        );
+        rebuild_managed.install_test_environment_binding_sink(rebuild_sink);
         HostWorkerResolver::realize_session(
             &rebuild_host,
             &rebuild_control,
@@ -1909,12 +1914,13 @@ mod tests {
         let continuity_thread = "cold-continuity-missing";
         let continuity_activation =
             test_activation(continuity_thread, "run-cold-continuity-missing");
-        let continuity_fixture_host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+        let continuity_fixture_host =
+            (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
                 .await
                 .with_store_dir(storage.path())
-                .await,
-        ));
+                .await)
+                .build()
+                .expect("validated Host dependencies");
         let mut continuity_frozen = frozen_projection();
         continuity_frozen.agent_publication = Some(continuity_activation.snapshot.clone());
         let missing =
@@ -1940,20 +1946,16 @@ mod tests {
                 ),
                 action: awaken_session_realization_contract::SessionRealizationAction::Complete,
             };
-        let continuity_host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
-                .await
-                .with_store_dir(storage.path())
-                .await,
-        ));
-        let continuity_managed =
-            crate::ManagedHost::new(continuity_host.clone()).install_dispatch_session_runtime();
+        let continuity_host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+            .await
+            .with_store_dir(storage.path())
+            .await)
+            .build()
+            .expect("validated Host dependencies");
+        let continuity_managed = crate::ManagedHost::new(continuity_host.clone());
         let continuity_control = RecoveryControl::fixed(continuity_frozen.clone());
         let continuity_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&continuity_control));
-        awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
-            &continuity_managed,
-            continuity_sink,
-        );
+        continuity_managed.install_test_environment_binding_sink(continuity_sink);
         let error = HostWorkerResolver::realize_session(
             &continuity_host,
             &continuity_control,

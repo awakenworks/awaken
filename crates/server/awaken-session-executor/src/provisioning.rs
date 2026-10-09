@@ -847,14 +847,9 @@ impl SharedHost {
         ) {
             (Some(fence), true) => {
                 let verifier = self
-                    .dispatch
-                    .dispatch_session_runtime
-                    .read()
-                    .map_err(|_| {
-                        crate::host::HostError::internal("dispatch Session Runtime lock poisoned")
-                    })?
-                    .as_ref()
-                    .and_then(|runtime| runtime.repository_binding_verifier.clone())
+                    .session_execution
+                    .repository_binding_verifier
+                    .clone()
                     .ok_or_else(|| {
                         crate::host::HostError::internal(
                             "terminal Repository publication has no binding verifier",
@@ -947,21 +942,14 @@ impl SharedHost {
                     Some(transport) => transport,
                     None => {
                         let verifier = self
-                            .dispatch
-                            .dispatch_session_runtime
-                            .read()
-                            .map_err(|_| {
-                                crate::host::HostError::internal(
-                                    "dispatch Session Runtime lock poisoned",
-                                )
-                            })?
-                            .as_ref()
-                            .and_then(|runtime| runtime.repository_binding_verifier.clone())
+                            .session_execution
+                            .repository_binding_verifier
+                            .clone()
                             .ok_or_else(|| {
-                                crate::host::HostError::internal(
-                                    "Gateway-mediated Repository has no binding verifier",
-                                )
-                            })?;
+                            crate::host::HostError::internal(
+                                "Gateway-mediated Repository has no binding verifier",
+                            )
+                        })?;
                         verifier
                             .verify(
                                 &workspace,

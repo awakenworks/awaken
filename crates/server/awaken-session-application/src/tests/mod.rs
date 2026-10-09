@@ -540,8 +540,6 @@ impl RecordingReplyRuntime {
 
 #[derive(Default)]
 struct RecordingCleanupRuntime {
-    binding_sink:
-        Mutex<Option<Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>>,
     fail_quiesce_once: AtomicBool,
     fail_before_effect_once: AtomicBool,
     fail_once: AtomicBool,
@@ -901,16 +899,6 @@ impl awaken_session_execution_contract::RealizationRuntime for NoopRuntime {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
             .await
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Install the durable callback used at the exact sandbox creation boundary.
-    fn install_environment_binding_sink(
-        &self,
-        sink: std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
-    ) {
-        awaken_session_execution_contract::NeutralRuntime.install_environment_binding_sink(sink)
     }
 }
 
@@ -1408,16 +1396,6 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingReplyRun
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
             .await
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Install the durable callback used at the exact sandbox creation boundary.
-    fn install_environment_binding_sink(
-        &self,
-        sink: std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
-    ) {
-        awaken_session_execution_contract::NeutralRuntime.install_environment_binding_sink(sink)
     }
 }
 
@@ -2070,13 +2048,6 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingAgentAdm
             .invalidate_session_realization_lease(thread, lease)
             .await
     }
-
-    fn install_environment_binding_sink(
-        &self,
-        sink: std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
-    ) {
-        awaken_session_execution_contract::NeutralRuntime.install_environment_binding_sink(sink)
-    }
 }
 
 #[async_trait::async_trait]
@@ -2717,16 +2688,6 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingBoundary
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
             .await
-    }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Install the durable callback used at the exact sandbox creation boundary.
-    fn install_environment_binding_sink(
-        &self,
-        sink: std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
-    ) {
-        awaken_session_execution_contract::NeutralRuntime.install_environment_binding_sink(sink)
     }
 }
 
@@ -3409,13 +3370,6 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCleanupR
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
             .await
-    }
-
-    fn install_environment_binding_sink(
-        &self,
-        sink: Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
-    ) {
-        *self.binding_sink.lock().unwrap() = Some(sink);
     }
 }
 
@@ -4825,16 +4779,21 @@ fn application_with_runtime(
     environments: Arc<dyn SessionEnvironmentSource>,
 ) -> SessionApplication {
     let mcp = Arc::new(NoopMcpRealizer);
-    SessionApplication::new(runtime, mcp, repo, environments, system_clock())
+    SessionApplication::new(
+        runtime,
+        mcp,
+        crate::SessionPersistence::new(repo, system_clock()),
+        environments,
+    )
 }
 
 #[tokio::test]
 async fn complete_runtime_composition_does_not_require_optional_role_discovery() {
-    // Causes: C1 all required role traits are implemented; C2 the old
-    // realization accessor returns None; C3 clock or repository is replaced.
-    // Effects: construction and both binding updates succeed through the real
-    // role. R1=C1+C2 => construct; R2=R1+C3 => rebind. Missing C1 is excluded by
-    // the CompleteSessionRuntime constructor parameter at compile time.
+    // Causes: C1 all required role traits; C2 legacy optional accessor is None;
+    // C3 a selected Store/Clock pair is prepared before Runtime composition.
+    // R1 C1+C2+C3 => construction uses required roles and the same cached sink.
+    // R2 repeated sink reads => pointer identity, no new writer or clock choice.
+    // Missing C1 is excluded by CompleteSessionRuntime at compile time.
     let runtime = Arc::new(NoopRuntime);
     assert!(SessionRuntime::realization(runtime.as_ref()).is_none());
     let repository = Arc::new(
@@ -4842,13 +4801,22 @@ async fn complete_runtime_composition_does_not_require_optional_role_discovery()
             .await
             .unwrap(),
     );
-    let mut app = application_with_runtime(
+    let clock = Arc::new(awaken_lease_testkit::ManualClock::new(100));
+    let persistence = crate::SessionPersistence::new(repository, clock.clone());
+    let sink = persistence.environment_binding_sink();
+    assert!(
+        Arc::ptr_eq(&sink, &persistence.environment_binding_sink()),
+        "R2"
+    );
+    let app = SessionApplication::new(
         runtime,
-        repository.clone(),
+        Arc::new(NoopMcpRealizer),
+        persistence,
         Arc::new(RecordingEnvironmentSource::default()),
-    )
-    .with_clock(system_clock());
-    app.replace_repository(repository);
+    );
+    assert!(Arc::ptr_eq(&sink, &app.environment_binding_sink()), "R1/R2");
+    let selected_clock: Arc<dyn awaken_time::WallClock> = clock;
+    assert!(Arc::ptr_eq(&selected_clock, &app.clock()), "R1");
 }
 
 fn application_with_configuration(
@@ -4859,10 +4827,9 @@ fn application_with_configuration(
     SessionApplication::new_with_configuration(
         Arc::new(NoopRuntime),
         Arc::new(NoopMcpRealizer),
-        repo,
+        crate::SessionPersistence::new(repo, system_clock()),
         environments,
         configuration,
-        system_clock(),
     )
 }
 

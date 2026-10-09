@@ -541,7 +541,7 @@ pub(crate) trait SessionAuthority: Send + Sync {
     async fn durable_thread_exists(&self, thread: &str) -> Result<bool, crate::HostError>;
 
     /// The durable dispatch store this process owns, if any.
-    fn durable_dispatch_store(&self) -> Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>>;
+    fn dispatch_store(&self) -> Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>>;
 
     /// The cross-node dispatch wake this process owns, if any.
     fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_execution::WakeSignal>>;
@@ -576,18 +576,15 @@ pub(crate) trait SessionAuthority: Send + Sync {
 }
 
 /// The authority of a Host that owns committed truth: a Coordinator or a single
-/// process. Absent a [`RuntimeAuthority`], every store-backed answer fails
-/// closed exactly as a Host without an injected authority always has.
-#[derive(Default)]
+/// process. Its selected commit/Dispatch/checkpoint source is mandatory before
+/// a Host can be constructed; availability errors remain the source's result.
 pub(crate) struct LocalAuthority {
-    runtime: Option<Arc<dyn RuntimeAuthority>>,
+    runtime: Arc<dyn RuntimeAuthority>,
 }
 
 impl LocalAuthority {
     pub(crate) fn new(runtime: Arc<dyn RuntimeAuthority>) -> Self {
-        Self {
-            runtime: Some(runtime),
-        }
+        Self { runtime }
     }
 }
 
@@ -598,10 +595,6 @@ impl SessionAuthority for LocalAuthority {
         thread: &str,
     ) -> Result<crate::store::HostCommit, crate::HostError> {
         self.runtime
-            .as_ref()
-            .ok_or_else(|| {
-                crate::HostError::internal("local Runtime requires an injected authority")
-            })?
             .open_commit(thread)
             .await
             .map(crate::store::HostCommit::Local)
@@ -613,12 +606,6 @@ impl SessionAuthority for LocalAuthority {
         thread: &str,
     ) -> Result<Option<Arc<dyn StreamCheckpointStore>>, crate::HostError> {
         self.runtime
-            .as_ref()
-            .ok_or_else(|| {
-                crate::HostError::internal(
-                    "database-less Worker build cannot open a local checkpoint authority",
-                )
-            })?
             .stream_checkpoint(thread)
             .map(Some)
             .map_err(crate::HostError::from)
@@ -644,25 +631,18 @@ impl SessionAuthority for LocalAuthority {
     }
 
     async fn durable_thread_exists(&self, thread: &str) -> Result<bool, crate::HostError> {
-        match self.runtime.as_ref() {
-            Some(runtime) => runtime
-                .durable_thread_exists(thread)
-                .await
-                .map_err(crate::HostError::from),
-            None => Ok(false),
-        }
+        self.runtime
+            .durable_thread_exists(thread)
+            .await
+            .map_err(crate::HostError::from)
     }
 
-    fn durable_dispatch_store(&self) -> Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>> {
-        self.runtime
-            .as_ref()
-            .map(|runtime| runtime.dispatch_store())
+    fn dispatch_store(&self) -> Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>> {
+        Some(self.runtime.dispatch_store())
     }
 
     fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_execution::WakeSignal>> {
-        self.runtime
-            .as_ref()
-            .and_then(|runtime| runtime.dispatch_wake())
+        self.runtime.dispatch_wake()
     }
 
     fn cancels_through_durable_intent(&self) -> bool {
@@ -696,6 +676,7 @@ impl SessionAuthority for LocalAuthority {
 /// used; no transport grants the Worker a local write authority.
 #[derive(Default)]
 pub struct UpstreamAuthority {
+    dispatch: Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>>,
     claimed_commit: Option<Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>>,
     stream_publisher: Option<Arc<dyn awaken_dispatch_contract::ClaimedStreamPublisher>>,
     terminal_cleanup_control:
@@ -704,6 +685,49 @@ pub struct UpstreamAuthority {
 }
 
 impl UpstreamAuthority {
+    /// Required executable-Worker wiring, checked before Host construction.
+    /// These are connection selections, not evidence that any remote effect
+    /// was authorized or completed; actual calls still verify their fences.
+    pub(crate) fn validate_worker_connections(&self) -> Result<(), crate::HostError> {
+        let required = [
+            (self.dispatch.is_some(), "upstream dispatch transport"),
+            (
+                self.claimed_commit.is_some(),
+                "claim-fenced commit transport",
+            ),
+            (
+                self.stream_publisher.is_some(),
+                "claim-fenced stream publisher",
+            ),
+            (
+                self.terminal_cleanup_control.is_some(),
+                "Session terminal cleanup control",
+            ),
+            (
+                self.memory_reference_encoder.is_some(),
+                "fenced Memory reference encoder",
+            ),
+        ];
+        if let Some((_, name)) = required.into_iter().find(|(present, _)| !present) {
+            return Err(crate::HostError::bad_request(format!(
+                "Worker construction requires {name}",
+            )));
+        }
+        Ok(())
+    }
+
+    /// The Worker's sole queue transport, selected with its other upstream ports.
+    #[must_use]
+    pub fn with_dispatch_transport(
+        mut self,
+        dispatch: Arc<dyn awaken_dispatch_contract::Dispatch>,
+    ) -> Self {
+        self.dispatch = Some(Arc::new(
+            awaken_dispatch_erasure::AnyDispatchStore::from_dispatch(dispatch),
+        ));
+        self
+    }
+
     /// The claim-fenced commit transport claimed Runs write through.
     #[must_use]
     pub fn with_claimed_commit(
@@ -798,8 +822,8 @@ impl SessionAuthority for UpstreamAuthority {
         Ok(false)
     }
 
-    fn durable_dispatch_store(&self) -> Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>> {
-        None
+    fn dispatch_store(&self) -> Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>> {
+        self.dispatch.clone()
     }
 
     fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_execution::WakeSignal>> {
@@ -828,5 +852,53 @@ impl SessionAuthority for UpstreamAuthority {
 
     fn memory_reference_encoder(&self) -> Option<&dyn crate::host::RuntimeMemoryReferenceEncoder> {
         self.memory_reference_encoder.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod worker_connection_tests {
+    #[test]
+    fn executable_worker_requires_every_existing_upstream_connection() {
+        // C1 claim commit; C2 stream publisher; C3 terminal cleanup; C4 fenced
+        // Memory encoder; C5 queue transport. R1 all => complete connection selection. R2-R6 each
+        // absent => construction refusal naming that missing port, zero effects.
+        // This is MC/DC for C1 && C2 && C3 && C4 && C5; multiple absent ports also
+        // refuse. Runtime fence and dependency failures remain owned by callers.
+        let selected = crate::host::test_upstream_authority();
+        assert!(selected.validate_worker_connections().is_ok(), "R1");
+        for missing in 0..5 {
+            let mut selected = crate::host::test_upstream_authority();
+            let expected = match missing {
+                0 => {
+                    selected.claimed_commit = None;
+                    "claim-fenced commit"
+                }
+                1 => {
+                    selected.stream_publisher = None;
+                    "claim-fenced stream"
+                }
+                2 => {
+                    selected.terminal_cleanup_control = None;
+                    "terminal cleanup"
+                }
+                3 => {
+                    selected.memory_reference_encoder = None;
+                    "Memory reference"
+                }
+                _ => {
+                    selected.dispatch = None;
+                    "dispatch transport"
+                }
+            };
+            assert!(
+                selected
+                    .validate_worker_connections()
+                    .unwrap_err()
+                    .to_string()
+                    .contains(expected),
+                "R{}",
+                missing + 2
+            );
+        }
     }
 }

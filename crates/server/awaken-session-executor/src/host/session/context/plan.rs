@@ -188,8 +188,7 @@ pub(super) async fn prepare(
     }
     let background_attention = if background_tasks_enabled {
         host.session_application
-            .background_runs
-            .get()
+            .background_run_submission()
             .cloned()
             .filter(|application| application.strong_count() > 0)
     } else {

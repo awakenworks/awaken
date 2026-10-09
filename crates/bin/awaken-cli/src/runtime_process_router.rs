@@ -529,6 +529,11 @@ pub(super) async fn prepare_runtime_routers(
     // assistant can call them. It shares the SAME skill store and Resource Registry the
     // capability inventory reads, so a skill or memory store the host serves is exactly
     // what the assistant enumerates, and identity survives a restart.
+    let runtime_authority = runtime_authority
+        .ok_or_else(|| "execution process requires its selected Runtime authority".to_string())?;
+    let local_dispatch = Some(runtime_authority.dispatch_store());
+    let session_persistence =
+        awaken_session_application::SessionPersistence::new(sessions.clone(), clock.clone());
     let mut host_builder = match deployment {
         Some(deployment) => HostDependencies::for_coordinator(
             model_wiring.executor,
@@ -541,6 +546,7 @@ pub(super) async fn prepare_runtime_routers(
                 deployment,
                 clock: clock.clone(),
             },
+            runtime_authority.clone(),
         ),
         #[cfg(any(test, feature = "test-support"))]
         None => HostDependencies::for_local_resources(
@@ -550,17 +556,13 @@ pub(super) async fn prepare_runtime_routers(
             memory_extractions,
             platform_workspace.clone(),
             awaken_session_executor::DeploymentConfig::ephemeral(),
+            runtime_authority.clone(),
         ),
         #[cfg(not(any(test, feature = "test-support")))]
         None => unreachable!("product runtime process requires a resolved deployment"),
     }
-    .with_auxiliary_sandboxes(awaken_execution_composition::local_auxiliary_sandboxes());
-    let local_dispatch = runtime_authority
-        .as_ref()
-        .map(|authority| authority.dispatch_store());
-    if let Some(runtime_authority) = runtime_authority {
-        host_builder = host_builder.with_runtime_authority(runtime_authority);
-    }
+    .with_auxiliary_sandboxes(awaken_execution_composition::local_auxiliary_sandboxes())
+    .with_environment_binding_sink(session_persistence.environment_binding_sink());
     let artifact_publisher = resource_application.artifact_publisher();
     let claim_fenced_artifact_publisher = local_dispatch.map(|dispatch| {
         Arc::new(awaken_coordinator::ClaimFencedArtifactPublisher::new(
@@ -612,7 +614,21 @@ pub(super) async fn prepare_runtime_routers(
         Some(customize) => customize(host_builder),
         None => host_builder,
     });
-    let host = Arc::new(SharedHost::from(host_builder));
+    let repository_bindings = Arc::new(
+        awaken_resource_application::RegistryRepositoryBindingVerifier::new(
+            resource_registry.clone(),
+        ),
+    );
+    let mut execution = awaken_session_executor::SessionExecutionDependencies::default()
+        .with_resource_validator(resource_registry.clone())
+        .with_repository_binding_verifier(repository_bindings);
+    if let Some(factory) = credential_refresh_factory {
+        execution = execution.with_credential_refresh_factory(factory);
+    }
+    let host_builder = host_builder.with_session_execution(execution);
+    let host = (host_builder)
+        .build()
+        .map_err(|error| format!("construct execution Host: {error}"))?;
     // The canonical Coordinator component owns Runtime background drain.
     // This process does not register a second drain for the same Host.
     let resource_reclaimer = Arc::new(
@@ -633,34 +649,18 @@ pub(super) async fn prepare_runtime_routers(
         )),
     );
     let reclamation_clock = resource_authorities.clock();
-    let repository_bindings = Arc::new(
-        awaken_resource_application::RegistryRepositoryBindingVerifier::new(
-            resource_registry.clone(),
-        ),
-    );
-    let mut managed_host = ManagedHost::new(host.clone())
-        .with_resource_validator(resource_registry.clone())
-        .with_repository_binding_verifier(repository_bindings);
-    if let Some(credentials) = credential_materializer {
-        managed_host = managed_host.with_credential_materializer(credentials);
-    }
-    if let Some(factory) = credential_refresh_factory {
-        managed_host = managed_host.with_credential_refresh_factory(factory);
-    }
-    managed_host = managed_host.install_dispatch_session_runtime();
-    let managed_host = Arc::new(managed_host);
+    let managed_host = Arc::new(ManagedHost::new(host.clone()));
     let mut session_application =
         awaken_session_application::SessionApplication::new_with_configuration(
             managed_host.clone(),
             managed_host.clone(),
-            sessions.clone(),
+            session_persistence,
             environment_execution.clone(),
             awaken_session_application::SessionApplicationConfiguration {
                 execution_placement: session_execution_placement,
                 local_realization_owner: host.dispatch_owner().to_string(),
                 ..Default::default()
             },
-            clock.clone(),
         );
     session_application.set_credential_source(credential_source);
     if let Some(vault_state) = local_vault_state.as_ref() {
@@ -723,12 +723,11 @@ pub(super) async fn prepare_runtime_routers(
         managed_state = managed_state.with_inference_geo_policy(policy);
     }
     let managed_state = Arc::new(managed_state);
-    awaken_coordinator::install_managed_lifecycle_delivery_with_deployments(
+    let lifecycle_delivery = awaken_coordinator::prepare_managed_lifecycle_delivery(
         &managed_state,
         &session_application,
         Some(webhook_delivery),
-        deployment_application.as_ref(),
-        &process.service_lifecycle,
+        Some(deployment_application.as_ref()),
     )
     .expect("Managed lifecycle delivery binds before Coordinator serves traffic");
     if let Some(vault_state) = local_vault_state {
@@ -773,6 +772,7 @@ pub(super) async fn prepare_runtime_routers(
     let coordinator = awaken_coordinator::build_coordinator_component(
         awaken_coordinator::CoordinatorDependencies {
             service_lifecycle: process.service_lifecycle.clone(),
+            lifecycle_delivery,
             host,
             session_application: session_application.clone(),
             managed_state,

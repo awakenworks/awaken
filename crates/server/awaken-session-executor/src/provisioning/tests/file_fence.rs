@@ -177,15 +177,16 @@ async fn file_staging_passes_one_exact_prepared_fence_to_one_source_read() {
         if remote {
             dependencies = dependencies.with_authority(crate::UpstreamAuthority::default());
         }
-        let result = crate::ManagedHost::new(Arc::new(SharedHost::from(dependencies)))
-            .stage_resolved_input(
-                "workspace",
-                &input,
-                claim.as_ref(),
-                realization.map(|(session_id, revision)| (session_id, revision, &lease)),
-                None,
-            )
-            .await;
+        let result =
+            crate::ManagedHost::new((dependencies).build().expect("validated Host dependencies"))
+                .stage_resolved_input(
+                    "workspace",
+                    &input,
+                    claim.as_ref(),
+                    realization.map(|(session_id, revision)| (session_id, revision, &lease)),
+                    None,
+                )
+                .await;
         match (result, succeeds) {
             (Ok(staged), true) => assert_eq!(staged.mounts.len(), 1, "{rule}"),
             (Err(error), false) if rule == "R5" => assert_eq!(
@@ -239,11 +240,13 @@ async fn terminal_repository_guard_rejects_file_before_any_source_read() {
         },
     };
     let source = Arc::new(FileFenceProbe::new(None));
-    let runtime = crate::ManagedHost::new(Arc::new(SharedHost::from(
-        dependencies()
+    let runtime = crate::ManagedHost::new(
+        (dependencies()
             .await
-            .with_file_content_source(source.clone()),
-    )));
+            .with_file_content_source(source.clone()))
+        .build()
+        .expect("validated Host dependencies"),
+    );
     let error = match runtime
         .stage_terminal_repository_publication_input(
             "workspace",

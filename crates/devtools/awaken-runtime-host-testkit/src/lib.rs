@@ -86,8 +86,13 @@ pub async fn memory_extraction_repository(
 /// # Panics
 /// When an ephemeral database cannot be opened.
 #[must_use]
-pub async fn volatile_host(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> SharedHost {
-    SharedHost::from(volatile_dependencies(llm, model_ref).await)
+pub async fn volatile_host(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+) -> Arc<SharedHost> {
+    (volatile_dependencies(llm, model_ref).await)
+        .build()
+        .expect("validated Host dependencies")
 }
 
 /// Volatile Host dependencies over `llm`: ephemeral Memory and extraction
@@ -117,20 +122,22 @@ pub async fn volatile_dependencies_with_deployment(
     model_ref: impl Into<String>,
     deployment: DeploymentConfig,
 ) -> HostDependencies {
+    let resources = volatile_resource_ports().await;
+    let authority = volatile_runtime_authority(resources.clock.clone());
     with_workdir_fallback(HostDependencies::for_local_resources(
         llm,
         model_ref,
-        volatile_resource_ports().await,
+        resources,
         memory_extraction_repository(None).await,
         SharedHost::mint_local_workspace(),
         deployment,
+        authority,
     ))
 }
 
 /// Select the Workdir adapter under the Deployment's sandbox root as the
 /// non-authoritative fallback Session provider.
 fn with_workdir_fallback(dependencies: HostDependencies) -> HostDependencies {
-    let dependencies = with_volatile_runtime_authority(dependencies);
     let base = awaken_session_executor::session_sandbox_base(dependencies.deployment_config());
     dependencies.with_fallback_session_environment_provider(
         awaken_session_environment::SandboxEnvironmentProvider::workdir(base)
@@ -141,20 +148,21 @@ fn with_workdir_fallback(dependencies: HostDependencies) -> HostDependencies {
 /// Select the one reference Dispatch/commit authority at a test composition
 /// root. Call only when no explicit runtime authority was already selected.
 #[must_use]
-pub fn with_volatile_runtime_authority(dependencies: HostDependencies) -> HostDependencies {
-    // Cause/effect fixture rule: C1 a volatile scenario Host has no injected
-    // authority; C2 the same Host clock stamps Dispatch and Thread commits.
+pub fn volatile_runtime_authority(
+    clock: Arc<dyn awaken_time::WallClock>,
+) -> Arc<dyn awaken_session_executor::RuntimeAuthority> {
+    // Cause/effect fixture rule: C1 a volatile scenario selects its authority
+    // before Host construction; C2 the same clock stamps Dispatch and Thread commits.
     // R1 C1+C2 -> one Ingress MemoryDispatchStore is selected here, retains its
     // continuation and operational-feed roles through AnyDispatchStore, and is injected once;
     // product Host construction never selects a Coordinator backend implicitly.
-    let clock = dependencies.clock();
     let dispatch = awaken_dispatch::AnyDispatchStore::from_durable_store(
         awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
         None,
     );
-    dependencies.with_runtime_authority(Arc::new(
+    Arc::new(
         awaken_session_executor::EphemeralRuntimeAuthority::with_dispatch(clock, Arc::new(dispatch)),
-    ))
+    )
 }
 
 /// Upgrade `dependencies` to local durable storage under `dir`, with the

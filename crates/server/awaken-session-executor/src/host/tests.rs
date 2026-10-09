@@ -23,11 +23,13 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
             .await
             .unwrap(),
     );
-    let (host, _managed) = dispatch_test_host(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
+    let (host, _managed) = dispatch_test_host(
+        (crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
             .await
-            .with_dispatch_store(dispatch.clone()),
-    ));
+            .with_ephemeral_dispatch(dispatch.clone()))
+        .build()
+        .expect("validated Host dependencies"),
+    );
     let thread = ThreadId("native-input-session".into());
     let run = RunId("native-input-run".into());
     let ctx = host.ctx_for(&thread.0, None).await.unwrap();
@@ -594,9 +596,8 @@ fn install_test_session_application(host: &Arc<SharedHost>) {
         Arc<dyn awaken_session_execution_contract::SessionAgentCoordination>,
     > = std::sync::OnceLock::new();
     let application = APPLICATION.get_or_init(|| Arc::new(RejectingSessionAgentCoordination));
-    host.session_application_ports()
-        .agent_coordination
-        .bind(Arc::downgrade(application))
+    host.session_application_bindings()
+        .bind_agent_coordination(application.clone())
         .expect("install one test Session application authority");
 }
 
@@ -611,9 +612,8 @@ fn install_recording_session_application(host: &Arc<SharedHost>) {
     let application = APPLICATION.get_or_init(|| {
         Arc::new(crate::coordination::RecordingSessionAgentCoordination::default())
     });
-    host.session_application_ports()
-        .agent_coordination
-        .bind(Arc::downgrade(application))
+    host.session_application_bindings()
+        .bind_agent_coordination(application.clone())
         .expect("install recording Session application authority");
 }
 
@@ -845,15 +845,8 @@ fn managed_with_resource_source_using(
     host: Arc<SharedHost>,
     install_coordination: fn(&Arc<SharedHost>),
 ) -> crate::ManagedHost {
-    let validator = test_resource_validator();
     install_coordination(&host);
-    let repository_bindings = Arc::new(
-        awaken_resource_application::RegistryRepositoryBindingVerifier::new(validator.clone()),
-    );
     crate::ManagedHost::new(host)
-        .with_resource_validator(validator.clone())
-        .with_repository_binding_verifier(repository_bindings)
-        .install_dispatch_session_runtime()
 }
 
 fn http_basic_material(username: &str, password: &str) -> awaken_agent_contract::RedactedString {
@@ -1092,14 +1085,13 @@ impl LlmExecutor for GatedModel {
 /// Interrupt fixtures retain the returned adapter so no test-only runtime or
 /// partial Session projection competes with that composition.
 pub(crate) fn install_test_dispatch_runtime(host: &Arc<SharedHost>) -> crate::ManagedHost {
-    crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime()
+    crate::ManagedHost::new(host.clone())
 }
 
 /// Wrap a fully configured ordinary Host and install the same canonical
 /// Dispatch composition used by the application. Callers configure the Host
 /// first, so this fixture cannot publish a partially configured adapter.
-fn dispatch_test_host(host: SharedHost) -> (Arc<SharedHost>, crate::ManagedHost) {
-    let host = Arc::new(host);
+fn dispatch_test_host(host: Arc<SharedHost>) -> (Arc<SharedHost>, crate::ManagedHost) {
     let managed = install_test_dispatch_runtime(&host);
     (host, managed)
 }
@@ -1244,23 +1236,16 @@ async fn install_complete_test_session_for_realization(
     thread: &str,
     init: awaken_session_configuration_contract::SessionInit,
 ) -> Result<(), awaken_session_types::RunError> {
-    managed
-        .realization()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "RealizationRuntime is unsupported by this runtime",
-            )
-        })?
-        .install_environment_binding_sink(Arc::new(BindingOrderSink {
-            host: Arc::downgrade(&managed.host),
-            authorize_calls: AtomicUsize::new(0),
-            calls: AtomicUsize::new(0),
-            observed_before_publish: AtomicBool::new(false),
-            fail: false,
-            require_realization: false,
-            owned_session_id: None,
-            committed_environment: None,
-        }));
+    managed.install_test_environment_binding_sink(Arc::new(BindingOrderSink {
+        host: Arc::downgrade(&managed.host),
+        authorize_calls: AtomicUsize::new(0),
+        calls: AtomicUsize::new(0),
+        observed_before_publish: AtomicBool::new(false),
+        fail: false,
+        require_realization: false,
+        owned_session_id: None,
+        committed_environment: None,
+    }));
     install_complete_test_session(managed, thread, init).await?;
     managed
         .host

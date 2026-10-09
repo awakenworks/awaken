@@ -34,10 +34,10 @@ fn text_of(message: &Message) -> String {
 
 fn host_with_client_tool(dependencies: HostDependencies) -> Arc<SharedHost> {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
-    let host = Arc::new(SharedHost::from(
-        dependencies.with_client_tools(client_tools),
-    ));
-    let _runtime = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    let host = (dependencies.with_client_tools(client_tools))
+        .build()
+        .expect("validated Host dependencies");
+    let _runtime = ManagedHost::new(host.clone());
     host
 }
 
@@ -59,7 +59,8 @@ async fn host_over(dir: &std::path::Path, process: &str) -> Arc<SharedHost> {
             worker_deployment,
         )
         .await
-        .with_runtime_authority(authority),
+        .with_runtime_authority(authority)
+        .expect("local authority is selected before Host construction"),
     )
 }
 
@@ -178,9 +179,7 @@ async fn in_memory_host_does_not_recover_an_awaiting_run_across_a_rebuild() {
 
     {
         let host = host_with_client_tool(
-            awaken_runtime_host_testkit::with_volatile_runtime_authority(
-                build_unmounted_dependencies(Arc::new(CustomToolModel), "custom").await,
-            ),
+            build_unmounted_dependencies(Arc::new(CustomToolModel), "custom").await,
         );
         host.run(None, thread, vec![user("u1", "hi")])
             .await
@@ -189,9 +188,7 @@ async fn in_memory_host_does_not_recover_an_awaiting_run_across_a_rebuild() {
     }
 
     let host = host_with_client_tool(
-        awaken_runtime_host_testkit::with_volatile_runtime_authority(
-            build_unmounted_dependencies(Arc::new(CustomToolModel), "custom").await,
-        ),
+        build_unmounted_dependencies(Arc::new(CustomToolModel), "custom").await,
     );
     assert!(
         !host.is_awaiting(thread).await,

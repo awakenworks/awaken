@@ -206,16 +206,6 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCreateRu
             .invalidate_session_realization_lease(thread, lease)
             .await
     }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Install the durable callback used at the exact sandbox creation boundary.
-    fn install_environment_binding_sink(
-        &self,
-        sink: std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
-    ) {
-        awaken_session_execution_contract::NeutralRuntime.install_environment_binding_sink(sink)
-    }
 }
 
 #[async_trait::async_trait]
@@ -641,13 +631,12 @@ async fn worker_projection_failure_is_rebuilt_from_the_durable_session_root() {
     let application = SessionApplication::new_with_configuration(
         runtime.clone(),
         Arc::new(NoopMcpRealizer),
-        repository.clone(),
+        crate::SessionPersistence::new(repository.clone(), awaken_time::system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
             ..Default::default()
         },
-        awaken_time::system_clock(),
     );
     let mut command = creation_command("worker-projection-recovery");
     command.intent.control.runtime_placement =
@@ -1158,9 +1147,8 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                 let application = SessionApplication::new(
                     runtime.clone(),
                     Arc::new(NoopMcpRealizer),
-                    repository.clone(),
+                    crate::SessionPersistence::new(repository.clone(), awaken_time::system_clock()),
                     Arc::new(RecordingEnvironmentSource::default()),
-                    awaken_time::system_clock(),
                 );
                 let accepted = application
                     .accept_session(make_command())
@@ -1247,9 +1235,8 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
             let application = SessionApplication::new(
                 runtime.clone(),
                 Arc::new(NoopMcpRealizer),
-                faulting.clone(),
+                crate::SessionPersistence::new(faulting.clone(), awaken_time::system_clock()),
                 Arc::new(RecordingEnvironmentSource::default()),
-                awaken_time::system_clock(),
             );
             if failed_scan {
                 faulting.fail_recovery_scan_once();
@@ -1382,13 +1369,12 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
     let application = SessionApplication::new_with_configuration(
         runtime.clone(),
         Arc::new(NoopMcpRealizer),
-        repository.clone(),
+        crate::SessionPersistence::new(repository.clone(), awaken_time::system_clock()),
         environments.clone(),
         SessionApplicationConfiguration {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
             ..Default::default()
         },
-        awaken_time::system_clock(),
     );
     let idempotency = awaken_session_state_contract::IdempotencyRecord {
         key: "create-replay-effects".into(),
@@ -1584,9 +1570,8 @@ async fn committed_create_conflicts_recover_only_through_the_exact_receipt() {
         let application = SessionApplication::new(
             runtime.clone(),
             Arc::new(NoopMcpRealizer),
-            faulting,
+            crate::SessionPersistence::new(faulting, awaken_time::system_clock()),
             Arc::new(RecordingEnvironmentSource::default()),
-            awaken_time::system_clock(),
         );
         let stable = stable_receipt.then(|| awaken_session_state_contract::IdempotencyRecord {
             key: "public-create-key".into(),
@@ -1680,9 +1665,8 @@ async fn create_failure_cleanup_is_authorized_only_by_a_terminal_durable_root() 
         let application = SessionApplication::new(
             runtime,
             Arc::new(NoopMcpRealizer),
-            repository.clone(),
+            crate::SessionPersistence::new(repository.clone(), awaken_time::system_clock()),
             Arc::new(RecordingEnvironmentSource::default()),
-            awaken_time::system_clock(),
         );
         let session_id = format!("create-cleanup-{rule}");
 
@@ -2487,13 +2471,12 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
     let application = SessionApplication::new_with_configuration(
         runtime.clone(),
         Arc::new(NoopMcpRealizer),
-        repository.clone(),
+        crate::SessionPersistence::new(repository.clone(), clock.clone()),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
             ..Default::default()
         },
-        clock.clone(),
     );
     let make = || {
         let mut command = creation_command("default-clock-identity");

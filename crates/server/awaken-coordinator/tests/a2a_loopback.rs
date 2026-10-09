@@ -259,21 +259,21 @@ async fn delegating_host(transport: Arc<dyn Transport>) -> Arc<SharedHost> {
         .build();
     let publications = StaticPublishedAgentSnapshots::try_new([parent, remote])
         .expect("parent and delegated remote publications are valid");
-    let host = Arc::new(SharedHost::from(
-        build_unmounted_dependencies_with_agent_publications(
-            Arc::new(NativeDelegatingModel),
-            "parent",
-            Arc::new(publications),
-        )
-        .await
-        .with_remote_attempt_executor(awaken_session_executor::RemoteAttemptInstallation {
-            executor: Arc::new(A2aRunExecutor::new(Arc::new(FixedTransportResolver(
-                transport,
-            )))),
-            credential_realization: Default::default(),
-        }),
-    ));
-    let _runtime = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    let host = (build_unmounted_dependencies_with_agent_publications(
+        Arc::new(NativeDelegatingModel),
+        "parent",
+        Arc::new(publications),
+    )
+    .await
+    .with_remote_attempt_executor(awaken_session_executor::RemoteAttemptInstallation {
+        executor: Arc::new(A2aRunExecutor::new(Arc::new(FixedTransportResolver(
+            transport,
+        )))),
+        credential_realization: Default::default(),
+    }))
+    .build()
+    .expect("validated Host dependencies");
+    let _runtime = ManagedHost::new(host.clone());
     host
 }
 
@@ -308,16 +308,16 @@ async fn published_delegating_host(
         .build();
     let publications = StaticPublishedAgentSnapshots::try_new([parent, remote])
         .expect("authenticated parent and child publications are valid");
-    let host = Arc::new(SharedHost::from(
-        build_unmounted_dependencies_with_agent_publications(
-            Arc::new(NativeDelegatingModel),
-            "parent",
-            Arc::new(publications),
-        )
-        .await
-        .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(Some(materializer))),
-    ));
-    let _runtime = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    let host = (build_unmounted_dependencies_with_agent_publications(
+        Arc::new(NativeDelegatingModel),
+        "parent",
+        Arc::new(publications),
+    )
+    .await
+    .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(Some(materializer))))
+    .build()
+    .expect("validated Host dependencies");
+    let _runtime = ManagedHost::new(host.clone());
     host
 }
 

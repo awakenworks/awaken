@@ -1759,10 +1759,9 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     let application = SessionApplication::new_with_configuration(
         runtime.clone(),
         Arc::new(NoopMcpRealizer),
-        repo.clone(),
+        crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration::default(),
-        awaken_time::system_clock(),
     );
     let fact = awaken_session_state_contract::ManagedLifecycleFact {
         id: "profiled-publication:terminated".into(),
@@ -1885,10 +1884,9 @@ async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup_
     let guarded = SessionApplication::new_with_configuration(
         runtime.clone(),
         Arc::new(NoopMcpRealizer),
-        faulting_repo,
+        crate::SessionPersistence::new(faulting_repo, awaken_time::system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration::default(),
-        awaken_time::system_clock(),
     );
     let effects_before_foreign = runtime.terminal_effect_order.lock().unwrap().len();
     assert!(
@@ -6458,9 +6456,8 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
     let app = SessionApplication::new(
         Arc::new(NoopRuntime),
         realizer.clone(),
-        repo.clone(),
+        crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
-        awaken_time::system_clock(),
     );
     let idempotency_key = "mixed-update-key";
     let command = SessionUpdateCommand {
@@ -7261,28 +7258,27 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
     session.updated_at_unix_ms = Some(100);
     create(repo.as_ref(), session).await;
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(200));
-    // B12 builder clock/repository replacement must update the Runtime-installed
-    // sink. A deliberately empty original repository detects stale composition.
-    let runtime = Arc::new(RecordingCleanupRuntime::default());
+    // B12 the selected faulting repository and clock prepare one sink before
+    // Runtime/App construction. The application retains that same Arc; an
+    // unrelated empty repository detects any hidden or stale source selection.
     let original_repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .unwrap(),
     );
-    let mut app = application_with_runtime(
-        runtime.clone(),
-        original_repo.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    )
-    .with_clock(clock.clone());
     let faulting = Arc::new(FaultingSessionRepository::new(repo.clone()));
-    app.replace_repository(faulting.clone());
-    let sink = runtime
-        .binding_sink
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("B12 installed sink");
+    let persistence = crate::SessionPersistence::new(faulting.clone(), clock.clone());
+    let sink = persistence.environment_binding_sink();
+    let app = SessionApplication::new(
+        Arc::new(RecordingCleanupRuntime::default()),
+        Arc::new(NoopMcpRealizer),
+        persistence,
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    assert!(
+        Arc::ptr_eq(&sink, &app.environment_binding_sink()),
+        "B12 one selected sink"
+    );
     let before_binding = repo.get(&SessionId::from("binding-fence")).await.unwrap();
 
     let first = receipt("binding-fence", "sandbox-a", Some(&current));

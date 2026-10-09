@@ -324,16 +324,6 @@ impl awaken_session_execution_contract::RealizationRuntime for EventBatchRuntime
             .invalidate_session_realization_lease(thread, lease)
             .await
     }
-
-    // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
-    // answered this role method with anything but the refusal below.
-    /// Install the durable callback used at the exact sandbox creation boundary.
-    fn install_environment_binding_sink(
-        &self,
-        sink: std::sync::Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
-    ) {
-        awaken_session_execution_contract::NeutralRuntime.install_environment_binding_sink(sink)
-    }
 }
 
 #[async_trait::async_trait]

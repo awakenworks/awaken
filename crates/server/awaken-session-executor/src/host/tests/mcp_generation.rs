@@ -2,12 +2,12 @@
 
 use super::*;
 
-async fn host_with_process_reaper() -> SharedHost {
-    SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_mcp_process_reaper(Arc::new(awaken_run_executor_acp::Supervisor)),
-    )
+async fn host_with_process_reaper() -> Arc<SharedHost> {
+    (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_mcp_process_reaper(Arc::new(awaken_run_executor_acp::Supervisor)))
+    .build()
+    .expect("validated Host dependencies")
 }
 
 /// Native and ACP are projections of the same exact durable generation.  This
@@ -21,7 +21,7 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
     use awaken_session_mcp::{McpTransportMaterial, McpWiring};
     use awaken_session_mcp_contract::McpRealizationReceipt;
 
-    let host = Arc::new(host_with_process_reaper().await);
+    let host = host_with_process_reaper().await;
     let generation = |number: u64| {
         crate::test_mcp::mcp_fence("mcp-parity", "mcp-docs", number, "runtime-1", 7, u64::MAX)
     };
@@ -236,7 +236,7 @@ async fn mcp_drain_acknowledges_removed_only_after_busy_call_quiesces() {
     // that can disappear before registration. Decision rules:
     // Q0 C0=>the start observation is retained; Q1 C1+C2+C3+C4=>E1+E2;
     // Q2 Q1+quiesced=>E3+E4.
-    let host = Arc::new(host_with_process_reaper().await);
+    let host = host_with_process_reaper().await;
     let generation =
         crate::test_mcp::mcp_fence("mcp-busy-drain", "docs", 1, "runtime-1", 1, u64::MAX);
     let request = StageMcpAttachment {
@@ -345,7 +345,7 @@ async fn worker_relay_drain_retains_exact_route_across_cancel_and_timeout_retry(
     // constraints for every rule. E1 no new route permit is admitted after the
     // first close. Cancellation/timeout never manufactures a different fence,
     // route registry, or Removed receipt.
-    let host = Arc::new(host_with_process_reaper().await);
+    let host = host_with_process_reaper().await;
     let relay = awaken_session_mcp::McpRelay::start().await.unwrap();
     assert!(host.mcp.install_relay(relay.clone()));
     let generation = crate::test_mcp::mcp_fence(
@@ -568,8 +568,9 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
             state: McpProjectionState::Active,
         }
     };
-    let missing_reaper_host =
-        SharedHost::from(crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await);
+    let missing_reaper_host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
     let missing = generation("mcp-reaper-missing", 9);
     let missing_projection = projection(missing.clone(), false);
     let same_handle = missing_projection.mcp_process.as_ref().unwrap().clone();
@@ -775,7 +776,7 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
         }
     }
 
-    let host = Arc::new(host_with_process_reaper().await);
+    let host = host_with_process_reaper().await;
     let generation = crate::test_mcp::mcp_fence(
         "mcp-staging-quiescence",
         "docs",
@@ -1455,12 +1456,14 @@ async fn worker_authority_loss_revokes_every_session_projection() {
 #[tokio::test]
 async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection() {
     use awaken_session_configuration_contract::SessionInit;
-    let host = Arc::new(host_with_process_reaper().await);
+    let dependencies = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_mcp_process_reaper(Arc::new(awaken_run_executor_acp::Supervisor));
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let credential = awaken_credential_vault::repo::enter_credential(
         awaken_credential_vault::CredentialCreateParams {
-            workspace_id: host.local_workspace().into(),
+            workspace_id: dependencies.local_workspace().into(),
             kind: awaken_credential_vault::CredentialKind::Vault,
             provider_id: Some("git".into()),
             env_key: None,
@@ -1473,9 +1476,11 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
     )
     .await
     .unwrap();
-    let managed = managed_with_resource_source(host.clone())
-        .with_credentials(credentials, secrets)
-        .install_dispatch_session_runtime();
+    let host = (crate::host::with_test_resource_validation(dependencies)
+        .with_credentials(credentials, secrets))
+    .build()
+    .unwrap();
+    let managed = managed_with_resource_source(host.clone());
 
     managed
         .install_test_session_init(

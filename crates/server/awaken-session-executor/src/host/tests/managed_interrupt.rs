@@ -151,7 +151,7 @@ async fn interrupt_with_admission_suspended(
     });
     let mut host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
         .await
-        .with_dispatch_store(dispatch.clone())
+        .with_ephemeral_dispatch(dispatch.clone())
         .with_remote_attempt_executor(RemoteAttemptInstallation {
             executor: attempt.clone(),
             credential_realization: Default::default(),
@@ -160,7 +160,7 @@ async fn interrupt_with_admission_suspended(
     // ordinary foreground-ingress choice. Mirror the scenario-host topology:
     // direct foreground plus a co-located process pool.
     host.deployment.durable = false;
-    let host = Arc::new(SharedHost::from(host));
+    let host = (host).build().expect("validated Host dependencies");
     install_recording_session_application(&host);
     let managed = install_test_dispatch_runtime(&host);
     host.ensure_dispatch_pool();

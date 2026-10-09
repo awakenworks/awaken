@@ -260,8 +260,7 @@
     "awaken-control::credential_refresh.rs::run_exchange": 162,
     "awaken-control::lib.rs::control_router": 181,
     "awaken-control::webhook_authoring.rs::put_subscription": 157,
-    "awaken-coordinator::coordinator_component.rs::build_coordinator_component": 164,
-    "awaken-coordinator::lib.rs::mount_with_managed_over_and_models": 421,
+    "awaken-coordinator::lib.rs::mount_with_managed_over_and_models": 410,
     "awaken-credential-store::postgres.rs::commit_managed_mutation": 275,
     "awaken-credential-store::sqlite/managed.rs::commit_managed_mutation": 244,
     "awaken-dispatch-execution::worker.rs::drive_claimed_inner": 597,
@@ -321,7 +320,7 @@
     "awaken-session-executor::host/session/context/execution.rs::prepare": 234,
     "awaken-session-executor::host/session/context/extensions.rs::memory": 220,
     "awaken-session-executor::host/session/context/extensions.rs::skills": 168,
-    "awaken-session-executor::host/session/context/plan.rs::prepare": 196,
+    "awaken-session-executor::host/session/context/plan.rs::prepare": 195,
     "awaken-session-executor::host/session/context/resources.rs::acquire": 274,
     "awaken-session-executor::host/session/environment_lifecycle.rs::adopt_bound_session_environment_under_lifecycle": 264,
     "awaken-session-executor::host/session/environment_lifecycle/state.rs::install_projection_with_resource_reservation": 208,
@@ -333,8 +332,8 @@
     "awaken-session-executor::host/worker_resolver/claimed_dispatch.rs::worker_for_claimed": 256,
     "awaken-session-executor::host/worker_resolver/session_realization/projection_synchronizer.rs::synchronize_session_projection": 248,
     "awaken-session-executor::managed_resource_projection.rs::apply_session_inputs_body": 479,
-    "awaken-session-executor::managed_resource_projection.rs::stage_resolved_input_with_resource_authority": 324,
-    "awaken-session-executor::provisioning.rs::repository_operation_credential": 215,
+    "awaken-session-executor::managed_resource_projection.rs::stage_resolved_input_with_resource_authority": 319,
+    "awaken-session-executor::provisioning.rs::repository_operation_credential": 203,
     "awaken-session-executor::skills.rs::build_skill_registry": 154,
     "awaken-session-executor::terminal_repository_publication.rs::publish_terminal_repository": 156,
     "awaken-runtime::engine/delegation.rs::resume_delegation": 180,
@@ -389,7 +388,7 @@
     "awaken-session-store::sqlite.rs::commit": 155,
     "awaken-store-postgres::lib.rs::recovery_snapshot": 194,
     "awaken-worker::lib.rs::build": 208,
-    "awaken-worker::lib.rs::run_until": 582,
+    "awaken-worker::lib.rs::run_until": 577,
     "awaken-worker::lifecycle.rs::renew_registry_authority": 176
   }
 }

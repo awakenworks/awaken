@@ -8,9 +8,11 @@ use super::*;
 #[tokio::test]
 async fn install_test_session_init_mounts_an_effective_memory_resource() {
     use awaken_session_configuration_contract::SessionInit;
-    let host = Arc::new(SharedHost::from(
+    let host = (crate::host::with_test_resource_validation(
         crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
+    ))
+    .build()
+    .expect("validated Host dependencies");
 
     // Seed a memory store with known bytes. The control plane has already resolved
     // this resource into the SessionInit passed across the runtime boundary.
@@ -160,9 +162,11 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
     let model = Arc::new(SemanticMemoryModel {
         fetch_url: Mutex::new(None),
     });
-    let host = Arc::new(SharedHost::from(
+    let host = (crate::host::with_test_resource_validation(
         crate::HostDependencies::ephemeral(model.clone(), "stub").await,
-    ));
+    ))
+    .build()
+    .expect("validated Host dependencies");
     let managed = managed_with_resource_source(host.clone());
     let store_a = "semantic-store-a";
     let store_b = "semantic-store-b";
@@ -452,11 +456,15 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
         RegisterMemoryStore, ResourceAdministration as _, ResourceState,
     };
 
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
-    let store_id = test_memory_store_id();
     let catalog = resource_registry().await;
+    let host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .with_session_execution(
+            crate::SessionExecutionDependencies::default().with_resource_validator(catalog.clone()),
+        ))
+    .build()
+    .expect("validated Host dependencies");
+    let store_id = test_memory_store_id();
+
     catalog
         .register_memory_store(RegisterMemoryStore {
             definition: MemoryStoreDefinition {
@@ -494,7 +502,7 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
         })
         .await
         .expect("suspend test MemoryStore");
-    let managed = crate::ManagedHost::new(host.clone()).with_resource_validator(catalog.clone());
+    let managed = crate::ManagedHost::new(host.clone());
     let mut init = bare_session("a", host.local_workspace());
     init.resources = manifest;
 
@@ -514,11 +522,15 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
         ResourceAdministration as _, ResourceState,
     };
 
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
-    let store_id = test_memory_store_id();
     let catalog = resource_registry().await;
+    let host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .with_session_execution(
+            crate::SessionExecutionDependencies::default().with_resource_validator(catalog.clone()),
+        ))
+    .build()
+    .expect("validated Host dependencies");
+    let store_id = test_memory_store_id();
+
     catalog
         .register_memory_store(RegisterMemoryStore {
             definition: MemoryStoreDefinition {
@@ -539,7 +551,7 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
         })
         .await
         .expect("register workspace-fenced MemoryStore");
-    let managed = crate::ManagedHost::new(host.clone()).with_resource_validator(catalog);
+    let managed = crate::ManagedHost::new(host.clone());
     let mut init = bare_session("agent", "workspace-b");
     init.resources = effective_resources(vec![TestInput {
         kind: "memory_store".into(),
@@ -566,9 +578,11 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
 async fn install_test_session_init_mounts_effective_file_and_stages_effective_repo() {
     use awaken_provisioning_contract::{MountAccess, MountSource};
     use awaken_session_configuration_contract::SessionInit;
-    let host = Arc::new(SharedHost::from(
+    let host = (crate::host::with_test_resource_validation(
         crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
+    ))
+    .build()
+    .expect("validated Host dependencies");
 
     // Seed a file blob and pass the already-resolved File and Repository inputs.
     let binary = vec![0, 0xff, b'R', 0x80, b'\n'];
@@ -671,15 +685,17 @@ async fn install_test_session_init_mounts_effective_file_and_stages_effective_re
 async fn complete_projection_preserves_the_canonical_repository_path_without_relocation() {
     use awaken_session_configuration_contract::SessionInit;
 
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
     let verifier = Arc::new(FixedRepositoryTransport(
         awaken_resource_contract::RepositoryTransport::Direct,
     ));
-    let managed = managed_with_resource_source(host.clone())
-        .with_repository_binding_verifier(verifier)
-        .install_dispatch_session_runtime();
+    let host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .with_session_execution(
+            crate::host::test_resource_execution().with_repository_binding_verifier(verifier),
+        ))
+    .build()
+    .expect("validated Host dependencies");
+
+    let managed = managed_with_resource_source(host.clone());
     let resources = effective_resources(vec![TestInput {
         kind: "github_repository".into(),
         id: "https://github.com/awaken/example.git".into(),
@@ -823,7 +839,9 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         .realizer()
         .capabilities()
         .path_fidelity;
-    let host = Arc::new(SharedHost::from(raw_host));
+    let host = (crate::host::with_test_resource_validation(raw_host))
+        .build()
+        .expect("validated Host dependencies");
     let workspace_id = host.local_workspace().to_string();
     let managed = managed_with_resource_source(host.clone());
     let session_id = "terminal-publication-local";
@@ -848,15 +866,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         owned_session_id: None,
         committed_environment: None,
     });
-    managed
-        .realization()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "RealizationRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
-        .install_environment_binding_sink(initial_binding_sink.clone());
+    managed.install_test_environment_binding_sink(initial_binding_sink.clone());
     let resources = effective_repository(
         "repository-publication",
         remote.to_str().unwrap(),
@@ -1369,15 +1379,13 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     drop(managed);
     drop(host);
 
-    let mut raw_replacement = SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_session_realization_control(control.clone())
-            .with_authority(
-                crate::UpstreamAuthority::default().with_terminal_cleanup_control(control.clone()),
-            )
-            .with_local_workspace(workspace_id),
-    );
+    let mut raw_replacement = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_session_realization_control(control.clone())
+        .with_authority(
+            crate::UpstreamAuthority::default().with_terminal_cleanup_control(control.clone()),
+        )
+        .with_local_workspace(workspace_id);
     raw_replacement.env.session_provider =
         crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             sandbox_root,
@@ -1387,7 +1395,9 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             std::time::Duration::ZERO,
         )
         .into_session_provider();
-    let replacement_host = Arc::new(raw_replacement);
+    let replacement_host = (crate::host::with_test_resource_validation(raw_replacement))
+        .build()
+        .unwrap();
     let replacement_managed = managed_with_resource_source(replacement_host.clone());
     let replacement_binding_sink = Arc::new(BindingOrderSink {
         host: Arc::downgrade(&replacement_host),
@@ -1399,15 +1409,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         owned_session_id: None,
         committed_environment: None,
     });
-    replacement_managed
-        .realization()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "RealizationRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
-        .install_environment_binding_sink(replacement_binding_sink.clone());
+    replacement_managed.install_test_environment_binding_sink(replacement_binding_sink.clone());
 
     assert!(
         !replacement_host.session_slots.contains(session_id)
@@ -1537,7 +1539,7 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
         ),
         Arc::new(awaken_resource_application::ApplicationArtifactPublisher::new(application)),
     );
-    let host = Arc::new(SharedHost::from(raw_host));
+    let host = (raw_host).build().expect("validated Host dependencies");
     let public_id = "file_corrupt".to_string();
     host.file_catalog()
         .create_file(awaken_resource_contract::FileRecord {
@@ -1585,9 +1587,9 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
 
 #[tokio::test]
 async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic() {
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
     let file_id = host
         .file_application()
         .expect("test startup installs File application")

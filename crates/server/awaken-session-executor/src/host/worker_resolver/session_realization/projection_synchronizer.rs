@@ -696,10 +696,14 @@ mod tests {
         } else {
             crate::host::with_test_memory_mounter(dependencies)
         };
-        let host = Arc::new(SharedHost::from(dependencies));
-        let managed = crate::host::worker_resolver::test_support::complete_managed_test_host(
-            crate::ManagedHost::new(host.clone())
+        let host = ((dependencies).with_session_execution(
+            crate::SessionExecutionDependencies::default()
                 .with_resource_validator(crate::host::test_resource_validator()),
+        ))
+        .build()
+        .expect("validated Host dependencies");
+        let managed = crate::host::worker_resolver::test_support::complete_managed_test_host(
+            crate::ManagedHost::new(host.clone()),
         );
         let snapshot = test_activation(thread, "run-claimed-ready-durable").snapshot;
         let snapshot = if successor_cancellations.is_empty() {
@@ -753,10 +757,7 @@ mod tests {
         projection.agent_publication = Some(snapshot.clone());
         let control = RecoveryControl::fixed(projection.clone());
         let binding_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&control));
-        awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
-            &managed,
-            binding_sink.clone(),
-        );
+        managed.install_test_environment_binding_sink(binding_sink.clone());
         let initial_lease = awaken_session_resource_contract::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/boot-1".into(),
@@ -789,10 +790,7 @@ mod tests {
                     initial == InitialEnvironment::LostResponse,
                 ),
             );
-            awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
-                &managed,
-                sink.clone(),
-            );
+            managed.install_test_environment_binding_sink(sink.clone());
             let creating = {
                 let host = host.clone();
                 let snapshot = snapshot.clone();
@@ -824,10 +822,7 @@ mod tests {
                     .unwrap()
                     .exact_matches(&candidate)
             );
-            awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
-                &managed,
-                binding_sink.clone(),
-            );
+            managed.install_test_environment_binding_sink(binding_sink.clone());
             None
         } else if committed_candidate {
             // Stop at the production sink-readback/local-publication boundary.
@@ -1195,10 +1190,7 @@ mod tests {
                 )
             });
             if let Some(sink) = &cancelled_sink {
-                awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
-                    &managed,
-                    sink.clone(),
-                );
+                managed.install_test_environment_binding_sink(sink.clone());
             }
             {
                 let recovering = async {
@@ -1296,10 +1288,7 @@ mod tests {
                     b"same physical durable root"
                 );
                 retired.push(candidate.environment);
-                awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
-                    &managed,
-                    binding_sink.clone(),
-                );
+                managed.install_test_environment_binding_sink(binding_sink.clone());
                 drop(sink);
             }
         }
@@ -1562,17 +1551,15 @@ mod tests {
 
         let thread = "claimed-ready-v1-preinstall-rebuild";
         let storage = tempfile::tempdir().expect("legacy rebuild storage");
-        let host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
-                .await
-                .with_store_dir(storage.path())
-                .await,
-        ));
-        let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
-        awaken_session_execution_contract::RealizationRuntime::install_environment_binding_sink(
-            &managed,
-            Arc::new(LegacyUnownedEnvironmentBindingSink),
-        );
+        let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+            .await
+            .with_store_dir(storage.path())
+            .await)
+            .build()
+            .expect("validated Host dependencies");
+        let managed = crate::ManagedHost::new(host.clone());
+        managed
+            .install_test_environment_binding_sink(Arc::new(LegacyUnownedEnvironmentBindingSink));
 
         let snapshot = test_activation(thread, "run-claimed-ready-v1").snapshot;
         let mut projection = frozen_projection();
@@ -1663,13 +1650,13 @@ mod tests {
 
         let thread = "claimed-remote-a2a-retiring-local";
         let storage = tempfile::tempdir().expect("remote A2A guard storage");
-        let host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
-                .await
-                .with_store_dir(storage.path())
-                .await,
-        ));
-        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+        let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+            .await
+            .with_store_dir(storage.path())
+            .await)
+            .build()
+            .expect("validated Host dependencies");
+        let _managed = crate::ManagedHost::new(host.clone());
         let local_snapshot = test_activation(thread, "run-local-owner").snapshot;
         let mut local_projection = frozen_projection();
         local_projection.agent_publication = Some(local_snapshot.clone());

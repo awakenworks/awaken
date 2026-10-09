@@ -21,40 +21,21 @@ impl ManagedHost {
     }
 
     pub fn new(host: Arc<SharedHost>) -> Self {
-        Self {
-            host,
-            credentials: None,
-            credential_refresh_factory: None,
-            platform_mcp_egress: None,
-            resource_validator: None,
-            repository_binding_verifier: None,
-            mcp_realizer: None,
-        }
+        Self { host }
     }
 
-    /// Install the fully configured Managed adapter used by durable dispatch.
-    ///
-    /// Call this once at the process startup after all `with_*` configuration
-    /// has been applied. Construction and configuration are deliberately free
-    /// of shared-host side effects, so a partially configured adapter can never
-    /// become visible to a concurrently claimed Run.
-    #[must_use]
-    pub fn install_dispatch_session_runtime(self) -> Self {
+    /// Unit-test receipt failure injection; product composition selects this
+    /// ordinary port in HostDependencies before constructing the Host.
+    #[cfg(test)]
+    pub(crate) fn install_test_environment_binding_sink(
+        &self,
+        sink: Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>,
+    ) {
         *self
             .host
-            .dispatch
-            .dispatch_session_runtime
+            .environment_binding_sink
             .write()
-            .expect("dispatch Session Runtime lock poisoned") = Some(DispatchSessionRuntime {
-            host: Arc::downgrade(&self.host),
-            credentials: self.credentials.clone(),
-            credential_refresh_factory: self.credential_refresh_factory.clone(),
-            platform_mcp_egress: self.platform_mcp_egress.clone(),
-            resource_validator: self.resource_validator.clone(),
-            repository_binding_verifier: self.repository_binding_verifier.clone(),
-            mcp_realizer: self.mcp_realizer.clone(),
-        });
-        self
+            .expect("test receipt sink lock poisoned") = Some(sink);
     }
 
     /// Decide whether a complete projection needs execution preparation before

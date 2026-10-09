@@ -1510,13 +1510,11 @@ mod tests {
                 .unwrap();
             let lifecycle = Arc::new(WorkerSupervisor {
                 authority: authority.clone(),
-                host: Arc::new(
-                    awaken_runtime_host_testkit::volatile_host(
-                        Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
-                        "none",
-                    )
-                    .await,
-                ),
+                host: awaken_runtime_host_testkit::volatile_host(
+                    Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
+                    "none",
+                )
+                .await,
                 control: WorkerControlClient::new(
                     awaken_worker_transport_security::WorkerUpstream::new(format!(
                         "http://{address}"

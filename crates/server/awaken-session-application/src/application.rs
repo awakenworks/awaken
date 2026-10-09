@@ -126,6 +126,37 @@ impl Default for SessionApplicationConfiguration {
     }
 }
 
+/// One immutable persistence selection made before the execution Host exists.
+/// The application and its Environment receipt sink always share these exact
+/// Store/Clock handles; no app-to-Host installation is needed to create it.
+pub struct SessionPersistence {
+    store: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    clock: Arc<dyn awaken_time::WallClock>,
+    environment_binding_sink: Arc<dyn SessionEnvironmentBindingSink>,
+}
+
+impl SessionPersistence {
+    #[must_use]
+    pub fn new(
+        store: Arc<dyn awaken_session_repository_contract::SessionStore>,
+        clock: Arc<dyn awaken_time::WallClock>,
+    ) -> Self {
+        let repo: Arc<dyn SessionRepository> = store.clone();
+        let environment_binding_sink =
+            Arc::new(RepositoryEnvironmentBindingSink::new(repo, clock.clone()));
+        Self {
+            store,
+            clock,
+            environment_binding_sink,
+        }
+    }
+
+    #[must_use]
+    pub fn environment_binding_sink(&self) -> Arc<dyn SessionEnvironmentBindingSink> {
+        self.environment_binding_sink.clone()
+    }
+}
+
 /// Canonical application object shared by wire adapters.
 pub struct SessionApplication {
     clock: Arc<dyn awaken_time::WallClock>,
@@ -144,6 +175,7 @@ pub struct SessionApplication {
     resource_files: Option<Arc<dyn awaken_resource_contract::FileCatalog>>,
     managed_list_prices: Option<Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>>,
     sessions_repo: Arc<dyn SessionRepository>,
+    environment_binding_sink: Arc<dyn SessionEnvironmentBindingSink>,
     /// Drain side of the same store's transactional lifecycle outbox. The
     /// application never reads it; it only hands it to the one delivery
     /// consumer bound through [`Self::set_lifecycle_notifier`].
@@ -191,10 +223,13 @@ static APPLICATION_INCARNATION_SEQ: AtomicU64 = AtomicU64::new(0);
 impl SessionApplication {
     /// Install the existing clock port before sharing the application.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_clock(mut self, clock: Arc<dyn awaken_time::WallClock>) -> Self {
         self.clock = clock;
-        self.runtime
-            .install_environment_binding_sink(self.environment_binding_sink());
+        self.environment_binding_sink = Arc::new(RepositoryEnvironmentBindingSink::new(
+            self.sessions_repo.clone(),
+            self.clock.clone(),
+        ));
         self
     }
 
@@ -215,17 +250,15 @@ impl SessionApplication {
     pub fn new(
         runtime: Arc<dyn CompleteSessionRuntime>,
         mcp_realizer: Arc<dyn McpAttachmentRealizer>,
-        sessions_repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
+        persistence: SessionPersistence,
         environments: Arc<dyn SessionEnvironmentSource>,
-        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self::new_with_configuration(
             runtime,
             mcp_realizer,
-            sessions_repo,
+            persistence,
             environments,
             SessionApplicationConfiguration::default(),
-            clock,
         )
     }
 
@@ -235,18 +268,18 @@ impl SessionApplication {
     pub fn new_with_configuration(
         runtime: Arc<dyn CompleteSessionRuntime>,
         mcp_realizer: Arc<dyn McpAttachmentRealizer>,
-        sessions_repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
+        persistence: SessionPersistence,
         environments: Arc<dyn SessionEnvironmentSource>,
         configuration: SessionApplicationConfiguration,
-        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
+        let SessionPersistence {
+            store,
+            clock,
+            environment_binding_sink,
+        } = persistence;
         let lifecycle_outbox: Arc<dyn awaken_session_repository_contract::LifecycleOutbox> =
-            sessions_repo.clone();
-        let sessions_repo: Arc<dyn SessionRepository> = sessions_repo;
-        runtime.install_environment_binding_sink(Arc::new(RepositoryEnvironmentBindingSink::new(
-            sessions_repo.clone(),
-            clock.clone(),
-        )));
+            store.clone();
+        let sessions_repo: Arc<dyn SessionRepository> = store;
         // The incarnation stem: this application's start instant on its clock.
         let started_at = clock.now().as_unix_nanos();
         let local_realization_owner = configuration.local_realization_owner.trim().to_string();
@@ -270,6 +303,7 @@ impl SessionApplication {
             resource_files: None,
             managed_list_prices: None,
             sessions_repo,
+            environment_binding_sink,
             lifecycle_outbox,
             executable_projection_refresh: None,
             lifecycle_notifier: OnceLock::new(),
@@ -606,20 +640,20 @@ impl SessionApplication {
     }
 
     pub fn environment_binding_sink(&self) -> Arc<dyn SessionEnvironmentBindingSink> {
-        Arc::new(RepositoryEnvironmentBindingSink::new(
-            self.sessions_repo.clone(),
-            self.clock.clone(),
-        ))
+        self.environment_binding_sink.clone()
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn replace_repository(
         &mut self,
         repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
     ) {
         self.lifecycle_outbox = repo.clone();
         self.sessions_repo = repo;
-        self.runtime
-            .install_environment_binding_sink(self.environment_binding_sink());
+        self.environment_binding_sink = Arc::new(RepositoryEnvironmentBindingSink::new(
+            self.sessions_repo.clone(),
+            self.clock.clone(),
+        ));
     }
 
     pub fn replace_environment_source(&mut self, source: Arc<dyn SessionEnvironmentSource>) {
