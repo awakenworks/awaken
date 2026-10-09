@@ -225,13 +225,15 @@ mod tests {
                 "startup-fixture",
             )
         };
-        let host = SharedHost::from(dependencies().await);
+        let host = (dependencies().await)
+            .build()
+            .expect("validated Host dependencies");
         assert!(host.file_application().is_some(), "P1/C1");
-        let host = SharedHost::from(
-            dependencies()
-                .await
-                .with_artifact_publisher(Arc::new(RemotePublisher)),
-        );
+        let host = (dependencies()
+            .await
+            .with_artifact_publisher(Arc::new(RemotePublisher)))
+        .build()
+        .expect("validated Host dependencies");
         assert!(host.file_application().is_none(), "P1/E1");
     }
 }

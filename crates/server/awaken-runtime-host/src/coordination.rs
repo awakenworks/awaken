@@ -42,8 +42,7 @@ impl crate::SharedHost {
     pub(crate) fn coordination_endpoint(&self) -> Option<CoordinationEndpoint> {
         let local = self
             .session_application
-            .agent_coordination
-            .get()
+            .agent_coordination()
             .cloned()
             .filter(|application| application.strong_count() > 0);
         local.map(CoordinationEndpoint::Local).or_else(|| {
@@ -884,20 +883,25 @@ mod tests {
         // consumer captures the dead Local endpoint. Decision table:
         // R1(live local,C2)->Local; R2(C1+C2)->E1+E2; !local+!remote is covered by
         // Managed build's fail-closed authority test.
+        // Readiness companion B1 unbound => Unavailable; B2 bound/live => Ok;
+        // B3 bound/dead => Unavailable while the existing remote selection owns
+        // routing. A cloned binding cannot silently hold a second connection.
         let local = Arc::new(RecordingSessionAgentCoordination::default());
         let local_port: Arc<dyn SessionAgentCoordination> = local.clone();
-        let dead = Arc::downgrade(&local_port);
+        let host = (crate::HostDependencies::ephemeral(Arc::new(EndpointModel), "stub")
+            .await
+            .with_session_control(Arc::new(RemoteControl::default())))
+        .build()
+        .expect("validated Host dependencies");
+        let shared = host.session_application_bindings().clone();
+        assert!(shared.require_agent_coordination().is_err(), "B1");
+        host.session_application_bindings()
+            .bind_agent_coordination(local_port.clone())
+            .expect("test coordination port binds once");
+        assert!(shared.require_agent_coordination().is_ok(), "B2");
         drop(local_port);
         drop(local);
-        let host = crate::SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(EndpointModel), "stub")
-                .await
-                .with_session_control(Arc::new(RemoteControl::default())),
-        );
-        host.session_application_ports()
-            .agent_coordination
-            .bind(dead)
-            .expect("test coordination port binds once");
+        assert!(shared.require_agent_coordination().is_err(), "B3");
 
         assert!(
             matches!(

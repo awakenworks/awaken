@@ -452,16 +452,14 @@ pub async fn build_router_and_host_with_agent_publications(
     let (host, resources) = resource_host(llm, model_ref)
         .await
         .map_dependencies(|host| host.with_agent_publications(publication.clone()))
-        .into_parts();
-    let host = Arc::new(host);
-    let router = scenario_platform::mount_parts_with_agent_source_on_lifecycle(
-        host.clone(),
+        .into_dependencies();
+    scenario_platform::mount_parts_with_agent_source_on_lifecycle(
+        host,
         resources,
         publication,
         awaken_service_lifecycle::ServiceLifecycle::new(),
     )
-    .await;
-    (router, host)
+    .await
 }
 
 /// [`build_unmounted_dependencies`] with one immutable Agent publication
@@ -481,12 +479,8 @@ pub async fn build_unmounted_dependencies_with_agent_publications(
 async fn build_router_and_host_from(
     platform: deployment::ScenarioPlatform,
 ) -> (Router, Arc<SharedHost>) {
-    let (host, resources) = platform.into_parts();
-    let host = Arc::new(host);
-    (
-        scenario_platform::mount_parts(host.clone(), resources).await,
-        host,
-    )
+    let (host, resources) = platform.into_dependencies();
+    scenario_platform::mount_parts(host, resources).await
 }
 
 pub(crate) async fn build_router_and_host_with_model_publication_resolver(
@@ -495,18 +489,9 @@ pub(crate) async fn build_router_and_host_with_model_publication_resolver(
     resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
 ) -> (Router, Arc<SharedHost>) {
     let platform = resource_host(llm, model_ref).await;
-    let (host, resources) = platform.into_parts();
-    let host = Arc::new(host);
-    (
-        scenario_platform::mount_parts_with_model_publication_resolver(
-            host.clone(),
-            resources,
-            resolver,
-            None,
-        )
-        .await,
-        host,
-    )
+    let (host, resources) = platform.into_dependencies();
+    scenario_platform::mount_parts_with_model_publication_resolver(host, resources, resolver, None)
+        .await
 }
 
 /// Test/embedder platform with one explicitly resolved deployment snapshot.
@@ -1483,11 +1468,7 @@ pub async fn build_config_router() -> Router {
                 .with_admin_tools(admin_execs)
                 .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(None))
         });
-    let (host, resources) = host.into_parts();
-    let host = Arc::new(host);
-    let scenario_dispatch = host
-        .dispatch_store()
-        .expect("config scenario installs one Dispatch authority");
+    let (host, resources) = host.into_dependencies();
     // Rebuild the disposable executable catalog through the same registration
     // recovery used by Control. This replays durable publication truth; it does
     // not create a second warm-install path or reinterpret a claimed Run.
@@ -1522,16 +1503,20 @@ pub async fn build_config_router() -> Router {
     // mount supplies an ephemeral Session repository; storage_dir present -> it
     // supplies sessions.db beside runtime truth. The Agent source is an added port,
     // never a reason to rebuild ManagedState through a parallel in-memory path.
-    let flat = scenario_platform::mount_parts_with_agent_source_on_lifecycle(
+    let (flat, host) = scenario_platform::mount_parts_with_agent_source_on_lifecycle(
         host,
         resources,
         executable_agent_catalog,
         awaken_service_lifecycle::ServiceLifecycle::new(),
     )
-    .await
-    .merge(config_router(plane))
-    .merge(agents)
-    .merge(session_reservation_scenario_router(scenario_dispatch).await);
+    .await;
+    let scenario_dispatch = host
+        .dispatch_store()
+        .expect("config scenario installs one Dispatch authority");
+    let flat = flat
+        .merge(config_router(plane))
+        .merge(agents)
+        .merge(session_reservation_scenario_router(scenario_dispatch).await);
     let flat =
         awaken_coordinator::workspace_path::with_platform_workspace(flat, platform_workspace);
     awaken_coordinator::workspace_path::with_workspace_path_addressing(flat)

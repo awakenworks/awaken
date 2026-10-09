@@ -445,7 +445,7 @@ pub(crate) struct CompletionRegistry {
     next_registration_id: std::sync::atomic::AtomicU64,
     hub: Arc<crate::ThreadEventHub>,
     /// The process composition's sole wakeup for committed Run progress.
-    committed_progress: crate::CyclicPort<Arc<dyn Fn() + Send + Sync>>,
+    committed_progress: crate::ApplicationPortBinding<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Default for CompletionRegistry {
@@ -463,7 +463,7 @@ struct ForegroundRegistration {
 impl CompletionRegistry {
     pub(crate) fn new(
         hub: Arc<crate::ThreadEventHub>,
-        committed_progress: crate::CyclicPort<Arc<dyn Fn() + Send + Sync>>,
+        committed_progress: crate::ApplicationPortBinding<Arc<dyn Fn() + Send + Sync>>,
     ) -> Self {
         Self {
             waiters: Default::default(),
@@ -644,7 +644,7 @@ mod completion_tests {
     use awaken_store_inmem::MemoryStreamSink;
     use std::sync::Arc;
 
-    use crate::{NoModelConfiguredExecutor, SharedHost, UNCONFIGURED_MODEL_REF};
+    use crate::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
 
     fn host_models() -> awaken_runtime_contract::resolved::ResolvedSpec {
         awaken_runtime_contract::ExecutableAgentSnapshot::builder("test")
@@ -1117,13 +1117,13 @@ mod completion_tests {
         // | coordinator-only | exact host registry | remote settle wakes Session |
         // Mode does not alter sink identity, so pointer identity covers both rules
         // without manufacturing two deployment configurations in this unit test.
-        let host = SharedHost::from(
-            crate::HostDependencies::ephemeral(
-                Arc::new(NoModelConfiguredExecutor),
-                UNCONFIGURED_MODEL_REF,
-            )
-            .await,
-        );
+        let host = (crate::HostDependencies::ephemeral(
+            Arc::new(NoModelConfiguredExecutor),
+            UNCONFIGURED_MODEL_REF,
+        )
+        .await)
+            .build()
+            .expect("validated Host dependencies");
         let expected = host.completion.clone() as Arc<dyn CompletionSink>;
         let exported = host.dispatch_completion_sink();
 
@@ -1138,14 +1138,14 @@ mod completion_tests {
         // Cause/effect rule: C0 the ordinary Dispatch runtime composition is
         // present and C1 its frozen model is explicitly unconfigured. E1 context
         // creation succeeds through C0; E2 dispatch rejects C1 before enqueue.
-        let host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(
-                Arc::new(NoModelConfiguredExecutor),
-                UNCONFIGURED_MODEL_REF,
-            )
-            .await,
-        ));
-        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+        let host = (crate::HostDependencies::ephemeral(
+            Arc::new(NoModelConfiguredExecutor),
+            UNCONFIGURED_MODEL_REF,
+        )
+        .await)
+            .build()
+            .expect("validated Host dependencies");
+        let _managed = crate::ManagedHost::new(host.clone());
         let ctx = host
             .ctx_for("unconfigured-model", None)
             .await
@@ -1171,7 +1171,7 @@ mod completion_tests {
         // Effects: E1 C2 wakes C3 exactly once despite C1; E2 a parallel owner
         // cannot replace it. Both local and remote Workers publish through this
         // same CompletionSink, so deployment mode is not another cause.
-        let port = crate::CyclicPort::default();
+        let port = crate::ApplicationPortBinding::default();
         let registry =
             CompletionRegistry::new(Arc::new(crate::ThreadEventHub::new()), port.clone());
         let wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));

@@ -21,8 +21,10 @@ async fn dependencies() -> crate::HostDependencies {
         .await
 }
 
-async fn host() -> SharedHost {
-    SharedHost::from(dependencies().await)
+async fn host() -> Arc<SharedHost> {
+    (dependencies().await)
+        .build()
+        .expect("validated Host dependencies")
 }
 
 fn lease() -> SessionRealizationLease {
@@ -94,7 +96,7 @@ async fn provider_fence_source_decision_table_preserves_exact_live_authority() {
             if registered {
                 host = host.with_execution_authority(worker.clone());
             }
-            let host = SharedHost::from(host);
+            let host = (host).build().expect("validated Host dependencies");
             let initial = lease().sandbox_effect_fence("create").unwrap();
             install(&host, lease());
             let source = host
@@ -332,11 +334,11 @@ async fn provider_fence_source_waiting_for_worker_rechecks_slot_after_revocation
             gate: Mutex::new(()),
             entered,
         });
-        let host = SharedHost::from(
-            dependencies()
-                .await
-                .with_execution_authority(worker.clone()),
-        );
+        let host = (dependencies()
+            .await
+            .with_execution_authority(worker.clone()))
+        .build()
+        .expect("validated Host dependencies");
         install(&host, lease());
         let initial = lease().sandbox_effect_fence("create").unwrap();
         let source = host
@@ -555,7 +557,7 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                 if registered {
                     host = host.with_execution_authority(worker.clone());
                 }
-                let host = SharedHost::from(host);
+                let host = (host).build().expect("validated Host dependencies");
                 install(&host, lease());
                 let observation = Arc::new(Boundary::default());
                 let probe = Arc::new(ProjectionProbe {
@@ -664,11 +666,11 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
         "provider_unfenced",
     ] {
         let warmup = Arc::new(Boundary::default());
-        let host = SharedHost::from(
-            dependencies()
-                .await
-                .with_cache_volume_initializer(warmup.clone()),
-        );
+        let host = (dependencies()
+            .await
+            .with_cache_volume_initializer(warmup.clone()))
+        .build()
+        .expect("validated Host dependencies");
         install(&host, lease());
         if rule == "provider_unfenced" {
             host.session_slots.remove("session");
@@ -818,7 +820,7 @@ async fn environment_receipt_refreshes_only_the_captured_live_generation() {
             if registered {
                 host = host.with_execution_authority(worker.clone());
             }
-            let host = SharedHost::from(host);
+            let host = (host).build().expect("validated Host dependencies");
             install(&host, lease());
             let intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
                 "session",

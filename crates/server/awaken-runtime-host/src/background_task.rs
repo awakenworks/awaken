@@ -1134,37 +1134,63 @@ mod tests {
         // replacement; R10 all external strong owners drop -> SharedHost does
         // not retain the Session application. This prevents both a second Run
         // admission owner and an Arc ownership cycle.
-        let host = Arc::new(crate::SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(crate::NoModelConfiguredExecutor), "stub")
-                .await,
-        ));
+        // Startup connection rules: R11 unbound/dead Weak => typed Unavailable;
+        // R12 live binding => readiness observed through every shared clone.
+        // Neither observation admits a Run or replaces its domain authority.
+        let host = (crate::HostDependencies::ephemeral(
+            Arc::new(crate::NoModelConfiguredExecutor),
+            "stub",
+        )
+        .await)
+            .build()
+            .expect("validated Host dependencies");
         let managed = crate::ManagedHost::new(host.clone());
+        let shared = host.session_application_bindings().clone();
+        assert_eq!(
+            shared.require_background_run_submission(),
+            Err(
+                crate::SessionApplicationBindingError::RequiredApplicationUnavailable(
+                    "background Run submission",
+                )
+            ),
+            "R11 unbound",
+        );
         let application = Arc::new(RecordingAttentionApplication::accepting(0));
         let port: Arc<dyn SessionRunBackgroundApplication> = application.clone();
         managed
             .host
-            .session_application_ports()
-            .background_runs
-            .bind(Arc::downgrade(&port))
+            .session_application_bindings()
+            .bind_background_run_submission(port.clone())
             .expect("R8 first install");
+        assert!(
+            shared.require_background_run_submission().is_ok(),
+            "R12 shared binding"
+        );
         assert_eq!(
             managed
                 .host
-                .session_application_ports()
-                .background_runs
-                .bind(Arc::downgrade(&port)),
-            Err(crate::CyclicPortAlreadyBound),
+                .session_application_bindings()
+                .bind_background_run_submission(port.clone()),
+            Err(crate::SessionApplicationBindingError::AlreadyBound),
             "R9 single assignment",
         );
         drop(application);
         drop(port);
         assert!(
             host.session_application
-                .background_runs
-                .get()
+                .background_run_submission()
                 .and_then(std::sync::Weak::upgrade)
                 .is_none(),
             "R10 weak ownership edge"
+        );
+        assert_eq!(
+            shared.require_background_run_submission(),
+            Err(
+                crate::SessionApplicationBindingError::RequiredApplicationUnavailable(
+                    "background Run submission",
+                )
+            ),
+            "R11 bound target expired",
         );
     }
 

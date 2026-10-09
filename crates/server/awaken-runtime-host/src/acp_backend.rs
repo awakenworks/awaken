@@ -116,8 +116,6 @@ pub(crate) fn with_fixture_acp(dependencies: crate::HostDependencies) -> crate::
 mod tests {
     use super::*;
 
-    use crate::host::SharedHost;
-
     struct NoLlm;
 
     #[test]
@@ -172,8 +170,9 @@ mod tests {
         // role can launch; E4 only canonical ids pass. Decision rules:
         // P1=absent=>E1; P2=projection-only=>E2+!E3+E4;
         // P3=executor=>E2+E3+E4; P4=alias|unknown=>!E4 for P2/P3.
-        let host =
-            SharedHost::from(crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await);
+        let host = (crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await)
+            .build()
+            .expect("validated Host dependencies");
         assert!(
             host.acp_adapter_policy()
                 .err()
@@ -185,7 +184,9 @@ mod tests {
         let projection_only = crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
             .await
             .with_acp_projection_policy(awaken_run_executor_acp::acp_adapter_policy());
-        let host = SharedHost::from(projection_only);
+        let host = (projection_only)
+            .build()
+            .expect("validated Host dependencies");
         assert!(host.exec.acp.is_none(), "P2/E3 no execution factory");
         assert!(
             std::ptr::eq(
@@ -194,11 +195,13 @@ mod tests {
             ),
             "P2/E2 one catalog instance"
         );
-        let host = SharedHost::from(with_fixture_acp(
+        let host = (with_fixture_acp(
             crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test")
                 .await
                 .with_acp_projection_policy(awaken_run_executor_acp::acp_adapter_policy()),
-        ));
+        ))
+        .build()
+        .expect("validated Host dependencies");
         assert!(
             host.exec.acp_projection_policy.is_none(),
             "P3 one effective policy owner"
@@ -222,9 +225,10 @@ mod tests {
         // | Rule | Executor wired | Session projection | ACP selected |
         // | A1 | yes | acp:claude | yes |
         // | A2 | yes | absent | no |
-        let host = SharedHost::from(with_fixture_acp(
-            crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await,
-        ));
+        let host =
+            (with_fixture_acp(crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await))
+                .build()
+                .expect("validated Host dependencies");
         host.register_thread_backend_projection("t", "acp:claude");
         assert!(host.exec.acp.is_some(), "A1 executor");
         assert_eq!(
@@ -272,7 +276,7 @@ mod tests {
                 std::time::Duration::ZERO,
             )
             .into_session_provider();
-        let host = SharedHost::from(dependencies);
+        let host = (dependencies).build().expect("validated Host dependencies");
         let backend_owned = awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
             credential: awaken_runtime_contract::CredentialRef {
                 id: "local".into(),
@@ -334,7 +338,7 @@ mod tests {
 
         let dependencies = crate::HostDependencies::ephemeral(Arc::new(NoLlm), "test").await;
         let observer = dependencies.acp_launch_observer();
-        let host = SharedHost::from(dependencies);
+        let host = (dependencies).build().expect("validated Host dependencies");
         // A UI-facing observer subscribes to the thread before the agent starts.
         let mut sub = host.hub().subscribe("thread-42");
 

@@ -25,11 +25,13 @@ async fn memory_test_host(model: Arc<dyn LlmExecutor>, agent: &str) -> Arc<Share
             agent,
         )])
         .expect("valid Memory Agent publication");
-    Arc::new(SharedHost::from(with_test_memory_mounter(
+    (crate::host::with_test_resource_validation(with_test_memory_mounter(
         crate::HostDependencies::ephemeral(model, "stub")
             .await
             .with_agent_publications(Arc::new(publications)),
     )))
+    .build()
+    .expect("validated Host dependencies")
 }
 
 /// Install one complete Memory-enabled Session through the immutable Agent and
@@ -133,11 +135,13 @@ async fn compaction_summary_reaches_the_same_long_run() {
     // C3 the Host supplies request-only environment context on both attempts:
     // it must remain model-visible while contributing no conversational prefix
     // to compaction. C1+C3 => still E1; C2+C3 => E2 over actual Thread history.
-    let (host, _managed) = dispatch_test_host(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(CompactHostModel), "stub")
+    let (host, _managed) = dispatch_test_host(
+        (crate::HostDependencies::ephemeral(Arc::new(CompactHostModel), "stub")
             .await
-            .with_compaction_tokens(1, 1),
-    ));
+            .with_compaction_tokens(1, 1))
+        .build()
+        .expect("validated Host dependencies"),
+    );
     let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, "hello")];
 
     // Run 1: only the single user message → below threshold, no summary injected.
@@ -172,11 +176,13 @@ async fn compaction_keeps_full_history_until_a_summary_activates_the_window() {
     // activates. Constraint/Invariant: window truncation requires committed prefix
     // coverage from a summary. Decision rule: keep C1 false for summary activation
     // and require both user messages remain visible.
-    let (host, _managed) = dispatch_test_host(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(CompactHostModel), "stub")
+    let (host, _managed) = dispatch_test_host(
+        (crate::HostDependencies::ephemeral(Arc::new(CompactHostModel), "stub")
             .await
-            .with_compaction_tokens(100, 1),
-    ));
+            .with_compaction_tokens(100, 1))
+        .build()
+        .expect("validated Host dependencies"),
+    );
     let user = |id: &str| vec![Message::text(MessageId(id.into()), Role::User, id)];
 
     host.run(None, "t-before-fold", user("u1"))
@@ -213,11 +219,13 @@ async fn compaction_keeps_full_history_until_a_summary_activates_the_window() {
 /// | C8 | 2/1 | claimed rebuild | 2/1 | preserve exact config |
 #[tokio::test]
 async fn generated_compaction_config_survives_claimed_rebuild() {
-    let host = Arc::new(SharedHost::from(
+    let host = (crate::host::with_test_resource_validation(
         crate::HostDependencies::ephemeral(Arc::new(CompactHostModel), "stub")
             .await
             .with_compaction_tokens(2, 1),
-    ));
+    ))
+    .build()
+    .expect("validated Host dependencies");
     let _managed = install_test_dispatch_runtime(&host);
 
     let provisional = host
@@ -281,11 +289,13 @@ async fn published_compact_plugin_is_installed_from_the_immutable_agent() {
     let publications =
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot.clone()])
             .expect("one immutable published Agent");
-    let (host, managed) = dispatch_test_host(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+    let (host, managed) = dispatch_test_host(
+        (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
-            .with_agent_publications(Arc::new(publications)),
-    ));
+            .with_agent_publications(Arc::new(publications)))
+        .build()
+        .expect("validated Host dependencies"),
+    );
     install_test_session_application(&host);
     crate::host::worker_resolver::test_support::install_complete_projection_for_snapshot(
         &managed,
@@ -605,13 +615,16 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
     // Constraint K1: neither rule adopts, deletes, or fabricates durable identity
     // for the legacy root. The test injects authority because runtime-host no
     // longer opens a commit Store.
-    let (first, first_managed) = dispatch_test_host(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
+    let (first, first_managed) = dispatch_test_host(
+        (crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
             .await
             .with_store_dir(&dir)
             .await
-            .with_runtime_authority(authority.clone()),
-    ));
+            .with_runtime_authority(authority.clone())
+            .expect("local authority is selected before Host construction"))
+        .build()
+        .expect("validated Host dependencies"),
+    );
     first
         .run(None, thread, user("remember rust"))
         .await
@@ -633,13 +646,16 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
     // Rebind the frozen resource and reopen the committed thread. Context recovery
     // derives the missing outbox identity from the latest terminal run and inserts
     // the same durable intent normal after-commit delivery would have produced.
-    let (second, second_managed) = dispatch_test_host(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
+    let (second, second_managed) = dispatch_test_host(
+        (crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub")
             .await
             .with_store_dir(&dir)
             .await
-            .with_runtime_authority(authority),
-    ));
+            .with_runtime_authority(authority)
+            .expect("local authority is selected before Host construction"))
+        .build()
+        .expect("validated Host dependencies"),
+    );
     bind_test_memory(&second, thread, "outbox-store", true);
     let commit = second
         .commit_for_read(thread)
@@ -715,11 +731,13 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
     .expect("literal model reference");
     let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
         .expect("valid publication");
-    let host = Arc::new(SharedHost::from(with_test_memory_mounter(
+    let host = (crate::host::with_test_resource_validation(with_test_memory_mounter(
         crate::HostDependencies::ephemeral(Arc::new(MemLoopModel), "stub")
             .await
             .with_agent_publications(Arc::new(publications)),
-    )));
+    )))
+    .build()
+    .expect("validated Host dependencies");
     let unbound_store = test_memory_store_id();
     host.resources
         .memory_stores
@@ -875,7 +893,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     use awaken_session_configuration_contract::SessionInit;
 
     let sandbox_roots = tempfile::tempdir().unwrap();
-    let host = Arc::new(SharedHost::from(with_test_memory_mounter(
+    let host = (crate::host::with_test_resource_validation(with_test_memory_mounter(
         crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_fallback_session_environment_provider(
@@ -888,7 +906,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
                 )
                 .into_session_provider(),
             ),
-    )));
+    ))).build().expect("validated Host dependencies");
     let store = test_memory_store_id();
     host.resources
         .memory_stores
@@ -1163,11 +1181,13 @@ async fn published_agent_memory_config_can_disable_recall_and_extraction() {
     .expect("literal model reference");
     let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
         .expect("valid publication");
-    let host = Arc::new(SharedHost::from(with_test_memory_mounter(
+    let host = (crate::host::with_test_resource_validation(with_test_memory_mounter(
         crate::HostDependencies::ephemeral(Arc::new(MemLoopModel), "stub")
             .await
             .with_agent_publications(Arc::new(publications)),
-    )));
+    )))
+    .build()
+    .expect("validated Host dependencies");
     let store = test_memory_store_id();
     host.resources
         .memory_stores
@@ -1290,12 +1310,14 @@ async fn resume_ended_run_triggers_memory_extraction() {
             "assistant",
         )])
         .expect("valid Memory Agent publication");
-    let host = Arc::new(SharedHost::from(with_test_memory_mounter(
+    let host = (crate::host::with_test_resource_validation(with_test_memory_mounter(
         crate::HostDependencies::ephemeral(Arc::new(ResumeMemModel), "stub")
             .await
             .with_gate_override(write_confirmation_gate())
             .with_agent_publications(Arc::new(publications)),
-    )));
+    )))
+    .build()
+    .expect("validated Host dependencies");
     let managed = managed_with_resource_source(host.clone());
     let store = test_memory_store_id();
     install_complete_memory_test_session(&managed, "t-res", "assistant", &store).await;

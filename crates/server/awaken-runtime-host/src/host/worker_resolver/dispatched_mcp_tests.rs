@@ -34,10 +34,10 @@ async fn dispatched_mcp_effect_projection_decision_table() {
             .is_none(),
         "R1"
     );
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await,
-    ));
-    let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await)
+        .build()
+        .expect("validated Host dependencies");
+    let _managed = crate::ManagedHost::new(host.clone());
     host.register_thread_agent_projection("mcp-dispatch", "agent-a");
     host.register_thread_backend_projection("mcp-dispatch", "acp:gemini");
     host.install_environment_projection("mcp-dispatch", &deferred_environment())

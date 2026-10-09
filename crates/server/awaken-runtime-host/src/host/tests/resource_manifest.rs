@@ -7,9 +7,11 @@ use super::*;
 #[tokio::test]
 async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount() {
     use awaken_provisioning_contract::MountAccess;
-    let host = Arc::new(SharedHost::from(
+    let host = (crate::host::with_test_resource_validation(
         crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
+    ))
+    .build()
+    .expect("validated Host dependencies");
     let store_id = test_memory_store_id();
     host.resources
         .memory_stores
@@ -167,9 +169,11 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
         }
     }
 
-    let host = Arc::new(SharedHost::from(
+    let host = (crate::host::with_test_resource_validation(
         crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
+    ))
+    .build()
+    .expect("validated Host dependencies");
     let managed = managed_with_resource_source(host.clone());
     for case in cases {
         let count = case.count.parse::<usize>().unwrap();
@@ -310,11 +314,13 @@ async fn automatic_memory_requires_one_explicit_existing_binding() {
         let publications =
             awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
                 .expect("valid publication");
-        let host = Arc::new(SharedHost::from(with_test_memory_mounter(
+        let host = (crate::host::with_test_resource_validation(with_test_memory_mounter(
             crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
                 .await
                 .with_agent_publications(Arc::new(publications)),
-        )));
+        )))
+        .build()
+        .expect("validated Host dependencies");
         let stores = [test_memory_store_id(), test_memory_store_id()];
         for store in &stores {
             host.resources
@@ -381,9 +387,11 @@ async fn automatic_memory_requires_one_explicit_existing_binding() {
 /// Agent defaults of its own. Replacement is a Session-control-plane decision.
 #[tokio::test]
 async fn runtime_stages_exactly_the_effective_resource_list() {
-    let host = Arc::new(SharedHost::from(
+    let host = (crate::host::with_test_resource_validation(
         crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
+    ))
+    .build()
+    .expect("validated Host dependencies");
     let s2 = test_memory_store_id();
     host.resources
         .memory_stores
@@ -437,11 +445,14 @@ async fn runtime_stages_exactly_the_effective_resource_list() {
 /// G4 — an effective Memory input whose backing store is absent fails closed.
 #[tokio::test]
 async fn a_bound_resource_with_a_missing_backing_store_fails_the_session_closed() {
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
-    let managed =
-        crate::ManagedHost::new(host.clone()).with_resource_validator(resource_registry().await);
+    let host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .with_session_execution(
+            crate::SessionExecutionDependencies::default()
+                .with_resource_validator(resource_registry().await),
+        ))
+    .build()
+    .expect("validated Host dependencies");
+    let managed = crate::ManagedHost::new(host.clone());
     let mut init = bare_session("a", host.local_workspace());
     init.resources = effective_resources(vec![TestInput {
         kind: "memory_store".into(),
@@ -468,12 +479,16 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
     };
     use awaken_session_resource_contract::ResolvedInputSource;
 
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
+    let catalog = resource_registry().await;
+    let host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .with_session_execution(
+            crate::SessionExecutionDependencies::default().with_resource_validator(catalog.clone()),
+        ))
+    .build()
+    .expect("validated Host dependencies");
     let workspace = host.local_workspace().to_string();
     let store_id = test_memory_store_id();
-    let catalog = resource_registry().await;
+
     catalog
         .register_memory_store(RegisterMemoryStore {
             definition: MemoryStoreDefinition {
@@ -516,7 +531,7 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
         initial_branch: None,
         initial_commit: None,
     }]);
-    let managed = crate::ManagedHost::new(host.clone()).with_resource_validator(catalog.clone());
+    let managed = crate::ManagedHost::new(host.clone());
     let mut valid = bare_session("a", &workspace);
     valid.resources = manifest.clone();
     managed
@@ -590,14 +605,16 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         .build();
     let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
         .expect("one immutable governed Agent");
-    let host = Arc::new(SharedHost::from(
+    let host = (crate::host::with_test_resource_validation(
         crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_skill_store(storage.path().join("skills"))
             .with_store_dir(storage.path())
             .await
             .with_agent_publications(Arc::new(publications)),
-    ));
+    ))
+    .build()
+    .expect("validated Host dependencies");
     let workspace = host.local_workspace().to_string();
     let files = vec![
         SkillBundleFile {
@@ -730,9 +747,11 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
 /// access to the resource data plane but not to the Agent authoring repository.
 #[tokio::test]
 async fn an_effective_resource_mounts_on_a_worker_without_the_binding_repository() {
-    let db_less = Arc::new(SharedHost::from(
+    let db_less = (crate::host::with_test_resource_validation(
         crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
+    ))
+    .build()
+    .expect("validated Host dependencies");
     let store_id = test_memory_store_id();
     db_less
         .resources

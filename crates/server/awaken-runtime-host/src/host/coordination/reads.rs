@@ -222,11 +222,13 @@ mod tests {
                 )),
             ),
         );
-        let host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
+        let host =
+            (crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
                 .await
-                .with_runtime_authority(authority),
-        ));
+                .with_runtime_authority(authority)
+                .expect("local authority is selected before Host construction"))
+            .build()
+            .expect("validated Host dependencies");
         let managed = crate::ManagedHost::new(host.clone());
         assert!(
             managed
@@ -428,14 +430,12 @@ mod tests {
                 ),
             );
             let make_host = || async {
-                Arc::new(SharedHost::from(
-                    crate::HostDependencies::ephemeral(
-                        Arc::new(crate::host::MemoryHostModel),
-                        "stub",
-                    )
+                (crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
                     .await
-                    .with_runtime_authority(authority.clone()),
-                ))
+                    .with_runtime_authority(authority.clone())
+                    .expect("local authority is selected before Host construction"))
+                .build()
+                .expect("validated Host dependencies")
             };
             let host = make_host().await;
             let managed = crate::ManagedHost::new(host.clone());
@@ -551,10 +551,11 @@ mod tests {
         let session_id = "snapshot-parent-session";
         let child_id = ThreadId("snapshot-logical-child".into());
         let child_run = RunId("snapshot-child-run".into());
-        let host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
-                .await,
-        ));
+        let host =
+            (crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
+                .await)
+                .build()
+                .expect("validated Host dependencies");
 
         assert_eq!(
             host.session_thread_recovery_snapshot(session_id, &child_id)

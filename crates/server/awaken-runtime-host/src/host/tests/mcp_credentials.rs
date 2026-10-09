@@ -45,11 +45,17 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         }
     }
 
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
+    let host = (((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .with_credentials(credentials.clone(), secrets.clone()))
+    .with_session_execution(
+        crate::SessionExecutionDependencies::default()
+            .with_credential_refresh_factory(Arc::new(ExactRefreshFactory)),
+    ))
+    .build()
+    .expect("validated Host dependencies");
+
     let mut credential = awaken_credential_vault::repo::enter_credential(
         awaken_credential_vault::CredentialCreateParams {
             workspace_id: "workspace-a".into(),
@@ -67,9 +73,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     )
     .await
     .unwrap();
-    let managed = crate::ManagedHost::new(host.clone())
-        .with_credentials(credentials.clone(), secrets.clone())
-        .with_credential_refresh_factory(Arc::new(ExactRefreshFactory));
+    let managed = crate::ManagedHost::new(host.clone());
     let holder = PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker");
     let (mcp_url, seen) = crate::test_mcp::start(Some("Bearer published-mcp-token")).await;
     let mcp_audience = awaken_session_mcp_contract::McpTarget::identity(&mcp_url)
@@ -527,11 +531,12 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         launch,
     ));
     let executor = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
-    let acp_host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_acp(executor.clone()),
-    ));
+    let acp_host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_acp(executor.clone()))
+    .with_credentials(credentials.clone(), secrets.clone()))
+    .build()
+    .expect("validated Host dependencies");
     acp_host.register_thread_backend_projection("mcp-acp-forbidden", "acp:test");
     acp_host.register_thread_backend_projection("mcp-acp-protected", "acp:test");
     acp_host.register_thread_backend_projection("mcp-acp-anonymous", "acp:test");
@@ -589,8 +594,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         PlaintextBoundary::Workload,
         awaken_credential_contract::SELF_HOSTED_ACP_TRUST_DOMAIN,
     );
-    let basic_client = crate::ManagedHost::new(acp_host.clone())
-        .with_credentials(credentials.clone(), secrets.clone());
+    let basic_client = crate::ManagedHost::new(acp_host.clone());
     let mut basic_client_request = request("mcp-acp-client-basic", "workspace-a", 1);
     basic_client_request.selected_plaintext_holder = Some(workload_holder.clone());
     basic_client_request.credential.as_mut().unwrap().policy =
@@ -788,14 +792,14 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // outbound proxy. Effects: missing issuer refuses before Worker Ready;
     // installed issuer permits transport staging without asserting public
     // upstream reachability. R1 no issuer -> refusal; R2 issuer -> bind.
-    let missing_proxy_host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral_with_deployment(
-            Arc::new(OkModel),
-            "stub",
-            secure_deployment.clone(),
-        )
-        .await,
-    ));
+    let missing_proxy_host = (crate::HostDependencies::ephemeral_with_deployment(
+        Arc::new(OkModel),
+        "stub",
+        secure_deployment.clone(),
+    )
+    .await)
+        .build()
+        .expect("validated Host dependencies");
     assert!(
         missing_proxy_host
             .prepare_container_mcp_relay()
@@ -803,20 +807,21 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             .is_err(),
         "R1 external relay without signed CONNECT issuer"
     );
-    let secure_acp_host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral_with_deployment(
-            Arc::new(OkModel),
-            "stub",
-            secure_deployment,
-        )
-        .await
-        .with_mcp_relay_outbound_proxy(Arc::new(StagingOnlyProxy))
-        .with_acp(executor.clone())
-        .with_session_container_provider(
-            Arc::new(SecureExternalProvider),
-            Arc::new(UnusedHandFactory),
-        ),
-    ));
+    let secure_acp_host = (crate::HostDependencies::ephemeral_with_deployment(
+        Arc::new(OkModel),
+        "stub",
+        secure_deployment,
+    )
+    .await
+    .with_credentials(credentials.clone(), secrets.clone())
+    .with_mcp_relay_outbound_proxy(Arc::new(StagingOnlyProxy))
+    .with_acp(executor.clone())
+    .with_session_container_provider(
+        Arc::new(SecureExternalProvider),
+        Arc::new(UnusedHandFactory),
+    ))
+    .build()
+    .expect("validated Host dependencies");
     secure_acp_host.register_thread_backend_projection("mcp-acp-secure", "acp:test");
     secure_acp_host.register_thread_backend_projection("mcp-acp-client", "acp:claude");
     secure_acp_host.register_thread_backend_projection("mcp-acp-refresh", "acp:claude");
@@ -877,8 +882,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             ),
         )
         .unwrap();
-    let external_gate = crate::ManagedHost::new(secure_acp_host.clone())
-        .with_credentials(credentials.clone(), secrets.clone());
+    let external_gate = crate::ManagedHost::new(secure_acp_host.clone());
     assert_eq!(
         external_gate
             .stage_mcp_attachment(request("mcp-acp-unstarted", "workspace-a", 1))
@@ -909,22 +913,22 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // H31 preserves only the established loopback compatibility behavior. The
     // provider fixture does not observe network topology, so this is not evidence
     // that loopback is reachable from an isolated container or of G43 custody.
-    let default_relay_host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_acp(executor.clone())
-            .with_session_container_provider(
-                Arc::new(SecureExternalProvider),
-                Arc::new(UnusedHandFactory),
-            ),
-    ));
+    let default_relay_host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_acp(executor.clone())
+        .with_session_container_provider(
+            Arc::new(SecureExternalProvider),
+            Arc::new(UnusedHandFactory),
+        ))
+    .with_credentials(credentials.clone(), secrets.clone()))
+    .build()
+    .expect("validated Host dependencies");
     default_relay_host.register_thread_backend_projection("mcp-acp-default-relay", "acp:test");
     default_relay_host.register_thread_agent_projection("mcp-acp-default-relay", "assistant");
     default_relay_host
         .retain_session_publication("mcp-acp-default-relay", Some(&host_acp_snapshot))
         .unwrap();
-    let default_relay_managed = crate::ManagedHost::new(default_relay_host.clone())
-        .with_credentials(credentials.clone(), secrets.clone());
+    let default_relay_managed = crate::ManagedHost::new(default_relay_host.clone());
     let seen_before = seen.lock().unwrap().len();
     let default_generation = generation("mcp-acp-default-relay");
     default_relay_host
@@ -1021,16 +1025,15 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         )
         .unwrap(),
     );
-    let mut backend_secure_host = SharedHost::from(
-        crate::HostDependencies::ephemeral_with_deployment(
-            Arc::new(OkModel),
-            "stub",
-            backend_deployment,
-        )
-        .await
-        .with_mcp_relay_outbound_proxy(Arc::new(StagingOnlyProxy))
-        .with_acp(executor.clone()),
-    );
+    let mut backend_secure_host = (crate::HostDependencies::ephemeral_with_deployment(
+        Arc::new(OkModel),
+        "stub",
+        backend_deployment,
+    )
+    .await
+    .with_mcp_relay_outbound_proxy(Arc::new(StagingOnlyProxy))
+    .with_acp(executor.clone()))
+    .with_credentials(credentials.clone(), secrets.clone());
     backend_secure_host.env.backend_owned_session_provider = Some(
         crate::session_environment::SandboxEnvironmentProvider::container(
             Arc::new(SecureExternalProvider),
@@ -1040,7 +1043,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         )
         .into_session_provider(),
     );
-    let backend_secure_host = Arc::new(backend_secure_host);
+    let backend_secure_host = (backend_secure_host).build().unwrap();
     backend_secure_host.register_thread_backend_projection("mcp-acp-backend-secure", "acp:test");
     backend_secure_host
         .install_environment_projection(
@@ -1061,28 +1064,25 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     backend_secure_host
         .retain_session_publication("mcp-acp-backend-secure", Some(&backend_owned_snapshot))
         .expect("H26 frozen BackendOwned publication");
-    let backend_secure = crate::ManagedHost::new(backend_secure_host.clone())
-        .with_credentials(credentials.clone(), secrets.clone());
+    let backend_secure = crate::ManagedHost::new(backend_secure_host.clone());
     backend_secure
         .stage_mcp_attachment(request("mcp-acp-backend-secure", "workspace-a", 1))
         .await
         .expect("H26 selected BackendOwned provider admits WorkerRelay");
 
     let weak_backend_root = tempfile::tempdir().expect("H27 weak BackendOwned root");
-    let mut default_secure_host = SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_acp(executor.clone())
-            .with_session_container_provider(
-                Arc::new(SecureExternalProvider),
-                Arc::new(UnusedHandFactory),
-            ),
-    );
+    let mut default_secure_host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_acp(executor.clone())
+        .with_session_container_provider(
+            Arc::new(SecureExternalProvider),
+            Arc::new(UnusedHandFactory),
+        );
     default_secure_host.env.backend_owned_session_provider = Some(
         crate::session_environment::SandboxEnvironmentProvider::workdir(weak_backend_root.path())
             .into_session_provider(),
     );
-    let default_secure_host = Arc::new(default_secure_host);
+    let default_secure_host = (default_secure_host).build().unwrap();
     default_secure_host.register_thread_backend_projection("mcp-acp-backend-weak", "acp:test");
     default_secure_host.register_thread_agent_projection("mcp-acp-backend-weak", "assistant");
     default_secure_host
@@ -1100,8 +1100,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H27 rejects before materialization"
     );
 
-    let secure_managed =
-        crate::ManagedHost::new(secure_acp_host.clone()).with_credentials(credentials, secrets);
+    let secure_managed = crate::ManagedHost::new(secure_acp_host.clone());
     let secure_generation = generation("mcp-acp-secure");
     // H20 mirrors the production Control-installed root before projecting the
     // opaque external route. H31 owns the retained real relay/upstream call.
@@ -1346,15 +1345,16 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
         ),
         holder: holder.clone(),
     });
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
-    let managed = crate::ManagedHost::new(host).with_credential_materializer(
-        awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
-            resolver,
-            awaken_time::system_clock(),
-        ),
-    );
+    let host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .with_credential_materializer(
+            awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
+                resolver,
+                awaken_time::system_clock(),
+            ),
+        ))
+    .build()
+    .expect("validated Host dependencies");
+    let managed = crate::ManagedHost::new(host);
 
     // Cause/effect decision table:
     // | Rule | authoring binding | runtime server label | runtime target | Effect |
@@ -1385,21 +1385,26 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
 }
 
 #[tokio::test]
-async fn dispatch_session_runtime_requires_explicit_installation() {
-    // Cause/effect graph: C1 a ManagedHost is only constructed; C2 the fully
-    // configured adapter is explicitly installed. Effects: E1 SharedHost has no
-    // dispatch adapter; E2 SharedHost exposes exactly the installed adapter.
-    // Constraint: C2 follows C1. Decision table: R1 C1&&!C2 -> E1; R2 C1&&C2
-    // -> E2. This guards against constructor/builder side effects reintroducing
-    // partially configured durable-dispatch state.
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
-    let managed = crate::ManagedHost::new(host.clone());
-
-    assert!(host.dispatch_session_runtime().is_err(), "R1/E1");
-    let _managed = managed.install_dispatch_session_runtime();
-    assert!(host.dispatch_session_runtime().is_ok(), "R2/E2");
+async fn dispatch_session_runtime_is_constructed_once_with_weak_host_ownership() {
+    // Causes: C1 complete selected dependencies; C2 empty Workspace; C3 all
+    // strong Host views dropped. R1 C1 => dispatch and Managed views share Host;
+    // R2 C2 => typed construction refusal; R3 C3 => Weak adapter refuses access.
+    // No installation, configuration mirror, or retained Host cycle exists.
+    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .build()
+        .unwrap();
+    let dispatch = host.dispatch_session_runtime();
+    let managed = dispatch.managed().unwrap();
+    assert!(Arc::ptr_eq(&host, &managed.host), "R1");
+    let weak = Arc::downgrade(&host);
+    drop(managed);
+    drop(host);
+    assert!(weak.upgrade().is_none(), "R3 no cycle");
+    assert!(dispatch.managed().is_err(), "R3");
+    let invalid = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .with_local_workspace("");
+    assert!((invalid).build().is_err(), "R2");
 }
 
 /// Public-realizer selection cause graph:
@@ -1466,13 +1471,16 @@ async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
         }
     }
 
-    let host = Arc::new(SharedHost::from(
-        crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await,
-    ));
     let external = Arc::new(RecordingRealizer::default());
-    let _managed = crate::ManagedHost::new(host.clone())
-        .with_mcp_attachment_realizer(external.clone())
-        .install_dispatch_session_runtime();
+    let host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+        .with_session_execution(
+            crate::SessionExecutionDependencies::default()
+                .with_mcp_attachment_realizer(external.clone()),
+        ))
+    .build()
+    .expect("validated Host dependencies");
+
+    let _managed = crate::ManagedHost::new(host.clone());
     let generation =
         crate::test_mcp::mcp_fence("external-mcp", "docs", 1, "runtime-1", 1, u64::MAX);
     let request = StageMcpAttachment {

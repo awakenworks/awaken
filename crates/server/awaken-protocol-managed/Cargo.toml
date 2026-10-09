@@ -22,6 +22,7 @@ schema = ["dep:schemars", "awaken-session-configuration-contract/schema"]
 # Store fixtures live in awaken-protocol-managed-testkit and reach this adapter
 # behind their ports; enabling this feature pulls in no concrete store.
 test-support = [
+    "awaken-session-application/test-support",
     "awaken-deployment-application/test-support",
     "awaken-dream-application/test-support",
     "awaken-credential-vault/test-support",

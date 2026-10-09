@@ -11,9 +11,13 @@ impl ManagedHost {
         &self,
     ) -> awaken_session_mcp::McpCredentialMaterialization<'_> {
         awaken_session_mcp::McpCredentialMaterialization {
-            credentials: self.credentials.as_ref(),
-            refresh_factory: self.credential_refresh_factory.as_deref(),
-            platform_egress: self.platform_mcp_egress.as_deref(),
+            credentials: self.host.exec.credential_materializer.as_ref(),
+            refresh_factory: self
+                .host
+                .session_execution
+                .credential_refresh_factory
+                .as_deref(),
+            platform_egress: self.host.session_execution.platform_mcp_egress.as_deref(),
         }
     }
 }

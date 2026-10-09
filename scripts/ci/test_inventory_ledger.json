@@ -14,6 +14,7 @@
     "session_schema_preserves_v1_and_adds_one_deterministic_dependency_index": "session_schema_preserves_v1_and_adds_owned_dependency_and_worker_indexes",
     "signed_database_boundary_is_fail_closed": "sql_bigint_codec_boundaries_are_exact",
     "stored_u64_matches_checked_integer_semantics": "sql_bigint_codec_matches_checked_integer_semantics",
-    "terminal_cleanup_capacity_counts_distinct_owners_from_one_root_scan": "session_worker_demand_counts_live_affinity_and_terminal_cleanup"
+    "terminal_cleanup_capacity_counts_distinct_owners_from_one_root_scan": "session_worker_demand_counts_live_affinity_and_terminal_cleanup",
+    "dispatch_session_runtime_requires_explicit_installation": "dispatch_session_runtime_is_constructed_once_with_weak_host_ownership"
   }
 }

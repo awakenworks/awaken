@@ -381,7 +381,7 @@ impl crate::SharedHost {
                 // and process-local acknowledgement for warm and cold slots.
                 let runtime = self
                     .dispatch_session_runtime()
-                    .and_then(|runtime| runtime.managed())
+                    .managed()
                     .map_err(crate::managed_adapter_error::from_run_error)?;
                 awaken_session_realization_driver::drive_session_terminal_cleanup(
                     session_id, lease, control, &runtime,

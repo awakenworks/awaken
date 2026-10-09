@@ -193,9 +193,8 @@ impl ManagedState {
             Arc::new(SessionApplication::new(
                 runtime,
                 mcp_realizer.unwrap_or_else(|| Arc::new(UnsupportedMcpAttachmentRealizer)),
-                sessions_repo,
+                awaken_session_application::SessionPersistence::new(sessions_repo, clock),
                 environments.clone(),
-                clock,
             )),
             environments,
         )

@@ -22,9 +22,9 @@ async fn outcome_queries_need_no_frozen_runtime_or_environment_and_preserve_comm
             reached: Arc::new(tokio::sync::Notify::new()),
             calls: AtomicUsize::new(0),
         });
-        let host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(model.clone(), "stub").await,
-        ));
+        let host = (crate::HostDependencies::ephemeral(model.clone(), "stub").await)
+            .build()
+            .expect("validated Host dependencies");
         let managed = install_test_dispatch_runtime(&host);
         let thread = ThreadId(format!("outcome-pure-query-cached-{cached}"));
         if cached {
@@ -42,10 +42,7 @@ async fn outcome_queries_need_no_frozen_runtime_or_environment_and_preserve_comm
             owned_session_id: None,
             committed_environment: None,
         });
-        managed
-            .realization()
-            .unwrap()
-            .install_environment_binding_sink(sink.clone());
+        managed.install_test_environment_binding_sink(sink.clone());
         let commit = host.commit_for_read(&thread.0).await.unwrap();
         let state = ThreadOutcomeState::new(&thread, commit.as_ref(), commit.as_ref());
         let mut id = Id("query-only".into());

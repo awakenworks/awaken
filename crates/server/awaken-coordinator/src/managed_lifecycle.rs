@@ -32,49 +32,34 @@ pub enum ManagedLifecycleCompositionError {
     Supervisor(&'static str),
 }
 
-/// Install the one lifecycle delivery chain before the Managed router is served.
-///
-/// `sessions` is the Session application the composition root built and
-/// narrowed into `state`; the notifier binds to it directly. Product passes its
-/// Control webhook delivery; scenario/local composition passes `None`. Both modes share this exact outbox consumer and Managed refresh
-/// receiver rather than wiring parallel notification paths.
-pub fn install_managed_lifecycle_delivery(
-    state: &Arc<ManagedState>,
-    sessions: &SessionApplication,
-    webhook: Option<Arc<dyn LifecycleFactDelivery>>,
-    service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
-) -> Result<Arc<ManagedLifecycleFactDelivery>, ManagedLifecycleCompositionError> {
-    install_managed_lifecycle_delivery_inner(state, sessions, webhook, None, service_lifecycle)
+/// Prepared connection to the existing sole outbox consumer. Preparation binds
+/// its receivers and owns its replay loop; only `start` spawns that same loop.
+pub struct PreparedManagedLifecycleDelivery {
+    managed: Arc<ManagedLifecycleFactDelivery>,
+    replay: awaken_session_application::LifecycleOutboxReplay,
 }
 
-/// Install the same lifecycle delivery chain and bind Deployment wake-ups to it.
-///
-/// This additive entry point preserves the original Session-only composition
-/// API. Both wrappers delegate to one implementation and start exactly one
-/// durable outbox consumer.
-pub fn install_managed_lifecycle_delivery_with_deployments(
-    state: &Arc<ManagedState>,
-    sessions: &SessionApplication,
-    webhook: Option<Arc<dyn LifecycleFactDelivery>>,
-    deployments: &awaken_deployment_application::DeploymentApplication,
-    service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
-) -> Result<Arc<ManagedLifecycleFactDelivery>, ManagedLifecycleCompositionError> {
-    install_managed_lifecycle_delivery_inner(
-        state,
-        sessions,
-        webhook,
-        Some(deployments),
-        service_lifecycle,
-    )
+impl PreparedManagedLifecycleDelivery {
+    pub fn start(
+        self,
+        service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
+    ) -> Arc<ManagedLifecycleFactDelivery> {
+        let Self { managed, replay } = self;
+        service_lifecycle.spawn("coordinator-webhook-outbox", move |cancel| {
+            replay.run(cancel)
+        });
+        managed
+    }
 }
 
-fn install_managed_lifecycle_delivery_inner(
+/// Bind the one lifecycle delivery chain without starting background work.
+/// Process assembly starts it only after all application connections validate.
+pub fn prepare_managed_lifecycle_delivery(
     state: &Arc<ManagedState>,
     application: &SessionApplication,
     webhook: Option<Arc<dyn LifecycleFactDelivery>>,
     deployments: Option<&awaken_deployment_application::DeploymentApplication>,
-    service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
-) -> Result<Arc<ManagedLifecycleFactDelivery>, ManagedLifecycleCompositionError> {
+) -> Result<PreparedManagedLifecycleDelivery, ManagedLifecycleCompositionError> {
     let managed = Arc::new(ManagedLifecycleFactDelivery::new(state));
 
     let managed_delivery: Arc<dyn LifecycleFactDelivery> = managed.clone();
@@ -100,10 +85,7 @@ fn install_managed_lifecycle_delivery_inner(
     let replay = notifier
         .replay_loop(LIFECYCLE_OUTBOX_RECONCILIATION_INTERVAL)
         .map_err(ManagedLifecycleCompositionError::Supervisor)?;
-    service_lifecycle.spawn("coordinator-webhook-outbox", move |cancel| {
-        replay.run(cancel)
-    });
-    Ok(managed)
+    Ok(PreparedManagedLifecycleDelivery { managed, replay })
 }
 
 #[cfg(test)]
@@ -161,6 +143,70 @@ mod tests {
             .collect()
     }
 
+    #[tokio::test]
+    async fn prepared_lifecycle_delivery_waits_for_explicit_service_start() {
+        // Causes: C1 one prepared Store-bound relay; C2 a committed Session
+        // creation fact; C3 the prepared loop is started. R1 C1+C2+!C3 => durable
+        // pending fact, zero deliveries. R2 C1+C2+C3 => that exact fact delivered
+        // and acknowledged by the existing consumer. No alternate drain exists.
+        let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()).await);
+        let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+        let webhook = Arc::new(RecordingWebhook::default());
+        let prepared = prepare_managed_lifecycle_delivery(
+            &state,
+            &state.session_application(),
+            Some(webhook.clone()),
+            None,
+        )
+        .unwrap();
+        let session = state
+            .create_session(
+                serde_json::from_value(serde_json::json!({
+                    "agent": "coder",
+                    "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
+                }))
+                .unwrap(),
+                awaken_tenancy::DEFAULT_WORKSPACE_ID,
+            )
+            .await
+            .unwrap();
+        let outbox = state.session_application().lifecycle_outbox_handle();
+        let pending = outbox.pending_lifecycle().await.unwrap();
+        let fact = pending
+            .iter()
+            .find(|fact| fact.object_id == session.id)
+            .unwrap();
+        let fact_id = fact.id.clone();
+        tokio::task::yield_now().await;
+        assert!(
+            webhook.0.lock().unwrap().is_empty(),
+            "R1 zero delivery before start"
+        );
+        assert!(
+            !outbox.pending_lifecycle().await.unwrap().is_empty(),
+            "R1 retained durable fact"
+        );
+        prepared.start(&lifecycle);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if webhook
+                    .0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|fact| fact.id == fact_id)
+                    && outbox.pending_lifecycle().await.unwrap().is_empty()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("R2 one existing outbox consumer delivers and acknowledges");
+        lifecycle.shutdown(Duration::from_secs(2)).await.unwrap();
+    }
+
     /// Lifecycle wake cause/effect graph: C1 the receiver/application and a
     /// Runtime accepting the complete frozen Session projection are composed
     /// before traffic; C2 durable Session + child facts advance outside the
@@ -190,12 +236,13 @@ mod tests {
         let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()).await);
         let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
         let webhook = Arc::new(RecordingWebhook::default());
-        let delivery = install_managed_lifecycle_delivery(
+        let delivery = prepare_managed_lifecycle_delivery(
             &state,
             &state.session_application(),
             Some(webhook.clone()),
-            &lifecycle,
+            None,
         )
+        .map(|prepared| prepared.start(&lifecycle))
         .expect("L1 bind before traffic");
 
         let unknown = ManagedLifecycleFact {
@@ -340,12 +387,13 @@ mod tests {
 
         assert!(
             matches!(
-                install_managed_lifecycle_delivery(
+                prepare_managed_lifecycle_delivery(
                     &state,
                     &state.session_application(),
                     None,
-                    &lifecycle
-                ),
+                    None
+                )
+                .map(|prepared| prepared.start(&lifecycle)),
                 Err(ManagedLifecycleCompositionError::Notifier(_))
             ),
             "L4/E5 application rejects a second outbox owner before it starts"

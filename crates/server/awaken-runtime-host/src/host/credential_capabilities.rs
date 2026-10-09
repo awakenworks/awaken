@@ -194,8 +194,6 @@ mod tests {
         ResolvedCredentialMaterial,
     };
 
-    use super::*;
-
     struct ControlReferenceResolver;
 
     #[async_trait::async_trait]
@@ -324,7 +322,7 @@ mod tests {
                             awaken_run_executor_acp::AcpRunExecutor::new(source),
                         ));
                     }
-                    let host = SharedHost::from(host);
+                    let host = (host).build().expect("validated Host dependencies");
                     let adapters = host.child_execution_adapters("profiles", environment.clone());
                     assert_eq!(
                         adapters.credential_capabilities,
@@ -359,26 +357,26 @@ mod tests {
         // from the Session request. Decision rules: R1=!C1=>neither; R2=C1&&!C2
         // =>WorkerRelay only; R3=C1+C2+C3=>both; R4=C4=>WorkerRelay only;
         // R5=C1+C2+undeclared backend=>no client-injection profile for it.
-        let without = SharedHost::from(
-            crate::HostDependencies::ephemeral(
-                Arc::new(crate::host::MemoryHostModel),
-                "test-model",
-            )
-            .await,
-        );
+        let without = (crate::HostDependencies::ephemeral(
+            Arc::new(crate::host::MemoryHostModel),
+            "test-model",
+        )
+        .await)
+            .build()
+            .expect("validated Host dependencies");
         let launch = awaken_run_executor_acp::AcpLaunch::custom(vec!["true".into()], vec![]);
         let source = Arc::new(awaken_run_executor_acp::SubprocessChannelSource::new(
             launch,
         ));
         let executor = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
-        let acp_without_materializer = SharedHost::from(
-            crate::HostDependencies::ephemeral(
-                Arc::new(crate::host::MemoryHostModel),
-                "test-model",
-            )
-            .await
-            .with_acp(executor.clone()),
-        );
+        let acp_without_materializer = (crate::HostDependencies::ephemeral(
+            Arc::new(crate::host::MemoryHostModel),
+            "test-model",
+        )
+        .await
+        .with_acp(executor.clone()))
+        .build()
+        .expect("validated Host dependencies");
         assert!(
             !has_worker_relay(&without.local_credential_realization_capabilities()),
             "R1: a host without a relay-capable adapter must fail closed"
@@ -403,20 +401,20 @@ mod tests {
         )
         .await;
         with_remote.agent.remote_credential_realization = remote_profile;
-        let with_remote = SharedHost::from(with_remote);
+        let with_remote = (with_remote).build().expect("validated Host dependencies");
         assert!(
             has_worker_relay(&with_remote.local_credential_realization_capabilities()),
             "R3: the installed Remote adapter must be visible to claim admission"
         );
 
-        let with = SharedHost::from(
-            crate::HostDependencies::ephemeral(
-                Arc::new(crate::host::MemoryHostModel),
-                "test-model",
-            )
-            .await
-            .with_credential_materializer(materializer.clone()),
-        );
+        let with = (crate::HostDependencies::ephemeral(
+            Arc::new(crate::host::MemoryHostModel),
+            "test-model",
+        )
+        .await
+        .with_credential_materializer(materializer.clone()))
+        .build()
+        .expect("validated Host dependencies");
         assert!(
             has_worker_relay(&with.local_credential_realization_capabilities()),
             "R2: the installed exact materializer must be visible to claim admission"
@@ -429,15 +427,15 @@ mod tests {
             "R2: material access alone does not declare an ACP client"
         );
 
-        let with_acp = SharedHost::from(
-            crate::HostDependencies::ephemeral(
-                Arc::new(crate::host::MemoryHostModel),
-                "test-model",
-            )
-            .await
-            .with_credential_materializer(materializer)
-            .with_acp(executor),
-        );
+        let with_acp = (crate::HostDependencies::ephemeral(
+            Arc::new(crate::host::MemoryHostModel),
+            "test-model",
+        )
+        .await
+        .with_credential_materializer(materializer)
+        .with_acp(executor))
+        .build()
+        .expect("validated Host dependencies");
         let capabilities = with_acp.local_credential_realization_capabilities();
         assert!(
             has_worker_relay(&capabilities),

@@ -35,13 +35,13 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         )
         .into_session_provider();
         let thread = "session-container";
-        let host = Arc::new(crate::SharedHost::from(
-            crate::HostDependencies::ephemeral(
-                Arc::new(crate::no_model::NoModelConfiguredExecutor),
-                "stub",
-            )
-            .await,
-        ));
+        let host = (crate::HostDependencies::ephemeral(
+            Arc::new(crate::no_model::NoModelConfiguredExecutor),
+            "stub",
+        )
+        .await)
+            .build()
+            .expect("validated Host dependencies");
         let managed = managed_test_host(host.clone());
         let activation = test_activation(thread, "rebind-run");
         let mut projection = empty_frozen_projection_for_snapshot(

@@ -339,10 +339,10 @@ mod tests {
     /// The controller remains the sole Outcome owner; this fixture supplies only
     /// the production Dispatch runtime required by context construction.
     async fn outcome_test_host(model: Arc<dyn LlmExecutor>) -> Arc<SharedHost> {
-        let host = Arc::new(SharedHost::from(
-            crate::HostDependencies::ephemeral(model, "stub").await,
-        ));
-        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+        let host = (crate::HostDependencies::ephemeral(model, "stub").await)
+            .build()
+            .expect("validated Host dependencies");
+        let _managed = crate::ManagedHost::new(host.clone());
         host
     }
 

@@ -421,14 +421,13 @@ mod tests {
         let application = awaken_session_application::SessionApplication::new_with_configuration(
             runtime.clone(),
             runtime,
-            repo,
+            awaken_session_application::SessionPersistence::new(repo, awaken_time::system_clock()),
             environments.clone(),
             awaken_session_application::SessionApplicationConfiguration {
                 execution_placement:
                     awaken_session_application::SessionExecutionPlacement::RegisteredWorker,
                 ..Default::default()
             },
-            awaken_time::system_clock(),
         );
         let restarted = ManagedState::from_application(Arc::new(application), environments);
 

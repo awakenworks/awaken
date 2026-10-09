@@ -43,6 +43,7 @@ pub(crate) const APPLICATION_ACCESS_RETENTION_CAPACITY_PER_TICK: u32 =
 /// boundaries before invoking this builder; the injected `SharedHost` is the
 /// Coordinator's neutral Runtime port adapter.
 pub struct CoordinatorDependencies {
+    pub lifecycle_delivery: crate::PreparedManagedLifecycleDelivery,
     pub service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
     pub host: Arc<SharedHost>,
     /// Canonical Session application shared by internal services and protocol
@@ -187,6 +188,16 @@ pub(crate) fn register_runtime_background_drain(
     );
 }
 
+/// Start the existing Runtime/Dream services after application composition.
+pub(crate) async fn start_runtime_services(
+    host: &Arc<SharedHost>,
+    dreams: &Arc<awaken_dream_application::DreamApplication>,
+) {
+    host.ensure_dispatch_pool();
+    host.ensure_terminal_dispatch_reconciliation();
+    dreams.resume_incomplete().await;
+}
+
 /// Attach bounded application-credential retention to the Coordinator's one
 /// service lifecycle. Cleanup failure is retried by this same task; it never
 /// installs a local authorization fallback or a second maintenance scheduler.
@@ -247,6 +258,7 @@ pub async fn build_coordinator_component(
 ) -> Result<CoordinatorComponent, CoordinatorBuildError> {
     let CoordinatorDependencies {
         service_lifecycle,
+        lifecycle_delivery,
         host,
         session_application,
         managed_state,
@@ -285,12 +297,6 @@ pub async fn build_coordinator_component(
         deployment_application.bind_executable_projection_refresh(refresh);
     }
 
-    // The canonical supervisor owns durable resource, MCP, and WorkQueue
-    // recovery as background work. Component construction must expose readiness
-    // without awaiting an external sandbox timeout for every persisted Session.
-    register_session_lifecycle(&service_lifecycle, session_application.clone());
-    register_runtime_background_drain(&service_lifecycle, host.clone());
-    register_application_access_retention(&service_lifecycle, application_access.clone());
     deployment_application.bind_launcher(deployment_session_launcher);
 
     let domain_observation = service_authenticator.as_ref().map(|authenticator| {
@@ -309,13 +315,13 @@ pub async fn build_coordinator_component(
     });
     let (managed, data, application, worker_transport, dream_application) =
         crate::mount_with_managed_application_access_models_and_dreams(
-            host,
+            host.clone(),
             managed_state.clone(),
             application_access.clone(),
             crate::ManagedApplicationServices {
                 #[cfg(feature = "test-support")]
                 dream_executor_decorator: None,
-                session_application,
+                session_application: session_application.clone(),
                 resource_registry,
                 model_inventory: Some(model_inventory),
                 dream_process_store,
@@ -366,11 +372,48 @@ pub async fn build_coordinator_component(
                 dream_application.clone(),
             ))
             .merge(crate::application_access::router(
-                application_access,
+                application_access.clone(),
                 sessions,
             )),
         default_workspace,
     );
+
+    register_application_access_retention(&service_lifecycle, application_access);
+    start_coordinator_services(
+        &service_lifecycle,
+        lifecycle_delivery,
+        host,
+        session_application,
+        deployment_application,
+        dream_application,
+        clock,
+    )
+    .await;
+
+    Ok(CoordinatorComponent {
+        router: data,
+        application_router: application,
+        managed_router: managed,
+        private_router,
+        management_router,
+        work_session_access,
+    })
+}
+
+/// Start the exact already-built services only after every connection validates.
+async fn start_coordinator_services(
+    service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
+    lifecycle_delivery: crate::PreparedManagedLifecycleDelivery,
+    host: Arc<SharedHost>,
+    session_application: Arc<SessionApplication>,
+    deployment_application: Arc<DeploymentApplication>,
+    dream_application: Arc<awaken_dream_application::DreamApplication>,
+    clock: Arc<dyn awaken_time::WallClock>,
+) {
+    lifecycle_delivery.start(service_lifecycle);
+    start_runtime_services(&host, &dream_application).await;
+    register_session_lifecycle(service_lifecycle, session_application);
+    register_runtime_background_drain(service_lifecycle, host);
 
     // One timer drives the exact DeploymentApplication and DreamApplication mounted above;
     // no scheduler may reconstruct either aggregate beside this component.
@@ -397,15 +440,6 @@ pub async fn build_coordinator_component(
             Ok(())
         },
     );
-
-    Ok(CoordinatorComponent {
-        router: data,
-        application_router: application,
-        managed_router: managed,
-        private_router,
-        management_router,
-        work_session_access,
-    })
 }
 
 #[cfg(test)]

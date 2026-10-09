@@ -68,9 +68,6 @@ pub trait RealizationRuntime: Send + Sync {
         thread: &str,
         lease: &crate::SessionRealizationLease,
     ) -> Result<(), RunError>;
-
-    /// Install the durable callback used at the exact sandbox creation boundary.
-    fn install_environment_binding_sink(&self, sink: Arc<dyn SessionEnvironmentBindingSink>);
 }
 
 /// Session Run coordination: reservations, activation, child threads, tool replies and delegation quiescence.
