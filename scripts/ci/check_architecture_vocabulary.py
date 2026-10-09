@@ -5,6 +5,11 @@ Historical ADR text is append-only and intentionally excluded. ADR-0072 and the
 current design documents own the replacement vocabulary; navigation and wiki
 documents may link to those owners but may not revive a retired implementation
 path.
+
+This checker reads documents only. Code identifiers are covered by
+`_naming_fitness.py` (ADR-0091 D7: mechanism words outside composition roots,
+bare `Runtime`/`Provider`/`Coordinator`/`Host`, the noun `Turn` outside protocol
+adapters), which `check_crate_boundaries.py` runs.
 """
 
 from __future__ import annotations
