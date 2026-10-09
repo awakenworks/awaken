@@ -86,6 +86,7 @@ fn select(
         local_workspace,
         deployment,
         execution,
+        content_capture,
         clock,
     } = process;
     // Process startup parses the deployment axes once from the environment
@@ -125,7 +126,7 @@ fn select(
             clock.clone(),
         ),
         execution,
-        capture: capability::ContentCaptureCapability::new(&deployment),
+        capture: capability::ContentCaptureCapability::new(content_capture),
         session_application: SessionApplicationBindings::default(),
         session_execution: SessionExecutionDependencies::default(),
         local_workspace,

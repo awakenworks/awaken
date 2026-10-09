@@ -610,6 +610,7 @@ impl DeploymentConfig {
             local_workspace,
             deployment: self.clone(),
             execution: self.execution_topology()?,
+            content_capture: self.content_capture,
             clock,
         })
     }

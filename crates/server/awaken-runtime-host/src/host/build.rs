@@ -12,10 +12,11 @@ mod environment_capacity;
 use awaken_runtime_contract::delegation::RunDelegationService;
 
 /// The process a Host is constructed in: the installation's resolved platform
-/// Workspace, the typed Deployment, and the one process clock. The process
-/// composition resolves all three once; every [`HostDependencies`] constructor
-/// receives them together so none can pair a Workspace or clock from a
-/// different process selection. Consumer: the `HostDependencies` constructors.
+/// Workspace, the typed Deployment, the process capabilities projected from it,
+/// and the one process clock. The process composition resolves them once;
+/// every [`HostDependencies`] constructor receives them together so none can
+/// pair a Workspace or clock from a different process selection. Consumer: the
+/// `HostDependencies` constructors.
 pub struct HostProcess {
     /// The installation's resolved platform Workspace coordinate.
     pub local_workspace: String,
@@ -23,6 +24,9 @@ pub struct HostProcess {
     pub deployment: crate::DeploymentConfig,
     /// This process's part in Run execution, selected by the composition.
     pub execution: crate::ExecutionTopology,
+    /// The process content-capture ceiling and redactor. Per-request consent
+    /// and the Workspace policy may only narrow it.
+    pub content_capture: crate::ContentCaptureSettings,
     /// The process wall clock the Host drives its Workers on.
     pub clock: Arc<dyn awaken_time::WallClock>,
 }
