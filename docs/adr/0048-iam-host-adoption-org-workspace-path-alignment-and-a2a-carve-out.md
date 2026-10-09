@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-07-09
+- Amends: ADR-0042 D4a, D6 and its 2026-07-05 Amendment (the 2026-07-10
+  amendment below removes Project; recorded 2026-10-09)
 - Follow-up to / partially supersedes: [ADR-0042](0042-public-api-tenancy-authz-and-front-door-consistency.md)
   (key-based tenancy, front-door envelope, IAM alignment — this ADR fixes the
   self-hosted assembly and paths its Non-Goals left deferred, and reconciles the

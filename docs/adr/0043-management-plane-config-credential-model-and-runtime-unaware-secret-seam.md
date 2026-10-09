@@ -1,7 +1,16 @@
 # ADR-0043: Management/Runtime Boundary and Resolved-Secret Runtime Contract
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-04
+- Implemented: the boundary holds in code — `awaken-runtime` and
+  `awaken-runtime-contract` link no catalog, vault, resolver, or admin crate;
+  management crates `awaken-model-catalog`, `awaken-credential-vault`,
+  `awaken-config-resolver` and `awaken-admin-config-api` exist;
+  `ProviderConnectionService` (`crates/control/awaken-admin-config-api/src/provider_connection.rs:112`),
+  `ProviderAccessKind` (`crates/contract/awaken-runtime-contract/src/resolved.rs:686`),
+  generated contracts (`scripts/contract/generate-contracts.sh`). Inference
+  credentials follow ADR-0062/0067 as the sections below already state.
+- Amended: 2026-10-09 (status corrected; names and references)
 - Amended 2026-07-30: a direct Provider connection defaults one protocol surface
   to `(provider_id, dialect)` and uses an explicit endpoint name only to qualify
   additional surfaces speaking the same dialect. The application derives the
@@ -560,3 +569,15 @@ test-only broad administrator grants cannot establish hosted BYOK acceptance.
 Brokered delegation retains the selected offering's public API dialect. Cloud
 filters its exact account pool by that dialect; internal catalog endpoint
 coordinates remain local selectors and are never passed off as Cloud route ids.
+
+## Amendment 2026-10-09: names and references
+
+- `awaken-management-contract` (2026-07-04 header amendment, Context, section 1)
+  was never created. Provider, endpoint, offering and `InferenceProfile` live in
+  `awaken-model-catalog` (`crates/control/awaken-model-catalog`), as this ADR's own
+  crate table already says.
+- The bare "ADR-0088" in section 1 means awaken-next's ADR-0088 (as the header
+  amendment says), not this repository's
+  [ADR-0088](0088-bounded-context-map-and-sdk-platform-contract.md).
+- `awaken-coordinator-local` (the "one service" assembly) is now `awaken-coordinator`.
+- Status corrected from Proposed to Accepted on 2026-10-09; see the Implemented line.

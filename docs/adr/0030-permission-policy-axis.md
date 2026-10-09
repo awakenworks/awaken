@@ -3,6 +3,11 @@
 - Status: Accepted
 - Date: 2026-06-30
 - Depends on: ADR-0016, ADR-0020
+- Amended by: [ADR-0079](0079-one-tool-authorization-vocabulary-and-opaque-backend-configuration.md)
+  (one authoring vocabulary: per-toolset default plus per-tool overrides; the
+  permission `mode` is retired from authoring)
+- Amended: 2026-10-09 (names and references: the resume-ticket machinery is
+  ADR-0003, not ADR-0016)
 
 ## Context
 
@@ -142,3 +147,15 @@ batch from being rehydrated into a later Run on the same thread.
 - [INVARIANTS.md](../INVARIANTS.md) — G1, G5, G9, G21, G26.
 - [permission-policy-axis.md](../design/permission-policy-axis.md) — the axis spec.
 - ADR-0016 — the resume-ticket/resume machinery this confirmation wait reuses.
+
+## Amendment 2026-10-09: names and references
+
+- D2 and the References credit ADR-0016 for the `ResumeTicket` / resume machinery.
+  ADR-0016 is durable cancellation and does not define it. The resume-ticket
+  mechanism was selected in [ADR-0003](0003-deferred-work-mechanism-selection.md)
+  (committed `ResumeTicket`); the type is `crates/contract/awaken-agent-contract/src/agent/awaiting.rs:228`.
+  The "Depends on: ADR-0016" header line should be read as ADR-0003.
+- D4's `auto` policy exists in code as `AgentToolPermissionPolicy::Auto`
+  (`crates/contract/awaken-session-configuration-contract/src/agent_config.rs:75`).
+  ADR-0079 governs how authored policies compile; this ADR keeps only the gate,
+  the confirmation wait, and the audit.

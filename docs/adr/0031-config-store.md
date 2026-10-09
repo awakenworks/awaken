@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-06-30
 - Depends on: ADR-0029, config-publication-lifecycle.md
+- Amended: 2026-10-09 (names and references: `ConfigStore` is `ConfigRegistry`)
 - Amended by: ADR-0071, which supersedes the whole-catalog handoff in D1/D4
   with per-Agent executable registration while retaining compilation and durable
   publication ownership
@@ -123,3 +124,11 @@ introduced.
 | F3 | Native | ACP-only residue changes | identical Native snapshot and fingerprint |
 | F4 | ACP | ACP section changes | changed executable fingerprint |
 | T1 | compact or ACP realization selected | legacy trigger conflicts with typed strategy | typed derived trigger wins; legacy threshold is absent |
+
+## Amendment 2026-10-09: names and references
+
+D3's `ConfigStore` port was renamed `ConfigRegistry` by
+[ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md) D1.
+Current trait: `crates/control/awaken-agent-config/src/store.rs:479`; its SQLite
+and Postgres adapters live in `awaken-config-store` under the `config` namespace
+(`crates/control/awaken-config-store/src/sqlite.rs:35`, `postgres.rs:35`).

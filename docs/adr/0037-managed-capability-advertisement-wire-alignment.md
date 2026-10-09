@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-07-02
+- Amended: 2026-10-09 (names and references: D4 producers now exist; D6
+  dependency claim)
 - Relates to: [ADR-0034](0034-runtime-axis-model-and-orthogonality.md) (managed
   protocol is a front-door axis, distinct from the environment/provider axis),
   [ADR-0035](0035-environment-provisioning-tools-skills-resources.md) D7 (a
@@ -158,3 +160,21 @@ until then, advertise empty.
   runtime-ext tools; `custom` skill reference on the wire.
 - [INVARIANTS.md](../INVARIANTS.md) — G16 (only the managed crate names Anthropic
   vocabulary).
+
+## Amendment 2026-10-09: names and references
+
+- **D4 producers exist now.** `session.resources` has a real producer: the
+  resource injection of [ADR-0038](0038-managed-resource-injection-and-store-organization.md)
+  and [ADR-0063](0063-resource-input-identity-configuration-pinning-and-lifecycle.md),
+  served at `/v1/sessions/{id}/resources`
+  (`crates/server/awaken-protocol-managed/src/routes/sessions.rs:189`).
+  `agent.mcp_servers` is filled from the Agent's MCP configuration
+  ([ADR-0057](0057-unified-agent-configuration.md);
+  `crates/server/awaken-protocol-managed/src/routes/agents_registry.rs:337`).
+  D4's rule (never fabricate a shape) still holds; the empty-field text is history.
+- **D6 dependency claim.** "The crate still depends only on
+  `awaken-agent-contract`, not the runtime contract" is not true:
+  `crates/server/awaken-protocol-managed/Cargo.toml:82` depends on
+  `awaken-runtime-contract`. The vocabulary rule of D6 (Managed names only in the
+  projection, G16) is unaffected.
+- `awaken-coordinator-local` is now `awaken-coordinator` (`crates/server/awaken-coordinator`).

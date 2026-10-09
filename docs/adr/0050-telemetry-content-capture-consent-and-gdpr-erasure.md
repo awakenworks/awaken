@@ -2,6 +2,9 @@
 
 - Status: Proposed
 - Date: 2026-07-10
+- Implemented: partially — see Amendment 2026-10-09
+- Amended: 2026-10-09 (reconciled with ADR-0048: the top existing layer holds
+  the capture ceiling; consent is kept off `trust_grants`)
 - Builds on:
   [ADR-0048](0048-iam-host-adoption-org-workspace-path-alignment-and-a2a-carve-out.md)
   and [ADR-0042](0042-public-api-tenancy-authz-and-front-door-consistency.md)
@@ -496,3 +499,59 @@ Build slices (**core** = both builds; **managed** = server-local only):
   explosion.
 - **Resolving capture inside the runtime.** Would leak scope/consent into the
   execution kernel, violating ADR-0043's runtime-unaware seam.
+
+## Amendment 2026-10-09: reconciled with ADR-0048
+
+- **Who holds the ceiling (D3, D8, D9).** The binding compliance ceiling is held
+  by the top layer that exists: the Org in the cloud; in self-hosted deployments,
+  which seed no Org ([ADR-0048](0048-iam-host-adoption-org-workspace-path-alignment-and-a2a-carve-out.md)
+  D4), the deployment configuration, because the operator is the controller.
+  Code: `deployment.runtime.content_capture.level`
+  (`crates/bin/awaken-cli/src/deployment_process.rs:225`,
+  `crates/bin/awaken-cli/src/control.rs:369`; parsed in
+  `crates/bin/awaken-cli/src/config/runtime_settings.rs:156`). Workspace, Agent
+  and Session may only tighten it. D3's "Org fields are required" applies where
+  an Org exists.
+- **Lower-layer narrowing is not wired yet.** `TelemetryCeiling`
+  (`crates/control/awaken-config-resolver/src/telemetry.rs`) implements the
+  tighten-only composition but has no caller outside its own tests; wiring the
+  Workspace/Agent/Session chain is planned work.
+- **Consent location (D4).** D4 keeps consent off `trust_grants`, but its entry
+  path line says enrollment "lands in `trust_grants[\"telemetry_content\"]`". The
+  first rule holds: `DataSubject` keeps `trust_grants` and `consents` as separate
+  fields (`crates/control/awaken-data-subject-application/src/lib.rs:194-200`).
+
+## Amendment 2026-10-09: implementation status
+
+Implemented:
+
+- `ContentCapture`, `CaptureDecision`, `ContentRedactor`, `NoopRedactor`
+  (`crates/contract/awaken-runtime-contract/src/capture.rs`) and the text redactor
+  `PiiRedactor` (`crates/runtime/awaken-observability/src/redaction.rs:17`);
+- the deployment-level ceiling above;
+- the `DataSubject` aggregate with per-purpose consent grants
+  (`awaken-data-subject-application`, `awaken-data-subject-store`),
+  `DataSubjectResolver`/`NullResolver` (`crates/contract/awaken-data-governance-contract/src/lib.rs:73`, `:120`),
+  `RepoDataSubjectResolver`, User Profile routes with enrollment, and
+  `POST /v1/user_profiles/{id}/erasure` (`crates/control/awaken-control/src/data_subject.rs:32`).
+
+Not implemented:
+
+- the Org → Workspace → Agent → Session narrowing chain (`TelemetryCeiling` has no caller);
+- the Session `content_capture` request field and the read-only decision
+  projection on `GET /v1/sessions/:id` (D8): `awaken-protocol-managed` has neither;
+- consent-gated eval recording: `crates/devtools/awaken-eval` can build a case from
+  a transcript, but no product path records eval fixtures under `eval_recording`;
+- `GET /v1/user_profiles/:id/data` (Art. 15), marked optional in D8.
+
+## Amendment 2026-10-09: names and references
+
+- The header and Context cite [ADR-0051](0051-tenancy-edge-aspect-one-opaque-scope-id.md)
+  D7 for "Org is an IAM fact". ADR-0051 is Superseded by ADR-0063; only its
+  `ScopedRepo` mechanism was dropped, and D7's point still stands. The current
+  record of the `Org -> Workspace` hierarchy is
+  [ADR-0061](0061-selectable-identity-and-platform-managed-resource-scopes.md).
+  No `awaken-scope` crate exists; tenancy types are in `crates/contract/awaken-tenancy`.
+- `RegexPiiRedactor` → `PiiRedactor`; `DataSubjectErasure` → `ContentEraser`
+  (`crates/contract/awaken-data-governance-contract/src/lib.rs:107`);
+  `foundation/awaken-runtime-contract` → `crates/contract/awaken-runtime-contract`.

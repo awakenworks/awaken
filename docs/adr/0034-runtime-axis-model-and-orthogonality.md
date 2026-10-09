@@ -3,6 +3,10 @@
 - Status: Accepted
 - Date: 2026-07-01
 - Depends on: ADR-0002 (resolver roles), ADR-0032 (RunnableConfig)
+- Amended by: [ADR-0044](0044-remote-hand-tool-executor-over-a-channel.md) (D6:
+  the kernel now calls an injected `ToolExecutor`; ADR-0044 is itself amended by
+  ADR-0073)
+- Amended: 2026-10-09 (reconciled with ADR-0044: `ToolExecutor` is a used kernel seam)
 - Relates to: D3, D18, D21, D22; `config-to-run-execution-flow.md`,
   `runtime-interface-boundaries.md#primary-runtime-axes`
 
@@ -176,3 +180,17 @@ feature.
   the capability-segment overlay dimensions.
 - [ADR-0002](0002-resolver-role-demarcation.md) — the resolver roles this closes.
 - [INVARIANTS.md](../INVARIANTS.md) — G3, G4, G9, G18, G21.
+
+## Amendment 2026-10-09: reconciled with ADR-0044
+
+D6, the Consequences bullet "The `ToolExecutor` port stays unused", and the
+rejected alternative "Inject a `ToolExecutor` … inside the kernel" are no longer
+true. [ADR-0044](0044-remote-hand-tool-executor-over-a-channel.md) D1 made the
+kernel call an injected `ToolExecutor` for every authorized call, and
+[ADR-0073](0073-session-environment-owned-hand-and-worker-capability-placement.md)
+makes the Session Environment the only source of a remote Hand. The kernel still
+names no placement, address, or relay: it sees only the port. Evidence: port at
+`crates/contract/awaken-tool-contract/src/tool.rs:1170`; kernel use at
+`crates/runtime/awaken-runtime/src/engine/tool_execution.rs:527` (`LocalToolExecutor`)
+and `:561` (`executor.invoke`). The ADR-0007 citation in D6 ("where a call runs is
+a `RawTool` detail") is likewise amended by ADR-0044/0073.

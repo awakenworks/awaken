@@ -3,6 +3,10 @@
 - Status: Accepted
 - Amended by: [ADR-0073](0073-session-environment-owned-hand-and-worker-capability-placement.md)
 - Date: 2026-07-08
+- Amends: [ADR-0034](0034-runtime-axis-model-and-orthogonality.md) D6 (the
+  kernel calls an injected `ToolExecutor` instead of `RawTool::invoke`; recorded 2026-10-09)
+- Amended: 2026-10-09 (names and references: executor selection, port crate,
+  transport)
 - Implemented: 2026-07-08 — `awaken-tool-relay` (`RemoteToolExecutor`, `serve_hand`,
   `HandSession`, wire types); kernel seam in `awaken-runtime` (`LocalToolExecutor`,
   `RuntimeRunContext::tool_executor`). The former Host-global
@@ -186,3 +190,23 @@ Unix) sufficient to prove the split end to end.
   this seam runs over.
 - [INVARIANTS.md](../INVARIANTS.md) — G1 (commit boundary), G26 (indeterminate
   remote execution explicit), G33 (new: hand isolation).
+
+## Amendment 2026-10-09: names and references
+
+- **Not a preservation of ADR-0034 D6.** D1 says ADR-0034's placement-agnostic
+  kernel stays intact, but ADR-0034 D6 had declared the `ToolExecutor` port
+  unused and rejected injecting it; this ADR amends that point (see the header).
+- **Executor selection.** D1's "driven by the resolved snapshot's
+  `BackendProfile`" contradicts the Consequences ("does not revive
+  `BackendProfile`"). No `BackendProfile` type exists in `crates/`. Per
+  [ADR-0073](0073-session-environment-owned-hand-and-worker-capability-placement.md),
+  a Session gets its `ToolExecutor` only from its realized Environment;
+  `LocalToolExecutor` remains the in-process case
+  (`crates/runtime/awaken-runtime/src/engine/tool_execution.rs:756`).
+- **Port crate.** `ToolExecutor` now lives in `awaken-tool-contract`
+  (`crates/contract/awaken-tool-contract/src/tool.rs:1170`), not
+  `awaken-runtime-contract/src/tool.rs`.
+- **Transport.** D3's `awaken-connection` was not adopted. Per the 2026-09-06
+  amendment of [ADR-0045](0045-connection-plan-and-network-topology.md), the
+  channel is `awaken-agent-channel::AgentChannel`, dialed through
+  `awaken-connection-plan::TokioChannelFactory`.

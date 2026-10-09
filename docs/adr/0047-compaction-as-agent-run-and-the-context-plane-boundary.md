@@ -1,7 +1,15 @@
 # ADR-0047: Compaction as an Agent Run — the Agent / Context-Plane Boundary, the Sub-run Substrate, and the `thread_context_compacted` Event
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-08
+- Implemented: D1–D3 — `RunCompactionMarker` (`compaction/<run_id>`,
+  `crates/contract/awaken-runtime-contract/src/compaction.rs:8`) staged by
+  `awaken-ext-compact` (`crates/runtime/awaken-ext-compact/src/plugin.rs:322`) and
+  projected as `OutboundKind::ThreadContextCompacted {}`
+  (`crates/server/awaken-protocol-managed/src/types/session.rs:974`), covered by
+  `e2e/managed_compaction_e2e.mjs`. D4 stays deferred by design; D5's remaining
+  item is the recorded execution debt.
+- Amended: 2026-10-09 (status corrected; names and references)
 - Builds on: [ADR-0034](0034-runtime-axis-model-and-orthogonality.md) (the axis
   model — protocol vs. runtime vs. environment are orthogonal; the protocol is a
   presentation projection), [ADR-0036](0036-skills-as-runtime-extension-single-tool.md)
@@ -237,3 +245,18 @@ Change list, each additive:
 - Projection precedent: `awaken-protocol-managed/src/{project.rs,state.rs,dto.rs}`.
 - [ADR-0034](0034-runtime-axis-model-and-orthogonality.md),
   [ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md).
+
+## Amendment 2026-10-09: names and references
+
+The Development-Ready Design and Risks sections disagree with D3 and the code;
+D3 is what was built:
+
+- Change item 4's `OutboundKind::ThreadContextCompacted { pre_compaction_tokens: Option<u64> }`
+  → the payload-free `ThreadContextCompacted {}` (D3; `types/session.rs:974`).
+- The keys `compaction/<step>` (change item 6, Risks) → `compaction/<run_id>`
+  (`RunCompactionMarker`, `crates/contract/awaken-runtime-contract/src/compaction.rs:5-16`).
+  One marker per folding Run, Thread scope, commutative merge.
+- `awaken-protocol-managed/src/dto.rs` and `state.rs` → the projection now lives
+  in `src/types/session.rs` and `src/state/events/timeline_encoding.rs:146`.
+
+Status corrected from Proposed to Accepted on 2026-10-09; see the Implemented line.

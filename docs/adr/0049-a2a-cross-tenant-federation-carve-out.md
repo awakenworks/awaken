@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-07-10
+- Amended: 2026-10-09 (reconciled with ADR-0042: today's inbound A2A is a
+  same-tenant entry point; cross-tenant federation stays deferred)
 - Carves out from: [ADR-0042](0042-public-api-tenancy-authz-and-front-door-consistency.md)
   D3 ("one envelope, three vocabularies — no front door invents its own tenancy,
   auth, or routing")
@@ -90,3 +92,22 @@ with its own tenancy (callee-in-URL), auth (foreign principal), and routing
   key-based tenancy, D3 the one-envelope rule this ADR carves out of.
 - [ADR-0048](0048-iam-host-adoption-org-workspace-path-alignment-and-a2a-carve-out.md)
   — D8 named this carve-out and deferred it here.
+
+## Amendment 2026-10-09: reconciled with ADR-0042
+
+What is true today: the inbound A2A endpoints
+(`crates/server/awaken-protocol-a2a/src/router.rs:84-94`) are a **same-tenant
+entry point inside the ADR-0042 D3 envelope**, not the federation surface of
+D1–D3. They are mounted on the service-authenticated product surface
+(`crates/server/awaken-coordinator/src/coordinator_component.rs:120`,
+`crates/server/awaken-coordinator/src/lib.rs:1688`) under the hosted-run route
+policy (`crates/control/awaken-control/src/authz/route_policy.rs:22-24`). The
+Workspace comes from the caller's token; in local mode it falls back to the local
+Workspace. The A2A `{tenant}` path segment selects the Agent, not a Workspace.
+
+Cross-tenant federation — foreign principal, federation grant, callee Workspace
+in the URL (D2–D4) — stays deferred and unbuilt.
+
+Risk: an external A2A caller must hold a token of this deployment and acts with
+that token's full authority; there is no narrower A2A-only grant. Issue tokens to
+A2A peers accordingly.

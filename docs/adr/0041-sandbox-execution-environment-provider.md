@@ -18,6 +18,8 @@
   vocabulary), [ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md)
   (one port per aggregate; content-addressed pins)
 - Relates to: G2, G3, G13
+- Amended: 2026-10-09 (reconciled with ADR-0045, ADR-0054 and ADR-0056: no
+  foundation `awaken-connection`, no `RunEventSink`, `reconcile_adoption` not yet wired)
 
 ## Context
 
@@ -1155,3 +1157,28 @@ within a bounded deadline, and refuses quiescence if that observation remains
 unknown. This protects a replacement Pod and its retained workspace from stale
 PID reuse without treating a signal request, CRI timeout or missing observation
 as an exit receipt.
+
+## Amendment 2026-10-09: reconciled with ADR-0045, ADR-0054 and ADR-0056
+
+- **Transport.** The Role Catalog `AgentChannel` row, First Slice item 3, the
+  2026-07-04 amendment, and Consequences name foundation `awaken-connection` as
+  the one transport. Per the 2026-09-06 amendment of
+  [ADR-0045](0045-connection-plan-and-network-topology.md), that adoption did not
+  happen: the duplex is `AgentChannel` (`crates/contract/awaken-agent-channel/src/lib.rs:22`),
+  dialed through `awaken-connection-plan::TokioChannelFactory`
+  (`crates/worker/awaken-connection-plan/src/factory.rs:40`). The workspace
+  `Cargo.toml` has no `awaken-connection` dependency.
+- **`RunEventSink`.** No such type or crate exists in `crates/`. ACP runs as a
+  `RunExecutor` (`crates/contract/awaken-runtime-contract/src/execution.rs:198`)
+  implemented by `awaken-run-executor-acp`, which depends on
+  `awaken-runtime-contract`, not on `awaken-runtime`
+  (`crates/server/awaken-run-executor-acp/Cargo.toml:22`); see
+  [ADR-0054](0054-safe-loop-boundary-shared-seam-and-pause-as-durable-await.md).
+  The "gap closed" by one binding crate is closed by that contract boundary instead.
+- **Orphan disposal.** First Slice item 5 and the 2026-07-04 amendment cite the
+  durable referenced-set reconciliation of ADR-0074. Per the 2026-10-06
+  amendment of [ADR-0056](0056-sandbox-reuse-two-orthogonal-volumes.md),
+  `reconcile_adoption` has no production caller (only tests in
+  `crates/contract/awaken-provisioning-contract/src/lease.rs`); it is the agreed
+  design, wired when the disposal decision becomes shared. Today each provider
+  owns disposal, with the process-identity reaper of Amendment 11.

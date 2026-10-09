@@ -2,6 +2,13 @@
 
 - Status: Accepted
 - Date: 2026-07-02
+- Amended by: [ADR-0063](0063-resource-input-identity-configuration-pinning-and-lifecycle.md)
+  (D2 only where a content fingerprint was implied for every family; A3a only
+  where the resource prompt was rendered at Agent bind time)
+- Amended by: ADR-0039 — its header renamed this ADR's store ports; those
+  renames were withdrawn on 2026-10-09 (see the amendments in both ADRs)
+- Amended: 2026-10-09 (reconciled with ADR-0036 and ADR-0063: skill registry
+  owner, store-port placement, prompt timing)
 - Builds on: [ADR-0035](0035-environment-provisioning-tools-skills-resources.md)
   (provisioning is the seam; delivery is external; kernel is environment-agnostic),
   [ADR-0036](0036-skills-as-runtime-extension-single-tool.md) (skills as two
@@ -900,3 +907,29 @@ terminal recovery. Removing the HTTP adapter neither rewrites historical V6
 rows nor turns an unobserved output into an observed empty set. Internal store
 and harvest tests continue to own those distinctions; public clients can only
 claim that a File appeared in the Session's historical catalog.
+
+## Amendment 2026-10-09: reconciled with ADR-0036 and ADR-0063
+
+- **Skill registry owner (A2 vs ADR-0036 D4).** Code follows
+  [ADR-0036](0036-skills-as-runtime-extension-single-tool.md) D4:
+  `awaken-ext-skills` owns `SkillRegistry`, the runtime lookup its `Skill` tool
+  resolves against (`crates/runtime/awaken-ext-skills/src/registry.rs:19`). The
+  durable, Workspace-scoped custom-Skill index that A2 describes is `SkillStore`
+  (`crates/contract/awaken-resource-contract/src/lib.rs:651`). A2's sentence that
+  `awaken-ext-skills` "touches no registry or store" does not hold; read A2's
+  control-plane index as `SkillStore`.
+- **Store-port placement (D3).** D3 and the rejected alternative "Put the three
+  store ports in a contract crate" are reversed in code. The ports live in the
+  contract crate `awaken-resource-contract` (`crates/contract/awaken-resource-contract/src/lib.rs`:
+  `FileCatalog` :287, `FileStore` :337, `SkillStore` :651, `MemoryRepository`
+  :982); `awaken-provisioning-contract` still carries the mount vocabulary. D1's
+  `MemoryStore` port is `MemoryRepository`. The `awaken-coordinator-local`
+  placement in D3 is obsolete (the crate is now `awaken-coordinator`).
+- **Prompt timing (A3a vs the 2026-09-05 amendment).** A3a's "config-time, not
+  per-Run" is superseded by ADR-0063 and this ADR's own 2026-09-05 amendment:
+  identity, access, and instructions are pinned by the binding, but paths are
+  rendered only after the single Session Environment is known. The A3a
+  consequences bullet is superseded the same way.
+- The port renames in [ADR-0039](0039-runtime-persistence-port-convergence-and-store-naming.md)'s
+  header (`FileStore` → `File`, `SkillStore` → `SkillRegistry`) were not applied;
+  ADR-0039's 2026-10-09 amendment withdraws them.

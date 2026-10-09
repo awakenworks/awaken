@@ -2,6 +2,12 @@
 
 - Status: Accepted
 - Date: 2026-07-03
+- Amended by: [ADR-0048](0048-iam-host-adoption-org-workspace-path-alignment-and-a2a-carve-out.md)
+  2026-07-10 amendment (Project removed; supersedes the Project parts of D4a and
+  D6 and the 2026-07-05 Amendment; the Follow-up line's "Project is frozen not
+  deleted" no longer holds)
+- Amended: 2026-10-09 (reconciled with ADR-0030/0037/0079: tool approval comes
+  from the Agent's tool policy, not IAM)
 - Amended: 2026-07-05 (D2 refinement — a project path prefix as pure ADDRESSING;
   see Amendment)
 - Follow-up: [ADR-0048](0048-iam-host-adoption-org-workspace-path-alignment-and-a2a-carve-out.md)
@@ -349,3 +355,23 @@ responses against its committed awaiting state and idempotency identity.
 - [ADR-0030](0030-permission-policy-axis.md) — permission policy as a runtime axis.
 - [INVARIANTS.md](../INVARIANTS.md) — G16 (only front-door adapters name product
   vocabulary).
+
+## Amendment 2026-10-09: reconciled with ADR-0030, ADR-0037 and ADR-0079
+
+- **D5 and the D4 layer-2 row.** Tool approval is not derived from a per-call IAM
+  `authorize` decision. It comes from the per-tool permission policy authored on
+  the Agent ([ADR-0030](0030-permission-policy-axis.md),
+  [ADR-0037](0037-managed-capability-advertisement-wire-alignment.md) D2,
+  [ADR-0079](0079-one-tool-authorization-vocabulary-and-opaque-backend-configuration.md)):
+  `AgentToolPermissionPolicy` (`crates/contract/awaken-session-configuration-contract/src/agent_config.rs:67`),
+  evaluated by `awaken-ext-permission`, which links no IAM crate. IAM authorizes
+  platform API routes only; an IAM `RequireApproval` is collapsed to Deny/403
+  (`crates/control/awaken-authz-enforce/src/lib.rs:613-618`,
+  `crates/control/awaken-control/src/authz.rs:1178`). The front-door confirmation
+  gates D5 lists remain the projection of that one Agent-policy decision.
+- **Project.** Per the ADR-0048 2026-07-10 amendment, tenancy is Org → Workspace
+  only. D4a's and D6's Project tier and the 2026-07-05 `/projects/{id}` Amendment
+  are superseded; `/v1/config/projects` routes are absent and fail closed
+  (`crates/control/awaken-control/src/authz_tests.rs:1156-1161`). D6's
+  "Organization is cloud-only" stands.
+- `awaken-coordinator-local` is now `awaken-coordinator`.

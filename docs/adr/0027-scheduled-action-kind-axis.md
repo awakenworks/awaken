@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2026-06-30
 - Depends on: ADR-0004, ADR-0020
+- Amended: 2026-10-09 (reconciled with ADR-0004: its `scheduled_actions` bound
+  is this `action_kinds` axis)
 
 ## Context
 
@@ -53,3 +55,13 @@ tool-backed scheduled action (ADR-0020), unchanged.
 - [INVARIANTS.md](../INVARIANTS.md) — G30 (every id-bearing kind is bounded).
 - ADR-0004 — the capability-bound model this axis extends.
 - ADR-0020 — ScheduledAction, which this bounds by kind as well as by tool.
+
+## Amendment 2026-10-09: reconciled with ADR-0004
+
+The Context sentence "That axis did not exist in `CapabilityBound`" describes the
+code at the time, not the ADR corpus: [ADR-0004](0004-plugin-factory-contributions-and-capability-bound.md)
+Amendment A1.2 had already required a bound on `scheduled_actions`. This ADR is
+the implementation of that requirement under the name `action_kinds`; there is
+one axis, not two. Evidence: `CapabilityBound.action_kinds: IdBound`
+(`crates/contract/awaken-runtime-contract/src/plugin/capability.rs:79`) and its
+check at `capability.rs:166`. Read `scheduled_actions` in ADR-0004 as `action_kinds`.
