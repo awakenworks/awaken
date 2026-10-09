@@ -225,7 +225,7 @@ impl ManagedState {
         // evaluation facts, while Errored adds one infrastructure error and no
         // partial evaluation. General transcript/lifecycle projection remains
         // the sole owner unless an exact failure source Run is correlated below.
-        append_durable_outcome_projections(record, &evidence.outcomes);
+        append_committed_outcomes(record, &evidence.outcomes)?;
         Ok(RootProjection {
             projected_budget_reach,
         })

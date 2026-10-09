@@ -16,11 +16,27 @@ use std::collections::HashMap;
 /// public usage and limit already priced.
 pub(super) type BudgetReachProjection = (u64, crate::types::Usage, crate::types::BudgetLimit);
 
+/// Every retained terminal Outcome the root prefix anchors; an invalid one
+/// fails the candidate.
+fn committed_outcomes(
+    terminals: impl IntoIterator<Item = (String, CommittedOutcomeProjection)>,
+    root: Option<&RunRecoverySnapshot>,
+) -> Result<Vec<awaken_managed_session_events::CommittedOutcome>, StateError> {
+    terminals
+        .into_iter()
+        .filter_map(|(outcome_id, terminal)| {
+            awaken_managed_session_events::CommittedOutcome::select(outcome_id, terminal, root)
+                .transpose()
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(projection_error)
+}
+
 pub(super) struct CandidateEvidence {
     pub(super) root: Option<RunRecoverySnapshot>,
     pub(super) links: Vec<CoordinatedThreadLink>,
     pub(super) children: awaken_session_application::ProjectionThreadSnapshots,
-    pub(super) outcomes: Vec<AnchoredOutcomeProjection>,
+    pub(super) outcomes: Vec<awaken_managed_session_events::CommittedOutcome>,
     pub(super) outcome_query_incomplete: bool,
     /// Child transcripts, minus every Thread whose transcript is blocked on a
     /// ticket the prefix does not expose yet.
@@ -120,13 +136,7 @@ impl CandidateEvidence {
                     ))
                 })?;
         }
-        let outcomes = outcome_terminals
-            .into_iter()
-            .map(|(outcome_id, terminal)| validate_durable_outcome_projection(outcome_id, terminal))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .filter_map(|projection| projection.anchor(root.as_ref()))
-            .collect::<Vec<_>>();
+        let outcomes = committed_outcomes(outcome_terminals, root.as_ref())?;
         let mut transcripts = children
             .iter()
             .map(|(thread_id, snapshot)| (thread_id.clone(), snapshot.messages.clone()))

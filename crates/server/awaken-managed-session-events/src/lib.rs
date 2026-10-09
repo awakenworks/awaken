@@ -51,7 +51,7 @@ pub use coordination::{
     is_coordination_send, link_facts, project_child_activity,
 };
 pub use error::ProjectionError;
-pub use fact::{DerivedSessionEvent, SessionEventKind};
+pub use fact::{DerivedSessionEvent, OutcomeVerdict, SessionEventKind};
 pub use fault::{RunFault, run_fault, run_state_fault};
 pub use historical::{
     audited_await_targets, historical_message_await_name, historical_message_boundaries,
@@ -74,9 +74,7 @@ pub use lifecycle::{
 };
 pub use observation::run_observation_facts;
 pub use order::{EventPosition, Ordinal, historical_pending_projection_order};
-pub use outcome::{
-    AnchoredOutcome, OutcomeAnchor, anchor_outcome, outcome_owns_failure_run, validate_outcome,
-};
+pub use outcome::{AnchoredOutcome, CommittedOutcome, OutcomeAnchor};
 pub use position::{AnchoredEvent, EventAnchor, position_events};
 pub use prefix::same_thread_projection_prefix;
 pub use role::{ManagedEventType, TranscriptRole, phase};

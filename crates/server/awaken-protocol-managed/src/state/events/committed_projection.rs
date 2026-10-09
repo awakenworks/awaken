@@ -30,7 +30,7 @@ mod usage_projection;
 use crate::state::session_record::ProjectionDeliveryMemo;
 use crate::state::sessions::RehydrationPurpose;
 use awaken_managed_session_events::{
-    AnchoredOutcome, BudgetReachAnchor, OrderEvidence, OrderIndex, ParentTerminalEvidence,
+    BudgetReachAnchor, OrderEvidence, OrderIndex, ParentTerminalEvidence,
 };
 use candidate_evidence::CandidateEvidence;
 use canonical_order::CanonicalizationEvidence;
@@ -166,12 +166,7 @@ impl ManagedState {
         let outcomes = evidence
             .outcomes
             .iter()
-            .map(|projection| AnchoredOutcome {
-                outcome_id: &projection.outcome_id,
-                terminal: &projection.terminal,
-                terminal_commit_cursor: projection.terminal_commit_cursor,
-                evaluation_commit_cursors: &projection.evaluation_commit_cursors,
-            })
+            .map(awaken_managed_session_events::CommittedOutcome::as_anchored)
             .collect::<Vec<_>>();
         let budget_reach = BudgetReachAnchor::of(
             &persisted,

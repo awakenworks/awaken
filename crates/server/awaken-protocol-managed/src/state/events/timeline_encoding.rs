@@ -170,6 +170,31 @@ pub(super) fn encode_fact(
                 message.clone(),
             ),
         },
+        SessionEventKind::OutcomeEvaluationStart {
+            outcome_id,
+            iteration,
+        } => OutboundKind::SpanOutcomeEvaluationStart {
+            outcome_id: outcome_id.clone(),
+            iteration: *iteration,
+        },
+        SessionEventKind::OutcomeEvaluationOngoing {
+            outcome_id,
+            iteration,
+        } => OutboundKind::SpanOutcomeEvaluationOngoing {
+            outcome_id: outcome_id.clone(),
+            iteration: *iteration,
+        },
+        SessionEventKind::OutcomeEvaluationEnd(verdict) => OutboundKind::SpanOutcomeEvaluationEnd {
+            outcome_id: verdict.outcome_id.clone(),
+            outcome_evaluation_start_id: record.fact_id(&verdict.start),
+            iteration: verdict.iteration,
+            result: verdict.result.clone(),
+            explanation: verdict.explanation.clone(),
+            usage: verdict.usage.map(SpanModelUsage::from).unwrap_or_default(),
+        },
+        SessionEventKind::OutcomeError { code, message } => OutboundKind::SessionError {
+            error: SessionError::classify(code, message.clone()),
+        },
     })
 }
 
