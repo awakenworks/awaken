@@ -11,10 +11,14 @@ keeps that structure executable:
 2. there is a ``- Status:`` line with an allowed value;
 3. the required sections ``## Context``, ``## Decision``, ``## Consequences``
    all exist;
-4. ADR numbers are unique across ``docs/adr/``.
+4. ADR numbers are unique across ``docs/adr/``;
+5. supersede and amend links are two-way: when one ADR's header says it
+   ``Supersedes:`` or ``Amends:`` another (or ``Superseded by:`` / ``Amended by:``),
+   the other ADR's header must name it back. A one-way link is how a later
+   decision silently changed an earlier one (ADR-0091 review, 2026-10-09).
 
-Deliberately NOT checked: prose quality, supersede-graph completeness, or link
-resolution (links are covered by check_doc_links). Classification of each ADR as
+Deliberately NOT checked: prose quality or link resolution (links are covered
+by check_doc_links). Classification of each ADR as
 a source document is covered by check_role_catalogs.
 """
 
@@ -35,6 +39,57 @@ STATUS = re.compile(r"^-\s+Status:\s*(.+?)\s*$", re.MULTILINE)
 FILE_NUM = re.compile(r"^(\d{4})-")
 ALLOWED_STATUS = {"Proposed", "Accepted", "Superseded", "Deprecated"}
 REQUIRED_SECTIONS = ("## Context", "## Decision", "## Consequences")
+# Header relations that must be answered in the other ADR's header.
+FORWARD_RELATIONS = ("Supersedes", "Amends")
+BACKWARD_RELATIONS = ("Superseded by", "Amended by")
+HEADER_ITEM = re.compile(r"^-\s+([A-Z][A-Za-z ]*?):\s*(.*)$")
+ADR_REFERENCE = re.compile(r"ADR-(\d{4})|\]\((\d{4})-")
+
+
+def header_items(text: str) -> list[tuple[str, str]]:
+    """``(key, value)`` for each ``- Key: value`` item before the first section,
+    with indented continuation lines joined to their item."""
+    items: list[tuple[str, str]] = []
+    for line in text.splitlines()[1:]:
+        if line.startswith("## "):
+            break
+        match = HEADER_ITEM.match(line)
+        if match:
+            items.append((match.group(1), match.group(2)))
+        elif line.startswith("  ") and items:
+            key, value = items[-1]
+            items[-1] = (key, f"{value} {line.strip()}")
+    return items
+
+
+def referenced(value: str) -> set[str]:
+    """ADR numbers a relation names. Explanations are not relations: text after an
+    em dash and parenthesised asides (\"(ADR-0001 bar)\") are dropped first; link
+    targets are parentheses too, so a linked ADR is found by its ``[ADR-NNNN]`` text."""
+    value = value.split(" — ")[0]
+    previous = None
+    while previous != value:
+        previous, value = value, re.sub(r"\([^()]*\)", "", value)
+    return {a or b for a, b in ADR_REFERENCE.findall(value)}
+
+
+def one_way_links(headers: dict[str, list[tuple[str, str]]]) -> list[str]:
+    """Relations whose target ADR does not name the source anywhere in its header."""
+    errors: list[str] = []
+    for num, items in sorted(headers.items()):
+        for key, value in items:
+            if key not in FORWARD_RELATIONS + BACKWARD_RELATIONS:
+                continue
+            for target in sorted(referenced(value) - {num}):
+                if target not in headers:
+                    continue
+                if not any(num in referenced(v) for _, v in headers[target]):
+                    answer = "Amended by" if key == "Amends" else "Superseded by" if key == "Supersedes" else key.replace(" by", "s").replace("Supersededs", "Supersedes").replace("Amendeds", "Amends")
+                    errors.append(
+                        f"ADR-{num} says `{key}: ADR-{target}` but ADR-{target}'s header does not "
+                        f"name ADR-{num}; add a `- {answer}: ADR-{num}` line there"
+                    )
+    return errors
 
 
 def main(argv: list[str]) -> int:
@@ -43,6 +98,7 @@ def main(argv: list[str]) -> int:
 
     errors: list[str] = []
     seen: dict[str, str] = {}
+    headers: dict[str, list[tuple[str, str]]] = {}
 
     for path in sorted(ADR_DIR.glob("0*.md")):
         m = FILE_NUM.match(path.name)
@@ -55,6 +111,7 @@ def main(argv: list[str]) -> int:
         seen[num] = path.name
 
         text = path.read_text(encoding="utf-8")
+        headers[num] = header_items(text)
         lines = text.splitlines()
         first = lines[0] if lines else ""
         tm = TITLE.match(first)
@@ -76,6 +133,8 @@ def main(argv: list[str]) -> int:
         for sec in REQUIRED_SECTIONS:
             if not re.search(rf"^{re.escape(sec)}\s*$", text, re.MULTILINE):
                 errors.append(f"{path}: missing required section `{sec}`")
+
+    errors.extend(one_way_links(headers))
 
     if errors:
         print("check-adr:", file=sys.stderr)
