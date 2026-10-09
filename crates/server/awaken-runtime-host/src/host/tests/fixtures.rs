@@ -888,7 +888,7 @@ impl SharedHost {
     pub(crate) fn test_local_provider(&self) -> awaken_sandbox_local::LocalProvider {
         let root = match &self.store_dir {
             Some(dir) => dir.join("sandboxes"),
-            None => crate::acp_backend::session_sandbox_base(&self.deployment),
+            None => self.env.sandbox_root.clone(),
         };
         let provider = awaken_sandbox_local::LocalProvider::new(root);
         if let Some(mounter) = self.memory_mounter() {

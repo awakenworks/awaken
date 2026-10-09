@@ -12,21 +12,33 @@ mod environment_capacity;
 use awaken_runtime_contract::delegation::RunDelegationService;
 
 /// The process a Host is constructed in: the installation's resolved platform
-/// Workspace, the typed Deployment, the process capabilities projected from it,
-/// and the one process clock. The process composition resolves them once;
+/// Workspace, the process capabilities the composition projected from its
+/// configuration, and the one process clock. The process composition resolves them once;
 /// every [`HostDependencies`] constructor receives them together so none can
 /// pair a Workspace or clock from a different process selection. Consumer: the
 /// `HostDependencies` constructors.
 pub struct HostProcess {
     /// The installation's resolved platform Workspace coordinate.
     pub local_workspace: String,
-    /// The typed Deployment this Host serves.
-    pub deployment: crate::DeploymentConfig,
     /// This process's part in Run execution, selected by the composition.
     pub execution: crate::ExecutionTopology,
     /// The process content-capture ceiling and redactor. Per-request consent
     /// and the Workspace policy may only narrow it.
     pub content_capture: crate::ContentCaptureSettings,
+    /// The durable storage root: set selects durable SQLite commit and
+    /// Resource adapters that survive a restart; `None` selects ephemeral ones.
+    pub storage_dir: Option<PathBuf>,
+    /// The root the construction-time Session provider realizes sandboxes
+    /// under until the composition installs its own provider.
+    pub sandbox_root: PathBuf,
+    /// Whether `trusted_host` Environments may be realized on this process.
+    pub trusted_host: crate::TrustedHostPolicy,
+    /// The warm Session capacity this process keeps.
+    pub warm_pool: crate::WarmPool,
+    /// How the Session MCP relay is exposed to container networks, if at all.
+    pub mcp_relay: Option<awaken_session_mcp::ContainerMcpRelayExposure>,
+    /// The exact ACP adapters this process advertises and serves.
+    pub acp_profile: Option<crate::AcpWorkerProfile>,
     /// The process wall clock the Host drives its Workers on.
     pub clock: Arc<dyn awaken_time::WallClock>,
 }
@@ -68,7 +80,6 @@ impl HostDependencies {
 fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHost>) -> SharedHost {
     let HostDependencies {
         local_workspace,
-        deployment,
         clock,
         store_dir,
         authority,
@@ -121,7 +132,6 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         execution_authority,
         hub: hub.clone(),
         store_dir,
-        deployment,
         authority,
         clock,
         background_supervisor,
@@ -150,23 +160,6 @@ impl SharedHost {
         // process distinct without reading a clock.
         let nonce = uuid::Uuid::new_v4().simple();
         format!("workspace_local_{:x}_{nonce}", std::process::id())
-    }
-
-    /// The configured Session sandbox tier selected by the authoritative
-    /// [`crate::DeploymentConfig`]. Startup adapters use this read-only view
-    /// when their realization strategy must be compatible with the environment;
-    /// it does not introduce another tier-selection source.
-    #[must_use]
-    pub fn sandbox_tier(&self) -> crate::SandboxTier {
-        self.deployment.sandbox_tier
-    }
-
-    /// The typed Deployment this Host was constructed from. Startup
-    /// compositions read it (they never re-read process configuration) to
-    /// select the environment tier they install.
-    #[must_use]
-    pub fn deployment_config(&self) -> &crate::DeploymentConfig {
-        &self.deployment
     }
 
     /// The process wall clock this Host drives its Workers on.

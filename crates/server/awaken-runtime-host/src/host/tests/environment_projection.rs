@@ -1466,7 +1466,7 @@ async fn frozen_environment_selects_trusted_host_exactly() {
     let namespace_root = tempfile::tempdir().unwrap();
     let trusted_root = tempfile::tempdir().unwrap();
     let mut host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
-    host.deployment.sandbox.trusted_host_enabled = true;
+    host.env.trusted_host = crate::TrustedHostPolicy::Admitted;
     host.env.session_provider =
         crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             namespace_root.path(),
@@ -1500,7 +1500,7 @@ async fn frozen_environment_selects_trusted_host_exactly() {
     assert!(selected.realizer().supports_host_identity(), "T1/E1");
 
     let mut absent = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await;
-    absent.deployment.sandbox.trusted_host_enabled = true;
+    absent.env.trusted_host = crate::TrustedHostPolicy::Admitted;
     absent.env.session_provider =
         crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
             namespace_root.path(),

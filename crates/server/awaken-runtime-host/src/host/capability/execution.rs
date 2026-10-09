@@ -31,13 +31,17 @@ pub(crate) struct AttemptBackends {
     /// adapter may retain another clone, but both share the same repositories,
     /// secret store, revision checks, and extension-consumer registry.
     pub(crate) credential_materializer: Option<crate::PinnedCredentialMaterializer>,
+    /// The exact ACP adapters this process advertises; `None` advertises the
+    /// installed executor's whole catalog for MCP injection and no ACP CLI.
+    pub(crate) acp_profile: Option<crate::AcpWorkerProfile>,
 }
 
 impl AttemptBackends {
     /// No ACP backend or decorator yet; process composition installs the
     /// executor and its optional portable session-home adapter.
-    pub(in crate::host) fn new(_deployment: &crate::deployment_config::DeploymentConfig) -> Self {
+    pub(in crate::host) fn new(acp_profile: Option<crate::AcpWorkerProfile>) -> Self {
         Self {
+            acp_profile,
             acp: None,
             acp_projection_policy: None,
             acp_tool_exporter: None,

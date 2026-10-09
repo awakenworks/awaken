@@ -22,6 +22,7 @@ pub(crate) use agent::{AgentExecution, AgentSelection};
 pub(crate) use capture::ContentCaptureCapability;
 pub(crate) use dispatch::DispatchCapability;
 pub(crate) use environment::EnvironmentProviders;
+pub use environment::{TrustedHostPolicy, WarmPool};
 pub(crate) use execution::AttemptBackends;
 pub use execution_topology::{
     DispatchPoolSizing, ExecutionTopology, LeaseOwnerId, LocalExecution, QueueDepthSource,

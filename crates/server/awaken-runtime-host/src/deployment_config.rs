@@ -480,6 +480,23 @@ pub struct DeploymentConfig {
     pub disable_local_pool: bool,
 }
 
+/// The base dir the Session sandbox roots and per-thread config homes live
+/// under, or a per-process temp dir when unset.
+pub fn session_sandbox_base(deployment: &DeploymentConfig) -> std::path::PathBuf {
+    deployment
+        .sandbox_dir
+        .clone()
+        .or_else(|| {
+            deployment
+                .storage_dir
+                .as_ref()
+                .map(|storage| storage.join("sandboxes"))
+        })
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("awaken-acp-sbx-{}", std::process::id()))
+        })
+}
+
 /// The default wake channel/subject, shared by the `pg_notify` channel and the NATS
 /// subject.
 pub const DEFAULT_WAKE_CHANNEL: &str = "awaken_dispatch_wake";
@@ -608,9 +625,21 @@ impl DeploymentConfig {
     ) -> Result<crate::HostProcess, String> {
         Ok(crate::HostProcess {
             local_workspace,
-            deployment: self.clone(),
             execution: self.execution_topology()?,
             content_capture: self.content_capture,
+            storage_dir: self.storage_dir.clone(),
+            sandbox_root: session_sandbox_base(self),
+            trusted_host: if self.trusted_host_enabled() {
+                crate::TrustedHostPolicy::Admitted
+            } else {
+                crate::TrustedHostPolicy::Refused
+            },
+            warm_pool: crate::WarmPool::new(
+                self.sandbox.warm_pool_size,
+                self.sandbox.warm_pool_total_size,
+            ),
+            mcp_relay: self.sandbox.container_mcp_relay.clone(),
+            acp_profile: self.acp.clone(),
             clock,
         })
     }

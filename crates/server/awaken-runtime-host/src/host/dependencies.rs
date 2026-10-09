@@ -49,7 +49,6 @@ pub struct SessionExecutionDependencies {
 /// Scenario host and test fixtures) and `HostDependencies::build`.
 pub struct HostDependencies {
     pub(crate) local_workspace: String,
-    pub(crate) deployment: crate::DeploymentConfig,
     pub(crate) clock: Arc<dyn awaken_time::WallClock>,
     pub(crate) store_dir: Option<PathBuf>,
     pub(crate) authority: Arc<dyn crate::SessionAuthority>,
@@ -84,16 +83,16 @@ fn select(
 ) -> HostDependencies {
     let HostProcess {
         local_workspace,
-        deployment,
         execution,
         content_capture,
+        storage_dir: store_dir,
+        sandbox_root,
+        trusted_host,
+        warm_pool,
+        mcp_relay,
+        acp_profile,
         clock,
     } = process;
-    // Process startup parses the deployment axes once from the environment
-    // into one typed config. `DeploymentConfig::storage_dir` set → durable SQLite commit
-    // and resource adapters (all survive a restart); unset → ephemeral adapters.
-    let store_dir = deployment.storage_dir.clone();
-    let sandbox_root = crate::acp_backend::session_sandbox_base(&deployment);
     let skills = crate::skill_catalog::SkillCatalog::new();
     #[cfg(any(test, feature = "test-support"))]
     let mut skills = skills;
@@ -113,18 +112,17 @@ fn select(
         capability::ResourceSelection::assemble(resources, store_dir.as_deref(), &clock);
     HostDependencies {
         agent: capability::AgentSelection::new(llm, model_ref),
-        exec: capability::AttemptBackends::new(&deployment),
+        exec: capability::AttemptBackends::new(acp_profile),
         worker: capability::WorkerTransports::default(),
         env: capability::EnvironmentProviders::new(
             sandbox_root,
             crate::auxiliary_sandbox::default_auxiliary_sandboxes(),
+            trusted_host,
+            warm_pool,
         ),
         tools: capability::ToolOffering::new(skills),
         resources,
-        mcp: awaken_session_mcp::McpSessions::new(
-            deployment.sandbox.container_mcp_relay.clone(),
-            clock.clone(),
-        ),
+        mcp: awaken_session_mcp::McpSessions::new(mcp_relay, clock.clone()),
         execution,
         capture: capability::ContentCaptureCapability::new(content_capture),
         session_application: SessionApplicationBindings::default(),
@@ -134,7 +132,6 @@ fn select(
         environment_binding_sink: None,
         hub: Arc::new(ThreadEventHub::new()),
         store_dir,
-        deployment,
         authority,
         clock,
     }
@@ -298,12 +295,12 @@ impl HostDependencies {
         )
     }
 
-    /// The typed Deployment these dependencies serve. Compositions read it
-    /// (they never re-read process configuration) to select the environment
-    /// tier they install.
+    /// The durable storage root these dependencies were selected with, when
+    /// the process is persistent. Compositions place sibling repositories
+    /// beside runtime truth through it.
     #[must_use]
-    pub fn deployment_config(&self) -> &crate::DeploymentConfig {
-        &self.deployment
+    pub fn storage_dir(&self) -> Option<&std::path::Path> {
+        self.store_dir.as_deref()
     }
 
     /// The process wall clock the Host will drive its Workers on.

@@ -151,8 +151,8 @@ impl SharedHost {
             if let Some(acp) = &self.exec.acp {
                 let policy = acp.adapter_policy();
                 let configured = self
-                    .deployment
-                    .acp
+                    .exec
+                    .acp_profile
                     .as_ref()
                     .map(|profile| profile.cli_ids().map(str::to_string).collect::<Vec<_>>())
                     .unwrap_or_else(|| {
@@ -163,7 +163,7 @@ impl SharedHost {
                 }));
             }
         }
-        if let (Some(acp), Some(profile)) = (&self.exec.acp, &self.deployment.acp) {
+        if let (Some(acp), Some(profile)) = (&self.exec.acp, &self.exec.acp_profile) {
             profiles.extend(profile.cli_ids().filter_map(|cli| {
                 let backend =
                     awaken_runtime_contract::resolved::Backend::from_ref(&format!("acp:{cli}"));
