@@ -90,6 +90,7 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "host::coordination",
         "host::credential_capabilities",
         "host::dependencies",
+        "host::dispatch_reconciliation",
         "host::dispatch_resolution",
         "host::durable_control",
         "host::placement",

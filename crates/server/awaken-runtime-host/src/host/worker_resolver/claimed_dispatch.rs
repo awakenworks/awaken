@@ -526,7 +526,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         &self,
         limit: usize,
     ) -> Result<Vec<(RunId, RunState)>, awaken_dispatch_execution::Error> {
-        crate::host::terminal_reconciliation::reconcile_committed_terminals(self, limit).await
+        crate::host::dispatch_reconciliation::reconcile_committed_terminals(self, limit).await
     }
 
     async fn reconcile_worker_evidence(&self) -> Result<(), awaken_dispatch_execution::Error> {
