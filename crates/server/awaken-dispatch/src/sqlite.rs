@@ -11,6 +11,7 @@
 //! the test-support `MemoryDispatchStore` reference backend exactly. Each
 //! operation holds the store's one sqlx connection (ADR-0087) for its whole span.
 
+use crate::dispatch::{no_running_peer, thread_available_for_claim};
 use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 
@@ -104,29 +105,6 @@ async fn published_checksum(
     .fetch_optional(pool)
     .await
     .map_err(|error| StoreError::Migrate(error.to_string()))
-}
-
-/// Shared SQLite claim predicate for a candidate `d`. Ordinary wake/fresh work
-/// waits behind every other Running or Awaiting Run on its Thread. Cancellation
-/// waits only behind a Running peer, so historical multi-Awaiting rows can be
-/// closed one at a time. Both branches exclude `d` itself.
-fn thread_available_for_claim(prefix: &str) -> String {
-    format!(
-        "((d.cancel_requested = 1 AND NOT EXISTS (SELECT 1 FROM {prefix}_dispatch r \
-         WHERE r.thread_id = d.thread_id AND r.run_id <> d.run_id \
-         AND r.status IN ('running', 'reservation_running'))) \
-         OR (d.cancel_requested = 0 AND NOT EXISTS (SELECT 1 FROM {prefix}_dispatch r \
-         WHERE r.thread_id = d.thread_id AND r.run_id <> d.run_id \
-         AND r.status IN ('running', 'reservation_running', 'awaiting'))))"
-    )
-}
-
-fn no_running_peer(prefix: &str) -> String {
-    format!(
-        "NOT EXISTS (SELECT 1 FROM {prefix}_dispatch r \
-         WHERE r.thread_id = d.thread_id AND r.run_id <> d.run_id \
-         AND r.status IN ('running', 'reservation_running'))"
-    )
 }
 
 async fn exact_run_replay(

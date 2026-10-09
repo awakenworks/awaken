@@ -12,14 +12,13 @@ layer = "infrastructure"
 authority = "store-schema"
 
 [dependencies]
+awaken-sql-storage.workspace = true
 awaken-scoped-migration.workspace = true
-thiserror.workspace = true
 
 # Dev-only: prove the portable bundle actually APPLIES on both real backends it
 # drives. The schema crate itself names no SQL driver; these harness deps (the two
 # migration runners and their drivers) live only in the test build.
 [dev-dependencies]
-proptest.workspace = true
 awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite", "json"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

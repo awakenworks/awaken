@@ -2070,6 +2070,9 @@ pub async fn assert_cancel<S: awaken_dispatch::ControlDispatch>(
     // | C2 | Pending/Awaiting | yes | current | E1+E2, guard true |
     // | C3 | Leased then cancelled | yes | stale | E3 |
     // | C4 | Done | any | any | E4 |
+    // Peer-selection companion: C5 the candidate itself is Running/Awaiting.
+    // Effect C5 never blocks its own cancellation claim (SQL excludes run_id).
+    // The adjacent wake-suppression table covers foreign Running/Awaiting peers.
     use awaken_dispatch::RunDispatch;
     let thread = Some(ThreadId(THREAD.to_string()));
 
@@ -3619,6 +3622,11 @@ pub async fn assert_wake_suppressed_while_thread_running<S: awaken_dispatch::Con
     use awaken_dispatch::{DispatchOutcome, RunDispatch};
     use awaken_runtime_contract::resume::ResumeResult;
 
+    // Causes: C1 ordinary/cancellation claim; C2 foreign peer is Awaiting or
+    // Running; C3 candidate differs from the peer. Effects: E1 queued/blocked,
+    // E2 exact claim. Rules W1 ordinary+Awaiting+C3 => E1; W2 cancellation+
+    // Awaiting+C3 => E2; W3 ordinary+Running+C3 => E1. Candidate-self exclusion
+    // is exercised by assert_cancel, using the same production SQL projection.
     // run-1 awaits on the thread.
     store
         .enqueue(RunDispatch::new(activation("run-1")))

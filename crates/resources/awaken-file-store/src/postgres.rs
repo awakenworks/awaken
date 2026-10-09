@@ -281,7 +281,7 @@ impl FileCatalog for PgFileStore {
             }
             capture.verify_files(&records)?;
             sqlx::query("UPDATE file_store_artifact_capture SET revision=$3,file_ids_json=$4 WHERE workspace_id=$1 AND session_id=$2")
-                .bind(&capture.workspace_id).bind(&capture.session_id).bind(crate::stored_u64::StoredU64::try_from(capture.revision).map_err(ce)?.database_value())
+                .bind(&capture.workspace_id).bind(&capture.session_id).bind(awaken_sql_storage::StoredU64::try_from(capture.revision).map_err(ce)?.database_value())
                 .bind(serde_json::to_string(&capture.file_ids).map_err(ce)?)
                 .execute(&mut *transaction).await.map_err(ce)?;
         } else if revision == 0 {

@@ -33,7 +33,7 @@ serde_json = { workspace = true }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "sqlite"], optional = true }
 awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"], optional = true }
 awaken-sqlite-pool = { workspace = true, optional = true }
-awaken-sql-storage = { workspace = true, optional = true }
+awaken-sql-storage.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
@@ -47,7 +47,7 @@ default = []
 # Process-local Memory authority and private SQLite databases for tests/scenarios.
 test-support = []
 sqlite = ["dep:sqlx", "dep:awaken-scoped-migration", "dep:awaken-sqlite-pool"]
-postgres = ["dep:sqlx", "dep:awaken-scoped-migration", "dep:awaken-sql-storage", "awaken-sql-storage/postgres"]
+postgres = ["dep:sqlx", "dep:awaken-scoped-migration", "awaken-sql-storage/postgres"]
 
 [lints]
 workspace = true
