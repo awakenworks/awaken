@@ -799,6 +799,66 @@ fn standard_builder_derives_from_its_installed_materializer() {
     assert!(worker.manifest().capabilities.contains("test-access/v1"));
 }
 
+#[tokio::test]
+async fn container_preparation_preserves_existing_provider_and_refuses_foreign_create_owner() {
+    // Causes: C1=non-container tier; C2=already selected provider;
+    // C3=caller supplies a foreign Kubernetes Create transport. Effects:
+    // R1 C1 -> no container construction/decorator; R2 C2 -> preserve the
+    // exact provider without rebuilding/decorating it; R3 C3 -> refuse before
+    // provider I/O. The existing Create-client tests own registration binding
+    // and HTTP effects; this table prevents a product from bypassing that owner.
+    for selected in [false, true] {
+        let mut configuration = deployment();
+        configuration.sandbox_tier = if selected {
+            awaken_session_executor::SandboxTier::Docker
+        } else {
+            awaken_session_executor::SandboxTier::Local
+        };
+        let mut builder = WorkerNodeBuilder::new(
+            awaken_worker_transport_security::WorkerUpstream::new("http://control"),
+            awaken_time::system_clock(),
+        )
+        .with_deployment_config(configuration);
+        let provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider> =
+            Arc::new(UnusedContainerProvider);
+        if selected {
+            builder = builder.with_session_container_provider("selected", provider.clone());
+        }
+        let builder = builder
+            .prepare_session_environment_from_deployment_with_policy(Default::default(), |_| {
+                panic!("R1/R2 must not construct or decorate another provider")
+            })
+            .await
+            .unwrap();
+        assert_eq!(builder.session_container_provider.is_some(), selected);
+        if let Some(installed) = builder.session_container_provider {
+            assert!(Arc::ptr_eq(&installed.provider, &provider), "R2");
+        }
+    }
+    #[cfg(feature = "container-k8s")]
+    {
+        let upstream = awaken_worker_transport_security::WorkerUpstream::new("http://control");
+        let policy = awaken_execution_composition::ContainerTierPolicy {
+            k8s_create_transport: Some(Arc::new(super::WorkerK8sCreateClient::new(
+                upstream.clone(),
+            ))),
+            ..Default::default()
+        };
+        let result = WorkerNodeBuilder::new(upstream, awaken_time::system_clock())
+            .prepare_session_environment_from_deployment_with_policy(policy, |_| {
+                panic!("R3 must refuse before provider effects")
+            })
+            .await;
+        assert!(
+            result
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("owns its Kubernetes Create")
+        );
+    }
+}
+
 #[test]
 fn worker_builder_rejects_scoped_execution_without_platform_or_host_consent() {
     // W1 typed builder bypasses TOML but must obey the same admission rule.
