@@ -20,7 +20,7 @@
 //! wake target the current attempt only and return [`Error::NoSubscriber`] when no
 //! subscriber accepts them.
 
-use awaken_dispatch_contract::ControlDispatch;
+use crate::ControlDispatch;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::Id as RunId;

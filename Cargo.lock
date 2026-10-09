@@ -851,6 +851,7 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-dispatch",
  "awaken-dispatch-contract",
+ "awaken-dispatch-erasure",
  "awaken-dispatch-execution",
  "awaken-lease-testkit",
  "awaken-outbound-http",

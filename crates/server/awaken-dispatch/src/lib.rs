@@ -78,14 +78,14 @@ pub use application::{
     has_active_physical_attempt_for_owner, release_closed_idle_worker_evidence,
     stop_expired_predecessor,
 };
-pub use awaken_dispatch_erasure::AnyDispatchStore;
+pub use awaken_dispatch_erasure::{AnyDispatchStore, Dispatch};
 pub use awaken_dispatch_execution::{
     ClaimedCommitCoordinator, ClaimedModelRequestGateFactory, ClaimedRunCommit, CompletionSink,
-    DEFAULT_LEASE_MS, DispatchPool, DispatchReconciler, DispatchService, DispatchServiceConfig,
-    DispatchWorker, FencedStreamCheckpointStore, GuardedRunCommit, InferenceMaterializerFn,
-    LiveRunControlError, LiveRunControlService, LocalWakeSignal, PoolDrainFence,
-    RecoveryProjection, RecoveryProjectionError, TerminalReconciliationScan, WorkerResolver,
-    claim_bound_ownership_verifier, publish_dispatch_hint,
+    ControlDispatch, DEFAULT_LEASE_MS, DispatchPool, DispatchReconciler, DispatchService,
+    DispatchServiceConfig, DispatchWorker, FencedStreamCheckpointStore, GuardedRunCommit,
+    InferenceMaterializerFn, LiveRunControlError, LiveRunControlService, LocalWakeSignal,
+    PoolDrainFence, RecoveryProjection, RecoveryProjectionError, TerminalReconciliationScan,
+    WorkerResolver, claim_bound_ownership_verifier, publish_dispatch_hint,
 };
 pub use awaken_dispatch_contract::ClaimedStreamPublisher;
 pub use awaken_dispatch_contract::operational::{
@@ -119,13 +119,12 @@ pub use awaken_dispatch_contract::{
 pub use dispatch::{
     AttemptAdmission, AttemptCredentialBinding, AttemptExecutionBinding, CandidateFingerprint,
     CasOutcome, Claimed, ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport,
-    CommitEpochGuard, ContinuationAdmission, ControlDispatch, ControlDispatchQueue,
-    CredentialRealizationReceipt, Dispatch, DispatchCompletion, DispatchDepths, DispatchError,
-    DispatchOutcome, DispatchQueue, DispatchSettlementError, DispatchSettlementObserver,
-    DispatchState, DispatchSummary, Inbox, Lease, LeaseRenewalOutcome, Outbox, PendingInput,
-    PendingRecord, PhysicalAttempt, RunClaim, SessionChildAdmission, SessionRunAdmissionObserver,
-    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
-    SettleOutcome, SubmitOptions,
+    CommitEpochGuard, ContinuationAdmission, ControlDispatchQueue, CredentialRealizationReceipt,
+    DispatchCompletion, DispatchDepths, DispatchError, DispatchOutcome, DispatchQueue,
+    DispatchSettlementError, DispatchSettlementObserver, DispatchState, DispatchSummary, Inbox,
+    Lease, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, PhysicalAttempt, RunClaim,
+    SessionChildAdmission, SessionRunAdmissionObserver, SessionRunReservationActivation,
+    SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
 };
 pub use dispatch_schema::dispatch_bundle;
 #[cfg(feature = "test-support")]

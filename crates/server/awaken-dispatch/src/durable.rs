@@ -8,7 +8,7 @@
 //! directly. This feature-gated fixture keeps concise backend conformance tests;
 //! it owns no state or transition authority beyond those existing components.
 
-use awaken_dispatch_contract::ControlDispatch;
+use awaken_dispatch_execution::ControlDispatch;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};

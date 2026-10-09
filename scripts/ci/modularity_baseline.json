@@ -51,7 +51,7 @@
     "awaken-run-executor-a2a": 1,
     "awaken-run-executor-acp": 6,
     "awaken-dispatch": 6,
-    "awaken-dispatch-contract": 2,
+    "awaken-dispatch-contract": 1,
     "awaken-dispatch-http": 2,
     "awaken-runtime": 10,
     "awaken-session-executor": 39,

@@ -15,11 +15,10 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_credential_contract::{CredentialRealizationCapabilities, CredentialRealizationKind};
 use awaken_dispatch_contract::dispatch::{
-    AttemptAdmission, CasOutcome, ContinuationAdmission, ControlDispatch,
-    CredentialRealizationReceipt, DispatchError, DispatchOutcome, DispatchState,
-    DurableControlDispatch, PendingInput, RunClaim, SessionChildAdmission,
-    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
-    SettleOutcome, SubmitOptions,
+    AttemptAdmission, CasOutcome, ContinuationAdmission, CredentialRealizationReceipt,
+    DispatchError, DispatchOutcome, DispatchState, Inbox, Outbox, PendingInput, RunClaim,
+    SessionChildAdmission, SessionContinuationOutbox, SessionRunReservationActivation,
+    SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
 };
 use awaken_dispatch_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalFeed, LeaseLossReason,
@@ -383,7 +382,7 @@ impl ConformanceCapabilities {
 /// | Command replay after Done | no new runnable row | caller identity / reservation SR6 |
 /// | Terminal repair crash | repair epoch advances; one completion | terminal recovery T7/T8 |
 /// | Missing physical cleanup ACK | occupied slot retained | occupied recovery |
-pub async fn assert_dispatch_conformance<S: ControlDispatch>(
+pub async fn assert_dispatch_conformance<S: ControlDispatchQueue + Inbox + Outbox>(
     store: &S,
     namespace: &str,
     capabilities: ConformanceCapabilities,
@@ -392,7 +391,7 @@ pub async fn assert_dispatch_conformance<S: ControlDispatch>(
         .await;
 }
 
-pub async fn assert_dispatch_conformance_with_clock<S: ControlDispatch>(
+pub async fn assert_dispatch_conformance_with_clock<S: ControlDispatchQueue + Inbox + Outbox>(
     store: &S,
     namespace: &str,
     capabilities: ConformanceCapabilities,
@@ -422,6 +421,19 @@ pub async fn assert_dispatch_conformance_with_clock<S: ControlDispatch>(
     // postcondition, so run it after every conformance rule that broadly claims
     // queue work.
     session_child_admission_is_atomic_and_bounded(store, namespace, clock).await;
+}
+
+/// The one store shape the Session continuation journeys drive as a trait
+/// object: the Control queue, inbox and outbox roles plus the atomic Session
+/// continuation write. This conformance suite is its only consumer.
+pub trait DurableControlDispatch:
+    ControlDispatchQueue + Inbox + Outbox + SessionContinuationOutbox
+{
+}
+
+impl<T: ControlDispatchQueue + Inbox + Outbox + SessionContinuationOutbox> DurableControlDispatch
+    for T
+{
 }
 
 include!("conformance/dispatch_admission.rs");

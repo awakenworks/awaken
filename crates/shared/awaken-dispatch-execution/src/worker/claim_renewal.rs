@@ -5,7 +5,7 @@
 //! process-local guard that keeps a current claim live and projects loss of
 //! provable ownership into Runtime's existing cooperative cancellation token.
 
-use awaken_dispatch_contract::ControlDispatch;
+use crate::ControlDispatch;
 use std::sync::Arc;
 
 use awaken_lease_contract::authority::AuthorityLeaseTiming;

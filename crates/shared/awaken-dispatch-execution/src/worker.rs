@@ -25,7 +25,7 @@
 //! and the run record — not from a duplicated status in the queue. That keeps the
 //! DispatchQueue aggregate free of run-outcome truth.
 
-use awaken_dispatch_contract::ControlDispatch;
+use crate::ControlDispatch;
 use std::sync::Arc;
 
 use awaken_agent_contract::ThreadCommit;

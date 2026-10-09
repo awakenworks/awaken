@@ -10,7 +10,7 @@
 //! It waits on a [`WakeSignal`] — a `LocalWakeSignal`
 //! for one process, or a cross-node signal for a fleet (ADR-0011, ADR-0019).
 
-use awaken_dispatch_contract::ControlDispatch;
+use crate::ControlDispatch;
 use std::sync::Arc;
 use std::time::Duration;
 

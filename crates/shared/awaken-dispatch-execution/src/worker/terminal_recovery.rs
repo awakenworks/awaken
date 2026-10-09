@@ -6,11 +6,11 @@
 //! entry uses its original claim-fenced commit, observer and settlement path.
 
 use super::{DispatchWorker, PendingInputAdmission, pending_input_admission};
+use crate::ControlDispatch;
 use crate::Error;
 use crate::dispatch::{Claimed, DispatchOutcome, DispatchSummary, RunClaim, SettleOutcome};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_dispatch_contract::ControlDispatch;
 use awaken_runtime_contract::terminal::{
     CommittedTerminalProjection, CommittedTerminalRun, committed_terminal_projection,
     deliver_committed_terminal,
