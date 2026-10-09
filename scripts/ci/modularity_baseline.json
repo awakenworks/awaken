@@ -248,7 +248,6 @@
     "awaken-cli::control_component.rs::prepare_control_routers": 241,
     "awaken-cli::deployment_process.rs::prepare_runtime_process_with_coordinator_services_and_installations": 219,
     "awaken-cli::process_stores.rs::open_process_stores": 393,
-    "awaken-cli::runtime_process_router.rs::prepare_runtime_routers": 827,
     "awaken-cli::service.rs::serve_prepared_process": 234,
     "awaken-config-service::managed_agent.rs::agent_config_from_managed": 179,
     "awaken-config-service::publication.rs::prepare_agent_publication": 174,

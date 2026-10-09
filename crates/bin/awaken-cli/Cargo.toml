@@ -88,6 +88,7 @@ awaken-session-work-contract.workspace = true
 awaken-environment-contract.workspace = true
 awaken-service-auth-contract = { workspace = true }
 awaken-session-application.workspace = true
+awaken-deployment-application = { workspace = true }
 awaken-deployment-contract = { workspace = true }
 awaken-ext-memory = { workspace = true }
 awaken-provisioning-contract = { workspace = true }

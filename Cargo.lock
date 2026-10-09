@@ -449,6 +449,7 @@ dependencies = [
  "awaken-data-governance-contract",
  "awaken-data-subject-application",
  "awaken-data-subject-store",
+ "awaken-deployment-application",
  "awaken-deployment-contract",
  "awaken-env-store",
  "awaken-environment-application",
