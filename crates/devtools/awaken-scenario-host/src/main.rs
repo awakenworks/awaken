@@ -479,71 +479,111 @@ mod dispatch_tests {
         // router-mapping test does not depend on an ambient Namespace companion.
         // `acp-tool-bridge` deliberately consumes the real scenario deployment
         // and sibling Hand binary; its dedicated durable ACP E2E owns that row.
+        // C0 all mode factories in one async table => their large construction
+        // futures compound this test frame. Pin each future on the heap before
+        // awaiting; the default-stack regression must execute every original
+        // mode/argument and retain the same mounted-route assertion below.
         // (AWAKEN_MODEL_MODE string, the router its `main()` arm builds). Kept in the
         // same order as the `match` in `main()` so drift is easy to spot.
         let mut local_test_deployment = awaken_session_executor::DeploymentConfig::ephemeral();
         local_test_deployment.sandbox_tier = awaken_session_executor::SandboxTier::Local;
         let dispatch: Vec<(&str, axum::Router)> = vec![
-            ("probe", sh::build_probe_router().await),
+            ("probe", Box::pin(sh::build_probe_router()).await),
             (
                 "revise",
-                sh::build_router(std::sync::Arc::new(sh::ReviseModel), "revise").await,
+                Box::pin(sh::build_router(
+                    std::sync::Arc::new(sh::ReviseModel),
+                    "revise",
+                ))
+                .await,
             ),
-            ("custom", sh::build_custom_router().await),
+            ("custom", Box::pin(sh::build_custom_router()).await),
             (
                 "delegate",
-                sh::build_delegation_router_with_deployment(local_test_deployment.clone()).await,
+                Box::pin(sh::build_delegation_router_with_deployment(
+                    local_test_deployment.clone(),
+                ))
+                .await,
             ),
-            ("statemachine", sh::build_statemachine_router().await),
+            (
+                "statemachine",
+                Box::pin(sh::build_statemachine_router()).await,
+            ),
             (
                 "statemachine-rich",
-                sh::build_statemachine_rich_router().await,
+                Box::pin(sh::build_statemachine_rich_router()).await,
             ),
-            ("schedule", sh::build_schedule_router().await),
-            ("skills", sh::build_skills_router().await),
-            ("skills-durable", sh::build_skills_durable_router().await),
-            ("vision", sh::build_vision_router().await),
-            ("model-route", sh::build_model_route_router().await),
+            ("schedule", Box::pin(sh::build_schedule_router()).await),
+            ("skills", Box::pin(sh::build_skills_router()).await),
+            (
+                "skills-durable",
+                Box::pin(sh::build_skills_durable_router()).await,
+            ),
+            ("vision", Box::pin(sh::build_vision_router()).await),
+            (
+                "model-route",
+                Box::pin(sh::build_model_route_router()).await,
+            ),
             (
                 "acp",
-                sh::build_acp_sandboxed_router_with_deployment(local_test_deployment.clone()).await,
+                Box::pin(sh::build_acp_sandboxed_router_with_deployment(
+                    local_test_deployment.clone(),
+                ))
+                .await,
             ),
             (
                 "acp-jsonrpc",
-                sh::build_acp_jsonrpc_router_with_deployment(local_test_deployment.clone()).await,
+                Box::pin(sh::build_acp_jsonrpc_router_with_deployment(
+                    local_test_deployment.clone(),
+                ))
+                .await,
             ),
             (
                 "acp-permission",
-                sh::build_acp_permission_router_with_deployment(local_test_deployment.clone())
-                    .await,
+                Box::pin(sh::build_acp_permission_router_with_deployment(
+                    local_test_deployment.clone(),
+                ))
+                .await,
             ),
             (
                 "acp-sandboxed",
-                sh::build_acp_sandboxed_router_with_deployment(local_test_deployment.clone()).await,
+                Box::pin(sh::build_acp_sandboxed_router_with_deployment(
+                    local_test_deployment.clone(),
+                ))
+                .await,
             ),
             (
                 "acp-gateway",
-                sh::build_acp_gateway_router_with_deployment(local_test_deployment.clone()).await,
+                Box::pin(sh::build_acp_gateway_router_with_deployment(
+                    local_test_deployment.clone(),
+                ))
+                .await,
             ),
-            ("memory", sh::build_memory_router().await),
-            ("memory-resource", sh::build_memory_resource_router().await),
+            ("memory", Box::pin(sh::build_memory_router()).await),
+            (
+                "memory-resource",
+                Box::pin(sh::build_memory_resource_router()).await,
+            ),
             (
                 "git-repo",
-                sh::build_git_repo_router(local_test_deployment.clone()).await,
+                Box::pin(sh::build_git_repo_router(local_test_deployment.clone())).await,
             ),
-            ("compaction", sh::build_compaction_router().await),
-            ("error", sh::build_error_router().await),
-            ("worker", sh::build_worker_router().await),
+            ("compaction", Box::pin(sh::build_compaction_router()).await),
+            ("error", Box::pin(sh::build_error_router()).await),
+            ("worker", Box::pin(sh::build_worker_router()).await),
             (
                 "environment-matrix",
-                sh::build_environment_matrix_router().await,
+                Box::pin(sh::build_environment_matrix_router()).await,
             ),
             (
                 "full-chain",
-                sh::build_full_chain_router_with_deployment(local_test_deployment).await,
+                Box::pin(sh::build_full_chain_router_with_deployment(
+                    local_test_deployment,
+                ))
+                .await,
             ),
             // The `_ =>` fallback: any unrecognized mode routes to the echo router.
-            ("<default/unknown>", sh::build_echo_router().await),
+            ("<default/unknown>", Box::pin(sh::build_echo_router()).await),
         ];
         for (mode, app) in dispatch {
             assert!(
