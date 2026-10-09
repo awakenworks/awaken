@@ -699,8 +699,34 @@ impl WorkerNodeBuilder {
     /// Worker manifest. The resulting instance is shared by capability evidence,
     /// readiness probes, capacity lifecycle, and Runtime Host realization.
     pub async fn prepare_session_environment_from_deployment(
-        mut self,
+        self,
     ) -> Result<Self, WorkerNodeBuildError> {
+        self.prepare_session_environment_from_deployment_with_policy(
+            awaken_execution_composition::ContainerTierPolicy::default(),
+            |components| components,
+        )
+        .await
+    }
+
+    /// Apply deployment-owned container security and a provider decorator on
+    /// the same preparation path. The Worker still selects and binds the sole
+    /// Kubernetes Create client; the decorator retains the canonical components.
+    pub async fn prepare_session_environment_from_deployment_with_policy<F>(
+        mut self,
+        policy: awaken_execution_composition::ContainerTierPolicy,
+        decorate: F,
+    ) -> Result<Self, WorkerNodeBuildError>
+    where
+        F: FnOnce(
+            awaken_execution_composition::ContainerEnvironmentComponents,
+        ) -> awaken_execution_composition::ContainerEnvironmentComponents,
+    {
+        #[cfg(feature = "container-k8s")]
+        if policy.k8s_create_transport.is_some() {
+            return Err(WorkerNodeBuildError(
+                "Worker builder owns its Kubernetes Create transport".into(),
+            ));
+        }
         if self.deployment.sandbox_tier == awaken_session_executor::SandboxTier::Namespace
             && self.deployment.sandbox.allow_local_fallback
             && self.session_container_provider.is_none()
@@ -728,7 +754,6 @@ impl WorkerNodeBuilder {
         }
         let backend = self.deployment.sandbox_support().1;
         let realization_namespace = worker_realization_namespace(&self.deployment)?;
-        let policy = awaken_execution_composition::ContainerTierPolicy::default();
         #[cfg(feature = "container-k8s")]
         let policy = policy_with_k8s_create_client(policy, self.k8s_create_client.as_ref());
         let components = awaken_execution_composition::build_container_environment_for_realization(
@@ -741,6 +766,7 @@ impl WorkerNodeBuilder {
         )
         .await
         .map_err(WorkerNodeBuildError)?;
+        let components = decorate(components);
         Ok(self.with_session_container_environment_components(backend, components))
     }
 

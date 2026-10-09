@@ -43,6 +43,15 @@ to that builder method. The generic registration-bound factory injection remains
 available for genuinely custom adapters, not as a standard parallel composition.
 No registry, Memory store, lifecycle or timing protocol changes in this migration.
 
+Container embeddings select deployment security and a provider decorator through
+`WorkerNodeBuilder::prepare_session_environment_from_deployment_with_policy`.
+The original preparation method delegates to that same implementation with the
+default policy. The builder selects the single Kubernetes Create client before
+provider construction and binds it to the registration receipt before Ready;
+caller-supplied Create transports are rejected. Product decorators retain the
+returned capacity, mounts and cache owner rather than constructing another
+provider or registration lifecycle.
+
 ```text
 Control                                      Worker
   register/heartbeat <-------------------------+
