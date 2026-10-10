@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
 use awaken_service_lifecycle::run_composed_async_test;
 use awaken_session_execution_contract::ToolPermissionDecision;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 async fn ephemeral_resource_registry() -> awaken_resource_application::RegistryApplication {
     let storage = Arc::new(

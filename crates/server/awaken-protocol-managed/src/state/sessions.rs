@@ -206,8 +206,10 @@ impl ManagedState {
 
     /// Publish only Session-root fields after its durable CAS. This is a
     /// candidate builder, not another writer: full Thread/lifecycle reduction
-    /// and root-only visibility both converge on the sole CAS publisher.
-    pub(super) fn publish_persisted_session(
+    /// and root-only visibility both converge on the sole CAS publisher. The
+    /// Coordinator's Session adoption of credential rollouts publishes the
+    /// roots it committed through this.
+    pub fn publish_persisted_session(
         &self,
         persisted: &PersistedSession,
     ) -> Result<(), StateError> {

@@ -76,6 +76,27 @@ pub trait ManagedCredentialRolloutTarget: Send + Sync {
     ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError>;
 }
 
+/// The credential revision a Session adopts for one rollout event: never below
+/// the revision it already holds, so a duplicate or stale delivery cannot roll
+/// it back, and never below the event's revision.
+#[must_use]
+pub const fn managed_credential_rollout_adoption_revision(current: u64, event: u64) -> u64 {
+    if current >= event { current } else { event }
+}
+
+#[cfg(kani)]
+/// @obligation credential.managed_rollout_abstract_ack_requires_every_target_adoption
+/// @kani profile=solver-kissat-v1
+#[kani::proof]
+fn rollout_update_revision_is_monotonic_and_covers_event() {
+    let current = kani::any::<u64>();
+    let event = kani::any::<u64>();
+    let target = managed_credential_rollout_adoption_revision(current, event);
+    assert!(target >= current);
+    assert!(target >= event);
+    assert_eq!(target, current.max(event));
+}
+
 /// The closed command vocabulary carried by durable credential mutations and
 /// their adoption events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,4 +1,5 @@
 use super::*;
+pub(in crate::state) use awaken_protocol_managed_testkit::sample_persisted;
 use awaken_session_repository_contract::LifecycleOutbox as _;
 use awaken_session_execution_contract::ToolPermissionDecision;
 use awaken_session_types::SessionId;
@@ -2468,93 +2469,4 @@ async fn archive_commits_while_sandbox_teardown_remains_recoverable() {
             session: durable,
         }]
     );
-}
-
-pub(in crate::state) fn sample_persisted(id: &str) -> PersistedSession {
-    let mut metadata = BTreeMap::new();
-    metadata.insert("team".to_string(), "research".to_string());
-    let holder = awaken_credential_contract::PlaintextHolder::new(
-        awaken_credential_contract::PlaintextBoundary::Workload,
-        "awaken.workload.acp",
-    );
-    let environment = awaken_session_configuration_contract::EnvironmentSnapshot {
-        environment_id: "env_local".into(),
-        revision: awaken_environment_contract::EnvironmentRevision(1),
-        self_hosted: false,
-        config_fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint(
-            "env-1".into(),
-        ),
-        sandbox: awaken_provisioning_contract::SandboxOverride {
-            isolation: Some(awaken_provisioning_contract::IsolationClass::Namespace),
-            ..Default::default()
-        },
-        sandbox_provisioning: Default::default(),
-        idle_retention: Default::default(),
-        packages: Default::default(),
-        prepared_image: None,
-        network: awaken_session_configuration_contract::SessionNetworkPolicy::None,
-        credential_realization: awaken_credential_contract::CredentialRealizationProfile {
-            inference_holder: holder.clone(),
-            mcp_holder: holder.clone(),
-            resource_holder: holder,
-        },
-    };
-    let mut mcp = awaken_session_mcp_contract::SessionMcpAttachmentSet::from_initial(
-        vec![awaken_session_mcp_contract::McpAttachmentDraft {
-            name: "calc".into(),
-            target: awaken_session_mcp_contract::McpTarget::parse_http("https://x").unwrap(),
-            credential: None,
-            prompts_as_skills: false,
-            origin: awaken_session_mcp_contract::McpAttachmentOrigin::Session,
-        }],
-        None,
-    )
-    .unwrap();
-    mcp.attachments[0].state = awaken_session_mcp_contract::McpAttachmentState::Active;
-    PersistedSession {
-        created_at_unix_ms: None,
-        updated_at_unix_ms: None,
-        session_id: SessionId::from(id),
-        revision: Default::default(),
-        baseline: awaken_session_configuration_contract::SessionBaselineState::Frozen(
-            awaken_session_configuration_contract::SessionBaseline::compile(
-                awaken_session_configuration_contract::SessionBaselineInputs {
-                    environment,
-                    runtime_placement:
-                        awaken_session_configuration_contract::SessionRuntimePlacement::Local,
-                    mcp_authoring: Default::default(),
-                    agent_id: "coder".into(),
-                    agent_revision: None,
-                    model_override: None,
-                    model: "kimi-k2".into(),
-                    runtime: Some("acp:custom".into()),
-                    delegate_ids: Vec::new(),
-                    toolsets: Vec::new(),
-                    mounts: Vec::new(),
-                    env: Vec::new(),
-                    prompts: Vec::new(),
-                    transcript_prefix: None,
-                },
-            ),
-        ),
-        title: Some("My session".to_string()),
-        metadata,
-        tools: Default::default(),
-        event_batches: Vec::new(),
-        activity_epoch: 0,
-        active_activity_epochs: Default::default(),
-        running_interval: None,
-        closed_runtime_intervals: Vec::new(),
-        runtime_active_millis: 0,
-        usage_cursor: Default::default(),
-        budget: Default::default(),
-        environment: Default::default(),
-        mcp,
-        resources: awaken_session_state_contract::SessionResourceState::from_active(sample_inputs()),
-        realization: None,
-        realization_progress: Default::default(),
-        execution: SessionExecutionState::Idle,
-        disposition: Default::default(),
-        terminal_cleanup: Default::default(),
-    }
 }

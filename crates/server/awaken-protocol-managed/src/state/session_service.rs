@@ -170,8 +170,8 @@ impl ManagedState {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_executable_projection_refresh(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_executable_projection_refresh(
         self,
         refresh: Arc<awaken_session_application_contract::ExecutableProjectionRefresh>,
     ) -> Self {
