@@ -16,6 +16,7 @@ mod protocol_doubles;
 mod read_control;
 mod rehydrate_fake;
 mod rehydrate_fake_roles;
+mod session_fixtures;
 
 pub use committed_audit::{
     AwaitTargets, StateLog, audited_lifecycle_records, fixture_state_log, fixture_thread_audit,
@@ -35,6 +36,10 @@ pub use read_control::ReadControl;
 pub use rehydrate_fake::{
     ChildCommitAfterHistorySnapshot, RehydrateFake, RestoredRuntime, create_session_fixture,
     ephemeral_session_repo,
+};
+pub use session_fixtures::{
+    RecordingProjectionRefresh, RolloutCredentialSource, paired_projection_refresh,
+    persisted_with_mcp_source, sample_inputs, sample_persisted,
 };
 
 use awaken_environment_application::EnvironmentApplication;

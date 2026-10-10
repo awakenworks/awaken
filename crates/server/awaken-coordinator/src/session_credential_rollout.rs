@@ -1,37 +1,36 @@
 // @formal entrypoint credential.managed_rollout_abstract_ack_requires_every_target_adoption
 // @formal entrypoint credential.managed_rollout_failure_or_busy_session_remains_pending
-//! Credential-outbox consumer for online Managed Sessions.
+//! The Coordinator's adoption of Vault credential rollouts by its Sessions:
+//! the target the private rollout route (and an all-in-one Control) delivers
+//! to. It reads and updates Sessions only through the Session application's
+//! ports, and publishes each committed root into the protocol projection
+//! through one narrow port, so no protocol owns this orchestration.
 
 use awaken_agent_contract::stable_fingerprint;
 use awaken_credential_contract::{
     ManagedCredentialAdoptionError, ManagedCredentialAdoptionProgress,
     ManagedCredentialAdoptionUnavailable, ManagedCredentialRolloutTarget,
 };
-use awaken_credential_vault::repo::{ManagedCredentialOperation, ManagedCredentialRollout};
+use std::sync::Arc;
+
+use awaken_credential_contract::{ManagedCredentialOperation, ManagedCredentialRollout};
 use awaken_session_application::{
-    McpAttachmentCandidate, McpAttachmentCandidateTarget, SessionMcpUpdate, SessionUpdateCommand,
-    SessionUpdateError,
+    McpAttachmentCandidate, McpAttachmentCandidateTarget, SessionApplication, SessionMcpUpdate,
+    SessionRootReads, SessionUpdateCommand, SessionUpdateError, SessionUpdates,
 };
-use awaken_session_state_contract::SessionExecutionState;
+use awaken_session_state_contract::{PersistedSession, SessionExecutionState};
 
-use super::ManagedState;
-
-#[must_use]
-const fn rollout_update_target_revision(current: u64, event: u64) -> u64 {
-    if current >= event { current } else { event }
+/// The disposable protocol projection a committed Session root is published
+/// into (the Managed wire cache). Durable truth is already committed when it
+/// is called; `false` leaves the rollout pending so it is redelivered.
+pub trait SessionProjectionPublication: Send + Sync {
+    fn publish_committed_session(&self, session: &PersistedSession) -> bool;
 }
 
-#[cfg(kani)]
-/// @obligation credential.managed_rollout_abstract_ack_requires_every_target_adoption
-/// @kani profile=solver-kissat-v1
-#[kani::proof]
-fn rollout_update_revision_is_monotonic_and_covers_event() {
-    let current = kani::any::<u64>();
-    let event = kani::any::<u64>();
-    let target = rollout_update_target_revision(current, event);
-    assert!(target >= current);
-    assert!(target >= event);
-    assert_eq!(target, current.max(event));
+impl SessionProjectionPublication for awaken_protocol_managed::ManagedState {
+    fn publish_committed_session(&self, session: &PersistedSession) -> bool {
+        self.publish_persisted_session(session).is_ok()
+    }
 }
 
 /// The Sessions an event names could not be read: log the store's own detail
@@ -45,13 +44,42 @@ fn sessions_unreadable(
     ManagedCredentialAdoptionError::Unavailable(ManagedCredentialAdoptionUnavailable::SessionRead)
 }
 
-impl ManagedState {
+/// Session adoption of credential rollouts over the Session application and
+/// one projection publication.
+pub struct SessionCredentialRolloutAdoption {
+    roots: Arc<dyn SessionRootReads>,
+    updates: Arc<dyn SessionUpdates>,
+    publication: Arc<dyn SessionProjectionPublication>,
+}
+
+impl SessionCredentialRolloutAdoption {
+    #[must_use]
+    pub fn new(
+        sessions: Arc<SessionApplication>,
+        publication: Arc<dyn SessionProjectionPublication>,
+    ) -> Self {
+        Self {
+            roots: sessions.clone(),
+            updates: sessions,
+            publication,
+        }
+    }
+
+    /// The adoption over the Session application a Managed state projects,
+    /// publishing into that state's wire cache.
+    #[must_use]
+    pub fn over_managed(
+        sessions: &Arc<SessionApplication>,
+        managed: &Arc<awaken_protocol_managed::ManagedState>,
+    ) -> Arc<Self> {
+        Arc::new(Self::new(sessions.clone(), managed.clone()))
+    }
+
     async fn apply_vault_rollout(
         &self,
         event: &ManagedCredentialRollout,
     ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError> {
         let sessions = self
-            .roles
             .roots
             .sessions_referencing_credential_source(&event.workspace_id, &event.source_id)
             .await
@@ -82,43 +110,44 @@ impl ManagedState {
                     // generation instead of silently publishing it anonymous.
                     continue;
                 }
-                let published_credential =
-                    if uses_changed_source {
-                        match event.operation {
-                            ManagedCredentialOperation::Update => {
-                                let access = attachment.credential.as_ref().expect(
-                                    "a matching credential source has an access descriptor",
-                                );
-                                let target_revision = rollout_update_target_revision(
+                let published_credential = if uses_changed_source {
+                    match event.operation {
+                        ManagedCredentialOperation::Update => {
+                            let access = attachment
+                                .credential
+                                .as_ref()
+                                .expect("a matching credential source has an access descriptor");
+                            let target_revision = awaken_credential_contract::managed_credential_rollout_adoption_revision(
                                     access.credential.revision,
                                     event.source_version,
                                 );
-                                if target_revision == access.credential.revision {
-                                    // Duplicate or stale delivery cannot roll a Session
-                                    // back from a newer credential revision.
-                                    Some((access.credential.id.clone(), access.credential.revision))
-                                } else {
-                                    // Resolve the exact durable revision named by this
-                                    // event. A revoked revision fails closed instead of
-                                    // silently publishing an anonymous attachment.
-                                    Some((event.source_id.0.clone(), target_revision))
-                                }
+                            if target_revision == access.credential.revision {
+                                // Duplicate or stale delivery cannot roll a Session
+                                // back from a newer credential revision.
+                                Some((access.credential.id.clone(), access.credential.revision))
+                            } else {
+                                // Resolve the exact durable revision named by this
+                                // event. A revoked revision fails closed instead of
+                                // silently publishing an anonymous attachment.
+                                Some((event.source_id.0.clone(), target_revision))
                             }
-                            ManagedCredentialOperation::Create => {
-                                attachment.credential.as_ref().map(|access| {
-                                    (access.credential.id.clone(), access.credential.revision)
-                                })
-                            }
-                            ManagedCredentialOperation::Archive
-                            | ManagedCredentialOperation::Delete => unreachable!(
-                                "revoked attachments are removed before candidate construction"
-                            ),
                         }
-                    } else {
-                        attachment.credential.as_ref().map(|access| {
-                            (access.credential.id.clone(), access.credential.revision)
-                        })
-                    };
+                        ManagedCredentialOperation::Create => {
+                            attachment.credential.as_ref().map(|access| {
+                                (access.credential.id.clone(), access.credential.revision)
+                            })
+                        }
+                        ManagedCredentialOperation::Archive
+                        | ManagedCredentialOperation::Delete => unreachable!(
+                            "revoked attachments are removed before candidate construction"
+                        ),
+                    }
+                } else {
+                    attachment
+                        .credential
+                        .as_ref()
+                        .map(|access| (access.credential.id.clone(), access.credential.revision))
+                };
                 candidates.push(McpAttachmentCandidate {
                     name: attachment.name.clone(),
                     target: McpAttachmentCandidateTarget::Normalized(attachment.target.clone()),
@@ -135,7 +164,6 @@ impl ManagedState {
                 event.credential_revision,
             ));
             let result = self
-                .roles
                 .updates
                 .update_session(
                     &session.session_id,
@@ -161,7 +189,7 @@ impl ManagedState {
                 .await;
             match result {
                 Ok(outcome) => {
-                    if self.publish_persisted_session(&outcome.session).is_err() {
+                    if !self.publication.publish_committed_session(&outcome.session) {
                         tracing::warn!(rollout_id = %event.id, session_id = %session.session_id,
                             phase = "projection_after_commit", failure = "publication",
                             "Managed credential rollout remains pending");
@@ -199,11 +227,23 @@ impl ManagedState {
 }
 
 #[async_trait::async_trait]
-impl ManagedCredentialRolloutTarget for ManagedState {
+impl ManagedCredentialRolloutTarget for SessionCredentialRolloutAdoption {
     async fn rollout(
         &self,
         event: &ManagedCredentialRollout,
     ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError> {
         self.apply_vault_rollout(event).await
     }
+}
+
+/// The private rollout route over this Coordinator's Session adoption.
+pub(crate) fn router(
+    sessions: &Arc<SessionApplication>,
+    managed: &Arc<awaken_protocol_managed::ManagedState>,
+    authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
+) -> axum::Router {
+    crate::credential_rollout_router_with_authenticator(
+        SessionCredentialRolloutAdoption::over_managed(sessions, managed),
+        authenticator,
+    )
 }

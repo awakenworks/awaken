@@ -63,7 +63,6 @@ mod sessions;
 pub(crate) mod test_support;
 mod threads;
 pub(crate) use threads::{internal_thread_id, public_thread_id};
-mod vault_rollout;
 mod work_dispatch;
 pub(crate) mod work_session_access;
 

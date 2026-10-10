@@ -741,7 +741,7 @@ fn assemble_session_plane(
         Some(resources.deployment_application.as_ref()),
     )
     .expect("Managed lifecycle delivery binds before Coordinator serves traffic");
-    install_credential_rollout_target(base, control, &managed_state);
+    install_credential_rollout_target(base, control, &session_application, &managed_state);
     Ok(SessionPlane {
         session_application,
         managed_state,
@@ -822,16 +822,21 @@ fn bind_session_lifecycle_hooks(
     Ok(())
 }
 
-/// Credential rollout reaches the local Managed state, conjoined with any
-/// external target the hosted composition supplies.
+/// Credential rollout reaches the Coordinator's Session adoption over the local
+/// Managed state, conjoined with any external target the hosted composition
+/// supplies.
 fn install_credential_rollout_target(
     base: &mut ProcessBase,
     control: &ControlSurface,
+    session_application: &Arc<awaken_session_application::SessionApplication>,
     managed_state: &Arc<ManagedState>,
 ) {
     if let Some(vault_state) = control.vault_state.as_ref() {
         let local_target: Arc<dyn awaken_credential_contract::ManagedCredentialRolloutTarget> =
-            managed_state.clone();
+            awaken_coordinator::SessionCredentialRolloutAdoption::over_managed(
+                session_application,
+                managed_state,
+            );
         let rollout_target = match base
             .process
             .managed_services

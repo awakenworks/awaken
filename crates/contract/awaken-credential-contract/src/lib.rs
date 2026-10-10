@@ -67,7 +67,7 @@ pub use managed_rollout::{
     ManagedCredentialAdoptionError, ManagedCredentialAdoptionProgress,
     ManagedCredentialAdoptionUnavailable, ManagedCredentialOperation, ManagedCredentialRollout,
     ManagedCredentialRolloutIdentityDecision, ManagedCredentialRolloutTarget,
-    managed_credential_rollout_identity_decision,
+    managed_credential_rollout_adoption_revision, managed_credential_rollout_identity_decision,
 };
 mod mcp_requirement;
 pub use mcp_requirement::{

@@ -37,6 +37,12 @@ awaken-session-application-contract.workspace = true
 awaken-session-budget-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-mcp-contract.workspace = true
+# Shared Session fixtures: the credential binding, resource inputs and the
+# Session application's credential-source port they exercise.
+awaken-credential-contract.workspace = true
+awaken-environment-contract.workspace = true
+awaken-resource-contract.workspace = true
+awaken-session-application.workspace = true
 awaken-session-realization-contract.workspace = true
 awaken-session-resource-contract.workspace = true
 awaken-session-state-contract.workspace = true

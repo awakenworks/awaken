@@ -11,7 +11,7 @@
       "reason": "gather its impls into one module or split it by responsibility when it next changes"
     },
     "awaken-protocol-managed::ManagedState": {
-      "files": 30,
+      "files": 29,
       "methods": 158,
       "reason": "W13 step 2 and W20: event projection and orchestration leave; the adapter keeps its wire cache"
     },
