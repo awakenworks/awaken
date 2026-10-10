@@ -266,7 +266,7 @@ fn current_container_provider_rejects_egress_only_secret_injection() {
 #[test]
 fn container_runtime_without_package_builder_rejects_before_launch() {
     let mut requested = spec("packages");
-    requested.packages = pc::PackageRequirements {
+    requested.packages = awaken_environment_contract::PackageRequirements {
         managers: [("pip".into(), vec!["httpx==0.28.0".into()])]
             .into_iter()
             .collect(),
@@ -284,7 +284,13 @@ fn container_runtime_without_package_builder_rejects_before_launch() {
 
 #[derive(Default)]
 struct RecordingPackageProvisioner {
-    calls: Mutex<Vec<(String, pc::PackageRequirements, pc::NetworkPolicy)>>,
+    calls: Mutex<
+        Vec<(
+            String,
+            awaken_environment_contract::PackageRequirements,
+            pc::NetworkPolicy,
+        )>,
+    >,
     response_gate: Option<Arc<tokio::sync::Semaphore>>,
     unreachable: bool,
 }
@@ -303,7 +309,7 @@ impl PackageImageProvisioner for RecordingPackageProvisioner {
     async fn prepare_package_image(
         &self,
         base_image: &str,
-        packages: &pc::PackageRequirements,
+        packages: &awaken_environment_contract::PackageRequirements,
         network: &pc::NetworkPolicy,
     ) -> Result<String, RuntimeError> {
         self.calls.lock().unwrap().push((
@@ -346,7 +352,7 @@ async fn an_external_package_provisioner_enables_a_non_building_runtime() {
     assert!(provider.capabilities().package_provisioning);
 
     let mut requested = spec("external-package-builder");
-    requested.packages = pc::PackageRequirements {
+    requested.packages = awaken_environment_contract::PackageRequirements {
         managers: [("pip".into(), vec!["httpx==0.28.0".into()])]
             .into_iter()
             .collect(),

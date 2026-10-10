@@ -629,7 +629,7 @@ async fn package_builder_job_is_rootless_bounded_and_registry_backed() {
         url: "http://proxy.internal:8080".into(),
     })
     .unwrap();
-    let packages = pc::PackageRequirements {
+    let packages = awaken_environment_contract::PackageRequirements {
         managers: [("npm".into(), vec!["@playwright/mcp@latest".into()])]
             .into_iter()
             .collect(),

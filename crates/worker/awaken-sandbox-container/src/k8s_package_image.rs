@@ -334,7 +334,7 @@ impl K8sPackageImageProvisioner {
     pub(crate) fn build_objects(
         &self,
         base_image: &str,
-        packages: &pc::PackageRequirements,
+        packages: &awaken_environment_contract::PackageRequirements,
     ) -> Result<(ConfigMap, Job, String), RuntimeError> {
         let (containerfile, fingerprint) =
             crate::packages::package_image_recipe(base_image, "", packages)?;
@@ -836,7 +836,7 @@ impl PackageImageProvisioner for K8sPackageImageProvisioner {
     async fn prepare_package_image(
         &self,
         base_image: &str,
-        packages: &pc::PackageRequirements,
+        packages: &awaken_environment_contract::PackageRequirements,
         network: &pc::NetworkPolicy,
     ) -> Result<String, RuntimeError> {
         if packages.is_empty() {
@@ -872,7 +872,7 @@ impl PackageImageProvisioner for K8sPackageImageProvisioner {
     async fn package_image_available(
         &self,
         base_image: &str,
-        packages: &pc::PackageRequirements,
+        packages: &awaken_environment_contract::PackageRequirements,
         network: &pc::NetworkPolicy,
         image: &str,
     ) -> Result<bool, RuntimeError> {
@@ -940,8 +940,8 @@ mod tests {
         .unwrap()
     }
 
-    fn package_requirements() -> awaken_provisioning_contract::PackageRequirements {
-        awaken_provisioning_contract::PackageRequirements {
+    fn package_requirements() -> awaken_environment_contract::PackageRequirements {
+        awaken_environment_contract::PackageRequirements {
             managers: [("npm".into(), vec!["@playwright/mcp@latest".into()])]
                 .into_iter()
                 .collect(),

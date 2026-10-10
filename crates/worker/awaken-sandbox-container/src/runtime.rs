@@ -1391,14 +1391,14 @@ pub trait PackageImageProvisioner: Send + Sync {
     async fn prepare_package_image(
         &self,
         base_image: &str,
-        packages: &pc::PackageRequirements,
+        packages: &awaken_environment_contract::PackageRequirements,
         network: &pc::NetworkPolicy,
     ) -> Result<String, RuntimeError>;
 
     async fn package_image_available(
         &self,
         _base_image: &str,
-        _packages: &pc::PackageRequirements,
+        _packages: &awaken_environment_contract::PackageRequirements,
         _network: &pc::NetworkPolicy,
         _image: &str,
     ) -> Result<bool, RuntimeError> {
@@ -1483,7 +1483,7 @@ pub trait ContainerRuntime: Send + Sync {
     async fn prepare_package_image(
         &self,
         base_image: &str,
-        packages: &pc::PackageRequirements,
+        packages: &awaken_environment_contract::PackageRequirements,
         _network: &pc::NetworkPolicy,
     ) -> Result<String, RuntimeError> {
         if packages.is_empty() {

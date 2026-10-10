@@ -78,8 +78,8 @@ fn test_builder_with_pull_secrets(image_pull_secrets: Vec<String>) -> K8sPackage
         .unwrap()
 }
 
-fn package_requirements() -> awaken_provisioning_contract::PackageRequirements {
-    awaken_provisioning_contract::PackageRequirements {
+fn package_requirements() -> awaken_environment_contract::PackageRequirements {
+    awaken_environment_contract::PackageRequirements {
         managers: [("npm".into(), vec!["@playwright/mcp@latest".into()])]
             .into_iter()
             .collect(),

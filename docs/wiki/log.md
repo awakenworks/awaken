@@ -907,3 +907,10 @@
   Owners: [ADR-0024](../adr/0024-daemon-lease-renewal.md),
   [ADR-0044](../adr/0044-remote-hand-tool-executor-over-a-channel.md),
   [ADR-0089](../adr/0089-session-realization-single-owner.md).
+
+## 2026-10-11 — Separate prepared packages from runtime egress
+
+- [ADR-0072](../adr/0072-environment-definition-and-execution-boundary.md) assigns
+  build and runtime host projections to the existing Environment contract.
+  Package preparation cannot grant runtime registry access, and an unsupported
+  build policy must fail at the existing provisioner boundary.

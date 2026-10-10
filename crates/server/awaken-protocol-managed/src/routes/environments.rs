@@ -618,7 +618,7 @@ mod tests {
                 "P6a",
                 EnvironmentApplicationError::Create(
                     awaken_environment_contract::CreateEnvironmentError::InvalidConfig(
-                        awaken_environment_contract::InvalidEnvironmentConfig::PackagesRequirePackageManager,
+                        awaken_environment_contract::InvalidEnvironmentConfig::InvalidPackageRequirement { manager: "npm" },
                     ),
                 ),
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -634,7 +634,7 @@ mod tests {
                 "P6b",
                 EnvironmentApplicationError::Store(
                     awaken_environment_contract::EnvironmentStoreError::InvalidConfig(
-                        awaken_environment_contract::InvalidEnvironmentConfig::PackagesRequirePackageManager,
+                        awaken_environment_contract::InvalidEnvironmentConfig::InvalidPackageRequirement { manager: "npm" },
                     ),
                 ),
                 StatusCode::UNPROCESSABLE_ENTITY,

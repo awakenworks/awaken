@@ -436,19 +436,19 @@ pub async fn nested_config_patch_is_atomic_and_durable<R: EnvRegistry>(r: &R) {
 }
 
 pub async fn package_network_invariant_is_atomic<R: EnvRegistry>(r: &R) {
-    // Cause/effect graph for the only cross-field Environment invariant:
-    // C1 packages configured; C2 limited networking; C3 package-manager access;
-    // C4 one atomic patch changes both package and network fields. E1 accepts a
-    // reachable package plan; E2 rejects an unreachable plan; E3 leaves current
+    // Cause/effect graph: C1 valid/malformed package operands; C2 limited
+    // runtime registry permission off/on; C3 one atomic patch changes both.
+    // E1 accepts valid prepared packages independently of runtime permission;
+    // E2 rejects malformed operands; E3 leaves current
     // state, revision history, and delivery intent unchanged on rejection.
     //
     // | Rule | packages | networking | manager access | effect |
     // | I1 | empty    | limited | false | accept |
-    // | I2 | nonempty | limited | false | reject, persist nothing |
+    // | I2 | malformed | limited | false | reject, persist nothing |
     // | I3 | nonempty | limited | true  | accept |
-    // | I4 | add      | limited | false | reject update atomically (E3) |
+    // | I4 | malformed | limited | false | reject update atomically (E3) |
     // | I5 | clear    | limited | false | accept atomic two-field update |
-    // | I6 | add      | limited | true  | accept atomic two-field update |
+    // | I6 | add      | limited | false | accept atomic two-field update |
     let limited = |allow_package_managers, packages| EnvironmentConfig::Cloud {
         networking: EnvironmentNetworking::Limited {
             allowed_hosts: Vec::new(),
@@ -478,13 +478,19 @@ pub async fn package_network_invariant_is_atomic<R: EnvRegistry>(r: &R) {
         description: None,
         metadata: Default::default(),
         scope: None,
-        config: limited(false, packages()),
+        config: limited(
+            false,
+            EnvironmentPackages {
+                npm: vec!["--invalid".into()],
+                ..Default::default()
+            },
+        ),
         sandbox_policy: None,
     };
     assert_eq!(
         r.create_once(invalid).await.unwrap_err(),
         CreateEnvironmentError::InvalidConfig(
-            InvalidEnvironmentConfig::PackagesRequirePackageManager
+            InvalidEnvironmentConfig::InvalidPackageRequirement { manager: "npm" }
         ),
         "I2"
     );
@@ -515,16 +521,19 @@ pub async fn package_network_invariant_is_atomic<R: EnvRegistry>(r: &R) {
                         allow_mcp_servers: None,
                         allow_package_managers: Some(EnvironmentFieldUpdate::Replace(false)),
                     }),
-                    packages: None,
+                    packages: Some(awaken_environment_contract::EnvironmentPackagesMutation {
+                        npm: Some(EnvironmentFieldUpdate::Replace(vec!["--invalid".into()])),
+                        ..Default::default()
+                    }),
                 }),
                 ..Default::default()
             }
         )
         .await
         .unwrap_err(),
-        EnvironmentStoreError::InvalidConfig(
-            InvalidEnvironmentConfig::PackagesRequirePackageManager
-        ),
+        EnvironmentStoreError::InvalidConfig(InvalidEnvironmentConfig::InvalidPackageRequirement {
+            manager: "npm"
+        }),
         "I4"
     );
     assert_eq!(
@@ -581,7 +590,7 @@ pub async fn package_network_invariant_is_atomic<R: EnvRegistry>(r: &R) {
                     networking: Some(EnvironmentNetworkingMutation::Limited {
                         allowed_hosts: None,
                         allow_mcp_servers: None,
-                        allow_package_managers: Some(EnvironmentFieldUpdate::Replace(true)),
+                        allow_package_managers: Some(EnvironmentFieldUpdate::Replace(false)),
                     }),
                     packages: Some(EnvironmentPackagesMutation {
                         npm: Some(EnvironmentFieldUpdate::Replace(vec!["tsx".into()])),
@@ -596,6 +605,34 @@ pub async fn package_network_invariant_is_atomic<R: EnvRegistry>(r: &R) {
         .expect("I6 row");
     assert_eq!(enabled.revision, EnvironmentRevision(2), "I6");
     enabled.config.validate().expect("I6 final state");
+    assert!(
+        enabled.config.runtime_network_hosts().unwrap().is_empty(),
+        "I6 runtime remains closed"
+    );
+    assert!(
+        !enabled
+            .config
+            .package_build_network_hosts()
+            .unwrap()
+            .is_empty(),
+        "I6 declared build remains reachable"
+    );
+    assert_eq!(
+        r.get_revision(&enabled.id, enabled.revision)
+            .await
+            .unwrap()
+            .unwrap(),
+        enabled,
+        "I6 exact persisted revision retains preparation and closed runtime"
+    );
+    // I7 these two exact fixtures are complete. Archive via the port to retain
+    // their revision/outbox evidence and leave later parity rules independent.
+    for id in [&enabled.id, &cleared.id] {
+        r.archive(id)
+            .await
+            .expect("I7 archive store")
+            .expect("I7 fixture exists");
+    }
 }
 
 pub async fn idempotent_create_decision_table<R: EnvRegistry>(r: &R) {
