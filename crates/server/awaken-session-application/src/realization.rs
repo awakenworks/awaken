@@ -49,7 +49,8 @@ use publication::{draining_generations, publication_action, publication_generati
 pub(super) use authority::terminal_cleanup_worker_requirements;
 use authority::{
     TerminalCleanupClaimConflict, TerminalCleanupClaimScope, TerminalCleanupRootClaim,
-    exact_generation_key, generation_set_authorizes, verify_lease,
+    exact_generation_key, generation_set_authorizes, terminal_cleanup_worker_affinity_rejection,
+    verify_lease,
 };
 use control::RefreshedSessionRealizationControl;
 pub(crate) use local_lock::LocalRealizationLocks;

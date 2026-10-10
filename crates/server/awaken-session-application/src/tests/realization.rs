@@ -12,6 +12,7 @@ use super::*;
 mod capacity_budget;
 mod cleanup_timing;
 mod initial_preparation;
+mod unattempted_owner_recovery;
 mod worker_affinity;
 use awaken_session_realization_contract::{
     SessionRealizationControl, SessionResourceMaterializationControl, SessionTerminalCleanupQueue,

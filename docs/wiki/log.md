@@ -883,3 +883,11 @@
   unattempted-profiled archive receipt. It travels through the existing Worker
   assignment, while unknown history retains provider observation and disposal
   requirements. All other cleanup participants and final receipts remain required.
+
+## 2026-10-10 — Recover expired cleanup-only affinity without a physical source
+
+- [ADR-0078](../adr/0078-terminal-recovery-retains-the-existing-session-authority.md)
+  keeps the existing terminal Root CAS as the only lease writer. An exact
+  no-Create archive witness and an unprepared root-only request may release
+  expired cleanup-only affinity; live ownership, unknown history and accepted
+  source progress continue to protect their original Worker installation.

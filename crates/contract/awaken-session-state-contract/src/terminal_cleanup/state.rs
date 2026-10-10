@@ -25,6 +25,66 @@ pub(crate) enum SessionCleanupPhase {
     Completed,
 }
 
+#[cfg(test)]
+mod unprepared_root_request_tests {
+    use super::super::progress::tests::{preparation, repository_preparation};
+    use super::*;
+
+    #[test]
+    fn unprepared_root_query_excludes_child_legacy_and_prepared_progress() {
+        // Query table: Q1 exact frozen root-only Requested + no receipts -> true.
+        // Q2 default/Fenced/foreign identity/child targets/legacy completion ->
+        // false. Q3 any accepted child/root preparation -> Preparing/Disposing,
+        // both false. No lease, token count or handle absence enters this fact.
+        let id = SessionId::from("root");
+        let mut op = SessionCleanupOperation::default();
+        assert!(!op.has_unprepared_root_only_request(&id), "Q2 default");
+        op.request(&id);
+        assert!(!op.has_unprepared_root_only_request(&id), "Q2 Fenced");
+        op.freeze_targets(&id, [], 0, 0).unwrap();
+        assert!(op.has_unprepared_root_only_request(&id), "Q1");
+        assert!(
+            !op.has_unprepared_root_only_request(&SessionId::from("foreign")),
+            "Q2 identity"
+        );
+        let command = op.command_for(&id, id.as_str()).unwrap();
+        let mut legacy = op.clone();
+        if let SessionCleanupState::Requested { completions, .. } = legacy.state_mut() {
+            completions.insert(
+                id.to_string(),
+                super::super::SessionCleanupCompletion::new(&command, Vec::new()),
+            );
+        } else {
+            unreachable!();
+        }
+        assert!(
+            !legacy.has_unprepared_root_only_request(&id),
+            "Q2 legacy evidence"
+        );
+        op.record_preparation(
+            &id,
+            preparation(&command),
+            Some(repository_preparation(id.as_str())),
+        )
+        .unwrap();
+        assert!(!op.has_unprepared_root_only_request(&id), "Q3 Disposing");
+        let mut children = SessionCleanupOperation::default();
+        children.request(&id);
+        children
+            .freeze_targets(&id, ["child".to_string()], 0, 0)
+            .unwrap();
+        assert!(!children.has_unprepared_root_only_request(&id), "Q2 child");
+        let child = children.command_for(&id, "child").unwrap();
+        children
+            .record_preparation(&id, preparation(&child), None)
+            .unwrap();
+        assert!(
+            !children.has_unprepared_root_only_request(&id),
+            "Q3 Preparing"
+        );
+    }
+}
+
 /// Unforgeable-in-public-API identity for the one cleanup operation owned by a
 /// Session root. The persisted effect id is derived only when the cleanup owner
 /// consumes this value.
@@ -511,6 +571,21 @@ impl SessionCleanupOperation {
         matches!(
             self.legacy_cleanup().state(),
             SessionCleanupState::Requested { .. }
+        )
+    }
+
+    /// Exact root-only request before any accepted source-dependent progress.
+    /// This observes the one opaque aggregate; it grants neither a lease nor
+    /// permission to infer physical absence from a Requested state alone.
+    #[must_use]
+    pub fn has_unprepared_root_only_request(&self, session_id: &SessionId) -> bool {
+        matches!(
+            self.state(),
+            SessionCleanupState::Requested {
+                effect_id, thread_ids, runtime_commit_cursor: Some(_), completions, ..
+            } if effect_id == &cleanup_effect_id(session_id)
+                && thread_ids.len() == 1 && thread_ids.contains(session_id.as_str())
+                && completions.is_empty()
         )
     }
 

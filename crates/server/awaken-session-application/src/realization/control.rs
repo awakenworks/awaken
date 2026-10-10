@@ -1129,17 +1129,17 @@ impl SessionApplication {
         {
             return TerminalCleanupRootClaim::Skip;
         }
-        // A realization lease is also the only durable logical-Worker affinity
-        // for Local/Namespace storage and the Container/Kubernetes realization
-        // namespace. Static manifest compatibility can narrow a candidate but
-        // can never authorize a foreign Worker to reopen that physical source.
-        if scope.is_external()
-            && session
-                .realization
-                .as_ref()
-                .is_some_and(|current| current.owner != target.owner)
+        if let Some(rejection) = terminal_cleanup_worker_affinity_rejection(
+            self.session_repository(),
+            scope,
+            owner_scope,
+            &session,
+            target,
+            self.clock.now_ms(),
+        )
+        .await
         {
-            return TerminalCleanupRootClaim::Skip;
+            return rejection;
         }
         // With no historical lease, only an Environment that has never acquired
         // a physical binding is eligible for first placement. Resident and

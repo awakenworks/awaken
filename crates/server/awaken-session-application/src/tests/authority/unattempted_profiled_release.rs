@@ -4,8 +4,19 @@ use awaken_session_resource_contract::SessionMutationPolicy;
 use awaken_session_state_contract::{ActivationState, SessionDisposition, SessionEnvironmentState};
 
 pub(super) fn unattempted(id: &str) -> PersistedSession {
+    unattempted_with_placement(
+        id,
+        awaken_session_configuration_contract::SessionRuntimePlacement::Local,
+    )
+}
+
+pub(in crate::tests) fn unattempted_with_placement(
+    id: &str,
+    placement: awaken_session_configuration_contract::SessionRuntimePlacement,
+) -> PersistedSession {
     let mut session = persisted(id, false, "preparing");
-    let b = session.frozen_baseline().unwrap().clone();
+    let mut b = session.frozen_baseline().unwrap().clone();
+    b.runtime_placement = placement;
     let compiled = creation_intent(b).finalize().unwrap();
     session.baseline =
         awaken_session_configuration_contract::SessionBaselineState::Frozen(compiled.baseline);

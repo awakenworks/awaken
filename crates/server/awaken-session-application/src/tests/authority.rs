@@ -20,7 +20,7 @@ mod coordinated_resources;
 mod interval_admission;
 mod lost_root_cas_replay;
 mod unattempted_archive_witness;
-mod unattempted_profiled_release;
+pub(super) mod unattempted_profiled_release;
 
 fn coordinated_session(id: &str) -> PersistedSession {
     let mut session = persisted(id, false, "idle");

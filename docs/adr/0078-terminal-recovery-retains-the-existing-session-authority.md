@@ -867,3 +867,27 @@ caller-supplied success flag substitutes for this committed no-Create evidence.
 The realization contract owns this consistency check. Runtime reuses the
 Session Environment's existing binding projection instead of maintaining a
 second match over the same state variants.
+
+### Expired cleanup-only affinity for the same no-Create admission
+
+An initial cold cleanup claim can attach a Worker lease before source
+preparation succeeds. If that Worker installation disappears, unconditional
+logical-owner affinity then strands even the exact admitted no-Create root.
+Lease expiry alone remains insufficient evidence for a foreign Worker.
+
+The same terminal claim CAS may replace an expired foreign affinity only when
+the existing archive receipt proves unattempted preparation, the Environment
+remains Unmaterialized, and the cleanup aggregate still has its exact frozen
+root-only Requested operation with no legacy completion or accepted preparation,
+disposal or Repository-publication progress. The aggregate owns this narrow
+request-shape observation; the application owns receipt and lease verification.
+Live leases, unavailable receipt authority, unknown history, physical sources,
+child targets and progressed cleanup retain the original affinity protection.
+
+The current Registry check, lease epoch increment, root CAS and exact uncertain
+claim compensation remain the sole assignment mechanism. The new Worker still
+installs the same receipt-derived no-Create projection and must complete every
+ordinary participant and canonical receipt. No direct lease edit, replacement
+Root, provider lookup guess, cleanup acknowledgement or force-reassignment API
+is introduced. Cause/effect tests cover expiry/witness/request-shape conditions,
+response-loss replay and refusal without Root or Runtime effects.
