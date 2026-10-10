@@ -3,10 +3,11 @@
 
 use std::sync::Arc;
 
-use awaken_credential_vault::repo::{
+use awaken_credential_contract::{
     ManagedCredentialAdoptionError, ManagedCredentialAdoptionProgress,
-    ManagedCredentialAdoptionUnavailable, ManagedCredentialRollout, ManagedCredentialRolloutTarget,
+    ManagedCredentialAdoptionUnavailable, ManagedCredentialRolloutTarget,
 };
+use awaken_credential_vault::repo::ManagedCredentialRollout;
 use awaken_service_auth_contract::{
     COORDINATOR_SERVICE_AUDIENCE, ServiceAuthError, ServiceAuthorizationRequirement,
     ServiceBearerTokenSource, ServiceRequestAuthenticator,

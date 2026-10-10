@@ -33,9 +33,8 @@ use crate::catalog::{
 };
 use crate::repo::{
     ApplicationMcpBearerCommand, CredentialMaterialPatch, CredentialRetirement,
-    ManagedCredentialAdoptionProgress, ManagedCredentialCreateCommand,
-    ManagedCredentialCreationError, ManagedCredentialOperation, ManagedCredentialRepository,
-    ManagedCredentialRolloutTarget, application_mcp_material_ref, application_mcp_operation_id,
+    ManagedCredentialCreateCommand, ManagedCredentialCreationError, ManagedCredentialOperation,
+    ManagedCredentialRepository, application_mcp_material_ref, application_mcp_operation_id,
     create_managed_credential, prepare_application_mcp_bearer_rotation,
     reconcile_managed_credential_rollout, reconcile_managed_vault_deletion,
     retire_managed_credential, revoke_credential_exact, rotate_credential_materials_exact,
@@ -44,6 +43,9 @@ use crate::repo::{
 use crate::{
     CredentialCreateParams, CredentialError, CredentialKind, CredentialSource, CredentialStatus,
     ExactCredentialAccessRequest, OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretStore,
+};
+use awaken_credential_contract::{
+    ManagedCredentialAdoptionProgress, ManagedCredentialRolloutTarget,
 };
 
 /// Which Vault object a command could not find in the caller's Workspace.

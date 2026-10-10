@@ -3,11 +3,11 @@
 //! Credential-outbox consumer for online Managed Sessions.
 
 use awaken_agent_contract::stable_fingerprint;
-use awaken_credential_vault::repo::{
+use awaken_credential_contract::{
     ManagedCredentialAdoptionError, ManagedCredentialAdoptionProgress,
-    ManagedCredentialAdoptionUnavailable, ManagedCredentialOperation, ManagedCredentialRollout,
-    ManagedCredentialRolloutTarget,
+    ManagedCredentialAdoptionUnavailable, ManagedCredentialRolloutTarget,
 };
+use awaken_credential_vault::repo::{ManagedCredentialOperation, ManagedCredentialRollout};
 use awaken_session_application::{
     McpAttachmentCandidate, McpAttachmentCandidateTarget, SessionMcpUpdate, SessionUpdateCommand,
     SessionUpdateError,

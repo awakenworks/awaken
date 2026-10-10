@@ -830,7 +830,7 @@ fn install_credential_rollout_target(
     managed_state: &Arc<ManagedState>,
 ) {
     if let Some(vault_state) = control.vault_state.as_ref() {
-        let local_target: Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget> =
+        let local_target: Arc<dyn awaken_credential_contract::ManagedCredentialRolloutTarget> =
             managed_state.clone();
         let rollout_target = match base
             .process

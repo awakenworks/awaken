@@ -49,7 +49,7 @@ pub struct ManagedServiceAdapters {
     /// Control remains the publication authority; a hosted composition may
     /// replace only the target-side rollout mechanism.
     pub credential_rollout_target:
-        Option<Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>>,
+        Option<Arc<dyn awaken_credential_contract::ManagedCredentialRolloutTarget>>,
     /// The browser-serving origin routes Awaken's exported Managed-runtime
     /// families to the canonical Coordinator. This changes presentation only;
     /// it never mounts runtime state or handlers in Control.
@@ -166,7 +166,7 @@ impl ManagedServiceAdapters {
     #[must_use]
     pub fn with_credential_rollout_target(
         mut self,
-        target: Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>,
+        target: Arc<dyn awaken_credential_contract::ManagedCredentialRolloutTarget>,
     ) -> Self {
         self.credential_rollout_target = Some(target);
         self
@@ -194,20 +194,20 @@ pub(super) fn install_background_services(
 }
 
 struct ConjunctiveCredentialRolloutTarget {
-    local: Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>,
-    external: Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>,
+    local: Arc<dyn awaken_credential_contract::ManagedCredentialRolloutTarget>,
+    external: Arc<dyn awaken_credential_contract::ManagedCredentialRolloutTarget>,
 }
 
 #[async_trait::async_trait]
-impl awaken_credential_vault::repo::ManagedCredentialRolloutTarget
+impl awaken_credential_contract::ManagedCredentialRolloutTarget
     for ConjunctiveCredentialRolloutTarget
 {
     async fn rollout(
         &self,
         event: &awaken_credential_vault::repo::ManagedCredentialRollout,
     ) -> Result<
-        awaken_credential_vault::repo::ManagedCredentialAdoptionProgress,
-        awaken_credential_vault::repo::ManagedCredentialAdoptionError,
+        awaken_credential_contract::ManagedCredentialAdoptionProgress,
+        awaken_credential_contract::ManagedCredentialAdoptionError,
     > {
         let local = self.local.rollout(event).await?;
         let external = self.external.rollout(event).await?;
@@ -220,9 +220,9 @@ impl awaken_credential_vault::repo::ManagedCredentialRolloutTarget
 }
 
 pub(super) fn conjunctive_credential_rollout_target(
-    local: Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>,
-    external: Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>,
-) -> Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget> {
+    local: Arc<dyn awaken_credential_contract::ManagedCredentialRolloutTarget>,
+    external: Arc<dyn awaken_credential_contract::ManagedCredentialRolloutTarget>,
+) -> Arc<dyn awaken_credential_contract::ManagedCredentialRolloutTarget> {
     Arc::new(ConjunctiveCredentialRolloutTarget { local, external })
 }
 
@@ -309,9 +309,12 @@ impl CoordinatorServiceAdapters {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_credential_vault::repo::{
+    use awaken_credential_contract::{
         ManagedCredentialAdoptionError, ManagedCredentialAdoptionProgress,
-        ManagedCredentialOperation, ManagedCredentialRollout, ManagedCredentialRolloutTarget,
+        ManagedCredentialRolloutTarget,
+    };
+    use awaken_credential_vault::repo::{
+        ManagedCredentialOperation, ManagedCredentialRollout,
         conjunctive_managed_credential_adoption_progress,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};

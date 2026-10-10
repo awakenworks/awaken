@@ -534,7 +534,7 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
         awaken_credential_vault::repo::ManagedCredentialOperation::Update,
     );
     let outcome =
-        awaken_credential_vault::repo::ManagedCredentialRolloutTarget::rollout(&state, &updated)
+        awaken_credential_contract::ManagedCredentialRolloutTarget::rollout(&state, &updated)
             .await
             .unwrap();
     assert!(outcome.is_converged(), "V1/E1: {outcome:?}");
@@ -570,7 +570,7 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
         awaken_credential_vault::repo::ManagedCredentialOperation::Archive,
     );
     assert!(
-        awaken_credential_vault::repo::ManagedCredentialRolloutTarget::rollout(&state, &archived)
+        awaken_credential_contract::ManagedCredentialRolloutTarget::rollout(&state, &archived)
             .await
             .unwrap()
             .is_converged(),
@@ -598,7 +598,7 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
         awaken_credential_vault::repo::ManagedCredentialOperation::Delete,
     );
     assert!(
-        awaken_credential_vault::repo::ManagedCredentialRolloutTarget::rollout(&state, &deleted)
+        awaken_credential_contract::ManagedCredentialRolloutTarget::rollout(&state, &deleted)
             .await
             .unwrap()
             .is_converged(),
@@ -1915,10 +1915,10 @@ async fn vault_rollout_reports_busy_and_postcommit_failure_then_replays_exact_ev
     // diagnostic, revision 2; R4 C5 ->
     // Converged without a second credential transition. Untrusted errors must
     // never enter diagnostics. Workspace/source discovery is covered by V1-V5.
-    use awaken_credential_vault::repo::{
-        ManagedCredentialAdoptionProgress, ManagedCredentialOperation,
-        ManagedCredentialRolloutTarget,
+    use awaken_credential_contract::{
+        ManagedCredentialAdoptionProgress, ManagedCredentialRolloutTarget,
     };
+    use awaken_credential_vault::repo::ManagedCredentialOperation;
     use tracing::instrument::WithSubscriber;
     for case in ["busy", "precommit", "postcommit"] {
         let failed_refresh = case == "precommit";

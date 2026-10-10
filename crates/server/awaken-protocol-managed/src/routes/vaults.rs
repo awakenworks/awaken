@@ -48,6 +48,7 @@ use crate::control::vault_acl::{
     mcp_oauth_to_create_params, static_bearer_to_create_params,
 };
 use awaken_agent_contract::RedactedString;
+use awaken_credential_contract::ManagedCredentialAdoptionProgress;
 use awaken_credential_contract::{CredentialDescriptor, CredentialSourceId};
 use awaken_credential_vault::catalog::{
     ManagedCredentialAdmissionError, ManagedCredentialAuth as AuthRecord,
@@ -57,8 +58,7 @@ use awaken_credential_vault::catalog::{
     ManagedVaultMutationError,
 };
 use awaken_credential_vault::repo::{
-    CredentialMaterialPatch, ManagedCredentialAdoptionProgress, ManagedCredentialCreationError,
-    ManagedCredentialRepository,
+    CredentialMaterialPatch, ManagedCredentialCreationError, ManagedCredentialRepository,
 };
 use awaken_credential_vault::{
     ApplicationMcpBearerEntry, McpCredentialTarget, OAUTH_CLIENT_SECRET_SLOT,

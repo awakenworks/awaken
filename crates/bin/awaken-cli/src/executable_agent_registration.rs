@@ -64,7 +64,7 @@ pub(crate) struct ExecutableAgentWiring {
     pub(crate) coordinator_content_eraser:
         Option<Arc<dyn awaken_data_governance_contract::ContentEraser>>,
     pub(crate) credential_rollout_target:
-        Option<Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>>,
+        Option<Arc<dyn awaken_credential_contract::ManagedCredentialRolloutTarget>>,
     pub(crate) service_authenticator:
         Option<Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>,
 }
@@ -239,7 +239,7 @@ type ProcessParts = (
     Router,
     Option<Arc<PostgresExecutableAgentRegistrar>>,
     Option<Arc<dyn awaken_data_governance_contract::ContentEraser>>,
-    Option<Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>>,
+    Option<Arc<dyn awaken_credential_contract::ManagedCredentialRolloutTarget>>,
     Option<Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>,
 );
 

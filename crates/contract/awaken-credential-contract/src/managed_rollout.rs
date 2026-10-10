@@ -11,6 +11,71 @@ use serde::{Deserialize, Serialize};
 
 use crate::CredentialSourceId;
 
+/// Local adoption progress. The cross-service HTTP adapter maps these two
+/// states directly to 204 and 202, while command receipts serialize this same
+/// enum; no second JSON state vocabulary is needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedCredentialAdoptionProgress {
+    Converged,
+    Pending,
+}
+
+impl ManagedCredentialAdoptionProgress {
+    #[must_use]
+    pub const fn is_converged(self) -> bool {
+        matches!(self, Self::Converged)
+    }
+}
+
+/// Typed failures owned by the rollout target port. Pending convergence is a
+/// successful state and therefore is not represented as an error.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ManagedCredentialAdoptionError {
+    #[error("credential adoption event is invalid: {0}")]
+    InvalidEvent(String),
+    #[error("credential adoption event id names a different payload")]
+    IdentityCollision,
+    #[error("credential adoption is unauthorized")]
+    Unauthorized,
+    #[error("credential adoption target is unavailable: {0}")]
+    Unavailable(ManagedCredentialAdoptionUnavailable),
+}
+
+/// Why an adoption target could not answer. Each cause is a closed fact the
+/// caller can classify; the participant's own error text never enters it (it
+/// may carry credentials), so each failing site logs its detail where it
+/// happens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ManagedCredentialAdoptionUnavailable {
+    /// The service credential for the private delivery could not be resolved.
+    #[error("the delivery service token is unavailable")]
+    ServiceToken,
+    /// The adoption event could not be encoded for delivery.
+    #[error("the adoption event could not be encoded")]
+    Encoding,
+    /// The private delivery to the adopting service did not complete.
+    #[error("the delivery transport failed")]
+    Transport,
+    /// The adopting service answered neither 204 (converged) nor 202 (pending).
+    #[error("the adopting service answered HTTP {0}")]
+    Status(u16),
+    /// The adopting service could not read the Sessions the event names.
+    #[error("the adopting service cannot read the Sessions the event names")]
+    SessionRead,
+}
+
+/// Service-owned rolling replacement edge. Credential never knows whether the
+/// consumer is a Session, Deployment, Kubernetes controller, or remote service;
+/// it only requires an idempotent adoption of the exact committed fence.
+#[async_trait::async_trait]
+pub trait ManagedCredentialRolloutTarget: Send + Sync {
+    async fn rollout(
+        &self,
+        event: &ManagedCredentialRollout,
+    ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError>;
+}
+
 /// The closed command vocabulary carried by durable credential mutations and
 /// their adoption events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

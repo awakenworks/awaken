@@ -64,7 +64,9 @@ pub use delivery_plan::{
 };
 mod managed_rollout;
 pub use managed_rollout::{
-    ManagedCredentialOperation, ManagedCredentialRollout, ManagedCredentialRolloutIdentityDecision,
+    ManagedCredentialAdoptionError, ManagedCredentialAdoptionProgress,
+    ManagedCredentialAdoptionUnavailable, ManagedCredentialOperation, ManagedCredentialRollout,
+    ManagedCredentialRolloutIdentityDecision, ManagedCredentialRolloutTarget,
     managed_credential_rollout_identity_decision,
 };
 mod mcp_requirement;
