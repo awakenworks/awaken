@@ -92,6 +92,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         idle_since_unix_ms: None,
     };
     let candidate = host
+        .realizer
         .begin_session_environment_preparation("remote-terminal-worker", environment.clone())
         .expect("R1 retain the exact Worker-local candidate");
     host.install_session_environment_owner_projection(
@@ -100,15 +101,16 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         &projection.environment,
     )
     .expect("R1 project the durable Worker-local Environment identity");
-    host.publish_prepared_session_environment(
-        "remote-terminal-worker",
-        &candidate,
-        crate::installed_session::BoundSessionEnvironmentIdentity::Durable {
-            effect_id: environment_effect_id.to_owned(),
-            generation: environment_generation,
-        },
-    )
-    .expect("R1 publish the exact Worker-local Environment owner");
+    host.realizer
+        .publish_prepared_session_environment(
+            "remote-terminal-worker",
+            &candidate,
+            crate::installed_session::BoundSessionEnvironmentIdentity::Durable {
+                effect_id: environment_effect_id.to_owned(),
+                generation: environment_generation,
+            },
+        )
+        .expect("R1 publish the exact Worker-local Environment owner");
     let assignment = awaken_session_realization_contract::SessionTerminalCleanupAssignment {
         session_id: "remote-terminal-worker".into(),
         projection: projection.clone(),

@@ -757,79 +757,6 @@ impl SharedHost {
         .map_err(|error| HostError::internal(error.to_string()))
     }
 
-    /// Consume only the exact Retiring owner and durable provider preparation.
-    /// Artifact, Memory, Hand, MCP, observation, and provider preparation are
-    /// forbidden here; this is the physical-only Disposal phase.
-    pub(crate) async fn dispose_prepared_checkpoint_source_environment(
-        &self,
-        thread: &str,
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
-        generation: &awaken_session_state_contract::SandboxGeneration,
-        source_binding: &str,
-        authorization: &awaken_provisioning_contract::SandboxDisposalAuthorization,
-    ) -> Result<(), HostError> {
-        self.realizer
-            .validate_suspend_operation(thread, operation, generation)?;
-        let expected_cause = SessionEnvironmentRetirementCause::CheckpointSource {
-            operation: operation.clone(),
-            generation: generation.clone(),
-        };
-        let retirement = self
-            .installed_sessions
-            .read_realization(thread, |r| match &r.environment_owner {
-                SessionEnvironmentOwner::Retiring(retirement) => Some(retirement.clone()),
-                _ => None,
-            })
-            .flatten()
-            .ok_or_else(|| {
-                HostError::unavailable_classified(
-                    "session_checkpoint_source_not_prepared",
-                    "checkpoint source Disposal has no retained Preparation owner",
-                )
-            })?;
-        let RetiringEnvironmentOwner::Bound(owned) = &retirement.owned else {
-            return Err(HostError::internal(
-                "checkpoint source Disposal cannot consume an unpublished owner",
-            ));
-        };
-        if retirement.cause != expected_cause
-            || !matches!(
-                &owned.identity,
-                BoundSessionEnvironmentIdentity::Durable {
-                    generation: owned_generation,
-                    ..
-                } if owned_generation == generation
-            )
-            || owned.binding != source_binding
-        {
-            return Err(HostError::unavailable_classified(
-                "session_checkpoint_source_owner_changed",
-                "checkpoint source Disposal does not match its retained Preparation owner",
-            ));
-        }
-        let authority = self
-            .realizer
-            .execution
-            .provider_effect_authority(thread, authorization.effect_fence())?;
-        owned
-            .environment
-            .lifecycle()
-            .dispose_for_effect(authorization, &authority)
-            .await
-            .map_err(|error| HostError::unavailable(error.to_string()))?;
-        if !self
-            .realizer
-            .confirm_terminated_retirement(thread, &retirement)
-        {
-            return Err(HostError::unavailable_classified(
-                "session_checkpoint_source_owner_changed",
-                "checkpoint source owner changed after exact physical Disposal",
-            ));
-        }
-        self.installed_sessions.drop_run_context(thread);
-        Ok(())
-    }
-
     /// Forget a dead environment only after its exact Arc/binding/identity and
     /// Retiring phase are still current and the provider reports Terminated.
     #[cfg(test)]
@@ -1798,5 +1725,75 @@ impl crate::environment_holding::EnvironmentHolding {
             }
         }
         Ok((handle, spec, resident, candidate))
+    }
+}
+
+impl crate::environment_holding::EnvironmentHolding {
+    /// Consume only the exact Retiring owner and durable provider preparation.
+    /// Artifact, Memory, Hand, MCP, observation, and provider preparation are
+    /// forbidden here; this is the physical-only Disposal phase.
+    pub(crate) async fn dispose_prepared_checkpoint_source_environment(
+        &self,
+        thread: &str,
+        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
+        generation: &awaken_session_state_contract::SandboxGeneration,
+        source_binding: &str,
+        authorization: &awaken_provisioning_contract::SandboxDisposalAuthorization,
+    ) -> Result<(), HostError> {
+        self.validate_suspend_operation(thread, operation, generation)?;
+        let expected_cause = SessionEnvironmentRetirementCause::CheckpointSource {
+            operation: operation.clone(),
+            generation: generation.clone(),
+        };
+        let retirement = self
+            .sessions
+            .read_realization(thread, |r| match &r.environment_owner {
+                SessionEnvironmentOwner::Retiring(retirement) => Some(retirement.clone()),
+                _ => None,
+            })
+            .flatten()
+            .ok_or_else(|| {
+                HostError::unavailable_classified(
+                    "session_checkpoint_source_not_prepared",
+                    "checkpoint source Disposal has no retained Preparation owner",
+                )
+            })?;
+        let RetiringEnvironmentOwner::Bound(owned) = &retirement.owned else {
+            return Err(HostError::internal(
+                "checkpoint source Disposal cannot consume an unpublished owner",
+            ));
+        };
+        if retirement.cause != expected_cause
+            || !matches!(
+                &owned.identity,
+                BoundSessionEnvironmentIdentity::Durable {
+                    generation: owned_generation,
+                    ..
+                } if owned_generation == generation
+            )
+            || owned.binding != source_binding
+        {
+            return Err(HostError::unavailable_classified(
+                "session_checkpoint_source_owner_changed",
+                "checkpoint source Disposal does not match its retained Preparation owner",
+            ));
+        }
+        let authority = self
+            .execution
+            .provider_effect_authority(thread, authorization.effect_fence())?;
+        owned
+            .environment
+            .lifecycle()
+            .dispose_for_effect(authorization, &authority)
+            .await
+            .map_err(|error| HostError::unavailable(error.to_string()))?;
+        if !self.confirm_terminated_retirement(thread, &retirement) {
+            return Err(HostError::unavailable_classified(
+                "session_checkpoint_source_owner_changed",
+                "checkpoint source owner changed after exact physical Disposal",
+            ));
+        }
+        self.sessions.drop_run_context(thread);
+        Ok(())
     }
 }

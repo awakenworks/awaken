@@ -477,6 +477,7 @@ impl ManagedHost {
         thread: &str,
         disposal: &awaken_session_state_contract::SourceReleaseDisposal,
     ) -> Result<awaken_session_state_contract::SourceDisposedReceipt, RunError> {
+        let exec = &self.host.realizer;
         let operation = disposal.operation();
         let generation = disposal.generation();
         let source_binding = disposal.source_binding();
@@ -484,16 +485,15 @@ impl ManagedHost {
         let _lifecycle = self.host.installed_sessions.lock_lifecycle(thread).await;
         let provider_authorization =
             self.continuation_source_disposal_authorization(thread, disposal)?;
-        self.host
-            .dispose_prepared_checkpoint_source_environment(
-                thread,
-                operation,
-                generation,
-                source_binding,
-                &provider_authorization,
-            )
-            .await
-            .map_err(to_run_error)?;
+        exec.dispose_prepared_checkpoint_source_environment(
+            thread,
+            operation,
+            generation,
+            source_binding,
+            &provider_authorization,
+        )
+        .await
+        .map_err(to_run_error)?;
         self.continuation_source_disposal_authorization(thread, disposal)?;
         Ok(awaken_session_state_contract::SourceDisposedReceipt {
             effect_id: operation.effect_id.clone(),
@@ -507,23 +507,19 @@ impl ManagedHost {
         &self,
         request: awaken_session_state_contract::SandboxRestoreRequest,
     ) -> Result<awaken_session_state_contract::RestoreReceipt, RunError> {
-        let staging = &self.host.realizer.staging;
+        let exec = &self.host.realizer;
+        let staging = &exec.staging;
         request
             .validate()
             .map_err(|error| RunError::unavailable(error.to_string()))?;
         let thread = request.session_id.clone();
         let _lifecycle = self.host.installed_sessions.lock_lifecycle(&thread).await;
-        self.host
-            .retry_unpublished_session_environment_cleanup(&thread)
+        exec.retry_unpublished_session_environment_cleanup(&thread)
             .await
             .map_err(to_run_error)?;
-        self.host
-            .realizer
-            .begin_session_environment_restore(&thread, &request)
+        exec.begin_session_environment_restore(&thread, &request)
             .map_err(to_run_error)?;
-        let store = self
-            .host
-            .realizer
+        let store = exec
             .env
             .environment_checkpoint_store
             .as_ref()
@@ -546,9 +542,7 @@ impl ManagedHost {
             .as_ref()
             .map(|snapshot| snapshot.resolved_spec.model_binding.provisioning())
             .unwrap_or(&awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor);
-        let provider = self
-            .host
-            .realizer
+        let provider = exec
             .session_environment_provider_for_thread(&thread, provisioning)
             .map_err(to_run_error)?;
         let spec = staging.sandbox_spec_for_provider(&thread, provider);

@@ -575,6 +575,7 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
     let authorization = source_disposal_authorization(&prepared_operation.effect_id);
 
     let error = host
+        .realizer
         .dispose_prepared_checkpoint_source_environment(
             thread,
             &operation,

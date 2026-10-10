@@ -207,7 +207,7 @@ impl SharedHost {
             | BoundEnvironmentPreparationMode::TerminalRepositoryPublication => {
                 if adopted {
                     let candidate =
-                        self.begin_session_environment_adoption(thread, environment.clone())?;
+                        exec.begin_session_environment_adoption(thread, environment.clone())?;
                     let crate::environment_owner::UnboundSessionEnvironmentOrigin::AdoptionFrom(
                         identity,
                     ) = &candidate.origin
@@ -216,7 +216,7 @@ impl SharedHost {
                             "live source adoption has no durable Environment identity",
                         ));
                     };
-                    self.publish_prepared_session_environment(
+                    exec.publish_prepared_session_environment(
                         thread,
                         &candidate,
                         identity.clone(),
@@ -291,7 +291,7 @@ impl SharedHost {
                         // scope. Keep that exact current handle as the existing
                         // Unbound retirement owner; it gains no durable binding
                         // and can only be disposed by this terminal fence.
-                        self.begin_session_environment_preparation(thread, environment.clone())?;
+                        exec.begin_session_environment_preparation(thread, environment.clone())?;
                         exec.retire_exact_environment(
                             thread,
                             cause,

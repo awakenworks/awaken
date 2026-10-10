@@ -111,6 +111,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         idle_since_unix_ms: None,
     };
     let candidate = host
+        .realizer
         .begin_session_environment_preparation("t-end", env.clone())
         .expect("retain the exact terminal-test candidate");
     host.install_session_environment_owner_projection(
@@ -125,14 +126,16 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     };
     match initial {
         "resident" => {
-            host.publish_prepared_session_environment("t-end", &candidate, identity)
+            host.realizer
+                .publish_prepared_session_environment("t-end", &candidate, identity)
                 .expect("publish the exact terminal-test Environment owner");
             host.ctx_for("t-end", None)
                 .await
                 .expect("cache the Runtime");
         }
         "committed-hidden" | "committed-conflict" => {
-            host.retain_committed_session_environment_candidate("t-end", &candidate, identity)
+            host.realizer
+                .retain_committed_session_environment_candidate("t-end", &candidate, identity)
                 .expect("retain actual Store-read identity without publication");
         }
         "adoption-conflict" => {

@@ -336,7 +336,8 @@ impl SharedHost {
         let provider_authority = provider_fence
             .as_ref()
             .map(|fence| {
-                self.session_environment_effect_fence_source(thread, fence)
+                self.realizer
+                    .session_environment_effect_fence_source(thread, fence)
                     .map(|source| {
                         Arc::new(source)
                             as Arc<dyn awaken_provisioning_contract::CurrentExecutionAuthority>
@@ -479,13 +480,14 @@ impl SharedHost {
         effect: &AuthorizedSessionEnvironmentEffect,
         reconciliation: crate::staged_resources::EnvironmentResourceReconciliation,
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, HostError> {
+        let exec = &self.realizer;
         let candidate = match effect.intent.kind() {
             awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt => {
-                self.begin_session_environment_adoption(thread, environment.clone())?
+                exec.begin_session_environment_adoption(thread, environment.clone())?
             }
             awaken_session_state_contract::SessionEnvironmentEffectKind::Create
             | awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild { .. } => {
-                self.begin_session_environment_preparation(thread, environment.clone())?
+                exec.begin_session_environment_preparation(thread, environment.clone())?
             }
             awaken_session_state_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation {
                 ..
@@ -502,7 +504,7 @@ impl SharedHost {
             Ok(identity) => identity,
             Err(failure) => {
                 if let Some(identity) = failure.committed_identity {
-                    self.retain_committed_session_environment_candidate(
+                    exec.retain_committed_session_environment_candidate(
                         thread, &candidate, identity,
                     )?;
                 }
@@ -514,7 +516,7 @@ impl SharedHost {
             }
         };
         let environment =
-            self.publish_prepared_session_environment(thread, &candidate, identity)?;
+            exec.publish_prepared_session_environment(thread, &candidate, identity)?;
         self.installed_sessions.update_realization(thread, |r| {
             r.environment_resource_reconciliation = reconciliation;
         });
@@ -530,6 +532,7 @@ impl SharedHost {
         &self,
         thread: &str,
     ) -> Result<Option<Arc<crate::session_environment::SessionEnvironment>>, HostError> {
+        let exec = &self.realizer;
         let revoked_binding = self.installed_sessions.read_realization(thread, |r| match &r.environment_owner {
             crate::environment_owner::SessionEnvironmentOwner::Retiring(retiring)
                 if retiring.cause == crate::environment_owner::SessionEnvironmentRetirementCause::RealizationRevocation =>
@@ -553,8 +556,7 @@ impl SharedHost {
                 None,
             )
             .await?;
-            return self
-                .realizer
+            return exec
                 .session_environment(thread)
                 .await
                 .map(Some)
@@ -585,7 +587,7 @@ impl SharedHost {
             Ok(identity) => identity,
             Err(failure) => {
                 if let Some(identity) = failure.committed_identity {
-                    self.retain_committed_session_environment_candidate(
+                    exec.retain_committed_session_environment_candidate(
                         thread, &candidate, identity,
                     )?;
                 }
@@ -604,7 +606,7 @@ impl SharedHost {
             }
         };
         let environment =
-            self.publish_prepared_session_environment(thread, &candidate, identity)?;
+            exec.publish_prepared_session_environment(thread, &candidate, identity)?;
         self.installed_sessions.update_realization(thread, |r| {
             r.environment_resource_reconciliation = reconciliation;
         });
@@ -840,22 +842,6 @@ impl SharedHost {
                 awaken_session_environment_contract::EnvironmentRealizationKind::Create,
             )
             .await
-    }
-
-    /// A projection through the existing Worker -> Session admission guards,
-    /// not another lease owner. Capture the exact operation and slot allocation;
-    /// renewals may replace the observation, never these identities. This
-    /// returns durable Control coordinates, not a provider-local expiry or an
-    /// authorization to perform asynchronous I/O after the guards are released.
-    fn session_environment_effect_fence_source(
-        &self,
-        thread: &str,
-        initial: &awaken_provisioning_contract::SandboxEffectFence,
-    ) -> Result<impl awaken_provisioning_contract::CurrentExecutionAuthority + use<>, HostError>
-    {
-        self.realizer
-            .execution
-            .provider_effect_authority(thread, initial)
     }
 
     /// Materialize the deferred environment at the first Sandbox-target tool.
@@ -1292,5 +1278,21 @@ impl crate::environment_holding::EnvironmentHolding {
     pub(crate) async fn evict_session_for_rebuild(&self, thread: &str) {
         self.sessions
             .modify_session(thread, |slot| slot.run.drop_context());
+    }
+}
+
+impl crate::environment_holding::EnvironmentHolding {
+    /// A projection through the existing Worker -> Session admission guards,
+    /// not another lease owner. Capture the exact operation and slot allocation;
+    /// renewals may replace the observation, never these identities. This
+    /// returns durable Control coordinates, not a provider-local expiry or an
+    /// authorization to perform asynchronous I/O after the guards are released.
+    fn session_environment_effect_fence_source(
+        &self,
+        thread: &str,
+        initial: &awaken_provisioning_contract::SandboxEffectFence,
+    ) -> Result<impl awaken_provisioning_contract::CurrentExecutionAuthority + use<>, HostError>
+    {
+        self.execution.provider_effect_authority(thread, initial)
     }
 }

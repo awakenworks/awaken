@@ -13,7 +13,8 @@ impl SharedHost {
         frozen_parent: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
     ) -> Result<ChildExecutionSubstrate, HostError> {
         let lifecycle_guard = self.installed_sessions.lock_lifecycle(thread).await;
-        self.retry_unpublished_session_environment_cleanup(thread)
+        self.realizer
+            .retry_unpublished_session_environment_cleanup(thread)
             .await?;
         let warm_context = self
             .installed_sessions

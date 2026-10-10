@@ -960,10 +960,12 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
     assert!(sandbox.spawn(command()).await.is_err());
     assert!(sandbox.spawn_agent(command()).await.is_err());
     let first = host
+        .realizer
         .begin_session_environment_preparation(SESSION, environment.clone())
         .unwrap();
     assert!(!sandbox.needs_execution_authority());
     let retry = host
+        .realizer
         .begin_session_environment_preparation(SESSION, environment.clone())
         .unwrap();
     assert!(Arc::ptr_eq(&first.environment, &retry.environment));

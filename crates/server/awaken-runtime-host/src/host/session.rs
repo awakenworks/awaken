@@ -209,7 +209,8 @@ impl SharedHost {
                 RuntimeContextPurpose::Execution
             };
             let _lifecycle = self.installed_sessions.lock_lifecycle(thread).await;
-            self.retry_unpublished_session_environment_cleanup(thread)
+            self.realizer
+                .retry_unpublished_session_environment_cleanup(thread)
                 .await?;
             self.retry_session_environment_candidate_under_lifecycle(thread)
                 .await?;

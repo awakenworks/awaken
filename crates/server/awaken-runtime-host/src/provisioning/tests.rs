@@ -226,6 +226,7 @@ fn install_terminal_artifact_environment(
     host.install_session_environment_owner_projection(session_id, workspace_id, &state)
         .expect("F1/E1 project the canonical legacy durable binding");
     let candidate = host
+        .realizer
         .begin_session_environment_adoption(session_id, environment)
         .expect("F2/E2 retain the exact adoption candidate");
     let crate::installed_session::UnboundSessionEnvironmentOrigin::AdoptionFrom(identity) =
@@ -233,7 +234,8 @@ fn install_terminal_artifact_environment(
     else {
         panic!("F3 aggregate projection must own the durable source identity");
     };
-    host.publish_prepared_session_environment(session_id, &candidate, identity.clone())
+    host.realizer
+        .publish_prepared_session_environment(session_id, &candidate, identity.clone())
         .expect("F2/E2 publish the exact durable owner");
 }
 

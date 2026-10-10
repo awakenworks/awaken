@@ -1676,7 +1676,8 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
                     .unwrap()
                     .unwrap(),
             );
-            host.begin_session_environment_preparation(thread, environment.clone())
+            host.realizer
+                .begin_session_environment_preparation(thread, environment.clone())
                 .unwrap();
             retained = Some(environment);
             if unmaterialized {
@@ -2003,7 +2004,8 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 .await
                 .unwrap()
                 .unwrap();
-            host.begin_session_environment_preparation(&thread, Arc::new(environment))
+            host.realizer
+                .begin_session_environment_preparation(&thread, Arc::new(environment))
                 .unwrap();
             if unmaterialized {
                 projection.environment =

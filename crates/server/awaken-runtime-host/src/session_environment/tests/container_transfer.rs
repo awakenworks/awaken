@@ -96,9 +96,11 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         )
         .unwrap();
         let candidate = host
+            .realizer
             .begin_session_environment_adoption(thread, original.clone())
             .unwrap();
-        host.publish_prepared_session_environment(thread, &candidate, identity)
+        host.realizer
+            .publish_prepared_session_environment(thread, &candidate, identity)
             .unwrap();
         let SandboxEnvironment::Container {
             sandbox: physical, ..

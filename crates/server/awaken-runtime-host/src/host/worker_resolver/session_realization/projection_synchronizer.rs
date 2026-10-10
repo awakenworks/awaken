@@ -860,13 +860,15 @@ mod tests {
                     .unwrap(),
             );
             let candidate = host
+                .realizer
                 .begin_session_environment_preparation(thread, environment)
                 .unwrap();
             let identity = host
                 .persist_environment_before_publish(thread, &candidate)
                 .await
                 .unwrap();
-            host.retain_committed_session_environment_candidate(thread, &candidate, identity)
+            host.realizer
+                .retain_committed_session_environment_candidate(thread, &candidate, identity)
                 .unwrap();
             assert!(
                 host.realizer.session_environment(thread).await.is_none(),
