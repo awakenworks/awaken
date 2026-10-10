@@ -14,7 +14,8 @@ corpus and the one comparison they share:
   ``slack`` or more below it;
 * ``--write-baseline`` records the current tree. It refuses to raise a number
   unless ``--reason`` says why, and keeps that reason next to the number. A
-  missing baseline file is recorded as it stands (the first write).
+  missing baseline file, or a rule the file does not hold yet (a rule added to
+  the module), is recorded as it stands (the first write).
 """
 
 from __future__ import annotations
@@ -91,11 +92,12 @@ def compare(rules: tuple[Rule, ...], counts: Counts, places: Places, baseline: d
 
 
 def growth(rules: tuple[Rule, ...], counts: Counts, baseline: dict) -> list[str]:
+    """Recorded numbers that would rise; a rule the baseline does not hold yet is its first write."""
     return [
-        f"{rule.name}: {key} {baseline.get(rule.name, {}).get(key, 0)} -> {count}"
-        for rule in rules
+        f"{rule.name}: {key} {baseline[rule.name].get(key, 0)} -> {count}"
+        for rule in rules if rule.name in baseline
         for key, count in sorted(counts.get(rule.name, {}).items())
-        if count > baseline.get(rule.name, {}).get(key, 0)
+        if count > baseline[rule.name].get(key, 0)
     ]
 
 
@@ -108,7 +110,7 @@ def render(rules: tuple[Rule, ...], counts: Counts, previous: dict, reason: str 
         kept = {key: text for key, text in previous.get("growth_reasons", {}).get(rule.name, {}).items()
                 if key in current}
         for key, count in current.items():
-            if reason and count > previous.get(rule.name, {}).get(key, 0):
+            if reason and rule.name in previous and count > previous[rule.name].get(key, 0):
                 earlier = kept.get(key)
                 kept[key] = reason if not earlier or reason in earlier else f"{earlier}; then: {reason}"
         if kept:
@@ -175,6 +177,7 @@ def selftest() -> None:
     | B3   | equal                                                     | accept |
     | B4   | slack rule falls less than / at least `slack` below       | accept / error (lower) |
     | B5   | render: growth without a reason / with one / a fall       | reported / reason kept / no reason needed |
+    | B6   | a rule the baseline does not hold yet (new rule)          | first write: no growth, no reason kept |
     """
     rules = (Rule("r", "fix it"), Rule("lines", "move it", slack=10))
     held = {"r": {"a": 2}, "lines": {"c": 100}}
@@ -195,4 +198,10 @@ def selftest() -> None:
     again = render(rules, {"r": {"a": 4}}, document, "second", "c")
     assert again["growth_reasons"] == {"r": {"a": "split pending; then: second"}}, "B5 history"
     assert "growth_reasons" not in render(rules, {"r": {"a": 1}}, held, None, "c"), "B5 fall"
+    assert growth(rules, {"r": {"a": 2}, "new": {"k": 5}}, held) == [], "B6 first write"
+    added = rules + (Rule("new", "fix"),)
+    first = render(added, {"r": {"a": 2}, "new": {"k": 5}}, held, "unused", "c")
+    assert first["new"] == {"k": 5} and "growth_reasons" not in first, f"B6 render {first}"
+    assert "baseline 0" in compare(added, {"r": {"a": 2}, "lines": {"c": 100}, "new": {"k": 5}}, {}, held,
+                                   "b.json")[0], "B6 check before the first write"
     print("_architecture_ratchet selftest: the decision table holds")
