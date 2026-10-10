@@ -390,13 +390,13 @@
   },
   "crate-budget": {
     "awaken-protocol-managed": {
-      "deps": 41,
-      "lines": 27087,
+      "deps": 42,
+      "lines": 27124,
       "reason": "W20 (plan 9.11): Session lifecycle and deployment decisions move to their application services; the adapter keeps protocol translation only"
     },
     "awaken-session-executor": {
       "deps": 47,
-      "lines": 35907,
+      "lines": 35913,
       "reason": "runtime-host split (plan 10.4 slices F, S, T, R, H): new behavior lands in its future crate; target < 20000 lines, about 26-28 dependencies"
     },
     "awaken-sandbox-container": {
