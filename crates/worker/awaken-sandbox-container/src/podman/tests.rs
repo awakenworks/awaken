@@ -1667,3 +1667,64 @@ async fn package_build_network_reaches_the_podman_build_argv() {
         "the deployment selects it explicitly"
     );
 }
+
+#[tokio::test]
+async fn startup_evidence_resolves_the_image_and_reads_delegated_controllers() {
+    // ADR-0092 decision 5 on the Podman engine. Causes: C1 the default image
+    // is present / pullable / neither; C2 the delegated cgroup controllers.
+    // Effects: E1 resource limits advertised; E2 withheld; E3 start-up fails
+    // (no image means no isolation tier remains).
+    // | Rule | C1 | C2 | effect |
+    // | I1 | present | cpu+memory+pids | E1, no pull |
+    // | I2 | pullable | rootless memory only | E2 after one pull |
+    // | I3 | neither | any | E3 |
+    let full = r#"["cpu","io","memory","pids"]"#;
+    let partial = r#"["memory"]"#;
+    for (rule, present, pullable, controllers, expected) in [
+        ("I1", true, true, full, Some(true)),
+        ("I2", false, true, partial, Some(false)),
+        ("I3", false, false, full, None),
+    ] {
+        let (runtime, fake) = runtime_with(8080, move |args| {
+            match args
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .as_slice()
+            {
+                ["image", "exists", ..] if present => ok(""),
+                ["image", "exists", ..] => err("no such image"),
+                ["pull", ..] if pullable => ok(""),
+                ["pull", ..] => err("manifest unknown"),
+                ["info", "--format", "{{json .Host.CgroupControllers}}"] => ok(controllers),
+                ["info", ..] => ok("amd64"),
+                other => err(&format!("unexpected {other:?}")),
+            }
+        });
+        let provider = crate::ContainerProvider::new(Arc::new(runtime), "sandbox:test");
+        let attested = provider.attest_startup().await;
+        match expected {
+            Some(limits) => {
+                assert_eq!(attested.expect(rule).resource_limits, limits, "{rule}");
+                assert_eq!(
+                    provider.runtime_sandbox_capabilities().resource_limits,
+                    limits,
+                    "{rule}"
+                );
+            }
+            None => assert!(attested.is_err(), "{rule}"),
+        }
+        let pulls = fake
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| call.first().map(String::as_str) == Some("pull"))
+            .count();
+        assert_eq!(
+            pulls,
+            usize::from(!present),
+            "{rule} pulls only a missing image"
+        );
+    }
+}
