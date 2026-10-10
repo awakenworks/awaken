@@ -8,7 +8,8 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 
 use super::{WireErr, error_response, session_projection_error};
-use crate::state::{ManagedState, RunError, StateError};
+use crate::state::{ManagedState, StateError};
+use awaken_session_types::RunError;
 
 fn exact_receipt(
     session_id: &str,
@@ -148,7 +149,7 @@ mod tests {
 
     use super::exact_receipt;
     use crate::routes::sessions::session_projection_error;
-    use crate::state::RunError;
+    use awaken_session_types::RunError;
 
     #[test]
     fn receipt_is_checked_before_activation_linkage() {

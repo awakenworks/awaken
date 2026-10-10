@@ -37,8 +37,7 @@
       "awaken_agent_contract::stream::sink": 2
     },
     "awaken-protocol-managed": {
-      "awaken_agent_contract::stream::sink": 4,
-      "awaken_runtime_contract::llm": 9
+      "awaken_runtime_contract::llm": 2
     },
     "awaken-protocol-mcp": {
       "awaken_runtime_contract::plugin": 1

@@ -24,8 +24,8 @@ mod support;
 use std::sync::Arc;
 
 use awaken_protocol_managed::ManagedState;
-use awaken_protocol_managed::test_support::CoordinatedRuntimeFake;
 use awaken_protocol_managed::types::Event;
+use awaken_protocol_managed_testkit::CoordinatedRuntimeFake;
 use awaken_session_execution_contract::SessionAgentCoordination as _;
 
 /// The Managed router as a real deployment mounts it — behind the trusted edge

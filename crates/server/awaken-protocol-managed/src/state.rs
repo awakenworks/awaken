@@ -63,7 +63,6 @@ mod sessions;
 pub(crate) mod test_support;
 mod threads;
 pub(crate) use threads::{internal_thread_id, public_thread_id};
-mod types;
 mod vault_rollout;
 mod work_dispatch;
 pub(crate) mod work_session_access;
@@ -72,8 +71,17 @@ pub use error::StateError;
 pub use managed_state::ManagedState;
 pub(crate) use managed_state::SessionApplicationRoles;
 
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) use constants::COMMITTED_PREFIX_READ_CONFLICT;
+#[cfg(test)]
+use awaken_session_application_contract::{DelegatedRun, StepOutcome};
+use awaken_session_budget_contract::SessionUsage;
+use awaken_session_configuration_contract::AgentCapabilities;
+use awaken_session_execution_contract::CommittedOutcomeProjection;
+#[cfg(test)]
+use awaken_session_execution_contract::SessionRuntime;
+#[cfg(test)]
+use awaken_session_execution_contract::{OutcomeDrive, OutcomeFailure, OutcomeReport};
+use awaken_session_types::RunError;
+pub use constants::COMMITTED_PREFIX_READ_CONFLICT;
 pub(crate) use constants::{DEFAULT_SCOPE, LEGACY_UNRECORDED_AT, MEMORY_CREATE_ONLY};
 pub(crate) use helpers::{
     durable_inbound_event_id, is_transient_event_id, lifecycle_fact, rubric_text,
@@ -87,16 +95,6 @@ use session_record::{
 pub(crate) use session_record::{
     RootTimeEvidence as SessionRootTimeEvidence, ThreadTimeEvidence as SessionThreadTimeEvidence,
 };
-#[cfg(test)]
-pub(crate) use types::DelegatedRun;
-#[cfg(test)]
-pub(crate) use types::SessionRuntime;
-pub(crate) use types::{
-    AgentCapabilities, CommittedOutcomeProjection, CustomTool, OutcomeIteration, RunError,
-    RunErrorKind, SessionUsage,
-};
-#[cfg(test)]
-pub(crate) use types::{OutcomeDrive, OutcomeFailure, OutcomeReport, StepOutcome};
 
 #[cfg(test)]
 mod tests;

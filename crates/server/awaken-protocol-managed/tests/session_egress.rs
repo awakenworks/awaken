@@ -125,7 +125,7 @@ impl awaken_session_execution_contract::RealizationRuntime for CapturingFake {
         awaken_lease_contract::authority::AuthorityProofStarted,
         awaken_session_types::RunError,
     > {
-        awaken_protocol_managed::test_support::observe_realization_request()
+        awaken_protocol_managed_testkit::observe_realization_request()
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -167,7 +167,7 @@ impl awaken_session_execution_contract::RealizationRuntime for CapturingFake {
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
-        if let Some(init) = awaken_protocol_managed::test_support::complete_session_projection_init(
+        if let Some(init) = awaken_protocol_managed_testkit::complete_session_projection_init(
             thread,
             &projection,
             &mode,

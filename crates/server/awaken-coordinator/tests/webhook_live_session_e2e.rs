@@ -182,7 +182,7 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
     // count: a row completes only after its delivery succeeded, so an empty
     // outbox is the exact evidence that nothing more is in flight and `== 1`
     // is a check rather than a race.
-    awaken_protocol_managed::test_support::wait_for_delivered_lifecycle_facts(
+    awaken_protocol_managed_testkit::wait_for_delivered_lifecycle_facts(
         facts.as_ref(),
         std::time::Duration::from_secs(2),
         "the created Session's lifecycle fact to be delivered",
@@ -235,7 +235,7 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
     let resp = app.oneshot(archive).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "guarded archive succeeds");
 
-    awaken_protocol_managed::test_support::wait_for_delivered_lifecycle_facts(
+    awaken_protocol_managed_testkit::wait_for_delivered_lifecycle_facts(
         facts.as_ref(),
         std::time::Duration::from_secs(2),
         "the archived Session's terminal lifecycle fact to be delivered",

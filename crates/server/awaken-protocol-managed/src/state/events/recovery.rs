@@ -636,7 +636,10 @@ impl ManagedState {
     pub(super) fn tool_reply_projection_phases(
         session: &awaken_session_state_contract::PersistedSession,
         candidates: &[PendingToolReplyCandidate],
-    ) -> std::collections::HashMap<PendingToolReplyKey, project::RuntimeToolProjectionPhase> {
+    ) -> std::collections::HashMap<
+        PendingToolReplyKey,
+        awaken_managed_session_events::RuntimeToolProjectionPhase,
+    > {
         candidates
             .iter()
             .map(|candidate| {
@@ -666,12 +669,12 @@ impl ManagedState {
                     });
                 let phase = retained.map_or_else(
                     || {
-                        project::RuntimeToolProjectionPhase::from_pending(
+                        awaken_managed_session_events::RuntimeToolProjectionPhase::from_pending(
                             candidate.key.client_executed,
                         )
                     },
                     |entry| {
-                        project::RuntimeToolProjectionPhase::from_retained_reply(entry.processed)
+                        awaken_managed_session_events::RuntimeToolProjectionPhase::from_retained_reply(entry.processed)
                     },
                 );
                 (candidate.key.clone(), phase)

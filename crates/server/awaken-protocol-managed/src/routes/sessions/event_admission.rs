@@ -8,9 +8,10 @@ use std::sync::Arc;
 
 use super::{WireErr, error_response, event_data_subject, parse_idempotency_key};
 use crate::{
-    state::{ManagedState, RunError, StateError},
+    state::{ManagedState, StateError},
     types::SendEventsRequest,
 };
+use awaken_session_types::RunError;
 use axum::{
     Json,
     extract::{Path, State},

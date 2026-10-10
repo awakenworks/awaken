@@ -19,10 +19,10 @@ use crate::types::environment::{
     WorkStopParams, WorkUpdateParams,
 };
 use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
-use crate::work_queue::{HeartbeatResult, LeaseHeartbeat};
 use awaken_environment_execution_application::{
     EnvironmentExecutionApplication, EnvironmentExecutionError,
 };
+use awaken_worker_contract::{HeartbeatCondition, HeartbeatResult, LeaseHeartbeat};
 
 fn map_execution_error(error: EnvironmentExecutionError) -> WireError {
     match error {
@@ -240,9 +240,7 @@ pub(super) async fn heartbeat_work(
 ) -> Result<Json<WorkHeartbeat>, WireError> {
     let state = &routes.environments;
     let command = LeaseHeartbeat {
-        condition: crate::work_queue::HeartbeatCondition::from_wire(
-            params.expected_last_heartbeat.as_deref(),
-        ),
+        condition: HeartbeatCondition::from_wire(params.expected_last_heartbeat.as_deref()),
         desired_ttl_seconds: params.desired_ttl_seconds,
     };
     let now_ms = routes.clock.now_ms();

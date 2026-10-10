@@ -40,7 +40,7 @@ async fn cloud_create_returns_durable_root_before_sandbox_realization() {
     // application owner tests cold recovery separately.
     for initial_message in [false, true] {
         let (environment_authoring, environment_execution) =
-            crate::test_support::environment_components();
+            crate::state::test_support::environment_components();
         let environment_id = environment_authoring
             .application()
             .create(awaken_environment_contract::CreateEnvironmentCommand {
@@ -173,7 +173,7 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
     let prepared = runtime.prepared.clone();
     let runtime = Arc::new(runtime);
     let repo = Arc::new(ephemeral_session_repo().await);
-    let environments = crate::test_support::environment_components().1;
+    let environments = crate::state::test_support::environment_components().1;
     let application = awaken_session_application::SessionApplication::new_with_configuration(
         runtime.clone(),
         Arc::new(mcp_attachment::UnsupportedMcpAttachmentRealizer),
@@ -266,7 +266,7 @@ async fn child_thread_archive_uses_durable_disposition_and_survives_cache_loss()
     // stores and committed facts remain the single behavior authority.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let runtime = crate::test_support::CoordinatedRuntimeFake::default();
+    let runtime = awaken_protocol_managed_testkit::CoordinatedRuntimeFake::default();
     let repo = Arc::new(ephemeral_session_repo().await);
     let state = Arc::new(
         ManagedState::new(runtime.clone())
@@ -281,7 +281,7 @@ async fn child_thread_archive_uses_durable_disposition_and_survives_cache_loss()
         .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
         .unwrap();
-    <crate::test_support::CoordinatedRuntimeFake as SessionRuntime>::run(
+    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as SessionRuntime>::run(
         &runtime,
         "coder",
         &session.id,
@@ -290,7 +290,7 @@ async fn child_thread_archive_uses_durable_disposition_and_survives_cache_loss()
     .await
     .expect("A1/C8 installs one committed coordinated recovery prefix");
     state.refresh_committed_events(&session.id).await.unwrap();
-    let child_id = crate::test_support::CoordinatedRuntimeFake::CHILD_THREAD_ID;
+    let child_id = awaken_protocol_managed_testkit::CoordinatedRuntimeFake::CHILD_THREAD_ID;
     assert_eq!(
         state.get_thread(&session.id, child_id).unwrap().status,
         SessionThreadStatus::Idle,
@@ -379,7 +379,7 @@ async fn child_thread_archive_rejects_a_committed_running_child() {
     // archive refreshes from that source, returns Conflict and commits no
     // Archived disposition or terminal Event. A2a's warm-only Running poison
     // in the adjacent test instead refreshes back to committed Idle.
-    let runtime = crate::test_support::CoordinatedRuntimeFake::default();
+    let runtime = awaken_protocol_managed_testkit::CoordinatedRuntimeFake::default();
     runtime.defer_child_completion();
     let state = ManagedState::new(runtime.clone()).await;
     let session = state
@@ -392,7 +392,7 @@ async fn child_thread_archive_rejects_a_committed_running_child() {
         )
         .await
         .unwrap();
-    <crate::test_support::CoordinatedRuntimeFake as SessionRuntime>::run(
+    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as SessionRuntime>::run(
         &runtime,
         "coder",
         &session.id,
@@ -418,7 +418,7 @@ async fn child_thread_archive_rejects_a_committed_running_child() {
         "A2 exact child activity admission"
     );
     state.refresh_committed_events(&session.id).await.unwrap();
-    let child_id = crate::test_support::CoordinatedRuntimeFake::CHILD_THREAD_ID;
+    let child_id = awaken_protocol_managed_testkit::CoordinatedRuntimeFake::CHILD_THREAD_ID;
     assert_eq!(
         state.get_thread(&session.id, child_id).unwrap().status,
         SessionThreadStatus::Running,
@@ -460,7 +460,7 @@ async fn child_thread_archive_failure_commits_no_terminal_projection() {
     // error is returned while both the disposable Thread and event stream remain
     // unchanged. Decision rule F1 is C1+C2+C3=>E1; command-success/retry/restart
     // rules are covered by the archive decision table above.
-    let runtime = crate::test_support::CoordinatedRuntimeFake::default();
+    let runtime = awaken_protocol_managed_testkit::CoordinatedRuntimeFake::default();
     let state = Arc::new(ManagedState::new(runtime.clone()).await);
     let session = state
         .create_session(
@@ -472,7 +472,7 @@ async fn child_thread_archive_failure_commits_no_terminal_projection() {
         )
         .await
         .unwrap();
-    <crate::test_support::CoordinatedRuntimeFake as SessionRuntime>::run(
+    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as SessionRuntime>::run(
         &runtime,
         "coder",
         &session.id,
@@ -481,7 +481,7 @@ async fn child_thread_archive_failure_commits_no_terminal_projection() {
     .await
     .expect("F1/C3 installs one committed coordinated recovery prefix");
     state.refresh_committed_events(&session.id).await.unwrap();
-    let child_id = crate::test_support::CoordinatedRuntimeFake::CHILD_THREAD_ID;
+    let child_id = awaken_protocol_managed_testkit::CoordinatedRuntimeFake::CHILD_THREAD_ID;
     let before = state
         .list_thread_events(&session.id, child_id, None, None)
         .unwrap()
@@ -549,7 +549,7 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
     // a read-time anchor fallback. I1 also proves the accepted interrupt uses
     // the complete committed reducer before publication: the first refresh
     // cannot insert previously unseen child facts before its issued cursor.
-    let runtime = crate::test_support::CoordinatedRuntimeFake::default();
+    let runtime = awaken_protocol_managed_testkit::CoordinatedRuntimeFake::default();
     runtime.defer_child_completion();
     let state = Arc::new(ManagedState::new(runtime.clone()).await);
     let request = serde_json::from_value(serde_json::json!({
@@ -560,7 +560,7 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
         .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
         .unwrap();
-    <crate::test_support::CoordinatedRuntimeFake as SessionRuntime>::run(
+    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as SessionRuntime>::run(
         &runtime,
         "coder",
         &session.id,
@@ -568,7 +568,7 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
     )
     .await
     .expect("I1-I5 setup installs one committed coordinated recovery prefix");
-    let child_id = crate::test_support::CoordinatedRuntimeFake::CHILD_THREAD_ID;
+    let child_id = awaken_protocol_managed_testkit::CoordinatedRuntimeFake::CHILD_THREAD_ID;
     assert_eq!(
         state.list_threads(&session.id).unwrap().len(),
         1,
@@ -755,7 +755,7 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
         "I6 no duplicate effect"
     );
 
-    <crate::test_support::CoordinatedRuntimeFake as awaken_session_execution_contract::ThreadReadRuntime>::archive_session_thread(
+    <awaken_protocol_managed_testkit::CoordinatedRuntimeFake as awaken_session_execution_contract::ThreadReadRuntime>::archive_session_thread(
         &runtime,
         &SessionId::from(&session.id),
         child_id,
@@ -1743,7 +1743,7 @@ impl awaken_session_execution_contract::RealizationRuntime for EndSessionFailer 
         awaken_lease_contract::authority::AuthorityProofStarted,
         awaken_session_types::RunError,
     > {
-        crate::test_support::observe_realization_request()
+        awaken_protocol_managed_testkit::observe_realization_request()
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -1785,7 +1785,11 @@ impl awaken_session_execution_contract::RealizationRuntime for EndSessionFailer 
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
-        crate::test_support::complete_session_projection_init(thread, &projection, &mode)?;
+        awaken_protocol_managed_testkit::complete_session_projection_init(
+            thread,
+            &projection,
+            &mode,
+        )?;
         Ok(())
     }
 
@@ -2234,7 +2238,10 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for EndSessionFai
         effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
         authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
     ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, RunError> {
-        crate::test_support::complete_terminal_cleanup_preparation(&effect, &authorization)
+        awaken_protocol_managed_testkit::complete_terminal_cleanup_preparation(
+            &effect,
+            &authorization,
+        )
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never

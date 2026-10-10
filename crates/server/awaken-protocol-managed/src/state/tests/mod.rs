@@ -121,7 +121,7 @@ impl awaken_session_execution_contract::RealizationRuntime for EndSessionRecorde
         awaken_lease_contract::authority::AuthorityProofStarted,
         awaken_session_types::RunError,
     > {
-        crate::test_support::observe_realization_request()
+        awaken_protocol_managed_testkit::observe_realization_request()
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -166,9 +166,11 @@ impl awaken_session_execution_contract::RealizationRuntime for EndSessionRecorde
         while self.block_prepare.load(std::sync::atomic::Ordering::SeqCst) {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        if let Some(init) =
-            crate::test_support::complete_session_projection_init(thread, &projection, &mode)?
-        {
+        if let Some(init) = awaken_protocol_managed_testkit::complete_session_projection_init(
+            thread,
+            &projection,
+            &mode,
+        )? {
             let _ = init;
             self.prepared.lock().unwrap().push(thread.to_string());
         }
@@ -723,7 +725,10 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for EndSessionRec
             .lock()
             .unwrap()
             .push(effect.command.thread_id.clone());
-        crate::test_support::complete_terminal_cleanup_preparation(&effect, &authorization)
+        awaken_protocol_managed_testkit::complete_terminal_cleanup_preparation(
+            &effect,
+            &authorization,
+        )
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -744,9 +749,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for EndSessionRec
         &self,
         effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
-        Ok(crate::test_support::complete_terminal_cleanup_disposal(
-            &effect,
-        ))
+        Ok(awaken_protocol_managed_testkit::complete_terminal_cleanup_disposal(&effect))
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never

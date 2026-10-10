@@ -206,7 +206,7 @@ impl awaken_session_execution_contract::RealizationRuntime for QueueFake {
     ) -> Result<awaken_lease_contract::authority::AuthorityProofStarted, RunError> {
         // Creation requires explicit request-relative execution-clock evidence;
         // the canonical test clock supplies that prerequisite for wire tests.
-        awaken_protocol_managed::test_support::observe_realization_request()
+        awaken_protocol_managed_testkit::observe_realization_request()
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never

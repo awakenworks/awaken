@@ -537,7 +537,7 @@ async fn scenario(
     let read = app.clone();
     let path = format!("/v1/sessions/{session_id}/events?limit=500");
     let hard_cancel = interrupt.as_ref().is_some_and(|g| g.hard_cancel);
-    awaken_protocol_managed::test_support::wait_for_session_events(
+    awaken_protocol_managed_testkit::wait_for_session_events(
         DurableFact::command_processed(&receipt),
         Duration::from_secs(90),
         "MCP provider dialogue reaches physical hangup",

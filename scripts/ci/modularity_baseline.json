@@ -292,7 +292,6 @@
     "awaken-protocol-managed::state/resources.rs::lower_complete_resource_manifest": 286,
     "awaken-protocol-managed::state/sessions.rs::create_session_with_identity_from": 213,
     "awaken-protocol-managed::state/sessions.rs::rehydrated_session_for": 157,
-    "awaken-protocol-managed::test_support.rs::run": 166,
     "awaken-provider-genai::lib.rs::infer_streaming": 228,
     "awaken-resource-reclaimer::lib.rs::reconcile": 237,
     "awaken-resource-worker-http::file_content_http.rs::read_file_content": 159,
@@ -391,7 +390,7 @@
   "crate-budget": {
     "awaken-protocol-managed": {
       "deps": 42,
-      "lines": 27124,
+      "lines": 25270,
       "reason": "W20 (plan 9.11): Session lifecycle and deployment decisions move to their application services; the adapter keeps protocol translation only"
     },
     "awaken-session-executor": {

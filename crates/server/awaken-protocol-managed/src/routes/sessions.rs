@@ -29,14 +29,15 @@ use crate::common::scope::RequiredWorkspaceScope;
 use crate::preview::ThreadPreviewProjector;
 use crate::routes::{ManagedJson, ManagedQuery};
 use crate::state::{
-    CommittedEventDelivery, ManagedState, ProjectionObservationDecision, RunError, RunErrorKind,
-    StateError, internal_thread_id,
+    CommittedEventDelivery, ManagedState, ProjectionObservationDecision, StateError,
+    internal_thread_id,
 };
 use crate::types::{
     DeletedSession, ErrorResponse, ListEventsResponse, PageCursor, PageQuery, SendEventsRequest,
     SendEventsResponse, Session, SessionCreateParams, SessionThread,
 };
 use crate::types::{Event, StreamFrame};
+use awaken_session_types::{RunError, RunErrorKind};
 
 mod content_capture;
 mod event_admission;
@@ -1575,7 +1576,8 @@ mod managed_json_tests {
         replay_is_terminal_after, require_v1_stream_time,
     };
     use crate::routes::extractors::managed_json_message;
-    use crate::state::{RunError, StateError};
+    use crate::state::StateError;
+    use awaken_session_types::RunError;
 
     #[test]
     fn history_time_header_selects_only_one_exact_version_and_rejects_sse_v2() {

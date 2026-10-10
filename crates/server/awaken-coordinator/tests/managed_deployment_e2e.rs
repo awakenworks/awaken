@@ -14,8 +14,8 @@ use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAge
 use awaken_executable_agent_contract::{
     ExecutableAgentRegistrar, ExecutableAgentRegistration, ExecutableAgentSessionProfile,
 };
-use awaken_protocol_managed::test_support::DurableFact;
 use awaken_protocol_managed::{ManagedDeploymentSessionLauncher, deployments_router};
+use awaken_protocol_managed_testkit::DurableFact;
 use awaken_runtime_contract::snapshot::AgentId;
 use awaken_runtime_contract::{
     AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,
