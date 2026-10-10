@@ -53,6 +53,14 @@ string literals and `cfg(test)` code are not scanned):
 * `renamed-reexport`: the items of such a re-export given another name with `as`
   (`as _` is not a name), keyed by the contract crate with their number. One type
   has one name (plan 9.19 item 5).
+* `aggregate-pub-field`: a public field of a struct declared in a Session
+  aggregate-state contract (`AGGREGATE_STATE_CRATES`: the state contract and the
+  `awaken-session-contract` it merges into, so the rule follows the code), keyed
+  by struct name with its number of fields declared exactly `pub` (a named field
+  `pub name: T` or a tuple field `pub T`; `pub(crate)` and private fields are not
+  public). Aggregate state changes through its constructors and transition
+  methods, and the contract publishes read-only projections (plan 9.19 item 2,
+  W26); a struct not recorded may not gain a public field.
 
 Every ratchet is held at or below `contract_map_baseline.json`; see
 `_architecture_ratchet.py` for how a fall is recorded
@@ -119,6 +127,8 @@ TOOLING_LAYER = "tooling"
 STORAGE_LAYER = "infrastructure"
 STORAGE_NAME = "store"
 FAT_TRAIT_METHODS = 12
+# Session aggregate state: the state contract and the merge target of TARGET_MAP that absorbs it.
+AGGREGATE_STATE_CRATES = frozenset({"awaken-session-state-contract", "awaken-session-contract"})
 
 RULES = (
     Rule("contract-crates", "merge contracts on the same boundary instead of adding one (ADR-0091 D2)"),
@@ -135,6 +145,8 @@ RULES = (
          "convenience paths live only in the SDK facade (ADR-0091 D2, plan 9.19 item 5)"),
     Rule("renamed-reexport", "use the owner's name; a renamed re-export gives one type two names "
          "(ADR-0091 D2, plan 9.19 item 5)"),
+    Rule("aggregate-pub-field", "make the field private and change it through a constructor or transition "
+         "method; publish a read-only projection (plan 9.19 item 2, W26)"),
 )
 
 _TRAIT = re.compile(r"\bpub\s+trait\s+([A-Z]\w*)[^{;]*\{")
@@ -145,6 +157,10 @@ _OPTIONAL_ROLE = re.compile(
 _IMPL = re.compile(r"\bimpl\b")
 _BODY_TOKEN = re.compile(r"[{}]|\bfn\s+\w+")
 _PUB_USE = re.compile(r"\bpub\s+use\s+([^;]*);")
+_STRUCT = re.compile(r"\bstruct\s+([A-Z]\w*)")
+_ATTRIBUTES = re.compile(r"^(?:\s*#\s*\[[^\]]*\])*\s*")
+_PUBLIC_NAMED_FIELD = re.compile(r"pub\s+(?:r#)?\w+\s*:")
+_PUBLIC_TUPLE_FIELD = re.compile(r"pub\b(?!\s*\()")
 _PUBLIC_TYPE = re.compile(r"\bpub\s+(?:unsafe\s+)?(?:struct|enum|trait|type)\s+([A-Za-z_]\w*)")
 
 
@@ -245,6 +261,45 @@ def foreign_reexports(syntax: str, foreign: set[str]) -> list[tuple[int, list[st
     return found
 
 
+def _top_level_fields(body: str) -> list[str]:
+    fields, depth, start = [], 0, 0
+    for cursor, character in enumerate(body):
+        depth += {"(": 1, "[": 1, "{": 1, "<": 1, ")": -1, "]": -1, "}": -1, ">": -1}.get(character, 0)
+        if character == "," and depth == 0:
+            fields.append(body[start:cursor])
+            start = cursor + 1
+    fields.append(body[start:])
+    return [_ATTRIBUTES.sub("", field, count=1) for field in fields if field.strip()]
+
+
+def public_fields(syntax: str) -> list[tuple[str, int, int]]:
+    """(struct, offset, fields declared exactly `pub`) of every struct with a public field in one file."""
+    syntax = syntax.replace("->", "  ")  # an `Fn() -> T` bound must not close a generic list
+    found = []
+    for match in _STRUCT.finditer(syntax):
+        index = match.end()
+        while index < len(syntax) and syntax[index].isspace():
+            index += 1
+        if syntax.startswith("<", index):
+            index = _crate_boundary_workspace._balanced_end(syntax, index, "<", ">") or index
+        tuple_body = re.match(r"\s*\(", syntax[index:])
+        if tuple_body:
+            opening = index + tuple_body.end() - 1
+            close = _crate_boundary_workspace._balanced_end(syntax, opening, "(", ")") or len(syntax)
+            fields = [field for field in _top_level_fields(syntax[opening + 1:close - 1])
+                      if _PUBLIC_TUPLE_FIELD.match(field)]
+        else:
+            body = re.compile(r"[{;]").search(syntax, index)
+            if not body or body.group(0) == ";":
+                continue
+            close = _block_end(syntax, body.start())
+            fields = [field for field in _top_level_fields(syntax[body.start() + 1:close - 1])
+                      if _PUBLIC_NAMED_FIELD.match(field)]
+        if fields:
+            found.append((match.group(1), match.start(), len(fields)))
+    return found
+
+
 def fat_trait_errors(counts: Counts, baseline: dict) -> list[str]:
     """The admission half of `fat-trait`: no new fat trait, and no recorded growth."""
     recorded = baseline.get("fat-trait", {})
@@ -335,6 +390,11 @@ def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) 
             implemented_by[crate.name] |= implemented_traits(syntax)
             if crate.metadata.get("layer") != TOOLING_LAYER:
                 implemented |= implemented_by[crate.name]
+            if crate.name in AGGREGATE_STATE_CRATES:
+                for name, offset, fields in public_fields(syntax):
+                    counts["aggregate-pub-field"][name] += fields
+                    places["aggregate-pub-field"][name].append(
+                        f"{relative}:{_architecture_ratchet.line_of(syntax, offset)}")
             if crate.name not in contracts:
                 continue
             for name, offset, methods in contract_traits(syntax):
@@ -431,6 +491,12 @@ def selftest() -> None:
     | R3   | third-party or std crate; `pub(crate) use` / `use`; non-contract crate; comment, literal or `cfg(test)` | not counted |
     | N1   | an item of a counted re-export renamed with `as` (also the whole crate) | `renamed-reexport` per contract crate, value = renamed items |
     | N2   | `as _`; a renamed re-export of the crate's own or a third-party item    | not counted |
+    | A1   | aggregate-state struct with `pub` named fields (attributes, generics, `where`, nested commas) | counted per struct, value = public fields |
+    | A2   | private field; `pub(crate)` field; unit struct; enum struct variant   | not counted |
+    | A3   | tuple struct `pub` field                                               | counted; `pub(crate)` tuple field not |
+    | A4   | struct in `cfg(test)` code; struct in a crate outside AGGREGATE_STATE_CRATES | not counted |
+    | A5   | ratchet: a public field added (recorded or new struct) / one removed   | error: grown / error: lower the baseline |
+    | A6   | AGGREGATE_STATE_CRATES are on TARGET_MAP (a target or merging into one) | holds |
     """
     pending = {"t": ("b", ("old",))}
     assert target_map_errors({"t", "old"}, pending) == [], "T1"
@@ -480,6 +546,7 @@ def selftest() -> None:
     _selftest_fat_traits()
     _selftest_duplicate_types()
     _selftest_reexports()
+    _selftest_aggregate_fields()
     print("_contract_map_fitness selftest: the decision tables hold")
 
 
@@ -541,6 +608,36 @@ def _selftest_reexports() -> None:
                                                 "c/src/lib.rs:9"], "R1 where"
     assert counts["renamed-reexport"] == {"c": 3}, f"N1/N2 {counts['renamed-reexport']}"
     assert places["renamed-reexport"]["c"] == ["c/src/lib.rs:1", "c/src/lib.rs:3", "c/src/lib.rs:9"], "N1 where"
+
+
+def _selftest_aggregate_fields() -> None:
+    code = (
+        "pub struct State<T: Clone> where T: Fn() -> u8 {\n"
+        "    #[serde(default)]\n    pub id: Id,\n    pub map: HashMap<String, Vec<(u8, u8)>>,\n"
+        "    private: u8,\n    pub(crate) inner: u8,\n    pub r#type: T,\n}\n"
+        "pub struct Pair(pub u8, pub(crate) u8, u16);\npub struct Unit;\nstruct Hidden { value: u8 }\n"
+        "pub enum Phase { Running { pub_like: u8 } }\n"
+        "#[cfg(test)]\nmod tests { pub struct Fixture { pub value: u8 } }\n"
+    )
+    sources = tuple(_architecture_ratchet.CrateSource(
+        crate.name, crate.metadata, crate.directory,
+        {path: _crate_boundary_workspace.production_rust(text) for path, text in crate.files.items()})
+        for crate in (_crate("awaken-session-state-contract", "contract", "session", code),
+                      _crate("other", "contract", "session", "pub struct Open { pub value: u8 }\n")))
+    counts, places, _contracts = measure(sources, Path("/w"))
+    assert counts["aggregate-pub-field"] == {"State": 3, "Pair": 1}, f"A1-A4 {counts['aggregate-pub-field']}"
+    assert places["aggregate-pub-field"]["Pair"] == ["awaken-session-state-contract/src/lib.rs:9"], "A3 where"
+    rules = tuple(rule for rule in RULES if rule.name == "aggregate-pub-field")
+    held = {"aggregate-pub-field": {"State": 3, "Pair": 1}}
+    assert _architecture_ratchet.compare(rules, counts, places, held, "b.json") == [], "A5 equal"
+    grown = _architecture_ratchet.compare(rules, {"aggregate-pub-field": {"State": 4, "Pair": 1, "New": 1}}, places,
+                                          held, "b.json")
+    assert len(grown) == 2 and all("baseline" in error and "make the field private" in error for error in grown), \
+        f"A5 growth {grown}"
+    fell = _architecture_ratchet.compare(rules, {"aggregate-pub-field": {"State": 2}}, places, held, "b.json")
+    assert len(fell) == 2 and all("lower b.json" in error for error in fell), f"A5 fall {fell}"
+    merging = {crate for _boundary, pending in TARGET_MAP.values() for crate in pending}
+    assert AGGREGATE_STATE_CRATES <= set(TARGET_MAP) | merging, "A6"
 
 
 def _selftest_persistence_ports() -> None:
