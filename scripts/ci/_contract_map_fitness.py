@@ -50,6 +50,9 @@ string literals and `cfg(test)` code are not scanned):
   (`crate::`, `self::`, `super::`, a local module or enum) and of third-party or
   standard-library crates are not counted: the rule is about one first-party type
   reachable through several contracts.
+* `renamed-reexport`: the items of such a re-export given another name with `as`
+  (`as _` is not a name), keyed by the contract crate with their number. One type
+  has one name (plan 9.19 item 5).
 
 Every ratchet is held at or below `contract_map_baseline.json`; see
 `_architecture_ratchet.py` for how a fall is recorded
@@ -130,6 +133,8 @@ RULES = (
          "(ADR-0091 D2, plan 9.19 item 4)"),
     Rule("contract-reexport", "depend on the owning crate directly instead of re-exporting its items; SDK "
          "convenience paths live only in the SDK facade (ADR-0091 D2, plan 9.19 item 5)"),
+    Rule("renamed-reexport", "use the owner's name; a renamed re-export gives one type two names "
+         "(ADR-0091 D2, plan 9.19 item 5)"),
 )
 
 _TRAIT = re.compile(r"\bpub\s+trait\s+([A-Z]\w*)[^{;]*\{")
@@ -221,6 +226,12 @@ def use_leaves(tree: str) -> list[str]:
             start = cursor + 1
     parts.append(inner[start:])
     return [tree[:opening] + leaf for part in parts for leaf in use_leaves(part)]
+
+
+def renamed(leaf: str) -> bool:
+    """Whether a use-tree leaf gives its item another name (`as _` only imports it anonymously)."""
+    alias = re.search(r"\sas\s+(\w+)$", leaf)
+    return bool(alias) and alias.group(1) != "_"
 
 
 def foreign_reexports(syntax: str, foreign: set[str]) -> list[tuple[int, list[str]]]:
@@ -341,6 +352,9 @@ def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) 
                 where = f"{relative}:{_architecture_ratchet.line_of(syntax, offset)}"
                 counts["contract-reexport"][crate.name] += len(leaves)
                 places["contract-reexport"][crate.name].append(where)
+                if any(map(renamed, leaves)):
+                    counts["renamed-reexport"][crate.name] += sum(map(renamed, leaves))
+                    places["renamed-reexport"][crate.name].append(where)
             for name, offset in public_types(syntax):
                 typed[name][crate.name].append(f"{relative}:{_architecture_ratchet.line_of(syntax, offset)}")
             for key, offset in optional_roles(syntax):
@@ -415,6 +429,8 @@ def selftest() -> None:
     | R1   | `pub use` of another first-party crate's items (nested groups, glob, `self`, the whole crate, `::` prefix) | counted per contract crate, value = leaves |
     | R2   | own module paths (`crate::`, `self::`, `super::`, local module or enum), own crate name | not counted |
     | R3   | third-party or std crate; `pub(crate) use` / `use`; non-contract crate; comment, literal or `cfg(test)` | not counted |
+    | N1   | an item of a counted re-export renamed with `as` (also the whole crate) | `renamed-reexport` per contract crate, value = renamed items |
+    | N2   | `as _`; a renamed re-export of the crate's own or a third-party item    | not counted |
     """
     pending = {"t": ("b", ("old",))}
     assert target_map_errors({"t", "old"}, pending) == [], "T1"
@@ -509,6 +525,7 @@ def _selftest_reexports() -> None:
     code = (
         "pub use other::{a::B, c::{D, E as F}, self};\npub use ::other::g::*;\npub use other as alias;\n"
         "pub use crate::x::Y;\npub use self::m::Z;\npub use super::W;\npub use local::V;\npub use Kind::*;\n"
+        "pub use other::m::{N as _, O as Q};\npub use crate::own::P as R;\npub use serde::Serialize as Ser;\n"
         "pub use c::Own;\npub use serde::Serialize;\npub use std::sync::Arc;\npub(crate) use other::H;\n"
         "use other::I;\n// pub use other::J;\nconst S: &str = \"pub use other::K;\";\n"
         "#[cfg(test)]\nmod tests { pub use other::L; }\n"
@@ -519,8 +536,11 @@ def _selftest_reexports() -> None:
         for crate in (_crate("c", "contract", "x", code), _crate("other", "contract", "y", ""),
                       _crate("app", "application", "x", "pub use other::B;\n")))
     counts, places, _contracts = measure(sources, Path("/w"))
-    assert counts["contract-reexport"] == {"c": 6}, f"R1-R3 {counts['contract-reexport']}"
-    assert places["contract-reexport"]["c"] == ["c/src/lib.rs:1", "c/src/lib.rs:2", "c/src/lib.rs:3"], "R1 where"
+    assert counts["contract-reexport"] == {"c": 8}, f"R1-R3 {counts['contract-reexport']}"
+    assert places["contract-reexport"]["c"] == ["c/src/lib.rs:1", "c/src/lib.rs:2", "c/src/lib.rs:3",
+                                                "c/src/lib.rs:9"], "R1 where"
+    assert counts["renamed-reexport"] == {"c": 3}, f"N1/N2 {counts['renamed-reexport']}"
+    assert places["renamed-reexport"]["c"] == ["c/src/lib.rs:1", "c/src/lib.rs:3", "c/src/lib.rs:9"], "N1 where"
 
 
 def _selftest_persistence_ports() -> None:

@@ -99,5 +99,11 @@
     "awaken-session-state-contract": 8,
     "awaken-tenancy": 2,
     "awaken-worker-contract": 5
+  },
+  "renamed-reexport": {
+    "awaken-runtime-contract": 9,
+    "awaken-session-configuration-contract": 3,
+    "awaken-session-runtime-contract": 1,
+    "awaken-worker-contract": 2
   }
 }
