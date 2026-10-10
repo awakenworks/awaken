@@ -103,11 +103,14 @@ selection retain their existing defaults. For interactive variable inspection,
 set `CARGO_PROFILE_DEV_DEBUG=2` and `CARGO_PROFILE_TEST_DEBUG=2`; changing profile
 settings deliberately requires a fresh compatible build once.
 
-The quality workflow enables workspace-crate caching in the existing pinned
-Rust cache action, whose keys include the toolchain, OS/architecture, compiler
-environment and manifests. Cargo still decides source freshness and all selected
-tests execute on every run; a cache hit is never execution evidence. Measure
-cache restore/save cost and retained artifact size alongside build time.
+The quality workflow retains dependency caching in the existing pinned Rust
+cache action, whose keys include the toolchain, OS/architecture, compiler
+environment and manifests. A warm checkout can reuse compatible workspace
+artifacts locally, but that is not evidence of savings on an ephemeral CI
+runner. Before enabling workspace-crate caching there, measure source freshness,
+cache restore/save cost and retained artifact size alongside build time under
+the actual checkout procedure. Cargo still decides freshness and all selected
+tests execute on every run; a cache hit is never execution evidence.
 
 `check-rust.sh` retains each stage's live output, exact argv, status and elapsed
 seconds under `target/test-timings/rust-gate.*/`. Its `test-build` stage uses the
