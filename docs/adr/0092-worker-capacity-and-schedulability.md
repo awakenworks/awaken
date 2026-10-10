@@ -1,6 +1,6 @@
 # ADR-0092: Worker Capacity and Schedulability
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-09
 - Revised: 2026-10-10 (simplified after review: Kubernetes keeps judging headroom; the
   first draft's capacity domain, quota-derived capacity, backpressure observation and
