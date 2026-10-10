@@ -254,7 +254,7 @@ pub(super) async fn memory(
         .await?;
     let recalled_memory = selected_memory
         .clone()
-        .filter(|memory| memory.recall_enabled() && authored_memory.recall_enabled);
+        .filter(|memory| memory.binding().recall_enabled && authored_memory.recall_enabled);
     let memory_selector = recalled_memory
         .as_ref()
         .map(

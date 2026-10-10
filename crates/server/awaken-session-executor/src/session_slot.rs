@@ -15,7 +15,7 @@ use awaken_session_mcp::SessionMcpState;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::memory::BoundMemory;
+use crate::memory_binding::MemoryBinding;
 use crate::staged_resources::StagedResources;
 
 pub(crate) use crate::environment_owner::*;
@@ -321,10 +321,10 @@ pub(crate) struct SessionRealizationState {
     /// Every standard MemoryStore resource frozen for this Session, keyed by
     /// binding id. These exist independently of the optional Awaken automatic
     /// memory extension selected into `memory` below.
-    pub memory_bindings: HashMap<String, Arc<BoundMemory>>,
+    pub memory_bindings: HashMap<String, Arc<MemoryBinding>>,
     /// The one explicitly selected automatic recall/extraction binding. This is
     /// never the authority for which standard resources are mounted.
-    pub memory: Option<Arc<BoundMemory>>,
+    pub memory: Option<Arc<MemoryBinding>>,
     /// The Session's MCP generation owners, quiescence fence, and frozen
     /// attachment marker. Other Host modules use only its methods.
     pub mcp: SessionMcpState,

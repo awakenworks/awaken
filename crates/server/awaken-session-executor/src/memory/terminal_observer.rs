@@ -25,7 +25,7 @@ use super::BoundMemory;
 use crate::store::HostCommit;
 
 struct BoundMemoryTerminalExtraction {
-    memory: Arc<BoundMemory>,
+    memory: BoundMemory,
     extractor: MemoryExtractorSnapshot,
 }
 
@@ -112,11 +112,12 @@ impl crate::host::SharedHost {
                     "the frozen Memory plugin requires an explicit `memory.binding_id`",
                 )
             })?;
-            let memory = self
+            let binding = self
                 .compile_dispatched_memory_binding(session_thread, manifest, binding_id)
                 .await
                 .map_err(|error| crate::HostError::internal(error.to_string()))?;
-            if !memory.extraction_enabled() {
+            let memory = self.resources.memory.bound(binding);
+            if !memory.binding().extraction_enabled {
                 return Ok(None);
             }
             memory
@@ -133,7 +134,7 @@ impl crate::host::SharedHost {
             // `bind_thread_memory_recovery`, including this selected one.
             memory
         };
-        if !memory.extraction_enabled() {
+        if !memory.binding().extraction_enabled {
             return Ok(None);
         }
         self.configured_memory_terminal_observer(config, model, memory, frozen_publications, commit)
@@ -195,7 +196,7 @@ impl crate::host::SharedHost {
                 (config, model)
             }
         };
-        if !config.extraction_enabled || !memory.extraction_enabled() {
+        if !config.extraction_enabled || !memory.binding().extraction_enabled {
             return Ok(None);
         }
         memory
@@ -210,7 +211,7 @@ impl crate::host::SharedHost {
         &self,
         config: awaken_ext_memory::MemoryConfig,
         model: awaken_runtime_contract::resolved::ResolvedModelCandidate,
-        memory: Arc<BoundMemory>,
+        memory: BoundMemory,
         frozen_publications: &dyn awaken_runtime_contract::PublishedAgentSnapshotSource,
         commit: Arc<HostCommit>,
     ) -> Result<
@@ -220,7 +221,7 @@ impl crate::host::SharedHost {
         let agent_id = config.agent_id.as_deref().unwrap_or(MEMORY_AGENT_ID);
         let agent = crate::agent_catalog::resolve_auxiliary_snapshot(
             Some(frozen_publications),
-            &memory.workspace_id,
+            &memory.binding().workspace_id,
             agent_id,
             default_memory_agent(model, DEFAULT_MEMORY_INSTRUCTIONS),
             config.instructions.as_deref(),

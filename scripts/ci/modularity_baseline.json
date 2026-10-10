@@ -88,7 +88,7 @@
     "awaken-dispatch": 2,
     "awaken-runtime": 2,
     "awaken-runtime-contract": 3,
-    "awaken-session-executor": 18,
+    "awaken-session-executor": 16,
     "awaken-sandbox-container": 3,
     "awaken-sandbox-local": 3,
     "awaken-session-application": 2,

@@ -18,9 +18,6 @@
     "managed_resource_projection -> crate": [
       "ManagedHost"
     ],
-    "managed_resource_projection -> memory": [
-      "BoundMemory"
-    ],
     "managed_resource_projection -> session_slot": [
       "SessionRuntimeSlot"
     ],
