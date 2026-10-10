@@ -18,6 +18,7 @@ separation = "contract"
 test-support = []
 
 [dependencies]
+awaken-environment-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-time.workspace = true
 awaken-lease-contract.workspace = true

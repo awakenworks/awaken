@@ -1,0 +1,9 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = ["external.async_runtime_synchronization_and_scheduling"]
+evidence = []
+production_entrypoints = []
+
+[[bounds]]
+text = "Kani executes the production EnvironmentConfig stage-permission decision over both network kinds, both runtime permission flags and every package manager with empty/nonempty declarations. That same decision drives both host projections: declaring packages cannot grant runtime registry permission; a declared package enables build-stage registry permission. Host preservation, catalog expansion, sorting and deduplication remain executable decision-table evidence, not properties proved by this kernel. This bounded value proof does not prove arbitrary host strings, package resolution, provider no-bypass enforcement, DNS, Kubernetes/CNI, image availability, process termination or business acceptance."

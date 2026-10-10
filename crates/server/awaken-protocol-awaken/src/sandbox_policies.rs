@@ -369,7 +369,7 @@ mod tests {
         assert_eq!(
             map_application_error(EnvironmentApplicationError::Create(
                 awaken_environment_contract::CreateEnvironmentError::InvalidConfig(
-                    awaken_environment_contract::InvalidEnvironmentConfig::PackagesRequirePackageManager,
+                    awaken_environment_contract::InvalidEnvironmentConfig::InvalidPackageRequirement { manager: "npm" },
                 ),
             )),
             StatusCode::UNPROCESSABLE_ENTITY
@@ -377,7 +377,7 @@ mod tests {
         assert_eq!(
             map_application_error(EnvironmentApplicationError::Store(
                 awaken_environment_contract::EnvironmentStoreError::InvalidConfig(
-                    awaken_environment_contract::InvalidEnvironmentConfig::PackagesRequirePackageManager,
+                    awaken_environment_contract::InvalidEnvironmentConfig::InvalidPackageRequirement { manager: "npm" },
                 ),
             )),
             StatusCode::UNPROCESSABLE_ENTITY

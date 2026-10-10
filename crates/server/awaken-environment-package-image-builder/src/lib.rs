@@ -2,8 +2,8 @@
 // @formal reason: Static owner: the sole build-stage projection from a canonical non-self-hosted
 // @formal reason: package-image demand to the existing package provisioner. Dynamic path: canonical demand
 // @formal reason: admission excludes SelfHosted and empty packages; Cloud Unrestricted projects to
-// @formal reason: NetworkPolicy::Unrestricted, while Cloud Limited preserves allowed_hosts, conditionally
-// @formal reason: adds the Environment owner's PUBLIC_PACKAGE_REGISTRY_HOSTS, sorts and deduplicates them,
+// @formal reason: NetworkPolicy::Unrestricted, while Cloud Limited preserves allowed_hosts, independently of runtime registry permission
+// @formal reason: adds the Environment owner's PUBLIC_PACKAGE_REGISTRY_HOSTS for declared packages, sorts and deduplicates them,
 // @formal reason: and supplies the same policy to build and availability. The Environment contract owns
 // @formal reason: authored networking and registry-catalog semantics, while the provisioner owns
 // @formal reason: enforcement; this is a runtime.capabilities.capability_floor product-requirement
@@ -15,10 +15,11 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_environment_contract::PackageRequirements;
 use awaken_executable_environment_contract::{
     EnvironmentImageBuildDemand, EnvironmentImageBuildError, EnvironmentImageBuilder,
 };
-use awaken_provisioning_contract::{NetworkPolicy, PackageRequirements};
+use awaken_provisioning_contract::NetworkPolicy;
 
 fn package_requirements(demand: &EnvironmentImageBuildDemand) -> PackageRequirements {
     PackageRequirements {
@@ -37,35 +38,11 @@ fn package_requirements(demand: &EnvironmentImageBuildDemand) -> PackageRequirem
 }
 
 fn build_network_policy(config: &awaken_environment_contract::EnvironmentConfig) -> NetworkPolicy {
-    use awaken_environment_contract::EnvironmentNetworking;
-    match config {
-        awaken_environment_contract::EnvironmentConfig::SelfHosted
-        | awaken_environment_contract::EnvironmentConfig::Cloud {
-            networking: EnvironmentNetworking::Unrestricted {},
-            ..
-        } => NetworkPolicy::Unrestricted,
-        awaken_environment_contract::EnvironmentConfig::Cloud {
-            networking:
-                EnvironmentNetworking::Limited {
-                    allowed_hosts,
-                    allow_package_managers,
-                    ..
-                },
-            ..
-        } => {
-            let mut hosts = allowed_hosts.clone();
-            if *allow_package_managers {
-                hosts.extend(
-                    awaken_environment_contract::PUBLIC_PACKAGE_REGISTRY_HOSTS
-                        .iter()
-                        .map(ToString::to_string),
-                );
-            }
-            hosts.sort();
-            hosts.dedup();
+    config
+        .package_build_network_hosts()
+        .map_or(NetworkPolicy::Unrestricted, |hosts| {
             NetworkPolicy::Allowlist { hosts }
-        }
-    }
+        })
 }
 
 struct PackageEnvironmentImageBuilder {
@@ -134,14 +111,14 @@ mod tests {
         calls: Mutex<
             Vec<(
                 String,
-                awaken_provisioning_contract::PackageRequirements,
+                awaken_environment_contract::PackageRequirements,
                 awaken_provisioning_contract::NetworkPolicy,
             )>,
         >,
         availability_calls: Mutex<
             Vec<(
                 String,
-                awaken_provisioning_contract::PackageRequirements,
+                awaken_environment_contract::PackageRequirements,
                 awaken_provisioning_contract::NetworkPolicy,
                 String,
             )>,
@@ -164,7 +141,7 @@ mod tests {
         async fn prepare_package_image(
             &self,
             base_image: &str,
-            packages: &awaken_provisioning_contract::PackageRequirements,
+            packages: &awaken_environment_contract::PackageRequirements,
             network: &awaken_provisioning_contract::NetworkPolicy,
         ) -> Result<String, awaken_sandbox_container::RuntimeError> {
             self.calls.lock().unwrap().push((
@@ -178,7 +155,7 @@ mod tests {
         async fn package_image_available(
             &self,
             base_image: &str,
-            packages: &awaken_provisioning_contract::PackageRequirements,
+            packages: &awaken_environment_contract::PackageRequirements,
             network: &awaken_provisioning_contract::NetworkPolicy,
             image: &str,
         ) -> Result<bool, awaken_sandbox_container::RuntimeError> {
@@ -276,5 +253,54 @@ mod tests {
             )],
             "R4 exact demand and stored identity reuse the one availability port"
         );
+    }
+    #[tokio::test]
+    async fn declared_packages_prepare_over_the_same_policy_without_runtime_registry_access() {
+        // DT-BN: C1 declared npm input; C2 empty limited runtime policy with
+        // registry permission off/on. BN1 both rows build/check the same
+        // declared registry policy; BN2 only C2 changes runtime hosts. The
+        // provisioner remains responsible for no-bypass enforcement and exact
+        // image verification; this port fixture proves neither by itself.
+        for allow_package_managers in [false, true] {
+            let provisioner = Arc::new(RecordingProvisioner::default());
+            let builder = package_environment_image_builder(provisioner.clone());
+            let demand = EnvironmentImageBuildDemand {
+                build_key: "offline-build".into(),
+                environment_id: "env-offline".into(),
+                source_revision: EnvironmentRevision(1),
+                definition_fingerprint: "definition".into(),
+                base_image: "registry/base@sha256:exact".into(),
+                config: EnvironmentConfig::Cloud {
+                    networking: EnvironmentNetworking::Limited {
+                        allowed_hosts: Vec::new(),
+                        allow_mcp_servers: false,
+                        allow_package_managers,
+                    },
+                    packages: EnvironmentPackages {
+                        npm: vec!["tsx@4.0.0".into()],
+                        ..Default::default()
+                    },
+                },
+            };
+            demand.config.validate().unwrap();
+            assert_eq!(
+                !demand.config.runtime_network_hosts().unwrap().is_empty(),
+                allow_package_managers,
+                "BN2"
+            );
+            let image = builder.build(&demand).await.unwrap();
+            assert!(builder.available(&demand, &image).await.unwrap());
+            let build = provisioner.calls.lock().unwrap()[0].clone();
+            let checked = provisioner.availability_calls.lock().unwrap()[0].clone();
+            assert_eq!(
+                (&build.0, &build.1, &build.2),
+                (&checked.0, &checked.1, &checked.2),
+                "BN1 exact build/check input"
+            );
+            assert!(
+                matches!(&build.2, NetworkPolicy::Allowlist { hosts } if hosts.contains(&"registry.npmjs.org".into())),
+                "BN1 explicit package registry"
+            );
+        }
     }
 }

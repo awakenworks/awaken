@@ -1,4 +1,5 @@
 // @formal entrypoint environment.registration_intent_is_atomic_recoverable_and_idempotent
+// @formal entrypoint environment.prepared_packages_do_not_grant_runtime_registry_access
 //! Control-owned Environment definitions and their persistence port.
 //!
 //! An Environment is immutable-by-revision configuration: identity, metadata,
@@ -110,8 +111,8 @@ pub enum EnvironmentStoreError {
 /// in-memory, SQLite, and PostgreSQL paths one authoritative interpretation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum InvalidEnvironmentConfig {
-    #[error("packages require package-manager network access")]
-    PackagesRequirePackageManager,
+    #[error("invalid {manager} package requirement")]
+    InvalidPackageRequirement { manager: &'static str },
 }
 
 /// A rejected mutation leaves the Environment and its revision unchanged.
@@ -170,6 +171,12 @@ pub enum EnvironmentConfig {
     SelfHosted,
 }
 
+#[derive(Clone, Copy)]
+enum EnvironmentNetworkStage {
+    Runtime,
+    PackageBuild,
+}
+
 impl EnvironmentConfig {
     #[must_use]
     pub fn is_self_hosted(&self) -> bool {
@@ -184,23 +191,74 @@ impl EnvironmentConfig {
         }
     }
 
-    /// Reject configurations whose package installation cannot reach a package
-    /// manager. Stores call this at their transaction boundary so an invalid
-    /// state cannot be persisted even when an adapter forgets to validate it.
+    /// Package preparation precedes execution. Runtime registry permission
+    /// cannot invalidate an explicitly declared build input; malformed operands
+    /// still fail at each ingress and persistence boundary.
     pub fn validate(&self) -> Result<(), InvalidEnvironmentConfig> {
-        if matches!(
-            self,
-            Self::Cloud {
-                networking: EnvironmentNetworking::Limited {
-                    allow_package_managers: false,
-                    ..
-                },
-                packages,
-            } if !packages.is_empty()
-        ) {
-            return Err(InvalidEnvironmentConfig::PackagesRequirePackageManager);
+        for (manager, requirements) in self.packages().manager_packages() {
+            if requirements
+                .iter()
+                .any(|requirement| !PackageRequirements::requirement_is_valid(requirement))
+            {
+                return Err(InvalidEnvironmentConfig::InvalidPackageRequirement { manager });
+            }
         }
         Ok(())
+    }
+
+    /// Base runtime hosts. MCP custody is added by its existing execution owner.
+    /// None denotes unrestricted egress; an empty Some denotes no egress.
+    #[must_use]
+    pub fn runtime_network_hosts(&self) -> Option<Vec<String>> {
+        self.network_hosts(EnvironmentNetworkStage::Runtime)
+    }
+
+    /// Package declarations authorize build-stage registry access independently
+    /// of the frozen runtime flag. Builds never derive MCP upstream access.
+    #[must_use]
+    pub fn package_build_network_hosts(&self) -> Option<Vec<String>> {
+        self.network_hosts(EnvironmentNetworkStage::PackageBuild)
+    }
+
+    fn package_registry_access(&self, stage: EnvironmentNetworkStage) -> bool {
+        match (self, stage) {
+            (
+                Self::Cloud {
+                    networking:
+                        EnvironmentNetworking::Limited {
+                            allow_package_managers,
+                            ..
+                        },
+                    ..
+                },
+                EnvironmentNetworkStage::Runtime,
+            ) => *allow_package_managers,
+            (Self::Cloud { packages, .. }, EnvironmentNetworkStage::PackageBuild) => {
+                !packages.is_empty()
+            }
+            _ => true,
+        }
+    }
+
+    fn network_hosts(&self, stage: EnvironmentNetworkStage) -> Option<Vec<String>> {
+        let Self::Cloud {
+            networking: EnvironmentNetworking::Limited { allowed_hosts, .. },
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let mut hosts = allowed_hosts.clone();
+        if self.package_registry_access(stage) {
+            hosts.extend(
+                PUBLIC_PACKAGE_REGISTRY_HOSTS
+                    .iter()
+                    .map(ToString::to_string),
+            );
+        }
+        hosts.sort();
+        hosts.dedup();
+        Some(hosts)
     }
 }
 
@@ -228,6 +286,39 @@ pub enum EnvironmentNetworking {
 impl Default for EnvironmentNetworking {
     fn default() -> Self {
         Self::Unrestricted {}
+    }
+}
+
+/// Exact package-manager inputs provisioned before any workload process starts.
+/// Manager names remain open for provider extensibility; protocol adapters own
+/// their closed public enums and providers reject unsupported managers.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageRequirements {
+    #[serde(default)]
+    pub managers: std::collections::BTreeMap<String, Vec<String>>,
+    /// Frozen Environment identity used only when at least one requirement is
+    /// unpinned. This gives "latest" a precise lifecycle: it resolves once for
+    /// one Environment snapshot, is cached across that snapshot's Sessions, and
+    /// is resolved again after the Environment revision changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution_id: Option<String>,
+}
+
+impl PackageRequirements {
+    /// One operand, never a command option. Managers interpret the value as data;
+    /// callers must still pass it as one argv element rather than interpolate it.
+    #[must_use]
+    pub fn requirement_is_valid(requirement: &str) -> bool {
+        !requirement.is_empty()
+            && requirement.trim() == requirement
+            && !requirement.starts_with('-')
+            && !requirement.chars().any(char::is_control)
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.managers.values().all(Vec::is_empty)
     }
 }
 
@@ -890,44 +981,155 @@ mod tests {
 
     #[test]
     fn package_network_invariant_exhausts_the_closed_state_space() {
-        // Exhaustive model check over the closed discriminants and booleans:
-        // self-hosted and unrestricted are always valid; limited is invalid iff
-        // packages are nonempty AND package-manager access is false. Because
-        // package contents do not affect the rule, empty/nonempty is the complete
-        // equivalence partition rather than a sampled example set.
-        for packages_present in [false, true] {
-            let packages = EnvironmentPackages {
-                npm: packages_present.then(|| "tsx".into()).into_iter().collect(),
-                ..Default::default()
-            };
-            assert!(EnvironmentConfig::SelfHosted.validate().is_ok());
-            assert!(
-                EnvironmentConfig::Cloud {
-                    networking: EnvironmentNetworking::Unrestricted {},
-                    packages: packages.clone(),
-                }
-                .validate()
-                .is_ok()
-            );
+        // DT-NET: C1 packages absent/present; C2 runtime registry permission
+        // off/on; C3 unrestricted/limited; C4 operand valid/invalid. N1 valid
+        // inputs admit independent preparation. N2 limited runtime permission
+        // alone controls runtime hosts. N3 declared packages alone enable
+        // build registry hosts. N4 malformed operands always reject. These
+        // projections grant no Pod policy or build completion receipt.
+        for present in [false, true] {
             for allow_package_managers in [false, true] {
-                let result = EnvironmentConfig::Cloud {
+                let config = EnvironmentConfig::Cloud {
                     networking: EnvironmentNetworking::Limited {
                         allowed_hosts: Vec::new(),
                         allow_mcp_servers: false,
                         allow_package_managers,
                     },
-                    packages: packages.clone(),
-                }
-                .validate();
-                assert_eq!(result.is_err(), packages_present && !allow_package_managers);
+                    packages: EnvironmentPackages {
+                        npm: present.then(|| "tsx".into()).into_iter().collect(),
+                        ..Default::default()
+                    },
+                };
+                assert!(config.validate().is_ok(), "N1");
+                assert_eq!(
+                    !config.runtime_network_hosts().unwrap().is_empty(),
+                    allow_package_managers,
+                    "N2"
+                );
+                assert_eq!(
+                    !config.package_build_network_hosts().unwrap().is_empty(),
+                    present,
+                    "N3"
+                );
             }
+        }
+        for networking in [
+            EnvironmentNetworking::Unrestricted {},
+            EnvironmentNetworking::Limited {
+                allowed_hosts: Vec::new(),
+                allow_mcp_servers: false,
+                allow_package_managers: false,
+            },
+        ] {
+            for operand in ["", "--option", " tsx", "tsx\n"] {
+                let config = EnvironmentConfig::Cloud {
+                    networking: networking.clone(),
+                    packages: EnvironmentPackages {
+                        npm: vec![operand.into()],
+                        ..Default::default()
+                    },
+                };
+                assert_eq!(
+                    config.validate(),
+                    Err(InvalidEnvironmentConfig::InvalidPackageRequirement { manager: "npm" }),
+                    "N4"
+                );
+            }
+        }
+        assert_eq!(EnvironmentConfig::SelfHosted.runtime_network_hosts(), None);
+        assert_eq!(
+            EnvironmentConfig::Cloud {
+                networking: EnvironmentNetworking::Unrestricted {},
+                packages: EnvironmentPackages::default()
+            }
+            .package_build_network_hosts(),
+            None,
+            "N1 unrestricted unchanged"
+        );
+    }
+
+    #[test]
+    fn package_operands_are_data_and_options_or_torn_values_are_refused() {
+        // DT-OP: O1 ordinary/scoped/pinned/URL values (including punctuation)
+        // remain one data operand; O2 empty, surrounding whitespace, leading
+        // option and embedded control bytes reject. This predicate does not
+        // authorize a registry or interpolate/execute a shell expression.
+        for value in [
+            "tsx",
+            "@org/pkg@1.0.0",
+            "pkg;literal",
+            "https://registry.test/archive.tgz",
+        ] {
+            assert!(
+                PackageRequirements::requirement_is_valid(value),
+                "O1 {value:?}"
+            );
+        }
+        for value in ["", " pkg", "pkg ", "--option", "pkg\nnext", "pkg\0next"] {
+            assert!(
+                !PackageRequirements::requirement_is_valid(value),
+                "O2 {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn network_projections_preserve_authored_hosts_without_mutating_the_definition() {
+        // DT-HOST: C1 duplicate, unsorted authored hosts including one registry;
+        // C2 each of six managers independently declares one package; C3 runtime
+        // registry permission is false. H1 runtime preserves only authored hosts;
+        // H2 preparation adds the complete canonical catalog; H3 both outputs
+        // sort/deduplicate and leave the immutable definition unchanged. Explicit
+        // authored registry access is preserved, so H1 forbids implicit grants.
+        for manager in 0..6 {
+            let mut packages = EnvironmentPackages::default();
+            match manager {
+                0 => &mut packages.apt,
+                1 => &mut packages.cargo,
+                2 => &mut packages.gem,
+                3 => &mut packages.go,
+                4 => &mut packages.npm,
+                _ => &mut packages.pip,
+            }
+            .push("package@1".into());
+            let config = EnvironmentConfig::Cloud {
+                networking: EnvironmentNetworking::Limited {
+                    allowed_hosts: vec![
+                        "z.example".into(),
+                        "registry.npmjs.org".into(),
+                        "a.example".into(),
+                        "z.example".into(),
+                    ],
+                    allow_mcp_servers: false,
+                    allow_package_managers: false,
+                },
+                packages,
+            };
+            let before = config.clone();
+            assert_eq!(
+                config.runtime_network_hosts().unwrap(),
+                ["a.example", "registry.npmjs.org", "z.example"],
+                "H1/H3 manager {manager}"
+            );
+            let mut expected: Vec<String> = PUBLIC_PACKAGE_REGISTRY_HOSTS
+                .iter()
+                .map(ToString::to_string)
+                .chain(["a.example".into(), "z.example".into()])
+                .collect();
+            expected.sort();
+            assert_eq!(
+                config.package_build_network_hosts().unwrap(),
+                expected,
+                "H2/H3 manager {manager}"
+            );
+            assert_eq!(config, before, "H3 immutable source");
         }
     }
 
     #[test]
     fn invalid_patch_restores_the_entire_aggregate() {
-        // C1 a valid aggregate has packages + access; C2 one patch disables
-        // access; E1 the patch is rejected; E2 every field and revision equals
+        // C1 a valid aggregate has declared packages; C2 one patch supplies an
+        // invalid operand and changes networking; E1 rejection; E2 every field and revision equals
         // the pre-state. This proves rollback is aggregate-wide, not field-local.
         let mut item = EnvItem {
             id: "env".into(),
@@ -962,12 +1164,15 @@ mod tests {
                         allow_mcp_servers: None,
                         allow_package_managers: Some(EnvironmentFieldUpdate::Replace(false)),
                     }),
-                    packages: None,
+                    packages: Some(EnvironmentPackagesMutation {
+                        npm: Some(EnvironmentFieldUpdate::Replace(vec!["--invalid".into()])),
+                        ..Default::default()
+                    }),
                 }),
                 ..Default::default()
             }),
             Err(EnvironmentMutationError::InvalidConfig(
-                InvalidEnvironmentConfig::PackagesRequirePackageManager
+                InvalidEnvironmentConfig::InvalidPackageRequirement { manager: "npm" }
             ))
         );
         assert_eq!(item, before);
@@ -988,7 +1193,7 @@ mod tests {
                         allow_package_managers: false,
                     },
                     packages: EnvironmentPackages {
-                        npm: vec!["tsx".into()],
+                        npm: vec!["--invalid".into()],
                         ..Default::default()
                     },
                 },
@@ -1025,14 +1230,14 @@ mod tests {
                 u64::MAX - 1,
                 invalid.clone(),
                 Err(EnvironmentMutationError::InvalidConfig(
-                    InvalidEnvironmentConfig::PackagesRequirePackageManager,
+                    InvalidEnvironmentConfig::InvalidPackageRequirement { manager: "npm" },
                 )),
             ),
             (
                 u64::MAX,
                 invalid,
                 Err(EnvironmentMutationError::InvalidConfig(
-                    InvalidEnvironmentConfig::PackagesRequirePackageManager,
+                    InvalidEnvironmentConfig::InvalidPackageRequirement { manager: "npm" },
                 )),
             ),
         ] {
@@ -1063,6 +1268,59 @@ mod tests {
         assert_eq!(
             EnvironmentStoreError::from(EnvironmentMutationError::RevisionExhausted),
             EnvironmentStoreError::RevisionExhausted,
+        );
+    }
+}
+
+#[cfg(kani)]
+mod network_projection_verification {
+    use super::*;
+    /// @obligation environment.prepared_packages_do_not_grant_runtime_registry_access
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn declared_build_packages_never_expand_runtime_hosts() {
+        // Raw configuration, then the same stage decision used by both host
+        // projections. The six managers and empty/nonempty declarations cover
+        // the presence predicate; no free authorization Boolean is supplied.
+        let restricted: bool = kani::any();
+        let runtime_permission: bool = kani::any();
+        let networking = if restricted {
+            EnvironmentNetworking::Limited {
+                allowed_hosts: Vec::new(),
+                allow_mcp_servers: kani::any(),
+                allow_package_managers: runtime_permission,
+            }
+        } else {
+            EnvironmentNetworking::Unrestricted {}
+        };
+        let mut config = EnvironmentConfig::Cloud {
+            networking,
+            packages: EnvironmentPackages::default(),
+        };
+        let before = config.package_registry_access(EnvironmentNetworkStage::Runtime);
+        let present: bool = kani::any();
+        if present {
+            let EnvironmentConfig::Cloud { packages, .. } = &mut config else {
+                unreachable!()
+            };
+            match kani::any::<u8>() % 6 {
+                0 => &mut packages.apt,
+                1 => &mut packages.cargo,
+                2 => &mut packages.gem,
+                3 => &mut packages.go,
+                4 => &mut packages.npm,
+                _ => &mut packages.pip,
+            }
+            .push("package@1".into());
+        }
+        assert_eq!(
+            before,
+            config.package_registry_access(EnvironmentNetworkStage::Runtime)
+        );
+        assert_eq!(before, !restricted || runtime_permission);
+        assert_eq!(
+            config.package_registry_access(EnvironmentNetworkStage::PackageBuild),
+            present
         );
     }
 }

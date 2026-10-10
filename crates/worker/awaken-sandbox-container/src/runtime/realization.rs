@@ -112,9 +112,7 @@ pub(crate) fn existing_realization_decision(
             observed.locator
         )));
     }
-    if observed_fence.succession(expected_fence)
-        == Some(awaken_lease_contract::fence::FenceSuccession::Reassignment)
-    {
+    if observed_fence.reassigns_realization_to(expected_fence) {
         if observed.phase == ExistingRealizationPhase::Indeterminate {
             return Err(RuntimeError::Backend(format!(
                 "existing Sandbox realization `{}` cannot be replaced by this effect",

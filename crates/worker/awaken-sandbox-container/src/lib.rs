@@ -178,7 +178,7 @@ pub struct ContainerPlan {
     pub command: Vec<String>,
     pub env: Vec<(String, String)>,
     pub control_services: std::collections::BTreeSet<SandboxControlServiceKind>,
-    pub packages: pc::PackageRequirements,
+    pub packages: awaken_environment_contract::PackageRequirements,
     pub binds: Vec<BindPlan>,
     /// Out-of-band outputs volume mount path (artifacts leave via the volume).
     pub outputs_volume: String,

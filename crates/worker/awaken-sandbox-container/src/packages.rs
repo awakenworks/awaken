@@ -4,6 +4,7 @@
 //! into provider build input. Runtime adapters may execute the returned recipe;
 //! they must not implement a second manager-command mapping.
 
+#[cfg(any(feature = "docker", feature = "podman"))]
 use awaken_provisioning_contract as pc;
 
 use crate::RuntimeError;
@@ -83,7 +84,9 @@ fn requirement_is_pinned(manager: &str, package: &str) -> bool {
 }
 
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s", test))]
-fn has_unpinned_requirement(requirements: &pc::PackageRequirements) -> bool {
+fn has_unpinned_requirement(
+    requirements: &awaken_environment_contract::PackageRequirements,
+) -> bool {
     requirements.managers.iter().any(|(manager, packages)| {
         packages
             .iter()
@@ -96,7 +99,7 @@ fn has_unpinned_requirement(requirements: &pc::PackageRequirements) -> bool {
 /// no protocol string is interpolated into a shell command.
 pub fn package_containerfile(
     base_image: &str,
-    requirements: &pc::PackageRequirements,
+    requirements: &awaken_environment_contract::PackageRequirements,
 ) -> Result<String, RuntimeError> {
     package_containerfile_for_user(base_image, "", requirements)
 }
@@ -104,7 +107,7 @@ pub fn package_containerfile(
 fn package_containerfile_for_user(
     base_image: &str,
     base_user: &str,
-    requirements: &pc::PackageRequirements,
+    requirements: &awaken_environment_contract::PackageRequirements,
 ) -> Result<String, RuntimeError> {
     if base_image.is_empty()
         || base_image
@@ -130,11 +133,7 @@ fn package_containerfile_for_user(
             continue;
         }
         for package in packages {
-            if package.trim() != package
-                || package.is_empty()
-                || package.starts_with('-')
-                || package.chars().any(char::is_control)
-            {
+            if !awaken_environment_contract::PackageRequirements::requirement_is_valid(package) {
                 return Err(RuntimeError::Backend(format!(
                     "invalid {manager} package requirement"
                 )));
@@ -223,7 +222,7 @@ fn package_containerfile_for_user(
 pub(crate) fn package_image_recipe(
     base_identity: &str,
     base_user: &str,
-    requirements: &pc::PackageRequirements,
+    requirements: &awaken_environment_contract::PackageRequirements,
 ) -> Result<(String, String), RuntimeError> {
     let mut containerfile = package_containerfile_for_user(base_identity, base_user, requirements)?;
     let resolution = if has_unpinned_requirement(requirements) {
@@ -269,7 +268,7 @@ mod tests {
     /// | B4 | unknown | any | reject |
     #[test]
     fn containerfile_follows_the_build_decision_table() {
-        let requirements = pc::PackageRequirements {
+        let requirements = awaken_environment_contract::PackageRequirements {
             managers: [
                 ("npm".into(), vec!["tsx@4.0.0".into()]),
                 ("pip".into(), vec!["httpx==0.28.0;touch /tmp/pwn".into()]),
@@ -294,7 +293,7 @@ mod tests {
         assert!(!file.contains("RUN pip install"), "B2 no shell form");
 
         for (rule, manager, package) in [("B3", "pip", "--index-url"), ("B4", "docker", "image")] {
-            let requirements = pc::PackageRequirements {
+            let requirements = awaken_environment_contract::PackageRequirements {
                 managers: [(manager.into(), vec![package.into()])]
                     .into_iter()
                     .collect(),
@@ -309,7 +308,7 @@ mod tests {
 
     #[test]
     fn image_fingerprint_keys_on_exact_base_identity_and_package_contents() {
-        let requirements = pc::PackageRequirements {
+        let requirements = awaken_environment_contract::PackageRequirements {
             managers: [("pip".into(), vec!["httpx==0.28.0".into()])]
                 .into_iter()
                 .collect(),
@@ -329,7 +328,7 @@ mod tests {
             "a mutable base tag moving invalidates the key"
         );
 
-        let changed = pc::PackageRequirements {
+        let changed = awaken_environment_contract::PackageRequirements {
             managers: [("pip".into(), vec!["httpx==0.29.0".into()])]
                 .into_iter()
                 .collect(),
@@ -356,7 +355,7 @@ mod tests {
 
     #[test]
     fn apt_builds_retry_transient_index_and_archive_failures() {
-        let requirements = pc::PackageRequirements {
+        let requirements = awaken_environment_contract::PackageRequirements {
             managers: [("apt".into(), vec!["curl=8.14.1-2".into()])]
                 .into_iter()
                 .collect(),
@@ -375,7 +374,7 @@ mod tests {
 
     #[test]
     fn unpinned_requirements_are_scoped_to_one_frozen_environment_resolution() {
-        let mut requirements = pc::PackageRequirements {
+        let mut requirements = awaken_environment_contract::PackageRequirements {
             managers: [("pip".into(), vec!["httpx".into()])].into_iter().collect(),
             resolution_id: Some("environment-revision-1".into()),
         };

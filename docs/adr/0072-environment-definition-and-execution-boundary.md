@@ -324,3 +324,39 @@ for an Environment whose package-build policy is Unrestricted; None remains
 network-none and Allowlist remains rejected where no enforcement exists. It never
 widens the Session execution network. The option grants build-time access to host
 network services, so it is a deployment trust decision, not model-selected data.
+
+## Package build networking and Session networking
+
+Package declarations authorize preparation of the immutable image before a
+Session runs. `networking` governs the Session's runtime egress; its
+`allow_package_managers` flag grants runtime registry access, not permission to
+prepare the explicitly declared packages. A Cloud definition may therefore
+request packages while freezing an empty limited runtime policy.
+
+The existing Environment contract owns both derived host projections. Limited
+package builds preserve the authored hosts and add the canonical public package
+registry catalog when packages are declared. Runtime projection adds that
+catalog only when runtime package-manager access is enabled. MCP custody remains
+an independent runtime projection; a build never obtains MCP access. Both
+projections derive from one immutable definition and create no second network
+configuration or execution authority.
+
+The package-image provisioner must enforce the derived build policy before it
+publishes an image. A backend without no-bypass allowlist enforcement refuses
+this build; it must not broaden access or fall back to an unprepared base image.
+Session activation then freezes the prepared digest and its own runtime policy.
+An empty runtime allowlist remains the existing `NetworkPolicy::None` profile.
+This permits exact contained-process recovery when the provider has independently
+attested that profile. Existing unrestricted profiles and historical opaque
+attempts retain their original recovery semantics.
+
+The neutral `PackageRequirements` vocabulary and its operand syntax have one
+owner in the dependency-free Environment contract. Provisioning uses that same
+type in its existing ports; Environment definitions do not depend on provisioning
+or acquire its deeper execution graph. Environment admission, authoring and the
+image recipe renderer reuse `PackageRequirements::requirement_is_valid`;
+malformed declarations fail before a definition revision or build is admitted.
+Wire fields and existing valid configuration serialization remain unchanged.
+Project dependency preparation is distinct from global tool installation;
+changing a development profile requires evidence that its repository bootstrap
+can run using the prepared dependencies without runtime network access.

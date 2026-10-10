@@ -377,7 +377,7 @@ impl PodmanRuntime {
     async fn resolve_package_build(
         &self,
         base_image: &str,
-        packages: &pc::PackageRequirements,
+        packages: &awaken_environment_contract::PackageRequirements,
     ) -> Result<(String, String, String), RuntimeError> {
         let base_identity = self
             .run(&[
@@ -743,7 +743,7 @@ impl ContainerRuntime for PodmanRuntime {
     async fn prepare_package_image(
         &self,
         base_image: &str,
-        packages: &pc::PackageRequirements,
+        packages: &awaken_environment_contract::PackageRequirements,
         network: &pc::NetworkPolicy,
     ) -> Result<String, RuntimeError> {
         let operation = async {
@@ -1434,7 +1434,7 @@ impl PackageImageProvisioner for PodmanRuntime {
     async fn prepare_package_image(
         &self,
         base_image: &str,
-        packages: &pc::PackageRequirements,
+        packages: &awaken_environment_contract::PackageRequirements,
         network: &pc::NetworkPolicy,
     ) -> Result<String, RuntimeError> {
         ContainerRuntime::prepare_package_image(self, base_image, packages, network).await
@@ -1443,7 +1443,7 @@ impl PackageImageProvisioner for PodmanRuntime {
     async fn package_image_available(
         &self,
         _base_image: &str,
-        _packages: &pc::PackageRequirements,
+        _packages: &awaken_environment_contract::PackageRequirements,
         _network: &pc::NetworkPolicy,
         image: &str,
     ) -> Result<bool, RuntimeError> {

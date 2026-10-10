@@ -448,7 +448,7 @@ async fn package_preparation_has_a_fail_closed_deadline() {
         .expect("constant test namespace");
     let runtime = PodmanRuntime::with_exec(namespace, 8080, Arc::new(BlockingExec))
         .with_package_build_timeout(std::time::Duration::from_millis(10));
-    let requirements = pc::PackageRequirements {
+    let requirements = awaken_environment_contract::PackageRequirements {
         managers: [("npm".to_owned(), vec!["cowsay@1.6.0".to_owned()])]
             .into_iter()
             .collect(),
@@ -785,7 +785,7 @@ async fn registry_mode_repairs_a_missing_remote_from_the_local_cache() {
         other => panic!("unexpected podman command: {other:?}"),
     });
     let rt = rt.with_package_registry("registry.internal");
-    let requirements = pc::PackageRequirements {
+    let requirements = awaken_environment_contract::PackageRequirements {
         managers: [("pip".into(), vec!["httpx==0.28.0".into()])]
             .into_iter()
             .collect(),
@@ -853,7 +853,7 @@ async fn package_requirements_build_one_content_addressed_image_on_cache_miss() 
             other => panic!("unexpected podman command: {other:?}"),
         }
     });
-    let requirements = pc::PackageRequirements {
+    let requirements = awaken_environment_contract::PackageRequirements {
         managers: [("pip".into(), vec!["httpx==0.28.0".into()])]
             .into_iter()
             .collect(),
@@ -892,7 +892,7 @@ async fn package_image_cache_hit_does_not_build_or_create_a_workload() {
             other => panic!("P2 forbids build/run calls: {other:?}"),
         }
     });
-    let requirements = pc::PackageRequirements {
+    let requirements = awaken_environment_contract::PackageRequirements {
         managers: [("pip".into(), vec!["httpx==0.28.0".into()])]
             .into_iter()
             .collect(),
@@ -926,7 +926,7 @@ async fn missing_base_identity_fails_before_cache_or_build_side_effects() {
             other => panic!("P3 forbids cache/build calls: {other:?}"),
         }
     });
-    let requirements = pc::PackageRequirements {
+    let requirements = awaken_environment_contract::PackageRequirements {
         managers: [("pip".into(), vec!["httpx==0.28.0".into()])]
             .into_iter()
             .collect(),
@@ -1575,7 +1575,7 @@ async fn package_build_network_reaches_the_podman_build_argv() {
             other => panic!("unexpected podman command: {other:?}"),
         });
         let rt = rt.with_package_build_host_network(host_opt_in);
-        let requirements = pc::PackageRequirements {
+        let requirements = awaken_environment_contract::PackageRequirements {
             managers: [("pip".into(), vec!["httpx==0.28.0".into()])]
                 .into_iter()
                 .collect(),

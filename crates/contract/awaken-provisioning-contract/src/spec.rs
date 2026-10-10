@@ -4,6 +4,8 @@
 //! The sandbox spec (what to realize), the declared environment config, and the
 //! process launch input.
 
+use awaken_environment_contract::PackageRequirements;
+
 use serde::{Deserialize, Serialize};
 use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,8 +15,8 @@ use std::sync::Arc;
 use crate::sandbox::IsolationClass;
 use crate::sandbox::{SandboxError, SecretBroker};
 use crate::vocab::{
-    EnvValue, EnvVar, EnvVisibility, MountRequirement, NetworkPolicy, PackageRequirements,
-    ResourceLimits, ResourceRequests,
+    EnvValue, EnvVar, EnvVisibility, MountRequirement, NetworkPolicy, ResourceLimits,
+    ResourceRequests,
 };
 
 /// How a process's standard streams are wired.

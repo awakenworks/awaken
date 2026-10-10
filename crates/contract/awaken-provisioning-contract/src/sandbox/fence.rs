@@ -266,6 +266,13 @@ impl SandboxEffectFence {
         self.succession(successor).is_some()
     }
 
+    /// Whether the shared successor law requires a new realization tenure.
+    /// Providers use this query without importing the lease kernel's enum.
+    #[must_use]
+    pub fn reassigns_realization_to(&self, successor: &Self) -> bool {
+        self.succession(successor) == Some(FenceSuccession::Reassignment)
+    }
+
     /// Compare the immutable aggregate effect identity while deliberately
     /// ignoring its renewable expiry boundary.
     #[must_use]
@@ -334,6 +341,13 @@ mod tests {
                 fence.authorizes_successor(&successor),
                 expected.is_some(),
                 "{rule}"
+            );
+            // S1 alone reassigns; S2 renewal and S3-S5 refusal cannot select
+            // provider replacement. The fixed decision-table rows own the oracle.
+            assert_eq!(
+                fence.reassigns_realization_to(&successor),
+                expected == Some(FenceSuccession::Reassignment),
+                "{rule} reassignment"
             );
         }
     }

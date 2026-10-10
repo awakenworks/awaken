@@ -764,9 +764,7 @@ fn session_network_policy(
     use awaken_session_configuration_contract::SessionNetworkPolicy;
 
     let EnvironmentNetworking::Limited {
-        allowed_hosts,
-        allow_mcp_servers,
-        allow_package_managers,
+        allow_mcp_servers, ..
     } = (match config {
         EnvironmentConfig::Cloud { networking, .. } => networking,
         EnvironmentConfig::SelfHosted => return SessionNetworkPolicy::Unrestricted,
@@ -774,7 +772,9 @@ fn session_network_policy(
     else {
         return SessionNetworkPolicy::Unrestricted;
     };
-    let mut hosts = allowed_hosts.clone();
+    let mut hosts = config
+        .runtime_network_hosts()
+        .expect("limited config has a host projection");
     // Only a Workload-held MCP credential authorizes the Sandbox to dial its
     // upstream host. Worker/Platform custody must use their mediated route;
     // adding the upstream here would mint a signed direct CONNECT bypass.
@@ -786,13 +786,6 @@ fn session_network_policy(
                     .map(|identity| identity.host)
             })
         }));
-    }
-    if *allow_package_managers {
-        hosts.extend(
-            awaken_environment_contract::PUBLIC_PACKAGE_REGISTRY_HOSTS
-                .iter()
-                .map(ToString::to_string),
-        );
     }
     SessionNetworkPolicy::Allowlist { hosts }.normalized()
 }
@@ -1827,6 +1820,42 @@ mod tests {
                 .expect("A4 replacement")
                 .lease_owner,
             "owner-b"
+        );
+    }
+    #[test]
+    fn prepared_packages_do_not_grant_runtime_network_or_mcp_upstream_access() {
+        // DT-RN: C1 valid declared npm dependency; C2 empty limited runtime
+        // policy with both grants false; C3 an attached MCP upstream exists.
+        // RN1 C1 does not change C2: execution compiles to None; RN2 C3 cannot
+        // expand it. Package construction/readiness and CNI enforcement retain
+        // their existing owners and independent qualification.
+        let config = EnvironmentConfig::Cloud {
+            networking: EnvironmentNetworking::Limited {
+                allowed_hosts: Vec::new(),
+                allow_mcp_servers: false,
+                allow_package_managers: false,
+            },
+            packages: EnvironmentPackages {
+                npm: vec!["tsx@4.0.0".into()],
+                ..Default::default()
+            },
+        };
+        config.validate().unwrap();
+        let target =
+            awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.example.test/rpc")
+                .unwrap();
+        assert_eq!(
+            session_network_policy(
+                &config,
+                &[target],
+                awaken_credential_contract::PlaintextBoundary::Workload
+            ),
+            awaken_session_configuration_contract::SessionNetworkPolicy::None,
+            "RN1-RN2"
+        );
+        assert!(
+            !config.package_build_network_hosts().unwrap().is_empty(),
+            "RN build policy remains independent"
         );
     }
 }
