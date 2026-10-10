@@ -55,12 +55,9 @@ impl SharedHost {
                 .environment_owner
                 .begin_preparing(environment, kind)?;
             #[cfg(target_os = "linux")]
-            self.installed_sessions.bind_execution_authority(
-                thread,
-                slot,
-                &candidate.environment,
-                self.execution_authority.as_ref(),
-            )?;
+            self.realizer
+                .execution
+                .bind(thread, &slot.realization, &candidate.environment)?;
             Ok(candidate)
         })
     }

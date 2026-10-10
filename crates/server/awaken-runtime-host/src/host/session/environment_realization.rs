@@ -853,11 +853,9 @@ impl SharedHost {
         initial: &awaken_provisioning_contract::SandboxEffectFence,
     ) -> Result<impl awaken_provisioning_contract::CurrentExecutionAuthority + use<>, HostError>
     {
-        self.installed_sessions.provider_effect_authority(
-            thread,
-            initial,
-            self.execution_authority.as_ref(),
-        )
+        self.realizer
+            .execution
+            .provider_effect_authority(thread, initial)
     }
 
     /// Materialize the deferred environment at the first Sandbox-target tool.

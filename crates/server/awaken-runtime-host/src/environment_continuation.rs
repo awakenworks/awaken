@@ -267,12 +267,9 @@ impl ManagedHost {
         // ownership; a same-byte replacement must not rebind this operation.
         let authority = self
             .host
-            .installed_sessions
-            .provider_effect_authority(
-                thread,
-                &effect_fence,
-                self.host.execution_authority.as_ref(),
-            )
+            .realizer
+            .execution
+            .provider_effect_authority(thread, &effect_fence)
             .map_err(to_run_error)?;
         let _lifecycle = self.host.installed_sessions.lock_lifecycle(thread).await;
         let environment = self
@@ -419,12 +416,9 @@ impl ManagedHost {
             let effect_fence = self.continuation_preparation_effect_fence(thread, preparation)?;
             let authority = self
                 .host
-                .installed_sessions
-                .provider_effect_authority(
-                    thread,
-                    &effect_fence,
-                    self.host.execution_authority.as_ref(),
-                )
+                .realizer
+                .execution
+                .provider_effect_authority(thread, &effect_fence)
                 .map_err(to_run_error)?;
             environment
                 .lifecycle()
@@ -440,12 +434,9 @@ impl ManagedHost {
         let effect_fence = self.continuation_preparation_effect_fence(thread, preparation)?;
         let authority = self
             .host
-            .installed_sessions
-            .provider_effect_authority(
-                thread,
-                &effect_fence,
-                self.host.execution_authority.as_ref(),
-            )
+            .realizer
+            .execution
+            .provider_effect_authority(thread, &effect_fence)
             .map_err(to_run_error)?;
         let provider_prepared_effect_fence = environment
             .lifecycle()

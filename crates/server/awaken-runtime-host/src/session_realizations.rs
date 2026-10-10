@@ -11,8 +11,10 @@ use std::sync::Arc;
 
 use crate::frozen_inputs::FrozenSessionInputs;
 
+mod execution_authority;
 mod projection_receipt;
 mod state;
+pub(crate) use execution_authority::ExecutionAuthority;
 pub(crate) use projection_receipt::FrozenProjectionReceipt;
 pub(crate) use state::{SessionRealization, SessionRealizationAuthority};
 
@@ -42,14 +44,19 @@ pub(crate) struct SessionRealizationAccess<'a> {
 /// Where the host keeps installed Sessions, as the realizer reaches them.
 pub(crate) trait SessionRealizationSource: Send + Sync {
     /// Visit one Session under the lock; with `create`, an absent Session is
-    /// installed empty first, otherwise an absent Session is not visited.
+    /// installed empty first, otherwise an absent Session is not visited. A
+    /// poisoned lock is reported, never unwound through.
     fn visit(
         &self,
         session: &str,
         create: bool,
         visit: &mut dyn FnMut(SessionRealizationAccess<'_>),
-    );
+    ) -> Result<(), InstalledSessionsPoisoned>;
 }
+
+/// A writer panicked while holding the installed Sessions' lock.
+#[derive(Debug)]
+pub(crate) struct InstalledSessionsPoisoned;
 
 /// The realizer's handle on installed Sessions (see the module docs).
 #[derive(Clone)]
@@ -67,9 +74,11 @@ impl SessionRealizations {
         f: impl FnOnce(SessionRealizationAccess<'_>) -> R,
     ) -> Option<R> {
         let (mut f, mut result) = (Some(f), None);
-        self.0.visit(session, create, &mut |access| {
-            result = f.take().map(|f| f(access));
-        });
+        self.0
+            .visit(session, create, &mut |access| {
+                result = f.take().map(|f| f(access));
+            })
+            .expect("installed sessions mutex poisoned");
         result
     }
 

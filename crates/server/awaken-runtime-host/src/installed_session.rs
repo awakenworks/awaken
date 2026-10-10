@@ -9,12 +9,12 @@
 //! lifecycle boundary instead of coordinating parallel maps.
 
 use crate::frozen_inputs::FrozenSessionInputs;
+use crate::session_realizations::InstalledSessionsPoisoned;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 pub(crate) use crate::environment_owner::*;
-mod execution_authority;
 pub(crate) use crate::session_realizations::{
     FrozenProjectionReceipt, SessionRealization, SessionRealizationAuthority,
 };
@@ -240,8 +240,8 @@ impl crate::session_realizations::SessionRealizationSource
         session: &str,
         create: bool,
         visit: &mut dyn FnMut(crate::session_realizations::SessionRealizationAccess<'_>),
-    ) {
-        let mut slots = self.lock().expect("session runtime slots mutex poisoned");
+    ) -> Result<(), InstalledSessionsPoisoned> {
+        let mut slots = self.lock().map_err(|_| InstalledSessionsPoisoned)?;
         let slot = if create {
             Some(slots.entry(session.to_string()).or_default())
         } else {
@@ -254,6 +254,7 @@ impl crate::session_realizations::SessionRealizationSource
                 run: &mut slot.run,
             });
         }
+        Ok(())
     }
 }
 
@@ -341,6 +342,27 @@ impl SessionRealizationRevocationSelection {
 }
 
 impl InstalledSessions {
+    /// Every enrolled scoped execution Environment, for realization renewal.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn execution_environments(
+        &self,
+    ) -> Vec<Arc<crate::session_environment::SessionEnvironment>> {
+        self.slots
+            .lock()
+            .expect("session runtime slots mutex poisoned")
+            .values()
+            .filter_map(|slot| slot.realization.environment_owner.execution_environment())
+            .filter(|environment| environment.scoped_execution().is_some())
+            .cloned()
+            .collect()
+    }
+
+    /// The registry itself, for tests that hold or poison its lock.
+    #[cfg(test)]
+    pub(crate) fn test_map(&self) -> &Arc<Mutex<HashMap<String, InstalledSession>>> {
+        &self.slots
+    }
+
     /// The realizer's view of these Sessions.
     pub(crate) fn realizations(&self) -> crate::session_realizations::SessionRealizations {
         self.realizations.clone()

@@ -275,10 +275,9 @@ impl SharedHost {
                 && let Some((environment, _)) = environment
             {
                 let provider_effect_fence = self.terminal_cleanup_effect_fence(&effect)?;
-                let authority = self.installed_sessions.provider_effect_authority(
+                let authority = self.realizer.execution.provider_effect_authority(
                     effect.command.session_id.as_str(),
                     &provider_effect_fence,
-                    self.execution_authority.as_ref(),
                 )?;
                 provider_prepared_effect_fence = Some(
                     environment
@@ -381,11 +380,10 @@ impl SharedHost {
                     provider,
                     previous_resources.as_ref(),
                 );
-                let authority = self.installed_sessions.provider_effect_authority(
-                    session_id.as_str(),
-                    authorization.effect_fence(),
-                    self.execution_authority.as_ref(),
-                )?;
+                let authority = self
+                    .realizer
+                    .execution
+                    .provider_effect_authority(session_id.as_str(), authorization.effect_fence())?;
                 provider
                     .terminal()
                     .dispose_restored(&spec, expected, &authorization, &authority)
@@ -439,10 +437,9 @@ impl SharedHost {
                             "terminal disposal authorization changed under its lifecycle lock",
                         ));
                     }
-                    let authority = self.installed_sessions.provider_effect_authority(
+                    let authority = self.realizer.execution.provider_effect_authority(
                         effect.command.session_id.as_str(),
                         authorization.effect_fence(),
-                        self.execution_authority.as_ref(),
                     )?;
                     environment
                         .lifecycle()

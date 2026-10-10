@@ -838,8 +838,9 @@ mod tests {
                 .unwrap();
             let fence = effect.provider_fence.as_ref().unwrap();
             let authority = host
-                .installed_sessions
-                .provider_effect_authority(thread, fence, host.execution_authority.as_ref())
+                .realizer
+                .execution
+                .provider_effect_authority(thread, fence)
                 .unwrap();
             let environment = Arc::new(
                 host.realizer

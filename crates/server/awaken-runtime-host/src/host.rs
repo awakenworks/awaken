@@ -198,10 +198,6 @@ pub struct SharedHost {
     /// Process-local projections materialized for prepared Sessions. The private
     /// slot makes their lifecycle atomic while the durable manifest stays authoritative.
     pub(crate) installed_sessions: crate::installed_session::InstalledSessions,
-    /// Worker-owned registry proof. Direct Hosts have no Worker registration;
-    /// every registered Worker installs this before enabling dispatch.
-    pub(crate) execution_authority:
-        Option<Arc<dyn awaken_provisioning_contract::CurrentExecutionAuthority>>,
     pub(crate) hub: Arc<ThreadEventHub>,
     /// When set, each thread commits to a durable SQLite database at
     /// `store_dir/<thread>.db`, so an awaiting run survives a process restart. When

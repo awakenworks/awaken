@@ -130,11 +130,10 @@ impl SharedHost {
             effect_fence,
         } = installation;
         let mut adopted = resident.is_none();
-        let authority = self.installed_sessions.provider_effect_authority(
-            thread,
-            effect_fence,
-            self.execution_authority.as_ref(),
-        )?;
+        let authority = self
+            .realizer
+            .execution
+            .provider_effect_authority(thread, effect_fence)?;
         let mut environment = match resident {
             Some(environment) => environment,
             None => match mode {
@@ -1025,11 +1024,10 @@ impl SharedHost {
             return Ok(());
         };
         let effect_fence = self.terminal_cleanup_effect_fence(effect)?;
-        let authority = self.installed_sessions.provider_effect_authority(
-            effect.command.session_id.as_str(),
-            &effect_fence,
-            self.execution_authority.as_ref(),
-        )?;
+        let authority = self
+            .realizer
+            .execution
+            .provider_effect_authority(effect.command.session_id.as_str(), &effect_fence)?;
         environment
             .lifecycle()
             .acknowledge_memory_reconciliation(&effect_fence, materializations, &authority)
@@ -1071,10 +1069,9 @@ impl SharedHost {
                 )
             })?;
         let terminal_effect_fence = self.terminal_cleanup_effect_fence(effect)?;
-        let authority = self.installed_sessions.provider_effect_authority(
+        let authority = self.realizer.execution.provider_effect_authority(
             effect.command.session_id.as_str(),
             &terminal_effect_fence,
-            self.execution_authority.as_ref(),
         )?;
         awaken_provisioning_contract::with_current_sandbox_effect(
             &terminal_effect_fence,

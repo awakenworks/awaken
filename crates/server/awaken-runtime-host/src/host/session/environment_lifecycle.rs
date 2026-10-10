@@ -495,11 +495,9 @@ impl SharedHost {
             .provider_fence
             .as_ref()
             .map(|fence| {
-                self.installed_sessions.provider_effect_authority(
-                    thread,
-                    fence,
-                    self.execution_authority.as_ref(),
-                )
+                self.realizer
+                    .execution
+                    .provider_effect_authority(thread, fence)
             })
             .transpose()?;
         let admit_original = || match (effect.provider_fence.as_ref(), authority.as_ref()) {
@@ -809,11 +807,10 @@ impl SharedHost {
                 "checkpoint source Disposal does not match its retained Preparation owner",
             ));
         }
-        let authority = self.installed_sessions.provider_effect_authority(
-            thread,
-            authorization.effect_fence(),
-            self.execution_authority.as_ref(),
-        )?;
+        let authority = self
+            .realizer
+            .execution
+            .provider_effect_authority(thread, authorization.effect_fence())?;
         owned
             .environment
             .lifecycle()
