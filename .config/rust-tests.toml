@@ -1,2 +1,13 @@
 # One Rust execution graph, shared by the full gate, affected tests and coverage.
 workspace_features = ["awaken-cli/container-k8s", "awaken-sandbox/hand"]
+
+# A binary some tests launch from beside their own executable. No crate under
+# test depends on it, so Cargo cannot derive it: `launcher` is the crate whose
+# code resolves and starts it, and scripts/ci/crate_test.py builds it first,
+# with this profile's features for its package, for every crate whose
+# dependency graph reaches the launcher. The full gate builds it as part of the
+# workspace graph.
+[[companion]]
+package = "awaken-sandbox"
+binary = "awaken-sandbox"
+launcher = "awaken-execution-composition"
