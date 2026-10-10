@@ -3,7 +3,10 @@
 - Status: Accepted
 - Date: 2026-10-09
 - Revised: 2026-10-09 (after the ADR consistency review: the Session aggregate keeps
-  the durable lease and environment truth; the first draft moved them to the realizer)
+  the durable lease and environment truth; the first draft moved them to the realizer);
+  2026-10-10 (naming: the crate is `awaken-session-realization` and its component
+  `RealizationExecutor` — "realizer" already names a per-resource-kind realizer in
+  ADR-0038/0053/0063/0075, and the component only executes effects)
 - Builds on: [ADR-0066](0066-session-service-binding-and-realization.md) (the durable
   `SessionRealizationLease` is the only Session ownership authority);
   [ADR-0074](0074-session-environment-suspension-and-checkpointed-continuation.md)
@@ -16,7 +19,7 @@
   machine).
 - Amends: [ADR-0088](0088-bounded-context-map-and-sdk-platform-contract.md) decision 2
   (the neutral `awaken-session-realization-driver` leaves the Session context and merges
-  into Execution's `awaken-session-realizer`).
+  into Execution's `awaken-session-realization`).
 - Preserves: [ADR-0056](0056-sandbox-reuse-two-orthogonal-volumes.md) amendment item 3
   (provisioning-contract slimming keeps the `lease` pure functions and the
   `select_provider*` kernels).
@@ -39,7 +42,7 @@ lines in eight crates across four contexts:
 
 | Crate | Lines | Role today |
 |---|---:|---|
-| `awaken-session-executor` | 14,264 | decides transitions and executes effects inside `SharedHost` (113 `SharedHost` methods in realizer modules, 43 upward module edges into host modules) |
+| `awaken-session-executor` | 14,264 | decides transitions and executes effects inside `SharedHost` (113 `SharedHost` methods in realization modules, 43 upward module edges into host modules) |
 | `awaken-provisioning-contract` | 12,833 | provider port plus lease, spec and preparation vocabulary |
 | `awaken-sandbox-local` | 3,805 | provider |
 | `awaken-session-application` | 3,790 | decides realization control (`realization`, `realization/control`) |
@@ -65,32 +68,32 @@ crates.
    `realization/control` modules, and the environment-state construction in
    runtime-host, move into that function.
 
-2. **Effects belong to one executor.** `awaken-session-realizer` (context: Execution,
+2. **Effects belong to one executor.** `awaken-session-realization` (context: Execution,
    as ADR-0088 decision 2 already lists) executes the actions the aggregate projects —
    provider calls, resource staging, content delivery, checkpoint, disposal — and
    reports observations (lease receipts, realized, failed, released, cleaned up). It
    keeps no durable state of its own, only process-local handles, and runs in both
-   topologies. runtime-host's realizer modules (the module-layer guard's `realizer`
-   set) move into it, and `awaken-session-realization-driver` merges into it.
+   topologies. runtime-host's realization modules (the module-layer guard's set, still
+   named `realizer` until the code rename) move into it, and `awaken-session-realization-driver` merges into it.
 
 3. **The boundary is ports: commands in, observations out.** The Session application
-   calls the realization contract's ports; the realizer implements them; the
+   calls the realization contract's ports; the realization executor implements them; the
    composition root wires them, so the Session application never depends on the
-   realizer crate. The ports keep ADR-0081 §9's capability ladder as typed roles: each
+   realization crate. The ports keep ADR-0081 §9's capability ladder as typed roles: each
    topology is constructed with exactly the roles it may use (a remote Worker receives
    only its claimed roles), and no caller discovers a role at run time. Roles are
    regrouped by caller; two roles merge only when no topology withholds one of them.
 
 4. **Functional core, imperative shell.** Decisions are pure functions over
    (aggregate, command or observation) and are tested with exhaustive decision tables;
-   the realizer executes effects and is tested against the provider port.
+   the realization executor executes effects and is tested against the provider port.
 
 5. **The provisioning contract shrinks to the provider port and its spec vocabulary**,
    keeping the `lease` pure functions and the `select_provider*` kernels that ADR-0056's
    amendment item 3 excludes from slimming.
 
 6. **Ratchets.** Construction of `SessionEnvironmentState` variants outside the state
-   contract, and code named for realization outside the realizer, its contract and the
+   contract, and code named for realization outside the realization executor, its contract and the
    providers, may only shrink.
 
 7. **Order.** In the split of `awaken-session-executor`, this move follows the layering of
@@ -105,7 +108,7 @@ crates.
   either a durable store or a second authority beside the aggregate.
 - **One command port and one observation port replacing the ladder.** A topology could
   then no longer be denied a capability by construction.
-- **The Session application calls the realizer crate directly.** Couples the
+- **The Session application calls the realization crate directly.** Couples the
   application to execution infrastructure; ports wired by the composition root keep the
   direction.
 - **Keep today's spread.** Every lease or cleanup rule keeps spanning three crates.
@@ -117,7 +120,7 @@ crates.
 - runtime-host loses its largest cluster (about 13,000 lines of realization);
   session-application loses its realization decision code to the aggregate; the driver
   crate disappears.
-- The Session ↔ realizer ports are also the remote protocol a Worker uses, through the
+- The Session ↔ realization executor ports are also the remote protocol a Worker uses, through the
   claimed roles.
 - Persisted data and wire shapes are unchanged: commands, receipts, the lease and
   `FrozenSessionProjection` keep their shapes.
