@@ -1015,19 +1015,46 @@ async fn exec_pending_wait_does_not_block_poll_or_another_waiter() {
     assert_eq!(b.unwrap().code, Some(0));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn exec_poll_distinguishes_running_missing_and_finished_status() {
     // X1 pending -> None then exact successful status; X2 missing observer ->
     // error; X3 transport ends without a Status frame -> error, with no
     // invented code 0. KPV6's external fault must not weaken X3 for a real
     // Session-owned exec whose status was lost.
-    let process = exec_process(Some(tokio::spawn(async {
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        Some(success_status(0))
-    })));
-    assert_eq!(process.poll().await.unwrap(), None);
-    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-    assert_eq!(process.poll().await.unwrap().unwrap().code, Some(0));
+    for code in [0, 7] {
+        let (finish, finished) = tokio::sync::oneshot::channel();
+        let (observe, observed) = tokio::sync::oneshot::channel();
+        let completion = tokio::spawn(async move {
+            finished.await.expect("X1 remote completion released");
+            observe.send(()).expect("X1 completion witness retained");
+            Some(success_status(code))
+        });
+        let completion_state = completion.abort_handle();
+        let process = exec_process(Some(completion));
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), process.poll())
+                .await
+                .expect("X1 pending poll must not wait for completion")
+                .unwrap(),
+            None,
+            "X1 held completion has no exit status"
+        );
+        finish.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), observed)
+            .await
+            .expect("X1 producer must complete")
+            .expect("X1 producer reported completion");
+        // The current-thread runtime returns the producer before the awakened
+        // witness runs. Check the actual JoinHandle state before terminal poll;
+        // waiting through ProcessHandle would cache the result and hide this path.
+        assert!(completion_state.is_finished(), "X1 observer returned");
+        assert_eq!(process.poll().await.unwrap().unwrap().code, Some(code));
+        assert_eq!(
+            process.poll().await.unwrap().unwrap().code,
+            Some(code),
+            "X1 terminal poll retains the exact status"
+        );
+    }
 
     let missing = exec_process(None);
     assert!(missing.poll().await.is_err());
