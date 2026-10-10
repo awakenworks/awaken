@@ -81,7 +81,7 @@ mod session_realizer;
 mod session_slot;
 mod session_tools;
 mod skill_catalog;
-mod skill_prompt;
+mod skill_delivery;
 mod skills;
 mod staged_resources;
 mod step_projection;

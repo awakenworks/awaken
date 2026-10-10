@@ -130,7 +130,7 @@ pub(super) async fn skills(
     .map_err(HostError::internal)?
     {
         if content_delivery == crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem {
-            let prompt = crate::skill_prompt::filesystem_skill_prompt(registry.as_ref())
+            let prompt = crate::skill_delivery::filesystem_skill_prompt(registry.as_ref())
                 .map_err(HostError::internal)?;
             host.session_slots
                 .update_realization(thread, |r| r.skill_prompt = prompt);

@@ -9,9 +9,13 @@
 //! legacy/direct callers, adapts that same registry to the two semantic tools.
 
 #[cfg(test)]
-use crate::skill_prompt::{FilesystemSkillPrompt, filesystem_skill_prompt};
+use crate::skill_delivery::{FilesystemSkillPrompt, filesystem_skill_prompt};
 use std::sync::Arc;
 
+use crate::skill_delivery::{
+    DELIVERED_SKILLS_SUBDIR, delivered_skill_content, delivered_skill_directory,
+    materialize_delivered_skill,
+};
 use awaken_ext_builtin_tools::{AUXILIARY_AGENT, AuxiliaryAgentInput};
 use awaken_ext_skills::{
     ActiveSkillTools, CompositeSkillRegistry, FixedSkillRegistry, ListSkillsTool, PathActivations,
@@ -31,54 +35,6 @@ use awaken_tool_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 /// negotiate a different dir via its `plugin_config.skills_dir`; this is the fallback.
 pub(crate) const DEFAULT_SKILLS_SUBDIR: &str = "skills";
 pub(crate) const MANAGED_SKILLS_SUBDIR: &str = ".claude/skills";
-pub(crate) const DELIVERED_SKILLS_SUBDIR: &str =
-    awaken_provisioning_contract::WorkspaceLayout::DELIVERED_SKILLS_SUBDIR;
-
-fn delivered_skill_directory(id: &str) -> String {
-    format!(
-        "{DELIVERED_SKILLS_SUBDIR}/{}",
-        awaken_resource_contract::skill_stem(id)
-    )
-}
-
-fn delivered_skill_content(version: &SkillVersion) -> Result<&str, String> {
-    if awaken_resource_contract::skill_bundle_sha256(&version.files) != version.bundle_sha256 {
-        return Err(format!(
-            "Skill {} version {} bundle hash mismatch",
-            version.skill_id, version.version
-        ));
-    }
-    version
-        .skill_md()
-        .and_then(|bytes| std::str::from_utf8(bytes).ok())
-        .ok_or_else(|| {
-            format!(
-                "Skill {} version {} has no UTF-8 SKILL.md",
-                version.skill_id, version.version
-            )
-        })
-}
-
-/// One physical bundle installer. Managed Resource realization owns its call;
-/// direct compatibility construction calls the same installer when necessary.
-pub(crate) async fn materialize_delivered_skill(
-    env: &crate::session_environment::SessionEnvironment,
-    version: &SkillVersion,
-) -> Result<(), String> {
-    delivered_skill_content(version)?;
-    let files = version
-        .files
-        .iter()
-        .map(|file| (file.path.clone(), file.content.clone(), file.executable))
-        .collect::<Vec<_>>();
-    env.skills()
-        .materialize_read_only_tree(
-            &delivered_skill_directory(version.skill_id.as_str()),
-            &files,
-        )
-        .await
-        .map_err(|error| error.to_string())
-}
 
 /// Serve only the advertised, exact Managed bundle while its filesystem is
 /// absent. This is an adapter over the existing frozen projection, not another

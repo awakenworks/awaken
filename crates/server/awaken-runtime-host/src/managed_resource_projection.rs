@@ -840,7 +840,7 @@ impl crate::ManagedHost {
             if reconcile_skills {
                 environment
                     .projection()
-                    .remove_projection_path(crate::skills::DELIVERED_SKILLS_SUBDIR)
+                    .remove_projection_path(crate::skill_delivery::DELIVERED_SKILLS_SUBDIR)
                     .await
                     .map_err(|error| RunError::internal(error.to_string()))?;
             }
@@ -887,7 +887,7 @@ impl crate::ManagedHost {
                             RunError::internal("compiled pinned Skill bytes are missing")
                         })?;
                     for version in &versions {
-                        crate::skills::materialize_delivered_skill(environment, version)
+                        crate::skill_delivery::materialize_delivered_skill(environment, version)
                             .await
                             .map_err(RunError::internal)?;
                     }
