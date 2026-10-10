@@ -16,24 +16,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
 use serde::{Deserialize, Serialize};
 
-/// Queue effect requested by one Session Run admission.
-///
-/// The value is part of the immutable reservation identity: recovery must
-/// preserve whether this Run merely follows prior work or replaces every older
-/// live dispatch on its logical Thread.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SessionRunReplacement {
-    #[default]
-    PreservePrior,
-    SupersedePrior,
-}
-
-impl SessionRunReplacement {
-    #[must_use]
-    pub const fn supersedes_prior(self) -> bool {
-        matches!(self, Self::SupersedePrior)
-    }
-}
+pub use awaken_session_types::{SessionRunCommandFingerprint, SessionRunReplacement};
 
 /// Immutable execution restrictions contributed by the application that owns
 /// a Session Run. These values can only narrow tool authority or require a
@@ -81,62 +64,28 @@ pub struct AdmitSessionRun {
     pub replacement: SessionRunReplacement,
 }
 
-/// Versioned compact identity of the immutable command admitted by the
-/// Session application.
-///
-/// Runtime projections are deliberately absent: a retry may observe newer
-/// Agent, model, Resource, Environment, Skill, or placement facts without
-/// changing the command that already owns the reserved Run. Distributed trace
-/// context is also excluded because it identifies an attempt, not the command.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SessionRunCommandFingerprint(String);
-
-impl SessionRunCommandFingerprint {
-    pub const CURRENT_PREFIX: &'static str = "session-command-v1:sha256:";
-
-    /// Compute the current identity before any mutable Runtime projection is
-    /// applied to the admitted command.
+impl AdmitSessionRun {
+    /// Compute the command's current compact identity before any mutable
+    /// Runtime projection is applied to it.
     #[must_use]
-    pub fn current(command: &AdmitSessionRun) -> Self {
+    pub fn command_fingerprint(&self) -> SessionRunCommandFingerprint {
         let digest = awaken_runtime_contract::content_fingerprint(&(
             "session-command-v1",
-            &command.session_id,
-            &command.agent_id,
-            &command.operation_id,
-            &command.run_id,
-            &command.messages,
-            &command.data_subject_id,
-            command.execution_requirements.tool_capability_narrowing,
-            &command.execution_requirements.required_worker_capabilities,
-            command.replacement,
+            &self.session_id,
+            &self.agent_id,
+            &self.operation_id,
+            &self.run_id,
+            &self.messages,
+            &self.data_subject_id,
+            self.execution_requirements.tool_capability_narrowing,
+            &self.execution_requirements.required_worker_capabilities,
+            self.replacement,
         ))
         .expect("Session Run command identity has no fallible serializable value");
-        Self(format!("{}{digest}", Self::CURRENT_PREFIX))
+        SessionRunCommandFingerprint::from_sha256_hex(&digest)
+            .expect("content_fingerprint yields a lowercase SHA-256 hex digest")
     }
 
-    /// Whether this value is the exact current wire format. Unknown versions
-    /// remain deserializable for durable-row inspection but never authorize a
-    /// new reservation or replay.
-    #[must_use]
-    pub fn is_current(&self) -> bool {
-        self.0
-            .strip_prefix(Self::CURRENT_PREFIX)
-            .is_some_and(|digest| {
-                digest.len() == 64
-                    && digest
-                        .bytes()
-                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            })
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl AdmitSessionRun {
     /// Message identities are the exact committed-input proof used when a
     /// foreground caller recovers the resulting Step from Thread truth.
     #[must_use]
@@ -490,7 +439,7 @@ mod tests {
         // Constraint: mutable Runtime projections do not exist in this input.
         // Rules F1=exact=>E1, F2=C2=>E1, F3=any C1 change=>E2.
         let original = command();
-        let fingerprint = SessionRunCommandFingerprint::current(&original);
+        let fingerprint = original.command_fingerprint();
         assert!(fingerprint.is_current(), "F1/E1");
         assert!(
             fingerprint
@@ -498,20 +447,12 @@ mod tests {
                 .starts_with(SessionRunCommandFingerprint::CURRENT_PREFIX),
             "F1/E1"
         );
-        assert_eq!(
-            fingerprint,
-            SessionRunCommandFingerprint::current(&original),
-            "F1/E1"
-        );
+        assert_eq!(fingerprint, original.command_fingerprint(), "F1/E1");
 
         let mut retraced = original.clone();
         retraced.traceparent =
             Some("00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-01".into());
-        assert_eq!(
-            fingerprint,
-            SessionRunCommandFingerprint::current(&retraced),
-            "F2/E1"
-        );
+        assert_eq!(fingerprint, retraced.command_fingerprint(), "F2/E1");
 
         let mut changes: Vec<AdmitSessionRun> = Vec::new();
         let mut changed = original.clone();
@@ -550,11 +491,7 @@ mod tests {
         changes.push(changed);
 
         for changed in changes {
-            assert_ne!(
-                fingerprint,
-                SessionRunCommandFingerprint::current(&changed),
-                "F3/E2"
-            );
+            assert_ne!(fingerprint, changed.command_fingerprint(), "F3/E2");
         }
     }
 

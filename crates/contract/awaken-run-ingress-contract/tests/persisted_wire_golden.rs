@@ -55,7 +55,7 @@ fn command() -> AdmitSessionRun {
 }
 
 fn command_fingerprint() -> SessionRunCommandFingerprint {
-    SessionRunCommandFingerprint::current(&command())
+    command().command_fingerprint()
 }
 
 fn activation() -> RunActivation {
