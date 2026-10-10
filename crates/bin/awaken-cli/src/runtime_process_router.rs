@@ -845,7 +845,7 @@ fn install_credential_rollout_target(
             }
             None => local_target,
         };
-        vault_state.set_rollout_target(rollout_target);
+        vault_state.application().set_rollout_target(rollout_target);
     }
 }
 

@@ -23,7 +23,9 @@ async-trait.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 url.workspace = true
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "v7"] }
+# Length-framed identities of application Vaults, sources and idempotent credentials.
+sha2 = "0.10"
 schemars = { version = "1", optional = true }
 serde_json.workspace = true
 # Feature `oauth-command`: refresh OAuth access tokens by running a helper
