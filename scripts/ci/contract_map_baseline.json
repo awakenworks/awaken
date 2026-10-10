@@ -88,7 +88,7 @@
     "awaken-credential-contract": 29,
     "awaken-executable-agent-contract": 1,
     "awaken-provisioning-contract": 1,
-    "awaken-dispatch-contract": 61,
+    "awaken-dispatch-contract": 60,
     "awaken-runtime-contract": 90,
     "awaken-session-application-contract": 5,
     "awaken-session-configuration-contract": 4,

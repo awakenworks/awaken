@@ -1,0 +1,362 @@
+use super::*;
+use awaken_session_configuration_contract::{ControlSessionCreationInputs, SessionCreationIntent};
+use awaken_session_resource_contract::SessionMutationPolicy;
+use awaken_session_state_contract::{ActivationState, SessionDisposition, SessionEnvironmentState};
+
+fn unattempted(id: &str) -> PersistedSession {
+    let mut session = persisted(id, false, "preparing");
+    let b = session.frozen_baseline().unwrap().clone();
+    let compiled = creation_intent(b).finalize().unwrap();
+    session.baseline =
+        awaken_session_configuration_contract::SessionBaselineState::Frozen(compiled.baseline);
+    session.created_at_unix_ms = Some(1);
+    // A cancelled queued Run may have advanced this watermark. Empty active
+    // membership, not a fabricated zero watermark, owns settled activity.
+    session.activity_epoch = 2;
+    session
+        .resources
+        .prepare(&session.session_id, file_resources("pending-file"))
+        .unwrap();
+    session.mcp = awaken_session_mcp_contract::SessionMcpAttachmentSet::from_initial(
+        vec![awaken_session_mcp_contract::McpAttachmentDraft {
+            name: "pending-mcp".into(),
+            target: awaken_session_mcp_contract::McpTarget::parse_http("https://example.test/mcp")
+                .unwrap(),
+            prompts_as_skills: false,
+            credential: None,
+            origin: awaken_session_mcp_contract::McpAttachmentOrigin::Session,
+        }],
+        None,
+    )
+    .unwrap();
+    session
+}
+
+fn creation_intent(
+    b: awaken_session_configuration_contract::SessionBaseline,
+) -> SessionCreationIntent {
+    SessionCreationIntent {
+        control: ControlSessionCreationInputs {
+            mutation_policy: SessionMutationPolicy::Frozen,
+            environment: b.environment,
+            runtime_placement: b.runtime_placement,
+            agent_id: b.agent_id,
+            agent_revision: b.agent_revision,
+            model: b.model,
+            execution_model_ref: b.execution_model_ref,
+            model_override: b.model_override,
+            system_prompt: *b.system_prompt,
+            runtime: b.runtime,
+            mcp_authoring: b.mcp_authoring,
+            delegate_ids: b.delegate_ids,
+            toolsets: b.toolsets,
+            mounts: b.mounts,
+            env: b.env,
+            prompts: b.prompts,
+            transcript_prefix: b.transcript_prefix,
+            resources: Default::default(),
+            initial_mcp: Vec::new(),
+        },
+    }
+}
+
+fn fact(id: &str) -> ManagedLifecycleFact {
+    ManagedLifecycleFact {
+        id: format!("{id}:terminated"),
+        object_id: id.into(),
+        workspace_id: Some("workspace".into()),
+        event_type: "session.terminated".into(),
+        timestamp: 1,
+        runtime_interval: None,
+    }
+}
+
+#[test]
+fn unattempted_profiled_release_checks_every_root_admission_cause() {
+    run_composed_async_test(|| async {
+        // Cause-effect graph: C1 Frozen WorkUnit + recorded creation; C2 Preparing
+        // + no active activity/interval; C3 unmaterialized Environment + no lease
+        // or attempted realization; C4 Resource/MCP participants only unattempted
+        // desired intent; C5 all accepted Events settled; C6 cleanup available.
+        // U1 C1&C2&C3&C4&C5&C6 -> archived + verified cleanup, no activation or
+        // publication. U2 any independent !C1..C5 -> rejection, exact unchanged
+        // root, zero effects. U3 !C6 -> retained archive intent, no successful
+        // reply; same-command retry joins the existing cleanup (next test).
+        // Conjunction short-circuiting makes one-false rules sufficient; each
+        // constituent and every other execution class has its own refusal case.
+        type Fault = (&'static str, fn(&mut PersistedSession));
+        let faults: &[Fault] = &[
+            ("managed", |s| {
+                if let awaken_session_configuration_contract::SessionBaselineState::Frozen(b) =
+                    &mut s.baseline
+                {
+                    b.mutation_policy = SessionMutationPolicy::Managed;
+                }
+            }),
+            ("interactive", |s| {
+                if let awaken_session_configuration_contract::SessionBaselineState::Frozen(b) =
+                    &mut s.baseline
+                {
+                    b.mutation_policy = SessionMutationPolicy::FileResources;
+                }
+            }),
+            ("missing-frozen-baseline", |s| {
+                let b = s.frozen_baseline().unwrap().clone();
+                s.baseline = awaken_session_configuration_contract::SessionBaselineState::Preparing(
+                    creation_intent(b),
+                );
+            }),
+            ("historical-creation", |s| s.created_at_unix_ms = None),
+            ("activating", |s| {
+                s.execution = SessionExecutionState::Activating
+            }),
+            ("running", |s| s.execution = SessionExecutionState::Running),
+            ("rescheduling", |s| {
+                s.execution = SessionExecutionState::Rescheduling
+            }),
+            ("idle", |s| s.execution = SessionExecutionState::Idle),
+            ("activation-failed", |s| {
+                s.execution = SessionExecutionState::ActivationFailed
+            }),
+            ("terminated", |s| {
+                s.execution = SessionExecutionState::Terminated
+            }),
+            ("active-activity", |s| {
+                s.active_activity_epochs.insert(2);
+            }),
+            ("running-interval", |s| {
+                s.running_interval =
+                    Some(awaken_session_state_contract::SessionRuntimeIntervalStart {
+                        interval_id: "old".into(),
+                        activity_epoch: 2,
+                        started_at_unix_ms: 1,
+                        opened_revision: Default::default(),
+                        admitted_after_commit_cursor: None,
+                        observations: Vec::new(),
+                    })
+            }),
+            ("realization-lease", |s| {
+                s.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+                    owner: "old".into(),
+                    runtime_incarnation: "old".into(),
+                    epoch: 1,
+                    expires_at_unix_ms: 10,
+                })
+            }),
+            ("attempted-realization", |s| {
+                s.realization_progress.attempts = 1
+            }),
+            ("unknown-failure", |s| {
+                s.realization_progress.last_error = Some("uncertain".into())
+            }),
+            ("resident-environment", |s| {
+                s.environment = SessionEnvironmentState::Resident {
+                    binding: "retained".into(),
+                    effect_id: None,
+                    generation: None,
+                    idle_since_unix_ms: None,
+                }
+            }),
+            ("active-resource", |s| {
+                s.resources.active = file_resources("active-file")
+            }),
+            ("active-skill", |s| {
+                s.resources.active = skill_resources("active-skill")
+            }),
+            ("resource-attempt", |s| {
+                s.resources.activations[0].attempts = 1
+            }),
+            ("resource-state", |s| {
+                s.resources.activations[0].state = ActivationState::Active
+            }),
+            ("resource-lease", |s| {
+                s.resources.activations[0].lease_expires_at_unix_ms = Some(10)
+            }),
+            ("repository-retirement", |s| {
+                s.resources.repository_retirements = repository_resources("repo", "retired-repo")
+                    .inputs()
+                    .to_vec()
+            }),
+            ("mcp-attempt", |s| s.mcp.attachments[0].attempts = 1),
+            ("mcp-state", |s| {
+                s.mcp.attachments[0].state =
+                    awaken_session_mcp_contract::McpAttachmentState::Realizing
+            }),
+            ("mcp-publication", |s| {
+                s.mcp.attachments[0].publication_acknowledged = true
+            }),
+            ("mcp-claim", |s| {
+                s.mcp.attachments[0].realization =
+                    Some(awaken_session_mcp_contract::McpRealizationClaim {
+                        realization_id: "old".into(),
+                        runtime_incarnation: "old".into(),
+                        lease_epoch: 1,
+                        lease_expires_at_unix_ms: 10,
+                        stage_idempotency_key: "old".into(),
+                    })
+            }),
+            ("accepted-event", |s| {
+                s.event_batches = session_with_unsettled_event("event").event_batches
+            }),
+        ];
+        for (cause, fault) in faults {
+            let repo = Arc::new(
+                awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                    .await
+                    .unwrap(),
+            );
+            let runtime = Arc::new(RecordingCleanupRuntime::default());
+            let app = application_with_runtime(
+                runtime.clone(),
+                repo.clone(),
+                Arc::new(RecordingEnvironmentSource::default()),
+            );
+            let id = format!("unattempted-{cause}");
+            let mut candidate = unattempted(&id);
+            fault(&mut candidate);
+            create(repo.as_ref(), candidate).await;
+            let before = repo.get(&SessionId::from(&id)).await.unwrap();
+            assert!(
+                app.release_unattempted_profiled_session(&id, "2026-10-10T00:00:00Z", fact(&id))
+                    .await
+                    .is_err(),
+                "U2 {cause}"
+            );
+            assert_eq!(
+                repo.get(&SessionId::from(&id)).await.unwrap(),
+                before,
+                "U2 {cause}: no root write"
+            );
+            assert!(
+                runtime.effective_ids.lock().unwrap().is_empty(),
+                "U2 {cause}: no effects"
+            );
+        }
+    });
+}
+
+#[test]
+fn unattempted_profiled_release_retains_cleanup_and_absorbs_replay() {
+    run_composed_async_test(|| async {
+        // U1/U3: nonempty pending File/MCP intent with zero attempts must still
+        // use the whole existing cleanup. Failure after archive returns no
+        // receipt; exact replay completes once, without ordinary activation.
+        // U4 public IdleOnly and TerminalOnly remain unchanged on Preparing.
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let runtime = Arc::new(RecordingCleanupRuntime::default());
+        let app = application_with_runtime(
+            runtime.clone(),
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let id = "unattempted-cleanup";
+        create(repo.as_ref(), unattempted(id)).await;
+        assert!(
+            app.terminate_session(id, "2026-10-10T00:00:00Z", fact(id))
+                .await
+                .is_err(),
+            "U4 public archive"
+        );
+        assert!(
+            app.release_terminal_session(id, "2026-10-10T00:00:00Z", fact(id))
+                .await
+                .is_err(),
+            "U4 TerminalOnly"
+        );
+        runtime.fail_quiesce_once.store(true, Ordering::SeqCst);
+        assert!(
+            app.release_unattempted_profiled_session(id, "2026-10-10T00:00:00Z", fact(id))
+                .await
+                .is_err(),
+            "U3 no premature success"
+        );
+        let pending = repo.get(&SessionId::from(id)).await.unwrap();
+        assert!(matches!(
+            pending.disposition,
+            SessionDisposition::Archived { .. }
+        ));
+        assert!(!pending.verified_terminal_cleanup().unwrap().is_completed());
+        app.release_unattempted_profiled_session(id, "2026-10-10T00:00:00Z", fact(id))
+            .await
+            .unwrap();
+        let completed = repo.get(&SessionId::from(id)).await.unwrap();
+        assert!(
+            completed
+                .verified_terminal_cleanup()
+                .unwrap()
+                .is_completed(),
+            "U1 whole cleanup receipt"
+        );
+        assert!(
+            app.begin_activity(&SessionId::from(id)).await.is_err(),
+            "U1 terminal absorption"
+        );
+        let effects = runtime.effective_ids.lock().unwrap().len();
+        app.release_unattempted_profiled_session(id, "another-timestamp", fact(id))
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.get(&SessionId::from(id)).await.unwrap(),
+            completed,
+            "U1 exact root replay"
+        );
+        assert_eq!(
+            runtime.effective_ids.lock().unwrap().len(),
+            effects,
+            "U1 no duplicate cleanup"
+        );
+        assert_eq!(
+            runtime.ordinary_resource_apply_calls.load(Ordering::SeqCst),
+            0,
+            "U1 no ordinary activation"
+        );
+    });
+}
+
+#[test]
+fn unattempted_profiled_release_and_activity_share_the_root_cas() {
+    run_composed_async_test(|| async {
+        // U5 C2 changes concurrently after adapter observation: release and
+        // activity must have one root-CAS winner. If activity wins, release
+        // rechecks and rejects; if release wins, activity cannot reopen it.
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let app = application_with_runtime(
+            Arc::new(RecordingCleanupRuntime::default()),
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let id = "unattempted-race";
+        create(repo.as_ref(), unattempted(id)).await;
+        let session_id = SessionId::from(id);
+        let (activity, release) = tokio::join!(
+            app.begin_activity(&session_id),
+            app.release_unattempted_profiled_session(id, "2026-10-10T00:00:00Z", fact(id))
+        );
+        assert_ne!(
+            activity.is_ok(),
+            release.is_ok(),
+            "U5 exactly one admitted owner"
+        );
+        let root = repo.get(&session_id).await.unwrap();
+        if release.is_ok() {
+            assert!(root.is_terminal());
+            assert!(!root.has_active_activities());
+            assert!(root.verified_terminal_cleanup().unwrap().is_completed());
+        } else {
+            assert_eq!(root.execution, SessionExecutionState::Running);
+            assert!(root.has_active_activities());
+            assert!(!matches!(
+                root.disposition,
+                SessionDisposition::Archived { .. }
+            ));
+        }
+    });
+}

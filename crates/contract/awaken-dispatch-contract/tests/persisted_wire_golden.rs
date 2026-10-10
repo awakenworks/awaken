@@ -321,6 +321,10 @@ const CANONICAL_FINGERPRINT: &str =
 #[test]
 fn session_command_fingerprint_bytes_are_pinned() {
     // G1: the digest tuple, its order and the version prefix are unchanged.
+    // Import-only ownership migration adds no runtime condition combination:
+    // compilation proves every consumer names SessionTypes directly; G1/G2
+    // keep the original bytes and replay identities as independent oracles.
+    // Do not regenerate fixtures to accept an import change.
     let fingerprint = command_fingerprint();
     assert_eq!(fingerprint.as_str(), COMMAND_FINGERPRINT, "G1 encode");
     assert!(fingerprint.is_current(), "G1 current version");

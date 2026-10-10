@@ -127,10 +127,63 @@ pub enum SessionArchiveWithRepositoryPublicationError {
     Unavailable(String),
 }
 
+impl From<SessionMutationError> for SessionArchiveWithRepositoryPublicationError {
+    fn from(error: SessionMutationError) -> Self {
+        match error {
+            SessionMutationError::NotFound => Self::NotFound,
+            SessionMutationError::Conflict | SessionMutationError::IdempotencyMismatch => {
+                Self::Conflict
+            }
+            SessionMutationError::Unavailable(message) => Self::Unavailable(message),
+        }
+    }
+}
+
+#[cfg(test)]
+mod publication_error_tests {
+    use super::*;
+
+    #[test]
+    fn canonical_mutation_error_mapping_retains_every_publication_outcome() {
+        // DT-PUBLICATION-ERROR: owner or repository read/CAS reports C1 missing,
+        // C2 conflict, C3 changed retry identity, or C4 unavailable. R1 -> missing;
+        // R2/R3 -> conflict; R4 -> unavailable with the original message. Every
+        // call site uses this conversion, while lost-root-CAS tests own retries.
+        for (cause, expected) in [
+            (
+                SessionMutationError::NotFound,
+                SessionArchiveWithRepositoryPublicationError::NotFound,
+            ),
+            (
+                SessionMutationError::Conflict,
+                SessionArchiveWithRepositoryPublicationError::Conflict,
+            ),
+            (
+                SessionMutationError::IdempotencyMismatch,
+                SessionArchiveWithRepositoryPublicationError::Conflict,
+            ),
+            (
+                SessionMutationError::Unavailable("owner unavailable".into()),
+                SessionArchiveWithRepositoryPublicationError::Unavailable(
+                    "owner unavailable".into(),
+                ),
+            ),
+        ] {
+            let actual = SessionArchiveWithRepositoryPublicationError::from(cause);
+            assert_eq!(
+                std::mem::discriminant(&actual),
+                std::mem::discriminant(&expected)
+            );
+            assert_eq!(actual.to_string(), expected.to_string());
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ArchiveAdmission {
     IdleOnly,
     TerminalOnly,
+    UnattemptedProfiledPreparation,
     ForceTerminal,
 }
 
@@ -139,12 +192,13 @@ impl ArchiveAdmission {
         match self {
             Self::IdleOnly => "idle_only",
             Self::TerminalOnly => "terminal_only",
+            Self::UnattemptedProfiledPreparation => "unattempted_profiled_preparation",
             Self::ForceTerminal => "force_terminal",
         }
     }
 }
 
-/// One Session Application command-identity law for both archive entrances.
+/// One Session Application command-identity law for every archive entrance.
 /// Route observation time belongs only to the candidate that wins the root
 /// CAS. It cannot distinguish two requests for the same business intent.
 #[derive(serde::Serialize)]
@@ -279,6 +333,26 @@ impl SessionDeleteCommand {
     }
 }
 
+/// Release only a Frozen WorkUnit root whose initial realization has never
+/// admitted effects. The archive CAS rechecks every fact; a completed Run
+/// or an adapter's status read cannot authorize terminating live execution.
+pub(crate) async fn release_unattempted_profiled_session(
+    application: &SessionApplication,
+    session_id: &str,
+    archived_at: &str,
+    fact: ManagedLifecycleFact,
+) -> Result<SessionDispositionMutation, SessionPreparationError> {
+    application
+        .terminate_session_with_admission(
+            &awaken_session_types::SessionId::from(session_id),
+            archived_at,
+            fact,
+            ArchiveAdmission::UnattemptedProfiledPreparation,
+            ArchiveCleanupCompletion::Required,
+        )
+        .await
+}
+
 impl SessionApplication {
     fn resolve_repository_publication_intent(
         session: &PersistedSession,
@@ -308,30 +382,26 @@ impl SessionApplication {
             .cloned()
             .collect::<Vec<ResolvedInput>>();
         let [input] = matching.as_slice() else {
-            return Err(SessionArchiveWithRepositoryPublicationError::Rejected(
-                RunError::bad_request(
-                    "Repository publication binding must select exactly one active Session input",
-                ),
-            ));
+            return Err(RunError::bad_request(
+                "Repository publication binding must select exactly one active Session input",
+            )
+            .into());
         };
         if input.access != ResourceAccess::ReadWrite
             || !matches!(input.source, ResolvedInputSource::Repository { .. })
         {
-            return Err(SessionArchiveWithRepositoryPublicationError::Rejected(
-                RunError::bad_request(
-                    "Repository publication binding must select one writable Repository input",
-                ),
-            ));
+            return Err(RunError::bad_request(
+                "Repository publication binding must select one writable Repository input",
+            )
+            .into());
         }
         let intent = SessionRepositoryPublicationIntent {
             input: input.clone(),
             expectation: selector.expectation.clone(),
         };
-        intent.validate().map_err(|error| {
-            SessionArchiveWithRepositoryPublicationError::Rejected(RunError::bad_request(
-                error.to_string(),
-            ))
-        })?;
+        intent
+            .validate()
+            .map_err(|error| RunError::bad_request(error.to_string()))?;
         Ok(intent)
     }
 
@@ -348,21 +418,7 @@ impl SessionApplication {
     > {
         let mut transition = None;
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            let owner_scope =
-                self.owner(&command.session_id)
-                    .await
-                    .map_err(|error| match error {
-                        SessionMutationError::NotFound => {
-                            SessionArchiveWithRepositoryPublicationError::NotFound
-                        }
-                        SessionMutationError::Conflict
-                        | SessionMutationError::IdempotencyMismatch => {
-                            SessionArchiveWithRepositoryPublicationError::Conflict
-                        }
-                        SessionMutationError::Unavailable(message) => {
-                            SessionArchiveWithRepositoryPublicationError::Unavailable(message)
-                        }
-                    })?;
+            let owner_scope = self.owner(&command.session_id).await?;
             if owner_scope != command.owner_scope {
                 return Err(SessionArchiveWithRepositoryPublicationError::NotFound);
             }
@@ -370,17 +426,7 @@ impl SessionApplication {
                 .session_repository()
                 .get(&command.session_id)
                 .await
-                .map_err(|error| match repository_failure(error) {
-                    SessionMutationError::NotFound => {
-                        SessionArchiveWithRepositoryPublicationError::NotFound
-                    }
-                    SessionMutationError::Conflict | SessionMutationError::IdempotencyMismatch => {
-                        SessionArchiveWithRepositoryPublicationError::Conflict
-                    }
-                    SessionMutationError::Unavailable(message) => {
-                        SessionArchiveWithRepositoryPublicationError::Unavailable(message)
-                    }
-                })?;
+                .map_err(repository_failure)?;
             if session.is_hidden() {
                 return Err(SessionArchiveWithRepositoryPublicationError::NotFound);
             }
@@ -393,11 +439,10 @@ impl SessionApplication {
             if !matches!(session.disposition, SessionDisposition::Archived { .. })
                 && session.execution != SessionExecutionState::Idle
             {
-                return Err(SessionArchiveWithRepositoryPublicationError::Rejected(
-                    RunError::bad_request(
-                        "only an idle Session may be archived with Repository publication",
-                    ),
-                ));
+                return Err(RunError::bad_request(
+                    "only an idle Session may be archived with Repository publication",
+                )
+                .into());
             }
             let intent =
                 Self::resolve_repository_publication_intent(&session, &command.repository)?;
@@ -461,20 +506,7 @@ impl SessionApplication {
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
                     continue;
                 }
-                Err(SessionMutationError::Conflict) => {
-                    return Err(SessionArchiveWithRepositoryPublicationError::Conflict);
-                }
-                Err(SessionMutationError::NotFound) => {
-                    return Err(SessionArchiveWithRepositoryPublicationError::NotFound);
-                }
-                Err(SessionMutationError::IdempotencyMismatch) => {
-                    return Err(SessionArchiveWithRepositoryPublicationError::Conflict);
-                }
-                Err(SessionMutationError::Unavailable(message)) => {
-                    return Err(SessionArchiveWithRepositoryPublicationError::Unavailable(
-                        message,
-                    ));
-                }
+                Err(error) => return Err(error.into()),
             }
         }
         let mut transition =
@@ -492,33 +524,22 @@ impl SessionApplication {
             .session_repository()
             .get(&command.session_id)
             .await
-            .map_err(|error| match repository_failure(error) {
-                SessionMutationError::NotFound => {
-                    SessionArchiveWithRepositoryPublicationError::NotFound
-                }
-                SessionMutationError::Conflict | SessionMutationError::IdempotencyMismatch => {
-                    SessionArchiveWithRepositoryPublicationError::Conflict
-                }
-                SessionMutationError::Unavailable(message) => {
-                    SessionArchiveWithRepositoryPublicationError::Unavailable(message)
-                }
-            })?;
+            .map_err(repository_failure)?;
         transition.session = durable.clone();
         if let Some(rejection) = durable
             .terminal_cleanup
             .repository_publication_rejection(&command.session_id)
             .map_err(|_| SessionArchiveWithRepositoryPublicationError::Conflict)?
         {
-            return Err(SessionArchiveWithRepositoryPublicationError::Rejected(
-                RunError::bad_request_classified(
-                    if rejection.effect_rejection.is_source_closed() {
-                        "repository_publication_source_closed"
-                    } else {
-                        "repository_publication_rejected"
-                    },
-                    rejection.effect_rejection.to_string(),
-                ),
-            ));
+            return Err(RunError::bad_request_classified(
+                if rejection.effect_rejection.is_source_closed() {
+                    "repository_publication_source_closed"
+                } else {
+                    "repository_publication_rejected"
+                },
+                rejection.effect_rejection.to_string(),
+            )
+            .into());
         }
         let publication_receipt = durable
             .terminal_cleanup
@@ -777,6 +798,15 @@ impl SessionApplication {
             if admission == ArchiveAdmission::TerminalOnly && !session.execution.is_terminal() {
                 return Err(SessionPreparationError::Rejected(RunError::bad_request(
                     "terminal Session release requires already-terminal execution",
+                )));
+            }
+            if admission == ArchiveAdmission::UnattemptedProfiledPreparation
+                && !awaken_session_state_contract::session_is_unattempted_profiled_preparation(
+                    &session,
+                )
+            {
+                return Err(SessionPreparationError::Rejected(RunError::bad_request(
+                    "profiled preparation release requires an unattempted frozen Session",
                 )));
             }
             let archive_time = self.clock.now_ms();
