@@ -244,7 +244,7 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
             case.rule
         );
         let (binding_count, automatic_absent) = host
-            .session_slots
+            .installed_sessions
             .read_realization(&thread, |r| (r.memory_bindings.len(), r.memory.is_none()))
             .unwrap();
         assert_eq!(binding_count, count, "{} E1 bindings", case.rule);

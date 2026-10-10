@@ -345,8 +345,8 @@ impl SharedHost {
         // realized. Durable dispatch and committed Thread truth remain the
         // authorities for cold Managed Sessions.
         let resident = self
-            .session_slots
-            .read_run(thread, |run| run.runtime.clone())
+            .installed_sessions
+            .read_run(thread, |run| run.context.clone())
             .flatten();
         let active_run = resident.as_ref().and_then(|ctx| {
             ctx.active_run
@@ -362,7 +362,7 @@ impl SharedHost {
             // cannot authorize a replacement attempt or acknowledge return.
             if let Some(ctx) = resident.as_ref() {
                 let run_id = active_run.or_else(|| {
-                    self.session_slots
+                    self.installed_sessions
                         .read_run(thread, |run| {
                             run.dispatch_claim
                                 .as_ref()
@@ -552,7 +552,7 @@ impl SharedHost {
         } = delivery;
         if ingress_scope == RunIngressScope::HostCommand
             && self
-                .session_slots
+                .installed_sessions
                 .read_run(thread, |run| run.session_dispatch)
                 .unwrap_or(false)
         {

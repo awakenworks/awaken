@@ -70,7 +70,7 @@ impl crate::host::SharedHost {
     }
 
     pub(crate) fn register_thread_backend_projection(&self, thread: &str, backend_ref: &str) {
-        self.session_slots.replace_frozen_with(thread, |next| {
+        self.installed_sessions.replace_frozen_with(thread, |next| {
             next.backend_ref = crate::frozen_inputs::backend_projection(backend_ref);
         });
     }
@@ -224,7 +224,7 @@ mod tests {
         host.register_thread_backend_projection("t", "acp:claude");
         assert!(host.exec.acp.is_some(), "A1 executor");
         assert_eq!(
-            host.session_slots
+            host.installed_sessions
                 .frozen("t")
                 .backend_ref
                 .clone()
@@ -233,7 +233,7 @@ mod tests {
             "A1"
         );
         assert_eq!(
-            host.session_slots
+            host.installed_sessions
                 .frozen("unstaged-thread")
                 .backend_ref
                 .clone(),

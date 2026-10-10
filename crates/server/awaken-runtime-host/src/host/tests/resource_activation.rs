@@ -346,7 +346,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
     );
 
     let bindings = host
-        .session_slots
+        .installed_sessions
         .read_realization("semantic-memory", |r| r.memory_bindings.clone())
         .unwrap();
     let tools = crate::session_memory_tools::SessionMemoryTools::new(bindings).unwrap();
@@ -435,15 +435,16 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         Some("v2"),
         "M4 never clobbers"
     );
-    host.session_slots.update_run("semantic-memory", |run| {
-        run.runtime = None;
-    });
+    host.installed_sessions
+        .update_run("semantic-memory", |run| {
+            run.context = None;
+        });
     let rebuilt = host
         .ctx_for("semantic-memory", Some("assistant"))
         .await
         .expect("M6 rebuilds from the frozen Session projection");
     assert_eq!(
-        host.session_slots
+        host.installed_sessions
             .read_realization("semantic-memory", |r| r.content_delivery)
             .flatten(),
         Some(crate::frozen_inputs::ManagedContentDelivery::SemanticTools),
@@ -1084,13 +1085,13 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         .expect("P1 command");
     let mut terminal_projection = ordinary_projection.clone();
     let retained = host
-        .session_slots
+        .installed_sessions
         .read_realization(session_id, |r| {
             r.environment_owner.terminal_bound_environment()
         })
         .flatten()
         .expect("P1 retained exact Environment identity");
-    let crate::session_slot::BoundSessionEnvironmentIdentity::Durable {
+    let crate::installed_session::BoundSessionEnvironmentIdentity::Durable {
         effect_id,
         generation,
     } = retained.identity
@@ -1118,9 +1119,9 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
             session_id: session_id.into(),
             projection: terminal_projection.clone(),
-            authority: crate::session_slot::test_lease_receipt(lease.clone()),
+            authority: crate::installed_session::test_lease_receipt(lease.clone()),
         },
-        crate::session_slot::test_observed_lease(lease.clone()),
+        crate::installed_session::test_observed_lease(lease.clone()),
     )
     .await
     .expect("P1 install the aggregate-fenced publication assignment");
@@ -1175,22 +1176,23 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         // retained this exact bound Arc behind retirement. Provider remains Ready;
         // publication must reuse it under the current terminal assignment, without
         // reopening ordinary execution. A cold Host does not reproduce this shape.
-        host.session_slots.update(session_id, |slot| {
+        host.installed_sessions.update(session_id, |slot| {
             let owned = slot
                 .realization
                 .environment_owner
                 .terminal_bound_environment()
                 .unwrap();
             slot.realization.environment_owner =
-                crate::session_slot::SessionEnvironmentOwner::Retiring(
-                    crate::session_slot::RetiringSessionEnvironment {
-                        cause: crate::session_slot::SessionEnvironmentRetirementCause::Terminal {
-                            effect_id: "terminal-source-preparation".into(),
-                        },
-                        owned: crate::session_slot::RetiringEnvironmentOwner::Bound(owned),
+                crate::installed_session::SessionEnvironmentOwner::Retiring(
+                    crate::installed_session::RetiringSessionEnvironment {
+                        cause:
+                            crate::installed_session::SessionEnvironmentRetirementCause::Terminal {
+                                effect_id: "terminal-source-preparation".into(),
+                            },
+                        owned: crate::installed_session::RetiringEnvironmentOwner::Bound(owned),
                     },
                 );
-            slot.run.runtime = None;
+            slot.run.context = None;
         });
         assert!(
             host.realizer
@@ -1222,18 +1224,18 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             ordinary.is_err(),
             "P6 terminal retirement remains hidden from ordinary live IO"
         );
-        host.session_slots.update_realization(session_id, |r| {
-            if let crate::session_slot::SessionEnvironmentOwner::Retiring(retiring) =
+        host.installed_sessions.update_realization(session_id, |r| {
+            if let crate::installed_session::SessionEnvironmentOwner::Retiring(retiring) =
                 &mut r.environment_owner
             {
                 retiring.cause =
-                    crate::session_slot::SessionEnvironmentRetirementCause::RealizationRevocation;
+                    crate::installed_session::SessionEnvironmentRetirementCause::RealizationRevocation;
             } else {
                 panic!("P7 retained owner");
             }
         });
         let before = host
-            .session_slots
+            .installed_sessions
             .read_realization(session_id, |r| {
                 r.environment_owner.terminal_bound_environment().unwrap()
             })
@@ -1245,12 +1247,12 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             .await
             .expect("P7 fresh wrapper resumes exact terminal publication");
         let after = host
-            .session_slots
+            .installed_sessions
             .read_realization(session_id, |r| {
                 assert!(
                     matches!(
                         r.environment_owner,
-                        crate::session_slot::SessionEnvironmentOwner::Retiring(_)
+                        crate::installed_session::SessionEnvironmentOwner::Retiring(_)
                     ),
                     "P7 not Resident"
                 );
@@ -1353,7 +1355,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         "P1-P2/P5 publication preserves ordinary residency or retirement",
     );
     assert!(
-        host.session_slots
+        host.installed_sessions
             .read_realization(session_id, |r| {
                 r.environment_owner.terminal_bound_environment().is_some()
             })
@@ -1387,7 +1389,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         awaken_session_realization_contract::SessionTerminalCleanupAssignment {
             session_id: session_id.into(),
             projection: terminal_projection,
-            authority: crate::session_slot::test_lease_receipt(lease.clone()),
+            authority: crate::installed_session::test_lease_receipt(lease.clone()),
         },
     );
     *control.session.lock().unwrap() = Some(control_session);
@@ -1455,8 +1457,8 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     replacement_managed.install_test_environment_binding_sink(replacement_binding_sink.clone());
 
     assert!(
-        !replacement_host.session_slots.contains(session_id)
-            && !replacement_host.session_slots.contains(child_id),
+        !replacement_host.installed_sessions.contains(session_id)
+            && !replacement_host.installed_sessions.contains(child_id),
         "P4 replacement starts without root or child process-local slots"
     );
     assert!(
@@ -1529,8 +1531,8 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         "P4 physical disposal runs only after publication and both durable preparations"
     );
     assert!(
-        !replacement_host.session_slots.contains(session_id)
-            && !replacement_host.session_slots.contains(child_id),
+        !replacement_host.installed_sessions.contains(session_id)
+            && !replacement_host.installed_sessions.contains(child_id),
         "P4 completion retires replacement root and child slots"
     );
 }

@@ -92,8 +92,8 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         .expect("session environment");
     let handle_before = environment_before.lifecycle().handle();
     assert!(
-        host.session_slots
-            .read_run("t-attach", |run| run.runtime.is_some())
+        host.installed_sessions
+            .read_run("t-attach", |run| run.context.is_some())
             .unwrap_or(false),
         "the first Run caches the Thread's sandbox ctx"
     );
@@ -107,7 +107,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         owner: "retired-worker".into(),
         epoch: 1,
     };
-    host.session_slots.update_run("t-attach", |run| {
+    host.installed_sessions.update_run("t-attach", |run| {
         run.dispatch_claim = Some(stale_claim.clone());
     });
 
@@ -146,8 +146,8 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     // The cached sandbox was evicted (so the next Run rebuilds) ...
     assert!(
         !host
-            .session_slots
-            .read_run("t-attach", |run| run.runtime.is_some())
+            .installed_sessions
+            .read_run("t-attach", |run| run.context.is_some())
             .unwrap_or(false),
         "attach evicts the cached ctx so the next Run rebuilds with the mount"
     );
@@ -188,13 +188,13 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         b"hello-attached"
     );
     assert_eq!(
-        host.session_slots
+        host.installed_sessions
             .read_run("t-attach", |run| run.dispatch_claim.clone())
             .flatten(),
         Some(stale_claim),
         "R2 Resource reservation leaves the attempt delivery cache untouched"
     );
-    host.session_slots
+    host.installed_sessions
         .update_run("t-attach", |run| run.dispatch_claim = None);
 
     run_prepared_session_messages(&managed, "agent", "t-attach", user("after attach"))
@@ -396,8 +396,8 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
         "L1/L2 physical files"
     );
     assert!(
-        host.session_slots
-            .read_run("invalid-live-repository", |run| run.runtime.is_some())
+        host.installed_sessions
+            .read_run("invalid-live-repository", |run| run.context.is_some())
             .unwrap_or(false),
         "L1/L2 cached Runtime"
     );
@@ -667,8 +667,8 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
             .is_empty()
     );
     assert!(
-        host.session_slots
-            .read_run("t-local-attach", |run| run.runtime.is_some())
+        host.installed_sessions
+            .read_run("t-local-attach", |run| run.context.is_some())
             .unwrap_or(false),
         "rejected replacement leaves the cached runtime intact"
     );
@@ -1112,7 +1112,7 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
         },
     ];
     let hash = bundle_sha256(&files);
-    host.session_slots
+    host.installed_sessions
         .update_realization("coordinator-dispatch-only", |r| {
             r.skills = Some(vec![SkillVersion {
                 id: "skver_files_1".into(),
@@ -1140,9 +1140,9 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
         "D1/E3"
     );
     assert!(
-        host.session_slots
+        host.installed_sessions
             .read("coordinator-dispatch-only", |slot| slot
-                .frozen
+                .inputs
                 .environment_snapshot
                 .is_some())
             .unwrap_or(false),
@@ -1399,9 +1399,9 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         "P5: {dispatch_conflict:?}"
     );
     assert!(
-        host.session_slots
+        host.installed_sessions
             .read("worker-dispatch-conflict", |slot| slot
-                .frozen
+                .inputs
                 .baseline
                 .is_none())
             .unwrap_or(true),

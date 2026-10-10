@@ -36,13 +36,13 @@ fn dispatch_resource_manifest_has_one_session_generation_selector() {
             )
             .expect("test transition belongs to one Workspace")
         });
-        let slot = SessionRuntimeSlot {
-            realization: SessionRealizationState {
+        let slot = InstalledSession {
+            realization: SessionRealization {
                 manifest: active.clone(),
                 resource_transition: transition,
                 ..Default::default()
             },
-            run: SessionRunState {
+            run: SessionRunBinding {
                 session_dispatch,
                 ..Default::default()
             },
@@ -69,18 +69,18 @@ fn environment_only_session_lease_remains_supervised() {
     // C2 the Session has no MCP projection; C3 supervision filters on MCP.
     // E1 C1+C2 must still expose the lease for renewal, otherwise C3 lets
     // the durable fence expire before the Environment receipt can commit.
-    let slots = SessionRuntimeSlots::default();
+    let slots = InstalledSessions::default();
     slots.update_realization("environment-only", |r| {
         assert!(!r.mcp.has_frozen_attachment(), "C2");
-        r.authority = crate::session_slot::SessionRealizationAuthority::Live(test_observed_lease(
-            awaken_session_resource_contract::SessionRealizationLease {
+        r.authority = crate::installed_session::SessionRealizationAuthority::Live(
+            test_observed_lease(awaken_session_resource_contract::SessionRealizationLease {
                 owner: "worker".into(),
                 runtime_incarnation: "worker/incarnation".into(),
                 epoch: 1,
                 expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms()
                     + 30_000,
-            },
-        ));
+            }),
+        );
     });
 
     let leases = slots.realization_leases();
@@ -198,7 +198,7 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
     // | F4 | exact | same generation + new effect/binding | E4 |
     // | F5 | exact | Unmaterialized + pending source owner | E3 |
     // | F6 | exact | Unmaterialized + Vacant + no local effects | E4 |
-    let slots = SessionRuntimeSlots::default();
+    let slots = InstalledSessions::default();
     let generation = awaken_session_state_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from("mcp-admission"),
         1,

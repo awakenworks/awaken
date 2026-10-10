@@ -11,7 +11,7 @@ use std::{io, sync::Weak, time::Duration};
 
 struct SessionExecutionAuthority {
     worker: Option<Arc<dyn CurrentExecutionAuthority>>,
-    slots: Weak<Mutex<HashMap<String, SessionRuntimeSlot>>>,
+    slots: Weak<Mutex<HashMap<String, InstalledSession>>>,
     session: String,
     realization: Arc<tokio::sync::Mutex<()>>,
     lifecycle: Arc<tokio::sync::Mutex<()>>,
@@ -81,9 +81,9 @@ impl CurrentExecutionAuthority for SessionExecutionAuthority {
 
 impl SessionExecutionAuthority {
     fn capture(
-        slots: &SessionRuntimeSlots,
+        slots: &InstalledSessions,
         session: &str,
-        slot: &SessionRuntimeSlot,
+        slot: &InstalledSession,
         asserted: &SessionRealizationLease,
         worker: Option<&Arc<dyn CurrentExecutionAuthority>>,
         target: SessionEffectTarget,
@@ -162,7 +162,7 @@ impl SessionExecutionAuthority {
     }
 }
 
-impl SessionRuntimeSlots {
+impl InstalledSessions {
     /// Capture one pre-Environment target through the existing authority
     /// implementation. The returned source and synchronous effect port share
     /// the same weak slot, lease, Worker proof and held-lock decision.
@@ -217,7 +217,7 @@ impl SessionRuntimeSlots {
     pub(crate) fn bind_execution_authority(
         &self,
         session: &str,
-        slot: &SessionRuntimeSlot,
+        slot: &InstalledSession,
         environment: &Arc<SessionEnvironment>,
         worker: Option<&Arc<dyn CurrentExecutionAuthority>>,
     ) -> Result<(), crate::HostError> {
@@ -261,7 +261,7 @@ mod tests {
     }
 
     struct Fixture {
-        slots: SessionRuntimeSlots,
+        slots: InstalledSessions,
         environment: Arc<SessionEnvironment>,
         worker: Arc<Worker>,
         authority: Arc<SessionExecutionAuthority>,
@@ -277,7 +277,7 @@ mod tests {
                 .unwrap();
             let environment =
                 Arc::new(SandboxEnvironment::workdir(sandbox).into_session_environment());
-            let slots = SessionRuntimeSlots::default();
+            let slots = InstalledSessions::default();
             let worker = Arc::new(Worker(Mutex::new(Some(Duration::from_secs(30)))));
             let asserted = SessionRealizationLease {
                 owner: "worker".into(),
@@ -288,7 +288,7 @@ mod tests {
             };
             let authority = slots.update_realization("session", |r| {
                 r.authority = SessionRealizationAuthority::Live(
-                    crate::session_slot::test_observed_lease(asserted.clone()),
+                    crate::installed_session::test_observed_lease(asserted.clone()),
                 );
                 r.environment_owner = Self::candidate(environment.clone());
                 Arc::new(SessionExecutionAuthority {
@@ -463,9 +463,9 @@ mod tests {
                         _ => unreachable!(),
                     }
                     r.authority = SessionRealizationAuthority::Live(if rule == "expired" {
-                        crate::session_slot::test_expired_observed_lease(lease)
+                        crate::installed_session::test_expired_observed_lease(lease)
                     } else {
-                        crate::session_slot::test_observed_lease(lease)
+                        crate::installed_session::test_observed_lease(lease)
                     });
                 }),
             }

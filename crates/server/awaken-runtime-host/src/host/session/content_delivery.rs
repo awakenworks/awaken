@@ -48,7 +48,7 @@ impl SharedHost {
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         tool: &str,
     ) -> bool {
-        let session_tools = self.session_slots.frozen(thread).tools.clone();
+        let session_tools = self.installed_sessions.frozen(thread).tools.clone();
         let toolsets = session_tools
             .as_ref()
             .map(|tools| tools.toolsets.as_slice())
@@ -118,7 +118,7 @@ impl SharedHost {
         authored_skills_subdir: &str,
     ) -> Option<Vec<String>> {
         let managed_session = self
-            .session_slots
+            .installed_sessions
             .read_run(thread, |run| run.session_dispatch)
             .unwrap_or(false);
         let read_enabled =
@@ -138,7 +138,7 @@ impl SharedHost {
         }
 
         let mut roots = self
-            .session_slots
+            .installed_sessions
             .read_realization(thread, |r| {
                 r.resources
                     .repositories
@@ -177,7 +177,7 @@ impl SharedHost {
         skill_evidence: SkillDeliveryEvidence<'_>,
     ) -> Result<crate::frozen_inputs::ManagedContentDelivery, HostError> {
         let managed_session = self
-            .session_slots
+            .installed_sessions
             .read_run(thread, |run| run.session_dispatch)
             .unwrap_or(false);
         let selected_skills = published_skill_ids(published_snapshot);
@@ -228,7 +228,7 @@ impl SharedHost {
         // a restricted Outcome grader or delegate must reuse that immutable
         // choice instead of trying to re-author the Session's mounts/tools.
         if let Some(existing) = self
-            .session_slots
+            .installed_sessions
             .read_realization(thread, |r| r.content_delivery)
             .flatten()
         {
@@ -254,7 +254,7 @@ impl SharedHost {
         };
         if delivery == crate::frozen_inputs::ManagedContentDelivery::SemanticTools
             && self
-                .session_slots
+                .installed_sessions
                 .read_realization(thread, |r| {
                     r.resources
                         .resource_prompts
@@ -289,7 +289,7 @@ impl SharedHost {
                 ));
             }
         }
-        self.session_slots
+        self.installed_sessions
             .update_realization(thread, |r| r.content_delivery = Some(delivery));
         Ok(delivery)
     }
@@ -302,7 +302,7 @@ impl SharedHost {
         let filesystem_delivery = self.session_allows_filesystem_tools(thread, published_snapshot);
         let selected_skills = published_skill_ids(published_snapshot);
         let (managed_session, slot_requires, frozen_has_selected) = self
-            .session_slots
+            .installed_sessions
             .read(thread, |slot| {
                 let is_selected = |id: &str| {
                     selected_skills
@@ -334,11 +334,11 @@ impl SharedHost {
                                 awaken_provisioning_contract::MountSource::MemoryStore { .. }
                             )
                     };
-                let baseline_requires = slot.frozen.baseline.as_ref().is_some_and(|baseline| {
+                let baseline_requires = slot.inputs.baseline.as_ref().is_some_and(|baseline| {
                     baseline.mounts.iter().any(mount_requires_environment)
                         || !baseline.env.is_empty()
                 });
-                let slot_requires = !slot.frozen.delegates.is_empty()
+                let slot_requires = !slot.inputs.delegates.is_empty()
                     || slot
                         .realization
                         .resources
@@ -393,10 +393,10 @@ impl SharedHost {
             && !has_published_delegates
             && published_snapshot.is_some_and(crate::provisioning::environment_free_inference)
             && self
-                .session_slots
+                .installed_sessions
                 .read(thread, |slot| {
                     !slot.run.session_dispatch
-                        && slot.frozen.environment_snapshot.is_none()
+                        && slot.inputs.environment_snapshot.is_none()
                         && slot.dispatch_resource_manifest().is_none()
                 })
                 .unwrap_or(true);
@@ -404,11 +404,11 @@ impl SharedHost {
             return true;
         }
         let slot_allows = self
-            .session_slots
+            .installed_sessions
             .read(thread, |slot| {
                 slot.run.deferred_executor.is_some()
                     && slot
-                        .frozen
+                        .inputs
                         .environment_projection
                         .as_ref()
                         .is_some_and(|projection| {
@@ -437,7 +437,7 @@ impl SharedHost {
                 .is_acp()
             });
         let selected_backend_is_acp = self
-            .session_slots
+            .installed_sessions
             .frozen(thread)
             .backend_ref
             .clone()

@@ -1,6 +1,6 @@
 // @formal entrypoint session_environment.stale_projection_never_rolls_back_or_relabels_resident_or_retiring_owner
 //! Admission of complete aggregate snapshots at the existing slot boundary.
-use super::SessionRealizationState;
+use super::SessionRealization;
 use crate::host_error::HostError;
 use awaken_session_realization_contract::FrozenSessionProjection;
 use awaken_session_types::SessionRevision;
@@ -46,7 +46,7 @@ fn projection_revision_admission(current: Option<u64>, incoming: u64, exact: boo
     }
 }
 
-impl SessionRealizationState {
+impl SessionRealization {
     pub(crate) fn validate_projection_receipt(
         &self,
         receipt: &FrozenProjectionReceipt,

@@ -1079,7 +1079,7 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
         ]),
     );
     recovered_host
-        .session_slots
+        .installed_sessions
         .update_realization(parent, |r| r.memory = Some(direct_binding.clone()));
     let first_recovery = recovered_host
         .bind_thread_memory_recovery(parent, parent_commit.clone())

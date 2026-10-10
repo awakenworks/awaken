@@ -2,7 +2,7 @@
 // @formal surface obligation=session_realization.concurrent_phase_drivers_are_serialized_per_session
 // @formal reason: Static owner: Runtime-host transition adapter over the single process-local Environment
 // @formal reason: owner retained in the Session slot. Dynamic path: preparation, durable adoption, and
-// @formal reason: publication all execute inside session_slots.update and delegate to that one owner; only
+// @formal reason: publication all execute inside installed_sessions.update and delegate to that one owner; only
 // @formal reason: its hidden prepared candidate can be published after the aggregate binding sink returns
 // @formal reason: exact Store-read authority, while cleanup retry only consumes the owner's retirement
 // @formal reason: projection. This module adds no registry, lease authority, or parallel Environment
@@ -49,13 +49,13 @@ impl SharedHost {
         environment: Arc<crate::session_environment::SessionEnvironment>,
         kind: awaken_session_state_contract::SessionEnvironmentEffectKind,
     ) -> Result<UnboundSessionEnvironment, HostError> {
-        self.session_slots.update(thread, |slot| {
+        self.installed_sessions.update(thread, |slot| {
             let candidate = slot
                 .realization
                 .environment_owner
                 .begin_preparing(environment, kind)?;
             #[cfg(target_os = "linux")]
-            self.session_slots.bind_execution_authority(
+            self.installed_sessions.bind_execution_authority(
                 thread,
                 slot,
                 &candidate.environment,
@@ -71,7 +71,7 @@ impl SharedHost {
         candidate: &UnboundSessionEnvironment,
         identity: BoundSessionEnvironmentIdentity,
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, HostError> {
-        self.session_slots.update_realization(thread, |r| {
+        self.installed_sessions.update_realization(thread, |r| {
             r.environment_owner.publish_prepared(candidate, identity)
         })
     }
@@ -82,7 +82,7 @@ impl SharedHost {
         candidate: &UnboundSessionEnvironment,
         identity: BoundSessionEnvironmentIdentity,
     ) -> Result<UnboundSessionEnvironment, HostError> {
-        self.session_slots.update_realization(thread, |r| {
+        self.installed_sessions.update_realization(thread, |r| {
             r.environment_owner
                 .retain_committed_candidate(candidate, identity)
         })
@@ -93,7 +93,7 @@ impl SharedHost {
         &self,
         thread: &str,
     ) -> Option<UnboundSessionEnvironment> {
-        self.session_slots
+        self.installed_sessions
             .read_realization(thread, |r| match &r.environment_owner {
                 SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(
                     candidate,
@@ -111,7 +111,7 @@ impl SharedHost {
         thread: &str,
     ) -> Result<(), HostError> {
         let retirement = self
-            .session_slots
+            .installed_sessions
             .read_realization(thread, |r| match &r.environment_owner {
                 SessionEnvironmentOwner::Retiring(retiring)
                     if retiring.cause

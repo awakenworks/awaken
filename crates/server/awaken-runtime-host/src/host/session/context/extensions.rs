@@ -132,7 +132,7 @@ pub(super) async fn skills(
         if content_delivery == crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem {
             let prompt = crate::skill_delivery::filesystem_skill_prompt(registry.as_ref())
                 .map_err(HostError::internal)?;
-            host.session_slots
+            host.installed_sessions
                 .update_realization(thread, |r| r.skill_prompt = prompt);
         } else {
             if session_dispatch {
@@ -176,7 +176,7 @@ pub(super) async fn skills(
         }
         skill_registry = Some(registry);
     } else {
-        host.session_slots
+        host.installed_sessions
             .update_realization(thread, |r| r.skill_prompt = None);
     }
     Ok(SkillWiring {

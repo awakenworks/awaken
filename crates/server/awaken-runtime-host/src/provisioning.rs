@@ -1031,7 +1031,7 @@ pub(crate) fn project_session_mounts(
 #[path = "provisioning/tests.rs"]
 mod provisioning_registry_tests;
 
-impl crate::session_realizer::SessionRealizer {
+impl crate::realization_executor::RealizationExecutor {
     /// The provisioning request for a thread. Skills are not a sandbox mount
     /// (ADR-0036); the environment provisions isolation tools plus the session's
     /// staged resource mounts (ADR-0038), each realized read-only under `.mnt/`.
@@ -1185,9 +1185,9 @@ impl crate::session_realizer::SessionRealizer {
             .sessions
             .modify_session(thread, |slot| {
                 (
-                    slot.frozen.baseline.clone(),
+                    slot.inputs.baseline.clone(),
                     slot.realization.content_delivery,
-                    slot.frozen.environment_projection.clone(),
+                    slot.inputs.environment_projection.clone(),
                 )
             })
             .unwrap_or_default();
@@ -1311,7 +1311,7 @@ impl crate::session_realizer::SessionRealizer {
     ) -> Vec<awaken_provisioning_contract::EnvVar> {
         self.sessions
             .modify_session(thread, |slot| {
-                slot.frozen
+                slot.inputs
                     .baseline
                     .as_ref()
                     .map(|baseline| baseline.env.clone())

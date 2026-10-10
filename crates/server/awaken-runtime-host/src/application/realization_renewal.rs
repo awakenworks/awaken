@@ -39,7 +39,7 @@ impl<'a> ResourcePreparation<'a> {
         let asserted = proof.lease.clone();
         let cancellation = Arc::new(awaken_runtime_contract::CancellationToken::new());
         let (introduced_lease, changed) = host.authorize_worker_effect(|| {
-            host.session_slots.update_realization(session, |r| {
+            host.installed_sessions.update_realization(session, |r| {
                 if r.resource_preparation.is_some() {
                     return Err(crate::HostError::internal(
                         "Resource preparation already holds its projection lock",
@@ -65,7 +65,7 @@ impl<'a> ResourcePreparation<'a> {
         Ok(preparation)
     }
 
-    fn authorized(&self, slot: &crate::session_slot::SessionRuntimeSlot) -> bool {
+    fn authorized(&self, slot: &crate::installed_session::InstalledSession) -> bool {
         slot.realization
             .resource_preparation
             .as_ref()
@@ -84,7 +84,7 @@ impl<'a> ResourcePreparation<'a> {
     pub(super) fn validate(&self) -> Result<(), crate::HostError> {
         if self
             .host
-            .session_slots
+            .installed_sessions
             .read(self.session, |slot| self.authorized(slot))
             .unwrap_or(false)
         {
@@ -96,7 +96,7 @@ impl<'a> ResourcePreparation<'a> {
 
     pub(super) fn finish(
         &self,
-        slot: &mut crate::session_slot::SessionRuntimeSlot,
+        slot: &mut crate::installed_session::InstalledSession,
     ) -> Result<(), crate::HostError> {
         if !self.authorized(slot) {
             return Err(Self::ended());
@@ -109,7 +109,7 @@ impl<'a> ResourcePreparation<'a> {
         loop {
             let Some(changed) = self
                 .host
-                .session_slots
+                .installed_sessions
                 .read_realization(self.session, |r| r.changed.clone())
             else {
                 return Self::ended();
@@ -120,7 +120,7 @@ impl<'a> ResourcePreparation<'a> {
             notified.as_mut().enable();
             let remaining = self
                 .host
-                .session_slots
+                .installed_sessions
                 .read(self.session, |slot| {
                     self.authorized(slot)
                         .then(|| slot.realization.authority.remaining())
@@ -141,7 +141,7 @@ impl<'a> ResourcePreparation<'a> {
 
 impl Drop for ResourcePreparation<'_> {
     fn drop(&mut self) {
-        self.host.session_slots.modify_realization(self.session, |r| {
+        self.host.installed_sessions.modify_realization(self.session, |r| {
             if r.resource_preparation
                 .as_ref()
                 .is_some_and(|current| Arc::ptr_eq(current, &self.cancellation))
@@ -156,7 +156,7 @@ impl Drop for ResourcePreparation<'_> {
                     })
                 {
                     r.authority =
-                        crate::session_slot::SessionRealizationAuthority::Uninstalled;
+                        crate::installed_session::SessionRealizationAuthority::Uninstalled;
                     r.changed.notify_waiters();
                 }
             }
@@ -194,7 +194,7 @@ impl crate::SharedHost {
         // Capture the existing slot identity before Control I/O. Equal lease
         // fields do not authorize an ABA replacement of the Session slot.
         let Some(realization) = self
-            .session_slots
+            .installed_sessions
             .read(&session_id, |slot| {
                 (slot.realization.authority.lease() == Some(&lease))
                     .then(|| slot.realization.realization.clone())
@@ -245,7 +245,7 @@ impl crate::SharedHost {
                 // to recreate a slot or overwrite a later installed lease.
                 self.authorize_worker_effect(|| {
                     Ok(self
-                        .session_slots
+                        .installed_sessions
                         .modify_realization(&session_id, |state| {
                             Arc::ptr_eq(&state.realization, &realization)
                                 && state.renew_lease(&lease, renewed_lease)
@@ -259,7 +259,7 @@ impl crate::SharedHost {
         match renewal {
             Ok(false)
                 if self
-                    .session_slots
+                    .installed_sessions
                     .read_realization(&session_id, |state| {
                         Arc::ptr_eq(&state.realization, &realization)
                             && state.authority.lease() == Some(&lease)
@@ -274,7 +274,7 @@ impl crate::SharedHost {
             Ok(applied) => Ok(applied),
             Err(_)
                 if !self
-                    .session_slots
+                    .installed_sessions
                     .read_realization(&session_id, |state| {
                         Arc::ptr_eq(&state.realization, &realization)
                             && state.authority.lease() == Some(&lease)
@@ -286,7 +286,7 @@ impl crate::SharedHost {
             Err((error, revoke_immediately))
                 if !revoke_immediately
                     && self
-                        .session_slots
+                        .installed_sessions
                         .read_realization(&session_id, |r| r.authority.remaining().is_some())
                         .unwrap_or(false) =>
             {
@@ -356,7 +356,7 @@ impl crate::SharedHost {
 
     #[cfg(target_os = "linux")]
     async fn refresh_session_execution(&self) -> Result<(), crate::HostError> {
-        let outcomes = stream::iter(self.session_slots.execution_environments())
+        let outcomes = stream::iter(self.installed_sessions.execution_environments())
             .map(|environment| async move {
                 let Some(scoped) = environment.scoped_execution() else {
                     unreachable!("execution environments are exactly the scoped ones")
@@ -381,7 +381,7 @@ impl crate::SharedHost {
         let now = awaken_authority_clock::authority_proof_started()
             .map_err(|error| crate::HostError::internal(error.to_string()))?;
         let mut due = self
-            .session_slots
+            .installed_sessions
             .realization_leases()
             .into_iter()
             .filter(|(_, proof)| {

@@ -44,8 +44,8 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
     matching.register_thread_backend_projection("backend-h1", "default");
     assert!(
         matching
-            .session_slots
-            .read("backend-h1", |slot| slot.frozen.backend_ref.is_none())
+            .installed_sessions
+            .read("backend-h1", |slot| slot.inputs.backend_ref.is_none())
             .unwrap_or(false),
         "H1 default has no redundant projection"
     );
@@ -229,7 +229,7 @@ async fn session_tool_policy_preserves_the_published_snapshot_identity() {
         .build()
         .expect("validated Host dependencies"),
     );
-    host.session_slots
+    host.installed_sessions
         .replace_frozen_with("policy-session", |next| {
             next.tools = Some(
                 awaken_session_configuration_contract::SessionToolConfiguration {
@@ -340,7 +340,7 @@ async fn session_web_policy_overlay_reaches_the_configured_plugin_before_inferen
         .build()
         .expect("validated Host dependencies"),
     );
-    host.session_slots
+    host.installed_sessions
         .replace_frozen_with("provider-server-policy", |next| {
             next.tools = Some(
                 awaken_session_configuration_contract::SessionToolConfiguration {
@@ -425,7 +425,7 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
             },
             credential_pin: None,
         };
-    host.session_slots.update("repository-policy", |slot| {
+    host.installed_sessions.update("repository-policy", |slot| {
         slot.run.session_dispatch = true;
         slot.replace_frozen_with(|next| {
             next.tools = Some(
@@ -469,8 +469,8 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
         "R3 no Managed repository source"
     );
 
-    host.session_slots.update("repository-policy", |slot| {
-        let mut tools = slot.frozen.tools.clone().expect("Session tools");
+    host.installed_sessions.update("repository-policy", |slot| {
+        let mut tools = slot.inputs.tools.clone().expect("Session tools");
         tools.toolsets[0]
             .overrides
             .push(ToolPolicyOverride::new("read", enabled));
@@ -501,7 +501,7 @@ async fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool()
         "R2c cold Managed recovery uses the durable slot read policy"
     );
 
-    host.session_slots
+    host.installed_sessions
         .update_run("repository-policy", |run| run.session_dispatch = false);
     assert_eq!(
         host.session_skill_source_roots(
@@ -576,7 +576,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     .build()
     .expect("validated Host dependencies");
 
-    host.session_slots
+    host.installed_sessions
         .replace_frozen_with("direct-semantic", |next| {
             next.tools = Some(deny_filesystem())
         });
@@ -591,9 +591,10 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         "M1/E2"
     );
 
-    host.session_slots.update_run("managed-filesystem", |run| {
-        run.session_dispatch = true;
-    });
+    host.installed_sessions
+        .update_run("managed-filesystem", |run| {
+            run.session_dispatch = true;
+        });
     assert_eq!(
         host.select_content_delivery(
             "managed-filesystem",
@@ -605,7 +606,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         "M2/E1"
     );
 
-    host.session_slots.update("managed-denied", |slot| {
+    host.installed_sessions.update("managed-denied", |slot| {
         slot.run.session_dispatch = true;
         slot.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
     });
@@ -626,10 +627,12 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     let empty_host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
-    empty_host.session_slots.update("managed-no-skill", |slot| {
-        slot.run.session_dispatch = true;
-        slot.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
-    });
+    empty_host
+        .installed_sessions
+        .update("managed-no-skill", |slot| {
+            slot.run.session_dispatch = true;
+            slot.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
+        });
     assert_eq!(
         empty_host
             .select_content_delivery(
@@ -659,7 +662,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         instructions: Some("Read {{awaken.resource.path}}".into()),
     };
     empty_host
-        .session_slots
+        .installed_sessions
         .update("managed-memory-path", |slot| {
             slot.run.session_dispatch = true;
             slot.replace_frozen_with(|next| next.tools = Some(deny_filesystem()));
@@ -685,7 +688,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
     );
 
     empty_host
-        .session_slots
+        .installed_sessions
         .update_run("managed-missing-freeze", |run| {
             run.session_dispatch = true;
         });
@@ -744,7 +747,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         bundle_sha256: "sha256:think".into(),
     };
     empty_host
-        .session_slots
+        .installed_sessions
         .update_run("managed-deferred-freeze", |run| run.session_dispatch = true);
     assert_eq!(
         empty_host
@@ -772,7 +775,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
             })
             .build();
     empty_host
-        .session_slots
+        .installed_sessions
         .update_run("managed-deferred-mismatch", |run| {
             run.session_dispatch = true
         });
@@ -817,7 +820,7 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
         !host.session_allows_filesystem_tools("filesystem-session", Some(&restricted)),
         "CD2 auxiliary snapshot would independently derive semantic delivery"
     );
-    host.session_slots
+    host.installed_sessions
         .update_realization("filesystem-session", |r| {
             r.content_delivery = Some(ManagedContentDelivery::ManagedFilesystem)
         });
@@ -832,7 +835,7 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
         "CD2/E2"
     );
 
-    host.session_slots.update("semantic-session", |slot| {
+    host.installed_sessions.update("semantic-session", |slot| {
         slot.realization.content_delivery = Some(ManagedContentDelivery::SemanticTools);
         slot.replace_frozen_with(|next| {
             next.tools = Some(
@@ -1194,7 +1197,7 @@ async fn session_client_tools_replace_the_published_surface_with_exact_ownership
         .expect("validated Host dependencies"),
     );
 
-    host.session_slots
+    host.installed_sessions
         .replace_frozen_with("cleared-client-tools", |next| {
             next.tools =
                 Some(awaken_session_configuration_contract::SessionToolConfiguration::default());
@@ -1223,7 +1226,7 @@ async fn session_client_tools_replace_the_published_surface_with_exact_ownership
             "additionalProperties": false
         }),
     };
-    host.session_slots
+    host.installed_sessions
         .replace_frozen_with("session-client-tools", |next| {
             next.tools = Some(
                 awaken_session_configuration_contract::SessionToolConfiguration {
@@ -1569,8 +1572,8 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
         .await
         .expect("P1 installs the frozen projection");
     assert!(
-        host.session_slots
-            .read_run("late-projection", |run| run.runtime.is_none())
+        host.installed_sessions
+            .read_run("late-projection", |run| run.context.is_none())
             .unwrap_or(false),
         "P1 stale context must not survive the authority transition"
     );
@@ -1638,9 +1641,9 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
         .await
         .expect("P4 reuses the immutable active projection");
     let retained = host
-        .session_slots
+        .installed_sessions
         .read_run("active-frozen-projection", |run| {
-            Arc::ptr_eq(run.runtime.as_ref().expect("P4 runtime"), &frozen_active)
+            Arc::ptr_eq(run.context.as_ref().expect("P4 runtime"), &frozen_active)
         })
         .unwrap_or(false);
     assert!(retained, "P4 keeps the one resident Runtime");
@@ -1814,7 +1817,7 @@ async fn session_creation_and_explicit_cache_warmup_share_one_preparation_path()
         .expect("cache preparation precedes Session environment creation");
     assert_eq!(initializer.0.load(Ordering::SeqCst), 1, "E1/E2");
 
-    host.realizer()
+    host.realization_executor()
         .prewarm_cache_volume(crate::CacheVolumeWarmup::host_path(
             "build-cache-v1",
             "/tmp/awaken-cache-volume-wiring",

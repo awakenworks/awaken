@@ -191,7 +191,7 @@ async fn five_hundred_twelve_session_reconciliation_remains_bounded_and_complete
     );
     for index in 0..SESSION_COUNT {
         assert!(
-            host.session_slots
+            host.installed_sessions
                 .contains(&format!("scale-session-{index:04}")),
             "S1/E1 retains every local projection"
         );
@@ -294,7 +294,7 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
                 expires_at_unix_ms: now + 5_000,
             };
             install_test_renewal_authority(&host, &control, "renew-race", old.clone());
-            let fence = host.session_slots.realization_lock("renew-race");
+            let fence = host.installed_sessions.realization_lock("renew-race");
             let guard = fence.lock().await;
             let sweep = {
                 let host = host.clone();
@@ -327,14 +327,14 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
                 epoch: 2,
             };
             if changed == "removed" {
-                host.session_slots.remove("renew-race");
+                host.installed_sessions.remove("renew-race");
             } else {
                 if changed == "replaced_slot" {
-                    host.session_slots.remove("renew-race");
+                    host.installed_sessions.remove("renew-race");
                 }
                 host.install_session_realization_lease("renew-race", replacement.clone())
                     .unwrap();
-                host.session_slots.update("renew-race", |slot| {
+                host.installed_sessions.update("renew-race", |slot| {
                     slot.run.dispatch_claim = Some(claim.clone());
                     slot.replace_frozen_with(|next| next.workspace = Some("new-workspace".into()));
                 });
@@ -351,13 +351,13 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
                 "R1 {failure:?}/{changed}"
             );
             if changed == "removed" {
-                assert!(!host.session_slots.contains("renew-race"));
+                assert!(!host.installed_sessions.contains("renew-race"));
             } else {
                 assert_eq!(
-                    host.session_slots.read("renew-race", |slot| (
+                    host.installed_sessions.read("renew-race", |slot| (
                         slot.realization.authority.lease().cloned(),
                         slot.run.dispatch_claim.clone(),
-                        slot.frozen.workspace.clone()
+                        slot.inputs.workspace.clone()
                     )),
                     Some((Some(replacement), Some(claim), Some("new-workspace".into()))),
                     "R1 {failure:?}/{changed}"
@@ -394,7 +394,7 @@ async fn renewal_revocation_rechecks_authority_after_realization_admission() {
             expires_at_unix_ms: now + 5_000,
         };
         install_test_renewal_authority(&host, &control, "renew-revoke", lease.clone());
-        let fence = host.session_slots.realization_lock("renew-revoke");
+        let fence = host.installed_sessions.realization_lock("renew-revoke");
         let guard = fence.lock().await;
         let sweep = {
             let host = host.clone();
@@ -417,7 +417,7 @@ async fn renewal_revocation_rechecks_authority_after_realization_admission() {
             !sweep.is_finished(),
             "R4 revocation waits for current admission"
         );
-        assert!(host.session_slots.contains("renew-revoke"));
+        assert!(host.installed_sessions.contains("renew-revoke"));
         let mut next = lease;
         next.epoch += 1;
         if replaced {
@@ -434,13 +434,13 @@ async fn renewal_revocation_rechecks_authority_after_realization_admission() {
             0
         );
         assert_eq!(
-            host.session_slots
+            host.installed_sessions
                 .read_realization("renew-revoke", |r| r.authority.lease().cloned())
                 .flatten(),
             replaced.then_some(next),
             "R4 exact replacement protection"
         );
-        assert_eq!(host.session_slots.contains("renew-revoke"), replaced);
+        assert_eq!(host.installed_sessions.contains("renew-revoke"), replaced);
     }
 }
 
@@ -483,12 +483,12 @@ async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
             expires_at_unix_ms: now + 90_000,
         };
         let proof = if expired {
-            crate::session_slot::test_expired_observed_lease(lease)
+            crate::installed_session::test_expired_observed_lease(lease)
         } else {
-            crate::session_slot::test_observed_lease(lease)
+            crate::installed_session::test_observed_lease(lease)
         };
-        host.session_slots.update_realization(session_id, |r| {
-            r.authority = crate::session_slot::SessionRealizationAuthority::Live(proof);
+        host.installed_sessions.update_realization(session_id, |r| {
+            r.authority = crate::installed_session::SessionRealizationAuthority::Live(proof);
         });
     }
 
@@ -501,8 +501,11 @@ async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
     .await
     .expect("F2 revocation cannot deadlock its interruption read")
     .expect_err("F1 keeps the retry diagnostic visible");
-    assert!(host.session_slots.contains("renewal-live"), "F1/E1");
-    assert!(!host.session_slots.contains("renewal-expired"), "F2/E2");
+    assert!(host.installed_sessions.contains("renewal-live"), "F1/E1");
+    assert!(
+        !host.installed_sessions.contains("renewal-expired"),
+        "F2/E2"
+    );
 }
 
 #[tokio::test]
@@ -550,7 +553,7 @@ async fn stale_ownership_revokes_even_when_the_old_deadline_is_still_live() {
         0,
         "F3"
     );
-    assert!(!host.session_slots.contains("renewal-stale"), "F3");
+    assert!(!host.installed_sessions.contains("renewal-stale"), "F3");
 }
 
 #[tokio::test(start_paused = true)]
@@ -617,7 +620,7 @@ async fn per_request_deadlines_release_every_renewal_capacity_slot() {
     );
     for index in 0..SESSION_COUNT {
         assert!(
-            host.session_slots
+            host.installed_sessions
                 .contains(&format!("deadline-session-{index:02}")),
             "D1/E4"
         );
@@ -674,9 +677,9 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
                 epoch: 1,
                 expires_at_unix_ms: now.saturating_add(90_000),
             };
-            host.session_slots.update_realization(&session, |r| {
-                r.authority = crate::session_slot::SessionRealizationAuthority::Live(
-                    crate::session_slot::test_expired_observed_lease(lease.clone()),
+            host.installed_sessions.update_realization(&session, |r| {
+                r.authority = crate::installed_session::SessionRealizationAuthority::Live(
+                    crate::installed_session::test_expired_observed_lease(lease.clone()),
                 );
             });
             control
@@ -686,7 +689,7 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
                 .insert(session.clone(), lease);
             if index < crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS {
                 held.push(
-                    host.session_slots
+                    host.installed_sessions
                         .realization_lock(&session)
                         .lock_owned()
                         .await,
@@ -700,13 +703,13 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
             (0..crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS)
                 .map(|index| {
                     let session = format!("deadline-mutex-{index:02}");
-                    host.session_slots.read_realization(&session, |r| serde_json::json!({
+                    host.installed_sessions.read_realization(&session, |r| serde_json::json!({
                     "session": session,
                     "identity": format!("{:p}", Arc::as_ptr(&r.realization)),
                     "lease": serde_json::to_string(&match &r.authority {
-                        crate::session_slot::SessionRealizationAuthority::Live(proof) => Some(&proof.lease),
-                        crate::session_slot::SessionRealizationAuthority::Closed(lease) => lease.as_ref(),
-                        crate::session_slot::SessionRealizationAuthority::Uninstalled => None,
+                        crate::installed_session::SessionRealizationAuthority::Live(proof) => Some(&proof.lease),
+                        crate::installed_session::SessionRealizationAuthority::Closed(lease) => lease.as_ref(),
+                        crate::installed_session::SessionRealizationAuthority::Uninstalled => None,
                     }).unwrap(),
                     "closed": r.authority.is_closed(),
                     "locked": r.realization.try_lock().is_err(),
@@ -742,7 +745,7 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
         );
         for index in 0..crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS {
             assert!(
-                host.session_slots
+                host.installed_sessions
                     .contains(&format!("deadline-mutex-{index:02}")),
                 "M1/E2 held Session remains installed"
             );
@@ -758,7 +761,7 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
         if cancel_waiting_completion {
             let before: Vec<_> = (0..SESSION_COUNT)
                 .map(|index| {
-                    host.session_slots
+                    host.installed_sessions
                         .read_realization(&format!("deadline-mutex-{index:02}"), |r| {
                             (r.realization.clone(), r.authority.clone())
                         })
@@ -776,7 +779,7 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
                 "M4 cancelled transport futures are gone"
             );
             for (index, (identity, lease)) in before.iter().enumerate() {
-                host.session_slots
+                host.installed_sessions
                     .read(&format!("deadline-mutex-{index:02}"), |slot| {
                         assert!(
                             Arc::ptr_eq(&slot.realization.realization, identity),
@@ -816,7 +819,7 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
         for index in 0..SESSION_COUNT {
             assert!(
                 !host
-                    .session_slots
+                    .installed_sessions
                     .contains(&format!("deadline-mutex-{index:02}")),
                 "M3/E4"
             );
@@ -892,9 +895,9 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
             },
         };
         if expired {
-            host.session_slots.update_realization(rule, |r| {
-                r.authority = crate::session_slot::SessionRealizationAuthority::Live(
-                    crate::session_slot::test_expired_observed_lease(old.clone()),
+            host.installed_sessions.update_realization(rule, |r| {
+                r.authority = crate::installed_session::SessionRealizationAuthority::Live(
+                    crate::installed_session::test_expired_observed_lease(old.clone()),
                 );
             });
             control
@@ -931,7 +934,7 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
             owner: "worker-a:new".into(),
             epoch: 2,
         };
-        let realization = host.session_slots.realization_lock(rule);
+        let realization = host.installed_sessions.realization_lock(rule);
         let installation = if rule == "P7" {
             Some(realization.lock().await)
         } else {
@@ -948,11 +951,11 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
             .expect("P7 response completes during owner-locked installation");
         }
         if replacement == "removed" {
-            host.session_slots.remove(rule);
+            host.installed_sessions.remove(rule);
         } else {
             host.install_session_realization_lease(rule, newer.clone())
                 .unwrap();
-            host.session_slots
+            host.installed_sessions
                 .update_run(rule, |run| run.dispatch_claim = Some(claim.clone()));
         }
         if installation.is_none() {
@@ -963,7 +966,7 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
             .await
             .expect("old completion does not hang")
             .expect("renewal task did not panic");
-        let observed = host.session_slots.read(rule, |slot| {
+        let observed = host.installed_sessions.read(rule, |slot| {
             (
                 slot.realization.authority.lease().cloned(),
                 slot.run.dispatch_claim.clone(),

@@ -14,7 +14,7 @@ use crate::frozen_inputs::FrozenSessionInputs;
 mod projection_receipt;
 mod state;
 pub(crate) use projection_receipt::FrozenProjectionReceipt;
-pub(crate) use state::{SessionRealizationAuthority, SessionRealizationState};
+pub(crate) use state::{SessionRealization, SessionRealizationAuthority};
 
 /// What the realizer may learn of a Session's run layer, and the only two
 /// changes it may make to it.
@@ -34,8 +34,8 @@ pub(crate) trait SessionRunQuery {
 
 /// One installed Session as the realizer sees it, borrowed under the lock.
 pub(crate) struct SessionRealizationAccess<'a> {
-    pub(crate) frozen: &'a Arc<FrozenSessionInputs>,
-    pub(crate) realization: &'a mut SessionRealizationState,
+    pub(crate) inputs: &'a Arc<FrozenSessionInputs>,
+    pub(crate) realization: &'a mut SessionRealization,
     pub(crate) run: &'a mut dyn SessionRunQuery,
 }
 
@@ -135,7 +135,7 @@ impl SessionRealizations {
                     .iter()
                     .map(|prompt| prompt.render(delivery, path_view.clone())),
             );
-            if let Some(baseline) = &slot.frozen.baseline {
+            if let Some(baseline) = &slot.inputs.baseline {
                 prompts.extend(baseline.prompts.iter()
                     .filter(|prompt| !awaken_session_configuration_contract::SessionContextSeed::is_seed_prompt(prompt))
                     .cloned());
@@ -180,7 +180,7 @@ impl SessionRealizations {
     /// The Session's current frozen inputs, taken out of the lock as one
     /// value. An unknown Session reads as the empty projection.
     pub(crate) fn frozen(&self, session: &str) -> Arc<FrozenSessionInputs> {
-        self.modify_session(session, |slot| slot.frozen.clone())
+        self.modify_session(session, |slot| slot.inputs.clone())
             .unwrap_or_default()
     }
 
@@ -188,7 +188,7 @@ impl SessionRealizations {
     pub(crate) fn read_realization<R>(
         &self,
         session: &str,
-        f: impl FnOnce(&SessionRealizationState) -> R,
+        f: impl FnOnce(&SessionRealization) -> R,
     ) -> Option<R> {
         self.modify_session(session, |slot| f(slot.realization))
     }
@@ -197,7 +197,7 @@ impl SessionRealizations {
     pub(crate) fn update_realization<R>(
         &self,
         session: &str,
-        f: impl FnOnce(&mut SessionRealizationState) -> R,
+        f: impl FnOnce(&mut SessionRealization) -> R,
     ) -> R {
         self.update_session(session, |slot| f(slot.realization))
     }
@@ -206,7 +206,7 @@ impl SessionRealizations {
     pub(crate) fn modify_realization<R>(
         &self,
         session: &str,
-        f: impl FnOnce(&mut SessionRealizationState) -> R,
+        f: impl FnOnce(&mut SessionRealization) -> R,
     ) -> Option<R> {
         self.modify_session(session, |slot| f(slot.realization))
     }

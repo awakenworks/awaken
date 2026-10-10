@@ -40,7 +40,7 @@ pub(crate) const MANAGED_SKILLS_SUBDIR: &str = ".claude/skills";
 /// absent. This is an adapter over the existing frozen projection, not another
 /// catalog or virtual workspace. `None` leaves ordinary files to lazy Hand.
 pub(crate) fn read_pinned_skill(
-    slot: &crate::session_slot::SessionRuntimeSlot,
+    slot: &crate::installed_session::InstalledSession,
     args: &awaken_ext_builtin_tools::ReadArgs,
 ) -> Option<Result<String, ToolError>> {
     use awaken_provisioning_contract::WorkspaceLayout;
@@ -81,7 +81,7 @@ pub(crate) fn read_pinned_skill(
             return Err(failure());
         }
         let manifest = slot.dispatch_resource_manifest().ok_or_else(failure)?;
-        if slot.frozen.workspace.as_deref() != Some(manifest.workspace_id.as_str()) {
+        if slot.inputs.workspace.as_deref() != Some(manifest.workspace_id.as_str()) {
             return Err(failure());
         }
         let mut bindings = manifest
@@ -852,7 +852,7 @@ mod tests {
         .unwrap()
         .unwrap();
         let projection = filesystem_skill_prompt(registry.as_ref()).unwrap().unwrap();
-        let slots = crate::session_slot::SessionRuntimeSlots::default();
+        let slots = crate::installed_session::InstalledSessions::default();
         slots.update_realization("skill-path", |r| r.skill_prompt = Some(projection.clone()));
         assert!(
             slots
@@ -865,7 +865,7 @@ mod tests {
         // The test installs a resident projection only, not a durable claim.
         // Actual Managed owner transitions retain their existing integration tests.
         slots.update_realization("skill-path", |r| {
-            use crate::session_slot::*;
+            use crate::installed_session::*;
             r.environment_owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
                 binding: "fixture".into(),
                 environment: env.clone(),

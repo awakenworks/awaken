@@ -209,7 +209,7 @@ impl RuntimePublicationIdentity {
 
 /// Ephemeral input reconstructed from one guarded `RunDispatch`. Publication
 /// snapshots are deliberately passed down the call stack rather than cached in
-/// `SessionRuntimeSlot`.
+/// `InstalledSession`.
 #[derive(Clone)]
 pub(crate) struct ClaimedRuntimeInput {
     pub(crate) identity: RuntimePublicationIdentity,

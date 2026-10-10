@@ -76,7 +76,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             "environment",
             "image",
         );
-        let identity = crate::session_slot::BoundSessionEnvironmentIdentity::Durable {
+        let identity = crate::installed_session::BoundSessionEnvironmentIdentity::Durable {
             effect_id: "create-effect".into(),
             generation: generation.clone(),
         };
@@ -118,7 +118,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 .unwrap();
             {
                 let lifecycle = host
-                    .session_slots
+                    .installed_sessions
                     .read_realization(thread, |r| r.lifecycle.clone())
                     .unwrap();
                 let _lifecycle = lifecycle.lock().await;
@@ -167,7 +167,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 "W1"
             );
             let retained = host
-                .session_slots
+                .installed_sessions
                 .read_realization(thread, |r| r.environment_owner.terminal_bound_environment())
                 .flatten()
                 .unwrap();
@@ -183,7 +183,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 .await
                 .unwrap();
             let rebound = host
-                .session_slots
+                .installed_sessions
                 .read_realization(thread, |r| r.environment_owner.terminal_bound_environment())
                 .flatten()
                 .unwrap()

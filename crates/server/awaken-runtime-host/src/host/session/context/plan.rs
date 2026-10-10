@@ -88,7 +88,7 @@ pub(super) async fn prepare(
     // so an empty Managed projection never depends on or reloads the live
     // direct-compatibility catalog.
     let session_dispatch = host
-        .session_slots
+        .installed_sessions
         .read_run(thread, |run| run.session_dispatch)
         .unwrap_or(false);
     // Direct protocol Sessions have no aggregate Resource projection, but
@@ -106,7 +106,7 @@ pub(super) async fn prepare(
         let transition =
             awaken_session_resource_contract::SessionResourceTransition::new(empty.clone(), empty)
                 .map_err(|error| HostError::internal(error.to_string()))?;
-        host.session_slots.update_realization(thread, |r| {
+        host.installed_sessions.update_realization(thread, |r| {
             if r.resource_transition.is_none() {
                 r.resource_transition = Some(transition);
             }
@@ -118,7 +118,7 @@ pub(super) async fn prepare(
     // wiring can classify a cold cache as instruction-only and then discover
     // support files after the sandbox-free decision has already been made.
     let frozen_skill_versions = host
-        .session_slots
+        .installed_sessions
         .read_realization(thread, |r| r.skills.clone())
         .flatten();
     // Reservation is metadata-only on a cold Coordinator. The aggregate
@@ -127,7 +127,7 @@ pub(super) async fn prepare(
     // bundle bytes after Environment adoption.
     let deferred_skill_bindings = (force_defer_environment && frozen_skill_versions.is_none())
         .then(|| {
-            host.session_slots
+            host.installed_sessions
                 .read_realization(thread, |r| {
                     r.resource_transition
                         .as_ref()

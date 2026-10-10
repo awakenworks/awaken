@@ -55,8 +55,8 @@ impl SharedHost {
         // must never materialize the sandbox, MCP connections, or current Agent
         // configuration merely to tear the Session down.
         let resident = self
-            .session_slots
-            .read_run(thread, |run| run.runtime.clone())
+            .installed_sessions
+            .read_run(thread, |run| run.context.clone())
             .flatten();
         let mut coordinated_thread_ids = std::collections::HashSet::new();
         if let Ok(store) = self.dispatch_store() {

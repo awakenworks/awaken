@@ -21,7 +21,7 @@ use std::sync::Arc;
 /// Resource/MemoryStore/Skill projection.
 pub(crate) struct SessionContextAttemptExecutor {
     inner: Arc<dyn RunAttemptExecutor>,
-    slots: crate::session_slot::SessionRuntimeSlots,
+    slots: crate::installed_session::InstalledSessions,
     session_id: String,
     clock: Arc<dyn awaken_time::WallClock>,
 }
@@ -29,7 +29,7 @@ pub(crate) struct SessionContextAttemptExecutor {
 impl SessionContextAttemptExecutor {
     pub(crate) fn new(
         inner: Arc<dyn RunAttemptExecutor>,
-        slots: crate::session_slot::SessionRuntimeSlots,
+        slots: crate::installed_session::InstalledSessions,
         session_id: impl Into<String>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
@@ -49,7 +49,7 @@ impl SessionContextAttemptExecutor {
         if let Some(result) = self
             .slots
             .read(&self.session_id, |slot| {
-                slot.frozen.tools.as_ref().map(|tools| {
+                slot.inputs.tools.as_ref().map(|tools| {
                     crate::config::project_session_tools(&mut activation.snapshot, tools)
                 })
             })
@@ -65,7 +65,7 @@ impl SessionContextAttemptExecutor {
         let seed = self
             .slots
             .read(&self.session_id, |slot| {
-                slot.frozen.baseline.as_ref().map(|baseline| {
+                slot.inputs.baseline.as_ref().map(|baseline| {
                     awaken_session_configuration_contract::SessionContextSeed::from_prompts(
                         &baseline.prompts,
                     )
@@ -392,7 +392,7 @@ mod acp_context_tests {
             prompts: vec![seed.encode(), "product context".into()],
             transcript_prefix: None,
         });
-        let slots = crate::session_slot::SessionRuntimeSlots::default();
+        let slots = crate::installed_session::InstalledSessions::default();
         let executor = SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
             slots.clone(),
@@ -464,13 +464,13 @@ mod acp_context_tests {
         );
         assert_eq!(
             slots
-                .read("session-1", |slot| slot.frozen.baseline.clone())
+                .read("session-1", |slot| slot.inputs.baseline.clone())
                 .unwrap(),
             Some(baseline),
             "frozen truth unchanged"
         );
         slots.update("session-1", |slot| {
-            let mut baseline = slot.frozen.baseline.clone().unwrap();
+            let mut baseline = slot.inputs.baseline.clone().unwrap();
             baseline.prompts.push(seed.encode());
             slot.replace_frozen_with(|next| next.baseline = Some(baseline))
         });
@@ -487,7 +487,7 @@ mod acp_context_tests {
     /// Rules: C1+C2+!C3 -> E1+E2; C1+*+C3 -> E2+E3; !C1 -> E2.
     #[test]
     fn session_context_is_request_only_and_attempt_idempotent() {
-        let slots = crate::session_slot::SessionRuntimeSlots::default();
+        let slots = crate::installed_session::InstalledSessions::default();
         let executor = SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
             slots.clone(),
@@ -520,7 +520,7 @@ mod acp_context_tests {
 
         let empty = SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
-            crate::session_slot::SessionRuntimeSlots::default(),
+            crate::installed_session::InstalledSessions::default(),
             "session-1",
             awaken_time::system_clock(),
         );
@@ -551,7 +551,7 @@ mod acp_context_tests {
         // only P1; C2 the same slot atomically advances to R2/P2 -> fresh A2
         // sees only P2; C3 A1 already captured P1 -> it remains immutable but
         // cannot contaminate A2. Every activation input stays byte-identical.
-        let slots = crate::session_slot::SessionRuntimeSlots::default();
+        let slots = crate::installed_session::InstalledSessions::default();
         let executor = SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
             slots.clone(),
@@ -601,7 +601,7 @@ mod acp_context_tests {
         // attempt reads during C2. Effect E1=C3 waits and observes all of R2,
         // never a mixed R1/R2 vector. The barrier makes the interleaving exact:
         // the reader starts only after the writer owns the publication lock.
-        let slots = crate::session_slot::SessionRuntimeSlots::default();
+        let slots = crate::installed_session::InstalledSessions::default();
         slots.update_realization("session-1", |r| {
             r.resources.prompts = vec!["r1-a".into(), "r1-b".into()]
         });
@@ -662,7 +662,7 @@ mod acp_context_tests {
         // | R2 | yes | disabled MCP | no | E2 + E3 |
         // | R3 | yes | enabled MCP + client | yes | E4 |
         // | R4 | yes | absent | no | unchanged |
-        let slots = crate::session_slot::SessionRuntimeSlots::default();
+        let slots = crate::installed_session::InstalledSessions::default();
         let executor = SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
             slots.clone(),
@@ -753,7 +753,7 @@ mod acp_context_tests {
 
         let absent = SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
-            crate::session_slot::SessionRuntimeSlots::default(),
+            crate::installed_session::InstalledSessions::default(),
             "session-1",
             awaken_time::system_clock(),
         );

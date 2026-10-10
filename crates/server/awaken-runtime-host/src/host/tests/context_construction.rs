@@ -26,8 +26,8 @@ async fn failed_context_assembly_retains_one_environment_for_retry() {
         .expect("R1 must fail");
     assert!(error.message.contains("invalid host compact plugin config"));
     assert!(
-        host.session_slots
-            .read_run(thread, |run| run.runtime.is_none())
+        host.installed_sessions
+            .read_run(thread, |run| run.context.is_none())
             .unwrap()
     );
     let retained = host
@@ -47,8 +47,8 @@ async fn failed_context_assembly_retains_one_environment_for_retry() {
             .contains("invalid host compact plugin config")
     );
     assert!(
-        host.session_slots
-            .read_run(thread, |run| run.runtime.is_none())
+        host.installed_sessions
+            .read_run(thread, |run| run.context.is_none())
             .unwrap()
     );
     assert!(
@@ -254,8 +254,8 @@ async fn acp_context_failure_releases_exports_and_reuses_environment() {
             .expect("injected failure");
         assert!(error.message.contains(message), "{error}");
         assert!(
-            host.session_slots
-                .read_run(thread, |run| run.runtime.is_none())
+            host.installed_sessions
+                .read_run(thread, |run| run.context.is_none())
                 .unwrap(),
             "E1"
         );
@@ -314,8 +314,8 @@ async fn cancelled_context_construction_releases_lock_and_partial_export() {
         .expect("C1 resident owner");
     drop(open);
     assert!(
-        host.session_slots
-            .read_run(thread, |run| run.runtime.is_none())
+        host.installed_sessions
+            .read_run(thread, |run| run.context.is_none())
             .unwrap(),
         "E1"
     );

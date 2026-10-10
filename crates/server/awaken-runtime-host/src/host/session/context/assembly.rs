@@ -128,7 +128,7 @@ pub(super) async fn assemble(
     let mut semantic_memory_tools = None;
     if content_delivery == crate::frozen_inputs::ManagedContentDelivery::SemanticTools {
         let bindings = host
-            .session_slots
+            .installed_sessions
             .read_realization(thread, |r| r.memory_bindings.clone())
             .unwrap_or_default();
         if let Some(wiring) = crate::session_memory_tools::SessionMemoryTools::new(bindings) {
@@ -336,7 +336,7 @@ pub(super) async fn assemble(
         Arc::new(
             crate::application::attempt_context::SessionContextAttemptExecutor::new(
                 attempt_executor,
-                host.session_slots.clone(),
+                host.installed_sessions.clone(),
                 thread,
                 host.clock.clone(),
             ),
@@ -410,7 +410,7 @@ pub(super) async fn assemble(
         // implementations behind the same ToolExecutor port.
         Some(environment.agent_tools().tool_executor())
     } else {
-        host.session_slots
+        host.installed_sessions
             .read_run(thread, |run| run.deferred_executor.clone())
             .flatten()
     };
@@ -435,7 +435,7 @@ pub(super) async fn assemble(
                 .tool_execution_admission(thread, &environment_generation),
         );
     let dispatch_claim = host
-        .session_slots
+        .installed_sessions
         .read_run(thread, |run| run.dispatch_claim.clone())
         .flatten();
     let mut run_context = run_context.with_model_content_materializer(Arc::new(
@@ -447,8 +447,8 @@ pub(super) async fn assemble(
         ),
     ));
     run_context.request_context = host
-        .session_slots
-        .read(thread, |slot| slot.frozen.request_context.clone())
+        .installed_sessions
+        .read(thread, |slot| slot.inputs.request_context.clone())
         .unwrap_or_default();
     let run_context = mcp.plugins.iter().cloned().fold(
         run_context,

@@ -197,7 +197,7 @@ pub struct SharedHost {
     pub(crate) local_workspace: String,
     /// Process-local projections materialized for prepared Sessions. The private
     /// slot makes their lifecycle atomic while the durable manifest stays authoritative.
-    pub(crate) session_slots: crate::session_slot::SessionRuntimeSlots,
+    pub(crate) installed_sessions: crate::installed_session::InstalledSessions,
     /// Worker-owned registry proof. Direct Hosts have no Worker registration;
     /// every registered Worker installs this before enabling dispatch.
     pub(crate) execution_authority:
@@ -241,7 +241,7 @@ pub struct SharedHost {
     /// adapters the attempt executors share.
     pub(crate) exec: capability::AttemptBackends,
     /// The Session realizer and the sandbox providers it realizes through.
-    pub(crate) realizer: crate::session_realizer::SessionRealizer,
+    pub(crate) realizer: crate::realization_executor::RealizationExecutor,
     /// Tool, Skill, plugin, and gate offering installed on every thread.
     pub(crate) tools: capability::ToolOffering,
     /// Resources-context ports: Memory, Files, Artifacts.

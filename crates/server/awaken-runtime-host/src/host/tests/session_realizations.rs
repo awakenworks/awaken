@@ -31,7 +31,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
 
     assert!(sessions.modify_session("absent", |_| ()).is_none(), "V1");
     assert!(
-        !host.session_slots.contains("absent"),
+        !host.installed_sessions.contains("absent"),
         "V1 nothing installed"
     );
     assert!(sessions.dispatch_claim("absent").is_none(), "V1 no claim");
@@ -39,13 +39,16 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         sessions.update_session("created", |access| access.realization.manifest.is_none()),
         "V2 empty"
     );
-    assert!(host.session_slots.contains("created"), "V2 installed");
+    assert!(host.installed_sessions.contains("created"), "V2 installed");
 
     let thread = "realizations-view";
-    host.session_slots
+    host.installed_sessions
         .replace_frozen_with(thread, |next| next.workspace = Some("ws-view".into()));
     assert!(
-        Arc::ptr_eq(&sessions.frozen(thread), &host.session_slots.frozen(thread)),
+        Arc::ptr_eq(
+            &sessions.frozen(thread),
+            &host.installed_sessions.frozen(thread)
+        ),
         "V3 exact frozen value"
     );
     assert_eq!(
@@ -56,7 +59,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
 
     sessions.update_realization(thread, |r| r.staged_resource_effect_key = Some("k1".into()));
     assert_eq!(
-        host.session_slots
+        host.installed_sessions
             .read(thread, |slot| slot
                 .realization
                 .staged_resource_effect_key
@@ -66,7 +69,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
         Some("k1"),
         "V4 realizer write"
     );
-    host.session_slots.update(thread, |slot| {
+    host.installed_sessions.update(thread, |slot| {
         slot.realization.staged_resource_effect_key = Some("k2".into());
     });
     assert_eq!(
@@ -99,8 +102,8 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
     let deferred: Arc<dyn awaken_tool_contract::tool::ToolExecutor> = Arc::new(
         crate::lazy_sandbox::DeferredSandboxExecutor::new(Arc::downgrade(&host), thread),
     );
-    host.session_slots.update_run(thread, |run| {
-        run.runtime = Some(ctx.clone());
+    host.installed_sessions.update_run(thread, |run| {
+        run.context = Some(ctx.clone());
         run.dispatch_claim = Some(claim.clone());
         run.deferred_executor = Some(deferred.clone());
     });
@@ -113,10 +116,10 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
 
     sessions.drop_run_context(thread);
     let (runtime, deferred_kept, kept_claim, session_dispatch) = host
-        .session_slots
+        .installed_sessions
         .read_run(thread, |run| {
             (
-                run.runtime.is_some(),
+                run.context.is_some(),
                 run.deferred_executor.is_some(),
                 run.dispatch_claim.clone(),
                 run.session_dispatch,
@@ -131,29 +134,29 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
     sessions.enter_session_dispatch(thread);
     assert_eq!(query(&sessions), (false, true, Some(claim.clone())), "V7");
     assert!(
-        host.session_slots
+        host.installed_sessions
             .read_run(thread, |run| run.deferred_executor.is_some())
             .unwrap(),
         "V7 deferred executor kept"
     );
 
-    host.session_slots.update(thread, |slot| {
-        slot.run.runtime = Some(ctx.clone());
+    host.installed_sessions.update(thread, |slot| {
+        slot.run.context = Some(ctx.clone());
         slot.realization.environment_resource_reconciliation =
             crate::staged_resources::EnvironmentResourceReconciliation::Adopted;
     });
     let staged_before = host
-        .session_slots
+        .installed_sessions
         .read(thread, |slot| {
             slot.realization.staged_resource_effect_key.clone()
         })
         .unwrap();
     sessions.end_terminal_disposal(thread);
     let after = host
-        .session_slots
+        .installed_sessions
         .read(thread, |slot| {
             (
-                slot.run.runtime.is_some(),
+                slot.run.context.is_some(),
                 slot.realization.environment_resource_reconciliation,
                 slot.run.dispatch_claim.clone(),
                 slot.run.session_dispatch,

@@ -146,7 +146,7 @@ impl SharedHost {
         // the canonical coordination envelope instead of trying to adopt that
         // physical Environment on every Outcome projection read.
         let worker_placement = self
-            .session_slots
+            .installed_sessions
             .frozen(thread)
             .baseline
             .as_ref()

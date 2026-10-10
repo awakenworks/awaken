@@ -252,11 +252,11 @@ mod tests {
 
     fn assert_no_resident_session_projection(host: &SharedHost, thread: &str, rule: &str) {
         assert!(
-            host.session_slots
+            host.installed_sessions
                 .read(thread, |slot| {
-                    slot.run.runtime.is_none()
+                    slot.run.context.is_none()
                         && !slot.realization.environment_owner.has_local_environment()
-                        && slot.frozen.workspace.is_none()
+                        && slot.inputs.workspace.is_none()
                         && slot.realization.manifest.is_none()
                         && slot.realization.memory_bindings.is_empty()
                         && slot.realization.memory.is_none()
@@ -375,7 +375,7 @@ mod tests {
         );
         let (host, _managed) = cold_claimed_memory_host().await;
         assert!(
-            host.session_slots.read(thread, |_| ()).is_none(),
+            host.installed_sessions.read(thread, |_| ()).is_none(),
             "R1-R3/C3 target starts cold"
         );
 
@@ -595,8 +595,8 @@ mod tests {
         .await
         .expect("D1 construct cold durable context");
         let ctx = host
-            .session_slots
-            .read_run(thread, |run| run.runtime.clone())
+            .installed_sessions
+            .read_run(thread, |run| run.context.clone())
             .flatten()
             .expect("D1 durable context resident");
         assert!(ctx.delivery.is_durable(), "D1/C3 must use durable delivery");
@@ -697,8 +697,10 @@ mod tests {
         );
         let (host, _managed) = cold_claimed_memory_host().await;
         assert!(
-            host.session_slots.read(parent_thread, |_| ()).is_none()
-                && host.session_slots.read(child_thread, |_| ()).is_none(),
+            host.installed_sessions
+                .read(parent_thread, |_| ())
+                .is_none()
+                && host.installed_sessions.read(child_thread, |_| ()).is_none(),
             "R1-R5/C6 target starts cold"
         );
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
@@ -867,7 +869,7 @@ mod tests {
         )
         .await;
         assert!(
-            host.session_slots.read(child_thread, |_| ()).is_none(),
+            host.installed_sessions.read(child_thread, |_| ()).is_none(),
             "R4-R6 E6 logical child has no resident Session slot"
         );
         assert_no_resident_session_projection(&host, parent_thread, "R4-R6 E6");

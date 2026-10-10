@@ -2259,7 +2259,7 @@ async fn managed_session_root_rejects_legacy_host_run_ingress() {
         .with_ephemeral_dispatch(dispatch.clone()))
     .build()
     .expect("validated Host dependencies");
-    host.session_slots
+    host.installed_sessions
         .update_run("managed-root", |run| run.session_dispatch = true);
 
     for result in [

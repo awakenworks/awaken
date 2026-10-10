@@ -336,7 +336,7 @@ class FormalSurfaceProductionSourceTests(unittest.TestCase):
             ),
             (
                 "state_machine",
-                "session_slots.update(|slot| slot.environment_owner.begin_preparing());",
+                "installed_sessions.update(|slot| slot.environment_owner.begin_preparing());",
             ),
             (
                 "concurrency",

@@ -18,7 +18,7 @@ impl SharedHost {
         thread: &str,
         environment: &Arc<crate::session_environment::SessionEnvironment>,
     ) -> bool {
-        self.session_slots
+        self.installed_sessions
             .read_realization(thread, |r| match &r.environment_owner {
                 SessionEnvironmentOwner::Retiring(retirement)
                     if matches!(
@@ -44,7 +44,7 @@ impl SharedHost {
         lease: &awaken_session_resource_contract::SessionRealizationLease,
     ) -> Result<awaken_session_resource_contract::SessionRealizationLease, HostError> {
         self
-            .session_slots
+            .installed_sessions
             .read_realization(session_id.as_str(), |r| {
                 let current = r.authority.lease().ok_or_else(|| {
                     HostError::unavailable_classified(
@@ -130,7 +130,7 @@ impl SharedHost {
             effect_fence,
         } = installation;
         let mut adopted = resident.is_none();
-        let authority = self.session_slots.provider_effect_authority(
+        let authority = self.installed_sessions.provider_effect_authority(
             thread,
             effect_fence,
             self.execution_authority.as_ref(),
@@ -195,7 +195,7 @@ impl SharedHost {
         // receipt merely to finish this terminal command.
         if mode == BoundEnvironmentPreparationMode::TerminalRepositoryPublication
             && let Some(retiring) = self
-                .session_slots
+                .installed_sessions
                 .read_realization(thread, |r| match &r.environment_owner {
                     SessionEnvironmentOwner::Retiring(retiring)
                         if retiring.cause
@@ -248,7 +248,7 @@ impl SharedHost {
                     })?,
             );
             admit()?;
-            self.session_slots.update_realization(thread, |r| {
+            self.installed_sessions.update_realization(thread, |r| {
                 r.environment_owner
                     .prepare_retiring_realization_adoption(&retiring, fresh.clone())?;
                 let SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(
@@ -275,7 +275,7 @@ impl SharedHost {
         if adopted
             && !mode.requires_live_source()
             && let Some(retiring) = self
-                .session_slots
+                .installed_sessions
                 .read_realization(thread, |r| match &r.environment_owner {
                     SessionEnvironmentOwner::Retiring(retiring) => Some(retiring.clone()),
                     _ => None,
@@ -322,7 +322,7 @@ impl SharedHost {
                     )?;
                 } else {
                     let still_resident = self
-                        .session_slots
+                        .installed_sessions
                         .read_realization(thread, |r| {
                             r.environment_owner.resident().is_some_and(|current| {
                                 Arc::ptr_eq(&current, &environment)
@@ -360,7 +360,7 @@ impl SharedHost {
                             "terminal committed Candidate changed its exact Environment",
                         ));
                     }
-                    self.session_slots.update_realization(thread, |r| {
+                    self.installed_sessions.update_realization(thread, |r| {
                         r.environment_owner
                             .begin_retirement_with_committed_candidate(candidate, cause)
                     })?;
@@ -377,7 +377,7 @@ impl SharedHost {
                                 "terminal bound Environment changed its durable binding",
                             ));
                         }
-                        self.session_slots.update_realization(thread, |r| {
+                        self.installed_sessions.update_realization(thread, |r| {
                             r.environment_owner.begin_retirement_with_adopted(
                                 &identity,
                                 binding,
@@ -414,7 +414,7 @@ impl SharedHost {
                         )?;
                     }
                 }
-                self.session_slots.update_realization(thread, |r| {
+                self.installed_sessions.update_realization(thread, |r| {
                     r.environment_resource_reconciliation =
                         crate::staged_resources::EnvironmentResourceReconciliation::None;
                 });
@@ -438,7 +438,7 @@ impl SharedHost {
         let exec = &self.realizer;
         if mode.requires_live_source()
             && self
-                .session_slots
+                .installed_sessions
                 .read_realization(thread, |r| {
                     matches!(
                         &r.environment_owner,
@@ -564,7 +564,7 @@ impl SharedHost {
                         effect_id: effect_fence.operation_id().to_owned(),
                     };
                     if let Some(candidate) = committed_candidate.as_ref() {
-                        self.session_slots.update_realization(thread, |r| {
+                        self.installed_sessions.update_realization(thread, |r| {
                             r.environment_owner
                                 .begin_retirement_with_committed_candidate(candidate, cause)
                         })?;
@@ -672,15 +672,15 @@ impl SharedHost {
             realization_lease,
             environment_fingerprint,
         ) = self
-            .session_slots
+            .installed_sessions
             .read(thread, |slot| {
-                let baseline = slot.frozen.baseline.as_ref();
+                let baseline = slot.inputs.baseline.as_ref();
                 let r = &slot.realization;
                 (
                     r.terminal_environment_state.clone(),
                     r.environment_owner.clone(),
                     r.previous_resources(),
-                    slot.frozen.workspace.clone(),
+                    slot.inputs.workspace.clone(),
                     baseline.map(|baseline| baseline.environment.idle_retention.clone()),
                     r.authority.lease().cloned(),
                     baseline.map(|baseline| baseline.environment.config_fingerprint.0.clone()),
@@ -925,7 +925,7 @@ impl SharedHost {
         prepared: &PreparedBoundEnvironment,
     ) -> Result<TerminalMemoryPlan, HostError> {
         let transition = self
-            .session_slots
+            .installed_sessions
             .read_realization(&effect.command.thread_id, |r| r.resource_transition.clone())
             .flatten()
             .ok_or_else(|| {
@@ -1025,7 +1025,7 @@ impl SharedHost {
             return Ok(());
         };
         let effect_fence = self.terminal_cleanup_effect_fence(effect)?;
-        let authority = self.session_slots.provider_effect_authority(
+        let authority = self.installed_sessions.provider_effect_authority(
             effect.command.session_id.as_str(),
             &effect_fence,
             self.execution_authority.as_ref(),
@@ -1071,7 +1071,7 @@ impl SharedHost {
                 )
             })?;
         let terminal_effect_fence = self.terminal_cleanup_effect_fence(effect)?;
-        let authority = self.session_slots.provider_effect_authority(
+        let authority = self.installed_sessions.provider_effect_authority(
             effect.command.session_id.as_str(),
             &terminal_effect_fence,
             self.execution_authority.as_ref(),

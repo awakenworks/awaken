@@ -6,7 +6,7 @@ use crate::environment_providers::EnvironmentProviders;
 
 /// Executes Session Environment realization; warm capacity is in
 /// `environment_capacity`, the other effects join as they leave `SharedHost`.
-pub struct SessionRealizer {
+pub struct RealizationExecutor {
     /// The Session-owned, BackendOwned and housekeeping sandbox providers.
     pub(crate) env: EnvironmentProviders,
     /// Warm capacity is kept only where a local dispatch pool realizes claims.

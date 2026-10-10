@@ -40,12 +40,12 @@ impl ManagedHost {
         // same-generation lease rather than extending the asserted value.
         let _realization = self
             .host
-            .session_slots
+            .installed_sessions
             .acquire_realization(command.session_id.as_str())
             .await;
         let _lifecycle = self
             .host
-            .session_slots
+            .installed_sessions
             .lock_lifecycle(command.session_id.as_str())
             .await;
         let mut current_lease = self
@@ -72,7 +72,7 @@ impl ManagedHost {
             .map_err(to_run_error)?;
         let (state, resolved_resources) = self
             .host
-            .session_slots
+            .installed_sessions
             .read_realization(command.session_id.as_str(), |r| {
                 (
                     r.terminal_environment_state.clone(),

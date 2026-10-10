@@ -228,7 +228,7 @@ fn install_terminal_artifact_environment(
     let candidate = host
         .begin_session_environment_adoption(session_id, environment)
         .expect("F2/E2 retain the exact adoption candidate");
-    let crate::session_slot::UnboundSessionEnvironmentOrigin::AdoptionFrom(identity) =
+    let crate::installed_session::UnboundSessionEnvironmentOrigin::AdoptionFrom(identity) =
         &candidate.origin
     else {
         panic!("F3 aggregate projection must own the durable source identity");
@@ -246,13 +246,13 @@ async fn root_terminal_cleanup_effect(
     awaken_session_state_contract::SessionTerminalCleanupEffect,
 ) {
     let environment = host
-        .session_slots
+        .installed_sessions
         .read_realization(session_id, |r| r.environment_owner.resident())
         .flatten()
         .expect("terminal test requires a resident Environment");
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
     let workspace_id = host
-        .session_slots
+        .installed_sessions
         .frozen(session_id)
         .workspace
         .clone()
@@ -298,7 +298,7 @@ async fn root_terminal_cleanup_effect(
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
             session_id: session_id.into(),
             projection,
-            authority: crate::session_slot::test_lease_receipt(lease.clone()),
+            authority: crate::installed_session::test_lease_receipt(lease.clone()),
         },
     )
     .await
@@ -965,9 +965,9 @@ async fn model_override_only_acp_candidate_rejects_split_process_paths() {
     .await
     .expect("install exact model-override-only frozen projection");
     assert!(
-        host.session_slots
+        host.installed_sessions
             .read("model-override-acp", |slot| slot
-                .frozen
+                .inputs
                 .published_snapshot
                 .is_none())
             .unwrap_or(false),
@@ -1679,7 +1679,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         root_terminal_cleanup_effect(host.as_ref(), "session-artifacts", lease).await;
     let managed = crate::ManagedHost::new(host.clone());
     let workspace_id = host
-        .session_slots
+        .installed_sessions
         .frozen("session-artifacts")
         .workspace
         .clone()
@@ -1697,7 +1697,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .await
         .unwrap();
     assert!(
-        host.session_slots
+        host.installed_sessions
             .read_realization("session-artifacts", |r| {
                 r.environment_owner.terminal_bound_environment().is_some()
             })
@@ -1846,9 +1846,9 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         "H1"
     );
 
-    host.session_slots
+    host.installed_sessions
         .update_realization("artifact-response-loss", |r| {
-            r.environment_owner = crate::session_slot::SessionEnvironmentOwner::Vacant;
+            r.environment_owner = crate::installed_session::SessionEnvironmentOwner::Vacant;
         });
     let recovered = host
         .artifact_harvester()
@@ -2092,7 +2092,7 @@ async fn terminal_artifact_recovery_requires_the_root_workspace_before_catalog_i
     );
     let publisher = Arc::new(RecordingArtifactRecovery::default());
     let harvester = ArtifactHarvester {
-        sessions: crate::session_slot::SessionRuntimeSlots::default().realizations(),
+        sessions: crate::installed_session::InstalledSessions::default().realizations(),
         local_workspace: "must-not-be-used".into(),
         publisher: publisher.clone(),
     };
@@ -2404,7 +2404,7 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
         .unwrap_err();
     assert!(error.message.contains("injected catalog failure"));
     assert!(
-        host.session_slots
+        host.installed_sessions
             .read_realization("session-harvest-failure", |r| {
                 r.environment_owner.terminal_bound_environment().is_some()
             })

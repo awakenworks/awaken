@@ -28,7 +28,7 @@ pub(crate) struct CompiledEffectiveInputs {
         std::collections::HashMap<String, std::sync::Arc<crate::memory_binding::MemoryBinding>>,
 }
 fn validate_preparation_publication(
-    realization: &crate::session_realizations::SessionRealizationState,
+    realization: &crate::session_realizations::SessionRealization,
     asserted: Option<&awaken_session_resource_contract::SessionRealizationLease>,
 ) -> Result<(), RunError> {
     if realization.resource_preparation.is_some()
@@ -82,7 +82,7 @@ impl crate::ManagedHost {
         let mut memory_bindings = std::collections::HashMap::new();
         let environment = self
             .host
-            .session_slots
+            .installed_sessions
             .frozen(thread)
             .environment_projection
             .clone();
@@ -282,7 +282,7 @@ impl crate::ManagedHost {
             && (prospective_environment_binding
                 || self
                     .host
-                    .session_slots
+                    .installed_sessions
                     .read_realization(thread, |r| r.environment_owner.durable_binding().is_some())
                     .unwrap_or(false));
         if awaiting_adoption {
@@ -302,7 +302,7 @@ impl crate::ManagedHost {
                     realization_lease.map(|lease| (thread, transition.desired().revision, lease)),
                 )
                 .await?;
-            self.host.session_slots.update(thread, |slot| {
+            self.host.installed_sessions.update(thread, |slot| {
                 validate_preparation_publication(&slot.realization, realization_lease)?;
                 slot.realization.skills = Some(versions);
                 Ok(())
@@ -339,7 +339,7 @@ impl crate::ManagedHost {
         if claim.is_none()
             && self
                 .host
-                .session_slots
+                .installed_sessions
                 .read_realization(thread, |r| {
                     r.staged_resource_effect_key.as_deref() == Some(effect_key.as_str())
                 })
@@ -359,7 +359,7 @@ impl crate::ManagedHost {
         // The slot then exposes one complete set of cold requirements; failed
         // compilation leaves no Workspace, prompt, binding, or active-manifest
         // residue. Only the exact physical transition publishes the manifest.
-        self.host.session_slots.update(thread, |slot| {
+        self.host.installed_sessions.update(thread, |slot| {
             // The lease check and correlated cache publication share the slot
             // lock with renewal rejection. Neither a late read nor cancellation
             // may publish requirements after that rejection has linearized.
@@ -419,10 +419,10 @@ impl crate::ManagedHost {
         // This method is entered only through the SessionRuntime application
         // port. Preserve that neutral identity before dispatch so a claiming
         // Worker enters the frozen Session realization path.
-        self.host.session_slots.enter_session_dispatch(thread);
+        self.host.installed_sessions.enter_session_dispatch(thread);
         let checks = self
             .host
-            .session_slots
+            .installed_sessions
             .read_realization(thread, |r| r.resources.binding_checks.clone())
             .unwrap_or_default();
         if checks.is_empty() {
@@ -476,7 +476,7 @@ impl crate::ManagedHost {
         claim: Option<&awaken_run_ingress_contract::RunClaim>,
         realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> Result<(), RunError> {
-        let _lifecycle = self.host.session_slots.lock_lifecycle(thread).await;
+        let _lifecycle = self.host.installed_sessions.lock_lifecycle(thread).await;
         self.apply_session_inputs_under_lifecycle(thread, transition, claim, realization_lease)
             .await
     }
@@ -495,7 +495,7 @@ impl crate::ManagedHost {
     ) -> Result<(), RunError> {
         let _resource_projection = self
             .host
-            .session_slots
+            .installed_sessions
             .lock_resource_projection(thread)
             .await;
         self.apply_session_inputs_body(thread, transition, claim, realization_lease)
@@ -513,6 +513,7 @@ impl crate::ManagedHost {
         claim: Option<&awaken_run_ingress_contract::RunClaim>,
         realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> Result<(), RunError> {
+        let sessions = &self.host.installed_sessions;
         let previous_manifest = transition.previous();
         let desired_manifest = transition.desired();
         let inputs = &desired_manifest.resources;
@@ -521,28 +522,25 @@ impl crate::ManagedHost {
         // precedes every Workspace, Skill, File, Repository, cache, or provider
         // effect below.
         self.validate_effective_resource_layout(thread, inputs)?;
-        self.host.session_slots.update_realization(thread, |r| {
+        sessions.update_realization(thread, |r| {
             r.resource_transition = Some(transition.clone());
         });
         let live_environment = self.host.realizer.session_environment(thread).await;
         let awaiting_adoption = live_environment.is_none()
-            && self
-                .host
-                .session_slots
+            && sessions
                 .read_realization(thread, |r| r.environment_owner.durable_binding().is_some())
                 .unwrap_or(false);
-        let (baseline_is_staged, session_dispatch, reconciliation, environment_projection) = self
-            .host
-            .session_slots
-            .modify_session(thread, |slot| {
-                (
-                    slot.frozen.baseline.is_some(),
-                    slot.run.session_dispatch(),
-                    slot.realization.environment_resource_reconciliation,
-                    slot.frozen.environment_projection.clone(),
-                )
-            })
-            .unwrap_or_default();
+        let (baseline_is_staged, session_dispatch, reconciliation, environment_projection) =
+            sessions
+                .modify_session(thread, |slot| {
+                    (
+                        slot.inputs.baseline.is_some(),
+                        slot.run.session_dispatch(),
+                        slot.realization.environment_resource_reconciliation,
+                        slot.inputs.environment_projection.clone(),
+                    )
+                })
+                .unwrap_or_default();
         // Direct protocol Sessions do not own a frozen Managed baseline, but
         // their Environment still enters through this one aggregate transition
         // authority. Admit only the exact empty legacy generation synthesized
@@ -762,9 +760,7 @@ impl crate::ManagedHost {
             }
         }
         let effect_key = resource_requirement_effect_key(transition, claim, realization_lease);
-        let cache_matches = self
-            .host
-            .session_slots
+        let cache_matches = sessions
             .read_realization(thread, |r| {
                 r.staged_resource_effect_key.as_deref() == Some(effect_key.as_str())
             })
@@ -783,9 +779,7 @@ impl crate::ManagedHost {
             )
             .await?;
         }
-        let compiled = self
-            .host
-            .session_slots
+        let compiled = sessions
             .read_realization(thread, |r| {
                 (r.staged_resource_effect_key.as_deref() == Some(effect_key.as_str())).then(|| {
                     CompiledEffectiveInputs {
@@ -880,9 +874,7 @@ impl crate::ManagedHost {
                 // Context construction only derives the Managed registry; it
                 // must not reinstall a second projection after publication.
                 if reconcile_skills {
-                    let versions = self
-                        .host
-                        .session_slots
+                    let versions = sessions
                         .read_realization(thread, |r| r.skills.clone())
                         .flatten()
                         .ok_or_else(|| {
@@ -976,7 +968,7 @@ impl crate::ManagedHost {
         if let Some(update) = projection_update {
             update.commit();
         }
-        self.host.session_slots.update_realization(thread, |r| {
+        sessions.update_realization(thread, |r| {
             r.environment_resource_reconciliation =
                 crate::staged_resources::EnvironmentResourceReconciliation::None;
         });
@@ -985,7 +977,7 @@ impl crate::ManagedHost {
     }
 }
 
-impl crate::session_realizer::SessionRealizer {
+impl crate::realization_executor::RealizationExecutor {
     fn validate_managed_layout_inputs(
         &self,
         thread: &str,
@@ -999,9 +991,9 @@ impl crate::session_realizer::SessionRealizer {
             .sessions
             .modify_session(thread, |slot| {
                 (
-                    slot.frozen.baseline.clone(),
+                    slot.inputs.baseline.clone(),
                     slot.realization.content_delivery,
-                    slot.frozen.environment_projection.clone(),
+                    slot.inputs.environment_projection.clone(),
                     slot.realization.environment_owner.resident(),
                 )
             })

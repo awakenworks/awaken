@@ -19,7 +19,7 @@ impl HostWorkerResolver {
         rebuild_unavailable_environment: bool,
     ) -> Result<(), awaken_dispatch_execution::Error> {
         let realization = host
-            .session_slots
+            .installed_sessions
             .acquire_realization(session_id.as_str())
             .await;
         let synchronizer = WorkerProjectionSynchronizer::for_directive(

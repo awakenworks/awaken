@@ -1,10 +1,10 @@
-//! Warm Environment capacity of the [`SessionRealizer`]: CacheVolume and image
+//! Warm Environment capacity of the [`RealizationExecutor`]: CacheVolume and image
 //! preparation, the default and per-Environment warm Session shapes, and their
 //! disposal. Every operation enters through the installed Session provider.
 
-use crate::session_realizer::SessionRealizer;
+use crate::realization_executor::RealizationExecutor;
 
-impl SessionRealizer {
+impl RealizationExecutor {
     /// The exact capacity shape of one Environment under this provider's
     /// network isolation.
     fn capacity_projection(

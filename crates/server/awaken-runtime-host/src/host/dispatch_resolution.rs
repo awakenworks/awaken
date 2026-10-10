@@ -67,7 +67,7 @@ impl SharedHost {
         activation: RunActivation,
     ) -> RunActivation {
         let is_session_dispatch = self
-            .session_slots
+            .installed_sessions
             .read_run(&activation.thread_id.0, |run| run.session_dispatch)
             .unwrap_or(false);
         super::placement::bind_root_tool_configuration_format(activation, is_session_dispatch)
@@ -134,12 +134,12 @@ impl SharedHost {
             ))
         })?;
         let (resources, runtime_projection, is_session_dispatch) = self
-            .session_slots
+            .installed_sessions
             .read(&thread, |slot| {
                 let runtime_projection =
-                    slot.frozen.environment_snapshot.clone().map(|environment| {
+                    slot.inputs.environment_snapshot.clone().map(|environment| {
                         let mcp_stages = slot.realization.mcp.active_stage_requests();
-                        (environment, slot.frozen.tools.clone(), mcp_stages)
+                        (environment, slot.inputs.tools.clone(), mcp_stages)
                     });
                 // Resource generation, Session identity, and runtime projection
                 // come from one slot snapshot so dispatch cannot mix transition
@@ -285,7 +285,7 @@ mod tests {
                 .await)
                 .build()
                 .expect("validated Host dependencies");
-        host.session_slots
+        host.installed_sessions
             .update_run("format-root", |run| run.session_dispatch = true);
         let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("assistant")
             .model(ModelBinding::parse("test", "model", "native").expect("valid fixture"))

@@ -44,19 +44,19 @@ impl ManagedHost {
     pub(super) fn session_preparation_needed(&self, thread: &str) -> Result<bool, RunError> {
         let active_projection = self
             .host
-            .session_slots
+            .installed_sessions
             .read(thread, |slot| {
                 (
-                    slot.run.runtime.as_ref().and_then(|context| {
+                    slot.run.context.as_ref().and_then(|context| {
                         context
                             .active_run
                             .lock()
                             .expect("active run mutex poisoned")
                             .clone()
                     }),
-                    slot.frozen.baseline.is_some() || slot.run.session_dispatch,
+                    slot.inputs.baseline.is_some() || slot.run.session_dispatch,
                     slot.run
-                        .runtime
+                        .context
                         .as_ref()
                         .is_some_and(|context| context.is_coordination_envelope()),
                 )
@@ -83,8 +83,8 @@ impl ManagedHost {
         thread: &str,
         environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
     ) {
-        self.host.session_slots.update_run(thread, |run| {
-            run.runtime = None;
+        self.host.installed_sessions.update_run(thread, |run| {
+            run.context = None;
             run.session_dispatch = true;
         });
         if environment.sandbox_provisioning
@@ -96,7 +96,7 @@ impl ManagedHost {
                     thread,
                 ));
             self.host
-                .session_slots
+                .installed_sessions
                 .update_run(thread, |run| run.deferred_executor = Some(executor));
         }
     }
@@ -141,13 +141,13 @@ impl ManagedHost {
         thread: &str,
         init: awaken_session_configuration_contract::SessionInit,
     ) -> Result<(), RunError> {
-        let _lifecycle = self.host.session_slots.lock_lifecycle(thread).await;
+        let _lifecycle = self.host.installed_sessions.lock_lifecycle(thread).await;
         if !self.session_preparation_needed(thread)? {
             return Ok(());
         }
         let _resource_projection = self
             .host
-            .session_slots
+            .installed_sessions
             .lock_resource_projection(thread)
             .await;
         self.host
