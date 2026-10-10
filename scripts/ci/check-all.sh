@@ -225,6 +225,7 @@ run static "gate-argument hygiene self-test" python3 scripts/ci/check_gate_argum
 run static "lane-reachability self-test" python3 scripts/ci/check_lane_reachability.py --self-test
 run static "lane reachability" python3 scripts/ci/check_lane_reachability.py
 run static "gate-argument hygiene" python3 scripts/ci/check_gate_arguments.py
+run static "guard navigation self-test" python3 scripts/ci/guards.py --self-test
 run static "gate path references self-test" python3 scripts/ci/check_gate_path_references.py --self-test
 run static "gate path references" python3 scripts/ci/check_gate_path_references.py
 run static "dependency-gates self-test" python3 scripts/ci/check_dependency_gates.py --self-test
