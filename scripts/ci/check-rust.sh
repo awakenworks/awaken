@@ -364,11 +364,11 @@ case "$mode" in
       # nextest bounds every test with the deadline in .config/nextest.toml;
       # it does not run doctests, so the doctest target keeps its own step
       # rather than silently going unrun.
-      # Same graph twice, with a warm no-op Cargo build on execution. Separate
-      # the expensive native link from test enumeration/execution, and retain
-      # Cargo's stable HTML build timings without nightly JSON instrumentation.
+      # Build with Nextest's underlying Cargo command. Discovery happens once,
+      # in the execution step, while this step retains stable HTML build timings
+      # without nightly JSON instrumentation.
       if step "test-build" "fix the test compilation/link errors shown above" \
-        cargo nextest run --workspace --features "$workspace_features" "${locked[@]}" --no-run --timings; then
+        cargo test --workspace --features "$workspace_features" "${locked[@]}" --no-run --timings; then
         step "test" "re-run a single failure with: cargo nextest run --workspace -E 'test(<test_name>)' --no-capture" \
           cargo nextest run --workspace --features "$workspace_features" "${locked[@]}"
       else
