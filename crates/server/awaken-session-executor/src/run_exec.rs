@@ -202,15 +202,21 @@ impl CaptureContextAttemptExecutor {
         activation: &RunActivation,
         mut context: RuntimeRunContext,
     ) -> RuntimeRunContext {
+        // A Run carries no requested level of its own (the Session request
+        // field of ADR-0050 D8 is not authored), so it asks for `Full`, the
+        // identity of the meet; the transparency reads decide the same way.
         let mut decision = self.decision.clone();
-        decision.level = self.policy.ceiling(decision.level).await;
+        decision.level = self
+            .policy
+            .decide(
+                decision.level,
+                awaken_runtime_contract::ContentCapture::Full,
+                activation.data_subject_id.as_ref(),
+            )
+            .await
+            .effective;
         context = context.with_capture(decision);
         if let Some(subject) = activation.data_subject_id.clone() {
-            let consent = self
-                .policy
-                .consent_ceiling(&subject, awaken_runtime_contract::Purpose::TelemetryContent)
-                .await;
-            context.capture.decision.level = context.capture.decision.level.meet(consent);
             context = match self.sink.clone() {
                 Some(sink) => context.with_capture_sink(subject, sink),
                 None => context.with_data_subject(subject),
@@ -610,7 +616,7 @@ impl SharedHost {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
@@ -932,7 +938,7 @@ mod tests {
         }
     }
 
-    fn activation(backend_ref: &str) -> RunActivation {
+    pub(crate) fn activation(backend_ref: &str) -> RunActivation {
         RunActivation::new(
             RunId("run-router".into()),
             ThreadId("thread-router".into()),
