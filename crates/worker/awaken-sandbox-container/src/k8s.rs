@@ -587,6 +587,8 @@ pub struct K8sRuntime {
     /// The composing process's wall clock: Sandbox effect fences are judged on
     /// it. A runtime composed without one judges no fence (fail closed).
     clock: Option<Arc<dyn awaken_time::WallClock>>,
+    /// Bound on waiting for the scheduler to place a Sandbox Pod (ADR-0092).
+    unschedulable_wait: std::time::Duration,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -675,20 +677,13 @@ impl K8sRuntime {
             create_mode_frozen: AtomicBool::new(false),
             creation_attempts: Mutex::new(Default::default()),
             clock: None,
+            unschedulable_wait: awaken_container_contract::DEFAULT_K8S_UNSCHEDULABLE_WAIT,
         };
         runtime
             .network_policy_attestation
             .refresh(&runtime.clients.control, &runtime.namespace)
             .await?;
         Ok(runtime)
-    }
-
-    /// Compose the runtime with the process's wall clock (see the `clock`
-    /// field). The execution composition always installs it.
-    #[must_use]
-    pub fn with_clock(mut self, clock: Arc<dyn awaken_time::WallClock>) -> Self {
-        self.clock = Some(clock);
-        self
     }
 
     /// Judge one Sandbox effect fence on the composed clock.
@@ -792,6 +787,7 @@ impl K8sRuntime {
             create_mode_frozen: AtomicBool::new(false),
             creation_attempts: Mutex::new(Default::default()),
             clock: Some(awaken_time::system_clock()),
+            unschedulable_wait: awaken_container_contract::DEFAULT_K8S_UNSCHEDULABLE_WAIT,
         }
     }
 

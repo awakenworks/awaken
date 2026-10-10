@@ -918,4 +918,113 @@ mod tests {
             "R3 PVC-only Create cannot yield absence or a cleanup handle"
         );
     }
+
+    struct FixedStatusBroker {
+        status: u16,
+        object: Value,
+    }
+
+    #[async_trait]
+    impl K8sCreateTransport for FixedStatusBroker {
+        async fn create(
+            &self,
+            _request: K8sCreateRequest,
+        ) -> Result<K8sCreateResponse, RuntimeError> {
+            Ok(K8sCreateResponse {
+                status: self.status,
+                object: self.object.clone(),
+            })
+        }
+
+        async fn seal_predecessor(
+            &self,
+            _scope: &str,
+            _predecessor: &ContainerEffectFence,
+            _expected_pod_name: &str,
+        ) -> Result<RequestJoin, RuntimeError> {
+            Ok(RequestJoin::Unknown)
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_and_brokered_create_refusals_classify_identically() {
+        // ADR-0092 decision 1, transport agreement. Causes: C1 the apiserver
+        // (direct) or the Coordinator broker (forwarding the upstream `Status`
+        // unchanged, or its own stale-Worker `Forbidden`) answers a Pod Create
+        // with status S and message M. Effect: E1 both transports produce the
+        // same port class for every row of the classification table.
+        use k8s_openapi::api::core::v1::Pod;
+        let status_object = |code: u16, message: &str| {
+            json!({
+                "apiVersion": "v1", "kind": "Status", "metadata": {},
+                "status": "Failure", "message": message, "reason": "Forbidden", "code": code
+            })
+        };
+        let quota = "pods \"p\" is forbidden: exceeded quota: compute, requested: pods=1";
+        let rows = [
+            (403, quota, "CapacityUnavailable"),
+            (403, "Forbidden", "Unauthorized"),
+            (
+                403,
+                "pods is forbidden: User cannot create resource",
+                "Unauthorized",
+            ),
+            (
+                403,
+                "failed quota: compute: must specify limits.cpu",
+                "Unauthorized",
+            ),
+            (401, "Unauthorized", "Unauthorized"),
+            (404, "not found", "NotFound"),
+            (409, "already exists", "Conflict"),
+            (422, "invalid", "Backend"),
+        ];
+        let class = |error: kube::Error| match crate::pc::SandboxError::from(
+            crate::runtime::RuntimeFailure::into_runtime_error(error),
+        ) {
+            crate::pc::SandboxError::CapacityUnavailable(_) => "CapacityUnavailable",
+            crate::pc::SandboxError::Unauthorized(_) => "Unauthorized",
+            crate::pc::SandboxError::NotFound(_) => "NotFound",
+            crate::pc::SandboxError::Conflict(_) => "Conflict",
+            crate::pc::SandboxError::Backend { .. } => "Backend",
+            other => panic!("unexpected class {other:?}"),
+        };
+        for (code, message, expected) in rows {
+            let object = status_object(code, message);
+            let direct = Client::new(
+                tower::service_fn({
+                    let object = object.clone();
+                    move |_request: Request<Body>| {
+                        let object = object.clone();
+                        async move {
+                            Ok::<_, std::io::Error>(
+                                Response::builder()
+                                    .status(code)
+                                    .header(header::CONTENT_TYPE, "application/json")
+                                    .body(Body::from(serde_json::to_vec(&object).unwrap()))
+                                    .unwrap(),
+                            )
+                        }
+                    }
+                }),
+                "ns",
+            );
+            let brokered = brokered_client(
+                direct.clone(),
+                Arc::new(FixedStatusBroker {
+                    status: code,
+                    object,
+                }),
+            );
+            let mut results = Vec::new();
+            for client in [direct, brokered] {
+                let error = Api::<Pod>::namespaced(client, "ns")
+                    .create(&PostParams::default(), &Pod::default())
+                    .await
+                    .expect_err("refused Create");
+                results.push(class(error));
+            }
+            assert_eq!(results, [expected, expected], "{code} {message}");
+        }
+    }
 }
