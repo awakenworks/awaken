@@ -2,7 +2,8 @@
 //! Delivered Skill bundles: their physical installer and the Session's catalogue prompt.
 
 use awaken_ext_skills::SkillRegistry;
-use awaken_resource_contract::{SkillVersion, skill_stem};
+use awaken_resource_contract::{SkillStoreError, SkillVersion, skill_stem};
+use awaken_session_types::RunError;
 
 /// Rebuildable metadata only, derived from the one frozen registry. Keep the
 /// directory unrendered until the attempt selects its filesystem view; an ACP
@@ -109,4 +110,138 @@ pub(crate) async fn materialize_delivered_skill(
         .materialize_read_only_tree(&directory, &files)
         .await
         .map_err(|error| error.to_string())
+}
+
+/// The shared closed classification of Skill repository failures.
+pub(crate) fn skill_store_run_error(error: SkillStoreError) -> RunError {
+    let message = error.to_string();
+    match error {
+        SkillStoreError::NotFound(_)
+        | SkillStoreError::InvalidDefinition { .. }
+        | SkillStoreError::InvalidVersion { .. }
+        | SkillStoreError::BundleMismatch { .. }
+        | SkillStoreError::InvalidSelection { .. } => RunError::bad_request(message),
+        SkillStoreError::Io { .. }
+        | SkillStoreError::Indeterminate { .. }
+        | SkillStoreError::AuthorityUnavailable { .. } => RunError::unavailable(message),
+        SkillStoreError::AlreadyExists(_)
+        | SkillStoreError::VersionConflict(_)
+        | SkillStoreError::LifecycleConflict { .. }
+        | SkillStoreError::CorruptData { .. }
+        | SkillStoreError::EncodingFailure { .. }
+        | SkillStoreError::Reference(_) => RunError::internal(message),
+    }
+}
+
+pub(crate) fn anthropic_skill(id: &str) -> Option<SkillVersion> {
+    let description = match id {
+        "pptx" => "Create, inspect, and modify PowerPoint presentations",
+        "xlsx" => "Create, inspect, and modify Excel workbooks",
+        "docx" => "Create, inspect, and modify Word documents",
+        "pdf" => "Create, inspect, and modify PDF documents",
+        _ => return None,
+    };
+    let body = format!(
+        "---\nname: {id}\ndescription: {description}\n---\nUse the available sandbox tools and libraries to {description}. Validate the generated artifact before returning it."
+    );
+    let files = vec![awaken_resource_contract::SkillBundleFile {
+        path: "SKILL.md".into(),
+        content: body.into_bytes(),
+        executable: false,
+    }];
+    Some(SkillVersion {
+        id: format!("anthropic-{id}-1").into(),
+        skill_id: id.into(),
+        version: 1,
+        name: id.into(),
+        description: description.into(),
+        directory: format!("/skills/{id}"),
+        bundle_sha256: awaken_resource_contract::skill_bundle_sha256(&files),
+        files,
+        created_unix_nanos: 0,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_session_types::RunErrorKind;
+
+    #[test]
+    fn session_skill_repository_failures_follow_the_closed_error_table() {
+        // Cause/effect decision table: caller-controlled missing/invalid
+        // selectors => 400; IO, missing authority and indeterminate backend
+        // outcomes => 503; corrupt data/encoding or impossible conflicts =>
+        // 500. SQL and filesystem failures now share the same cause policy.
+        // Reference-index refusals preserve their owned Resource error; they
+        // cannot be mistaken for a missing Skill or permission to publish. Every runtime Skill
+        // entry point uses this one adapter so create, restore, and live apply
+        // cannot classify the same repository cause differently.
+        let rules = [
+            (
+                SkillStoreError::NotFound("x".into()),
+                RunErrorKind::BadRequest,
+            ),
+            (
+                SkillStoreError::InvalidSelection { detail: "x".into() },
+                RunErrorKind::BadRequest,
+            ),
+            (
+                SkillStoreError::InvalidDefinition { detail: "x".into() },
+                RunErrorKind::BadRequest,
+            ),
+            (
+                SkillStoreError::InvalidVersion { detail: "x".into() },
+                RunErrorKind::BadRequest,
+            ),
+            (
+                SkillStoreError::BundleMismatch { detail: "x".into() },
+                RunErrorKind::BadRequest,
+            ),
+            (
+                SkillStoreError::from(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "x",
+                )),
+                RunErrorKind::Unavailable,
+            ),
+            (
+                SkillStoreError::AlreadyExists("x".into()),
+                RunErrorKind::Internal,
+            ),
+            (
+                SkillStoreError::VersionConflict("x".into()),
+                RunErrorKind::Internal,
+            ),
+            (
+                SkillStoreError::LifecycleConflict { detail: "x".into() },
+                RunErrorKind::Internal,
+            ),
+            (
+                SkillStoreError::Indeterminate { detail: "x".into() },
+                RunErrorKind::Unavailable,
+            ),
+            (
+                SkillStoreError::CorruptData { detail: "x".into() },
+                RunErrorKind::Internal,
+            ),
+            (
+                SkillStoreError::EncodingFailure { detail: "x".into() },
+                RunErrorKind::Internal,
+            ),
+            (
+                SkillStoreError::AuthorityUnavailable { detail: "x".into() },
+                RunErrorKind::Unavailable,
+            ),
+            (
+                SkillStoreError::Reference(
+                    awaken_resource_contract::ResourcePurgeError::StaleClaim,
+                ),
+                RunErrorKind::Internal,
+            ),
+        ];
+        for (cause, effect) in rules {
+            assert_eq!(skill_store_run_error(cause).kind, effect);
+        }
+    }
 }

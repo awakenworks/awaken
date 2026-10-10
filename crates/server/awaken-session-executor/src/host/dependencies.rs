@@ -16,6 +16,7 @@
 
 use crate::host::*;
 use awaken_dispatch_contract::RunClaim;
+use awaken_session_configuration_contract::SkillBundleSource;
 
 mod environment;
 mod tools;
@@ -68,6 +69,8 @@ pub struct HostDependencies {
     pub(crate) capture: capability::ContentCaptureCapability,
     pub(crate) session_application: SessionApplicationBindings,
     pub(crate) session_execution: SessionExecutionDependencies,
+    pub(crate) skill_bundle_source:
+        Option<Arc<dyn SkillBundleSource<crate::ResourceOperationFence>>>,
 }
 
 /// Select the role-neutral defaults around one role's required inputs.
@@ -94,17 +97,16 @@ fn select(
     #[cfg(any(test, feature = "test-support"))]
     let mut skills = skills;
     #[cfg(any(test, feature = "test-support"))]
-    if let Some(skill_ports) = resources
+    let skill_bundle_source = resources
         .local
         .as_ref()
         .and_then(|plane| plane.skills.clone())
-    {
-        skills.set_store(
-            skill_ports.store,
-            skill_ports.bundle_source,
-            skill_ports.application,
-        );
-    }
+        .map(|ports| {
+            skills.set_store(ports.store, ports.application);
+            ports.bundle_source
+        });
+    #[cfg(not(any(test, feature = "test-support")))]
+    let skill_bundle_source = None;
     let resources =
         capability::ResourceSelection::assemble(resources, store_dir.as_deref(), &clock);
     HostDependencies {
@@ -125,6 +127,7 @@ fn select(
         capture: capability::ContentCaptureCapability::new(content_capture),
         session_application: SessionApplicationBindings::default(),
         session_execution: SessionExecutionDependencies::default(),
+        skill_bundle_source,
         local_workspace,
         execution_authority: None,
         environment_binding_sink: None,
