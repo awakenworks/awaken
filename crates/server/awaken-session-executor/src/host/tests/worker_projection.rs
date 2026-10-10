@@ -727,7 +727,8 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             .expect_err("F1 rejects the complete prospective layout");
         assert!(error.message.contains("overlaps"), "F1: {error:?}");
         assert!(
-            host.thread_resource_manifest("prospective-layout-conflict")
+            host.realizer
+                .thread_resource_manifest("prospective-layout-conflict")
                 .is_none(),
             "F1 no Resource projection"
         );
@@ -861,7 +862,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             "R1 stages the exact SessionResourceState generation without forging completion"
         );
 
-        let spec = host.sandbox_spec("flow-thread");
+        let spec = host.realizer.sandbox_spec("flow-thread");
         assert_eq!(spec.mounts.len(), 1);
         assert_eq!(spec.env.len(), 1);
         assert_eq!(
@@ -1238,7 +1239,10 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         awaken_dispatch_contract::DispatchState::Reserved,
         "R1/E1 remains unclaimable before activity activation"
     );
-    assert!(host.session_environment(thread).await.is_none(), "R1/E2");
+    assert!(
+        host.realizer.session_environment(thread).await.is_none(),
+        "R1/E2"
+    );
     assert!(
         host.session_slots
             .read_run(thread, |run| run.runtime.clone())
@@ -1723,7 +1727,10 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
         .await
         .expect("R1 reservation does not require local adoption");
     assert!(reserved.env.is_none(), "R1/E1 no physical Environment");
-    assert!(host.session_environment(thread).await.is_none(), "R1/E1");
+    assert!(
+        host.realizer.session_environment(thread).await.is_none(),
+        "R1/E1"
+    );
 
     host.prepare_outcome(thread, "worker-owned-outcome", "deliver", "rubric", 2)
         .await
@@ -1734,7 +1741,10 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
             .expect("R3 nonterminal Outcome read needs no physical Environment")
             .is_none()
     );
-    assert!(host.session_environment(thread).await.is_none(), "R3/E1");
+    assert!(
+        host.realizer.session_environment(thread).await.is_none(),
+        "R3/E1"
+    );
 
     let child_run = RunId("worker-owned-child-report".into());
     let report = awaken_session_execution_contract::SessionAgentReportContinuation {
@@ -1750,7 +1760,7 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
     };
     // Eviction also exercises cold Coordinator reconstruction, rather than
     // accidentally succeeding through a previously cached envelope.
-    host.evict_session_for_rebuild(thread).await;
+    host.realizer.evict_session_for_rebuild(thread).await;
     for _ in 0..2 {
         host.continue_session_agent_report(report.clone())
             .await
@@ -1761,13 +1771,16 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
     assert_eq!(queued[0].thread_id.0, thread, "R4 primary target");
     assert_eq!(queued[0].session_thread_id, Some(ThreadId(thread.into())));
     assert_eq!(queued[0].session_activity_epoch, Some(7));
-    assert!(host.session_environment(thread).await.is_none(), "R4/E1");
+    assert!(
+        host.realizer.session_environment(thread).await.is_none(),
+        "R4/E1"
+    );
     let mut invalid = report;
     invalid.message.role = Role::Assistant;
     assert!(host.continue_session_agent_report(invalid).await.is_err());
     assert_eq!(dispatch.list_dispatches().await.unwrap().len(), 1, "R5");
 
-    host.evict_session_for_rebuild(thread).await;
+    host.realizer.evict_session_for_rebuild(thread).await;
     let error = match host
         .ctx_for_snapshot(thread, Some("assistant"), Some(reserved.config.clone()))
         .await
@@ -1805,7 +1818,7 @@ async fn rebuilt_coordination_context_never_borrows_a_retained_environment() {
         .await
         .expect("C1 create executable context");
     let retained = executable.env.clone().expect("C1 resident Environment");
-    host.evict_session_for_rebuild(thread).await;
+    host.realizer.evict_session_for_rebuild(thread).await;
 
     let coordination = host
         .ctx_for_session_coordination(thread, None)
@@ -1817,6 +1830,7 @@ async fn rebuilt_coordination_context_never_borrows_a_retained_environment() {
         Arc::ptr_eq(
             &retained,
             &host
+                .realizer
                 .session_environment(thread)
                 .await
                 .expect("R1/E1 physical owner survives"),
@@ -1877,7 +1891,7 @@ async fn claimed_inference_only_context_keeps_scope_without_a_resource_transitio
         "R1 omitting a Sandbox must not downgrade the claim to coordination"
     );
     assert!(ctx.env.is_none(), "R1 no physical environment");
-    assert!(host.session_environment(thread).await.is_none());
+    assert!(host.realizer.session_environment(thread).await.is_none());
     let dispatch = host
         .resolved_dispatch(awaken_runtime_contract::RunActivation::new(
             RunId("inference-only-run".into()),

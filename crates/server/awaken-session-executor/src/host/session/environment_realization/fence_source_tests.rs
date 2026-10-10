@@ -573,7 +573,9 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                     "unused",
                 )
                 .into_session_provider();
-                let spec = host.sandbox_spec_for_provider("session", &provider);
+                let spec = host
+                    .realizer
+                    .sandbox_spec_for_provider("session", &provider);
                 let handle =
                     crate::host::tests::terminal_fixture_container_handle("session", &spec);
                 let binding = serde_json::to_string(&handle).unwrap();
@@ -710,16 +712,18 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
         if rule == "initial_closed" {
             host.session_slots.close_realization("session", None);
         }
-        let create = host.create_session_environment_with_provider_effect(
-            &provider,
-            &spec,
-            (rule != "provider_unfenced").then_some(&initial),
-            authority
-                .as_ref()
-                .map(|source| source as &dyn CurrentExecutionAuthority),
-            None,
-            awaken_session_environment_contract::EnvironmentRealizationKind::Create,
-        );
+        let create = host
+            .realizer
+            .create_session_environment_with_provider_effect(
+                &provider,
+                &spec,
+                (rule != "provider_unfenced").then_some(&initial),
+                authority
+                    .as_ref()
+                    .map(|source| source as &dyn CurrentExecutionAuthority),
+                None,
+                awaken_session_environment_contract::EnvironmentRealizationKind::Create,
+            );
         let transition = async {
             if rule == "initial_closed" {
                 return;
@@ -880,7 +884,9 @@ async fn environment_receipt_refreshes_only_the_captured_live_generation() {
                 }
                 _ => {}
             }
-            let receipt = host.current_environment_receipt("binding".into(), &effect);
+            let receipt = host
+                .realizer
+                .current_environment_receipt("binding".into(), &effect);
             assert_eq!(
                 receipt.is_ok(),
                 rule == "exact" || rule == "renewed",

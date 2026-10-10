@@ -29,6 +29,7 @@ pub(super) async fn adopt_bound_sandbox(
     awaken_dispatch_execution::Error,
 > {
     let provider = host
+        .realizer
         .session_environment_provider_for_thread(expected_sandbox_id, provisioning)
         .map_err(HostWorkerResolver::map_host_resolution_error)?;
     host.adopt_bound_session_environment(
@@ -353,7 +354,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         // into the queue's existing delivery cache under this exact claim.
         if canonical_session_realization
             && run_thread_id == thread_id
-            && let Some(binding) = host.durable_session_environment_binding(&thread_id.0)
+            && let Some(binding) = host.realizer.durable_environment_binding(&thread_id.0)
         {
             let outcome = host
                 .dispatch_store()

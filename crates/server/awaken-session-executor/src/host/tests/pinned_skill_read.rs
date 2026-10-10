@@ -184,7 +184,12 @@ async fn pinned_reads_during_concurrent_first_hand_calls_do_not_join_sandbox_sta
         version.skill_md().unwrap(),
         "B1 read while creation pending"
     );
-    assert!(host.session_environment("skill-race").await.is_none());
+    assert!(
+        host.realizer
+            .session_environment("skill-race")
+            .await
+            .is_none()
+    );
     assert!(
         host.session_slots
             .read_realization("skill-race", |r| r.manifest.is_none())
@@ -307,7 +312,12 @@ async fn cold_resource_replacement_and_revocation_never_return_old_skill_bytes()
         ),
         "B4 revoked bytes unavailable"
     );
-    assert!(host.session_environment("skill-change").await.is_none());
+    assert!(
+        host.realizer
+            .session_environment("skill-change")
+            .await
+            .is_none()
+    );
     assert!(
         host.session_slots
             .read_realization("skill-change", |r| r.manifest.is_none())
@@ -400,7 +410,12 @@ async fn read_disabled_or_awaiting_permission_never_leaks_pinned_content() {
                 "B5/B6 no body before permission"
             );
         }
-        assert!(host.session_environment("skill-policy").await.is_none());
+        assert!(
+            host.realizer
+                .session_environment("skill-policy")
+                .await
+                .is_none()
+        );
         if enabled {
             assert!(matches!(outcome.state(), RunState::Awaiting), "B6");
             let pending = outcome.pending().unwrap();
@@ -428,7 +443,12 @@ async fn read_disabled_or_awaiting_permission_never_leaks_pinned_content() {
                 .any(|message| block_text(&message.content).contains("PERMISSION-PROTECTED-BODY"));
             assert_eq!(leaked, allow, "B7/B8 only allow discloses content");
         }
-        assert!(host.session_environment("skill-policy").await.is_none());
+        assert!(
+            host.realizer
+                .session_environment("skill-policy")
+                .await
+                .is_none()
+        );
     }
 }
 
@@ -506,7 +526,11 @@ async fn failed_skill_file_write_blocks_tools_and_repaired_pin_reuses_environmen
                 .unwrap()
         );
     }
-    let environment = host.session_environment("skill-write-fault").await.unwrap();
+    let environment = host
+        .realizer
+        .session_environment("skill-write-fault")
+        .await
+        .unwrap();
     let mut v2 = frozen_skill_version(
         "write-fault",
         "Write fault",
@@ -550,7 +574,11 @@ async fn failed_skill_file_write_blocks_tools_and_repaired_pin_reuses_environmen
     );
     assert!(Arc::ptr_eq(
         &environment,
-        &host.session_environment("skill-write-fault").await.unwrap()
+        &host
+            .realizer
+            .session_environment("skill-write-fault")
+            .await
+            .unwrap()
     ));
     assert_eq!(
         executor
@@ -617,7 +645,10 @@ async fn managed_on_tool_use_reads_instruction_and_reference_before_reply_withou
     .await
     .unwrap();
     assert!(
-        host.session_environment("brain-first").await.is_none(),
+        host.realizer
+            .session_environment("brain-first")
+            .await
+            .is_none(),
         "P1/E3"
     );
     let requests = model.requests.lock().unwrap();
@@ -752,7 +783,12 @@ async fn pinned_read_path_and_text_decision_table() {
                 "P4/P5 {path}: {result:?}"
             ),
         }
-        assert!(host.session_environment("text-table").await.is_none());
+        assert!(
+            host.realizer
+                .session_environment("text-table")
+                .await
+                .is_none()
+        );
     }
     for arguments in [
         serde_json::json!({"file_path": ".skills/files/SKILL.md", "extra": true}),
@@ -870,7 +906,7 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
                 .is_err(),
             "P8 {mismatch}"
         );
-        assert!(host.session_environment("cold").await.is_none());
+        assert!(host.realizer.session_environment("cold").await.is_none());
     }
     host.session_slots.update("cold", |slot| {
         slot.realization.skills = Some(vec![v1.clone()]);
@@ -905,7 +941,7 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
             .is_err(),
         "P9"
     );
-    assert!(host.session_environment("cold").await.is_none());
+    assert!(host.realizer.session_environment("cold").await.is_none());
 }
 
 #[tokio::test]
@@ -972,7 +1008,11 @@ async fn lazy_skill_installation_reloads_exact_bytes_and_reuses_environment() {
         version.skill_md().unwrap(),
         "P10 canonical bytes replace stale projection"
     );
-    let environment = host.session_environment("install-retry").await.unwrap();
+    let environment = host
+        .realizer
+        .session_environment("install-retry")
+        .await
+        .unwrap();
     let output = executor.invoke(&call).await.unwrap();
     assert!(
         output.text().contains("INSTALLED"),
@@ -981,7 +1021,11 @@ async fn lazy_skill_installation_reloads_exact_bytes_and_reuses_environment() {
     assert!(
         Arc::ptr_eq(
             &environment,
-            &host.session_environment("install-retry").await.unwrap()
+            &host
+                .realizer
+                .session_environment("install-retry")
+                .await
+                .unwrap()
         ),
         "P11 one Environment"
     );

@@ -275,7 +275,7 @@ mod tests {
         assert_eq!(grade.decision, GradeDecision::NeedsRevision);
         assert_eq!(grade.explanation, "add coverage");
         assert!(
-            host.session_environment(&thread.0).await.is_none(),
+            host.realizer.session_environment(&thread.0).await.is_none(),
             "J1 the tool-less Judge must not materialize an unowned Environment"
         );
         // J1 scope cause/effect: a non-default Worker Workspace -> the fresh,

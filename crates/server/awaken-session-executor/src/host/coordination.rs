@@ -1109,7 +1109,7 @@ mod tests {
                 "{rule}/E4 eligible Worker capability",
             );
             assert_eq!(
-                host.thread_resource_manifest(&session_id),
+                host.realizer.thread_resource_manifest(&session_id),
                 active,
                 "{rule}/E5 admission must not publish active",
             );

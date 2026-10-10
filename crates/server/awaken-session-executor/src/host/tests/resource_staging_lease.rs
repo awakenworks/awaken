@@ -644,7 +644,12 @@ impl StagingFixture {
                 .unwrap_or(true),
             "preparation does not publish an executable projection"
         );
-        assert!(self.host.thread_resource_manifest(SESSION).is_none());
+        assert!(
+            self.host
+                .realizer
+                .thread_resource_manifest(SESSION)
+                .is_none()
+        );
     }
 }
 
@@ -1634,5 +1639,10 @@ async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
         assert_eq!(task.await.unwrap().is_err(), index == 0);
     }
     assert_eq!(f.control.renewals_active.load(Ordering::SeqCst), 0);
-    assert!(f.host.thread_resource_manifest("soak-00").is_none());
+    assert!(
+        f.host
+            .realizer
+            .thread_resource_manifest("soak-00")
+            .is_none()
+    );
 }

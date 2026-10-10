@@ -558,9 +558,10 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
     )
     .await
     .expect("HS1 install frozen source projection");
-    host.register_thread_resource_manifest(thread, source_manifest);
+    host.realizer
+        .register_thread_resource_manifest(thread, source_manifest);
 
-    let handle = terminal_fixture_container_handle(thread, &host.sandbox_spec(thread));
+    let handle = terminal_fixture_container_handle(thread, &host.realizer.sandbox_spec(thread));
     let source_binding = serde_json::to_string(&handle).unwrap();
     let lease = awaken_session_resource_contract::SessionRealizationLease {
         owner: "source-cleanup-worker".into(),
@@ -633,7 +634,10 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         Some(source_binding.as_str()),
         "HS1/E2 binding retained"
     );
-    assert!(host.session_environment(thread).await.is_none(), "HS1/E2");
+    assert!(
+        host.realizer.session_environment(thread).await.is_none(),
+        "HS1/E2"
+    );
 }
 
 struct RecordingTerminalArtifactRecovery {
@@ -1014,7 +1018,7 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
     )
     .await
     .expect("install the exact frozen Memory/checkpoint projection");
-    let handle = terminal_fixture_container_handle(thread, &host.sandbox_spec(thread))
+    let handle = terminal_fixture_container_handle(thread, &host.realizer.sandbox_spec(thread))
         .with_memory_materializations(vec![terminal_memory_evidence()])
         .expect("install exact writable Memory evidence");
     let generation = awaken_session_state_contract::SandboxGeneration::new(
@@ -1203,7 +1207,7 @@ async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
     let host = (raw_host).build().expect("validated Host dependencies");
     let managed = install_test_dispatch_runtime(&host);
     install_test_session_application(&host);
-    let handle = terminal_fixture_container_handle(thread, &host.sandbox_spec(thread));
+    let handle = terminal_fixture_container_handle(thread, &host.realizer.sandbox_spec(thread));
     let binding = serde_json::to_string(&handle).unwrap();
     let terminal_projection = install_terminal_recovery_projection(
         &host,
@@ -1330,7 +1334,7 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
     let host = (raw_host).build().expect("validated Host dependencies");
     let managed = install_test_dispatch_runtime(&host);
     install_test_session_application(&host);
-    let handle = terminal_fixture_container_handle(thread, &host.sandbox_spec(thread));
+    let handle = terminal_fixture_container_handle(thread, &host.realizer.sandbox_spec(thread));
     let (disposing_environment, source_preparation, source_preparation_receipt) =
         disposing_terminal_environment(thread, &lease, &handle, &checkpoint_id);
     let terminal_projection = install_terminal_recovery_projection(
@@ -1487,7 +1491,7 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
     )
     .await
     .expect("A1 install frozen writable Memory input");
-    let handle = terminal_fixture_container_handle(thread, &host.sandbox_spec(thread))
+    let handle = terminal_fixture_container_handle(thread, &host.realizer.sandbox_spec(thread))
         .with_memory_materializations(vec![terminal_memory_evidence()])
         .expect("A1 durable handle carries exact writable Copy evidence");
     let (disposing_environment, source_preparation, source_preparation_receipt) =
@@ -1623,7 +1627,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
         .await
         .expect("M0 install frozen writable Memory input");
 
-        let handle = terminal_fixture_container_handle(thread, &host.sandbox_spec(thread))
+        let handle = terminal_fixture_container_handle(thread, &host.realizer.sandbox_spec(thread))
             .with_memory_materializations(vec![terminal_memory_evidence()])
             .expect("M0 durable handle carries exact writable Copy evidence");
         let binding = serde_json::to_string(&handle).expect("M0 encode durable binding");
@@ -1647,7 +1651,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
                     .session_provider
                     .terminal()
                     .prepare_terminal_effective_for_effect(
-                        &host.sandbox_spec(thread),
+                        &host.realizer.sandbox_spec(thread),
                         Some(&handle),
                         None,
                         &fence,
@@ -1951,9 +1955,10 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
         .unwrap_or_else(|error| panic!("{} installs frozen Memory input: {error}", rule.name));
 
         let evidence = terminal_memory_evidence();
-        let handle = terminal_fixture_container_handle(&thread, &host.sandbox_spec(&thread))
-            .with_memory_materializations(vec![evidence])
-            .expect("HM1 current V2 handle carries exact Memory evidence");
+        let handle =
+            terminal_fixture_container_handle(&thread, &host.realizer.sandbox_spec(&thread))
+                .with_memory_materializations(vec![evidence])
+                .expect("HM1 current V2 handle carries exact Memory evidence");
         let binding = serde_json::to_string(&handle).expect("HM1 encode terminal binding");
         // A changed aggregate Environment is a new root-CAS snapshot.
         projection.revision.0 += 1;
@@ -1974,7 +1979,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 .session_provider
                 .terminal()
                 .prepare_terminal_effective_for_effect(
-                    &host.sandbox_spec(&thread),
+                    &host.realizer.sandbox_spec(&thread),
                     Some(&handle),
                     None,
                     &fence,
@@ -2022,7 +2027,10 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 "H1/C3 exact same-process owner is retained behind Preparation"
             );
         } else {
-            assert!(host.session_environment(&thread).await.is_none(), "H2/C3");
+            assert!(
+                host.realizer.session_environment(&thread).await.is_none(),
+                "H2/C3"
+            );
         }
         events.lock().unwrap().clear();
 
@@ -2188,6 +2196,9 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             Some(&"dispose-physical"),
             "HM1/E5 physical disposal is the final effect",
         );
-        assert!(host.session_environment(&thread).await.is_none(), "HM1/E5");
+        assert!(
+            host.realizer.session_environment(&thread).await.is_none(),
+            "HM1/E5"
+        );
     }
 }

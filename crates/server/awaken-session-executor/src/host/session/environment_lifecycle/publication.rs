@@ -123,7 +123,8 @@ impl SharedHost {
             })
             .flatten();
         if let Some(retirement) = retirement {
-            self.dispose_and_confirm_retirement(thread, &retirement)
+            self.realizer
+                .dispose_and_confirm_retirement(thread, &retirement)
                 .await?;
         }
         Ok(())

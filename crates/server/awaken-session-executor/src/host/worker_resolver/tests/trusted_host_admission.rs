@@ -18,6 +18,7 @@ async fn trusted_host_admission_rejection_preserves_permanent_class_without_effe
     spec.isolation = awaken_provisioning_contract::IsolationClass::Namespace;
     spec.network = awaken_provisioning_contract::NetworkPolicy::Unrestricted;
     let rejected = host
+        .realizer
         .validate_session_environment_capabilities(&provider, &spec)
         .expect_err("T1 incompatible exact tier");
     assert_eq!(
@@ -26,7 +27,8 @@ async fn trusted_host_admission_rejection_preserves_permanent_class_without_effe
         "T1 absorbing admission"
     );
     spec.isolation = awaken_provisioning_contract::IsolationClass::Workdir;
-    host.validate_session_environment_capabilities(&provider, &spec)
+    host.realizer
+        .validate_session_environment_capabilities(&provider, &spec)
         .expect("T2 exact Workdir admission");
     assert_eq!(
         std::fs::read_dir(root.path()).expect("T3 root").count(),

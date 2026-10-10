@@ -8,20 +8,16 @@
 //! projection materialized from it so registration and terminal cleanup share one
 //! lifecycle boundary instead of coordinating parallel maps.
 
-use crate::frozen_inputs::{FrozenSessionInputs, ManagedContentDelivery};
-use crate::staged_resources::EnvironmentResourceReconciliation;
-pub(crate) use awaken_session_mcp::McpQuiescenceAdmissionFence;
-use awaken_session_mcp::SessionMcpState;
+use crate::frozen_inputs::FrozenSessionInputs;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::memory_binding::MemoryBinding;
-use crate::staged_resources::StagedResources;
-
 pub(crate) use crate::environment_owner::*;
 mod execution_authority;
-mod projection_receipt;
-pub(crate) use projection_receipt::FrozenProjectionReceipt;
+pub(crate) use crate::session_realizations::{
+    FrozenProjectionReceipt, SessionRealizationAuthority, SessionRealizationState,
+};
 /// The exclusion every realization phase driver must hold is contract-owned
 /// (`SessionRealizationPermit`); this crate only supplies the Session slot
 /// allocation as its identity.
@@ -69,79 +65,6 @@ pub(crate) fn test_expired_observed_lease(
             .is_none()
     );
     proof
-}
-
-/// One process-local projection of aggregate authority, not another lease.
-/// Closing retains the exact lease for cleanup CAS, but never for admission.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) enum SessionRealizationAuthority {
-    #[default]
-    Uninstalled,
-    Live(awaken_session_realization_contract::ObservedSessionRealizationLease),
-    Closed(Option<awaken_session_resource_contract::SessionRealizationLease>),
-}
-
-impl SessionRealizationAuthority {
-    pub(crate) fn proof(
-        &self,
-    ) -> Option<&awaken_session_realization_contract::ObservedSessionRealizationLease> {
-        match self {
-            Self::Live(proof) => Some(proof),
-            Self::Uninstalled | Self::Closed(_) => None,
-        }
-    }
-
-    pub(crate) fn remaining(&self) -> Option<std::time::Duration> {
-        self.proof()?
-            .remaining_at(awaken_authority_clock::authority_proof_started().ok()?)
-    }
-
-    /// One local admission rule: exact aggregate generation and a still-live
-    /// request-relative observation. Callers hold the existing slot mutex;
-    /// neither wall time nor a retained Closed lease grants authority.
-    pub(crate) fn remaining_for(
-        &self,
-        asserted: &awaken_session_resource_contract::SessionRealizationLease,
-    ) -> Option<std::time::Duration> {
-        awaken_session_realization_contract::realization_lease_generation_authorizes(
-            self.lease()?,
-            asserted,
-        )
-        .then(|| self.remaining())
-        .flatten()
-    }
-
-    pub(crate) fn lease(
-        &self,
-    ) -> Option<&awaken_session_resource_contract::SessionRealizationLease> {
-        match self {
-            Self::Live(proof) => Some(&proof.lease),
-            Self::Uninstalled | Self::Closed(_) => None,
-        }
-    }
-
-    pub(crate) fn is_closed(&self) -> bool {
-        matches!(self, Self::Closed(_))
-    }
-
-    /// Called under the Session slot mutex used for renewal application. The
-    /// pending provider GO callback must hold this same mutex through its grant.
-    /// A retry may select the retained closed identity; a stale revoker cannot.
-    pub(crate) fn close(
-        &mut self,
-        expected: Option<&awaken_session_resource_contract::SessionRealizationLease>,
-    ) -> bool {
-        let retained = match self {
-            Self::Live(proof) => Some(&mut proof.lease),
-            Self::Closed(lease) => lease.as_mut(),
-            Self::Uninstalled => None,
-        };
-        if expected.is_some_and(|expected| retained.as_deref() != Some(expected)) {
-            return false;
-        }
-        *self = Self::Closed(retained.cloned());
-        true
-    }
 }
 
 impl SessionRuntimeSlot {
@@ -271,97 +194,6 @@ pub(crate) struct SessionRuntimeSlot {
     pub(crate) run: SessionRunState,
 }
 
-/// The environment-realization layer: who owns the Session's Environment,
-/// under which realization lease, and which Resources, memory, Skills and MCP
-/// generations are staged for it. Built while realizing; revocation keeps
-/// only what a retry of a retained Environment owner still needs.
-#[derive(Default)]
-pub(crate) struct SessionRealizationState {
-    /// Serializes the canonical realization phase driver for this Session.
-    /// Lease renewal may advance authority while this lock is held, but it must
-    /// not start a second Stage/Publish driver. This is deliberately separate
-    /// from `lifecycle`, which is re-entered by Environment materialization.
-    pub realization: Arc<tokio::sync::Mutex<()>>,
-    /// Serializes first materialization/rebuild for this Session without a
-    /// process-wide registry lock being held across I/O.
-    pub lifecycle: Arc<tokio::sync::Mutex<()>>,
-    /// Serializes one complete Resource-generation compare/realize/publish
-    /// transition. The global lock order is `realization -> lifecycle ->
-    /// resource_projection`; callers may acquire any suffix but never reverse
-    /// it. Keeping this separate lets projection installation remain atomic to
-    /// Runtime observers without re-entering `lifecycle` during Resource sync.
-    pub resource_projection: Arc<tokio::sync::Mutex<()>>,
-    /// Last accepted aggregate version and equality digest; rebuildable, never authority.
-    pub(crate) frozen_projection_receipt: Option<FrozenProjectionReceipt>,
-    /// Sole live Environment owner. Every state transition is driven through
-    /// `host/session/environment_lifecycle.rs`; other modules may only inspect
-    /// Resident/occupancy projections through its read helpers.
-    pub(crate) environment_owner: SessionEnvironmentOwner,
-    /// Derived once while the Session context is built. Prompt projection,
-    /// mount realization, Native tools, and ACP export all consume this value;
-    /// none may independently choose another delivery path.
-    pub content_delivery: Option<ManagedContentDelivery>,
-    /// Exact aggregate Environment phase installed only by a terminal cleanup
-    /// assignment. The cleanup command uses this frozen fact to distinguish a
-    /// genuinely unmaterialized/hibernated Session from Resident, Suspending,
-    /// or Restoring state; absence is never interpreted as permission to reap
-    /// or acknowledge a root cleanup.
-    pub terminal_environment_state: Option<awaken_session_state_contract::SessionEnvironmentState>,
-    /// Process-local parent of a terminal cleanup target. This is routing
-    /// metadata only: the aggregate's frozen command set remains the sole work
-    /// and receipt authority. It lets an accepted root receipt (or a later
-    /// aggregate Completed read after response loss) retire child projections
-    /// without maintaining a second cleanup registry.
-    pub terminal_cleanup_root: Option<String>,
-    /// Exact unavailable aggregate binding/generation authorized for one
-    /// RebuildFromCommittedTruth replacement. This is a process-local command
-    /// projection; the Session aggregate receipt remains the only transition
-    /// authority and clears it after durable publication.
-    pub environment_rebuild_source: Option<(String, Option<String>)>,
-    /// Every standard MemoryStore resource frozen for this Session, keyed by
-    /// binding id. These exist independently of the optional Awaken automatic
-    /// memory extension selected into `memory` below.
-    pub memory_bindings: HashMap<String, Arc<MemoryBinding>>,
-    /// The one explicitly selected automatic recall/extraction binding. This is
-    /// never the authority for which standard resources are mounted.
-    pub memory: Option<Arc<MemoryBinding>>,
-    /// The Session's MCP generation owners, quiescence fence, and frozen
-    /// attachment marker. Other Host modules use only its methods.
-    pub mcp: SessionMcpState,
-    /// Current Control-issued projection authority. It is a live cache used to
-    /// request renewal; durable ownership remains in the Session aggregate.
-    pub authority: SessionRealizationAuthority,
-    /// Cancellation of the current Resource preparation only. This carries no
-    /// ownership: `authority` and Control remain the sole authorities.
-    pub resource_preparation: Option<Arc<awaken_runtime_contract::CancellationToken>>,
-    /// Wakes a claim resolver waiting for the Session application's initial
-    /// restart reassignment. The lease above remains the only projected fact;
-    /// this notification carries no authority or parallel state.
-    pub changed: Arc<tokio::sync::Notify>,
-    /// `Some([])` means the frozen manifest delivers no Skills; `None` means this
-    /// embedded Session has no frozen Skill manifest.
-    pub skills: Option<Vec<awaken_resource_contract::SkillVersion>>,
-    /// Managed-filesystem Skill discovery metadata. Full instructions remain
-    /// in the exact frozen bundle (and its later filesystem projection) and
-    /// are read on demand by the ordinary `read` tool.
-    pub skill_prompt: Option<crate::skill_delivery::FilesystemSkillPrompt>,
-    pub resources: StagedResources,
-    pub manifest: Option<awaken_session_resource_contract::SessionResourceManifest>,
-    /// Exact aggregate-owned physical replacement currently being replayed.
-    /// This is a rebuildable command projection, not completion state: the
-    /// durable Resource aggregate remains the only active/pending authority.
-    pub resource_transition: Option<awaken_session_resource_contract::SessionResourceTransition>,
-    /// Fingerprint of the exact transition + optional Run claim whose immutable
-    /// inputs were compiled into `resources`, `memory_bindings`, and `skills`.
-    /// This avoids duplicate File/Vault/catalog reads between deferred staging
-    /// and the same process's later physical Environment convergence.
-    pub staged_resource_effect_key: Option<String>,
-    /// How the resident Environment entered this process. Fresh substrates and
-    /// adopted providers require different idempotent mount completion, but the
-    /// aggregate transition remains their single desired-state authority.
-    pub environment_resource_reconciliation: EnvironmentResourceReconciliation,
-}
-
 /// The run layer: the Session context built for running and the durable
 /// dispatch it serves. Rebuilt from the other two layers when dropped.
 #[derive(Default)]
@@ -378,6 +210,53 @@ pub(crate) struct SessionRunState {
     pub session_dispatch: bool,
 }
 
+impl crate::session_realizations::SessionRunQuery for SessionRunState {
+    fn holds_context(&self) -> bool {
+        self.runtime.is_some()
+    }
+
+    fn session_dispatch(&self) -> bool {
+        self.session_dispatch
+    }
+
+    fn dispatch_claim(&self) -> Option<&awaken_dispatch_contract::RunClaim> {
+        self.dispatch_claim.as_ref()
+    }
+
+    fn drop_context(&mut self) {
+        self.runtime = None;
+    }
+
+    fn enter_session_dispatch(&mut self) {
+        self.session_dispatch = true;
+    }
+}
+
+impl crate::session_realizations::SessionRealizationSource
+    for Mutex<HashMap<String, SessionRuntimeSlot>>
+{
+    fn visit(
+        &self,
+        session: &str,
+        create: bool,
+        visit: &mut dyn FnMut(crate::session_realizations::SessionRealizationAccess<'_>),
+    ) {
+        let mut slots = self.lock().expect("session runtime slots mutex poisoned");
+        let slot = if create {
+            Some(slots.entry(session.to_string()).or_default())
+        } else {
+            slots.get_mut(session)
+        };
+        if let Some(slot) = slot {
+            visit(crate::session_realizations::SessionRealizationAccess {
+                frozen: &slot.frozen,
+                realization: &mut slot.realization,
+                run: &mut slot.run,
+            });
+        }
+    }
+}
+
 impl SessionRunState {
     /// Drop a metadata-only coordination envelope so the next read rebuilds
     /// it; an executable context is kept.
@@ -389,143 +268,6 @@ impl SessionRunState {
         {
             self.runtime = None;
         }
-    }
-}
-
-impl SessionRealizationState {
-    /// Resources the Environment held before an in-flight resource transition.
-    pub(crate) fn previous_resources(
-        &self,
-    ) -> Option<awaken_session_resource_contract::ResolvedSessionResources> {
-        let transition = self.resource_transition.as_ref()?;
-        Some(transition.previous().resources.clone())
-    }
-
-    /// What revocation keeps while an Environment owner is still retained:
-    /// the slot's lock identities, the closed authority, the owner itself and
-    /// the content it was staged with. Everything else is rebuilt.
-    pub(crate) fn take_retained_on_revocation(&mut self) -> Self {
-        Self {
-            realization: self.realization.clone(),
-            lifecycle: self.lifecycle.clone(),
-            resource_projection: self.resource_projection.clone(),
-            changed: self.changed.clone(),
-            authority: self.authority.clone(),
-            environment_owner: std::mem::take(&mut self.environment_owner),
-            content_delivery: self.content_delivery,
-            resources: std::mem::take(&mut self.resources),
-            // Revocation clears process-local realization material but is
-            // not an Environment restoration/source-disposal authority.
-            // Preserve an already-closed quiescence fence so only the
-            // canonical durable projection proof may reopen MCP effects.
-            mcp: self.mcp.take_retained_on_revocation(),
-            ..Self::default()
-        }
-    }
-
-    pub(crate) fn close_authority(
-        &mut self,
-        expected: Option<&awaken_session_resource_contract::SessionRealizationLease>,
-    ) -> bool {
-        if !self.authority.close(expected) {
-            return false;
-        }
-        if let Some(preparation) = &self.resource_preparation {
-            preparation.cancel();
-        }
-        self.changed.notify_waiters();
-        true
-    }
-
-    pub(crate) fn install_lease(
-        &mut self,
-        proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
-    ) -> bool {
-        let Ok(now) = awaken_authority_clock::authority_proof_started() else {
-            return false;
-        };
-        if proof.remaining_at(now).is_none() {
-            return false;
-        }
-        let lease = &proof.lease;
-        if let SessionRealizationAuthority::Closed(Some(closed)) = &self.authority
-            && (awaken_session_realization_contract::realization_lease_generation_authorizes(
-                closed, lease,
-            ) || awaken_session_realization_contract::realization_lease_generation_authorizes(
-                lease, closed,
-            ))
-        {
-            // An assertion or delayed renewal cannot reopen a closed generation.
-            return false;
-        }
-        if let Some(current) = self.authority.lease()
-            && (awaken_session_realization_contract::realization_lease_generation_authorizes(
-                current, lease,
-            ) || awaken_session_realization_contract::realization_lease_generation_authorizes(
-                lease, current,
-            ))
-            && self.authority.remaining().is_none()
-        {
-            return false;
-        }
-        if self.authority.lease().is_some_and(|current| {
-            awaken_session_realization_contract::realization_lease_generation_authorizes(
-                current, lease,
-            )
-        }) {
-            // A slow preparation must not overwrite an intervening renewal.
-            return true;
-        }
-        if self.authority.lease().is_some_and(|current| {
-            !awaken_session_realization_contract::realization_lease_generation_authorizes(
-                lease, current,
-            )
-        }) && let Some(preparation) = &self.resource_preparation
-        {
-            preparation.cancel();
-        }
-        self.authority = SessionRealizationAuthority::Live(proof);
-        true
-    }
-
-    /// The only renewal response application edge. Callers with an I/O
-    /// snapshot must supply it unchanged; a fresh same-lock caller may use
-    /// the currently visible lease. Neither can recreate absent/closed state.
-    pub(crate) fn renew_lease(
-        &mut self,
-        asserted: &awaken_session_resource_contract::SessionRealizationLease,
-        renewed: awaken_session_realization_contract::ObservedSessionRealizationLease,
-    ) -> bool {
-        if self.authority.lease() != Some(asserted)
-            || !awaken_session_realization_contract::realization_lease_generation_authorizes(
-                &renewed.lease,
-                asserted,
-            )
-        {
-            return false;
-        }
-        let Some(now) = awaken_authority_clock::authority_proof_started().ok() else {
-            return false;
-        };
-        if self.authority.remaining().is_none() || renewed.remaining_at(now).is_none() {
-            return false;
-        }
-        self.authority = SessionRealizationAuthority::Live(renewed);
-        self.changed.notify_waiters();
-        true
-    }
-
-    pub(crate) fn resource_preparation_authorized(
-        &self,
-        asserted: &awaken_session_resource_contract::SessionRealizationLease,
-    ) -> bool {
-        !self.authority.is_closed()
-            && self
-                .resource_preparation
-                .as_ref()
-                .is_none_or(|preparation| {
-                    !preparation.is_cancelled() && self.authority.remaining_for(asserted).is_some()
-                })
     }
 }
 
@@ -544,8 +286,31 @@ impl SessionRuntimeSlot {
     }
 }
 
-#[derive(Clone, Default)]
-pub(crate) struct SessionRuntimeSlots(Arc<Mutex<HashMap<String, SessionRuntimeSlot>>>);
+#[derive(Clone)]
+pub(crate) struct SessionRuntimeSlots {
+    slots: Arc<Mutex<HashMap<String, SessionRuntimeSlot>>>,
+    /// The realizer's view of these same Sessions; the realization-layer
+    /// operations live there and are reached through `Deref`.
+    realizations: crate::session_realizations::SessionRealizations,
+}
+
+impl Default for SessionRuntimeSlots {
+    fn default() -> Self {
+        let slots: Arc<Mutex<HashMap<String, SessionRuntimeSlot>>> = Arc::default();
+        Self {
+            realizations: crate::session_realizations::SessionRealizations::new(slots.clone()),
+            slots,
+        }
+    }
+}
+
+impl std::ops::Deref for SessionRuntimeSlots {
+    type Target = crate::session_realizations::SessionRealizations;
+
+    fn deref(&self) -> &Self::Target {
+        &self.realizations
+    }
+}
 
 /// Ephemeral cleanup selection, captured at the close edge. Existing lock Arcs
 /// identify the slot allocation; equal Session ids and leases cannot defeat
@@ -576,6 +341,11 @@ impl SessionRealizationRevocationSelection {
 }
 
 impl SessionRuntimeSlots {
+    /// The realizer's view of these Sessions.
+    pub(crate) fn realizations(&self) -> crate::session_realizations::SessionRealizations {
+        self.realizations.clone()
+    }
+
     pub(crate) fn close_realization(
         &self,
         session: &str,
@@ -600,7 +370,7 @@ impl SessionRuntimeSlots {
     pub(crate) fn close_all_realizations(
         &self,
     ) -> Vec<(String, SessionRealizationRevocationSelection)> {
-        self.0
+        self.slots
             .lock()
             .expect("session runtime slots mutex poisoned")
             .iter_mut()
@@ -614,90 +384,6 @@ impl SessionRuntimeSlots {
             .collect()
     }
 
-    pub(crate) fn close_mcp_realization_admission(
-        &self,
-        session: &str,
-        fence: McpQuiescenceAdmissionFence,
-    ) -> Result<bool, crate::HostError> {
-        self.update(session, |slot| slot.realization.mcp.close_admission(fence))
-            .map_err(crate::HostError::from)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn mcp_realization_admitted(&self, session: &str) -> bool {
-        self.read(session, |slot| slot.realization.mcp.admits_realization())
-            .unwrap_or(true)
-    }
-
-    /// Read the one current process-local projection of all frozen prompt
-    /// inputs. The durable baseline/resource aggregates remain authoritative;
-    /// executors call this at attempt time so late realization cannot leave a
-    /// construction-time prompt snapshot behind.
-    pub fn prompts(
-        &self,
-        session: &str,
-        working_directory: Option<&str>,
-        has_acp: bool,
-        has_native: bool,
-    ) -> Result<Vec<String>, String> {
-        self.read(session, |slot| {
-            let mut prompts = slot.realization.resources.prompts.clone();
-            let delivery = slot.realization.content_delivery.unwrap_or_default();
-            let environment = slot.realization.environment_owner.resident();
-            let path_view = match environment.as_deref() {
-                Some(environment) => environment
-                    .agent_tools()
-                    .agent_prompt_path_view(working_directory, has_acp, has_native)
-                    .map_err(str::to_owned)?,
-                None => Default::default(),
-            };
-            prompts.extend(
-                slot.realization.resources
-                    .resource_prompts
-                    .iter()
-                    .map(|prompt| prompt.render(delivery, path_view.clone())),
-            );
-            if let Some(baseline) = &slot.frozen.baseline {
-                prompts.extend(baseline.prompts.iter()
-                    .filter(|prompt| !awaken_session_configuration_contract::SessionContextSeed::is_seed_prompt(prompt))
-                    .cloned());
-            }
-            if let Some(skill_prompt) = &slot.realization.skill_prompt {
-                prompts.push(skill_prompt.render(&path_view, environment.as_deref())?);
-            }
-            Ok(prompts)
-        })
-        .unwrap_or_else(|| Ok(Vec::new()))
-    }
-
-    /// Hold one Session's Environment `lifecycle` lock, creating its slot.
-    pub(crate) async fn lock_lifecycle(&self, session: &str) -> tokio::sync::OwnedMutexGuard<()> {
-        let lifecycle = self.update(session, |slot| slot.realization.lifecycle.clone());
-        lifecycle.lock_owned().await
-    }
-
-    /// Hold one Session's `resource_projection` lock, creating its slot.
-    pub(crate) async fn lock_resource_projection(
-        &self,
-        session: &str,
-    ) -> tokio::sync::OwnedMutexGuard<()> {
-        let projection = self.update(session, |slot| slot.realization.resource_projection.clone());
-        projection.lock_owned().await
-    }
-
-    #[cfg(test)]
-    pub fn realization_lock(&self, session: &str) -> Arc<tokio::sync::Mutex<()>> {
-        self.update(session, |slot| slot.realization.realization.clone())
-    }
-
-    /// The immutable Agent publication retained for one Session.
-    pub(crate) fn published_snapshot(
-        &self,
-        session: &str,
-    ) -> Option<awaken_runtime_contract::ExecutableAgentSnapshot> {
-        self.frozen(session).published_snapshot.clone()
-    }
-
     /// Publish a replacement of one Session's frozen inputs, creating its slot.
     pub(crate) fn replace_frozen_with(
         &self,
@@ -707,15 +393,8 @@ impl SessionRuntimeSlots {
         self.update(session, |slot| slot.replace_frozen_with(build));
     }
 
-    /// The Session's current frozen inputs, taken out of the lock as one
-    /// value. An unknown Session reads as the empty projection.
-    pub(crate) fn frozen(&self, session: &str) -> Arc<FrozenSessionInputs> {
-        self.read(session, |slot| slot.frozen.clone())
-            .unwrap_or_default()
-    }
-
     pub fn read<R>(&self, session: &str, f: impl FnOnce(&SessionRuntimeSlot) -> R) -> Option<R> {
-        self.0
+        self.slots
             .lock()
             .expect("session runtime slots mutex poisoned")
             .get(session)
@@ -723,7 +402,10 @@ impl SessionRuntimeSlots {
     }
 
     pub fn update<R>(&self, session: &str, f: impl FnOnce(&mut SessionRuntimeSlot) -> R) -> R {
-        let mut slots = self.0.lock().expect("session runtime slots mutex poisoned");
+        let mut slots = self
+            .slots
+            .lock()
+            .expect("session runtime slots mutex poisoned");
         f(slots.entry(session.to_string()).or_default())
     }
 
@@ -732,38 +414,11 @@ impl SessionRuntimeSlots {
         session: &str,
         f: impl FnOnce(&mut SessionRuntimeSlot) -> R,
     ) -> Option<R> {
-        self.0
+        self.slots
             .lock()
             .expect("session runtime slots mutex poisoned")
             .get_mut(session)
             .map(f)
-    }
-
-    /// Read only the realization layer of one Session's slot.
-    pub(crate) fn read_realization<R>(
-        &self,
-        session: &str,
-        f: impl FnOnce(&SessionRealizationState) -> R,
-    ) -> Option<R> {
-        self.read(session, |slot| f(&slot.realization))
-    }
-
-    /// Change only the realization layer, creating the Session's slot.
-    pub(crate) fn update_realization<R>(
-        &self,
-        session: &str,
-        f: impl FnOnce(&mut SessionRealizationState) -> R,
-    ) -> R {
-        self.update(session, |slot| f(&mut slot.realization))
-    }
-
-    /// Change only the realization layer of an existing slot.
-    pub(crate) fn modify_realization<R>(
-        &self,
-        session: &str,
-        f: impl FnOnce(&mut SessionRealizationState) -> R,
-    ) -> Option<R> {
-        self.modify(session, |slot| f(&mut slot.realization))
     }
 
     /// Read only the run layer of one Session's slot.
@@ -795,7 +450,7 @@ impl SessionRuntimeSlots {
 
     pub fn remove(&self, session: &str) -> Option<SessionRuntimeSlot> {
         let removed = self
-            .0
+            .slots
             .lock()
             .expect("session runtime slots mutex poisoned")
             .remove(session);
@@ -814,7 +469,7 @@ impl SessionRuntimeSlots {
         String,
         awaken_session_realization_contract::ObservedSessionRealizationLease,
     )> {
-        self.0
+        self.slots
             .lock()
             .expect("session runtime slots mutex poisoned")
             .iter()
@@ -829,7 +484,7 @@ impl SessionRuntimeSlots {
     }
 
     pub fn session_ids(&self) -> Vec<String> {
-        self.0
+        self.slots
             .lock()
             .expect("session runtime slots mutex poisoned")
             .keys()
@@ -839,7 +494,7 @@ impl SessionRuntimeSlots {
 
     #[cfg(test)]
     pub fn contains(&self, session: &str) -> bool {
-        self.0
+        self.slots
             .lock()
             .expect("session runtime slots mutex poisoned")
             .contains_key(session)

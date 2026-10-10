@@ -60,16 +60,17 @@ pub(super) async fn acquire(
     // projection synchronizer; only an explicit resume may consume the
     // quiesced owner here, after frozen publication and local-placement
     // validation. Ordinary and remote-only contexts remain fail-closed.
+    let exec = &host.realizer;
     if recover_revoked_legacy && !a2a_only {
-        let provider = host.session_environment_provider_for_thread(thread, provisioning)?;
-        host.rebuild_claimed_legacy_environment_after_revocation(thread, provider)
+        let provider = exec.session_environment_provider_for_thread(thread, provisioning)?;
+        exec.rebuild_claimed_legacy_environment_after_revocation(thread, provider)
             .await?;
     }
     let retained = host
         .session_slots
         .read_realization(thread, |r| r.environment_owner.resident())
         .flatten();
-    let environment_owner_is_vacant = host.session_environment_owner_is_vacant(thread);
+    let environment_owner_is_vacant = exec.session_environment_owner_is_vacant(thread);
     let environment_owner_has_unpublished_candidate = host
         .session_slots
         .read_realization(thread, |r| {
@@ -81,7 +82,7 @@ pub(super) async fn acquire(
             "remote A2A execution cannot bind a local Session Environment",
         ));
     }
-    let expected_binding = host.durable_session_environment_binding(thread);
+    let expected_binding = exec.durable_environment_binding(thread);
     // Recovery cause/effect decision table: C1 durable binding exists; C2 a
     // matching lifecycle-owned environment is resident. R1 !C1 may create
     // the first environment; R2 C1+C2 reuses it; R3 C1+!C2 fails
@@ -142,9 +143,7 @@ pub(super) async fn acquire(
     // mismatch before the Session activity opens; otherwise an impossible
     // mount remains `running` while the queue repeatedly relinquishes it.
     if force_defer_environment && host.runs_local_dispatch_pool() && !a2a_only && !can_defer {
-        let provider = host.session_environment_provider_for_thread(thread, provisioning)?;
-        let spec = host.sandbox_spec_for_provider(thread, provider);
-        let _ = host.validate_session_environment_capabilities(provider, &spec)?;
+        exec.validate_session_environment_substrate(thread, provisioning)?;
     }
     // Reservation is a projection-producing boundary, never an
     // Environment consumer. A cold Coordinator may legitimately know
@@ -171,7 +170,7 @@ pub(super) async fn acquire(
             )));
         }
         RuntimeEnvironmentAdmission::Create => {
-            let provider = host.session_environment_provider_for_thread(thread, provisioning)?;
+            let provider = exec.session_environment_provider_for_thread(thread, provisioning)?;
             Some(
                 host.create_reserved_session_environment_under_lifecycle(thread, provider)
                     .await?,

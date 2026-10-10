@@ -288,7 +288,8 @@ mod tests {
         };
 
         assert!(
-            host.session_environment_provider(&backend_owned)
+            host.realizer
+                .session_environment_provider(&backend_owned)
                 .expect("E1")
                 .realizer()
                 .supports_host_identity(),
@@ -303,6 +304,7 @@ mod tests {
         ] {
             assert!(
                 !host
+                    .realizer
                     .session_environment_provider(provisioning)
                     .unwrap_or_else(|_| panic!("{rule}"))
                     .realizer()

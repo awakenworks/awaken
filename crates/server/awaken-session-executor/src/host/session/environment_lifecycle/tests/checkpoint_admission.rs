@@ -275,7 +275,7 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
                 crate::session_slot::test_observed_lease(lease.clone()),
             );
         });
-        let handle = terminal_fixture_container_handle(thread, &host.sandbox_spec(thread));
+        let handle = terminal_fixture_container_handle(thread, &host.realizer.sandbox_spec(thread));
         let (state, _, _) =
             disposing_terminal_environment(thread, &lease, &handle, "exact-checkpoint");
         *worker.current.lock().unwrap() = None;
@@ -428,7 +428,8 @@ async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen
             None,
         );
         assert_eq!(
-            host.validate_suspend_operation(rule, &operation, &generation)
+            host.realizer
+                .validate_suspend_operation(rule, &operation, &generation)
                 .is_ok(),
             suspension,
             "{rule}/suspend"

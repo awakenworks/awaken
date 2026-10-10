@@ -741,7 +741,7 @@ impl crate::SharedHost {
         let _resource_projection = self.session_slots.lock_resource_projection(thread).await;
         let receipt = crate::session_slot::FrozenProjectionReceipt::from_projection(&projection)?;
         self.session_slots
-            .update(thread, |slot| slot.validate_projection_receipt(&receipt))?;
+            .update_realization(thread, |r| r.validate_projection_receipt(&receipt))?;
         let (publication, model_candidate) = self.resolve_canonical_session_projection(
             &projection.workspace_id,
             crate::session_environment::CanonicalSessionProjection::Baseline(&projection.baseline),
@@ -777,7 +777,7 @@ impl crate::SharedHost {
             && projection.baseline.runtime_placement
                 == awaken_session_configuration_contract::SessionRuntimePlacement::Worker
         {
-            self.validate_structural_managed_resource_layout(
+            self.realizer.validate_structural_managed_resource_layout(
                 thread,
                 &projection.resources,
                 Some(&baseline.mounts),
@@ -785,15 +785,14 @@ impl crate::SharedHost {
                 Some(&environment_projection),
             )?;
         } else {
-            let provider = if let Some(candidate) = model_candidate.as_ref() {
-                self.session_environment_provider_for_thread(thread, candidate.provisioning())?
-            } else {
-                self.session_environment_provider_for_thread(
-                    thread,
-                    &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-                )?
-            };
-            self.validate_managed_resource_layout(
+            let provisioning = model_candidate.as_ref().map_or(
+                &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+                |candidate| candidate.provisioning(),
+            );
+            let provider = self
+                .realizer
+                .session_environment_provider_for_thread(thread, provisioning)?;
+            self.realizer.validate_managed_resource_layout(
                 thread,
                 &projection.resources,
                 provider,
@@ -886,7 +885,7 @@ impl crate::SharedHost {
             // Reject a foreign durable owner BEFORE retiring a valid execution
             // object. Publication still revalidates this same canonical kernel.
             self.session_slots.update(thread, |slot| {
-                let newer = slot.validate_projection_receipt(&receipt)?;
+                let newer = slot.realization.validate_projection_receipt(&receipt)?;
                 slot.realization.environment_owner.after_projection(
                     thread,
                     &projection.workspace_id,
@@ -938,7 +937,7 @@ impl crate::SharedHost {
                 // published before the time proof/preparation is admitted.
                 slot.frozen.validate_publication(publication.as_ref())?;
                 slot.validate_environment_projection(thread, &environment_projection)?;
-                let newer = slot.validate_projection_receipt(&receipt)?;
+                let newer = slot.realization.validate_projection_receipt(&receipt)?;
                 let owner = slot.realization.environment_owner.after_projection(
                     thread,
                     &projection.workspace_id,
@@ -1075,21 +1074,6 @@ impl crate::SharedHost {
                         .map(|baseline| baseline.mounts.as_slice()),
                     slot.realization.content_delivery,
                 )
-            })
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn thread_session_env(
-        &self,
-        thread: &str,
-    ) -> Vec<awaken_provisioning_contract::EnvVar> {
-        self.session_slots
-            .read(thread, |slot| {
-                slot.frozen
-                    .baseline
-                    .as_ref()
-                    .map(|baseline| baseline.env.clone())
-                    .unwrap_or_default()
             })
             .unwrap_or_default()
     }

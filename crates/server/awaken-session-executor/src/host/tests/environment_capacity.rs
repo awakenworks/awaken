@@ -224,6 +224,7 @@ fn realizer(
         crate::SessionRealizer {
             env,
             runs_local_dispatch_pool,
+            sessions: crate::session_slot::SessionRuntimeSlots::default().realizations(),
         },
         recording,
     )
