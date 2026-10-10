@@ -3,9 +3,9 @@
 - Status: Accepted
 - Date: 2026-07-23
 - Current execution decision: [ADR-0075](0075-unified-managed-session-worker-execution.md)
-- Amended by: ADR-0092 (proposed; a Kubernetes Worker's capacity is configured or
-  derived from the namespace ResourceQuota, never from its CPU count; placement gains a
-  capacity-backpressure observation)
+- Amended by: ADR-0092 (a Kubernetes Worker's `max_concurrent` must be
+  configured explicitly, never derived from its CPU count; a sandbox Kubernetes cannot
+  place returns the claim as `CapacityUnavailable` without consuming its retry budget)
 
 ## Context
 
