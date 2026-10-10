@@ -1,45 +1,16 @@
-//! Explicit Awaken HTTP extensions layered beside, never inside, the Anthropic
-//! Managed Agents compatibility adapter.
+//! Awaken's own HTTP routes: Awaken platform resources that are not extensions
+//! of another protocol (a Session's live inbox, a Memory store's Dream policy,
+//! sandbox execution policies of Environments).
 //!
 //! Every route is namespaced under `/v1/awaken`. This crate drives neutral
 //! application ports; concrete application services are injected only by the
-//! composition root.
+//! composition root. Extensions of the Anthropic Managed Agents protocol (they
+//! speak its envelope, ids and headers) live in `awaken-protocol-managed`.
 
-mod content_capture;
 mod dream_policies;
-mod event_admissions;
-mod execution_evidence;
 mod live_inbox;
-mod memory_copy_conflicts;
-mod profiled_run_events;
-mod profiled_sessions;
-mod repositories;
-mod resource_manifests;
 mod sandbox_policies;
 
-pub use content_capture::session_content_capture_router;
 pub use dream_policies::dream_policy_router;
-pub use event_admissions::{
-    EventAdmissionProof, EventAdmissionReceipt, EventAdmissionStatus,
-    session_event_admission_router,
-};
-pub use execution_evidence::{
-    SessionExecutionEvidence, SessionModelRequestEvidence, SessionRunExecutionEvidence,
-    session_execution_evidence_router,
-};
 pub use live_inbox::live_inbox_router;
-pub use memory_copy_conflicts::memory_copy_conflicts_router;
-pub use profiled_run_events::{
-    ProfiledSessionRunEventsQuery, ProfiledSessionRunResume, profiled_session_run_events_router,
-    profiled_session_run_resume_router,
-};
-pub use profiled_sessions::{
-    ProfiledSessionCreate, ProfiledSessionCreated, ProfiledSessionMcpAttachment,
-    ProfiledSessionMode, ProfiledSessionRelease, ProfiledSessionReleased,
-    ProfiledSessionRepository, ProfiledSessionRepositoryPublication,
-    ProfiledSessionRepositoryPublished, ProfiledSessionRunReceipt, ProfiledSessionRunSubmit,
-    profiled_session_release_router, profiled_session_router, profiled_session_run_router,
-};
-pub use repositories::{CreateRepository, RepositoryObject, repositories_router};
-pub use resource_manifests::session_resource_manifest_router;
 pub use sandbox_policies::environment_extensions_router;

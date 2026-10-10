@@ -146,15 +146,21 @@ def official_managed_routes(repo_root: Path) -> set[tuple[str, str]]:
 
 
 def check_managed_route_inventory(repo_root: Path) -> list[str]:
-    compatible_roots = (repo_root / "crates/server/awaken-protocol-managed/src",)
-    extension_root = repo_root / "crates/server/awaken-protocol-awaken/src"
+    compatible_root = repo_root / "crates/server/awaken-protocol-managed/src"
+    # Awaken's /v1/awaken routes: the Managed-protocol extensions (in the
+    # Managed adapter, speaking its envelope) and Awaken's own routes.
+    extension_roots = (
+        compatible_root / "awaken_extensions",
+        repo_root / "crates/server/awaken-protocol-awaken/src",
+    )
     core: set[tuple[str, str]] = set()
-    for root in compatible_roots:
-        for path in sorted(root.glob("**/*.rs")):
+    for path in sorted(compatible_root.glob("**/*.rs")):
+        if extension_roots[0] not in path.parents:
             core.update(_execution_ownership_fitness._owned_routes(path))
     extensions: set[tuple[str, str]] = set()
-    for path in sorted(extension_root.glob("**/*.rs")):
-        extensions.update(_execution_ownership_fitness._owned_routes(path))
+    for root in extension_roots:
+        for path in sorted(root.glob("**/*.rs")):
+            extensions.update(_execution_ownership_fitness._owned_routes(path))
     normalized_core = {
         (method, route.replace("{*}", "{}")) for method, route in core
     }

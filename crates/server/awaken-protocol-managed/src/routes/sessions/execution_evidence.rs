@@ -15,10 +15,10 @@ use crate::state::ManagedState;
 
 fn project_execution_evidence(
     observation: awaken_session_application::SessionExecutionObservation,
-) -> awaken_protocol_awaken::SessionExecutionEvidence {
+) -> crate::awaken_extensions::SessionExecutionEvidence {
     let public_thread_id =
         crate::state::public_thread_id(&observation.session_id, &observation.session_id);
-    awaken_protocol_awaken::SessionExecutionEvidence {
+    crate::awaken_extensions::SessionExecutionEvidence {
         session_id: observation.session_id,
         session_revision: observation.session_revision,
         agent_id: observation.agent_id,
@@ -30,33 +30,35 @@ fn project_execution_evidence(
         runs: observation
             .runs
             .into_iter()
-            .map(|run| awaken_protocol_awaken::SessionRunExecutionEvidence {
-                run_id: run.run_id,
-                idempotency_key: run.idempotency_key,
-                state: run.state,
-                tool_use_ids: run
-                    .tool_uses
-                    .into_iter()
-                    .map(|tool_use| {
-                        crate::project::managed_tool_event_id(
-                            &public_thread_id,
-                            &tool_use.source_message_id,
-                            &tool_use.call_id,
+            .map(
+                |run| crate::awaken_extensions::SessionRunExecutionEvidence {
+                    run_id: run.run_id,
+                    idempotency_key: run.idempotency_key,
+                    state: run.state,
+                    tool_use_ids: run
+                        .tool_uses
+                        .into_iter()
+                        .map(|tool_use| {
+                            crate::project::managed_tool_event_id(
+                                &public_thread_id,
+                                &tool_use.source_message_id,
+                                &tool_use.call_id,
+                            )
+                        })
+                        .collect(),
+                    model_requests: run
+                        .model_requests
+                        .into_iter()
+                        .map(
+                            |request| crate::awaken_extensions::SessionModelRequestEvidence {
+                                sequence: request.sequence,
+                                is_error: request.is_error,
+                                retry_count: request.retry_count,
+                            },
                         )
-                    })
-                    .collect(),
-                model_requests: run
-                    .model_requests
-                    .into_iter()
-                    .map(
-                        |request| awaken_protocol_awaken::SessionModelRequestEvidence {
-                            sequence: request.sequence,
-                            is_error: request.is_error,
-                            retry_count: request.retry_count,
-                        },
-                    )
-                    .collect(),
-            })
+                        .collect(),
+                },
+            )
             .collect(),
     }
 }
@@ -68,7 +70,7 @@ pub async fn get_session_execution_evidence(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
     RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
-) -> Result<Json<awaken_protocol_awaken::SessionExecutionEvidence>, WireErr> {
+) -> Result<Json<crate::awaken_extensions::SessionExecutionEvidence>, WireErr> {
     let observation = state
         .roles
         .observation
