@@ -15,9 +15,11 @@ use awaken_runtime_contract::ContentCapture;
 use awaken_runtime_contract::data_subject::{DataSubjectId, Purpose};
 use serde::{Deserialize, Serialize};
 
+mod decision;
 mod telemetry;
+pub use decision::{CapturePolicyDecision, CapturePolicyInputs, CaptureReason, decide_capture};
 pub use telemetry::{
-    CapturePolicySources, RedactionMode, TelemetryCeiling, TelemetryNarrowing,
+    CapturePolicy, CapturePolicySources, RedactionMode, TelemetryCeiling, TelemetryNarrowing,
     TelemetryNarrowingSource, TelemetryPolicyError, WorkspaceCapturePolicy,
 };
 
