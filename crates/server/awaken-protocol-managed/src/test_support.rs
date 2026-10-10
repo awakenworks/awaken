@@ -4,6 +4,7 @@
 // @formal reason: is reachable only through the exact cfg(any(test, feature = test-support)) declaration
 // @formal reason: and never enters the default product graph. Evidence:
 // @formal reason: crates/server/awaken-protocol-managed/src/lib.rs.
+// awaken-file-limit-ceiling: 1528
 //! Explicit test-only startup for the split Environment owners.
 
 #[path = "test_support/managed_event_observer.rs"]

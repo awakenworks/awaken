@@ -1,5 +1,21 @@
 #!/usr/bin/env python3
-"""Enforce file length limits for source, config, and design files."""
+"""Enforce file length limits for source, config, and design files.
+
+Rust source files are measured by what they are, not by how long they look:
+
+* functional lines -- non-blank production lines, comments and `cfg(test)` code
+  excluded -- warn at RUST_FUNCTIONAL_WARNING_LIMIT and stop at
+  RUST_FUNCTIONAL_ERROR_LIMIT; a file already over the stop line when the rule
+  arrived carries an `awaken-file-limit-ceiling: N` marker (functional lines) that
+  may only fall;
+* inline test lines (the file's `cfg(test)` code) stop at TEST_ERROR_LIMIT, the
+  room a separate test file gets, so tests can stay beside the code they verify;
+* physical lines stop at RUST_PHYSICAL_BACKSTOP so a file stays navigable.
+
+A Rust file is a test file when its path says so or when its crate does not
+compile it into production (a `#[cfg(test)] mod x;` file); test files keep the
+physical test limit. Other languages keep the physical CODE_* limits.
+"""
 
 from __future__ import annotations
 
@@ -24,6 +40,9 @@ CONFIG_LIMIT = 1200
 # the most-rebased files in the tree (runtime-host host/tests.rs was touched by
 # 46 of 500 commits). Tests get more room than production, not unlimited room.
 TEST_ERROR_LIMIT = 3000
+RUST_FUNCTIONAL_WARNING_LIMIT = 800
+RUST_FUNCTIONAL_ERROR_LIMIT = 1500
+RUST_PHYSICAL_BACKSTOP = 4000
 # A test file that was already over TEST_ERROR_LIMIT when the limit arrived
 # carries its ceiling in its own first lines, as `awaken-file-limit-ceiling: N`.
 # The ceiling lives with the file, not in a path list here, so a split or a
@@ -82,6 +101,56 @@ TEST_PATH_RE = re.compile(r"(^|/)(fixtures|test-data|snapshots|tests|test)/")
 TEST_FILE_RE = re.compile(
     r"(^|/)[^/]*(\.test|\.spec)\.(ts|tsx|js|jsx)$|(^|/)tests\.rs$|_test\.(go|rs)$"
 )
+
+
+_PRODUCTION_FILES: dict[Path, frozenset[Path]] = {}
+
+
+def _workspace():
+    sys.path.insert(0, str(REPO_ROOT / "scripts" / "ci"))
+    import _crate_boundary_workspace
+
+    return _crate_boundary_workspace
+
+
+def _crate_manifest(path: Path) -> Path | None:
+    for parent in path.parents:
+        manifest = parent / "Cargo.toml"
+        if manifest.is_file() and "[package]" in manifest.read_text(encoding="utf-8", errors="replace"):
+            return manifest
+        if parent == REPO_ROOT:
+            return None
+    return None
+
+
+def compiled_into_production(rel: str) -> bool:
+    """Whether the file's crate compiles it into its production build."""
+    path = (REPO_ROOT / rel).resolve()
+    manifest = _crate_manifest(path)
+    if manifest is None:
+        return False
+    if manifest not in _PRODUCTION_FILES:
+        _PRODUCTION_FILES[manifest] = frozenset(
+            Path(item).resolve() for item in _workspace().production_module_files([manifest])
+        )
+    return path in _PRODUCTION_FILES[manifest]
+
+
+def rust_measures(text: str) -> tuple[int, int, int]:
+    """(functional, inline test, physical) lines of one Rust source."""
+    workspace = _workspace()
+    functional = sum(1 for line in workspace.production_rust(text).splitlines() if line.strip())
+    code = sum(1 for line in workspace.rust_without_comments(text).splitlines() if line.strip())
+    return functional, code - functional, count_lines(text)
+
+
+def functional_lines(text: str) -> int:
+    return rust_measures(text)[0]
+
+
+def is_rust_source(rel: str) -> bool:
+    return (Path(rel).suffix == ".rs" and not is_excluded(rel) and not is_test_path(rel)
+            and compiled_into_production(rel))
 
 
 def is_excluded(rel: str) -> bool:
@@ -208,48 +277,71 @@ def committed_text(rel: str) -> str | None:
 
 def test_file_errors(rel: str, text: str, previous: str | None, staged: bool) -> list[str]:
     """The test-file limit with its in-file ceiling, judged against HEAD when staged."""
+    return ceiling_errors(
+        rel, text, previous, staged, count_lines, TEST_ERROR_LIMIT, "lines", "test limit",
+        "split the file by the behaviour its tests verify",
+        "an oversized test file may shrink but never grow -- add new tests in a new file",
+    )
 
-    lines = count_lines(text)
+
+def ceiling_errors(rel: str, text: str, previous: str | None, staged: bool, measure, limit: int,
+                   unit: str, label: str, split_advice: str, grow_advice: str) -> list[str]:
+    """A hard limit that a legacy file's in-file `awaken-file-limit-ceiling` may exceed, only downward."""
+
+    lines = measure(text)
     ceiling = declared_ceiling(text)
     errors: list[str] = []
     if ceiling is None:
-        if lines > TEST_ERROR_LIMIT:
-            errors.append(
-                f"{rel}: {lines} lines > test limit {TEST_ERROR_LIMIT}; split the file by the "
-                "behaviour its tests verify"
-            )
+        if lines > limit:
+            errors.append(f"{rel}: {lines} {unit} > {label} {limit}; {split_advice}")
         return errors
-    if lines <= TEST_ERROR_LIMIT:
+    if lines <= limit:
         errors.append(
-            f"{rel}: {lines} lines is within the {TEST_ERROR_LIMIT}-line test limit; remove its "
+            f"{rel}: {lines} {unit} is within the {label} {limit}; remove its "
             "awaken-file-limit-ceiling marker so it cannot grow back"
         )
         return errors
     if lines > ceiling:
-        errors.append(
-            f"{rel}: {lines} lines > its awaken-file-limit-ceiling {ceiling}; an oversized test "
-            "file may shrink but never grow -- add new tests in a new file"
-        )
+        errors.append(f"{rel}: {lines} {unit} > its awaken-file-limit-ceiling {ceiling}; {grow_advice}")
     if staged:
         if previous is None:
             errors.append(
-                f"{rel}: a new file may not declare awaken-file-limit-ceiling; keep it under "
-                f"{TEST_ERROR_LIMIT} lines"
+                f"{rel}: a new file may not declare awaken-file-limit-ceiling; keep it under {limit} {unit}"
             )
         else:
             before = declared_ceiling(previous)
-            bound = before if before is not None else count_lines(previous) + 1
-            if before is None and count_lines(previous) <= TEST_ERROR_LIMIT:
+            bound = before if before is not None else measure(previous) + 1
+            if before is None and measure(previous) <= limit:
                 errors.append(
-                    f"{rel}: declares awaken-file-limit-ceiling {ceiling} but was within the "
-                    f"{TEST_ERROR_LIMIT}-line limit; a ceiling may not be introduced to admit growth"
+                    f"{rel}: declares awaken-file-limit-ceiling {ceiling} but was within the {label} "
+                    f"{limit}; a ceiling may not be introduced to admit growth"
                 )
             elif ceiling > bound:
                 errors.append(
-                    f"{rel}: raises awaken-file-limit-ceiling to {ceiling} from {bound}; the "
-                    "ceiling only falls"
+                    f"{rel}: raises awaken-file-limit-ceiling to {ceiling} from {bound}; the ceiling only falls"
                 )
     return errors
+
+
+def rust_source_results(rel: str, text: str, previous: str | None, staged: bool) -> tuple[list[str], list[str]]:
+    """Warnings and errors for one production Rust source file."""
+    functional, inline_tests, physical = rust_measures(text)
+    errors = ceiling_errors(
+        rel, text, previous, staged, functional_lines, RUST_FUNCTIONAL_ERROR_LIMIT, "functional lines",
+        "functional limit", "split the module by responsibility",
+        "a file over the functional limit may shrink but never grow -- put new behaviour in a new module",
+    )
+    if inline_tests > TEST_ERROR_LIMIT:
+        errors.append(f"{rel}: {inline_tests} inline test lines > test limit {TEST_ERROR_LIMIT}; "
+                      "split the tests by the behaviour they verify")
+    if physical > RUST_PHYSICAL_BACKSTOP:
+        errors.append(f"{rel}: {physical} lines > backstop {RUST_PHYSICAL_BACKSTOP}; split the file")
+    warnings = []
+    if not errors and RUST_FUNCTIONAL_WARNING_LIMIT <= functional < RUST_FUNCTIONAL_ERROR_LIMIT:
+        warnings.append(
+            f"{rel}: {functional} functional lines >= warning threshold {RUST_FUNCTIONAL_WARNING_LIMIT}"
+        )
+    return warnings, errors
 
 
 def find_results(files: list[str], staged: bool) -> tuple[list[str], list[str], bool]:
@@ -263,7 +355,14 @@ def find_results(files: list[str], staged: bool) -> tuple[list[str], list[str], 
         text = read_content(rel, staged)
         if text is None:
             continue
-        if is_test_code_file(rel):
+        if is_rust_source(rel):
+            previous = committed_text(rel) if staged else None
+            found_warnings, found = rust_source_results(rel, text, previous, staged)
+            warnings.extend(found_warnings)
+            errors.extend(found)
+            has_code_violation = has_code_violation or bool(found)
+            continue
+        if is_test_code_file(rel) or Path(rel).suffix == ".rs":
             previous = committed_text(rel) if staged else None
             found = test_file_errors(rel, text, previous, staged)
             errors.extend(found)
@@ -346,6 +445,32 @@ def self_test() -> int:
     for name, text, previous, staged, rejected in rows:
         if bool(test_file_errors("tests/x.rs", text, previous, staged)) != rejected:
             failures.append(f"{name}: expected {'reject' if rejected else 'accept'}")
+    # Cause/effect table for production Rust sources. Causes: functional lines vs
+    # 800 / 1500, comments and cfg(test) code (never functional), a legacy ceiling
+    # marker, inline tests vs 3000, physical lines vs 4000. Effects: accept, warn, reject.
+    def body(functional: int, comments: int = 0, inline_tests: int = 0, marker: int | None = None) -> str:
+        head = f"// awaken-file-limit-ceiling: {marker}\n" if marker is not None else ""
+        code = "".join(f"pub fn f{i}() {{}}\n" for i in range(functional))
+        notes = "// note\n" * comments
+        tests = ("#[cfg(test)]\nmod tests {\n" + "    fn t() {}\n" * max(inline_tests - 2, 0) + "}\n"
+                 if inline_tests else "")
+        return head + notes + code + tests
+
+    rust_rows = [
+        ("R1 under the warning line", body(799), False, False),
+        ("R2 at the warning line warns", body(800), True, False),
+        ("R3 at the stop line without a marker", body(1501), False, True),
+        ("R4 comments are not functional", body(700, comments=3000), False, False),
+        ("R5 cfg(test) code is not functional", body(700, inline_tests=2000), False, False),
+        ("R6 inline tests over the test limit", body(10, inline_tests=3002), False, True),
+        ("R7 physical backstop", body(10, comments=4100), False, True),
+        ("R8 legacy file at its ceiling", body(1600, marker=1600), False, False),
+        ("R9 legacy file over its ceiling", body(1601, marker=1600), False, True),
+    ]
+    for name, text, warned, rejected in rust_rows:
+        warns, errs = rust_source_results("crates/x/src/lib.rs", text, None, False)
+        if bool(warns) != warned or bool(errs) != rejected:
+            failures.append(f"{name}: expected warn={warned} reject={rejected}, got {warns} {errs}")
     if failures:
         print("Self-test FAILED:", file=sys.stderr)
         for failure in failures:
@@ -374,8 +499,9 @@ def main(argv: list[str] | None = None) -> int:
         for warning in warnings:
             print(f"  {warning}", file=sys.stderr)
         print(
-            "\nBackend/frontend source files over 1000 lines should be split before "
-            "they reach the 2000-line hard limit. Do not respond by moving tests "
+            "\nRust sources over 800 functional lines (other languages: 1000 lines) "
+            "should be split before they reach the hard limit (1500 functional lines; "
+            "2000 lines elsewhere). Do not respond by moving tests "
             "away, deleting tests, or weakening coverage; split production "
             "responsibilities and keep tests with the behavior they verify.",
             file=sys.stderr,
