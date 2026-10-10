@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
-use awaken_credential_vault::repo::ManagedCredentialAdoptionProgress;
+use awaken_credential_contract::ManagedCredentialAdoptionProgress;
 use awaken_protocol_managed::{VaultState, parse_idempotency_key_header};
 use awaken_tenancy::WorkspaceScope;
 use axum::extract::{Extension, State};

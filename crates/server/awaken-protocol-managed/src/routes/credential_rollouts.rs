@@ -3,10 +3,11 @@
 
 use std::sync::Arc;
 
-use awaken_credential_vault::repo::{
-    ManagedCredentialAdoptionError, ManagedCredentialAdoptionProgress, ManagedCredentialRollout,
-    ManagedCredentialRolloutTarget,
+use awaken_credential_contract::{
+    ManagedCredentialAdoptionError, ManagedCredentialAdoptionProgress,
+    ManagedCredentialAdoptionUnavailable, ManagedCredentialRolloutTarget,
 };
+use awaken_credential_vault::repo::ManagedCredentialRollout;
 use awaken_service_auth_contract::{
     COORDINATOR_SERVICE_AUDIENCE, ServiceAuthError, ServiceAuthorizationRequirement,
     ServiceBearerTokenSource, ServiceRequestAuthenticator,
@@ -129,14 +130,18 @@ impl ManagedCredentialRolloutTarget for HttpManagedCredentialRolloutTarget {
         &self,
         event: &ManagedCredentialRollout,
     ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError> {
+        let unavailable = |cause, detail: &dyn std::fmt::Display| {
+            tracing::warn!(rollout_id = %event.id, %detail,
+                "Managed credential rollout delivery failed");
+            ManagedCredentialAdoptionError::Unavailable(cause)
+        };
         let token =
             awaken_service_auth_contract::resolve_service_bearer_token(self.token_source.as_ref())
-                .map_err(ManagedCredentialAdoptionError::Unavailable)?;
-        let body = serde_json::to_string(event).map_err(|error| {
-            ManagedCredentialAdoptionError::Unavailable(format!(
-                "encode Managed credential rollout: {error}"
-            ))
-        })?;
+                .map_err(|error| {
+                    unavailable(ManagedCredentialAdoptionUnavailable::ServiceToken, &error)
+                })?;
+        let body = serde_json::to_string(event)
+            .map_err(|error| unavailable(ManagedCredentialAdoptionUnavailable::Encoding, &error))?;
         let response = self
             .client
             .send(
@@ -146,19 +151,16 @@ impl ManagedCredentialRolloutTarget for HttpManagedCredentialRolloutTarget {
             )
             .await
             .map_err(|error| {
-                ManagedCredentialAdoptionError::Unavailable(format!(
-                    "deliver Managed credential rollout: {error}"
-                ))
+                unavailable(ManagedCredentialAdoptionUnavailable::Transport, &error)
             })?;
         if response.status() == StatusCode::NO_CONTENT.as_u16() {
             Ok(ManagedCredentialAdoptionProgress::Converged)
         } else if response.status() == StatusCode::ACCEPTED.as_u16() {
             Ok(ManagedCredentialAdoptionProgress::Pending)
         } else {
-            Err(ManagedCredentialAdoptionError::Unavailable(format!(
-                "Coordinator rollout service returned {}",
-                response.status()
-            )))
+            Err(ManagedCredentialAdoptionError::Unavailable(
+                ManagedCredentialAdoptionUnavailable::Status(response.status()),
+            ))
         }
     }
 }
@@ -219,10 +221,11 @@ mod tests {
     #[tokio::test]
     async fn http_rollout_acknowledges_only_exact_convergence_status() {
         // Causes: C1 authenticated delivery; C2 HTTP status; C3 transport dies.
-        // Rules: 204 -> Converged; 202 -> Pending; 200/401/403/409/503 -> error;
-        // closed listener -> error. No response body (possibly secret) becomes
-        // a diagnostic. The Control reconciler separately proves error retains
-        // the durable event, including for nominally successful non-204 codes.
+        // Rules: 204 -> Converged; 202 -> Pending; 200/401/403/409/503 ->
+        // Unavailable(Status(code)); closed listener -> Unavailable(Transport).
+        // No response body (possibly secret) becomes a diagnostic. The Control
+        // reconciler separately proves error retains the durable event,
+        // including for nominally successful non-204 codes.
         for status in [204, 202, 200, 401, 403, 409, 503] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
@@ -244,16 +247,28 @@ mod tests {
                     ManagedCredentialAdoptionProgress::Converged
                 ),
                 202 => assert_eq!(result.unwrap(), ManagedCredentialAdoptionProgress::Pending),
-                _ => assert!(
-                    !result
-                        .unwrap_err()
-                        .to_string()
-                        .contains("secret-response-canary")
-                ),
+                _ => {
+                    let error = result.unwrap_err();
+                    assert!(!error.to_string().contains("secret-response-canary"));
+                    // The cause is the closed status fact, never the body.
+                    assert_eq!(
+                        error,
+                        ManagedCredentialAdoptionError::Unavailable(
+                            ManagedCredentialAdoptionUnavailable::Status(status)
+                        ),
+                        "C2/{status}"
+                    );
+                }
             }
             server.abort();
             let _ = server.await;
-            assert!(target.rollout(&event()).await.is_err(), "C3/{status}");
+            assert_eq!(
+                target.rollout(&event()).await.unwrap_err(),
+                ManagedCredentialAdoptionError::Unavailable(
+                    ManagedCredentialAdoptionUnavailable::Transport
+                ),
+                "C3/{status}"
+            );
         }
     }
 }

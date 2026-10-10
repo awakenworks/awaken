@@ -554,7 +554,9 @@ impl Future for ControlledDelivery {
             1 => Err(ManagedCredentialAdoptionError::InvalidEvent("x".into())),
             2 => Err(ManagedCredentialAdoptionError::IdentityCollision),
             3 => Err(ManagedCredentialAdoptionError::Unauthorized),
-            4 => Err(ManagedCredentialAdoptionError::Unavailable("x".into())),
+            4 => Err(ManagedCredentialAdoptionError::Unavailable(
+                ManagedCredentialAdoptionUnavailable::Status(503),
+            )),
             _ => unreachable!("outcome outside the closed pending/error domain"),
         })
     }
@@ -658,4 +660,39 @@ fn repository_monitor_rejects_future_construction_without_polling() {
     // M1 merely constructing a repository Future is already forbidden. This
     // catches a monitor that defers its assertion until its async body is polled.
     assert!(std::panic::catch_unwind(|| RejectRepository.pending_managed_rollouts()).is_err());
+}
+
+#[test]
+fn adoption_unavailable_causes_render_closed_text() {
+    // Decision table: each cause the delivery or the adopting service can meet
+    // renders one closed sentence under the 503 prefix; no participant text
+    // (which may carry credentials) has a slot to enter.
+    // | Cause | text |
+    for (cause, text) in [
+        (
+            ManagedCredentialAdoptionUnavailable::ServiceToken,
+            "the delivery service token is unavailable",
+        ),
+        (
+            ManagedCredentialAdoptionUnavailable::Encoding,
+            "the adoption event could not be encoded",
+        ),
+        (
+            ManagedCredentialAdoptionUnavailable::Transport,
+            "the delivery transport failed",
+        ),
+        (
+            ManagedCredentialAdoptionUnavailable::Status(409),
+            "the adopting service answered HTTP 409",
+        ),
+        (
+            ManagedCredentialAdoptionUnavailable::SessionRead,
+            "the adopting service cannot read the Sessions the event names",
+        ),
+    ] {
+        assert_eq!(
+            ManagedCredentialAdoptionError::Unavailable(cause).to_string(),
+            format!("credential adoption target is unavailable: {text}")
+        );
+    }
 }

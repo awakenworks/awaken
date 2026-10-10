@@ -2,10 +2,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use awaken_credential_contract::CredentialSourceId;
-use awaken_credential_vault::repo::{
-    CredentialRepo, InMemoryCredentialRepo, ManagedCredentialAdoptionError,
-    ManagedCredentialAdoptionProgress, ManagedCredentialRepository, ManagedCredentialRollout,
+use awaken_credential_contract::{
+    ManagedCredentialAdoptionError, ManagedCredentialAdoptionProgress,
     ManagedCredentialRolloutTarget,
+};
+use awaken_credential_vault::repo::{
+    CredentialRepo, InMemoryCredentialRepo, ManagedCredentialRepository, ManagedCredentialRollout,
 };
 use awaken_credential_vault::{InMemorySecretStore, SecretStore};
 use awaken_protocol_managed::VaultState;
@@ -34,7 +36,7 @@ impl ManagedCredentialRolloutTarget for AdoptionTarget {
         self.events.lock().unwrap().push(event.clone());
         if self.fail.load(Ordering::SeqCst) {
             return Err(ManagedCredentialAdoptionError::Unavailable(
-                "test target unavailable".into(),
+                awaken_credential_contract::ManagedCredentialAdoptionUnavailable::Transport,
             ));
         }
         if self.pending.load(Ordering::SeqCst) {
