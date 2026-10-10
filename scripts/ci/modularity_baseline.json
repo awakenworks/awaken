@@ -389,10 +389,25 @@
     "awaken-worker::lifecycle.rs::renew_registry_authority": 176
   },
   "crate-budget": {
+    "awaken-protocol-managed": {
+      "deps": 41,
+      "lines": 27087,
+      "reason": "W20 (plan 9.11): Session lifecycle and deployment decisions move to their application services; the adapter keeps protocol translation only"
+    },
     "awaken-runtime-host": {
-      "lines": 71937,
       "deps": 47,
+      "lines": 35907,
       "reason": "runtime-host split (plan 10.4 slices F, S, T, R, H): new behavior lands in its future crate; target < 20000 lines, about 26-28 dependencies"
+    },
+    "awaken-sandbox-container": {
+      "deps": 11,
+      "lines": 23581,
+      "reason": "plan W34: the Kubernetes backend (optional feature with the kube dependency tree) leaves for its own crate"
+    },
+    "awaken-session-application": {
+      "deps": 24,
+      "lines": 18558,
+      "reason": "W21 (plan 9.12): split by use case around one SessionMutations core; if it stays one aggregate after W21, record that review here"
     }
   }
 }
