@@ -2,6 +2,7 @@
 //! Real kube HTTP boundaries, with one deterministic API response-loss scheduler
 //! shared by cleanup and checkpoint participant tests.
 use super::*;
+use awaken_container_contract::ContainerEffect;
 use awaken_provisioning_contract::test_support::FenceTamper as _;
 use pc::test_support::EffectAuthority;
 use serde_json::{Value, json};
@@ -69,7 +70,15 @@ impl ApiState {
                 }
                 let releasing = continuation::pod_cleanup_gate_held(old)
                     && !continuation::pod_cleanup_gate_held(&replacement);
-                if releasing && self.release_conflict {
+                let guarded = |pod: &Pod| {
+                    pod.metadata.finalizers.as_ref().is_some_and(|values| {
+                        values
+                            .iter()
+                            .any(|value| value == create_ledger::ORIGINAL_GUARD_FINALIZER)
+                    })
+                };
+                let releasing_original = guarded(old) && !guarded(&replacement);
+                if (releasing || releasing_original) && self.release_conflict {
                     self.release_conflict = false;
                     return (
                         409,
@@ -150,6 +159,234 @@ impl ApiState {
                 )
             }
             _ => panic!("unexpected cleanup request {method} {path}: {body}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn unscheduled_pod_cleanup_retains_current_authority_at_every_response() {
+    /* UCA cause/effect graph: the actual converge path observes Unschedulable
+     * at a zero configured bound -> exact Pod DELETE/projected cleanup/original
+     * Create guard release/UID absence. Cross every HTTP reply from that capacity
+     * observation onward with stable/renew/revoke/reassign/expire/cancel, plus
+     * the finalizer's 409 retry. UCA1 stable/renew returns CapacityUnavailable
+     * ONLY after exact Pod absence; UCA2 authority loss returns another error and
+     * emits no later request/write/guard release; UCA3 cancellation keeps the
+     * already accepted prefix and emits no later request. All writes use the
+     * original UID/resourceVersion and projected attempt; the PVC is untouched.
+     * with_attempt must retain the original admission checkpoint. This tests the
+     * real adapter HTTP wiring, not physical process/cluster qualification.
+     */
+    for conflict in [false, true] {
+        let mut boundaries = 0;
+        for cut in 0..=16 {
+            if cut == 1 || (cut > 0 && cut > boundaries) {
+                continue;
+            }
+            for change in if cut == 0 {
+                &['s'][..]
+            } else {
+                &['s', 'r', 'v', 'g', 'e', 'c'][..]
+            } {
+                let fence = pc::SandboxEffectFence::new("create", "owner", "boot", 1, u64::MAX - 1)
+                    .unwrap();
+                let authority = Arc::new(EffectAuthority::new(&fence));
+                let (mut runtime, state, reached, release, server) = fixture(cut, conflict).await;
+                runtime.unschedulable_wait = Duration::ZERO;
+                {
+                    let mut state = state.lock().unwrap();
+                    let pod = state.pod.as_mut().unwrap();
+                    pod.metadata.finalizers =
+                        Some(vec![create_ledger::ORIGINAL_GUARD_FINALIZER.into()]);
+                    pod.status = Some(serde_json::from_value(json!({
+                        "phase":"Pending", "conditions":[{
+                            "type":"PodScheduled", "status":"False", "reason":"Unschedulable", "message":"no capacity"
+                        }]
+                    })).unwrap());
+                }
+                let current = authority.clone();
+                let task = tokio::spawn(async move {
+                    let fingerprint = serde_json::from_value(json!("frozen-spec")).unwrap();
+                    let attempt = ContainerCreateAttempt::new("initial-attempt");
+                    let recovered = ContainerCreateAttempt::new("attempt");
+                    let intent = ContainerRealizationIntent::Create;
+                    let context = ContainerRealizationContext::new(
+                        "scope",
+                        &fingerprint,
+                        Some(&fence),
+                        &intent,
+                        &attempt,
+                    )
+                    .with_effect(ContainerEffect::Fenced {
+                        fence: &fence,
+                        authority: current.as_ref(),
+                    });
+                    creation::converge(
+                        &runtime,
+                        "cleanup",
+                        "awaken-cleanup",
+                        "pod-uid",
+                        &context.with_attempt(&recovered),
+                        &ephemeral_plan(),
+                        &fingerprint,
+                    )
+                    .await
+                });
+                let mut task = task;
+                let mut writes_at_cut = vec![];
+                if cut > 0 {
+                    tokio::time::timeout(Duration::from_secs(5), reached.notified())
+                        .await
+                        .expect("UCA selected reply must be reached");
+                    writes_at_cut = state.lock().unwrap().writes.clone();
+                    if *change == 'c' {
+                        task.abort();
+                    } else {
+                        let mut current = authority.current.lock().unwrap();
+                        match change {
+                            's' => {}
+                            'r' => current.as_mut().unwrap().0.renew(),
+                            'v' => *current = None,
+                            'g' => current.as_mut().unwrap().0.reassign(),
+                            'e' => current.as_mut().unwrap().1 = Duration::ZERO,
+                            _ => unreachable!(),
+                        }
+                    }
+                    release.add_permits(1);
+                }
+                let result = tokio::time::timeout(Duration::from_secs(5), &mut task)
+                    .await
+                    .expect("UCA cleanup bounded");
+                {
+                    let state = state.lock().unwrap();
+                    if cut == 0 || matches!(change, 's' | 'r') {
+                        assert!(
+                            matches!(result.unwrap(), Err(RuntimeError::CapacityUnavailable(_))),
+                            "UCA1"
+                        );
+                        assert!(
+                            state.pod.is_none(),
+                            "UCA1 exact absence before capacity return"
+                        );
+                        assert!(state.projected.is_empty());
+                        assert_eq!(
+                            state.writes,
+                            [
+                                "DELETE pods",
+                                "DELETE configmaps",
+                                "DELETE configmaps",
+                                "DELETE secrets",
+                                "DELETE secrets",
+                                "PUT pods"
+                            ]
+                        );
+                        boundaries = state.calls.len();
+                        assert_eq!(boundaries, if conflict { 16 } else { 14 });
+                    } else {
+                        if *change == 'c' {
+                            assert!(result.unwrap_err().is_cancelled(), "UCA3");
+                        } else {
+                            let error = result.unwrap().unwrap_err();
+                            assert!(
+                                !matches!(error, RuntimeError::CapacityUnavailable(_)),
+                                "UCA2 not a safe capacity return"
+                            );
+                        }
+                        assert_eq!(
+                            state.calls.len(),
+                            cut,
+                            "UCA2/UCA3 no next request {cut}/{change}"
+                        );
+                        assert_eq!(state.writes, writes_at_cut, "UCA2/UCA3 preserve prefix");
+                    }
+                    assert!(state.claim.is_some(), "UCA no PVC disposal authority");
+                }
+                server.abort();
+                assert!(server.await.unwrap_err().is_cancelled());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn unscheduled_pod_absence_and_replacement_require_current_response_authority() {
+    // UA cause/effect table: C1 initial exact lookup observes 404/a replacement
+    // UID; C2 authority stable/renew/revoke/reassign/expire/cancel at its reply.
+    // UA1 stable/renew -> original UID is absent, no writes; UA2 lost -> error,
+    // no success or later request; UA3 cancel -> preserve the accepted read.
+    // The foreign Pod, its guard, projected resources and PVC remain untouched.
+    for absent in [false, true] {
+        for change in ['s', 'r', 'v', 'g', 'e', 'c'] {
+            let fence =
+                pc::SandboxEffectFence::new("create", "owner", "boot", 1, u64::MAX - 1).unwrap();
+            let authority = Arc::new(EffectAuthority::new(&fence));
+            let (runtime, state, reached, release, server) = fixture(1, false).await;
+            {
+                let mut state = state.lock().unwrap();
+                if absent {
+                    state.pod = None;
+                } else {
+                    state.pod.as_mut().unwrap().metadata.uid = Some("foreign-uid".into());
+                }
+            }
+            let current = authority.clone();
+            let mut task = tokio::spawn(async move {
+                let admit = || {
+                    pc::with_current_sandbox_effect(&fence, current.as_ref(), |_| Ok(()))
+                        .map_err(backend)
+                };
+                creation::dispose_unscheduled_pod(
+                    &runtime,
+                    "awaken-cleanup",
+                    "pod-uid",
+                    "attempt",
+                    &admit,
+                )
+                .await
+            });
+            tokio::time::timeout(Duration::from_secs(5), reached.notified())
+                .await
+                .unwrap();
+            if change == 'c' {
+                task.abort();
+            } else {
+                let mut current = authority.current.lock().unwrap();
+                match change {
+                    's' => {}
+                    'r' => current.as_mut().unwrap().0.renew(),
+                    'v' => *current = None,
+                    'g' => current.as_mut().unwrap().0.reassign(),
+                    'e' => current.as_mut().unwrap().1 = Duration::ZERO,
+                    _ => unreachable!(),
+                }
+            }
+            release.add_permits(1);
+            let result = tokio::time::timeout(Duration::from_secs(5), &mut task)
+                .await
+                .unwrap();
+            if change == 'c' {
+                assert!(result.unwrap_err().is_cancelled(), "UA3");
+            } else {
+                assert_eq!(
+                    result.unwrap().is_ok(),
+                    matches!(change, 's' | 'r'),
+                    "UA1/UA2"
+                );
+            }
+            server.abort();
+            assert!(server.await.unwrap_err().is_cancelled());
+            let state = state.lock().unwrap();
+            assert_eq!(state.calls.len(), 1);
+            assert!(state.writes.is_empty());
+            assert_eq!(state.projected.len(), 4);
+            assert!(state.claim.is_some());
+            assert_eq!(
+                state
+                    .pod
+                    .as_ref()
+                    .and_then(|pod| pod.metadata.uid.as_deref()),
+                if absent { None } else { Some("foreign-uid") }
+            );
         }
     }
 }

@@ -696,7 +696,6 @@ impl SessionApplication {
         let initial_metadata = session.metadata.clone();
         let initial_tools = session.tools.clone();
         let initial_budget = session.budget.clone();
-        let command_receipt_key = command_record.as_ref().map(|record| record.key.clone());
         let mut mcp_changed = false;
         if let Some(mcp_update) = command.mcp_update.clone() {
             let baseline = session
@@ -837,6 +836,7 @@ impl SessionApplication {
             budget: session.budget != initial_budget,
         };
         let mut command_applied = true;
+        let mut command_revision = session.revision;
         if changes.title
             || changes.metadata
             || changes.tools
@@ -844,20 +844,11 @@ impl SessionApplication {
             || changes.budget
             || command_record.is_some()
         {
-            session = match command_record {
-                Some(record) => {
-                    let commit = self
-                        .commit_session_snapshot_with_record(
-                            &owner_scope,
-                            session,
-                            record,
-                            Vec::new(),
-                        )
-                        .await
-                        .map_err(SessionUpdateError::mutation)?;
-                    command_applied = commit.transitioned();
-                    commit.into_session()
-                }
+            let commit = match command_record {
+                Some(record) => self
+                    .commit_session_snapshot_with_record(&owner_scope, session, record, Vec::new())
+                    .await
+                    .map_err(SessionUpdateError::mutation)?,
                 None => self
                     .commit_session_snapshot_with_outcome(
                         &owner_scope,
@@ -866,30 +857,12 @@ impl SessionApplication {
                         Vec::new(),
                     )
                     .await
-                    .map_err(SessionUpdateError::mutation)?
-                    .into_session(),
+                    .map_err(SessionUpdateError::mutation)?,
             };
+            command_applied = commit.transitioned();
+            command_revision = commit.committed_revision();
+            session = commit.into_session();
         }
-        let command_revision = if command_applied {
-            session.revision
-        } else {
-            let key = command_receipt_key.ok_or_else(|| {
-                SessionUpdateError::Unavailable(
-                    "replayed Session update has no idempotency key".into(),
-                )
-            })?;
-            self.session_repository()
-                .idempotency_receipt(session_id, &key)
-                .await
-                .map_err(repository_failure)
-                .map_err(SessionUpdateError::mutation)?
-                .ok_or_else(|| {
-                    SessionUpdateError::Unavailable(
-                        "replayed Session update has no idempotency receipt".into(),
-                    )
-                })?
-                .committed_revision
-        };
         Ok(SessionUpdateOutcome {
             session,
             command_revision,

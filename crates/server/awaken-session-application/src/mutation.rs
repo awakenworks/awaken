@@ -33,12 +33,15 @@ pub(crate) fn repository_failure(error: SessionRepositoryError) -> SessionMutati
 }
 
 /// What one snapshot commit did to the durable root: the committed aggregate,
-/// and whether *this* call is the one that applied it.
+/// whether *this* call applied it, and the original atomic receipt revision.
 ///
-/// The pair is sealed because the second half is a decision a caller must not
-/// author. A concurrent replay loses the root CAS and reads the winner's
+/// These values are sealed because the result and its revision are decisions
+/// a caller must not author. A concurrent replay loses the root CAS and reads
+/// the winner's
 /// aggregate back; reporting that read as an application is what duplicated a
-/// terminal fact on the delete path. Both coordinates therefore leave the CAS
+/// terminal fact on the delete path. That reload may observe a later mutation,
+/// so its revision cannot replace the original receipt. All three values leave
+/// the CAS
 /// together, and the only producer is
 /// [`SessionApplication::commit_session_snapshot_with_record`] — a literal is a
 /// compile error outside this module:
@@ -50,6 +53,7 @@ pub(crate) fn repository_failure(error: SessionRepositoryError) -> SessionMutati
 ///     SnapshotCommit {
 ///         session,
 ///         transitioned: true,
+///         committed_revision: awaken_session_types::SessionRevision(1),
 ///     }
 /// }
 /// ```
@@ -58,6 +62,7 @@ pub(crate) fn repository_failure(error: SessionRepositoryError) -> SessionMutati
 pub struct SnapshotCommit {
     session: PersistedSession,
     transitioned: bool,
+    committed_revision: SessionRevision,
 }
 
 impl SnapshotCommit {
@@ -73,8 +78,16 @@ impl SnapshotCommit {
         &self.session
     }
 
-    /// Take the committed aggregate and deliberately drop the applied/replayed
-    /// outcome, for a command whose response does not report it.
+    /// Original revision of this command's atomic repository receipt. A replay
+    /// may reload a newer aggregate; its current revision cannot replace this
+    /// immutable command coordinate.
+    #[must_use]
+    pub fn committed_revision(&self) -> SessionRevision {
+        self.committed_revision
+    }
+
+    /// Take the current committed aggregate and deliberately drop the receipt
+    /// outcome/revision, for a command whose response does not report them.
     #[must_use]
     pub fn into_session(self) -> PersistedSession {
         self.session
@@ -100,14 +113,15 @@ fn observe_root_update(previous: &mut Option<u64>, now: u64) {
     *previous = Some(now.max(previous.unwrap_or(0)));
 }
 
-/// Interpret the actual repository receipt without accepting a local candidate
-/// on replay. `None` requires loading the durable root through the existing port.
-fn applied_root_revision(
+/// Interpret the actual repository receipt once. Both successful variants keep
+/// their original revision; only Applied permits accepting the local candidate.
+/// Replay requires loading the durable root through the existing port.
+fn snapshot_commit_receipt(
     result: SessionMutationResult,
-) -> Result<Option<SessionRevision>, SessionMutationError> {
+) -> Result<(SessionRevision, bool), SessionMutationError> {
     match result {
-        SessionMutationResult::Applied { new_revision } => Ok(Some(new_revision)),
-        SessionMutationResult::Replayed { .. } => Ok(None),
+        SessionMutationResult::Applied { new_revision } => Ok((new_revision, true)),
+        SessionMutationResult::Replayed { new_revision } => Ok((new_revision, false)),
         SessionMutationResult::Conflict { .. } => Err(SessionMutationError::Conflict),
         SessionMutationResult::IdempotencyMismatch => {
             Err(SessionMutationError::IdempotencyMismatch)
@@ -346,24 +360,21 @@ impl SessionApplication {
         )
         .await
         .map_err(repository_failure)?;
-        match applied_root_revision(result)? {
-            Some(new_revision) => {
-                session.revision = new_revision;
-                Ok(SnapshotCommit {
-                    session,
-                    transitioned: true,
-                })
-            }
-            None => self
-                .sessions_repo
+        let (committed_revision, transitioned) = snapshot_commit_receipt(result)?;
+        let session = if transitioned {
+            session.revision = committed_revision;
+            session
+        } else {
+            self.sessions_repo
                 .get(&session_id)
                 .await
-                .map(|session| SnapshotCommit {
-                    session,
-                    transitioned: false,
-                })
-                .map_err(repository_failure),
-        }
+                .map_err(repository_failure)?
+        };
+        Ok(SnapshotCommit {
+            session,
+            transitioned,
+            committed_revision,
+        })
     }
 
     /// Execute any validated root mutation, including terminal tombstones.

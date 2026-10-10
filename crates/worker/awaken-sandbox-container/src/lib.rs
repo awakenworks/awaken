@@ -58,6 +58,7 @@ mod sandbox_exec;
 mod secret;
 mod staged_mounts;
 mod writable;
+use awaken_container_contract::ContainerEffect;
 pub use cgroup::CgroupCaps;
 pub use egress::{
     AllowlistCapability, AllowlistProxy, EgressError, EgressRealization, EgressRealizationIdentity,
@@ -81,7 +82,6 @@ pub use packages::package_containerfile;
 pub(crate) use podman_plan::podman_create_argv;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 use podman_plan::{image_of, rootfs_of};
-pub(crate) use provider_contract::ContainerEffect;
 pub use provider_contract::{
     ContainerCreateAttempt, ContainerEffectFence, ContainerEnvironment,
     ContainerEnvironmentAdoption, ContainerEnvironmentProvider, ContainerObservationExpectation,

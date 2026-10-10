@@ -29,14 +29,17 @@ fn rebase_staged_paths(
 
 fn refresh_effect_fence(
     asserted: &ContainerEffectFence,
-    source: Option<&dyn pc::CurrentExecutionAuthority>,
+    source: ContainerEffect<'_>,
     now_ms: u64,
 ) -> Result<ContainerEffectFence, pc::SandboxError> {
-    let source = source.ok_or_else(|| {
-        pc::SandboxError::fence_rejected(
+    let ContainerEffect::Fenced {
+        authority: source, ..
+    } = source
+    else {
+        return Err(pc::SandboxError::fence_rejected(
             "container effect fence expired without a renewable Session authority",
-        )
-    })?;
+        ));
+    };
     let current = source.current_effect_fence(asserted)?;
     if !asserted.same_effect_identity(&current)
         || current.expires_at_unix_ms() <= asserted.expires_at_unix_ms()
@@ -341,7 +344,6 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         intent: ContainerRealizationIntent,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
         let effect_fence = effect.fence();
-        let effect_fence_source = effect.authority();
         if let Some(effect_fence) = effect_fence {
             effect_fence.validate_live_at(self.effect_clock_ms()?)?;
         }
@@ -352,8 +354,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         admit()?;
         let create_attempt = crate::fresh_create_attempt();
         // Fail closed against our capabilities before touching the runtime.
-        pc::prepare_environment(spec, &self.runtime_sandbox_capabilities())
-            .map_err(pc::SandboxError::from)?;
+        pc::prepare_environment(spec, &self.runtime_sandbox_capabilities())?;
         if spec
             .mounts
             .iter()
@@ -510,11 +511,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                             "unfenced container realization reported an expired effect fence",
                         ));
                     };
-                    let refreshed = refresh_effect_fence(
-                        asserted,
-                        effect_fence_source,
-                        self.effect_clock_ms()?,
-                    );
+                    let refreshed = refresh_effect_fence(asserted, effect, self.effect_clock_ms()?);
                     match refreshed {
                         Ok(refreshed) => current_effect_fence = Some(refreshed),
                         Err(error) => return Err(error),
@@ -680,7 +677,8 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     current_effect_fence.as_ref(),
                     &intent,
                     &create_attempt,
-                );
+                )
+                .with_effect(effect);
                 let activation = self
                     .runtime
                     .activate_for_effect(
@@ -705,7 +703,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                         })?;
                         current_effect_fence = Some(refresh_effect_fence(
                             asserted,
-                            effect_fence_source,
+                            effect,
                             self.effect_clock_ms()?,
                         )?);
                     }
