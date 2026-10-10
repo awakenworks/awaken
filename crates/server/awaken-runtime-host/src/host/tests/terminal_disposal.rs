@@ -592,7 +592,9 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
 
         let disposal_effect = terminal_disposal_effect(preparation, lease.clone(), &projection);
         let expected_authorization = host
-            .terminal_cleanup_disposal_authorization(&disposal_effect)
+            .realizer
+            .cleanup
+            .disposal_authorization(&disposal_effect)
             .unwrap();
 
         *worker.current.lock().unwrap() = None;

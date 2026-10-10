@@ -436,11 +436,10 @@ async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen
             "{rule}/suspend"
         );
         assert_eq!(
-            host.authorize_terminal_cleanup_lease(
-                &awaken_session_types::SessionId::from(rule),
-                &asserted
-            )
-            .is_ok(),
+            host.realizer
+                .cleanup
+                .authorize_lease(&awaken_session_types::SessionId::from(rule), &asserted)
+                .is_ok(),
             terminal,
             "{rule}/terminal"
         );

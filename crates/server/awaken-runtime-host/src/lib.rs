@@ -90,6 +90,7 @@ mod skills;
 mod staged_resources;
 mod step_projection;
 mod store;
+mod terminal_cleanup;
 mod terminal_repository_publication;
 #[cfg(test)]
 use awaken_session_mcp::test_mcp;

@@ -7,6 +7,8 @@
 pub struct RealizationExecutor {
     /// The Environment each installed Session holds, and its providers.
     pub(crate) environments: crate::environment_holding::EnvironmentHolding,
+    /// Terminal cleanup authorization.
+    pub(crate) cleanup: crate::terminal_cleanup::TerminalCleanup,
 }
 
 impl std::ops::Deref for RealizationExecutor {

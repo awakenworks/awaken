@@ -125,6 +125,9 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
                 installed_sessions.realizations(),
                 execution_authority,
             ),
+            cleanup: crate::terminal_cleanup::TerminalCleanup {
+                sessions: installed_sessions.realizations(),
+            },
         },
         tools,
         resources: capability::ResourcePorts::new(resources, memory),

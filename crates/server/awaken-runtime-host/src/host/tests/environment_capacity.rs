@@ -226,9 +226,10 @@ fn executor(
             environments: crate::environment_holding::EnvironmentHolding::new(
                 env,
                 runs_local_dispatch_pool,
-                sessions,
+                sessions.clone(),
                 None,
             ),
+            cleanup: crate::terminal_cleanup::TerminalCleanup { sessions },
         },
         recording,
     )

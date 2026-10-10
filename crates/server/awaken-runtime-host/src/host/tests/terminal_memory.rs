@@ -833,14 +833,18 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         );
     });
     assert_eq!(
-        host.terminal_cleanup_effect_fence(&effect)
+        host.realizer
+            .cleanup
+            .effect_fence(&effect)
             .expect("R1/E1 preparation fence")
             .expires_at_unix_ms(),
         renewed_lease.expires_at_unix_ms,
         "R1/E1 preparation projects current expiry"
     );
     assert_eq!(
-        host.terminal_cleanup_disposal_authorization(&disposal)
+        host.realizer
+            .cleanup
+            .disposal_authorization(&disposal)
             .expect("R1/E1 disposal fence")
             .effect_fence()
             .expires_at_unix_ms(),
@@ -859,12 +863,14 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         r.authority = crate::installed_session::SessionRealizationAuthority::Live(skewed_proof);
     });
     assert_eq!(
-        host.terminal_cleanup_effect_fence(&effect).unwrap(),
+        host.realizer.cleanup.effect_fence(&effect).unwrap(),
         effect.sandbox_effect_fence().unwrap(),
         "R4 fresh relative proof, not Worker UTC, owns preparation"
     );
     assert_eq!(
-        host.terminal_cleanup_disposal_authorization(&disposal)
+        host.realizer
+            .cleanup
+            .disposal_authorization(&disposal)
             .expect("R4 same relative proof owns disposal projection"),
         disposal
             .sandbox_disposal_authorization_for_current_generation(&expired_lease)
@@ -876,9 +882,11 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
             crate::installed_session::test_expired_observed_lease(renewed_lease.clone()),
         );
     });
-    assert!(host.terminal_cleanup_effect_fence(&effect).is_err(), "R5");
+    assert!(host.realizer.cleanup.effect_fence(&effect).is_err(), "R5");
     assert!(
-        host.terminal_cleanup_disposal_authorization(&disposal)
+        host.realizer
+            .cleanup
+            .disposal_authorization(&disposal)
             .is_err(),
         "R5"
     );
@@ -888,9 +896,11 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
     ] {
         host.installed_sessions
             .update_realization(session_id, |r| r.authority = closed);
-        assert!(host.terminal_cleanup_effect_fence(&effect).is_err(), "R6");
+        assert!(host.realizer.cleanup.effect_fence(&effect).is_err(), "R6");
         assert!(
-            host.terminal_cleanup_disposal_authorization(&disposal)
+            host.realizer
+                .cleanup
+                .disposal_authorization(&disposal)
                 .is_err(),
             "R6"
         );
@@ -902,11 +912,13 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         );
     });
     assert!(
-        host.terminal_cleanup_effect_fence(&effect).is_err(),
+        host.realizer.cleanup.effect_fence(&effect).is_err(),
         "R2/E2"
     );
     assert!(
-        host.terminal_cleanup_disposal_authorization(&disposal)
+        host.realizer
+            .cleanup
+            .disposal_authorization(&disposal)
             .is_err(),
         "R2/E2"
     );
@@ -922,11 +934,13 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         );
     });
     assert!(
-        host.terminal_cleanup_effect_fence(&effect).is_err(),
+        host.realizer.cleanup.effect_fence(&effect).is_err(),
         "R3/E3"
     );
     assert!(
-        host.terminal_cleanup_disposal_authorization(&disposal)
+        host.realizer
+            .cleanup
+            .disposal_authorization(&disposal)
             .is_err(),
         "R3/E3"
     );

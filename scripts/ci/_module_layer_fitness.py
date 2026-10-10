@@ -63,6 +63,7 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "managed_resource_projection",
         "cache_volume",
         "environment_continuation",
+        "terminal_cleanup",
         "terminal_repository_publication",
         "session_environment",
         "environment_owner",

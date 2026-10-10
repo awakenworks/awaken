@@ -18,6 +18,7 @@ impl SharedHost {
         effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
         authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
     ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, HostError> {
+        let sessions = &self.installed_sessions;
         authorization.verify_for(&effect).map_err(|error| {
             HostError::unavailable_classified(
                 "session_terminal_cleanup_preparation_unauthorized",
@@ -38,8 +39,7 @@ impl SharedHost {
                 "terminal cleanup authorization belongs to another Workspace",
             ));
         }
-        let root_realization = self
-            .installed_sessions
+        let root_realization = sessions
             .read_realization(effect.command.session_id.as_str(), |r| {
                 r.realization.clone()
             })
@@ -50,11 +50,8 @@ impl SharedHost {
                 )
             })?;
         let _root_realization = root_realization.lock().await;
-        let _lifecycle = self
-            .installed_sessions
-            .lock_lifecycle(&effect.command.thread_id)
-            .await;
-        let effect_fence = self.terminal_cleanup_effect_fence(&effect)?;
+        let _lifecycle = sessions.lock_lifecycle(&effect.command.thread_id).await;
+        let effect_fence = self.realizer.cleanup.effect_fence(&effect)?;
 
         let root_environment = if effect.command.thread_id == effect.command.session_id {
             let mut prepared = self
@@ -88,16 +85,18 @@ impl SharedHost {
         }
         let memory_plan = root_environment
             .as_ref()
-            .map(|prepared| self.terminal_memory_plan(&effect, &prepared.environment))
+            .map(|root| {
+                self.realizer
+                    .cleanup
+                    .memory_plan(&effect, &root.environment)
+            })
             .transpose()?;
 
-        self.installed_sessions
-            .update_realization(&effect.command.thread_id, |r| {
-                r.terminal_cleanup_root = Some(effect.command.session_id.to_string());
-            });
+        sessions.update_realization(&effect.command.thread_id, |r| {
+            r.terminal_cleanup_root = Some(effect.command.session_id.to_string());
+        });
 
-        let primary_active = self
-            .installed_sessions
+        let primary_active = sessions
             .read_run(&effect.command.thread_id, |run| {
                 run.context.as_ref().is_some_and(|runtime| {
                     runtime
@@ -113,8 +112,7 @@ impl SharedHost {
             .await?;
         let delegated_active = delegated.iter().any(|run| {
             run.status.occupies_parallel_slot()
-                && self
-                    .installed_sessions
+                && sessions
                     .read_run(&run.run_id.0, |run| {
                         run.context.as_ref().is_some_and(|runtime| {
                             runtime
@@ -132,8 +130,7 @@ impl SharedHost {
                 "Primary or delegated work still owns the terminal Environment",
             ));
         }
-        if let Some(owned) = self
-            .installed_sessions
+        if let Some(owned) = sessions
             .read_realization(&effect.command.thread_id, |r| {
                 r.environment_owner.terminal_bound_environment()
             })
@@ -156,8 +153,7 @@ impl SharedHost {
                     "Shared-Environment background work did not reach a durable boundary",
                 ));
             }
-            let retained = self
-                .installed_sessions
+            let retained = sessions
                 .read_realization(&effect.command.thread_id, |r| {
                     r.environment_owner
                         .terminal_bound_environment()
@@ -171,7 +167,7 @@ impl SharedHost {
                 ));
             }
         }
-        self.terminal_cleanup_effect_fence(&effect)?;
+        self.realizer.cleanup.effect_fence(&effect)?;
         self.drain_mcp_projections(&effect.command.thread_id, &[])
             .await
             .map_err(|error| {
@@ -196,7 +192,7 @@ impl SharedHost {
                     )
                 })?;
         }
-        self.terminal_cleanup_effect_fence(&effect)?;
+        self.realizer.cleanup.effect_fence(&effect)?;
         let artifact_capture_mode = root_environment
             .as_ref()
             .map(TerminalEnvironmentPreparation::artifact_capture_mode)
@@ -247,7 +243,7 @@ impl SharedHost {
             let effect_mode = prepared.environment.effect_mode;
             let environment = prepared.environment.environment.as_ref();
             if let Some((environment, _)) = environment.as_ref() {
-                self.terminal_cleanup_effect_fence(&effect)?;
+                self.realizer.cleanup.effect_fence(&effect)?;
                 self.reconcile_terminal_memory(
                     &effect,
                     environment.as_ref(),
@@ -274,7 +270,7 @@ impl SharedHost {
             if prepared.environment.requires_provider_preparation()
                 && let Some((environment, _)) = environment
             {
-                let provider_effect_fence = self.terminal_cleanup_effect_fence(&effect)?;
+                let provider_effect_fence = self.realizer.cleanup.effect_fence(&effect)?;
                 let authority = self.realizer.execution.provider_effect_authority(
                     effect.command.session_id.as_str(),
                     &provider_effect_fence,
@@ -291,7 +287,7 @@ impl SharedHost {
 
         // Protect even a no-Environment preparation from reporting success
         // after the terminal owner changed while source effects were in flight.
-        let final_effect_fence = self.terminal_cleanup_effect_fence(&effect)?;
+        let final_effect_fence = self.realizer.cleanup.effect_fence(&effect)?;
         awaken_session_state_contract::SessionCleanupPreparation::try_new(
             &effect,
             provider_prepared_effect_fence.unwrap_or(final_effect_fence),
@@ -324,9 +320,9 @@ impl SharedHost {
                 )
             })?;
         let _root_realization = root_realization.lock().await;
-        self.terminal_cleanup_disposal_authorization(&effect)?;
+        self.realizer.cleanup.disposal_authorization(&effect)?;
         let _lifecycle = sessions.lock_lifecycle(session_id.as_str()).await;
-        let authorization = self.terminal_cleanup_disposal_authorization(&effect)?;
+        let authorization = self.realizer.cleanup.disposal_authorization(&effect)?;
         let prepared_environment = if effect.command.restore_target.is_none() {
             // Disposal decision table TD0. Causes: C1 the aggregate has
             // durably admitted one exact Preparation; C2 the process-local
@@ -430,7 +426,7 @@ impl SharedHost {
                 if !provider_proved_absence {
                     let environment = retirement.owned.environment();
                     let exact_authorization =
-                        self.terminal_cleanup_disposal_authorization(&effect)?;
+                        self.realizer.cleanup.disposal_authorization(&effect)?;
                     if exact_authorization != authorization {
                         return Err(HostError::unavailable_classified(
                             "session_terminal_cleanup_disposal_changed",
@@ -471,7 +467,7 @@ impl SharedHost {
             }
         }
         sessions.end_terminal_disposal(session_id.as_str());
-        self.terminal_cleanup_disposal_authorization(&effect)?;
+        self.realizer.cleanup.disposal_authorization(&effect)?;
         Ok(awaken_session_state_contract::SessionCleanupDisposalReceipt::new(&effect.command))
     }
 

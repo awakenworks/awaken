@@ -685,7 +685,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             "prepare_terminal_cleanup_effect",
             (
                 "authorization.verify_for(&effect)",
-                "self.terminal_cleanup_effect_fence(&effect)?",
+                "self.realizer.cleanup.effect_fence(&effect)?",
                 "TerminalEnvironmentPreparation::artifact_capture_mode",
                 ".harvest_with_fence_mode(",
                 "SessionCleanupPreparation::try_new(",
@@ -697,9 +697,9 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
         _require_ordered_function(
             sources,
             RUNTIME_HOST_TERMINAL_PREPARATION,
-            "terminal_cleanup_disposal_authorization",
+            "disposal_authorization",
             (
-                "self.authorize_terminal_cleanup_lease(&effect.command.session_id, &effect.lease)?",
+                "self.authorize_lease(&effect.command.session_id, &effect.lease)?",
                 ".sandbox_disposal_authorization_for_current_generation(&current)",
             ),
             "typed Sandbox disposal authorization",
@@ -718,7 +718,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
         _require_ordered_function(
             sources, RUNTIME_HOST_TERMINAL_PREPARATION,
             "cleanup_terminal_checkpoint",
-            ("self.terminal_cleanup_effect_fence(effect)?",
+            ("self.realizer.cleanup.effect_fence(effect)?",
              "self.realizer.execution.provider_effect_authority(",
              "with_current_sandbox_effect(", "match (checkpoint, pending_checkpoint)",
              ".cleanup_checkpoint_for_terminal(", "&authority,",
@@ -728,7 +728,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
     )
     disposal_projection = _rust_function(
         sources.get(RUNTIME_HOST_TERMINAL_PREPARATION, ""),
-        "terminal_cleanup_disposal_authorization",
+        "disposal_authorization",
     )
     if disposal_projection is not None and any(
         marker in disposal_projection
@@ -744,14 +744,14 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             RUNTIME_HOST_TERMINAL_CLEANUP,
             "dispose_terminal_cleanup_effect",
             (
-                "let authorization = self.terminal_cleanup_disposal_authorization(&effect)?",
+                "let authorization = self.realizer.cleanup.disposal_authorization(&effect)?",
                 "self.prepare_terminal_environment_under_lifecycle(",
                 "authorization.effect_fence()",
                 "BoundEnvironmentPreparationMode::TerminalDisposal",
                 "(SessionEnvironmentOwner::Retiring(retirement), None)",
                 "self.realizer.execution.provider_effect_authority(",
                 ".dispose_for_effect(&authorization, &authority)",
-                "self.terminal_cleanup_disposal_authorization(&effect)?",
+                "self.realizer.cleanup.disposal_authorization(&effect)?",
                 "SessionCleanupDisposalReceipt::new(",
             ),
             "physical terminal disposal",
@@ -1205,8 +1205,8 @@ async fn renew_session_realization() {
 }
 """
     canonical[RUNTIME_HOST_TERMINAL_PREPARATION] = """
-fn terminal_cleanup_disposal_authorization() {
-    let current = self.authorize_terminal_cleanup_lease(&effect.command.session_id, &effect.lease)?;
+fn disposal_authorization() {
+    let current = self.authorize_lease(&effect.command.session_id, &effect.lease)?;
     effect.sandbox_disposal_authorization_for_current_generation(&current)
 }
 fn install_bound_environment_under_lifecycle() {
@@ -1214,7 +1214,7 @@ fn install_bound_environment_under_lifecycle() {
     provider.prepare_terminal_effective_for_effect(spec, handle, expected, effect, &authority,);
 }
 fn cleanup_terminal_checkpoint() {
-    let fence = self.terminal_cleanup_effect_fence(effect)?;
+    let fence = self.realizer.cleanup.effect_fence(effect)?;
     let authority = self.realizer.execution.provider_effect_authority(...);
     with_current_sandbox_effect(&fence, &authority, || Ok(()));
     match (checkpoint, pending_checkpoint) {
@@ -1226,7 +1226,7 @@ fn cleanup_terminal_checkpoint() {
     canonical[RUNTIME_HOST_TERMINAL_CLEANUP] = """
 fn prepare_terminal_cleanup_effect() {
     authorization.verify_for(&effect);
-    self.terminal_cleanup_effect_fence(&effect)?;
+    self.realizer.cleanup.effect_fence(&effect)?;
     TerminalEnvironmentPreparation::artifact_capture_mode;
     self.artifact_harvester().harvest_with_fence_mode(
         thread,
@@ -1236,8 +1236,8 @@ fn prepare_terminal_cleanup_effect() {
     SessionCleanupPreparation::try_new(&effect, provider_prepared_effect_fence, artifact_receipts);
 }
 fn dispose_terminal_cleanup_effect() {
-    self.terminal_cleanup_disposal_authorization(&effect)?;
-    let authorization = self.terminal_cleanup_disposal_authorization(&effect)?;
+    self.realizer.cleanup.disposal_authorization(&effect)?;
+    let authorization = self.realizer.cleanup.disposal_authorization(&effect)?;
     self.prepare_terminal_environment_under_lifecycle(
         session_id, authorization.effect_fence(), BoundEnvironmentPreparationMode::TerminalDisposal);
     let authority = self.realizer.execution.provider_effect_authority(...);
@@ -1249,7 +1249,7 @@ fn dispose_terminal_cleanup_effect() {
             environment.dispose_for_effect(&authorization, &authority);
         }
     }
-    self.terminal_cleanup_disposal_authorization(&effect)?;
+    self.realizer.cleanup.disposal_authorization(&effect)?;
     SessionCleanupDisposalReceipt::new(&effect.command);
 }
 """
@@ -1730,7 +1730,7 @@ fn recover_terminal_receipts() {
     missing_current[RUNTIME_HOST_TERMINAL_PREPARATION] = missing_current[
         RUNTIME_HOST_TERMINAL_PREPARATION
     ].replace(
-        "self.authorize_terminal_cleanup_lease(&effect.command.session_id, &effect.lease)?",
+        "self.authorize_lease(&effect.command.session_id, &effect.lease)?",
         "effect.lease.clone()",
     )
     assert any("typed Sandbox disposal authorization" in error
