@@ -247,6 +247,7 @@ struct WorkerFileConfig {
     sandbox_trusted_host_scoped_execution: Option<bool>,
     sandbox_allow_local_fallback: Option<bool>,
     k8s_namespace: Option<String>,
+    k8s_unschedulable_wait_secs: Option<u64>,
     k8s_continuation_volume: Option<awaken_sandbox_container::K8sContinuationVolume>,
     k8s_image_prewarm: Option<awaken_sandbox_container::K8sImagePrewarm>,
     k8s_image_pull_secrets: Option<Vec<String>>,
@@ -341,6 +342,10 @@ impl WorkerDaemonConfig {
             }
             runtime.sandbox.k8s_namespace = namespace;
         }
+        let tier = runtime.sandbox_tier;
+        runtime
+            .sandbox
+            .apply_k8s_unschedulable_wait_secs(tier, file.k8s_unschedulable_wait_secs)?;
         if let Some(policy) = file.k8s_image_prewarm {
             policy.validate()?;
             if runtime.sandbox_tier != awaken_session_executor::SandboxTier::K8s {
@@ -1325,6 +1330,48 @@ mod tests {
             }
         }
 
+        assert_eq!(
+            k8s.runtime.sandbox.k8s_unschedulable_wait_secs, 300,
+            "S5 default"
+        );
+        // S5 the authored scheduler wait reaches the typed Deployment value;
+        // a value over one day or on another tier is refused.
+        for (body, expected) in [
+            (
+                "sandbox_tier='k8s'\nk8s_unschedulable_wait_secs=45\n",
+                Some(45),
+            ),
+            (
+                "sandbox_tier='k8s'\nk8s_unschedulable_wait_secs=86401\n",
+                None,
+            ),
+            (
+                "sandbox_tier='docker'\nk8s_unschedulable_wait_secs=45\n",
+                None,
+            ),
+        ] {
+            write(&format!(
+                "role='worker'\nworker_server='http://coordinator:3000'\n{body}"
+            ));
+            let loaded = WorkerDaemonConfig::load(&path, None);
+            match expected {
+                Some(secs) => assert_eq!(
+                    loaded
+                        .expect("S5")
+                        .runtime
+                        .sandbox
+                        .k8s_unschedulable_wait_secs,
+                    secs,
+                    "S5"
+                ),
+                None => {
+                    let Err(error) = loaded else {
+                        panic!("S5 must refuse {body}");
+                    };
+                    assert!(error.contains("k8s_unschedulable_wait_secs"), "S5 {body}");
+                }
+            }
+        }
         write(
             "role='worker'\nworker_server='http://coordinator:3000'\nsandbox_tier='k8s'\nk8s_namespace='  '\n",
         );
