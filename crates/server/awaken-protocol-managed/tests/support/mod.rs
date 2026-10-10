@@ -272,6 +272,12 @@ pub async fn finalize_applied_user_dispatch(
     }
 }
 
+#[derive(Clone, Copy)]
+enum ResourceRace {
+    PrepareAndAttempt,
+    StartPendingAttempt,
+}
+
 /// Shared integration-test decorator for deterministic root-CAS races.
 ///
 /// It delegates every real read/write to the SQLite adapter; only selected
@@ -283,7 +289,7 @@ pub struct ScheduledConflictRepository {
     commit_calls: AtomicUsize,
     conflicts: Mutex<BTreeSet<usize>>,
     unavailable: Mutex<BTreeSet<usize>>,
-    resource_changes: Mutex<BTreeSet<usize>>,
+    resource_changes: Mutex<BTreeMap<usize, ResourceRace>>,
     metadata_changes: Mutex<BTreeMap<usize, (String, String)>>,
     disposition_changes: Mutex<BTreeMap<usize, awaken_session_state_contract::SessionDisposition>>,
 }
@@ -296,7 +302,7 @@ impl ScheduledConflictRepository {
             commit_calls: AtomicUsize::new(0),
             conflicts: Mutex::new(BTreeSet::new()),
             unavailable: Mutex::new(BTreeSet::new()),
-            resource_changes: Mutex::new(BTreeSet::new()),
+            resource_changes: Mutex::new(BTreeMap::new()),
             metadata_changes: Mutex::new(BTreeMap::new()),
             disposition_changes: Mutex::new(BTreeMap::new()),
         }
@@ -326,7 +332,21 @@ impl ScheduledConflictRepository {
     pub fn resource_change_on_next(&self, offset: usize) {
         let call = self.commit_calls.load(Ordering::SeqCst) + offset;
         self.conflicts.lock().unwrap().insert(call);
-        self.resource_changes.lock().unwrap().insert(call);
+        self.resource_changes
+            .lock()
+            .unwrap()
+            .insert(call, ResourceRace::PrepareAndAttempt);
+    }
+
+    /// Let the canonical initial Resource attempt win the selected root CAS
+    /// without changing its desired generation or manifest.
+    pub fn resource_attempt_on_next(&self, offset: usize) {
+        let call = self.commit_calls.load(Ordering::SeqCst) + offset;
+        self.conflicts.lock().unwrap().insert(call);
+        self.resource_changes
+            .lock()
+            .unwrap()
+            .insert(call, ResourceRace::StartPendingAttempt);
     }
 
     /// Before reporting the selected conflict, commit an unrelated metadata
@@ -457,17 +477,20 @@ impl SessionRepository for ScheduledConflictRepository {
                 )
                 .await;
             }
-            if self.resource_changes.lock().unwrap().contains(&call) {
+            let resource_change = { self.resource_changes.lock().unwrap().get(&call).copied() };
+            if let Some(change) = resource_change {
                 let mut concurrent = self
                     .inner
                     .get(mutation.payload.session_id())
                     .await
                     .expect("concurrent Resource Session exists");
-                let session_id = concurrent.session_id.clone();
-                concurrent
-                    .resources
-                    .prepare(&session_id, concurrent.resources.active.clone())
-                    .expect("concurrent Resource intent is valid");
+                if matches!(change, ResourceRace::PrepareAndAttempt) {
+                    let session_id = concurrent.session_id.clone();
+                    concurrent
+                        .resources
+                        .prepare(&session_id, concurrent.resources.active.clone())
+                        .expect("concurrent Resource intent is valid");
+                }
                 concurrent
                     .resources
                     .start_attempt()
