@@ -10,6 +10,8 @@ use awaken_session_execution_contract::ThreadReadRuntime;
 use awaken_session_types::SessionId;
 use std::sync::Arc;
 mod support;
+#[path = "session_resources/unattempted_profiled_release.rs"]
+mod unattempted_profiled_release;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::{

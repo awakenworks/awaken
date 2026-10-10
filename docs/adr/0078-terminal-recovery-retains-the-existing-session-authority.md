@@ -799,3 +799,40 @@ must never force-delete the guarded Pod or describe the new Session as recovery
 of the old one. Automatic recovery of the original identity after this exact
 hard-node fault still requires a provider-side terminal evidence source; no
 timeout, Node condition, Pod 404 or test-harness Docker receipt is a substitute.
+
+
+## Amendment 2026-10-10: release a never-attempted frozen preparation
+
+A Flow WorkUnit may be cancelled before any Worker can claim its packaged
+Environment. Its immutable Session remains Preparing even after the Run ends;
+idle-only archive correctly rejects it. A cancelled Run is not authority to
+terminate another activity, and the terminal-only command remains unchanged.
+
+The existing profiled no-publication release may select one narrower Session
+Application command. The same archive CAS reloads a Frozen WorkUnit baseline,
+Preparing execution, a recorded creation time, no active activity or Running
+interval, an Unmaterialized Environment, no realization lease or attempted
+initial realization, and no attempted/active Resource or MCP participant.
+Every accepted Event batch must already be complete. Missing, historical or
+inconsistent evidence remains rejected. A competing realization or activity
+CAS invalidates these preconditions on the next read. This is admission from
+durable Session facts, never an old Run outcome or sampled Pod absence.
+
+The command reuses the existing archive fence, idempotency receipt, lifecycle
+fact, complete pending Resource projection and required verified cleanup. It
+returns no publication receipt. Lost responses and unavailable cleanup retry
+the same retained intent. Public idle-only archive, terminal-only release,
+Repository publication and already-attempted physical recovery keep their
+existing admission. The existing profiled route and local product adapter share
+one command selection; no new wire route, queue, Session state or force-release
+flag is introduced. Cause-effect tests cover each independent admission
+refusal, accepted Event fences, cleanup failure/replay and the real profiled
+route. Live product recovery must still retain the original Issue and root.
+
+The pure never-attempted predicate lives on the existing `PersistedSession`
+aggregate beside its activity and tombstone predicates. Session Application
+remains its only release-admission consumer and rechecks it in the root CAS;
+the value query cannot grant a command or certify cleanup. Repository-publication
+owner, read and CAS failures share one existing error conversion instead of
+four parallel matches. This consolidation preserves every refusal and retry
+outcome without increasing the large application or protocol package budgets.

@@ -15,6 +15,41 @@ use crate::{
     session_event_execution_may_close, session_inputs_allow_idle,
 };
 
+/// Whether this aggregate still represents a frozen preparation with no
+/// admitted realization effects. This is only a state predicate: the
+/// Session application must recheck it inside the archive root CAS and
+/// join verified cleanup before returning a successful profiled release.
+#[must_use]
+pub fn session_is_unattempted_profiled_preparation(session: &PersistedSession) -> bool {
+    session.frozen_baseline().is_some_and(|baseline| {
+        baseline.mutation_policy == awaken_session_resource_contract::SessionMutationPolicy::Frozen
+    }) && session.created_at_unix_ms.is_some()
+        && session.execution == SessionExecutionState::Preparing
+        && !session.has_active_activities()
+        && session.running_interval.is_none()
+        && matches!(
+            session.environment,
+            crate::SessionEnvironmentState::Unmaterialized
+        )
+        && session.realization.is_none()
+        && session.realization_progress.attempts == 0
+        && session.realization_progress.last_error.is_none()
+        && session.resources.active.inputs().is_empty()
+        && session.resources.active.skills().is_empty()
+        && session.resources.repository_retirements.is_empty()
+        && session.resources.activations.iter().all(|activation| {
+            activation.state == crate::ActivationState::Prepared
+                && activation.attempts == 0
+                && activation.lease_expires_at_unix_ms.is_none()
+        })
+        && session.mcp.attachments.iter().all(|attachment| {
+            attachment.state == awaken_session_mcp_contract::McpAttachmentState::Requested
+                && attachment.attempts == 0
+                && attachment.realization.is_none()
+                && !attachment.publication_acknowledged
+        })
+}
+
 /// Secret-free active MCP projection consumed by protocol adapters. It is
 /// derived from this aggregate's typed attachment state without a JSON hop.
 #[derive(Clone, Debug, PartialEq, Eq)]

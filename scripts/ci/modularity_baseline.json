@@ -371,7 +371,6 @@
     "awaken-session-application::resource_reconciliation/terminal_cleanup.rs::release_terminal_resources_once": 197,
     "awaken-session-application::run_admission.rs::create_profiled_session_with_completion": 398,
     "awaken-session-application::runtime_commands.rs::configure_session_repository": 268,
-    "awaken-session-application::terminal.rs::archive_with_repository_publication": 197,
     "awaken-session-application::update.rs::update_session_once": 265,
     "awaken-session-event-contract::lib.rs::compile_attributed": 172,
     "awaken-session-mcp::mcp/attachment.rs::stage_attachment": 649,

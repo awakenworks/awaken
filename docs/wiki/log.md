@@ -1,5 +1,14 @@
 # Wiki Update Log
 
+## 2026-10-10 — Release never-attempted frozen WorkUnit preparation
+
+- [ADR-0078](../adr/0078-terminal-recovery-retains-the-existing-session-authority.md)
+  adds bounded profiled release admission from durable, zero-attempt Session
+  facts. It reuses archive CAS and verified cleanup, preserving public IdleOnly
+  and existing TerminalOnly admission and every attempted physical uncertainty.
+- Causal tests cover independent refusal conditions, pending participants and
+  cleanup failure/replay; live Flow recovery remains separate evidence.
+
 ## 2026-10-01 — Include Session realization affinity in Worker-domain reads
 
 - [ADR-0065](../adr/0065-recoverable-embeddable-remote-worker.md)
@@ -852,3 +861,17 @@
   retires an exact closed-idle Kubernetes Pod before releasing its evidence,
   allowing the Deployment to supply a new UID without reviving old admission.
   Deletion intent grants no process-exit, Session cleanup, or replay receipt.
+
+## 2026-10-10 — Share the existing claimed-commit composition binding
+
+- [ADR-0075](../adr/0075-unified-managed-session-worker-execution.md) keeps
+  `ClaimedCommitService` as the sole claim-guarded writer. Coordinator embeddings
+  reuse its existing `SessionCommitOwner` binding; the Host remains a read-only
+  owner selector with no dependency on the RunIngress implementation.
+
+## 2026-10-10 — Consume Session command values from their definition
+
+- [ADR-0090](../adr/0090-session-state-model.md) keeps the replacement intent
+  and command fingerprint in `awaken-session-types`. Runtime and Dispatch
+  consumers no longer expose parallel import paths; persisted wire and
+  fingerprint decision tables retain their compatibility authority.

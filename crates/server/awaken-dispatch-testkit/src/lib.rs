@@ -24,8 +24,7 @@ use awaken_dispatch_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalFeed, LeaseLossReason,
 };
 use awaken_dispatch_contract::{
-    ControlDispatchQueue, DispatchAdmissionShape, RunDispatch, SessionRunReplacement,
-    SessionRuntimeEnvelope,
+    ControlDispatchQueue, DispatchAdmissionShape, RunDispatch, SessionRuntimeEnvelope,
 };
 use awaken_dispatch_contract::{
     LeastLoadedPolicy, PlacementRequirements, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
@@ -43,7 +42,7 @@ use awaken_runtime_contract::{
     CredentialUsage, InferenceEndpoint, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
 };
 use awaken_session_execution_contract::{AdmitSessionRun, SessionRunExecutionRequirements};
-use awaken_session_types::SessionRunCommandFingerprint;
+use awaken_session_types::{SessionRunCommandFingerprint, SessionRunReplacement};
 
 /// Minimum live lease used by cross-backend conformance journeys. A live
 /// database clock keeps moving while an in-process logical clock does not, so
