@@ -123,8 +123,8 @@ pub use dispatch::{
     DispatchCompletion, DispatchDepths, DispatchError, DispatchOutcome, DispatchQueue,
     DispatchSettlementError, DispatchSettlementObserver, DispatchState, DispatchSummary, Inbox,
     Lease, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, PhysicalAttempt, RunClaim,
-    SessionChildAdmission, SessionRunAdmissionObserver, SessionRunReservationActivation,
-    SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
+    SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
+    SessionRunReservationResolution, SettleOutcome, SubmitOptions,
 };
 pub use dispatch_schema::dispatch_bundle;
 #[cfg(feature = "test-support")]
