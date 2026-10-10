@@ -37,9 +37,6 @@ use awaken_credential_contract::{CredentialAdmissionError, CredentialRealization
 pub use awaken_runtime_contract::CandidateFingerprint;
 #[cfg(test)]
 use awaken_runtime_contract::{CredentialUsage, PlaintextBoundary};
-use awaken_session_execution_contract::{
-    SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
-};
 use awaken_time::{Expiry, UtcTime};
 use awaken_worker_contract::{PlacementPolicy, WorkerAssignment, WorkerIdentity, WorkerSnapshot};
 use serde::{Deserialize, Serialize};

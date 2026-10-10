@@ -67,10 +67,10 @@ impl crate::SharedHost {
 
     pub(crate) fn session_run_admission_observer(
         &self,
-    ) -> Option<Arc<dyn awaken_dispatch_contract::SessionRunAdmissionObserver>> {
+    ) -> Option<Arc<dyn awaken_dispatch_execution::SessionRunAdmissionObserver>> {
         self.coordination_endpoint().map(|endpoint| {
             Arc::new(HostDispatchSettlementObserver::new(endpoint))
-                as Arc<dyn awaken_dispatch_contract::SessionRunAdmissionObserver>
+                as Arc<dyn awaken_dispatch_execution::SessionRunAdmissionObserver>
         })
     }
 }
@@ -475,7 +475,7 @@ impl HostDispatchSettlementObserver {
 }
 
 #[async_trait::async_trait]
-impl awaken_dispatch_contract::SessionRunAdmissionObserver for HostDispatchSettlementObserver {
+impl awaken_dispatch_execution::SessionRunAdmissionObserver for HostDispatchSettlementObserver {
     async fn admit_session_run_activity(
         &self,
         dispatch: &RunDispatch,

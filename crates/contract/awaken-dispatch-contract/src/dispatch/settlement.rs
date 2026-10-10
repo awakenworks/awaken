@@ -52,15 +52,3 @@ pub trait DispatchSettlementObserver: Send + Sync {
         Ok(())
     }
 }
-
-/// Exact Session activity admission used only while repairing a claimed
-/// reservation. Non-Session terminal observers do not implement this role.
-#[async_trait]
-pub trait SessionRunAdmissionObserver: Send + Sync {
-    async fn admit_session_run_activity(
-        &self,
-        dispatch: &RunDispatch,
-        claim: &RunClaim,
-        mode: SessionRunActivityAdmissionMode,
-    ) -> Result<SessionRunActivityAdmission, DispatchSettlementError>;
-}
