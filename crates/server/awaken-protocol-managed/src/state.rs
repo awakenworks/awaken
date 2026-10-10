@@ -72,7 +72,7 @@ pub use managed_state::ManagedState;
 pub(crate) use managed_state::SessionApplicationRoles;
 
 #[cfg(test)]
-use awaken_session_application_contract::{DelegatedRun, StepOutcome};
+use awaken_session_application_contract::StepOutcome;
 use awaken_session_budget_contract::SessionUsage;
 use awaken_session_configuration_contract::AgentCapabilities;
 use awaken_session_execution_contract::CommittedOutcomeProjection;

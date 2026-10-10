@@ -13,6 +13,9 @@ mod hosted_doubles;
 mod managed_event_observer;
 mod projection_completion;
 mod protocol_doubles;
+mod read_control;
+mod rehydrate_fake;
+mod rehydrate_fake_roles;
 
 pub use committed_audit::{
     AwaitTargets, StateLog, audited_lifecycle_records, fixture_state_log, fixture_thread_audit,
@@ -28,6 +31,11 @@ pub use projection_completion::{
     complete_terminal_cleanup_preparation, observe_realization_request,
 };
 pub use protocol_doubles::CoordinatedRuntimeFake;
+pub use read_control::ReadControl;
+pub use rehydrate_fake::{
+    ChildCommitAfterHistorySnapshot, RehydrateFake, RestoredRuntime, create_session_fixture,
+    ephemeral_session_repo,
+};
 
 use awaken_environment_application::EnvironmentApplication;
 use awaken_environment_execution_application::{

@@ -24,14 +24,14 @@ struct ReadState {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct ReadControl(Arc<Mutex<ReadState>>);
+pub struct ReadControl(Arc<Mutex<ReadState>>);
 
 impl ReadControl {
-    pub(crate) fn trace(&self) -> Vec<&'static str> {
+    pub fn trace(&self) -> Vec<&'static str> {
         self.0.lock().unwrap().trace.clone()
     }
 
-    pub(crate) fn count(&self, port: &str) -> usize {
+    pub fn count(&self, port: &str) -> usize {
         self.0
             .lock()
             .unwrap()
@@ -42,11 +42,11 @@ impl ReadControl {
     }
 
     /// Arm a new observation only when no previously paused read is in flight.
-    pub(crate) fn reset(&self) {
+    pub fn reset(&self) {
         *self.0.lock().unwrap() = ReadState::default();
     }
 
-    pub(crate) fn fail(&self, port: &'static str, enabled: bool) {
+    pub fn fail(&self, port: &'static str, enabled: bool) {
         let mut state = self.0.lock().unwrap();
         if enabled {
             state.failed_ports.insert(port);
@@ -55,15 +55,15 @@ impl ReadControl {
         }
     }
 
-    pub(crate) fn fail_at(&self, ordinal: usize) {
+    pub fn fail_at(&self, ordinal: usize) {
         self.0.lock().unwrap().fail_at = Some(ordinal);
     }
 
-    pub(crate) fn pause_at(&self, ordinal: usize) -> (Arc<Notify>, Arc<Notify>) {
+    pub fn pause_at(&self, ordinal: usize) -> (Arc<Notify>, Arc<Notify>) {
         self.arm_pause(ReadTarget::Ordinal(ordinal))
     }
 
-    pub(crate) fn pause_next(&self, port: &'static str) -> (Arc<Notify>, Arc<Notify>) {
+    pub fn pause_next(&self, port: &'static str) -> (Arc<Notify>, Arc<Notify>) {
         self.arm_pause(ReadTarget::Port(port))
     }
 
@@ -85,7 +85,7 @@ impl ReadControl {
 
     /// Return the zero-based index for this port, captured before any await.
     /// Global ordinals continue to own cross-port failure/pause selection.
-    pub(crate) async fn on_read(&self, port: &'static str) -> Result<usize, &'static str> {
+    pub async fn on_read(&self, port: &'static str) -> Result<usize, &'static str> {
         let (ordinal, port_index, pause) = {
             let mut state = self.0.lock().unwrap();
             let ordinal = state.trace.len();
