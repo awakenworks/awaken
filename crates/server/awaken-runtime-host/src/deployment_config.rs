@@ -235,6 +235,9 @@ pub struct SandboxSettings {
     pub container_mcp_relay: Option<ContainerMcpRelayExposure>,
     /// Kubernetes namespace used by the K8s container adapter.
     pub k8s_namespace: String,
+    /// Bound on waiting for the scheduler to place a Sandbox Pod, measured
+    /// from Pod creation; past it the claim returns as no capacity (ADR-0092).
+    pub k8s_unschedulable_wait_secs: u64,
     /// Existing namespace-local Secrets used by kubelet for private image pulls.
     pub k8s_image_pull_secrets: Vec<String>,
     /// Optional retained active-filesystem PVC policy. Association is derived
@@ -293,6 +296,7 @@ impl Default for SandboxSettings {
             container_forward_proxy: None,
             container_mcp_relay: None,
             k8s_namespace: "default".to_owned(),
+            k8s_unschedulable_wait_secs: K8S_UNSCHEDULABLE_WAIT_DEFAULT_SECS,
             k8s_image_pull_secrets: Vec::new(),
             k8s_continuation_volume: None,
             k8s_image_prewarm: None,
@@ -309,6 +313,32 @@ impl Default for SandboxSettings {
             package_local_cache_ttl_secs: 7 * 24 * 60 * 60,
             inherit_agent_stderr: false,
         }
+    }
+}
+
+const K8S_UNSCHEDULABLE_WAIT_DEFAULT_SECS: u64 =
+    awaken_container_contract::DEFAULT_K8S_UNSCHEDULABLE_WAIT.as_secs();
+const K8S_UNSCHEDULABLE_WAIT_MAX_SECS: u64 = 24 * 60 * 60;
+
+impl SandboxSettings {
+    /// Apply an authored `k8s_unschedulable_wait_secs`: Kubernetes only, at
+    /// most one day; `0` fails on the first unschedulable observation.
+    pub fn apply_k8s_unschedulable_wait_secs(
+        &mut self,
+        tier: SandboxTier,
+        secs: Option<u64>,
+    ) -> Result<(), String> {
+        let Some(secs) = secs else { return Ok(()) };
+        if tier != SandboxTier::K8s {
+            return Err("k8s_unschedulable_wait_secs requires sandbox_tier=k8s".into());
+        }
+        if secs > K8S_UNSCHEDULABLE_WAIT_MAX_SECS {
+            return Err(format!(
+                "k8s_unschedulable_wait_secs must be at most {K8S_UNSCHEDULABLE_WAIT_MAX_SECS}"
+            ));
+        }
+        self.k8s_unschedulable_wait_secs = secs;
+        Ok(())
     }
 }
 
@@ -976,6 +1006,59 @@ fn local_pool_disabled(run_local_pool: Option<&str>, legacy_disable: Option<&str
 /// the lease is owner-scoped (single-owner-per-run, ADR-0019/0024).
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn k8s_unschedulable_wait_defaults_and_accepts_only_bounded_kubernetes_values() {
+        // Decision table (ADR-0092 decision 2 setting). Causes: C1 authored
+        // value absent / 0 / in range / the one-day maximum / above it; C2 the
+        // tier is Kubernetes or not. Effects: E1 the 300 s default stays; E2 the
+        // value is applied; E3 rejected with the setting named.
+        // | Rule | C1 | C2 | effect |
+        // | U1 | absent | any | E1 |
+        // | U2 | 0 / 45 / 86400 | k8s | E2 (0 fails on the first refusal) |
+        // | U3 | 86401 | k8s | E3 |
+        // | U4 | any value | not k8s | E3 |
+        use super::{SandboxSettings, SandboxTier};
+        assert_eq!(
+            SandboxSettings::default().k8s_unschedulable_wait_secs,
+            300,
+            "U1"
+        );
+        for tier in [SandboxTier::K8s, SandboxTier::Docker] {
+            let mut settings = SandboxSettings::default();
+            settings
+                .apply_k8s_unschedulable_wait_secs(tier, None)
+                .unwrap();
+            assert_eq!(settings.k8s_unschedulable_wait_secs, 300, "U1 {tier:?}");
+        }
+        for secs in [0, 45, 86_400] {
+            let mut settings = SandboxSettings::default();
+            settings
+                .apply_k8s_unschedulable_wait_secs(SandboxTier::K8s, Some(secs))
+                .unwrap();
+            assert_eq!(settings.k8s_unschedulable_wait_secs, secs, "U2");
+        }
+        let mut settings = SandboxSettings::default();
+        let too_long = settings
+            .apply_k8s_unschedulable_wait_secs(SandboxTier::K8s, Some(86_401))
+            .unwrap_err();
+        assert!(too_long.contains("k8s_unschedulable_wait_secs"), "U3");
+        for tier in [
+            SandboxTier::Local,
+            SandboxTier::Namespace,
+            SandboxTier::Docker,
+            SandboxTier::Podman,
+        ] {
+            let error = settings
+                .apply_k8s_unschedulable_wait_secs(tier, Some(60))
+                .unwrap_err();
+            assert!(error.contains("sandbox_tier=k8s"), "U4 {tier:?}");
+        }
+        assert_eq!(
+            settings.k8s_unschedulable_wait_secs, 300,
+            "rejection mutates nothing"
+        );
+    }
+
     use super::*;
 
     struct TestAcpAdapterPolicy;

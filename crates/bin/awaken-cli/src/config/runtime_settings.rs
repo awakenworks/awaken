@@ -81,6 +81,7 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
             .k8s_namespace
             .clone()
             .unwrap_or_else(|| "default".to_owned()),
+        k8s_unschedulable_wait_secs: sandbox_defaults.k8s_unschedulable_wait_secs,
         k8s_image_pull_secrets: Vec::new(),
         // The operator selects the existing retained-PVC policy. Omission
         // preserves ephemeral roots and cannot advertise retained Session support.
@@ -123,6 +124,7 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
         inherit_agent_stderr: file.sandbox_inherit_agent_stderr.unwrap_or(false),
     }
     .apply(sandbox_tier, &mut sandbox)?;
+    sandbox.apply_k8s_unschedulable_wait_secs(sandbox_tier, file.k8s_unschedulable_wait_secs)?;
     if sandbox.container_hand_residency == ContainerHandResidency::Resident
         && sandbox_tier != SandboxTier::K8s
     {

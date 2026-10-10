@@ -112,6 +112,7 @@ pub(super) struct FileConfig {
     pub(super) container_mcp_relay_bind: Option<String>,
     pub(super) container_mcp_relay_url: Option<String>,
     pub(super) k8s_namespace: Option<String>,
+    pub(super) k8s_unschedulable_wait_secs: Option<u64>,
     pub(super) k8s_continuation_volume: Option<awaken_sandbox_container::K8sContinuationVolume>,
     pub(super) k8s_image_prewarm: Option<awaken_sandbox_container::K8sImagePrewarm>,
     pub(super) k8s_image_pull_secrets: Option<Vec<String>>,

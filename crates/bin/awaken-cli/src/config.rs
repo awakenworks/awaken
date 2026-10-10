@@ -664,6 +664,21 @@ mod tests {
             "S2"
         );
         assert_eq!(selected.k8s_namespace, "agents", "S2");
+        assert_eq!(selected.k8s_unschedulable_wait_secs, 300, "S2 default wait");
+        let explicit_wait = resolve(
+            FileConfig {
+                sandbox_tier: Some("k8s".into()),
+                k8s_unschedulable_wait_secs: Some(45),
+                ..FileConfig::default()
+            },
+            ConfigOverrides::default(),
+        )
+        .runtime
+        .sandbox;
+        assert_eq!(
+            explicit_wait.k8s_unschedulable_wait_secs, 45,
+            "S2 explicit wait"
+        );
         assert_eq!(selected.k8s_image_pull_secrets, ["registry-pull"], "S2");
         assert_eq!(selected.container_hand_bin, "/opt/awaken/bin/hand", "S2");
         assert_eq!(selected.container_hand_idle_secs, 73, "S2");
@@ -729,6 +744,18 @@ mod tests {
             .contains("k8s_namespace"),
             "V1"
         );
+        // V5 the scheduler wait is Kubernetes-only and at most one day.
+        for (tier, secs) in [("k8s", 86_401), ("docker", 45)] {
+            assert!(
+                resolve_error(FileConfig {
+                    sandbox_tier: Some(tier.into()),
+                    k8s_unschedulable_wait_secs: Some(secs),
+                    ..FileConfig::default()
+                })
+                .contains("k8s_unschedulable_wait_secs"),
+                "V5 {tier}"
+            );
+        }
         assert!(
             resolve_error(FileConfig {
                 container_hand_bin: Some(String::new()),

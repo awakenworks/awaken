@@ -417,7 +417,10 @@ pub async fn build_container_environment_for_realization(
             .await
             .map_err(|error| format!("k8s runtime: {error}"))?
             .with_image_pull_secrets(settings.k8s_image_pull_secrets.clone())
-            .with_clock(clock.clone());
+            .with_clock(clock.clone())
+            .with_unschedulable_wait(std::time::Duration::from_secs(
+                settings.k8s_unschedulable_wait_secs,
+            ));
             if let Some(policy) = settings.k8s_image_prewarm.clone() {
                 runtime = runtime
                     .with_image_prewarm(policy)
