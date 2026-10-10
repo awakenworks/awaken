@@ -745,6 +745,18 @@ async fn defer_claim_is_request_local_on_sqlite() {
 }
 
 #[tokio::test]
+async fn capacity_deferrals_hand_off_without_spending_budget_on_sqlite() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = SqliteDispatchStore::open_in_memory(clock.clock())
+        .await
+        .expect("open");
+    harness::capacity_deferral::assert_capacity_deferrals_hand_off_without_spending_budget(
+        &store, &clock,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn defer_claim_uses_the_store_clock_and_exact_deadline_on_sqlite() {
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(100));
     let store = SqliteDispatchStore::open_in_memory(clock.clone())

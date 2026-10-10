@@ -51,6 +51,23 @@ pub(crate) enum ManifestSelection {
 }
 
 impl ManifestSelection {
+    /// A standard manifest derives its capacity from this Worker's
+    /// configuration; on Kubernetes it must be explicit (ADR-0092). The builder
+    /// checks this before any cluster connection and again at build. An
+    /// explicit manifest carries its own capacity.
+    pub(crate) fn require_capacity(
+        &self,
+        config: &StandardManifestConfig,
+        deployment: &awaken_session_executor::DeploymentConfig,
+    ) -> Result<(), crate::WorkerNodeBuildError> {
+        if matches!(self, Self::Selected(ManifestSource::Standard { .. })) {
+            config
+                .max_concurrent_for(deployment.sandbox_tier)
+                .map_err(crate::WorkerNodeBuildError)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn select(&mut self, next: ManifestSource) {
         let current = std::mem::replace(self, Self::Unset);
         *self = match current {
@@ -74,7 +91,9 @@ pub struct StandardManifestConfig {
     build_digest: String,
     zone: Option<String>,
     extra_capabilities: BTreeSet<String>,
-    max_concurrent: u32,
+    /// Operator-set capacity. Absent, sandboxes running on this host default
+    /// to its parallelism; a Kubernetes Worker refuses to start (ADR-0092).
+    max_concurrent: Option<u32>,
 }
 
 impl Default for StandardManifestConfig {
@@ -83,9 +102,7 @@ impl Default for StandardManifestConfig {
             build_digest: env!("CARGO_PKG_VERSION").to_string(),
             zone: None,
             extra_capabilities: Default::default(),
-            max_concurrent: std::thread::available_parallelism()
-                .map(|value| value.get() as u32)
-                .unwrap_or(1),
+            max_concurrent: None,
         }
     }
 }
@@ -116,8 +133,29 @@ impl StandardManifestConfig {
 
     #[must_use]
     pub fn with_max_concurrent(mut self, max_concurrent: u32) -> Self {
-        self.max_concurrent = max_concurrent;
+        self.max_concurrent = Some(max_concurrent);
         self
+    }
+
+    /// The manifest capacity for `tier`. Kubernetes sandboxes consume cluster
+    /// resources, which the Worker's own CPU count says nothing about, so a
+    /// Kubernetes Worker must set it explicitly; every other backend runs its
+    /// sandboxes on this host and defaults to its parallelism.
+    pub(crate) fn max_concurrent_for(
+        &self,
+        tier: awaken_session_executor::SandboxTier,
+    ) -> Result<u32, String> {
+        match (self.max_concurrent, tier) {
+            (Some(max_concurrent), _) => Ok(max_concurrent),
+            (None, awaken_session_executor::SandboxTier::K8s) => Err(
+                "worker_max_concurrent must be set on a Kubernetes Worker: it bounds the \
+                 simultaneous sandbox Pods this Worker may run"
+                    .into(),
+            ),
+            (None, _) => Ok(std::thread::available_parallelism()
+                .map(|value| value.get() as u32)
+                .unwrap_or(1)),
+        }
     }
 }
 
@@ -317,24 +355,66 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
             .chain(inputs.checkpoint_formats)
             .collect(),
         capacity: WorkerCapacity {
-            max_concurrent: inputs.config.max_concurrent,
+            // The builder refuses an unset Kubernetes capacity before deriving;
+            // a zero here is rejected again by manifest validation.
+            max_concurrent: inputs
+                .config
+                .max_concurrent_for(inputs.deployment.sandbox_tier)
+                .unwrap_or(0),
             ..WorkerCapacity::default()
         },
         ..WorkerManifest::default()
     }
 }
 
+/// The local Session tier this Worker proved before registration, and the
+/// probe it re-runs on every heartbeat (ADR-0092 decision 5).
+#[derive(Clone)]
+pub(crate) struct PreparedLocalSandbox {
+    pub(crate) capabilities: awaken_provisioning_contract::SandboxCapabilities,
+    pub(crate) backend: &'static str,
+    pub(crate) readiness: crate::lifecycle::LocalReadinessProbe,
+}
+
+impl PreparedLocalSandbox {
+    /// Probe the deployment's local tier (an unavailable Namespace degrades to
+    /// Workdir only under the explicit fallback opt-in) and keep the effective
+    /// tier's manifest projection with its readiness probe.
+    pub(crate) async fn probe(
+        deployment: &awaken_session_executor::DeploymentConfig,
+    ) -> Result<Self, crate::WorkerNodeBuildError> {
+        let base = awaken_session_executor::session_sandbox_base(deployment);
+        let tier = awaken_execution_composition::resolve_sandbox_tier(
+            deployment.sandbox_tier,
+            deployment.sandbox.allow_local_fallback,
+            &base,
+        )
+        .await
+        .map_err(crate::WorkerNodeBuildError)?;
+        let readiness = awaken_execution_composition::local_tier_readiness(tier, &base)
+            .ok_or_else(|| {
+                crate::WorkerNodeBuildError(format!("{tier:?} is not a local Session tier"))
+            })?;
+        let (capabilities, backend) = deployment.sandbox_support_for_tier(tier);
+        Ok(Self {
+            capabilities,
+            backend,
+            readiness: std::sync::Arc::new(move || {
+                let provider = readiness.clone();
+                Box::pin(async move { provider.probe_ready().await })
+            }),
+        })
+    }
+}
+
 /// The local Session provider installed into the Host must still be the one this
 /// Worker registered; a change after registration refuses Ready.
 pub(crate) fn ensure_registered_local_provider(
-    prepared: &Option<(
-        awaken_provisioning_contract::SandboxCapabilities,
-        &'static str,
-    )>,
+    prepared: &Option<PreparedLocalSandbox>,
     manifest: &awaken_worker_contract::WorkerManifest,
     deps: &awaken_session_executor::HostDependencies,
 ) -> std::io::Result<()> {
-    let Some((_, backend)) = prepared else {
+    let Some(PreparedLocalSandbox { backend, .. }) = prepared else {
         return Ok(());
     };
     if deps
@@ -348,4 +428,91 @@ pub(crate) fn ensure_registered_local_provider(
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+    use awaken_session_executor::SandboxTier;
+
+    #[test]
+    fn kubernetes_capacity_must_be_explicit_and_host_backends_keep_the_default() {
+        // Decision table (ADR-0092 decision 4). Causes: C1 sandbox tier; C2
+        // `worker_max_concurrent` set. Effects: E1 the configured value; E2 the
+        // host's parallelism; E3 refusal naming the setting (fail closed).
+        // | Rule | C1 | C2 | effect |
+        // | K1 | K8s | unset | E3 |
+        // | K2 | K8s | set | E1 |
+        // | K3 | Local/Namespace/Docker/Podman | unset | E2 |
+        // | K4 | any host tier | set | E1 |
+        let parallelism = std::thread::available_parallelism()
+            .map(|value| value.get() as u32)
+            .unwrap_or(1);
+        let unset = StandardManifestConfig::default();
+        let set = StandardManifestConfig::default().with_max_concurrent(4);
+        let refusal = unset.max_concurrent_for(SandboxTier::K8s).unwrap_err();
+        assert!(refusal.contains("worker_max_concurrent"), "K1: {refusal}");
+        assert!(refusal.contains("sandbox Pods"), "K1: {refusal}");
+        assert_eq!(set.max_concurrent_for(SandboxTier::K8s), Ok(4), "K2");
+        for tier in [
+            SandboxTier::Local,
+            SandboxTier::Namespace,
+            SandboxTier::Docker,
+            SandboxTier::Podman,
+        ] {
+            assert_eq!(
+                unset.max_concurrent_for(tier),
+                Ok(parallelism),
+                "K3 {tier:?}"
+            );
+            assert_eq!(set.max_concurrent_for(tier), Ok(4), "K4 {tier:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_registered_kubernetes_worker_without_capacity_refuses_to_start() {
+        // K1 at the builder: the standard manifest of a Kubernetes Worker
+        // without `worker_max_concurrent` is refused before any cluster
+        // connection (prepare); an explicit manifest carries its own capacity
+        // and is not refused by this rule (K5).
+        let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
+        deployment.sandbox_tier = SandboxTier::K8s;
+        let builder = || {
+            crate::WorkerNodeBuilder::new(
+                awaken_worker_transport_security::WorkerUpstream::new("https://control.test"),
+                awaken_time::system_clock(),
+            )
+            .with_deployment_config(deployment.clone())
+            .with_standard_manifest(Default::default())
+        };
+        let prepared = builder()
+            .prepare_session_environment_from_deployment()
+            .await;
+        let Err(error) = prepared else {
+            panic!("an unset Kubernetes capacity must be refused before connecting");
+        };
+        assert!(
+            error.to_string().contains("worker_max_concurrent"),
+            "{error}"
+        );
+        // The build-time recheck uses the same rule (behind the topology
+        // checks, which refuse a Kubernetes build without its provider first).
+        let standard = ManifestSelection::Selected(ManifestSource::Standard {
+            application_capabilities: Default::default(),
+        });
+        let unset = StandardManifestConfig::default();
+        assert!(
+            standard.require_capacity(&unset, &deployment).is_err(),
+            "K1"
+        );
+        let set = StandardManifestConfig::default().with_max_concurrent(2);
+        assert!(standard.require_capacity(&set, &deployment).is_ok(), "K2");
+        let explicit = ManifestSelection::Selected(ManifestSource::Explicit(Box::default()));
+        assert!(
+            explicit
+                .require_capacity(&StandardManifestConfig::default(), &deployment)
+                .is_ok(),
+            "K5"
+        );
+    }
 }

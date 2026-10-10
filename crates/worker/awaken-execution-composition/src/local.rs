@@ -8,41 +8,64 @@ use awaken_session_executor::{DeploymentConfig, HostDependencies, SandboxTier};
 use awaken_session_environment::SandboxEnvironmentProvider;
 use awaken_session_environment_contract::HandExecutorFactory;
 
-/// Resolve the effective sandbox tier at startup, probing the OS-native launcher
-/// once for the `Namespace` tier so an unsupported host gets a clear startup
-/// decision instead of an opaque per-run spawn error. An unavailable provider
-/// fails closed (`Err`) by default; only when typed deployment policy opts in
-/// does it degrade to the UNSANDBOXED `Local` tier with a loud notice. Every
-/// other tier passes through unchanged.
+/// The readiness probe of a local tier's backend (ADR-0092 decision 5): the
+/// Worker runs it before registration and again on every heartbeat, so a
+/// backend lost after start drains the Worker like a lost container daemon.
+/// Workdir checks its provider base; Namespace runs the full unprivileged
+/// profile. Container tiers are probed by their installed provider instead.
+pub fn local_tier_readiness(
+    tier: SandboxTier,
+    base: &Path,
+) -> Option<Arc<dyn awaken_provisioning_contract::SandboxProvider>> {
+    match tier {
+        SandboxTier::Local => Some(Arc::new(awaken_sandbox_local::LocalProvider::new(
+            base.to_path_buf(),
+        ))),
+        SandboxTier::Namespace => Some(Arc::new(awaken_sandbox_local::NamespaceProvider::new(
+            base.to_path_buf(),
+        ))),
+        SandboxTier::Docker | SandboxTier::Podman | SandboxTier::K8s => None,
+    }
+}
+
+/// Resolve the effective sandbox tier at startup by probing its local backend
+/// once, so an unusable host gets a clear startup decision instead of an
+/// opaque per-run spawn error. An unavailable provider fails closed (`Err`) by
+/// default; only when typed deployment policy opts in does an unavailable
+/// Namespace degrade to the UNSANDBOXED `Local` tier with a loud notice, and
+/// that tier is probed in turn. Container tiers pass through unchanged.
 pub async fn resolve_sandbox_tier(
     tier: SandboxTier,
     allow_local_fallback: bool,
-    namespace_base: &Path,
+    base: &Path,
 ) -> Result<SandboxTier, String> {
-    use awaken_provisioning_contract::SandboxProvider as _;
-    if tier != SandboxTier::Namespace {
+    let Some(probe) = local_tier_readiness(tier, base) else {
         return Ok(tier);
+    };
+    let error = match probe.probe_ready().await {
+        Ok(()) => return Ok(tier),
+        Err(error) => error,
+    };
+    if tier == SandboxTier::Local {
+        return Err(format!(
+            "Workdir sandbox base {} is not usable: {error}",
+            base.display()
+        ));
     }
-    match awaken_sandbox_local::NamespaceProvider::new(namespace_base.to_path_buf())
-        .probe_ready()
-        .await
-    {
-        Ok(()) => Ok(SandboxTier::Namespace),
-        Err(e) if namespace_degrades_to_local(allow_local_fallback) => {
-            eprintln!(
-                "awaken: OS-native sandbox unavailable ({e}); running UNSANDBOXED local ACP \
-                 execution (no OS isolation for this worker). Install bwrap on Linux or enable \
-                 macOS Seatbelt, or disable sandbox.allow_local_fallback to require \
-                 isolation (fail closed)."
-            );
-            Ok(SandboxTier::Local)
-        }
-        Err(e) => Err(format!(
-            "OS-native sandbox unavailable: {e}. Install bwrap (Linux) / use macOS Seatbelt, \
+    if !namespace_degrades_to_local(allow_local_fallback) {
+        return Err(format!(
+            "OS-native sandbox unavailable: {error}. Install bwrap (Linux) / use macOS Seatbelt, \
              configure sandbox_allow_local_fallback=true for an explicit unsafe fallback, or \
              configure sandbox_tier=local to run unsandboxed"
-        )),
+        ));
     }
+    eprintln!(
+        "awaken: OS-native sandbox unavailable ({error}); running UNSANDBOXED local ACP \
+         execution (no OS isolation for this worker). Install bwrap on Linux or enable \
+         macOS Seatbelt, or disable sandbox.allow_local_fallback to require \
+         isolation (fail closed)."
+    );
+    Box::pin(resolve_sandbox_tier(SandboxTier::Local, false, base)).await
 }
 
 /// Whether an unavailable `Namespace` provider may degrade to the UNSANDBOXED
@@ -341,21 +364,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_sandbox_tier_passes_non_namespace_tiers_through_unprobed() {
-        // Only the namespace tier is probed; the rest resolve to themselves.
+    async fn resolve_sandbox_tier_probes_local_tiers_and_passes_container_tiers_through() {
+        // ADR-0092 decision 5. Causes: C1 tier is Workdir / Namespace /
+        // container; C2 its local probe succeeds or fails. Effects: E1 a
+        // usable Workdir resolves to itself; E2 an unusable Workdir base fails
+        // start-up, since no isolation tier remains (the probe's base checks are
+        // the Workdir provider's own tests; the refusal is the `Err` arm); E3 container tiers are not
+        // probed here (their installed provider probes before Ready) and have
+        // no local readiness probe; E4 every local tier has one, so it joins
+        // the heartbeat monitor.
         let base = std::env::temp_dir().join(format!("awaken-tier-ut-{}", std::process::id()));
         assert_eq!(
             resolve_sandbox_tier(SandboxTier::Local, true, &base)
                 .await
                 .unwrap(),
-            SandboxTier::Local
+            SandboxTier::Local,
+            "E1"
         );
-        assert_eq!(
-            resolve_sandbox_tier(SandboxTier::Docker, true, &base)
-                .await
-                .unwrap(),
-            SandboxTier::Docker
-        );
+        for tier in [SandboxTier::Docker, SandboxTier::Podman, SandboxTier::K8s] {
+            assert_eq!(
+                resolve_sandbox_tier(tier, true, &base).await.unwrap(),
+                tier,
+                "E3"
+            );
+            assert!(local_tier_readiness(tier, &base).is_none(), "E3 {tier:?}");
+        }
+        for tier in [SandboxTier::Local, SandboxTier::Namespace] {
+            assert!(local_tier_readiness(tier, &base).is_some(), "E4 {tier:?}");
+        }
     }
 
     #[tokio::test]

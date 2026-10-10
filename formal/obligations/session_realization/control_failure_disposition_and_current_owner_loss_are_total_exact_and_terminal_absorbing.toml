@@ -7,3 +7,6 @@ production_entrypoints = []
 
 [[bounds]]
 text = '''Production Rust type domain under the named bounded Kani harness assumptions.'''
+
+[[bounds]]
+text = '''ADR-0092: Kani exhausts the Session aggregate's realization-failure budget rule over every SessionExecutionState and the full u32 attempt and budget domains: a capacity report never absorbs and refunds exactly the attempt a Preparing/Activating assignment counted, an ordinary retryable report retries only below the budget, and a capacity flag on a non-retryable report is rejected. The failed-effect classification (Unavailable + capacity code -> NotReady deferral, other Unavailable -> Retryable, otherwise Terminal) and the SandboxError-disposition-to-code mapping are exhaustive decision-table tests over every RunErrorKind and stable code, not Kani claims; the Worker projection of NotReady/Retryable/Terminal reuses the existing proved control-disposition harness.'''

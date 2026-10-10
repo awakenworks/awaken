@@ -189,6 +189,8 @@ pub(crate) struct WorkerSupervisor {
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
     pub(crate) session_environment_provider:
         Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>>,
+    /// A local tier's backend probe; present only without a container provider.
+    pub(crate) local_readiness: Option<LocalReadinessProbe>,
     pub(crate) observations: Arc<WorkerObservationCache>,
     pub(crate) observation_ttl: std::time::Duration,
     pub(crate) probe_interval: std::time::Duration,
@@ -202,7 +204,52 @@ pub(crate) struct WorkerSupervisor {
     >,
 }
 
+/// One fresh readiness observation of a local tier's backend.
+pub(crate) type LocalReadinessProbe = Arc<
+    dyn Fn() -> futures_util::future::BoxFuture<
+            'static,
+            Result<(), awaken_provisioning_contract::SandboxError>,
+        > + Send
+        + Sync,
+>;
+
 impl WorkerSupervisor {
+    /// Whether an installed Session backend proves its readiness before Ready
+    /// and on every heartbeat: the container provider, or a local tier's probe.
+    pub(crate) fn environment_readiness_installed(&self) -> bool {
+        self.session_environment_provider.is_some() || self.local_readiness.is_some()
+    }
+
+    /// The first environment proof, required before Ready.
+    pub(crate) async fn prove_environment_before_ready(
+        &self,
+        timeout: std::time::Duration,
+    ) -> std::io::Result<()> {
+        if !self.environment_readiness_installed() {
+            return Ok(());
+        }
+        tokio::time::timeout(timeout, self.probe_environment())
+            .await
+            .map_err(|_| {
+                std::io::Error::other("sandbox readiness evidence timed out before Ready")
+            })?
+            .map_err(|error| {
+                std::io::Error::other(format!(
+                    "sandbox readiness evidence failed before Ready: {error}"
+                ))
+            })
+    }
+
+    pub(crate) async fn probe_environment(
+        &self,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        match (&self.session_environment_provider, &self.local_readiness) {
+            (Some(provider), _) => provider.probe_ready().await,
+            (None, Some(local)) => local().await,
+            (None, None) => Ok(()),
+        }
+    }
+
     async fn publish_registry_drain(
         &self,
         _local_fence: awaken_session_executor::PoolDrainFence,
@@ -380,11 +427,11 @@ pub(crate) fn spawn_heartbeat(
                 tokio::select! {
                     biased;
                     () = async {
-                        if let Some(provider) = &lifecycle.session_environment_provider {
+                        if lifecycle.environment_readiness_installed() {
                             environment_evidence::monitor(
                                 environment_proof_started,
                                 timing,
-                                || provider.probe_ready(),
+                                || lifecycle.probe_environment(),
                             ).await;
                         } else {
                             std::future::pending::<()>().await;
@@ -1014,6 +1061,81 @@ mod tests {
         supervise_session_realization_reconciliation, supervise_worker_authority,
     };
 
+    #[tokio::test(start_paused = true)]
+    async fn a_local_backend_lost_after_start_drains_like_a_lost_container_daemon() {
+        // ADR-0092 decision 5. Causes: C1 a container provider is installed;
+        // C2 a local tier's readiness probe is installed; C3 the probe answers.
+        // Effects: E1 the Worker proves environment evidence before Ready and
+        // on every heartbeat; E2 a rejecting local probe closes the evidence
+        // monitor (the Worker drains); E3 with neither installed there is no
+        // environment evidence to prove.
+        // | Rule | C1 | C2 | C3 | effect |
+        // | L1 | no | yes | ok | E1, monitor keeps running |
+        // | L2 | no | yes | lost | E1 + E2 |
+        // | L3 | no | no | - | E3 |
+        use std::time::Duration;
+        let alive = Arc::new(AtomicBool::new(true));
+        let probe_state = alive.clone();
+        let probe: super::LocalReadinessProbe = Arc::new(move || {
+            let alive = probe_state.load(Ordering::SeqCst);
+            Box::pin(async move {
+                if alive {
+                    Ok(())
+                } else {
+                    Err(awaken_provisioning_contract::SandboxError::not_ready(
+                        "bwrap revoked",
+                    ))
+                }
+            })
+        });
+        let supervisor = |local_readiness| async move {
+            Arc::new(super::WorkerSupervisor {
+                authority: Default::default(),
+                host: awaken_runtime_host_testkit::volatile_host(
+                    Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
+                    "worker-test",
+                )
+                .await,
+                control: awaken_coordinator_client::WorkerControlClient::new(
+                    awaken_worker_transport_security::WorkerUpstream::new("http://127.0.0.1:1")
+                        .with_worker_id("local-probe"),
+                ),
+                identity: awaken_worker_contract::WorkerIdentity::new("local-probe", "boot", 1),
+                credential_observation_resolver: None,
+                acp_capability_observation_source: None,
+                session_environment_provider: None,
+                local_readiness,
+                observations: Arc::new(crate::WorkerObservationCache::default()),
+                observation_ttl: Duration::from_secs(30),
+                probe_interval: Duration::from_secs(10),
+                warm_environments: Default::default(),
+            })
+        };
+        let none = supervisor(None).await;
+        assert!(!none.environment_readiness_installed(), "L3");
+        let local = supervisor(Some(probe)).await;
+        assert!(local.environment_readiness_installed(), "L1");
+        assert!(local.probe_environment().await.is_ok(), "L1");
+        let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(6000);
+        let monitored = local.clone();
+        let monitor = tokio::spawn(async move {
+            super::environment_evidence::monitor(awaken_time::mono::now(), timing, || {
+                monitored.probe_environment()
+            })
+            .await;
+        });
+        // awaken-wait: paused clock; three proof windows of healthy renewals
+        // must pass without the monitor closing, which is the fact under test.
+        tokio::time::sleep(timing.proof_window() * 3).await;
+        assert!(!monitor.is_finished(), "L1 healthy evidence keeps renewing");
+        alive.store(false, Ordering::SeqCst);
+        assert!(local.probe_environment().await.is_err(), "L2");
+        tokio::time::timeout(timing.proof_window() * 2, monitor)
+            .await
+            .expect("L2 a lost local backend closes the evidence monitor")
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn image_retirement_never_uses_incomplete_fallback_receipts() {
         // F1 fresh Control demand => provider invoked once, including an empty
@@ -1541,6 +1663,7 @@ mod tests {
                 credential_observation_resolver: None,
                 acp_capability_observation_source: None,
                 session_environment_provider: Some(provider.clone()),
+                local_readiness: None,
                 observations: Arc::new(WorkerObservationCache::default()),
                 observation_ttl: Duration::from_secs(6),
                 probe_interval: Duration::from_secs(1),

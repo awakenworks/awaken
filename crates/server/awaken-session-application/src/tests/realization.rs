@@ -9,6 +9,7 @@
 // @formal evidence session_run.execution_requires_dispatch_work_and_realization_owner
 // awaken-file-limit-ceiling: 6486 (legacy oversized test file: split, never grow)
 use super::*;
+mod capacity_budget;
 mod cleanup_timing;
 mod initial_preparation;
 mod worker_affinity;
@@ -1565,6 +1566,7 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
             lease: first.authority.lease,
             prepared_resource_revision: None,
             retryable: true,
+            capacity_unavailable: false,
             source_run_id: None,
             reason: "worker unavailable".into(),
         },
@@ -1610,6 +1612,7 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
             lease: second.authority.lease,
             prepared_resource_revision: None,
             retryable: true,
+            capacity_unavailable: false,
             source_run_id: None,
             reason: "worker unavailable again".into(),
         },
@@ -1667,6 +1670,7 @@ async fn failed_nonterminal_realization_expires_assignment_before_same_incarnati
                     lease: lease.clone(),
                     prepared_resource_revision: None,
                     retryable,
+                    capacity_unavailable: false,
                     source_run_id: None,
                     reason: "external stage failed".into(),
                 };
@@ -6303,6 +6307,7 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
                 lease,
                 prepared_resource_revision: None,
                 retryable: false,
+                capacity_unavailable: false,
                 source_run_id: Some(awaken_agent_contract::agent::run::Id(
                     "running-realization-run".into(),
                 )),
@@ -6346,6 +6351,7 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
                 lease: later.realization.clone().unwrap(),
                 prepared_resource_revision: None,
                 retryable: false,
+                capacity_unavailable: false,
                 source_run_id: None,
                 reason: "permanent realization failure".into(),
             },

@@ -197,10 +197,7 @@ pub struct WorkerNodeBuilder {
     session_container_provider: Option<InstalledSessionContainerProvider>,
     #[cfg(feature = "container-k8s")]
     k8s_create_client: Option<Arc<WorkerK8sCreateClient>>,
-    prepared_local_sandbox: Option<(
-        awaken_provisioning_contract::SandboxCapabilities,
-        &'static str,
-    )>,
+    prepared_local_sandbox: Option<manifest::PreparedLocalSandbox>,
     mcp_attachment_realizer:
         Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
     memory_mounter_factory: Option<RegisteredMemoryMounterFactory>,
@@ -728,19 +725,16 @@ impl WorkerNodeBuilder {
                 "Worker builder owns its Kubernetes Create transport".into(),
             ));
         }
-        if self.deployment.sandbox_tier == awaken_session_executor::SandboxTier::Namespace
-            && self.deployment.sandbox.allow_local_fallback
+        self.manifest
+            .require_capacity(&self.standard_manifest_config, &self.deployment)?;
+        if !self.deployment.sandbox_tier.is_container()
             && self.session_container_provider.is_none()
             && self.enclosing_sandbox_boundary.is_none()
         {
-            let tier = awaken_execution_composition::resolve_sandbox_tier(
-                self.deployment.sandbox_tier,
-                true,
-                &awaken_session_executor::session_sandbox_base(&self.deployment),
-            )
-            .await
-            .map_err(WorkerNodeBuildError)?;
-            self.prepared_local_sandbox = Some(self.deployment.sandbox_support_for_tier(tier));
+            // Every local tier proves its backend before the manifest is
+            // derived and the Worker registers (ADR-0092 decision 5).
+            self.prepared_local_sandbox =
+                Some(manifest::PreparedLocalSandbox::probe(&self.deployment).await?);
         }
         if !self.deployment.sandbox_tier.is_container() || self.session_container_provider.is_some()
         {
@@ -889,6 +883,8 @@ impl WorkerNodeBuilder {
                 "container execution requires an installed hand executor factory".to_string(),
             ));
         }
+        self.manifest
+            .require_capacity(&self.standard_manifest_config, &self.deployment)?;
         Ok(())
     }
 
@@ -944,7 +940,7 @@ impl WorkerNodeBuilder {
             .or_else(|| {
                 self.prepared_local_sandbox
                     .as_ref()
-                    .map(|(capabilities, backend)| (capabilities.clone(), *backend))
+                    .map(|prepared| (prepared.capabilities.clone(), prepared.backend))
             });
         let manifest = match self.manifest {
             ManifestSelection::Selected(ManifestSource::Explicit(manifest)) => *manifest,
@@ -988,8 +984,9 @@ impl WorkerNodeBuilder {
                 )));
             }
         };
-        if let Some((capabilities, backend)) = &self.prepared_local_sandbox {
-            let mut expected_backends = std::collections::BTreeSet::from([(*backend).to_string()]);
+        if let Some(prepared) = &self.prepared_local_sandbox {
+            let (capabilities, backend) = (&prepared.capabilities, prepared.backend);
+            let mut expected_backends = std::collections::BTreeSet::from([backend.to_string()]);
             if self.deployment.trusted_host_enabled() {
                 expected_backends
                     .insert(awaken_worker_contract::TRUSTED_HOST_SANDBOX_BACKEND.to_string());
@@ -1126,10 +1123,7 @@ pub struct WorkerNode {
     session_container_provider: Option<InstalledSessionContainerProvider>,
     #[cfg(feature = "container-k8s")]
     k8s_create_client: Option<Arc<WorkerK8sCreateClient>>,
-    prepared_local_sandbox: Option<(
-        awaken_provisioning_contract::SandboxCapabilities,
-        &'static str,
-    )>,
+    prepared_local_sandbox: Option<manifest::PreparedLocalSandbox>,
     mcp_attachment_realizer:
         Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
     memory_mounter_factory: Option<RegisteredMemoryMounterFactory>,
@@ -1698,6 +1692,7 @@ impl WorkerNode {
             credential_observation_resolver: self.credential_observation_resolver,
             acp_capability_observation_source,
             session_environment_provider,
+            local_readiness: self.prepared_local_sandbox.map(|prepared| prepared.readiness),
             observations,
             observation_ttl: self.credential_observation_ttl,
             probe_interval: self.credential_probe_interval,
@@ -1710,14 +1705,7 @@ impl WorkerNode {
         // making the Worker itself permanently Starting while claim admission
         // still fails closed for any Run that needs their evidence.
         let environment_proof_started = awaken_time::mono::now();
-        if let Some(provider) = &lifecycle.session_environment_provider {
-            tokio::time::timeout(startup_timing.request_timeout(), provider.probe_ready())
-                .await
-                .map_err(|_| std::io::Error::other("sandbox readiness evidence timed out before Ready"))?
-                .map_err(|error| std::io::Error::other(format!(
-                    "sandbox readiness evidence failed before Ready: {error}"
-                )))?;
-        }
+        lifecycle.prove_environment_before_ready(startup_timing.request_timeout()).await?;
         // A lease receipt proves no more time than remained when the request
         // started. Anchoring locally before I/O prevents response latency from
         // extending the Coordinator-owned expiry in the Worker process.
