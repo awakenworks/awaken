@@ -370,7 +370,9 @@ async fn automatic_memory_requires_one_explicit_existing_binding() {
                 let selected = host.memory_for_thread(&thread);
                 match expected_index {
                     Some(index) => assert_eq!(
-                        selected.as_ref().map(|memory| memory.memory_store_id()),
+                        selected
+                            .as_ref()
+                            .map(|memory| memory.binding().memory_store_id.as_str()),
                         Some(stores[index].as_str()),
                         "{rule} E3"
                     ),

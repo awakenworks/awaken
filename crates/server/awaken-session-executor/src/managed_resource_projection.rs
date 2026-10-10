@@ -25,7 +25,7 @@ use repository_error::repository_binding_run_error;
 pub(crate) struct CompiledEffectiveInputs {
     pub(crate) staged: crate::staged_resources::StagedResources,
     pub(crate) memory_bindings:
-        std::collections::HashMap<String, std::sync::Arc<crate::memory::BoundMemory>>,
+        std::collections::HashMap<String, std::sync::Arc<crate::memory_binding::MemoryBinding>>,
 }
 fn validate_preparation_publication(
     slot: &crate::session_slot::SessionRuntimeSlot,
@@ -133,7 +133,7 @@ impl crate::ManagedHost {
         workspace: &str,
         input: &awaken_session_resource_contract::ResolvedInput,
         materialization_reference: Option<String>,
-    ) -> Result<Option<(String, Arc<crate::memory::BoundMemory>)>, RunError> {
+    ) -> Result<Option<(String, Arc<crate::memory_binding::MemoryBinding>)>, RunError> {
         let awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
             memory_store_id,
             config,
@@ -176,7 +176,7 @@ impl crate::ManagedHost {
         };
         Ok(Some((
             input.binding_id.to_string(),
-            Arc::new(self.host.resources.memory.bind(
+            Arc::new(crate::memory_binding::MemoryBinding::new(
                 session_thread,
                 workspace,
                 handle,

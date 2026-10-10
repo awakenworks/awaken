@@ -233,7 +233,7 @@ impl DispatchSessionRuntime {
         session_thread: &str,
         manifest: &awaken_session_resource_contract::SessionResourceManifest,
         binding_id: &str,
-    ) -> Result<Arc<crate::memory::BoundMemory>, RunError> {
+    ) -> Result<Arc<crate::memory_binding::MemoryBinding>, RunError> {
         let input = manifest
             .resources
             .inputs()
@@ -373,7 +373,7 @@ impl SharedHost {
         session_thread: &str,
         manifest: &awaken_session_resource_contract::SessionResourceManifest,
         binding_id: &str,
-    ) -> Result<Arc<crate::memory::BoundMemory>, RunError> {
+    ) -> Result<Arc<crate::memory_binding::MemoryBinding>, RunError> {
         self.dispatch_session_runtime()
             .compile_memory_binding(session_thread, manifest, binding_id)
             .await
