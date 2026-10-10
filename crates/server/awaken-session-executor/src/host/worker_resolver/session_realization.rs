@@ -189,7 +189,10 @@ mod tests {
             .await
             .expect("C1 complete eager projection remains eager");
         assert!(
-            host.session_environment("cold-legacy").await.is_some(),
+            host.realizer
+                .session_environment("cold-legacy")
+                .await
+                .is_some(),
             "C1"
         );
 
@@ -231,7 +234,10 @@ mod tests {
             .await
             .expect("C2 cold Brain resolution stays deferred");
         assert!(
-            host.session_environment("cold-deferred").await.is_none(),
+            host.realizer
+                .session_environment("cold-deferred")
+                .await
+                .is_none(),
             "C2"
         );
         assert!(
@@ -892,7 +898,10 @@ mod tests {
             )
             .await
             .expect("M1 lease-only renewal reuses resident projection");
-        assert!(host.thread_resource_manifest(thread).is_none(), "M1");
+        assert!(
+            host.realizer.thread_resource_manifest(thread).is_none(),
+            "M1"
+        );
         assert_eq!(
             host.session_slots
                 .read_realization(thread, |r| r.authority.lease().cloned())
@@ -1524,7 +1533,7 @@ mod tests {
         // Publication deliberately evicts the rebuildable SessionCtx before the
         // final claimed resolve. A heartbeat may enter this exact gap; the
         // retained Environment remains the publication-authorized effect owner.
-        host.evict_session_for_rebuild(thread).await;
+        host.realizer.evict_session_for_rebuild(thread).await;
         assert!(
             host.session_slots
                 .read(thread, |slot| slot.run.runtime.is_none()
@@ -1570,7 +1579,7 @@ mod tests {
                     .await
                     .expect("R9 warm Runtime");
             } else {
-                host.evict_session_for_rebuild(thread).await;
+                host.realizer.evict_session_for_rebuild(thread).await;
             }
             assert_eq!(
                 host.session_slots
@@ -1580,6 +1589,7 @@ mod tests {
                 "R9 fixture independently establishes each Runtime state"
             );
             let retained = host
+                .realizer
                 .session_environment(thread)
                 .await
                 .expect("R9 resident Arc");
@@ -1611,7 +1621,10 @@ mod tests {
                 "R9: {error}"
             );
             assert!(
-                Arc::ptr_eq(&retained, &host.session_environment(thread).await.unwrap()),
+                Arc::ptr_eq(
+                    &retained,
+                    &host.realizer.session_environment(thread).await.unwrap()
+                ),
                 "R9 retains exact owner"
             );
             assert_eq!(
@@ -1645,7 +1658,7 @@ mod tests {
             );
             assert!(Arc::ptr_eq(
                 &retained,
-                &host.session_environment(thread).await.unwrap()
+                &host.realizer.session_environment(thread).await.unwrap()
             ));
             assert_eq!(
                 control.current_projection().environment.binding(),
@@ -1671,6 +1684,7 @@ mod tests {
             .await
             .expect("R10 rebuild through the production synchronizer");
             let replacement = host
+                .realizer
                 .session_environment(thread)
                 .await
                 .expect("R10 replacement");
@@ -1698,7 +1712,7 @@ mod tests {
             assert!(
                 Arc::ptr_eq(
                     &replacement,
-                    &host.session_environment(thread).await.unwrap()
+                    &host.realizer.session_environment(thread).await.unwrap()
                 ),
                 "R10 no duplicate ready owner"
             );
@@ -1817,6 +1831,7 @@ mod tests {
         );
         assert!(
             unpinned_host
+                .realizer
                 .session_environment(first_use_thread)
                 .await
                 .is_none(),
@@ -1972,6 +1987,7 @@ mod tests {
         );
         assert!(
             continuity_host
+                .realizer
                 .session_environment(continuity_thread)
                 .await
                 .is_none(),

@@ -253,7 +253,8 @@ async fn generated_compaction_config_survives_claimed_rebuild() {
     };
     assert_exact_config(&provisional.config, "C7/E1");
 
-    host.evict_session_for_rebuild("durable-compact-config")
+    host.realizer
+        .evict_session_for_rebuild("durable-compact-config")
         .await;
     let executable = host
         .ctx_for_snapshot(
@@ -949,7 +950,10 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     });
     tokio::task::yield_now().await;
     assert!(
-        host.session_environment("memory-replay").await.is_none(),
+        host.realizer
+            .session_environment("memory-replay")
+            .await
+            .is_none(),
         "preparation cannot expose Environment before the lifecycle owner commits the manifest"
     );
     drop(lifecycle_guard);
@@ -966,6 +970,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     .await
     .unwrap();
     let environment = host
+        .realizer
         .session_environment("memory-replay")
         .await
         .expect("live environment");
@@ -1035,10 +1040,14 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     right.expect("concurrent exact durable replay");
     assert!(Arc::ptr_eq(
         &environment,
-        &host.session_environment("memory-replay").await.unwrap()
+        &host
+            .realizer
+            .session_environment("memory-replay")
+            .await
+            .unwrap()
     ));
 
-    let installed = host.thread_resource_manifest("memory-replay");
+    let installed = host.realizer.thread_resource_manifest("memory-replay");
     for field in [
         "store",
         "config",
@@ -1117,7 +1126,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
             );
         }
         assert_eq!(
-            host.thread_resource_manifest("memory-replay"),
+            host.realizer.thread_resource_manifest("memory-replay"),
             installed,
             "{field}"
         );

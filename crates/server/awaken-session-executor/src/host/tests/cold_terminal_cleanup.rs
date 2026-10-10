@@ -62,7 +62,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
     let physical = host
         .test_local_provider()
         .create_sandbox_for_effect(
-            &host.sandbox_spec("remote-terminal-worker"),
+            &host.realizer.sandbox_spec("remote-terminal-worker"),
             &create_fence,
             None,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(&create_fence),

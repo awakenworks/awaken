@@ -87,8 +87,8 @@ impl DispatchSessionRuntime {
             .session_slots
             .update_realization(thread, |r| r.resource_projection.clone());
         let _resource_projection = resource_projection.lock().await;
-        let active = managed.host.thread_resource_manifest(thread);
-        let live_environment = managed.host.session_environment(thread).await;
+        let active = managed.host.realizer.thread_resource_manifest(thread);
+        let live_environment = managed.host.realizer.session_environment(thread).await;
         let (expected_binding, projected_transition) = managed
             .host
             .session_slots

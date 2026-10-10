@@ -67,7 +67,8 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     // exact durable V2 Sandbox. Terminal cleanup must erase all of them so
     // reusing the opaque thread id cannot inherit stale scope or model state.
     host.register_thread_memory("t-end", None);
-    host.register_thread_resources("t-end", crate::staged_resources::StagedResources::default());
+    host.realizer
+        .register_thread_resources("t-end", crate::staged_resources::StagedResources::default());
     host.register_thread_model("t-end", "private-model");
     let mut lease = awaken_session_resource_contract::SessionRealizationLease {
         owner: "terminal-test-worker".into(),
@@ -81,7 +82,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     let physical = host
         .test_local_provider()
         .create_sandbox_for_effect(
-            &host.sandbox_spec("t-end"),
+            &host.realizer.sandbox_spec("t-end"),
             &create_fence,
             None,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(&create_fence),
@@ -274,7 +275,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             "U4 no physical delete"
         );
         assert!(
-            host.session_environment("t-end").await.is_none(),
+            host.realizer.session_environment("t-end").await.is_none(),
             "U4 no publication"
         );
         return;
@@ -303,7 +304,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         "T1/E2 exact owner is hidden from tools but retained for Disposal"
     );
     assert!(
-        host.session_environment("t-end").await.is_none(),
+        host.realizer.session_environment("t-end").await.is_none(),
         "U no terminal publication"
     );
     if initial == "uncommitted" || initial == "lost-response" {
@@ -347,7 +348,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         "terminal cleanup evicts the cached ctx"
     );
     assert!(
-        host.session_environment("t-end").await.is_none(),
+        host.realizer.session_environment("t-end").await.is_none(),
         "terminal end removes the independent environment owner"
     );
     // ... and the sandbox is ACTUALLY disposed: its workspace dir was reaped, so a
@@ -944,7 +945,10 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
         "T1/E1+E2"
     );
     assert!(
-        host.session_environment(&session.0).await.is_none(),
+        host.realizer
+            .session_environment(&session.0)
+            .await
+            .is_none(),
         "T1/E3"
     );
 }
@@ -1282,5 +1286,8 @@ async fn coordinator_terminal_quiescence_waits_for_remote_parent_and_child_settl
         dispatch.list_dispatches().await.unwrap().is_empty(),
         "Q2/E2"
     );
-    assert!(host.session_environment(&parent.0).await.is_none(), "Q2/E4");
+    assert!(
+        host.realizer.session_environment(&parent.0).await.is_none(),
+        "Q2/E4"
+    );
 }

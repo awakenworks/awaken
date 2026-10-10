@@ -90,7 +90,7 @@ impl awaken_session_mcp::McpStagingSession for ManagedHost {
         &self,
         session: &str,
     ) -> Option<Arc<crate::session_environment::SessionEnvironment>> {
-        self.host.session_environment(session).await
+        self.host.realizer.session_environment(session).await
     }
 
     fn frozen_agent(&self, session: &str) -> Option<String> {

@@ -190,7 +190,10 @@ async fn durable_projection_cannot_publish_a_hidden_candidate() {
         .prepared_session_environment(thread)
         .expect("E1 Candidate remains hidden");
     assert!(candidate.exact_matches(&retained), "E1");
-    assert!(host.session_environment(thread).await.is_none(), "E1");
+    assert!(
+        host.realizer.session_environment(thread).await.is_none(),
+        "E1"
+    );
 
     let published = host
         .publish_prepared_session_environment(
@@ -296,7 +299,7 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
             .expect("A1 source receipt is not this adoption's committed receipt");
         assert_eq!(retained.durable_identity(), Some(&successor));
         assert!(Arc::ptr_eq(&retained.environment, &environment));
-        assert!(host.session_environment(thread).await.is_none());
+        assert!(host.realizer.session_environment(thread).await.is_none());
         let replay = host
             .retain_committed_session_environment_candidate(thread, &retained, successor.clone())
             .unwrap();
@@ -429,7 +432,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
                         .unwrap()
                         .exact_matches(&candidate)
                 );
-                assert!(host.session_environment(thread).await.is_none());
+                assert!(host.realizer.session_environment(thread).await.is_none());
             }
             host.session_slots.update_run(thread, |run| {
                 run.dispatch_claim =
@@ -516,11 +519,14 @@ async fn committed_hidden_create_candidate_is_terminally_retired_without_publica
         "E1"
     );
     assert_eq!(
-        host.durable_session_environment_binding(thread).as_deref(),
+        host.realizer.durable_environment_binding(thread).as_deref(),
         Some(candidate.binding.as_str()),
         "E1"
     );
-    assert!(host.session_environment(thread).await.is_none(), "E2");
+    assert!(
+        host.realizer.session_environment(thread).await.is_none(),
+        "E2"
+    );
 
     let cause = SessionEnvironmentRetirementCause::Terminal {
         effect_id: "terminal-candidate-takeover".into(),
@@ -539,7 +545,7 @@ async fn committed_hidden_create_candidate_is_terminally_retired_without_publica
     assert_eq!(owned.binding, candidate.binding, "E3 binding");
     assert!(Arc::ptr_eq(&owned.environment, &environment), "E3 Arc");
     assert!(
-        host.session_environment(thread).await.is_none(),
+        host.realizer.session_environment(thread).await.is_none(),
         "E3 hidden"
     );
 }
@@ -766,6 +772,7 @@ async fn unacknowledged_candidate_adoption_requires_aggregate_authority() {
         .begin_session_environment_preparation(thread, environment.clone())
         .unwrap();
     let retirement = host
+        .realizer
         .retire_current_environment(
             thread,
             SessionEnvironmentRetirementCause::RealizationRevocation,
@@ -792,7 +799,7 @@ async fn unacknowledged_candidate_adoption_requires_aggregate_authority() {
         SessionEnvironmentOwner::Retiring(current) if current.exact_matches(&retirement.owner)))
         })
         .unwrap();
-    assert!(host.session_environment(thread).await.is_none());
+    assert!(host.realizer.session_environment(thread).await.is_none());
 }
 
 #[tokio::test]
@@ -835,7 +842,7 @@ async fn stale_unmaterialized_projection_cannot_unbind_a_candidate_or_resident()
         .expect("S1 Candidate retained");
     assert!(candidate.exact_matches(&retained), "S1 exact Candidate");
     assert!(
-        host.session_environment(thread).await.is_none(),
+        host.realizer.session_environment(thread).await.is_none(),
         "S1 hidden"
     );
 
@@ -849,6 +856,7 @@ async fn stale_unmaterialized_projection_cannot_unbind_a_candidate_or_resident()
     )
     .expect("S2 stale projection is a no-write replay");
     let resident = host
+        .realizer
         .session_environment(thread)
         .await
         .expect("S2 Resident retained");

@@ -38,6 +38,7 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
         });
     });
     let activity_generation = host
+        .realizer
         .resident_environment_activity_generation_id(thread, &environment)
         .expect("C1 exact Resident activity projection");
     assert_eq!(activity_generation, durable_generation.id(), "E1");
@@ -147,7 +148,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         let create_fence = lease
             .sandbox_effect_fence(format!("terminal-background-create-{thread}"))
             .expect("C1 create exact durable Sandbox fence");
-        let spec = host.sandbox_spec(thread);
+        let spec = host.realizer.sandbox_spec(thread);
         let physical = host
             .test_local_provider()
             .create_sandbox_for_effect(
@@ -530,7 +531,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     )
     .for_environment(projection.baseline.environment.config_fingerprint.0.clone());
     let fence = lease.sandbox_effect_fence(intent.effect_id()).unwrap();
-    let spec = host.sandbox_spec(thread);
+    let spec = host.realizer.sandbox_spec(thread);
     let physical = host
         .test_local_provider()
         .create_sandbox_for_effect(
@@ -609,7 +610,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         "U1 no fabricated receipt"
     );
     assert!(
-        host.session_environment(thread).await.is_none(),
+        host.realizer.session_environment(thread).await.is_none(),
         "U1 hidden"
     );
     // U6 crosses foreign terminal operation and stale lease with both phases.
@@ -788,5 +789,8 @@ async fn cold_checkpoint_disposal_cannot_seed_an_owner_without_preparation() {
         error.to_string().contains("no retained Preparation owner"),
         "R20/E1: {error}"
     );
-    assert!(host.session_environment_owner_is_vacant(thread), "R20/E2");
+    assert!(
+        host.realizer.session_environment_owner_is_vacant(thread),
+        "R20/E2"
+    );
 }

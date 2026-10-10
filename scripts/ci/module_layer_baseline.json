@@ -18,27 +18,20 @@
     "managed_resource_projection -> crate": [
       "ManagedHost"
     ],
-    "managed_resource_projection -> session_slot": [
-      "SessionRuntimeSlot"
-    ],
     "managed_resource_projection -> skill_catalog": [
       "skill_store_run_error"
     ],
     "provisioning -> host": [
       "SharedHost"
     ],
-    "provisioning -> session_slot": [
-      "SessionRuntimeSlots"
-    ],
     "terminal_repository_publication -> crate": [
       "ManagedHost"
     ]
   },
   "shared-host-impl": {
-    "host::session::environment_lifecycle": 47,
-    "host::session::environment_realization": 25,
+    "host::session::environment_lifecycle": 28,
+    "host::session::environment_realization": 16,
     "host::terminal_reconciliation": 1,
-    "managed_resource_projection": 5,
-    "provisioning": 15
+    "provisioning": 5
   }
 }

@@ -424,288 +424,10 @@ fn repository_http_basic_credential(
 impl SharedHost {
     pub(crate) fn artifact_harvester(&self) -> ArtifactHarvester {
         ArtifactHarvester {
-            session_slots: self.session_slots.clone(),
+            sessions: self.realizer.sessions.clone(),
             local_workspace: self.local_workspace.clone(),
             publisher: self.resources.artifact_publisher.clone(),
         }
-    }
-
-    /// The provisioning request for a thread. Skills are not a sandbox mount
-    /// (ADR-0036); the environment provisions isolation tools plus the session's
-    /// staged resource mounts (ADR-0038), each realized read-only under `.mnt/`.
-    #[cfg(test)]
-    pub(crate) fn sandbox_spec(&self, thread: &str) -> pc::SandboxSpec {
-        let resources = self.thread_resources_snapshot(thread);
-        self.sandbox_spec_for_resources(thread, &resources)
-    }
-
-    /// Build the exact neutral Session spec for the provider selected by the
-    /// immutable Agent publication. Network projection is provider capability
-    /// dependent, so create/adopt/restore must not build with the process-wide
-    /// default and then execute on a BackendOwned provider.
-    pub(crate) fn sandbox_spec_for_provider(
-        &self,
-        thread: &str,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
-    ) -> pc::SandboxSpec {
-        let resources = self.thread_resources_snapshot(thread);
-        self.sandbox_spec_for_resources_and_provider(thread, &resources, provider)
-    }
-
-    /// Build the provider-selected physical substrate with only mounts that the
-    /// provider contract cannot attach later. The Session pending transition is
-    /// already durable before this create-time Memory effect; after create, the
-    /// V2 handle is persisted before any mutable workspace or Git effect.
-    pub(crate) fn sandbox_substrate_spec_for_provider(
-        &self,
-        thread: &str,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
-    ) -> pc::SandboxSpec {
-        let (create_time_mounts, has_repositories) = self
-            .session_slots
-            .read_realization(thread, |r| {
-                let create_time_mounts = r
-                    .resources
-                    .mounts
-                    .iter()
-                    .filter(|mount| resource_mount_is_create_time(mount))
-                    .cloned()
-                    .collect();
-                let has_repositories = r.resource_transition.as_ref().is_some_and(|transition| {
-                    transition.desired().resources.inputs().iter().any(|input| {
-                        matches!(
-                            input.source,
-                            awaken_session_resource_contract::ResolvedInputSource::Repository { .. }
-                        )
-                    })
-                });
-                (create_time_mounts, has_repositories)
-            })
-            .unwrap_or_default();
-        self.sandbox_spec_for_mount_layout_with_network(
-            thread,
-            create_time_mounts,
-            has_repositories,
-            provider.realizer().capabilities().network_isolation,
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn sandbox_spec_for_resources(
-        &self,
-        thread: &str,
-        resources: &StagedResources,
-    ) -> pc::SandboxSpec {
-        self.sandbox_spec_for_mount_layout(
-            thread,
-            resources.mounts.clone(),
-            !resources.repositories.is_empty(),
-        )
-    }
-
-    pub(crate) fn sandbox_spec_for_resources_and_provider(
-        &self,
-        thread: &str,
-        resources: &StagedResources,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
-    ) -> pc::SandboxSpec {
-        self.sandbox_spec_for_mount_layout_with_network(
-            thread,
-            resources.mounts.clone(),
-            !resources.repositories.is_empty(),
-            provider.realizer().capabilities().network_isolation,
-        )
-    }
-
-    /// Project a frozen aggregate manifest into the exact create-time provider
-    /// substrate without loading any File, Memory, Skill, Vault, or Repository
-    /// material. File mounts remain on the canonical late-attach path; cold
-    /// adoption retains only typed Memory identity for handle validation.
-    pub(crate) fn sandbox_spec_for_resolved_resources_and_provider(
-        &self,
-        thread: &str,
-        resources: &awaken_session_resource_contract::ResolvedSessionResources,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
-    ) -> pc::SandboxSpec {
-        let environment = self
-            .session_slots
-            .frozen(thread)
-            .environment_projection
-            .clone();
-        let mounts = resources
-            .inputs()
-            .iter()
-            .filter_map(|input| {
-                crate::managed_input_layout::resolved_input_validation_mount(
-                    input,
-                    environment.as_ref(),
-                )
-            })
-            .filter(resource_mount_is_create_time)
-            .collect();
-        let has_repositories = resources.inputs().iter().any(|input| {
-            matches!(
-                input.source,
-                awaken_session_resource_contract::ResolvedInputSource::Repository { .. }
-            )
-        });
-        self.sandbox_spec_for_mount_layout_with_network(
-            thread,
-            mounts,
-            has_repositories,
-            provider.realizer().capabilities().network_isolation,
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn sandbox_spec_for_mount_layout(
-        &self,
-        thread: &str,
-        resource_mounts: Vec<pc::MountRequirement>,
-        has_repositories: bool,
-    ) -> pc::SandboxSpec {
-        self.sandbox_spec_for_mount_layout_with_network(
-            thread,
-            resource_mounts,
-            has_repositories,
-            self.realizer
-                .env
-                .session_provider
-                .realizer()
-                .capabilities()
-                .network_isolation,
-        )
-    }
-
-    fn sandbox_spec_for_mount_layout_with_network(
-        &self,
-        thread: &str,
-        resource_mounts: Vec<pc::MountRequirement>,
-        has_repositories: bool,
-        network_isolation: bool,
-    ) -> pc::SandboxSpec {
-        let (baseline, content_delivery, environment) = self
-            .session_slots
-            .read(thread, |slot| {
-                (
-                    slot.frozen.baseline.clone(),
-                    slot.realization.content_delivery,
-                    slot.frozen.environment_projection.clone(),
-                )
-            })
-            .unwrap_or_default();
-        self.sandbox_spec_for_projected_layout(
-            thread,
-            ProjectedSandboxLayout {
-                resource_mounts,
-                has_repositories,
-                baseline_mounts: baseline.as_ref().map(|baseline| baseline.mounts.as_slice()),
-                baseline_env: baseline.as_ref().map(|baseline| baseline.env.as_slice()),
-                content_delivery,
-                environment: environment.as_ref(),
-                network_isolation,
-            },
-        )
-    }
-
-    pub(crate) fn sandbox_spec_for_projected_layout(
-        &self,
-        thread: &str,
-        projection: ProjectedSandboxLayout<'_>,
-    ) -> pc::SandboxSpec {
-        let mounts = project_session_mounts(
-            projection.resource_mounts,
-            projection.baseline_mounts,
-            projection.content_delivery,
-        );
-        let env = projection
-            .baseline_env
-            .map(<[pc::EnvVar]>::to_vec)
-            .unwrap_or_else(|| self.thread_session_env(thread));
-        let spec = sandbox_spec_from_projection(
-            thread,
-            mounts,
-            env,
-            projection.environment,
-            projection.network_isolation,
-        );
-        if projection.environment.is_some_and(|environment| {
-            environment
-                .sandbox
-                .as_ref()
-                .is_some_and(|sandbox| sandbox.host_access == pc::HostAccessPolicy::TrustedHost)
-        }) {
-            // Preserve the frozen exact trust decision, just as placement does.
-            // TrustedHost clients consume AgentFilesystemView, not an asserted
-            // sandbox-absolute process namespace. Provider admission still checks
-            // every requested capability against the exact Workdir provider.
-            spec
-        } else {
-            session_sandbox_projection(&spec, projection.has_repositories, false).0
-        }
-    }
-
-    pub(crate) fn validate_repository_environment_adoption_paths(
-        &self,
-        provider: &crate::session_environment::SessionEnvironmentProvider,
-        spec: &pc::SandboxSpec,
-        repository_paths: &[&str],
-        historical_owned_paths: &[&str],
-    ) -> Result<pc::SandboxSpec, crate::host_error::HostError> {
-        let effective = provider
-            .realizer()
-            .effective_spec(spec)
-            .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?;
-        pc::validate_repository_sandbox_adoption_layout(
-            repository_paths,
-            &effective,
-            historical_owned_paths,
-        )
-        .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?;
-        Ok(effective)
-    }
-
-    /// Stage a thread's resources (mounts + prompt fragments); consumed by
-    /// `sandbox_spec` and injected into the run's system prompt. From `prepare_session`.
-    /// REPLACES the Thread's set (correct at create time, before its first Run).
-    #[cfg(test)]
-    pub(crate) fn register_thread_resources(&self, thread: &str, staged: StagedResources) {
-        self.session_slots
-            .update_realization(thread, |r| r.resources = staged);
-    }
-
-    pub(crate) fn register_thread_resource_manifest(
-        &self,
-        thread: &str,
-        manifest: awaken_session_resource_contract::SessionResourceManifest,
-    ) {
-        self.session_slots
-            .update_realization(thread, |r| r.manifest = Some(manifest));
-    }
-
-    pub(crate) fn thread_resource_manifest(
-        &self,
-        thread: &str,
-    ) -> Option<awaken_session_resource_contract::SessionResourceManifest> {
-        self.session_slots
-            .read_realization(thread, |r| r.manifest.clone())
-            .flatten()
-    }
-
-    pub(crate) fn thread_resources_snapshot(&self, thread: &str) -> StagedResources {
-        self.session_slots
-            .read_realization(thread, |r| r.resources.clone())
-            .unwrap_or_default()
-    }
-
-    /// The Repository activations queued for `thread` (test-only observability: a
-    /// working tree is realized through its port, not as a byte mount, so it is absent
-    /// from `sandbox_spec`).
-    #[cfg(test)]
-    pub(crate) fn thread_repository_activations(&self, thread: &str) -> Vec<RepositoryActivation> {
-        self.session_slots
-            .read_realization(thread, |r| r.resources.repositories.clone())
-            .unwrap_or_default()
     }
 
     /// Realize a thread's resolved Repository inputs into its freshly-created
@@ -718,7 +440,7 @@ impl SharedHost {
         thread: &str,
         realizer: &dyn pc::RepositoryRealizer,
     ) -> Result<(), crate::host_error::HostError> {
-        let resources = self.thread_resources_snapshot(thread);
+        let resources = self.realizer.thread_resources_snapshot(thread);
         for repository in &resources.repositories {
             self.realize_repository_activation(
                 thread,
@@ -1045,7 +767,7 @@ impl SharedHost {
 /// same operation as an idempotent final retry before Sandbox disposal.
 #[derive(Clone)]
 pub(crate) struct ArtifactHarvester {
-    session_slots: crate::session_slot::SessionRuntimeSlots,
+    sessions: crate::session_realizations::SessionRealizations,
     local_workspace: String,
     publisher:
         std::sync::Arc<dyn awaken_resource_contract::ArtifactPublisher<ResourceOperationFence>>,
@@ -1070,9 +792,7 @@ impl ArtifactHarvester {
         &self,
         thread: &str,
     ) -> Option<awaken_dispatch_contract::RunClaim> {
-        self.session_slots
-            .read_run(thread, |run| run.dispatch_claim.clone())
-            .flatten()
+        self.sessions.dispatch_claim(thread)
     }
 
     pub(crate) async fn harvest(
@@ -1153,7 +873,7 @@ impl ArtifactHarvester {
         let workspace_owner = terminal_effect
             .map(|effect| effect.command.session_id.as_str())
             .unwrap_or(thread);
-        let workspace = self.session_slots.frozen(workspace_owner).workspace.clone();
+        let workspace = self.sessions.frozen(workspace_owner).workspace.clone();
         let workspace = match (workspace, terminal_effect) {
             (Some(workspace), _) => workspace,
             (None, Some(_)) => {
@@ -1174,7 +894,7 @@ impl ArtifactHarvester {
                 .await;
         }
         let projected_environment = exact_environment.cloned().or_else(|| {
-            self.session_slots
+            self.sessions
                 .read_realization(thread, |r| r.environment_owner.resident())
                 .flatten()
         });
@@ -1310,3 +1030,293 @@ pub(crate) fn project_session_mounts(
 #[cfg(test)]
 #[path = "provisioning/tests.rs"]
 mod provisioning_registry_tests;
+
+impl crate::session_realizer::SessionRealizer {
+    /// The provisioning request for a thread. Skills are not a sandbox mount
+    /// (ADR-0036); the environment provisions isolation tools plus the session's
+    /// staged resource mounts (ADR-0038), each realized read-only under `.mnt/`.
+    #[cfg(test)]
+    pub(crate) fn sandbox_spec(&self, thread: &str) -> pc::SandboxSpec {
+        let resources = self.thread_resources_snapshot(thread);
+        self.sandbox_spec_for_resources(thread, &resources)
+    }
+
+    /// Build the exact neutral Session spec for the provider selected by the
+    /// immutable Agent publication. Network projection is provider capability
+    /// dependent, so create/adopt/restore must not build with the process-wide
+    /// default and then execute on a BackendOwned provider.
+    pub(crate) fn sandbox_spec_for_provider(
+        &self,
+        thread: &str,
+        provider: &crate::session_environment::SessionEnvironmentProvider,
+    ) -> pc::SandboxSpec {
+        let resources = self.thread_resources_snapshot(thread);
+        self.sandbox_spec_for_resources_and_provider(thread, &resources, provider)
+    }
+
+    /// Build the provider-selected physical substrate with only mounts that the
+    /// provider contract cannot attach later. The Session pending transition is
+    /// already durable before this create-time Memory effect; after create, the
+    /// V2 handle is persisted before any mutable workspace or Git effect.
+    pub(crate) fn sandbox_substrate_spec_for_provider(
+        &self,
+        thread: &str,
+        provider: &crate::session_environment::SessionEnvironmentProvider,
+    ) -> pc::SandboxSpec {
+        let (create_time_mounts, has_repositories) = self
+            .sessions
+            .read_realization(thread, |r| {
+                let create_time_mounts = r
+                    .resources
+                    .mounts
+                    .iter()
+                    .filter(|mount| resource_mount_is_create_time(mount))
+                    .cloned()
+                    .collect();
+                let has_repositories = r.resource_transition.as_ref().is_some_and(|transition| {
+                    transition.desired().resources.inputs().iter().any(|input| {
+                        matches!(
+                            input.source,
+                            awaken_session_resource_contract::ResolvedInputSource::Repository { .. }
+                        )
+                    })
+                });
+                (create_time_mounts, has_repositories)
+            })
+            .unwrap_or_default();
+        self.sandbox_spec_for_mount_layout_with_network(
+            thread,
+            create_time_mounts,
+            has_repositories,
+            provider.realizer().capabilities().network_isolation,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sandbox_spec_for_resources(
+        &self,
+        thread: &str,
+        resources: &StagedResources,
+    ) -> pc::SandboxSpec {
+        self.sandbox_spec_for_mount_layout(
+            thread,
+            resources.mounts.clone(),
+            !resources.repositories.is_empty(),
+        )
+    }
+
+    pub(crate) fn sandbox_spec_for_resources_and_provider(
+        &self,
+        thread: &str,
+        resources: &StagedResources,
+        provider: &crate::session_environment::SessionEnvironmentProvider,
+    ) -> pc::SandboxSpec {
+        self.sandbox_spec_for_mount_layout_with_network(
+            thread,
+            resources.mounts.clone(),
+            !resources.repositories.is_empty(),
+            provider.realizer().capabilities().network_isolation,
+        )
+    }
+
+    /// Project a frozen aggregate manifest into the exact create-time provider
+    /// substrate without loading any File, Memory, Skill, Vault, or Repository
+    /// material. File mounts remain on the canonical late-attach path; cold
+    /// adoption retains only typed Memory identity for handle validation.
+    pub(crate) fn sandbox_spec_for_resolved_resources_and_provider(
+        &self,
+        thread: &str,
+        resources: &awaken_session_resource_contract::ResolvedSessionResources,
+        provider: &crate::session_environment::SessionEnvironmentProvider,
+    ) -> pc::SandboxSpec {
+        let environment = self.sessions.frozen(thread).environment_projection.clone();
+        let mounts = resources
+            .inputs()
+            .iter()
+            .filter_map(|input| {
+                crate::managed_input_layout::resolved_input_validation_mount(
+                    input,
+                    environment.as_ref(),
+                )
+            })
+            .filter(resource_mount_is_create_time)
+            .collect();
+        let has_repositories = resources.inputs().iter().any(|input| {
+            matches!(
+                input.source,
+                awaken_session_resource_contract::ResolvedInputSource::Repository { .. }
+            )
+        });
+        self.sandbox_spec_for_mount_layout_with_network(
+            thread,
+            mounts,
+            has_repositories,
+            provider.realizer().capabilities().network_isolation,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sandbox_spec_for_mount_layout(
+        &self,
+        thread: &str,
+        resource_mounts: Vec<pc::MountRequirement>,
+        has_repositories: bool,
+    ) -> pc::SandboxSpec {
+        self.sandbox_spec_for_mount_layout_with_network(
+            thread,
+            resource_mounts,
+            has_repositories,
+            self.env
+                .session_provider
+                .realizer()
+                .capabilities()
+                .network_isolation,
+        )
+    }
+
+    fn sandbox_spec_for_mount_layout_with_network(
+        &self,
+        thread: &str,
+        resource_mounts: Vec<pc::MountRequirement>,
+        has_repositories: bool,
+        network_isolation: bool,
+    ) -> pc::SandboxSpec {
+        let (baseline, content_delivery, environment) = self
+            .sessions
+            .modify_session(thread, |slot| {
+                (
+                    slot.frozen.baseline.clone(),
+                    slot.realization.content_delivery,
+                    slot.frozen.environment_projection.clone(),
+                )
+            })
+            .unwrap_or_default();
+        self.sandbox_spec_for_projected_layout(
+            thread,
+            ProjectedSandboxLayout {
+                resource_mounts,
+                has_repositories,
+                baseline_mounts: baseline.as_ref().map(|baseline| baseline.mounts.as_slice()),
+                baseline_env: baseline.as_ref().map(|baseline| baseline.env.as_slice()),
+                content_delivery,
+                environment: environment.as_ref(),
+                network_isolation,
+            },
+        )
+    }
+
+    pub(crate) fn sandbox_spec_for_projected_layout(
+        &self,
+        thread: &str,
+        projection: ProjectedSandboxLayout<'_>,
+    ) -> pc::SandboxSpec {
+        let mounts = project_session_mounts(
+            projection.resource_mounts,
+            projection.baseline_mounts,
+            projection.content_delivery,
+        );
+        let env = projection
+            .baseline_env
+            .map(<[pc::EnvVar]>::to_vec)
+            .unwrap_or_else(|| self.thread_session_env(thread));
+        let spec = sandbox_spec_from_projection(
+            thread,
+            mounts,
+            env,
+            projection.environment,
+            projection.network_isolation,
+        );
+        if projection.environment.is_some_and(|environment| {
+            environment
+                .sandbox
+                .as_ref()
+                .is_some_and(|sandbox| sandbox.host_access == pc::HostAccessPolicy::TrustedHost)
+        }) {
+            // Preserve the frozen exact trust decision, just as placement does.
+            // TrustedHost clients consume AgentFilesystemView, not an asserted
+            // sandbox-absolute process namespace. Provider admission still checks
+            // every requested capability against the exact Workdir provider.
+            spec
+        } else {
+            session_sandbox_projection(&spec, projection.has_repositories, false).0
+        }
+    }
+
+    pub(crate) fn validate_repository_environment_adoption_paths(
+        &self,
+        provider: &crate::session_environment::SessionEnvironmentProvider,
+        spec: &pc::SandboxSpec,
+        repository_paths: &[&str],
+        historical_owned_paths: &[&str],
+    ) -> Result<pc::SandboxSpec, crate::host_error::HostError> {
+        let effective = provider
+            .realizer()
+            .effective_spec(spec)
+            .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?;
+        pc::validate_repository_sandbox_adoption_layout(
+            repository_paths,
+            &effective,
+            historical_owned_paths,
+        )
+        .map_err(|error| crate::host_error::HostError::internal(error.to_string()))?;
+        Ok(effective)
+    }
+
+    /// Stage a thread's resources (mounts + prompt fragments); consumed by
+    /// `sandbox_spec` and injected into the run's system prompt. From `prepare_session`.
+    /// REPLACES the Thread's set (correct at create time, before its first Run).
+    #[cfg(test)]
+    pub(crate) fn register_thread_resources(&self, thread: &str, staged: StagedResources) {
+        self.sessions
+            .update_realization(thread, |r| r.resources = staged);
+    }
+
+    pub(crate) fn register_thread_resource_manifest(
+        &self,
+        thread: &str,
+        manifest: awaken_session_resource_contract::SessionResourceManifest,
+    ) {
+        self.sessions
+            .update_realization(thread, |r| r.manifest = Some(manifest));
+    }
+
+    pub(crate) fn thread_resource_manifest(
+        &self,
+        thread: &str,
+    ) -> Option<awaken_session_resource_contract::SessionResourceManifest> {
+        self.sessions
+            .read_realization(thread, |r| r.manifest.clone())
+            .flatten()
+    }
+
+    pub(crate) fn thread_resources_snapshot(&self, thread: &str) -> StagedResources {
+        self.sessions
+            .read_realization(thread, |r| r.resources.clone())
+            .unwrap_or_default()
+    }
+
+    /// The Repository activations queued for `thread` (test-only observability: a
+    /// working tree is realized through its port, not as a byte mount, so it is absent
+    /// from `sandbox_spec`).
+    #[cfg(test)]
+    pub(crate) fn thread_repository_activations(&self, thread: &str) -> Vec<RepositoryActivation> {
+        self.sessions
+            .read_realization(thread, |r| r.resources.repositories.clone())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn thread_session_env(
+        &self,
+        thread: &str,
+    ) -> Vec<awaken_provisioning_contract::EnvVar> {
+        self.sessions
+            .modify_session(thread, |slot| {
+                slot.frozen
+                    .baseline
+                    .as_ref()
+                    .map(|baseline| baseline.env.clone())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default()
+    }
+}

@@ -58,13 +58,13 @@ async fn install_test_session_init_mounts_an_effective_memory_resource() {
         .install_test_session_init("t-bound", bare("a"))
         .await
         .unwrap();
-    let dump = serde_json::to_string(&host.sandbox_spec("t-bound").mounts).unwrap();
+    let dump = serde_json::to_string(&host.realizer.sandbox_spec("t-bound").mounts).unwrap();
     assert!(
         dump.contains("mnt/memory"),
         "the bound memory store is mounted at its path: {dump}"
     );
     assert_eq!(
-        memory_mount_store_id(&host.sandbox_spec("t-bound").mounts[0]),
+        memory_mount_store_id(&host.realizer.sandbox_spec("t-bound").mounts[0]),
         store_id
     );
 
@@ -81,7 +81,7 @@ async fn install_test_session_init_mounts_an_effective_memory_resource() {
         .await
         .unwrap();
     assert_eq!(
-        host.sandbox_spec("t-read-only").mounts[0].access,
+        host.realizer.sandbox_spec("t-read-only").mounts[0].access,
         awaken_provisioning_contract::MountAccess::ReadOnly
     );
 
@@ -90,7 +90,7 @@ async fn install_test_session_init_mounts_an_effective_memory_resource() {
         .install_test_session_init("t-unbound", bare("no-bindings"))
         .await
         .unwrap();
-    let empty = serde_json::to_string(&host.sandbox_spec("t-unbound").mounts).unwrap();
+    let empty = serde_json::to_string(&host.realizer.sandbox_spec("t-unbound").mounts).unwrap();
     assert!(
         !empty.contains("BANANA-42"),
         "an unbound agent mounts nothing extra: {empty}"
@@ -231,11 +231,17 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         .unwrap();
 
     assert!(
-        host.session_environment("semantic-memory").await.is_none(),
+        host.realizer
+            .session_environment("semantic-memory")
+            .await
+            .is_none(),
         "M1/E1"
     );
     assert!(
-        host.sandbox_spec("semantic-memory").mounts.is_empty(),
+        host.realizer
+            .sandbox_spec("semantic-memory")
+            .mounts
+            .is_empty(),
         "M1/E1"
     );
     let prompt = host.thread_session_prompts("semantic-memory").join("\n");
@@ -264,7 +270,10 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         "M1/E1 fail closed"
     );
     assert!(
-        host.session_environment("semantic-memory").await.is_none(),
+        host.realizer
+            .session_environment("semantic-memory")
+            .await
+            .is_none(),
         "M1/E1 rejected file call cannot awaken Sandbox"
     );
     assert!(
@@ -298,7 +307,10 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         "M1/E3 model descriptor reaches the bound executor through host.run"
     );
     assert!(
-        host.session_environment("semantic-memory").await.is_none(),
+        host.realizer
+            .session_environment("semantic-memory")
+            .await
+            .is_none(),
         "M1/E1 semantic Runtime execution remains Sandbox-free"
     );
 
@@ -326,7 +338,10 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         runtime_fetch.new_messages
     );
     assert!(
-        host.session_environment("semantic-memory").await.is_none(),
+        host.realizer
+            .session_environment("semantic-memory")
+            .await
+            .is_none(),
         "M7/E5 rejected WebFetch remains Sandbox-free"
     );
 
@@ -444,7 +459,10 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         "M6 preserves the Session-owned semantic Memory tools"
     );
     assert!(
-        host.session_environment("semantic-memory").await.is_none(),
+        host.realizer
+            .session_environment("semantic-memory")
+            .await
+            .is_none(),
         "M6 does not materialize a Sandbox while rebuilding"
     );
 }
@@ -512,7 +530,7 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
         .unwrap_err();
 
     assert!(error.message.contains("not active"));
-    assert!(host.sandbox_spec("t-suspended").mounts.is_empty());
+    assert!(host.realizer.sandbox_spec("t-suspended").mounts.is_empty());
 }
 
 #[tokio::test]
@@ -568,7 +586,12 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
         .await
         .unwrap_err();
     assert!(error.message.contains("not found"));
-    assert!(host.sandbox_spec("wrong-workspace").mounts.is_empty());
+    assert!(
+        host.realizer
+            .sandbox_spec("wrong-workspace")
+            .mounts
+            .is_empty()
+    );
     assert!(host.memory_for_thread("wrong-workspace").is_none());
 }
 
@@ -642,7 +665,7 @@ async fn install_test_session_init_mounts_effective_file_and_stages_effective_re
 
     // The exact bytes and their content identity cross the neutral mount contract;
     // no UTF-8 conversion can corrupt binary input.
-    let spec = host.sandbox_spec("t-multi");
+    let spec = host.realizer.sandbox_spec("t-multi");
     let mount = &spec.mounts[0];
     assert_eq!(mount.mount_path, "/mnt/session/uploads/mnt/files/notes.txt");
     assert_eq!(mount.access, MountAccess::ReadOnly);
@@ -657,7 +680,7 @@ async fn install_test_session_init_mounts_effective_file_and_stages_effective_re
     assert_eq!(content_hash.as_deref(), Some(record.blob_id.as_str()));
 
     // The repo is staged for a host-side clone (not a byte mount).
-    let repositories = host.thread_repository_activations("t-multi");
+    let repositories = host.realizer.thread_repository_activations("t-multi");
     assert_eq!(
         repositories.len(),
         1,
@@ -739,16 +762,20 @@ async fn complete_projection_preserves_the_canonical_repository_path_without_rel
         )
         .await
         .expect("compile the exact cold Repository transition");
-    let activations = host.thread_repository_activations("canonical-repository-path");
+    let activations = host
+        .realizer
+        .thread_repository_activations("canonical-repository-path");
     assert_eq!(activations.len(), 1, "one exact Repository activation");
     assert_eq!(activations[0].plan.mount_path, "/workspace/repo");
     assert!(
-        host.thread_resource_manifest("canonical-repository-path")
+        host.realizer
+            .thread_resource_manifest("canonical-repository-path")
             .is_none(),
         "staging is not physical completion"
     );
     assert!(
-        host.sandbox_spec("canonical-repository-path")
+        host.realizer
+            .sandbox_spec("canonical-repository-path")
             .mounts
             .is_empty(),
         "Repository stays on its sole activation path"
@@ -955,7 +982,10 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             error.message
         );
         assert!(
-            host.session_environment(session_id).await.is_none(),
+            host.realizer
+                .session_environment(session_id)
+                .await
+                .is_none(),
             "P0 rejection happens before a publishable environment is exposed"
         );
         let published = std::process::Command::new("git")
@@ -971,6 +1001,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     }
     realization.expect("P1 realize Session Environment");
     let environment = host
+        .realizer
         .session_environment(session_id)
         .await
         .expect("P1 retained Environment");
@@ -1162,7 +1193,10 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             slot.run.runtime = None;
         });
         assert!(
-            host.session_environment(session_id).await.is_none(),
+            host.realizer
+                .session_environment(session_id)
+                .await
+                .is_none(),
             "P5 ordinary execution remains closed"
         );
         // P6: the generic live/checkpoint source path remains denied, even with
@@ -1238,7 +1272,10 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             "P7 exact physical target"
         );
         assert!(
-            host.session_environment(session_id).await.is_none(),
+            host.realizer
+                .session_environment(session_id)
+                .await
+                .is_none(),
             "P7 ordinary execution stays closed"
         );
     }
@@ -1308,7 +1345,10 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     git(&divergent, &["commit", "-am", "remote changed"]);
     git(&divergent, &["push", "origin", "awf/work"]);
     assert_eq!(
-        host.session_environment(session_id).await.is_some(),
+        host.realizer
+            .session_environment(session_id)
+            .await
+            .is_some(),
         !retained_terminal,
         "P1-P2/P5 publication preserves ordinary residency or retirement",
     );
@@ -1421,6 +1461,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     );
     assert!(
         replacement_host
+            .realizer
             .session_environment(session_id)
             .await
             .is_none(),
@@ -1481,6 +1522,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     );
     assert!(
         replacement_host
+            .realizer
             .session_environment(session_id)
             .await
             .is_none(),

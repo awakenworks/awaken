@@ -197,83 +197,6 @@ impl SharedHost {
         ))
     }
 
-    pub(crate) fn session_environment_provider(
-        &self,
-        provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
-    ) -> Result<&crate::session_environment::SessionEnvironmentProvider, HostError> {
-        match provisioning {
-            awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. } => self
-                .realizer
-                .env
-                .backend_owned_session_provider
-                .as_ref()
-                .ok_or_else(|| {
-                    HostError::internal(
-                        "BackendOwned provisioning requires a trusted-host Session provider",
-                    )
-                }),
-            awaken_runtime_contract::resolved::ModelProvisioning::Provider { .. }
-            | awaken_runtime_contract::resolved::ModelProvisioning::Remote { .. }
-            | awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor => {
-                Ok(&self.realizer.env.session_provider)
-            }
-        }
-    }
-
-    /// Select one provider from the frozen Environment trust decision and the
-    /// immutable model provisioning. `trusted_host` is exact rather than a
-    /// minimum capability: a stronger Namespace/Container provider would lose
-    /// the local machine identity the author explicitly selected.
-    pub(crate) fn session_environment_provider_for_thread(
-        &self,
-        thread: &str,
-        provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
-    ) -> Result<&crate::session_environment::SessionEnvironmentProvider, HostError> {
-        let sandbox = self
-            .session_slots
-            .frozen(thread)
-            .environment_projection
-            .as_ref()
-            .and_then(|environment| environment.sandbox.as_ref())
-            .cloned();
-        if sandbox.as_ref().is_some_and(|sandbox| {
-            sandbox.host_access == awaken_provisioning_contract::HostAccessPolicy::TrustedHost
-        }) {
-            if self.realizer.env.trusted_host != crate::TrustedHostPolicy::Admitted {
-                return Err(HostError::bad_request(
-                    "trusted_host Environment is disabled on this Worker",
-                ));
-            }
-            let provider = self
-                .realizer
-                .env
-                .backend_owned_session_provider
-                .as_ref()
-                .ok_or_else(|| {
-                    HostError::bad_request(
-                        "trusted_host Environment requires a local Workdir provider",
-                    )
-                })?;
-            if !provider.realizer().supports_host_identity() {
-                return Err(HostError::internal(
-                    "trusted_host provider does not preserve host identity",
-                ));
-            }
-            return Ok(provider);
-        }
-        if matches!(
-            provisioning,
-            awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. }
-        ) && sandbox.as_ref().and_then(|sandbox| sandbox.isolation)
-            >= Some(awaken_provisioning_contract::IsolationClass::Namespace)
-        {
-            return Err(HostError::bad_request(
-                "backend-owned local Agent credentials require a trusted_host Workdir Environment",
-            ));
-        }
-        self.session_environment_provider(provisioning)
-    }
-
     /// Freeze one exact publication into the existing Session runtime slot.
     /// The slot is already the projection used by claimed-worker replay; direct
     /// and deferred execution reuse it instead of adding a provider-selection
@@ -304,7 +227,8 @@ impl SharedHost {
         agent: Option<&str>,
     ) -> Result<&crate::session_environment::SessionEnvironmentProvider, HostError> {
         let provisioning = self.projected_session_model_provisioning(thread, agent)?;
-        self.session_environment_provider_for_thread(thread, &provisioning)
+        self.realizer
+            .session_environment_provider_for_thread(thread, &provisioning)
     }
 
     pub(crate) fn projected_session_model_provisioning(
@@ -330,11 +254,11 @@ impl SharedHost {
     ) -> Result<AuthorizedSessionEnvironmentEffect, HostError> {
         let (realization, claimed_ordinary_run, closed) = self
             .session_slots
-            .read(thread, |slot| {
+            .modify_session(thread, |slot| {
                 let realization = slot.realization.authority.lease().cloned();
                 let claimed_ordinary_run = realization.is_none()
-                    && slot.run.dispatch_claim.is_some()
-                    && !slot.run.session_dispatch
+                    && slot.run.dispatch_claim().is_some()
+                    && !slot.run.session_dispatch()
                     && slot.frozen.baseline.is_none();
                 (
                     realization,
@@ -447,53 +371,6 @@ impl SharedHost {
             .await
     }
 
-    /// Re-enter the captured authority after provider I/O, and submit current
-    /// Control lease coordinates under the same stable operation identity.
-    fn current_environment_receipt(
-        &self,
-        binding: String,
-        effect: &AuthorizedSessionEnvironmentEffect,
-    ) -> Result<awaken_session_state_contract::SessionEnvironmentReceipt, HostError> {
-        let intent = match (&effect.provider_fence, &effect.provider_authority) {
-            (Some(initial), Some(authority)) => {
-                let current = authority
-                    .current_effect_fence(initial)
-                    .map_err(|error| HostError::internal(error.to_string()))?;
-                let lease = awaken_session_resource_contract::SessionRealizationLease {
-                    owner: current.owner().to_owned(),
-                    runtime_incarnation: current.runtime_incarnation().to_owned(),
-                    epoch: current.epoch(),
-                    expires_at_unix_ms: current.expires_at_unix_ms(),
-                };
-                let mut intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
-                    effect.intent.session_id().clone(),
-                    effect.intent.kind().clone(),
-                    Some(lease),
-                );
-                if let Some(environment) = effect.intent.environment_fingerprint() {
-                    intent = intent.for_environment(environment);
-                }
-                if let Some(source) = effect.intent.source_binding() {
-                    intent = intent.from_binding(source);
-                }
-                if intent.effect_id() != effect.intent.effect_id() {
-                    return Err(HostError::internal(
-                        "renewal changed Environment operation identity",
-                    ));
-                }
-                intent
-            }
-            (None, None) => effect.intent.clone(),
-            _ => {
-                return Err(HostError::internal(
-                    "Environment effect lacks its captured authority",
-                ));
-            }
-        };
-        awaken_session_state_contract::SessionEnvironmentReceipt::from_intent(&intent, binding)
-            .map_err(|error| HostError::internal(error.to_string()))
-    }
-
     pub(crate) async fn persist_authorized_environment_binding(
         &self,
         thread: &str,
@@ -504,6 +381,7 @@ impl SharedHost {
         EnvironmentBindingPersistenceError,
     > {
         let receipt = self
+            .realizer
             .current_environment_receipt(binding.clone(), effect)
             .map_err(|error| EnvironmentBindingPersistenceError {
                 error,
@@ -676,6 +554,7 @@ impl SharedHost {
             )
             .await?;
             return self
+                .realizer
                 .session_environment(thread)
                 .await
                 .map(Some)
@@ -752,9 +631,9 @@ impl SharedHost {
             })?;
         let (claim, realization_lease) = self
             .session_slots
-            .read(thread, |slot| {
+            .modify_session(thread, |slot| {
                 (
-                    slot.run.dispatch_claim.clone(),
+                    slot.run.dispatch_claim().cloned(),
                     slot.realization.authority.lease().cloned(),
                 )
             })
@@ -800,9 +679,12 @@ impl SharedHost {
         )
         .await
         .map_err(|error| HostError::internal(error.to_string()))?;
-        let spec = self.sandbox_substrate_spec_for_provider(thread, provider);
+        let spec = self
+            .realizer
+            .sandbox_substrate_spec_for_provider(thread, provider);
         let environment = Arc::new(
-            self.create_session_environment_for_effect(provider, &spec, &effect)
+            self.realizer
+                .create_session_environment_for_effect(provider, &spec, &effect)
                 .await?,
         );
         for input in transition.desired().resources.inputs() {
@@ -852,11 +734,14 @@ impl SharedHost {
                 "root-committed Session Environment was not ready during receipt replay",
             ));
         }
-        self.session_environment(thread).await.ok_or_else(|| {
-            HostError::internal(
-                "root-committed Session Environment was not published after adoption",
-            )
-        })
+        self.realizer
+            .session_environment(thread)
+            .await
+            .ok_or_else(|| {
+                HostError::internal(
+                    "root-committed Session Environment was not published after adoption",
+                )
+            })
     }
 
     /// Gate every Environment consumer on completion of the exact transition
@@ -880,7 +765,7 @@ impl SharedHost {
             .ok_or_else(|| {
                 HostError::internal("published Session Environment lacks its Resource transition")
             })?;
-        let installed = self.thread_resource_manifest(thread);
+        let installed = self.realizer.thread_resource_manifest(thread);
         if reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::None
             && installed.as_ref() == Some(transition.desired())
         {
@@ -888,9 +773,9 @@ impl SharedHost {
         }
         let (claim, realization_lease) = self
             .session_slots
-            .read(thread, |slot| {
+            .modify_session(thread, |slot| {
                 (
-                    slot.run.dispatch_claim.clone(),
+                    slot.run.dispatch_claim().cloned(),
                     slot.realization.authority.lease().cloned(),
                 )
             })
@@ -946,15 +831,212 @@ impl SharedHost {
         provider: &crate::session_environment::SessionEnvironmentProvider,
         spec: &awaken_provisioning_contract::SandboxSpec,
     ) -> Result<crate::session_environment::SessionEnvironment, HostError> {
-        self.create_session_environment_with_provider_effect(
-            provider,
-            spec,
-            None,
-            None,
-            None,
-            awaken_session_environment_contract::EnvironmentRealizationKind::Create,
+        self.realizer
+            .create_session_environment_with_provider_effect(
+                provider,
+                spec,
+                None,
+                None,
+                None,
+                awaken_session_environment_contract::EnvironmentRealizationKind::Create,
+            )
+            .await
+    }
+
+    /// A projection through the existing Worker -> Session admission guards,
+    /// not another lease owner. Capture the exact operation and slot allocation;
+    /// renewals may replace the observation, never these identities. This
+    /// returns durable Control coordinates, not a provider-local expiry or an
+    /// authorization to perform asynchronous I/O after the guards are released.
+    fn session_environment_effect_fence_source(
+        &self,
+        thread: &str,
+        initial: &awaken_provisioning_contract::SandboxEffectFence,
+    ) -> Result<impl awaken_provisioning_contract::CurrentExecutionAuthority + use<>, HostError>
+    {
+        self.session_slots.provider_effect_authority(
+            thread,
+            initial,
+            self.execution_authority.as_ref(),
         )
-        .await
+    }
+
+    /// Materialize the deferred environment at the first Sandbox-target tool.
+    /// The same lifecycle mutex used by context construction guarantees one
+    /// creator, and publication follows resource realization + durable binding.
+    pub(crate) async fn ensure_session_environment_for_tool(
+        &self,
+        thread: &str,
+    ) -> Result<Arc<crate::session_environment::SessionEnvironment>, HostError> {
+        let _lifecycle = self.session_slots.lock_lifecycle(thread).await;
+        if let Some(environment) = self
+            .retry_session_environment_candidate_under_lifecycle(thread)
+            .await?
+        {
+            return self
+                .ensure_published_environment_reconciled_under_lifecycle(thread, environment)
+                .await;
+        }
+        if let Some(environment) = self
+            .session_slots
+            .read_realization(thread, |r| r.environment_owner.resident())
+            .flatten()
+        {
+            return self
+                .ensure_published_environment_reconciled_under_lifecycle(thread, environment)
+                .await;
+        }
+        let provider = self.projected_session_environment_provider(thread, None)?;
+        if let Some(binding) = self.realizer.durable_environment_binding(thread) {
+            let disposition = self
+                .adopt_bound_session_environment_under_lifecycle(
+                    thread,
+                    &binding,
+                    provider,
+                    None,
+                    SessionEnvironmentUnavailablePolicy::Reject,
+                    None,
+                )
+                .await?;
+            if disposition != SessionEnvironmentAdoptionDisposition::Ready {
+                return Err(HostError::internal(
+                    "durable Session Environment did not become Resident",
+                ));
+            }
+            return self
+                .realizer
+                .session_environment(thread)
+                .await
+                .ok_or_else(|| {
+                    HostError::internal("durable Session Environment adoption published no owner")
+                });
+        }
+        self.create_reserved_session_environment_under_lifecycle(thread, provider)
+            .await
+    }
+}
+
+impl crate::session_realizer::SessionRealizer {
+    pub(crate) fn session_environment_provider(
+        &self,
+        provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
+    ) -> Result<&crate::session_environment::SessionEnvironmentProvider, HostError> {
+        match provisioning {
+            awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. } => self
+                .env
+                .backend_owned_session_provider
+                .as_ref()
+                .ok_or_else(|| {
+                    HostError::internal(
+                        "BackendOwned provisioning requires a trusted-host Session provider",
+                    )
+                }),
+            awaken_runtime_contract::resolved::ModelProvisioning::Provider { .. }
+            | awaken_runtime_contract::resolved::ModelProvisioning::Remote { .. }
+            | awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor => {
+                Ok(&self.env.session_provider)
+            }
+        }
+    }
+
+    /// Select one provider from the frozen Environment trust decision and the
+    /// immutable model provisioning. `trusted_host` is exact rather than a
+    /// minimum capability: a stronger Namespace/Container provider would lose
+    /// the local machine identity the author explicitly selected.
+    pub(crate) fn session_environment_provider_for_thread(
+        &self,
+        thread: &str,
+        provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
+    ) -> Result<&crate::session_environment::SessionEnvironmentProvider, HostError> {
+        let sandbox = self
+            .sessions
+            .frozen(thread)
+            .environment_projection
+            .as_ref()
+            .and_then(|environment| environment.sandbox.as_ref())
+            .cloned();
+        if sandbox.as_ref().is_some_and(|sandbox| {
+            sandbox.host_access == awaken_provisioning_contract::HostAccessPolicy::TrustedHost
+        }) {
+            if self.env.trusted_host != crate::environment_providers::TrustedHostPolicy::Admitted {
+                return Err(HostError::bad_request(
+                    "trusted_host Environment is disabled on this Worker",
+                ));
+            }
+            let provider = self
+                .env
+                .backend_owned_session_provider
+                .as_ref()
+                .ok_or_else(|| {
+                    HostError::bad_request(
+                        "trusted_host Environment requires a local Workdir provider",
+                    )
+                })?;
+            if !provider.realizer().supports_host_identity() {
+                return Err(HostError::internal(
+                    "trusted_host provider does not preserve host identity",
+                ));
+            }
+            return Ok(provider);
+        }
+        if matches!(
+            provisioning,
+            awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. }
+        ) && sandbox.as_ref().and_then(|sandbox| sandbox.isolation)
+            >= Some(awaken_provisioning_contract::IsolationClass::Namespace)
+        {
+            return Err(HostError::bad_request(
+                "backend-owned local Agent credentials require a trusted_host Workdir Environment",
+            ));
+        }
+        self.session_environment_provider(provisioning)
+    }
+
+    /// Re-enter the captured authority after provider I/O, and submit current
+    /// Control lease coordinates under the same stable operation identity.
+    fn current_environment_receipt(
+        &self,
+        binding: String,
+        effect: &AuthorizedSessionEnvironmentEffect,
+    ) -> Result<awaken_session_state_contract::SessionEnvironmentReceipt, HostError> {
+        let intent = match (&effect.provider_fence, &effect.provider_authority) {
+            (Some(initial), Some(authority)) => {
+                let current = authority
+                    .current_effect_fence(initial)
+                    .map_err(|error| HostError::internal(error.to_string()))?;
+                let lease = awaken_session_resource_contract::SessionRealizationLease {
+                    owner: current.owner().to_owned(),
+                    runtime_incarnation: current.runtime_incarnation().to_owned(),
+                    epoch: current.epoch(),
+                    expires_at_unix_ms: current.expires_at_unix_ms(),
+                };
+                let mut intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+                    effect.intent.session_id().clone(),
+                    effect.intent.kind().clone(),
+                    Some(lease),
+                );
+                if let Some(environment) = effect.intent.environment_fingerprint() {
+                    intent = intent.for_environment(environment);
+                }
+                if let Some(source) = effect.intent.source_binding() {
+                    intent = intent.from_binding(source);
+                }
+                if intent.effect_id() != effect.intent.effect_id() {
+                    return Err(HostError::internal(
+                        "renewal changed Environment operation identity",
+                    ));
+                }
+                intent
+            }
+            (None, None) => effect.intent.clone(),
+            _ => {
+                return Err(HostError::internal(
+                    "Environment effect lacks its captured authority",
+                ));
+            }
+        };
+        awaken_session_state_contract::SessionEnvironmentReceipt::from_intent(&intent, binding)
+            .map_err(|error| HostError::internal(error.to_string()))
     }
 
     async fn create_session_environment_for_effect(
@@ -1024,8 +1106,7 @@ impl SharedHost {
                 .current_effect_fence(fence)
                 .map_err(|error| HostError::internal(error.to_string()))?;
         }
-        self.realizer
-            .env
+        self.env
             .cache_volume_prewarmer
             .prepare_mounts(&spec.mounts)
             .await
@@ -1051,28 +1132,23 @@ impl SharedHost {
             })
     }
 
-    /// A projection through the existing Worker -> Session admission guards,
-    /// not another lease owner. Capture the exact operation and slot allocation;
-    /// renewals may replace the observation, never these identities. This
-    /// returns durable Control coordinates, not a provider-local expiry or an
-    /// authorization to perform asynchronous I/O after the guards are released.
-    fn session_environment_effect_fence_source(
-        &self,
-        thread: &str,
-        initial: &awaken_provisioning_contract::SandboxEffectFence,
-    ) -> Result<impl awaken_provisioning_contract::CurrentExecutionAuthority + use<>, HostError>
-    {
-        self.session_slots.provider_effect_authority(
-            thread,
-            initial,
-            self.execution_authority.as_ref(),
-        )
-    }
-
     /// Validate one exact physical projection without creating it. Reservation
     /// uses this shared classifier when durable admission must remain
     /// side-effect free but the eventual execution cannot be deferred; actual
     /// creation reuses it immediately before effects.
+    /// Reject a deterministic substrate mismatch between the Session's frozen
+    /// mounts and its provider before any Environment exists.
+    pub(crate) fn validate_session_environment_substrate(
+        &self,
+        thread: &str,
+        provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
+    ) -> Result<(), HostError> {
+        let provider = self.session_environment_provider_for_thread(thread, provisioning)?;
+        let spec = self.sandbox_spec_for_provider(thread, provider);
+        self.validate_session_environment_capabilities(provider, &spec)
+            .map(|_| ())
+    }
+
     pub(crate) fn validate_session_environment_capabilities(
         &self,
         provider: &crate::session_environment::SessionEnvironmentProvider,
@@ -1107,7 +1183,7 @@ impl SharedHost {
         handle: &awaken_provisioning_contract::SandboxHandle,
     ) -> Result<awaken_provisioning_contract::SandboxSpec, HostError> {
         let repository_paths = self
-            .session_slots
+            .sessions
             .read_realization(&spec.scope, |r| {
                 r.resource_transition
                     .as_ref()
@@ -1187,8 +1263,8 @@ impl SharedHost {
         // installed by Session activation and claimed-worker replay. Never
         // re-resolve a mutable catalog head while choosing physical isolation.
         let opaque_process = self
-            .session_slots
-            .read(&spec.scope, |slot| {
+            .sessions
+            .modify_session(&spec.scope, |slot| {
                 crate::provisioning::frozen_session_requires_opaque_process(
                     slot.frozen.published_snapshot.as_ref(),
                     slot.frozen.baseline.as_ref(),
@@ -1212,62 +1288,12 @@ impl SharedHost {
         Ok(spec)
     }
 
-    /// Materialize the deferred environment at the first Sandbox-target tool.
-    /// The same lifecycle mutex used by context construction guarantees one
-    /// creator, and publication follows resource realization + durable binding.
-    pub(crate) async fn ensure_session_environment_for_tool(
-        &self,
-        thread: &str,
-    ) -> Result<Arc<crate::session_environment::SessionEnvironment>, HostError> {
-        let _lifecycle = self.session_slots.lock_lifecycle(thread).await;
-        if let Some(environment) = self
-            .retry_session_environment_candidate_under_lifecycle(thread)
-            .await?
-        {
-            return self
-                .ensure_published_environment_reconciled_under_lifecycle(thread, environment)
-                .await;
-        }
-        if let Some(environment) = self
-            .session_slots
-            .read_realization(thread, |r| r.environment_owner.resident())
-            .flatten()
-        {
-            return self
-                .ensure_published_environment_reconciled_under_lifecycle(thread, environment)
-                .await;
-        }
-        let provider = self.projected_session_environment_provider(thread, None)?;
-        if let Some(binding) = self.durable_session_environment_binding(thread) {
-            let disposition = self
-                .adopt_bound_session_environment_under_lifecycle(
-                    thread,
-                    &binding,
-                    provider,
-                    None,
-                    SessionEnvironmentUnavailablePolicy::Reject,
-                    None,
-                )
-                .await?;
-            if disposition != SessionEnvironmentAdoptionDisposition::Ready {
-                return Err(HostError::internal(
-                    "durable Session Environment did not become Resident",
-                ));
-            }
-            return self.session_environment(thread).await.ok_or_else(|| {
-                HostError::internal("durable Session Environment adoption published no owner")
-            });
-        }
-        self.create_reserved_session_environment_under_lifecycle(thread, provider)
-            .await
-    }
-
     /// Evict only the rebuildable runtime context while retaining the
     /// independently-owned Session environment and its live resource projection.
     /// Terminal cleanup remains the single two-stage responsibility of
     /// [`Self::prepare_terminal_cleanup_effect`] and [`Self::dispose_terminal_cleanup_effect`].
     pub(crate) async fn evict_session_for_rebuild(&self, thread: &str) {
-        self.session_slots
-            .modify_run(thread, |run| run.runtime = None);
+        self.sessions
+            .modify_session(thread, |slot| slot.run.drop_context());
     }
 }

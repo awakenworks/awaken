@@ -120,6 +120,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         lease: &awaken_session_realization_contract::ObservedSessionRealizationLease,
         prepare_session: bool,
     ) -> Result<(), awaken_session_types::RunError> {
+        let exec = &self.host.realizer;
         let retained_publication = self
             .host
             .session_slots
@@ -204,24 +205,23 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
             }
             if self.rebuild_unavailable_environment && !a2a_only {
                 let provider = if let Some(candidate) = model_candidate.as_ref() {
-                    self.host.session_environment_provider_for_thread(
+                    exec.session_environment_provider_for_thread(
                         session_id.as_str(),
                         candidate.provisioning(),
                     )
                 } else {
-                    self.host.session_environment_provider_for_thread(
+                    exec.session_environment_provider_for_thread(
                         session_id.as_str(),
                         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
                     )
                 }
                 .map_err(to_run_error)?;
-                self.host
-                    .rebuild_claimed_legacy_environment_after_revocation(
-                        session_id.as_str(),
-                        provider,
-                    )
-                    .await
-                    .map_err(to_run_error)?;
+                exec.rebuild_claimed_legacy_environment_after_revocation(
+                    session_id.as_str(),
+                    provider,
+                )
+                .await
+                .map_err(to_run_error)?;
             }
         }
         // A claim authorizes live Resource revalidation. A preparation Stage
@@ -262,7 +262,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         // generation.
         self.host
             .session_slots
-            .update_run(session_id.as_str(), |run| run.session_dispatch = true);
+            .enter_session_dispatch(session_id.as_str());
         drop(lifecycle_guard);
         let published_snapshot = self
             .host
@@ -276,8 +276,8 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         let runtime_authority_resident = self
             .host
             .session_slots
-            .read(session_id.as_str(), |slot| {
-                slot.run.runtime.is_some() || slot.realization.environment_owner.is_resident()
+            .modify_session(session_id.as_str(), |slot| {
+                slot.run.holds_context() || slot.realization.environment_owner.is_resident()
             })
             .unwrap_or(false);
         if self.requires_runtime_before_effects
@@ -318,8 +318,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
             // provider has proved the exact durable binding unavailable; the new
             // Environment receipt must still pass the ordinary durable sink.
             debug_assert!(
-                self.host
-                    .durable_session_environment_binding(session_id.as_str())
+                exec.durable_environment_binding(session_id.as_str())
                     .is_none(),
                 "terminated recovery owner clears its durable binding"
             );
@@ -778,7 +777,7 @@ mod tests {
         .expect("DH1 install complete durable projection");
         if !successor_cancellations.is_empty() {
             assert_eq!(
-                host.sandbox_spec(thread).mounts.len(),
+                host.realizer.sandbox_spec(thread).mounts.len(),
                 1,
                 "MC-M complete frozen projection stages the Memory requirement before Create"
             );
@@ -848,7 +847,7 @@ mod tests {
                     .session_provider
                     .realizer()
                     .create_effective_for_effect(
-                        &host.sandbox_spec(thread),
+                        &host.realizer.sandbox_spec(thread),
                         crate::session_environment::ProviderEffect::Fenced {
                             fence,
                             authority: &authority,
@@ -869,7 +868,7 @@ mod tests {
             host.retain_committed_session_environment_candidate(thread, &candidate, identity)
                 .unwrap();
             assert!(
-                host.session_environment(thread).await.is_none(),
+                host.realizer.session_environment(thread).await.is_none(),
                 "SC1 still hidden"
             );
             None
@@ -945,7 +944,7 @@ mod tests {
             .unwrap();
             assert!(Arc::ptr_eq(&original, &owned_environment()));
             assert_eq!(
-                host.session_environment(thread).await.is_none(),
+                host.realizer.session_environment(thread).await.is_none(),
                 committed_candidate,
                 "SR4/SC2 renewal preserves publication phase"
             );
@@ -1094,7 +1093,7 @@ mod tests {
                 );
                 assert!(Arc::ptr_eq(&original, &owned_environment()));
                 assert_eq!(
-                    host.session_environment(thread).await.is_none(),
+                    host.realizer.session_environment(thread).await.is_none(),
                     committed_candidate,
                     "SR5/SC2 foreign projection preserves publication phase"
                 );
@@ -1256,7 +1255,7 @@ mod tests {
                     .prepared_session_environment(thread)
                     .expect("MC cancelled successor retains Candidate");
                 assert!(
-                    host.session_environment(thread).await.is_none(),
+                    host.realizer.session_environment(thread).await.is_none(),
                     "MC hidden owner"
                 );
                 assert_eq!(candidate.environment.lifecycle().handle(), original_handle);
@@ -1292,6 +1291,7 @@ mod tests {
         }
 
         let rebuilt = host
+            .realizer
             .session_environment(thread)
             .await
             .expect("DH1/E1-E2 fresh Resident Environment B");
@@ -1487,7 +1487,7 @@ mod tests {
         let provider = host
             .projected_session_environment_provider(thread, None)
             .expect("select frozen provider for LegacyDirect fixture");
-        let spec = host.sandbox_spec_for_provider(thread, provider);
+        let spec = host.realizer.sandbox_spec_for_provider(thread, provider);
         let environment = Arc::new(
             host.create_session_environment(provider, &spec)
                 .await
@@ -1611,6 +1611,7 @@ mod tests {
         .expect("CR1/E1-E3 cleanup precedes merge and projection installation");
 
         let rebuilt = host
+            .realizer
             .session_environment(thread)
             .await
             .expect("CR1/E3 fresh Resident Environment B");
@@ -1692,7 +1693,7 @@ mod tests {
                 )
             })
             .expect("RA1 retained slot caches");
-        let cached_resources = host.thread_resource_manifest(thread);
+        let cached_resources = host.realizer.thread_resource_manifest(thread);
 
         let remote_snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
             .model(awaken_runtime_contract::resolved::ModelBinding::new(
@@ -1784,7 +1785,7 @@ mod tests {
             "RA1/E2 publication, lease, Environment, and MCP caches are unchanged"
         );
         assert_eq!(
-            host.thread_resource_manifest(thread),
+            host.realizer.thread_resource_manifest(thread),
             cached_resources,
             "RA1/E2 Resource projection is unchanged"
         );

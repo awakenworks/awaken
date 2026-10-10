@@ -40,7 +40,7 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
     let provider = host
         .projected_session_environment_provider(thread, None)
         .expect("RR1 canonical projected provider");
-    let spec = host.sandbox_spec_for_provider(thread, provider);
+    let spec = host.realizer.sandbox_spec_for_provider(thread, provider);
     let environment = Arc::new(
         host.create_session_environment(provider, &spec)
             .await
@@ -162,6 +162,7 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
         "R21/E1"
     );
     let resident = ready_host
+        .realizer
         .session_environment(ready_thread)
         .await
         .expect("R21/E1 Resident restored");
@@ -231,7 +232,9 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
         "R21/E2"
     );
     assert!(
-        missing_host.session_environment_owner_is_vacant(missing_thread),
+        missing_host
+            .realizer
+            .session_environment_owner_is_vacant(missing_thread),
         "R21/E2 exact closed owner cleared"
     );
     assert!(
@@ -268,13 +271,14 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
     host.session_slots.update_realization(thread, |r| {
         r.environment_owner = resident(thread, environment.clone());
     });
-    host.retire_current_environment(
-        thread,
-        SessionEnvironmentRetirementCause::RealizationRevocation,
-        RetirementSelection::Exact(&environment),
-    )
-    .expect("C1 exact revocation")
-    .expect("C1 retained owner");
+    host.realizer
+        .retire_current_environment(
+            thread,
+            SessionEnvironmentRetirementCause::RealizationRevocation,
+            RetirementSelection::Exact(&environment),
+        )
+        .expect("C1 exact revocation")
+        .expect("C1 retained owner");
     dispose_current_environment(&environment, thread).await;
     // R0 C1+C2+!C3 => reject and retain the exact revoked owner; only the
     // frozen aggregate policy may authorize the subsequent R1 rebuild.
@@ -312,7 +316,7 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
         SessionEnvironmentAdoptionDisposition::RebuildRequired
     );
     assert!(
-        host.session_environment_owner_is_vacant(thread),
+        host.realizer.session_environment_owner_is_vacant(thread),
         "R1 closed owner consumed"
     );
     assert_eq!(
@@ -410,6 +414,7 @@ async fn closed_recovery_cannot_override_protected_retirements() {
             }
         };
         let protected = host
+            .realizer
             .retire_current_environment(thread, cause, RetirementSelection::Exact(&environment))
             .unwrap()
             .unwrap();
@@ -539,14 +544,15 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
         None,
         None,
     );
-    host.retain_checkpoint_source_environment_for_disposal(
-        thread,
-        &prepared_operation,
-        &prepared_generation,
-        &binding,
-        &environment,
-    )
-    .expect("C1 exact Preparation owner");
+    host.realizer
+        .retain_checkpoint_source_environment_for_disposal(
+            thread,
+            &prepared_operation,
+            &prepared_generation,
+            &binding,
+            &environment,
+        )
+        .expect("C1 exact Preparation owner");
     let asserted_generation = awaken_session_state_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from(thread),
         2,

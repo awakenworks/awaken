@@ -157,6 +157,7 @@ impl ManagedHost {
         let _lifecycle = self.host.session_slots.lock_lifecycle(thread).await;
         let environment = self
             .host
+            .realizer
             .resident_checkpoint_source_environment(
                 thread,
                 operation,
@@ -282,6 +283,7 @@ impl ManagedHost {
         let _lifecycle = self.host.session_slots.lock_lifecycle(thread).await;
         let environment = self
             .host
+            .realizer
             .resident_checkpoint_source_environment(
                 thread,
                 &request.operation,
@@ -331,13 +333,14 @@ impl ManagedHost {
         generation: &awaken_session_state_contract::SandboxGeneration,
         source_binding: &str,
     ) -> Result<awaken_session_state_contract::SourceReleasePreparedReceipt, RunError> {
+        let exec = &self.host.realizer;
         self.continuation_preparation_effect_fence(thread, preparation)?;
-        let resources = self.host.thread_resource_manifest(thread).ok_or_else(|| {
-            RunError::unavailable_classified(
+        let Some(resources) = exec.thread_resource_manifest(thread) else {
+            return Err(RunError::unavailable_classified(
                 "session_environment_continuation_resources_missing",
                 "Checkpoint source preparation has no frozen active Resource manifest",
-            )
-        })?;
+            ));
+        };
         let handle =
             serde_json::from_str::<awaken_provisioning_contract::SandboxHandle>(source_binding)
                 .map_err(|error| {
@@ -473,15 +476,14 @@ impl ManagedHost {
                 error.to_string(),
             )
         })?;
-        self.host
-            .retain_checkpoint_source_environment_for_disposal(
-                thread,
-                preparation.operation(),
-                generation,
-                source_binding,
-                environment,
-            )
-            .map_err(to_run_error)?;
+        exec.retain_checkpoint_source_environment_for_disposal(
+            thread,
+            preparation.operation(),
+            generation,
+            source_binding,
+            environment,
+        )
+        .map_err(to_run_error)?;
         Ok(receipt)
     }
 
@@ -530,6 +532,7 @@ impl ManagedHost {
             .await
             .map_err(to_run_error)?;
         self.host
+            .realizer
             .begin_session_environment_restore(&thread, &request)
             .map_err(to_run_error)?;
         let store = self
@@ -559,9 +562,13 @@ impl ManagedHost {
             .unwrap_or(&awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor);
         let provider = self
             .host
+            .realizer
             .session_environment_provider_for_thread(&thread, provisioning)
             .map_err(to_run_error)?;
-        let spec = self.host.sandbox_spec_for_provider(&thread, provider);
+        let spec = self
+            .host
+            .realizer
+            .sandbox_spec_for_provider(&thread, provider);
         let handle = provider
             .terminal()
             .restore(&spec, &request, store.as_ref())

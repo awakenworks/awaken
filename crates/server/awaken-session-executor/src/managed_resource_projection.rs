@@ -28,11 +28,11 @@ pub(crate) struct CompiledEffectiveInputs {
         std::collections::HashMap<String, std::sync::Arc<crate::memory_binding::MemoryBinding>>,
 }
 fn validate_preparation_publication(
-    slot: &crate::session_slot::SessionRuntimeSlot,
+    realization: &crate::session_realizations::SessionRealizationState,
     asserted: Option<&awaken_session_resource_contract::SessionRealizationLease>,
 ) -> Result<(), RunError> {
-    if slot.realization.resource_preparation.is_some()
-        && !asserted.is_some_and(|lease| slot.realization.resource_preparation_authorized(lease))
+    if realization.resource_preparation.is_some()
+        && !asserted.is_some_and(|lease| realization.resource_preparation_authorized(lease))
     {
         return Err(RunError::unavailable_classified(
             "session_realization_authority_lost",
@@ -196,6 +196,7 @@ impl crate::ManagedHost {
         manifest: awaken_session_resource_contract::SessionResourceManifest,
     ) {
         self.host
+            .realizer
             .register_thread_resource_manifest(thread, manifest);
     }
 
@@ -267,7 +268,7 @@ impl crate::ManagedHost {
         realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
         prospective_environment_binding: bool,
     ) -> Result<(), RunError> {
-        let installed = self.host.thread_resource_manifest(thread);
+        let installed = self.host.realizer.thread_resource_manifest(thread);
         if installed.as_ref().is_some_and(|installed| {
             installed != transition.previous() && installed != transition.desired()
         }) {
@@ -276,7 +277,7 @@ impl crate::ManagedHost {
                 "the resident active Resource generation is outside the aggregate transition",
             ));
         }
-        let live_environment = self.host.session_environment(thread).await;
+        let live_environment = self.host.realizer.session_environment(thread).await;
         let awaiting_adoption = live_environment.is_none()
             && (prospective_environment_binding
                 || self
@@ -302,7 +303,7 @@ impl crate::ManagedHost {
                 )
                 .await?;
             self.host.session_slots.update(thread, |slot| {
-                validate_preparation_publication(slot, realization_lease)?;
+                validate_preparation_publication(&slot.realization, realization_lease)?;
                 slot.realization.skills = Some(versions);
                 Ok(())
             })?;
@@ -362,7 +363,10 @@ impl crate::ManagedHost {
             // The lease check and correlated cache publication share the slot
             // lock with renewal rejection. Neither a late read nor cancellation
             // may publish requirements after that rejection has linearized.
-            validate_preparation_publication(slot, realization.map(|(_, _, lease)| lease))?;
+            validate_preparation_publication(
+                &slot.realization,
+                realization.map(|(_, _, lease)| lease),
+            )?;
             slot.replace_frozen_with(|next| next.workspace = Some(workspace.to_owned()));
             slot.realization.resources = compiled.staged;
             slot.realization.memory_bindings = compiled.memory_bindings;
@@ -415,9 +419,7 @@ impl crate::ManagedHost {
         // This method is entered only through the SessionRuntime application
         // port. Preserve that neutral identity before dispatch so a claiming
         // Worker enters the frozen Session realization path.
-        self.host
-            .session_slots
-            .update_run(thread, |run| run.session_dispatch = true);
+        self.host.session_slots.enter_session_dispatch(thread);
         let checks = self
             .host
             .session_slots
@@ -522,7 +524,7 @@ impl crate::ManagedHost {
         self.host.session_slots.update_realization(thread, |r| {
             r.resource_transition = Some(transition.clone());
         });
-        let live_environment = self.host.session_environment(thread).await;
+        let live_environment = self.host.realizer.session_environment(thread).await;
         let awaiting_adoption = live_environment.is_none()
             && self
                 .host
@@ -532,10 +534,10 @@ impl crate::ManagedHost {
         let (baseline_is_staged, session_dispatch, reconciliation, environment_projection) = self
             .host
             .session_slots
-            .read(thread, |slot| {
+            .modify_session(thread, |slot| {
                 (
                     slot.frozen.baseline.is_some(),
-                    slot.run.session_dispatch,
+                    slot.run.session_dispatch(),
                     slot.realization.environment_resource_reconciliation,
                     slot.frozen.environment_projection.clone(),
                 )
@@ -584,7 +586,7 @@ impl crate::ManagedHost {
         // requirements cache. A lost aggregate acknowledgement may resend A→B
         // after this process completed B. Memory must compare against B while
         // the remaining Resource effects still replay the authored A→B command.
-        let installed_manifest = self.host.thread_resource_manifest(thread);
+        let installed_manifest = self.host.realizer.thread_resource_manifest(thread);
         let old_memory: Vec<_> = installed_manifest
             .as_ref()
             .unwrap_or(previous_manifest)
@@ -648,8 +650,7 @@ impl crate::ManagedHost {
             // same-generation adoption is continuity, not a replacement: the
             // provider adoption hook reattaches Namespace mounts and no Resource
             // path may be removed before terminal publication/cleanup.
-            self.host
-                .register_thread_resource_manifest(thread, desired_manifest);
+            self.publish_active_resource_manifest(thread, desired_manifest);
             return Ok(());
         }
         let mut previous_mounts = previous_manifest
@@ -979,12 +980,12 @@ impl crate::ManagedHost {
             r.environment_resource_reconciliation =
                 crate::staged_resources::EnvironmentResourceReconciliation::None;
         });
-        self.host.evict_session_for_rebuild(thread).await;
+        self.host.realizer.evict_session_for_rebuild(thread).await;
         Ok(())
     }
 }
 
-impl crate::SharedHost {
+impl crate::session_realizer::SessionRealizer {
     fn validate_managed_layout_inputs(
         &self,
         thread: &str,
@@ -995,8 +996,8 @@ impl crate::SharedHost {
         environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
     ) -> Result<(), crate::host_error::HostError> {
         let (resident_baseline, content_delivery, resident_environment, live_environment) = self
-            .session_slots
-            .read(thread, |slot| {
+            .sessions
+            .modify_session(thread, |slot| {
                 (
                     slot.frozen.baseline.clone(),
                     slot.realization.content_delivery,
@@ -1183,25 +1184,28 @@ impl crate::ManagedHost {
         let result = if layout.runtime_placement
             == awaken_session_configuration_contract::SessionRuntimePlacement::Worker
         {
-            self.host.validate_structural_managed_binding_layout(
-                thread,
-                &layout.resources,
-                Some(&layout.mounts),
-                Some(&layout.env),
-                Some(&environment),
-            )
+            self.host
+                .realizer
+                .validate_structural_managed_binding_layout(
+                    thread,
+                    &layout.resources,
+                    Some(&layout.mounts),
+                    Some(&layout.env),
+                    Some(&environment),
+                )
         } else {
             let provider = if let Some(candidate) = candidate.as_ref() {
                 self.host
+                    .realizer
                     .session_environment_provider_for_thread(thread, candidate.provisioning())
             } else {
-                self.host.session_environment_provider_for_thread(
+                self.host.realizer.session_environment_provider_for_thread(
                     thread,
                     &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
                 )
             }
             .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
-            self.host.validate_managed_binding_layout(
+            self.host.realizer.validate_managed_binding_layout(
                 thread,
                 &layout.resources,
                 provider,
@@ -1223,6 +1227,7 @@ impl crate::ManagedHost {
             .projected_session_environment_provider(thread, None)
             .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
         self.host
+            .realizer
             .validate_managed_resource_layout(thread, resources, provider, None, None, None)
             .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))
     }

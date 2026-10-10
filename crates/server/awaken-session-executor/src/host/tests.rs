@@ -234,6 +234,7 @@ mod resume_and_replies;
 use fixtures::*;
 mod run_boundary;
 mod session_projection;
+mod session_realizations;
 mod skill_delivery;
 mod terminal_disposal;
 mod terminal_memory;
@@ -1344,7 +1345,8 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Bindin
         self.calls.fetch_add(1, Ordering::SeqCst);
         let host = self.host.upgrade().expect("host remains live");
         self.observed_before_publish.store(
-            host.session_environment(receipt.session_id.as_str())
+            host.realizer
+                .session_environment(receipt.session_id.as_str())
                 .await
                 .is_none(),
             Ordering::SeqCst,

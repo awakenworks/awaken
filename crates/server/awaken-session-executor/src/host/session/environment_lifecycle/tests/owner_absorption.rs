@@ -148,6 +148,7 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
         });
     });
     let (_, _, resident, candidate) = host
+        .realizer
         .validated_session_environment_adoption(
             thread,
             &binding,
@@ -161,14 +162,15 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
         "R1 old Arc is not B2"
     );
     assert!(
-        host.validated_session_environment_adoption(
-            thread,
-            &binding,
-            &provider,
-            None,
-            Some(generation("foreign").id()),
-        )
-        .is_err(),
+        host.realizer
+            .validated_session_environment_adoption(
+                thread,
+                &binding,
+                &provider,
+                None,
+                Some(generation("foreign").id()),
+            )
+            .is_err(),
         "R2 foreign generation"
     );
     assert!(
@@ -702,7 +704,7 @@ async fn discard_keeps_live_owner_and_exact_retry_clears_after_termination() {
         "R19/E1 live owner is retained"
     );
     assert!(
-        host.session_environment(thread).await.is_none(),
+        host.realizer.session_environment(thread).await.is_none(),
         "R19/E1 hidden"
     );
     assert!(
@@ -719,7 +721,10 @@ async fn discard_keeps_live_owner_and_exact_retry_clears_after_termination() {
         host.discard_session_environment(thread, &environment).await,
         "R21/E2 exact retry clears"
     );
-    assert!(host.session_environment_owner_is_vacant(thread), "R21/E2");
+    assert!(
+        host.realizer.session_environment_owner_is_vacant(thread),
+        "R21/E2"
+    );
 }
 
 #[tokio::test]
@@ -909,7 +914,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     let provider = host
         .projected_session_environment_provider(thread, None)
         .expect("C1 frozen Environment provider");
-    let spec = host.sandbox_spec_for_provider(thread, provider);
+    let spec = host.realizer.sandbox_spec_for_provider(thread, provider);
     // LegacyDirect is the aggregate-Unowned creation row. Reuse the single
     // unfenced test entry into production creation so the handle is the exact
     // marker-free V1 that this compatibility path owns; a fenced V2 fixture
@@ -1006,7 +1011,8 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
 
     {
         let _lifecycle = lifecycle.lock().await;
-        host.rebuild_claimed_legacy_environment_after_revocation(thread, provider)
+        host.realizer
+            .rebuild_claimed_legacy_environment_after_revocation(thread, provider)
             .await
             .expect("CP2/CP3 exact typed observation consumes the retirement");
     }

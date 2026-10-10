@@ -835,7 +835,7 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
     host.session_slots
         .close_mcp_realization_admission(
             "mcp-staging-quiescence",
-            crate::session_slot::McpQuiescenceAdmissionFence::new(
+            awaken_session_mcp::McpQuiescenceAdmissionFence::new(
                 &operation,
                 "source-effect",
                 "source-binding",
@@ -1509,12 +1509,12 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
 
     // The repo is staged for a host-side clone...
     assert_eq!(
-        host.thread_repository_activations("t-gh").len(),
+        host.realizer.thread_repository_activations("t-gh").len(),
         1,
         "repo staged for cloning"
     );
 
-    let activations = host.thread_repository_activations("t-gh");
+    let activations = host.realizer.thread_repository_activations("t-gh");
     let activation = &activations[0];
     assert_eq!(
         activation

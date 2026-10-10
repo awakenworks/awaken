@@ -378,7 +378,7 @@ impl SharedHost {
                             .map(|transition| transition.previous().resources.clone())
                     })
                     .flatten();
-                let spec = self.session_environment_adoption_spec(
+                let spec = self.realizer.session_environment_adoption_spec(
                     session_id.as_str(),
                     provider,
                     previous_resources.as_ref(),
@@ -475,11 +475,8 @@ impl SharedHost {
                 ));
             }
         }
-        self.session_slots.update(session_id.as_str(), |slot| {
-            slot.run.runtime = None;
-            slot.realization.environment_resource_reconciliation =
-                crate::staged_resources::EnvironmentResourceReconciliation::None;
-        });
+        self.session_slots
+            .end_terminal_disposal(session_id.as_str());
         self.terminal_cleanup_disposal_authorization(&effect)?;
         Ok(awaken_session_state_contract::SessionCleanupDisposalReceipt::new(&effect.command))
     }

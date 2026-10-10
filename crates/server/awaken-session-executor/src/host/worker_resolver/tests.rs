@@ -88,10 +88,7 @@ async fn session_run_reservation_repair_skips_execution_realization() {
     .worker_for_claimed(&claimed)
     .await
     .expect("R1/E2 environment-free worker");
-    assert!(
-        host.session_environment(session_id).await.is_none(),
-        "R1/E3"
-    );
+    assert!(!has_environment(&host, session_id).await, "R1/E3");
 }
 
 #[tokio::test]
@@ -667,10 +664,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
         .worker_for_claimed(&claimed)
         .await
         .expect("D1 resolves Brain worker without Sandbox");
-    assert!(
-        host.session_environment("durable-lazy").await.is_none(),
-        "D1"
-    );
+    assert!(!has_environment(&host, "durable-lazy").await, "D1");
 
     clock.set(now + 2_000);
     let replacement = store
@@ -695,17 +689,14 @@ async fn durable_deferred_sandbox_publication_decision_table() {
         error.to_string().contains("replacement claim"),
         "D3: {error}"
     );
-    assert!(
-        host.session_environment("durable-lazy").await.is_none(),
-        "D2"
-    );
+    assert!(!has_environment(&host, "durable-lazy").await, "D2");
 
     resolver
         .worker_for_claimed(&replacement)
         .await
         .expect("D3 replacement repairs the root-first Candidate");
     assert!(
-        host.session_environment("durable-lazy").await.is_some(),
+        has_environment(&host, "durable-lazy").await,
         "D3 exact Candidate published"
     );
     assert_eq!(sink.calls.load(Ordering::SeqCst), 2, "D2+D3");
@@ -766,6 +757,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
     );
     assert!(
         loss_host
+            .realizer
             .session_environment("durable-loss")
             .await
             .is_none(),
@@ -790,6 +782,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
     );
     assert!(
         loss_host
+            .realizer
             .session_environment("durable-loss")
             .await
             .is_some(),
@@ -1307,10 +1300,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         vec![None, None, None, Some(installed)],
         "CR1-CR3"
     );
-    assert!(
-        host.session_environment("ordinary-remote").await.is_some(),
-        "O1/E3"
-    );
+    assert!(has_environment(&host, "ordinary-remote").await, "O1/E3");
     assert!(
         host.session_slots
             .read("ordinary-remote", |slot| {
@@ -1452,10 +1442,7 @@ async fn claimed_resource_conflict_is_terminal_before_realization() {
             phases.lock().unwrap().is_empty(),
             "{rule}/E2: no realization phase"
         );
-        assert!(
-            host.session_environment("conflict").await.is_none(),
-            "{rule}/E2"
-        );
+        assert!(!has_environment(&host, "conflict").await, "{rule}/E2");
     }
 }
 
@@ -1505,9 +1492,7 @@ async fn resource_manifest_must_match_the_durable_execution_scope() {
     };
     assert!(error.to_string().contains("outside its execution scope"));
     assert!(
-        host.session_environment("thread-scope-mismatch")
-            .await
-            .is_none(),
+        !has_environment(&host, "thread-scope-mismatch").await,
         "scope rejection happens before sandbox creation"
     );
 }
@@ -1561,11 +1546,7 @@ async fn malformed_resource_manifest_is_rejected_before_sandbox_creation() {
             .to_string()
             .contains("invalid Session resource manifest")
     );
-    assert!(
-        host.session_environment("thread-malformed-resources")
-            .await
-            .is_none()
-    );
+    assert!(!has_environment(&host, "thread-malformed-resources").await);
 }
 
 #[tokio::test]
@@ -1652,7 +1633,8 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         .await
         .expect("F1 revalidate the exact desired manifest without republishing");
     assert!(
-        host.thread_resource_manifest("thread-cold-resource")
+        host.realizer
+            .thread_resource_manifest("thread-cold-resource")
             .is_none(),
         "F1 desired-only staging is not completion evidence"
     );
@@ -1666,6 +1648,7 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
     .expect("open environment after resource install");
 
     let mount = host
+        .realizer
         .sandbox_spec("thread-cold-resource")
         .mounts
         .into_iter()
@@ -1682,7 +1665,8 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
     };
     assert_eq!(contents, bytes);
     assert_eq!(
-        host.thread_resource_manifest("thread-cold-resource"),
+        host.realizer
+            .thread_resource_manifest("thread-cold-resource"),
         Some(manifest.clone())
     );
 
@@ -1697,12 +1681,14 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         .expect_err("F3 desired-only replacement must fail closed");
     assert_eq!(error.code, "session_resource_transition_conflict", "F3");
     assert_eq!(
-        host.thread_resource_manifest("thread-cold-resource"),
+        host.realizer
+            .thread_resource_manifest("thread-cold-resource"),
         Some(manifest.clone()),
         "F3 retains the active manifest"
     );
     assert!(
         !host
+            .realizer
             .session_environment("thread-cold-resource")
             .await
             .expect("F3 resident environment")
@@ -1723,7 +1709,8 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         .await
         .expect("F4 exact live replacement");
     assert!(
-        host.session_environment("thread-cold-resource")
+        host.realizer
+            .session_environment("thread-cold-resource")
             .await
             .expect("resident environment")
             .harvest()
@@ -1734,11 +1721,15 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         "F4 removes the stale physical projection"
     );
     assert!(
-        host.sandbox_spec("thread-cold-resource").mounts.is_empty(),
+        host.realizer
+            .sandbox_spec("thread-cold-resource")
+            .mounts
+            .is_empty(),
         "F4 publishes the empty staged projection"
     );
     assert_eq!(
-        host.thread_resource_manifest("thread-cold-resource"),
+        host.realizer
+            .thread_resource_manifest("thread-cold-resource"),
         Some(cleared),
         "F4 publishes generation 2 only after realization"
     );
@@ -1804,12 +1795,13 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         .await
         .unwrap_or_else(|error| panic!("{thread}: complete projection producer: {error}"));
         assert!(
-            host.thread_resource_manifest(thread).is_none(),
+            host.realizer.thread_resource_manifest(thread).is_none(),
             "{thread}: C2 active truth remains absent"
         );
     }
     let active_thread = "active-previous-transition";
-    host.register_thread_resource_manifest(active_thread, revision_one.clone());
+    host.realizer
+        .register_thread_resource_manifest(active_thread, revision_one.clone());
     let mut active_projection =
         frozen_projection_for_manifest(deferred_environment(), &revision_two);
     active_projection.previous_resource_manifest = Some(revision_one.clone());
@@ -1840,7 +1832,8 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         "R1/E1 retains the exact producer transition"
     );
     assert!(
-        host.thread_resource_manifest("exact-cold-transition")
+        host.realizer
+            .thread_resource_manifest("exact-cold-transition")
             .is_none(),
         "R1/E1 staging does not publish active truth"
     );
@@ -1867,7 +1860,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         "R2/E1 retains the exact producer transition"
     );
     assert_eq!(
-        host.thread_resource_manifest(active_thread),
+        host.realizer.thread_resource_manifest(active_thread),
         Some(revision_one.clone()),
         "R2/E1 staging does not publish desired as active"
     );
@@ -1988,7 +1981,8 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
             "R2 rejects desired-only replacement: {rejected:?}"
         );
         assert_eq!(
-            host.thread_resource_manifest("thread-generation-fence"),
+            host.realizer
+                .thread_resource_manifest("thread-generation-fence"),
             Some(revision_four.clone())
         );
     }
@@ -2015,7 +2009,8 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
     .await
     .expect("R3 exact transition advances generation");
     assert_eq!(
-        host.thread_resource_manifest("thread-generation-fence"),
+        host.realizer
+            .thread_resource_manifest("thread-generation-fence"),
         Some(revision_five),
         "R3 publishes only after exact physical transition"
     );
@@ -2171,7 +2166,8 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         9,
         Default::default(),
     );
-    host.register_thread_resource_manifest(foreign_thread, foreign.clone());
+    host.realizer
+        .register_thread_resource_manifest(foreign_thread, foreign.clone());
     host.session_slots.update(foreign_thread, |slot| {
         slot.replace_frozen_with(|next| next.workspace = Some("sentinel-workspace".into()));
         slot.realization.staged_resource_effect_key = Some("sentinel-key".into());
@@ -2312,6 +2308,7 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
         .await
         .expect("W1");
     let mount = host
+        .realizer
         .sandbox_spec("remote-file-ok")
         .mounts
         .into_iter()
@@ -2326,7 +2323,9 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
         "W1"
     );
     assert!(
-        host.thread_resource_manifest("remote-file-ok").is_none(),
+        host.realizer
+            .thread_resource_manifest("remote-file-ok")
+            .is_none(),
         "W1 desired-only staging does not publish active completion"
     );
     managed
@@ -2340,7 +2339,10 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
         .expect_err("W2");
     assert!(error.to_string().contains("not found"), "W2: {error}");
     assert!(
-        host.sandbox_spec("remote-file-no-claim").mounts.is_empty(),
+        host.realizer
+            .sandbox_spec("remote-file-no-claim")
+            .mounts
+            .is_empty(),
         "W2"
     );
 }
@@ -2650,7 +2652,7 @@ async fn a_dead_resident_environment_fails_continuity_and_is_fenced_before_rebui
         adopted,
         crate::host::session::SessionEnvironmentAdoptionDisposition::RebuildRequired
     );
-    assert!(host.session_environment(thread).await.is_none());
+    assert!(host.realizer.session_environment(thread).await.is_none());
     assert!(
         !host
             .session_slots
@@ -2727,15 +2729,19 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
     .await
     .expect("C1 publish first exact owner");
     let observed = host
+        .realizer
         .session_environment(thread)
         .await
         .expect("observed owner");
-    let spec = host.sandbox_spec_for_resolved_resources_and_provider(
-        thread,
-        &projection.resources,
-        &host.realizer.env.session_provider,
-    );
     let spec = host
+        .realizer
+        .sandbox_spec_for_resolved_resources_and_provider(
+            thread,
+            &projection.resources,
+            &host.realizer.env.session_provider,
+        );
+    let spec = host
+        .realizer
         .validate_session_environment_capabilities(&host.realizer.env.session_provider, &spec)
         .expect("C2 exact adoption spec");
     let replacement = Arc::new(
@@ -2759,6 +2765,7 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
         "object identity fences a stale observer even when the handle is reused"
     );
     let current = host
+        .realizer
         .session_environment(thread)
         .await
         .expect("replacement kept");
@@ -2829,7 +2836,7 @@ async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
         .worker_for_claimed(&claimed)
         .await
         .expect("terminal control bypasses sandbox decoding/adoption");
-    assert!(host.session_environment(&thread.0).await.is_none());
+    assert!(host.realizer.session_environment(&thread.0).await.is_none());
     assert!(
         !host
             .session_slots
@@ -2908,7 +2915,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
         .await;
         if invalid_receipt {
             assert!(result.is_err());
-            assert!(host.session_environment(&thread).await.is_none());
+            assert!(host.realizer.session_environment(&thread).await.is_none());
             continue;
         }
         result.expect("Outcome Work receipt realizes exact baseline");
@@ -2919,7 +2926,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
                     && slot.run.runtime.is_some())
                 .unwrap_or(false)
         );
-        assert!(host.session_environment(&thread).await.is_some());
+        assert!(host.realizer.session_environment(&thread).await.is_some());
         assert_eq!(
             claimed.request.admission_shape(),
             ingress::DispatchAdmissionShape::OrdinaryRoot
@@ -2975,5 +2982,10 @@ async fn outcome_projection_read_does_not_adopt_worker_owned_environment() {
             .expect("read remote-owned outcome")
             .is_none()
     );
-    assert!(host.session_environment(thread).await.is_none());
+    assert!(host.realizer.session_environment(thread).await.is_none());
+}
+
+/// Whether the realizer holds a live Environment for `thread`.
+async fn has_environment(host: &SharedHost, thread: &str) -> bool {
+    host.realizer.session_environment(thread).await.is_some()
 }

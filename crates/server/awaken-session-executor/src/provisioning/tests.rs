@@ -334,7 +334,11 @@ async fn session_and_housekeeping_filesystem_continuity_are_distinct() {
      * capacity identity, so the two requests cannot share warm capacity.
      */
     assert_eq!(
-        host().await.sandbox_spec("session").filesystem_continuity,
+        host()
+            .await
+            .realizer
+            .sandbox_spec("session")
+            .filesystem_continuity,
         pc::FilesystemContinuity::Retained,
         "SC1"
     );
@@ -344,7 +348,7 @@ async fn session_and_housekeeping_filesystem_continuity_are_distinct() {
         "SC2"
     );
     assert_ne!(
-        pc::SandboxCapacityShapeId::from_spec(&host().await.sandbox_spec("session")),
+        pc::SandboxCapacityShapeId::from_spec(&host().await.realizer.sandbox_spec("session")),
         pc::SandboxCapacityShapeId::from_spec(&agent_run_sandbox_spec("probe")),
         "SC1/SC2"
     );
@@ -412,7 +416,7 @@ async fn projected_sandbox_layout_preserves_one_complete_input_snapshot() {
     environment.network = awaken_session_configuration_contract::SessionNetworkPolicy::None;
     let environment = project_environment(&environment);
 
-    let spec = host.sandbox_spec_for_projected_layout(
+    let spec = host.realizer.sandbox_spec_for_projected_layout(
         "complete-layout",
         ProjectedSandboxLayout {
             resource_mounts: vec![resource.clone()],
@@ -511,7 +515,7 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
         lifetime: pc::MountLifetime::PerRun,
         required: true,
     };
-    host.register_thread_resources(
+    host.realizer.register_thread_resources(
         "checkpoint-memory",
         StagedResources {
             mounts: vec![
@@ -521,7 +525,7 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
             ..Default::default()
         },
     );
-    let fresh = host.sandbox_substrate_spec_for_provider(
+    let fresh = host.realizer.sandbox_substrate_spec_for_provider(
         "checkpoint-memory",
         &host.realizer.env.session_provider,
     );
@@ -595,11 +599,13 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
         materialization_reference.is_none(),
         "M3 local no-upstream staging uses its binding validator, not a remote reference"
     );
-    let cold = host.sandbox_spec_for_resolved_resources_and_provider(
-        "checkpoint-memory",
-        &resolved,
-        &host.realizer.env.session_provider,
-    );
+    let cold = host
+        .realizer
+        .sandbox_spec_for_resolved_resources_and_provider(
+            "checkpoint-memory",
+            &resolved,
+            &host.realizer.env.session_provider,
+        );
     assert_eq!(cold.mounts.len(), 1, "M4/E3");
     assert_eq!(
         consistency(&cold),
@@ -612,7 +618,7 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
         "M4/E4"
     );
 
-    let readonly = host.sandbox_spec_for_projected_layout(
+    let readonly = host.realizer.sandbox_spec_for_projected_layout(
         "readonly-memory",
         ProjectedSandboxLayout {
             resource_mounts: vec![memory_mount(pc::MountAccess::ReadOnly, None)],
@@ -633,7 +639,7 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
     let mut resident_environment = environment;
     resident_environment.idle_retention = Default::default();
     let resident_projection = project_environment(&resident_environment);
-    let resident = host.sandbox_spec_for_projected_layout(
+    let resident = host.realizer.sandbox_spec_for_projected_layout(
         "resident-memory",
         ProjectedSandboxLayout {
             resource_mounts: vec![memory_mount(pc::MountAccess::ReadWrite, None)],
@@ -670,7 +676,7 @@ fn repository_activation(logical: &str) -> RepositoryActivation {
 #[tokio::test]
 async fn register_replaces_the_threads_staged_set() {
     let host = host().await;
-    host.register_thread_resources(
+    host.realizer.register_thread_resources(
         "t",
         StagedResources {
             mounts: vec![resource_mount("a.md"), resource_mount("b.md")],
@@ -681,7 +687,7 @@ async fn register_replaces_the_threads_staged_set() {
         },
     );
     // A second register REPLACES (correct at create time, before any first Run).
-    host.register_thread_resources(
+    host.realizer.register_thread_resources(
         "t",
         StagedResources {
             mounts: vec![resource_mount("c.md")],
@@ -692,10 +698,14 @@ async fn register_replaces_the_threads_staged_set() {
         },
     );
 
-    assert_eq!(host.sandbox_spec("t").mounts.len(), 1, "old mounts dropped");
+    assert_eq!(
+        host.realizer.sandbox_spec("t").mounts.len(),
+        1,
+        "old mounts dropped"
+    );
     assert_eq!(host.thread_session_prompts("t"), vec!["second".to_string()]);
     assert!(
-        host.thread_repository_activations("t").is_empty(),
+        host.realizer.thread_repository_activations("t").is_empty(),
         "old repository activation dropped"
     );
 }
@@ -710,7 +720,7 @@ async fn sandbox_spec_carries_deny_egress_and_the_staged_mounts() {
     // | W2 | none | no | unrestricted | yes |
     let host = host().await;
     // No registration and no egress: shared network, no mounts.
-    let bare = host.sandbox_spec("t");
+    let bare = host.realizer.sandbox_spec("t");
     assert!(!denies(&bare));
     assert!(bare.mounts.is_empty());
 
@@ -734,14 +744,14 @@ async fn sandbox_spec_carries_deny_egress_and_the_staged_mounts() {
         },
     )
     .expect("freeze test Environment");
-    host.register_thread_resources(
+    host.realizer.register_thread_resources(
         "t",
         StagedResources {
             mounts: vec![resource_mount("notes.md")],
             ..Default::default()
         },
     );
-    let spec = host.sandbox_spec("t");
+    let spec = host.realizer.sandbox_spec("t");
     assert!(denies(&spec), "the thread's deny-egress policy is carried");
     assert_eq!(
         spec.network,
@@ -773,17 +783,17 @@ async fn repository_workspace_rejects_a_provider_with_split_tool_and_process_pat
         tempfile::tempdir().unwrap().path(),
     )
     .into_session_provider();
-    let bare = host.sandbox_spec("bare");
+    let bare = host.realizer.sandbox_spec("bare");
     assert_eq!(bare.isolation, pc::IsolationClass::Workdir, "W2/E3");
 
-    host.register_thread_resources(
+    host.realizer.register_thread_resources(
         "repository-session",
         StagedResources {
             repositories: vec![repository_activation("repo")],
             ..Default::default()
         },
     );
-    let repository_spec = host.sandbox_spec("repository-session");
+    let repository_spec = host.realizer.sandbox_spec("repository-session");
     assert_eq!(
         repository_spec.isolation,
         pc::IsolationClass::Namespace,
@@ -828,7 +838,7 @@ async fn trusted_host_repository_projection_preserves_the_exact_tier() {
                 pc::HostAccessPolicy::Isolated
             };
             let environment = project_environment(&environment);
-            let spec = host.sandbox_spec_for_projected_layout(
+            let spec = host.realizer.sandbox_spec_for_projected_layout(
                 "trust-matrix",
                 ProjectedSandboxLayout {
                     resource_mounts: Vec::new(),
@@ -886,7 +896,7 @@ async fn projected_acp_rejects_a_provider_with_split_tool_and_process_paths() {
     let root = tempfile::tempdir().unwrap();
     let local = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
-    let spec = host.sandbox_spec("projected-acp");
+    let spec = host.realizer.sandbox_spec("projected-acp");
     assert_eq!(
         spec.isolation,
         pc::IsolationClass::Workdir,
@@ -967,7 +977,7 @@ async fn model_override_only_acp_candidate_rejects_split_process_paths() {
     let root = tempfile::tempdir().unwrap();
     let local = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
-    let spec = host.sandbox_spec("model-override-acp");
+    let spec = host.realizer.sandbox_spec("model-override-acp");
     assert_eq!(
         spec.isolation,
         pc::IsolationClass::Workdir,
@@ -1029,7 +1039,7 @@ async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
     )
     .into_session_environment();
     let host = host().await;
-    host.register_thread_resources(
+    host.realizer.register_thread_resources(
         "t",
         StagedResources {
             repositories: vec![RepositoryActivation {
@@ -1055,7 +1065,7 @@ async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
         "R9a unsafe repo mount must abort Session start"
     );
 
-    host.register_thread_resources(
+    host.realizer.register_thread_resources(
         "clone-failure",
         StagedResources {
             repositories: vec![repository_activation("repo")],
@@ -1151,7 +1161,7 @@ async fn reverse_channels_are_safe_noops_without_a_live_session() {
     // Stage a repo, but never create a session for the thread: reverse channels
     // must early-return (no live env), not panic. Memory write-through is owned
     // by the MemoryMount guard and therefore has no Host-side reverse channel.
-    host.register_thread_resources(
+    host.realizer.register_thread_resources(
         "t",
         StagedResources {
             repositories: vec![repository_activation("r")],
@@ -1502,7 +1512,7 @@ impl BatchArtifactContainer {
 
 async fn install_batch_artifact_environment(host: &SharedHost, thread: &str, workspace: &str) {
     host.register_thread_workspace(thread, workspace);
-    let spec = host.sandbox_spec(thread);
+    let spec = host.realizer.sandbox_spec(thread);
     let environment = Arc::new(
         host.create_session_environment(&host.realizer.env.session_provider, &spec)
             .await
@@ -1612,7 +1622,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
     )
     .await;
     let lease = terminal_cleanup_test_lease();
-    let spec = host.sandbox_spec("session-artifacts");
+    let spec = host.realizer.sandbox_spec("session-artifacts");
     let create_fence = lease
         .sandbox_effect_fence("session-artifacts-create")
         .unwrap();
@@ -1733,7 +1743,8 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .await
         .unwrap();
     assert!(
-        host.session_environment("session-artifacts")
+        host.realizer
+            .session_environment("session-artifacts")
             .await
             .is_none()
     );
@@ -1780,7 +1791,7 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
     )
     .await;
     let lease = terminal_cleanup_test_lease();
-    let spec = host.sandbox_spec("artifact-response-loss");
+    let spec = host.realizer.sandbox_spec("artifact-response-loss");
     let create_fence = lease
         .sandbox_effect_fence("artifact-response-loss-create")
         .unwrap();
@@ -2081,7 +2092,7 @@ async fn terminal_artifact_recovery_requires_the_root_workspace_before_catalog_i
     );
     let publisher = Arc::new(RecordingArtifactRecovery::default());
     let harvester = ArtifactHarvester {
-        session_slots: Default::default(),
+        sessions: crate::session_slot::SessionRuntimeSlots::default().realizations(),
         local_workspace: "must-not-be-used".into(),
         publisher: publisher.clone(),
     };
@@ -2339,7 +2350,7 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
     )
     .await;
     let lease = terminal_cleanup_test_lease();
-    let spec = host.sandbox_spec("session-harvest-failure");
+    let spec = host.realizer.sandbox_spec("session-harvest-failure");
     let create_fence = lease
         .sandbox_effect_fence("session-harvest-failure-create")
         .unwrap();

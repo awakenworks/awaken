@@ -143,7 +143,7 @@ async fn outcome_queries_need_no_frozen_runtime_or_environment_and_preserve_comm
                 "Q{rule} no inference"
             );
             assert!(
-                host.session_environment(&thread.0).await.is_none(),
+                host.realizer.session_environment(&thread.0).await.is_none(),
                 "Q{rule} no Environment"
             );
             assert_eq!(
