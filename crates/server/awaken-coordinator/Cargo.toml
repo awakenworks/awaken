@@ -123,6 +123,8 @@ async-trait.workspace = true
 awaken-time.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Diagnostics of a failed private rollout delivery (the closed cause travels typed).
+tracing = "0.1"
 thiserror.workspace = true
 base64 = "0.22"
 uuid = { version = "1", features = ["v7"] }

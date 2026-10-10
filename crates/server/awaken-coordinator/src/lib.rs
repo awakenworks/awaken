@@ -32,6 +32,10 @@ pub mod console;
 pub mod control_service_boundary;
 mod coordinator_component;
 mod coordinator_persistence;
+mod credential_rollout_delivery;
+pub use credential_rollout_delivery::{
+    HttpManagedCredentialRolloutTarget, credential_rollout_router_with_authenticator,
+};
 pub mod data_subject_boundary;
 mod extraction_references;
 #[cfg(test)]
