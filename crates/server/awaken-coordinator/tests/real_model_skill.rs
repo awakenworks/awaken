@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use awaken_coordinator::SkillSpec;
-use awaken_protocol_managed::test_support::DurableFact;
+use awaken_protocol_managed_testkit::DurableFact;
 use awaken_provider_genai::GenaiExecutor;
 use awaken_scenario_host::build_router_with_managed_skills;
 use axum::Router;
@@ -84,7 +84,7 @@ async fn send_message(app: &Router, session: &str, text: &str) -> serde_json::Va
     .await;
     let uri = format!("/v1/sessions/{session}/events");
     let app = app.clone();
-    awaken_protocol_managed::test_support::wait_for_session_events(
+    awaken_protocol_managed_testkit::wait_for_session_events(
         DurableFact::command_processed(&receipt),
         std::time::Duration::from_secs(90),
         "live Skill Run reply",

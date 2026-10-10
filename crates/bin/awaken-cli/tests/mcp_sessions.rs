@@ -44,7 +44,7 @@ use awaken_credential_vault::{
     OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretRef, SecretStore,
 };
 use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher};
-use awaken_protocol_managed::test_support::DurableFact;
+use awaken_protocol_managed_testkit::DurableFact;
 use awaken_runtime_contract::{CredentialRefreshAccess, TokenEndpointAuth};
 use awaken_scenario_host::McpToolModel;
 use awaken_session_configuration_contract::{
@@ -416,7 +416,7 @@ async fn wait_for_session_events(
     // W1=C1+C2=>E1; W2=C1+C3&&!C5=>E2; W3=C1+C4=>E3; W4=C5=>E4.
     let uri = format!("/v1/sessions/{session}/events?limit=500");
     let app = app.clone();
-    let list = awaken_protocol_managed::test_support::wait_for_session_events(
+    let list = awaken_protocol_managed_testkit::wait_for_session_events(
         DurableFact::command_processed(accepted_receipt),
         std::time::Duration::from_secs(10),
         expectation,

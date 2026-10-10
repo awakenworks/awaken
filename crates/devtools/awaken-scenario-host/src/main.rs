@@ -53,7 +53,7 @@ fn management_scenario_adapters(rate_limit_transition: bool) -> awaken_cli::Mana
     let adapters = awaken_cli::ManagedServiceAdapters::default()
         .with_list_price_provider(Arc::new(ScenarioListPriceProvider))
         .with_tunnel_application(Arc::new(
-            awaken_protocol_managed::test_support::EmptyManagedTunnelApplication,
+            awaken_protocol_managed_testkit::EmptyManagedTunnelApplication,
         ));
     if !rate_limit_transition {
         return adapters;

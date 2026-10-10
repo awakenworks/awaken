@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
-use awaken_protocol_managed::test_support::DurableFact;
+use awaken_protocol_managed_testkit::DurableFact;
 use awaken_runtime_contract::ExecutableAgentSnapshot;
 use awaken_runtime_contract::agent_bindings::{
     AgentBindings, ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride,

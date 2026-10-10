@@ -23,10 +23,6 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 
-use crate::env_registry::{
-    EnvUpdate, EnvironmentConfigMutation, EnvironmentFieldUpdate, EnvironmentNetworkingMutation,
-    EnvironmentPackagesMutation,
-};
 use crate::routes::{ManagedJson, ManagedQuery};
 use crate::types::environment::{
     CloudNetworkingParams, CloudNetworkingUpdateParams, DeletedEnvironment, Environment,
@@ -35,6 +31,10 @@ use crate::types::environment::{
 };
 use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 use awaken_environment_application::{EnvironmentApplication, EnvironmentApplicationError};
+use awaken_environment_contract::{
+    EnvUpdate, EnvironmentConfigMutation, EnvironmentFieldUpdate, EnvironmentNetworkingMutation,
+    EnvironmentPackagesMutation,
+};
 pub(crate) mod work_routes;
 
 /// Control-owned Environment definitions, immutable revision history, policy

@@ -3,7 +3,7 @@
 
 mod support;
 
-use awaken_protocol_managed::test_support::DurableFact;
+use awaken_protocol_managed_testkit::DurableFact;
 use awaken_scenario_host::build_dream_router_and_host;
 use awaken_service_lifecycle::run_composed_async_test;
 use axum::Router;
@@ -244,7 +244,7 @@ fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_plane(
             "/v1/sessions/{}/events",
             terminal["session_id"].as_str().unwrap()
         );
-        let auxiliary_events = awaken_protocol_managed::test_support::wait_for_session_events(
+        let auxiliary_events = awaken_protocol_managed_testkit::wait_for_session_events(
             DurableFact::committed_event("agent.tool_use"),
             std::time::Duration::from_secs(10),
             "Dream auxiliary write",

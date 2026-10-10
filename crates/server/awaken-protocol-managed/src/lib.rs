@@ -34,9 +34,6 @@ pub mod schema;
 /// from neutral domain state lives in [`project`] and the private adapter state.
 pub mod types;
 
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_support;
-
 pub use common::headers::{
     ANTHROPIC_API_VERSION, DREAMING_BETA, LEGACY_TUNNELS_BETA, MANAGED_BETA, MEMORY_BETA,
     ManagedCapability, SKILLS_BETA, TUNNELS_BETA, USER_PROFILES_BETA, parse_idempotency_key_header,
@@ -51,17 +48,15 @@ pub use resources::{
     resources_router, skills_router,
 };
 
-/// Managed Environment wire projection over the Control-owned
-/// [`env_registry::EnvRegistry`] contract and its durable adapters.
 mod dream;
+/// `BetaEnvironment` wire projection of the neutral Environment record.
 mod env_registry;
 mod inference_policy;
 mod lifecycle_delivery;
 mod preview;
 mod state;
 mod tunnel;
-/// The self-hosted environment work queue as a port ([`work_queue::WorkQueue`]),
-/// with an in-memory default; durable (sqlite/postgres) backends fold in behind it.
+/// `BetaSelfHostedWork` wire projection of the neutral WorkQueue item.
 mod work_queue;
 mod work_session_access;
 
@@ -96,6 +91,8 @@ pub use routes::{
     release_profiled_session, replace_resource_manifest, resume_profiled_session_run, router,
     submit_profiled_session_run, tunnels_router,
 };
-pub use state::{ManagedState, StateError, managed_session_id_from_idempotency};
+pub use state::{
+    COMMITTED_PREFIX_READ_CONFLICT, ManagedState, StateError, managed_session_id_from_idempotency,
+};
 pub use tunnel::{ManagedTunnelApplication, ManagedTunnelApplicationError, ManagedTunnelScope};
 pub use work_session_access::{ManagedWorkSessionAccess, work_session_guard};

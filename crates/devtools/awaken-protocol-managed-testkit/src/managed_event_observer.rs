@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::state::COMMITTED_PREFIX_READ_CONFLICT;
+use awaken_protocol_managed::COMMITTED_PREFIX_READ_CONFLICT;
 
 /// Session lifecycle Events name a boundary some Run reached, never which
 /// command caused it. `session.status_idle` published by a concurrent

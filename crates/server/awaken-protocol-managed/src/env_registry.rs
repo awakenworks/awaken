@@ -8,10 +8,7 @@
 //! the two projections the neutral crate must not name — the `BetaEnvironment` wire
 //! shape and the sandbox `NetworkPolicy` derived from a record's `config`.
 
-pub(crate) use awaken_environment_contract::{
-    EnvItem, EnvUpdate, EnvironmentConfigMutation, EnvironmentFieldUpdate,
-    EnvironmentNetworkingMutation, EnvironmentPackagesMutation,
-};
+use awaken_environment_contract::EnvItem;
 
 use crate::types::environment::Environment;
 

@@ -211,6 +211,7 @@ awaken-sandbox-policy-store = { workspace = true, features = ["test-support"] }
 awaken-session-store = { workspace = true, features = ["test-support"] }
 awaken-work-store = { workspace = true, features = ["test-support"] }
 awaken-protocol-managed = { workspace = true, features = ["test-support"] }
+awaken-protocol-managed-testkit.workspace = true
 awaken-coordinator = { workspace = true, features = ["test-support"] }
 # The management integration tests moved here from awaken-coordinator (they drive
 # build_all_in_one_router* over this process startup).
