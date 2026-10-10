@@ -66,6 +66,7 @@ INPUT_GLOBS: tuple[str, ...] = (
     "e2e/k6/*.sh",
     "deploy/images/sandbox/build.sh",
     "deploy/k3d/test_image_contract.py",
+    "CONTRIBUTING.md",
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -109,6 +110,9 @@ LANE_FILES = (
     "scripts/ci/check_formal.sh",
     "scripts/ci/check-docs.sh",
     "lefthook.yml",
+    # The contributor guide is a lane for people: a command it tells someone to
+    # run must name a script that exists and flags that script declares.
+    "CONTRIBUTING.md",
 )
 
 # Key: repository-relative path. Value: why this executable is not subject to
@@ -370,8 +374,8 @@ def abbreviation_behaviour_errors(root: Path, probes: dict[str, Probe]) -> list[
     return errors
 
 
-def lane_call_site_errors(lanes: dict[str, str], declared: dict[str, set[str]]) -> list[str]:
-    """A3: a lane may only pass a flag its target declares."""
+def lane_call_site_errors(lanes: dict[str, str], declared: dict[str, set[str]], root: Path) -> list[str]:
+    """A3: a lane may only invoke a path that exists, with flags its target declares."""
 
     errors: list[str] = []
     for lane, text in sorted(lanes.items()):
@@ -381,6 +385,9 @@ def lane_call_site_errors(lanes: dict[str, str], declared: dict[str, set[str]]) 
                 continue
             for match in LANE_INVOCATION.finditer(stripped):
                 target = match.group(1)
+                if not (root / target).exists():
+                    errors.append(f"{lane}: invokes {target}, which does not exist")
+                    continue
                 if target not in declared:
                     continue
                 for flag in LONG_FLAG.findall(match.group(2)):
@@ -434,7 +441,7 @@ def validate(root: Path) -> list[str]:
     errors = refusal_errors(probes)
     errors += abbreviation_construction_errors(python_sources(root))
     errors += abbreviation_behaviour_errors(root, probes)
-    errors += lane_call_site_errors(lanes, declared)
+    errors += lane_call_site_errors(lanes, declared, root)
     probed = [(relative, PROBE_FLAG) for relative in relatives] + abbreviation_truncations(probes)
     errors += trace_errors(root, before, probed)
     for relative, reason in sorted(ENTRY_POINT_EXEMPTIONS.items()):
@@ -464,13 +471,14 @@ def self_test() -> None:
       C10 a lane passes a flag the target declares
       C11 a lane passes a flag the target does not declare
       C12 a lane passes no flag at all
+      C15 a lane invokes a path that does not exist
     Causes, over the working tree:
       C13 a refusal writes nothing
       C14 a refusal first writes the flag as a path
     Effects: E1 admitted, E2 rejected by name.
     Rules: A1 = C1|C5 => E1; C2|C3|C4 => E2.
            A2 = C6|C8 => E1; C7|C9 => E2.
-           A3 = C10|C12 => E1; C11 => E2.
+           A3 = C10|C12 => E1; C11|C15 => E2.
            A4 = C13 => E1; C14 => E2 naming the writer.
     """
 
@@ -568,17 +576,20 @@ def self_test() -> None:
         # written for -- a lane that spells the flag its target does not have.
         declared = {"scripts/ci/strict.sh": {"--self-test"}}
         assert not lane_call_site_errors(
-            {"lane.sh": "run static x scripts/ci/strict.sh --self-test\n"}, declared
+            {"lane.sh": "run static x scripts/ci/strict.sh --self-test\n"}, declared, root
         ), "C10/E1"
         assert lane_call_site_errors(
-            {"lane.sh": "run static x scripts/ci/strict.sh --selftest\n"}, declared
+            {"lane.sh": "run static x scripts/ci/strict.sh --selftest\n"}, declared, root
         ), "C11/E2 the reported defect"
         assert not lane_call_site_errors(
-            {"lane.sh": "run static x scripts/ci/strict.sh\n"}, declared
+            {"lane.sh": "run static x scripts/ci/strict.sh\n"}, declared, root
         ), "C12/E1"
         assert not lane_call_site_errors(
-            {"lane.sh": "# scripts/ci/strict.sh --selftest\n"}, declared
+            {"lane.sh": "# scripts/ci/strict.sh --selftest\n"}, declared, root
         ), "C12/E1 a comment is documentation, not a call site"
+        assert lane_call_site_errors(
+            {"guide.md": "    scripts/ci/gone.sh --self-test\n"}, declared, root
+        ) == ["guide.md: invokes scripts/ci/gone.sh, which does not exist"], "C15/E2"
 
         # C13/C14: the committed-binary defect. `writes_flag.sh` treats its
         # argument as an output path and then refuses; A1 alone admits it.

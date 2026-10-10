@@ -150,6 +150,8 @@ verification topology, not the local onboarding path.
 
 For implementation boundaries, runtime coverage, architecture invariants, and
 documentation checks, continue to [docs/README.md](docs/README.md).
+To build, test and commit changes, start with
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
