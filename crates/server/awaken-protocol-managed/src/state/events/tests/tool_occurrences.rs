@@ -1,6 +1,190 @@
 use super::*;
 
 #[tokio::test]
+async fn wire_tool_identity_and_permission_use_the_exact_selected_message_or_pending_run() {
+    // Causes: C1 root/child reuse one call id and Message id; C2 two Messages
+    // on the root reuse that call; C3 an audited pending Run has no Message;
+    // C4 a tool-use DTO arrives without its selected source. Effects: E1 each
+    // C1-C3 public id retains its exact Thread+Message/Run+call coordinates;
+    // E2 the recorded permission comes from that same tuple; E3 C4 keeps the
+    // existing internal refusal. Rules: Q1 ordinary root/child Message => E1+E2;
+    // Q2 synthetic pending Run => E1+E2 without inheriting a Message decision;
+    // Q3 missing source => E3. These wire inputs are exactly the two production
+    // cases: one selected Message with encoder pending=None, or no Message and
+    // one index-selected historical target. The unchanged canonical index owns
+    // ambiguous/missing committed evidence, not another qualifier-side fold.
+    let state = ManagedState::new(RehydrateFake::default()).await;
+    let session = state
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent": "coder", "environment_id": "env_local"
+            }))
+            .unwrap(),
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
+        )
+        .await
+        .unwrap();
+    let run = RunId("shared-run".into());
+    let messages = [1, 2].map(|step| {
+        Message::new(
+            MessageId::assistant(&run, step),
+            Role::Assistant,
+            vec![ContentBlock::tool_use(
+                "same",
+                "read",
+                serde_json::json!({}),
+            )],
+        )
+    });
+    let audit =
+        |cursor, run_id: RunId, decision: &str| awaken_agent_contract::audit::record::Record {
+            sequence: lifecycle_cursor(cursor).0,
+            run_id,
+            kind: awaken_agent_contract::audit::kind::Kind::PermissionDecided,
+            payload: serde_json::json!({"call_id": "same", "decision": decision}),
+        };
+    let prefix = |thread_id: &str, messages: Vec<Message>, cursors, events| {
+        awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+            thread_id: ThreadId(thread_id.into()),
+            claimed_run_id: run.clone(),
+            runs: vec![],
+            latest_run_id: None,
+            messages,
+            message_commit_cursors: cursors,
+            commit_timestamps: Default::default(),
+            state: vec![],
+            state_commit_cursors: vec![],
+            events,
+            resume_tickets: vec![],
+            thread_version: 1,
+            store_cursor: 40,
+            next_commit_ordinal: 0,
+        }
+    };
+    let pending_run = RunId("pending-run".into());
+    let root = prefix(
+        &session.id,
+        messages.to_vec(),
+        vec![10, 20],
+        vec![
+            audit(10, run.clone(), "deny"),
+            audit(20, run.clone(), "allow"),
+            audit(30, pending_run.clone(), "ask"),
+        ],
+    );
+    let children = std::collections::HashMap::from([(
+        "child".into(),
+        prefix(
+            "child",
+            vec![messages[0].clone()],
+            vec![10],
+            vec![audit(10, run.clone(), "ask")],
+        ),
+    )]);
+    let historical = Default::default();
+    let index = awaken_managed_session_events::OrderIndex::new(
+        awaken_managed_session_events::OrderEvidence {
+            session_id: &session.id,
+            batches: &[],
+            closed_intervals: &[],
+            budget_reach: &[],
+            parent_terminal: Default::default(),
+            lifecycle: &[],
+            root: Some(&root),
+            children: &children,
+            links: &[],
+            outcomes: &[],
+            historical_pending: &historical,
+        },
+    );
+    let mut record = state
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&session.id)
+        .unwrap()
+        .clone();
+    record.project_recorded_permissions(&index).unwrap();
+    let pending = Pending {
+        tool_use_id: "same".into(),
+        name: "read".into(),
+        input: serde_json::json!({}),
+        client_executed: false,
+    };
+    let cases = [
+        (
+            None,
+            Some(&messages[0]),
+            messages[0].id.0.as_str(),
+            EvaluatedPermission::Deny,
+        ),
+        (
+            None,
+            Some(&messages[1]),
+            messages[1].id.0.as_str(),
+            EvaluatedPermission::Allow,
+        ),
+        (
+            Some("child"),
+            Some(&messages[0]),
+            messages[0].id.0.as_str(),
+            EvaluatedPermission::Ask,
+        ),
+        (None, None, pending_run.0.as_str(), EvaluatedPermission::Ask),
+    ];
+    let mut ids = std::collections::HashSet::new();
+    for (owner, message, source, expected) in cases {
+        let mut events = project_messages_with_mcp_ids(
+            message.map_or(&[], std::slice::from_ref),
+            message.is_none().then_some(&pending),
+            &Default::default(),
+            Default::default(),
+            &Default::default(),
+            &[],
+        );
+        ManagedState::qualify_tool_projection(&record, owner, Some(source), &[], &mut events)
+            .unwrap();
+        let tool = events
+            .iter()
+            .find(|event| ProjectedToolUseFamily::from_kind(&event.kind).is_some())
+            .unwrap();
+        let public_thread = ManagedState::public_tool_thread_id(&session.id, owner);
+        let expected_id = managed_tool_event_id(&public_thread, source, "same");
+        assert_eq!(
+            tool.id.as_deref(),
+            Some(expected_id.as_str()),
+            "Q1/Q2 exact wire identity"
+        );
+        assert!(
+            ids.insert(expected_id),
+            "Q1/Q2 all occurrence identities stay distinct"
+        );
+        assert!(
+            matches!(&tool.kind, OutboundKind::AgentToolUse {
+            evaluated_permission: Some(actual), ..
+        } if *actual == expected),
+            "Q1/Q2 exact permission: {expected:?}"
+        );
+    }
+    let mut missing = project_messages_with_mcp_ids(
+        &messages[..1],
+        None,
+        &Default::default(),
+        Default::default(),
+        &Default::default(),
+        &[],
+    );
+    let error =
+        ManagedState::qualify_tool_projection(&record, None, None, &[], &mut missing).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        RunError::internal("Managed tool call `same` has no committed message or Run identity")
+            .to_string(),
+        "Q3 original refusal, never a raw-call fallback"
+    );
+}
+
+#[tokio::test]
 async fn client_result_index_is_occurrence_exact_when_runtime_call_ids_repeat() {
     // Cause/effect graph: C1 one custom tool occurrence has a qualified public
     // id and an admitted client result; C2 a later server-executed occurrence
@@ -63,7 +247,6 @@ async fn client_result_index_is_occurrence_exact_when_runtime_call_ids_repeat() 
     ManagedState::qualify_tool_projection(
         &record,
         None,
-        &[],
         None,
         &[awaken_managed_session_events::ToolResultSource {
             source_id: "source-1".into(),
@@ -93,7 +276,6 @@ async fn client_result_index_is_occurrence_exact_when_runtime_call_ids_repeat() 
     ManagedState::qualify_tool_projection(
         &record,
         None,
-        &[],
         None,
         &[awaken_managed_session_events::ToolResultSource {
             source_id: "source-2".into(),
@@ -119,7 +301,6 @@ async fn client_result_index_is_occurrence_exact_when_runtime_call_ids_repeat() 
     ManagedState::qualify_tool_projection(
         &record,
         None,
-        &[],
         None,
         &[awaken_managed_session_events::ToolResultSource {
             source_id: "source-1".into(),

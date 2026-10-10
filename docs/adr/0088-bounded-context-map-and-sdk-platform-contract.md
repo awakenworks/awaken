@@ -16,6 +16,8 @@
   `awaken-agent-contract`)
 - Amended: 2026-10-10 (the dispatch contract stops depending on Session contracts;
   public paths that moved and their awaken-cloud impact)
+- Amended: 2026-10-11 (provider checkpoint capture input has its own name;
+  Session authorization and checkpoint object bytes are unchanged)
 
 ## Context
 
@@ -266,4 +268,31 @@ A row built as at `retained_session.rs:49` carries no typed requirements, so cla
 admission takes the legacy full-decode path for it; that stays correct until the
 fallback is removed, after which the helper must also set
 `placement.session_mcp_credentials` from `.dispatch()`.
+
+## Amendment 2026-10-11: checkpoint capture and Session authorization are distinct
+
+The two `SandboxCheckpointRequest` definitions are different boundary values.
+The Session-owned value carries the complete durable operation, activity epoch,
+realization lease, generation and exact source binding. The provisioning value
+names the format, bounds and object metadata for capturing, packing and
+persisting the physical filesystem; it does not grant a Session effect.
+
+Rename only `awaken_provisioning_contract::SandboxCheckpointRequest` to
+`awaken_provisioning_contract::SandboxCheckpointCaptureRequest`, without a
+compatibility alias. The Session definition keeps its name and fields. Runtime
+reuses its one `provisioning_checkpoint_request` projection for ordinary suspension
+and terminal takeover. Capture, WAL, object writes and receipt replay still require
+the separate effect fence and current execution authority, then the Session root
+admits the exact receipt through its existing CAS. No new mechanism is added.
+
+All request fields, `CheckpointObjectMetadata`, `SandboxCheckpointRef`, upload
+fingerprints and marker JSON remain unchanged. Neither request is a serialized
+wire DTO. This is a Rust path change, not an object or persistence migration.
+
+awaken-cloud's `awaken-hosting-durable` must use the new provisioning name in
+`src/container_continuation.rs`, `src/container_continuation/upload.rs`,
+`src/container_continuation/tests.rs` and
+`src/container_continuation/tests/upload_tests.rs`. Its capture implementation and
+tests must compile against the matching Native candidate before their dependency
+pin advances; an older Cloud checkout still naming the old type is not compatible.
 

@@ -363,34 +363,16 @@ impl ManagedState {
         public_thread_id(session_id, owner_thread_id.unwrap_or(session_id))
     }
 
-    pub(super) fn tool_call_sources(
-        messages: &[awaken_agent_contract::agent::message::Message],
-    ) -> std::collections::HashMap<String, std::collections::VecDeque<String>> {
-        let mut sources =
-            std::collections::HashMap::<String, std::collections::VecDeque<String>>::new();
-        for message in messages.iter().filter(|message| {
-            message.role == awaken_agent_contract::agent::message::Role::Assistant
-        }) {
-            for block in &message.content {
-                if let ContentBlock::ToolUse { id, .. } = block {
-                    sources
-                        .entry(id.clone())
-                        .or_default()
-                        .push_back(message.id.0.clone());
-                }
-            }
-        }
-        sources
-    }
-
     /// Qualify every tool-use identity at the sole event append boundary, and
     /// rewrite all references to that public identity. The Runtime call id stays
     /// inside the reversible encoding and is decoded only at command admission.
+    /// Callers project one selected Message or one index-authorized synthetic
+    /// Awaiting target at a time and supply its exact Message/Run source. This
+    /// wire stage does not refold committed occurrences or choose a fallback.
     pub(super) fn qualify_tool_projection(
         record: &SessionRecord,
         owner_thread_id: Option<&str>,
-        messages: &[awaken_agent_contract::agent::message::Message],
-        synthetic_source_run_id: Option<&awaken_agent_contract::agent::run::Id>,
+        call_source_id: Option<&str>,
         result_sources: &[awaken_managed_session_events::ToolResultSource],
         events: &mut Vec<ProjectedEvent>,
     ) -> Result<(), StateError> {
@@ -413,7 +395,6 @@ impl ManagedState {
                 _ => None,
             })
             .collect::<std::collections::HashSet<_>>();
-        let mut sources = Self::tool_call_sources(messages);
         let mut tool_index = record.projected_tool_index_for(owner_thread_id);
         let mut result_sources = result_sources.iter();
         let mut qualified = Vec::with_capacity(events.len());
@@ -446,17 +427,13 @@ impl ManagedState {
                         "Managed tool-use projection is missing its Runtime call id",
                     ))
                 })?;
-                let source_id = sources
-                    .get_mut(runtime_call_id)
-                    .and_then(std::collections::VecDeque::pop_front)
-                    .or_else(|| synthetic_source_run_id.map(|run_id| run_id.0.clone()))
-                    .ok_or_else(|| {
+                let source_id = call_source_id.ok_or_else(|| {
                         StateError::Run(RunError::internal(format!(
                             "Managed tool call `{runtime_call_id}` has no committed message or Run identity"
                         )))
                     })?;
                 let public_id =
-                    managed_tool_event_id(&public_thread_id, &source_id, runtime_call_id);
+                    managed_tool_event_id(&public_thread_id, source_id, runtime_call_id);
                 tool_index.observe_tool_use(runtime_call_id, public_id.clone(), family);
                 event.id = Some(public_id);
                 Some(source_id)
@@ -468,7 +445,7 @@ impl ManagedState {
             // look identical in the transcript, so only this record can tell
             // them apart — and reporting a refusal as `allow` tells a client the
             // call it blocked went through.
-            record.apply_recorded_permission(owner_thread_id, source_id.as_deref(), &mut event);
+            record.apply_recorded_permission(owner_thread_id, source_id, &mut event);
             match &mut event.kind {
                 OutboundKind::AgentToolResult {
                     tool_use_id,

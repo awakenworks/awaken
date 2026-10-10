@@ -72,7 +72,7 @@ pub trait EnvironmentLifecycle: Send + Sync {
     /// or refuse when the backing sandbox cannot checkpoint.
     async fn checkpoint_for_effect(
         &self,
-        request: &pc::SandboxCheckpointRequest,
+        request: &pc::SandboxCheckpointCaptureRequest,
         store: &dyn pc::SandboxCheckpointStore,
         effect_fence: &pc::SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
@@ -81,7 +81,7 @@ pub trait EnvironmentLifecycle: Send + Sync {
     /// Remove the checkpoint a terminal Session no longer needs.
     async fn cleanup_checkpoint_for_terminal(
         &self,
-        request: &pc::SandboxCheckpointRequest,
+        request: &pc::SandboxCheckpointCaptureRequest,
         store: &dyn pc::SandboxCheckpointStore,
         expected_effect_fence: &pc::SandboxEffectFence,
         terminal_effect_fence: &pc::SandboxEffectFence,

@@ -521,3 +521,108 @@ async fn session_usage_reads_closed_intervals_only_and_never_the_read_clock() {
         "R1/E2 only closed intervals count"
     );
 }
+
+#[tokio::test]
+async fn historical_usage_prefix_failure_preserves_warm_frame_and_repair_rebuilds_identically() {
+    // Causes: C1 an unowned lifecycle period closes at commit 25; C2 cumulative
+    // usage Sets commit at 20/30; C3 recovery omits their coordinates; C4 a
+    // warm reader or independent cold reader consumes the repaired prefix.
+    // Effects: E1 C1+C2 publishes exactly 5 tokens at the close, not the later
+    // 15-token cell; E2 C3 fails the actual candidate with its existing internal
+    // fault and preserves the warm frame; E3 both C4 values publish identical
+    // durable ids/payloads. Rules: U1 C1+C2+C3 => E2; U2 after coordinate repair
+    // => E1+E3. This exercises the migrated usage rule through the real async
+    // refresh and fallback-close adapter, not a second historical reducer.
+    use awaken_agent_contract::agent::state::{Command, MergePolicy, Scope};
+    let runtime = LifecycleRuntime::default();
+    let repository = Arc::new(ephemeral_session_repo().await);
+    let replica = || async {
+        let state = ManagedState::new(runtime.clone())
+            .await
+            .with_session_repo(repository.clone());
+        state.disable_warm_cold_oracle();
+        state
+    };
+    let warm = replica().await;
+    let session = warm
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent": "coder", "environment_id": "env_local"
+            }))
+            .unwrap(),
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
+        )
+        .await
+        .unwrap();
+    let run = RunId("historical-usage".into());
+    runtime.lifecycle.lock().unwrap().extend([
+        lifecycle(
+            10,
+            &session.id,
+            &run,
+            RunLifecycleEventKind::Running,
+            RunState::Running,
+        ),
+        lifecycle(
+            25,
+            &session.id,
+            &run,
+            RunLifecycleEventKind::Completed,
+            RunState::Ended(EndCause::NaturalEnd),
+        ),
+    ]);
+    *runtime.state.lock().unwrap() = [5, 15]
+        .map(|input_tokens| {
+            let mut usage = awaken_runtime_contract::llm::ThreadUsage::default();
+            usage.record(
+                "model",
+                awaken_agent_contract::audit::model_request::TokenUsage {
+                    prompt_tokens: input_tokens,
+                    ..Default::default()
+                },
+            );
+            Command::set(
+                Scope::Thread,
+                MergePolicy::Commutative,
+                awaken_runtime_contract::llm::THREAD_USAGE_STATE_KEY,
+                serde_json::to_value(usage).unwrap(),
+            )
+        })
+        .into();
+    let before = warm
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&session.id)
+        .unwrap()
+        .clone();
+    let error = warm
+        .refresh_committed_events(&session.id)
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("state recovery omitted commit coordinates"),
+        "U1: {error}"
+    );
+    assert_record_frame_eq(
+        warm.sessions.lock().unwrap().get(&session.id).unwrap(),
+        &before,
+    );
+    *runtime.state_cursors.lock().unwrap() = vec![20, 30];
+    warm.refresh_committed_events(&session.id).await.unwrap();
+    let history = super::timeline_scenarios::durable_history(&warm, &session.id);
+    let usage = history
+        .iter()
+        .find(|event| event.1["type"] == "session.usage")
+        .unwrap();
+    assert_eq!(usage.1["usage"]["input_tokens"], 5, "U2 historical close");
+    let cold = replica().await;
+    cold.refresh_committed_events(&session.id).await.unwrap();
+    assert_eq!(
+        super::timeline_scenarios::durable_history(&cold, &session.id),
+        history,
+        "U2 warm/cold ids and bytes"
+    );
+}

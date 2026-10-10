@@ -1847,7 +1847,7 @@ impl pc::Sandbox for LocalSandbox {
 impl pc::CheckpointingSandbox for LocalSandbox {
     async fn checkpoint_for_effect(
         &self,
-        request: &pc::SandboxCheckpointRequest,
+        request: &pc::SandboxCheckpointCaptureRequest,
         store: &dyn pc::SandboxCheckpointStore,
         effect_fence: &pc::SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
@@ -1858,7 +1858,7 @@ impl pc::CheckpointingSandbox for LocalSandbox {
 
     async fn cleanup_checkpoint_for_terminal(
         &self,
-        request: &pc::SandboxCheckpointRequest,
+        request: &pc::SandboxCheckpointCaptureRequest,
         store: &dyn pc::SandboxCheckpointStore,
         expected_effect_fence: &pc::SandboxEffectFence,
         terminal_effect_fence: &pc::SandboxEffectFence,

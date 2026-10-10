@@ -188,7 +188,7 @@ use pc::Sandbox as _;
 
 fn exact_restore_request(
     spec: &pc::SandboxSpec,
-    checkpoint_request: &pc::SandboxCheckpointRequest,
+    checkpoint_request: &pc::SandboxCheckpointCaptureRequest,
     checkpoint: &pc::SandboxCheckpointRef,
     operation: &str,
 ) -> pc::SandboxRestoreRequest {

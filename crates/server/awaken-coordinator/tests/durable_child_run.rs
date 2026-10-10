@@ -206,10 +206,12 @@ async fn durable_child_run_scenario() {
         ),
     };
 
-    assert!(matches!(
+    assert!(
+        matches!(result.state, RunState::Ended(EndCause::NaturalEnd)),
+        "parent resumed to {:?}; durable rows={:?}",
         result.state,
-        RunState::Ended(EndCause::NaturalEnd)
-    ));
+        memory.list_dispatches().await
+    );
     assert!(
         memory
             .list_dispatches()

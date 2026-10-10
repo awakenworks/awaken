@@ -17,10 +17,12 @@ use crate::host_error::to_run_error;
 /// The Runtime Host is the sole adapter from aggregate checkpoint intent to
 /// provider byte-custody input. Ordinary suspension and terminal takeover both
 /// call this projection so metadata, expiry, and effect identity cannot drift.
+/// Session activity/source/lease coordinates stay on the aggregate-side request;
+/// this capture input neither grants authority nor replaces the separate fence.
 pub(super) fn provisioning_checkpoint_request(
     request: &awaken_session_state_contract::SandboxCheckpointRequest,
-) -> awaken_provisioning_contract::SandboxCheckpointRequest {
-    awaken_provisioning_contract::SandboxCheckpointRequest {
+) -> awaken_provisioning_contract::SandboxCheckpointCaptureRequest {
+    awaken_provisioning_contract::SandboxCheckpointCaptureRequest {
         workspace_id: request.workspace_id.clone(),
         session_id: request.session_id.to_string(),
         generation_id: request.generation.id().to_owned(),

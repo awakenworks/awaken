@@ -60,8 +60,7 @@ pub(super) fn project_committed_message(
     ManagedState::qualify_tool_projection(
         record,
         owner_thread_id,
-        std::slice::from_ref(&selected.message),
-        fold.source_run_id,
+        Some(&selected.message.id.0),
         &sources,
         &mut events,
     )?;

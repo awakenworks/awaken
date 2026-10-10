@@ -35,8 +35,7 @@ impl ManagedState {
             Self::qualify_tool_projection(
                 record,
                 owner_thread_id,
-                &[],
-                Some(&tool.run_id),
+                Some(&tool.run_id.0),
                 &[],
                 &mut projected,
             )?;

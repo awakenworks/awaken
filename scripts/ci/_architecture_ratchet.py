@@ -12,6 +12,9 @@ corpus and the one comparison they share:
   same commit, so the file records the real state. A rule with ``slack`` (a line
   count) may float below its baseline and must be re-recorded only once it falls
   ``slack`` or more below it;
+* no mode, or ``--check``, checks the tree without changing the baseline;
+* ``--tighten`` records a smaller tree against an existing baseline, refuses
+  every increase (including a newly measured rule), and checks hard rules first;
 * ``--write-baseline`` records the current tree. It refuses to raise a number
   unless ``--reason`` says why, and keeps that reason next to the number. A
   missing baseline file, or a rule the file does not hold yet (a rule added to
@@ -133,30 +136,50 @@ def main(
 ) -> int:
     parser = argparse.ArgumentParser(prog=prog, description=description, allow_abbrev=False,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--self-test", action="store_true", help="run the decision table")
-    parser.add_argument("--write-baseline", action="store_true", help="record the current tree (never raises a "
-                        "number without --reason)")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--self-test", action="store_true", help="run the decision table")
+    modes.add_argument("--check", action="store_true", help="check without writing (the default)")
+    modes.add_argument("--tighten", action="store_true", help="record decreases only in an existing baseline")
+    modes.add_argument("--write-baseline", action="store_true", help="record the current tree (never raises a "
+                       "number without --reason)")
     parser.add_argument("--reason", help="with --write-baseline: why a recorded number is allowed to grow")
     args = parser.parse_args(argv)
+    if args.reason is not None and not args.write_baseline:
+        print("usage: --reason only applies to --write-baseline", file=sys.stderr)
+        return 2
     if args.self_test:
         self_test()
         return 0
-    if args.reason and not args.write_baseline:
-        print("usage: --reason only applies to --write-baseline", file=sys.stderr)
-        return 2
     counts, places = measure()
     exists = baseline_path.exists()
     previous = json.loads(baseline_path.read_text(encoding="utf-8")) if exists else {}
-    if args.write_baseline:
-        grown = growth(rules, counts, previous)
-        if exists and grown and not args.reason:
+    if args.write_baseline or args.tighten:
+        if args.tighten and not exists:
+            print("ERROR: --tighten requires an existing baseline; initialize it with --write-baseline",
+                  file=sys.stderr)
+            return 1
+        if args.tighten and hard_rules:
+            errors = hard_rules()
+            if errors:
+                for error in errors:
+                    print(f"ERROR: {error}", file=sys.stderr)
+                return 1
+        # First writes may initialize a rule, but tightening must compare every
+        # measured rule with its held count (zero when absent).
+        held = {rule.name: previous.get(rule.name, {}) for rule in rules} if args.tighten else previous
+        grown = growth(rules, counts, held)
+        if exists and grown and (args.tighten or not args.reason):
             for item in grown:
                 print(f"ERROR: baseline would grow: {item}", file=sys.stderr)
-            print("Pass --reason '<why this must grow>' to record the growth.", file=sys.stderr)
+            print("Use --write-baseline --reason '<why this must grow>' to record the growth.", file=sys.stderr)
             return 1
         comment = (f"Shrink-only ratchet of scripts/ci/{prog} (ADR-0091). Numbers may only fall; write it with "
                    f"`python3 scripts/ci/{prog} --write-baseline`; raising one needs --reason, kept in growth_reasons.")
-        document = render(rules, counts, previous, args.reason, comment)
+        document = render(rules, counts, previous, args.reason,
+                          previous.get("$comment", comment) if args.tighten else comment)
+        if args.tighten and document == previous:
+            print(f"{baseline_path.name} is already tight")
+            return 0
         baseline_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
         print(f"wrote {baseline_path.name}")
         return 0
@@ -166,6 +189,77 @@ def main(
     if not errors:
         print(f"OK - {prog} ratchets hold.")
     return 1 if errors else 0
+
+
+def _selftest_cli() -> None:
+    """CLI cause/effect table over the existing comparison and writer.
+
+    Causes: mode, baseline presence, equal/lower/higher or newly measured
+    counts, hard-rule failure, and whether a growth reason was supplied.
+    Constraints: modes are exclusive; reasons belong only to explicit writes.
+    Effects: exit status, whether measurement ran, and exact baseline bytes.
+    C1 default/check -> read-only; C2 tighten lower -> shrink; C3 equal -> no
+    write; C4 growth/new key/new rule -> refuse without changing bytes; C5
+    missing baseline -> refuse without creating it; C6 hard failure -> refuse;
+    C7 explicit first write/reasoned growth -> existing writer; C8 invalid
+    modes/reasons -> usage before measurement; C9 self-test -> no measurement.
+    """
+    import contextlib
+    import io
+    import tempfile
+
+    rules = (Rule("r", "fix"), Rule("new", "fix"))
+    held = {"$comment": "fixture", "r": {"a": 2}, "new": {}}
+
+    def invoke(argv, counts, baseline=held, hard=()):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "baseline.json"
+            if baseline is not None:
+                path.write_text(json.dumps(baseline) + "\n", encoding="utf-8")
+            before = path.read_bytes() if path.exists() else None
+            observed = []
+
+            def measure():
+                observed.append("measured")
+                return counts, {}
+
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                try:
+                    status = main(argv, prog="fixture.py", description="fixture", rules=rules,
+                                  measure=measure, baseline_path=path, self_test=lambda: None,
+                                  hard_rules=lambda: list(hard))
+                except SystemExit as error:
+                    status = error.code
+            after = path.read_bytes() if path.exists() else None
+            return status, before, after, observed
+
+    equal = {"r": {"a": 2}, "new": {}}
+    for argv in ([], ["--check"], ["--tighten"]):
+        status, before, after, observed = invoke(argv, equal)
+        assert status == 0 and before == after and observed, f"C1/C3 {argv}"
+    status, _, after, _ = invoke(["--tighten"], {"r": {"a": 1}})
+    assert status == 0 and json.loads(after)["r"] == {"a": 1}, "C2 shrink"
+    for counts, baseline in (({"r": {"a": 3}}, held), ({"r": {"b": 1}}, held),
+                             ({"r": {"a": 2}, "new": {"k": 1}}, {"r": {"a": 2}})):
+        status, before, after, _ = invoke(["--tighten"], counts, baseline)
+        assert status == 1 and before == after, "C4 no growth, new key or first rule"
+    status, before, after, _ = invoke(["--tighten"], equal, None)
+    assert status == 1 and before is None and after is None, "C5 no initialization"
+    status, before, after, _ = invoke(["--tighten"], {"r": {"a": 1}}, hard=("hard failure",))
+    assert status == 1 and before == after, "C6 hard rules before writing"
+    status, _, after, _ = invoke(["--write-baseline"], equal, None)
+    assert status == 0 and json.loads(after)["r"] == {"a": 2}, "C7 first write retained"
+    status, before, after, _ = invoke(["--write-baseline"], {"r": {"a": 3}})
+    assert status == 1 and before == after, "C7 reason required for growth"
+    status, _, after, _ = invoke(["--write-baseline", "--reason", "necessary"], {"r": {"a": 3}})
+    assert status == 0 and json.loads(after)["growth_reasons"]["r"]["a"] == "necessary", "C7 reason"
+    for argv in (["--check", "--tighten"], ["--self-test", "--write-baseline"],
+                 ["--tighten", "--reason", "growth"], ["--check", "--reason", "growth"],
+                 ["--tighten", "--reason", ""]):
+        status, before, after, observed = invoke(argv, equal)
+        assert status == 2 and before == after and not observed, f"C8 {argv}"
+    status, before, after, observed = invoke(["--self-test"], equal)
+    assert status == 0 and before == after and not observed, "C9 self-test only"
 
 
 def selftest() -> None:
@@ -204,4 +298,5 @@ def selftest() -> None:
     assert first["new"] == {"k": 5} and "growth_reasons" not in first, f"B6 render {first}"
     assert "baseline 0" in compare(added, {"r": {"a": 2}, "lines": {"c": 100}, "new": {"k": 5}}, {}, held,
                                    "b.json")[0], "B6 check before the first write"
+    _selftest_cli()
     print("_architecture_ratchet selftest: the decision table holds")

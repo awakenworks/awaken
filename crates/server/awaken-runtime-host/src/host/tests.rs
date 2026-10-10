@@ -1889,7 +1889,7 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
 impl pc::CheckpointingSandbox for TerminalRecoveryEnvironment {
     async fn checkpoint_for_effect(
         &self,
-        _request: &pc::SandboxCheckpointRequest,
+        _request: &pc::SandboxCheckpointCaptureRequest,
         _store: &dyn pc::SandboxCheckpointStore,
         _effect_fence: &pc::SandboxEffectFence,
         _authority: &dyn pc::CurrentExecutionAuthority,
@@ -1901,7 +1901,7 @@ impl pc::CheckpointingSandbox for TerminalRecoveryEnvironment {
 
     async fn cleanup_checkpoint_for_terminal(
         &self,
-        _request: &pc::SandboxCheckpointRequest,
+        _request: &pc::SandboxCheckpointCaptureRequest,
         _store: &dyn pc::SandboxCheckpointStore,
         _expected_effect_fence: &pc::SandboxEffectFence,
         terminal_effect_fence: &pc::SandboxEffectFence,
