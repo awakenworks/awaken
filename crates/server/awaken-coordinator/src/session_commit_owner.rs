@@ -22,6 +22,16 @@ impl SessionCommitOwner {
     }
 }
 
+#[async_trait::async_trait]
+impl ClaimedOperationCoordinatorResolver for SessionCommitOwner {
+    async fn resolve(
+        &self,
+        session_thread_id: &ThreadId,
+    ) -> Result<Arc<dyn OperationCoordinator>, ApplicationError> {
+        awaken_session_executor::session_commit_owner(&self.0, session_thread_id).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -51,15 +61,5 @@ mod tests {
             .await
             .expect("shared binding reuses the Host boundary");
         assert!(host.registered_thread_workspace(&thread.0).is_none());
-    }
-}
-
-#[async_trait::async_trait]
-impl ClaimedOperationCoordinatorResolver for SessionCommitOwner {
-    async fn resolve(
-        &self,
-        session_thread_id: &ThreadId,
-    ) -> Result<Arc<dyn OperationCoordinator>, ApplicationError> {
-        awaken_session_executor::session_commit_owner(&self.0, session_thread_id).await
     }
 }
