@@ -7,6 +7,7 @@
 //! `awaken-control` ports. It contains no Control business implementation.
 
 use super::*;
+use awaken_credential_vault::VaultApplication;
 
 fn managed_runtime_available_at_control_origin(
     role: config::Role,
@@ -333,7 +334,7 @@ pub(super) async fn prepare_control_routers(
         .clone()
         .or(credential_rollout_target);
     if let Some(target) = credential_rollout_target {
-        component.vault_state.set_rollout_target(target);
+        VaultApplication::set_rollout_target(component.vault_state.application(), target);
     }
     let webhook_delivery: Arc<dyn awaken_session_application_contract::LifecycleFactDelivery> = {
         let control = stores

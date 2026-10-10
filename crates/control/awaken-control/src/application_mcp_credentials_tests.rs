@@ -225,7 +225,7 @@ async fn hosted_application_bearer_http_contract_is_stable_and_rotatable() {
 
     let target = Arc::new(AdoptionTarget::default());
     target.pending.store(true, Ordering::SeqCst);
-    state.set_rollout_target(target.clone());
+    state.application().set_rollout_target(target.clone());
     let (_, pending_target) = call(
         &app,
         "workspace-a",

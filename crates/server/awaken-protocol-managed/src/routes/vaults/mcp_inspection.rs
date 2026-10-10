@@ -58,18 +58,13 @@ impl VaultState {
         workspace: &str,
     ) -> Result<Vec<McpCredentialChoice>, CredentialError> {
         let mut choices = Vec::new();
-        for vault in self.repository.list_vaults(workspace).await? {
-            if !vault.accepts_child_mutation() {
-                continue;
-            }
-            for credential in self
-                .repository
-                .list_vault_credentials(workspace, &vault.id)
+        for vault in self.application.executable_vaults(workspace).await? {
+            let credentials = self
+                .application
+                .executable_credentials(workspace, &vault.id)
                 .await?
-            {
-                if !credential.lifecycle.is_active() {
-                    continue;
-                }
+                .unwrap_or_default();
+            for credential in credentials {
                 let (credential_url, auth_type) = match &credential.auth {
                     AuthRecord::StaticBearer { mcp_server_url } => {
                         (mcp_server_url, "static_bearer")
@@ -79,7 +74,7 @@ impl VaultState {
                 };
                 let target = awaken_session_mcp_contract::McpTarget::parse_http(credential_url)
                     .map_err(|e| CredentialError::InvalidSource(e.to_string()))?;
-                let source = self.repository.get(&credential.source_id).await?;
+                let source = self.application.source(&credential.source_id).await?;
                 if inspection_source_admitted(&source, workspace, credential_url).is_err() {
                     continue;
                 }
@@ -123,7 +118,7 @@ impl VaultState {
             McpProbeStatus::Invalid { http_status } => ("invalid", Some(http_status)),
             McpProbeStatus::Unknown => ("unknown", None),
         };
-        let checked_at = self.clock_reading_rfc3339()?;
+        let checked_at = self.application.clock_reading_rfc3339()?;
         Ok(McpInspectionView {
             status,
             http_status,
@@ -157,10 +152,8 @@ impl VaultState {
         source_id: &CredentialSourceId,
         config: awaken_credential_vault::catalog::ManagedMcpOauthRefresh,
     ) -> Option<awaken_session_configuration_contract::RefreshExchangeOutcome> {
-        let source = self.repository.get(source_id).await.ok()?;
-        let revision = u64::try_from(source.version).ok()?;
-        let access = oauth_refresh_access(&source, revision, config).ok()?;
-        Some(exchange.exchange(source.id.clone(), access).await)
+        let (source_id, access) = self.application.refresh_access(source_id, config).await?;
+        Some(exchange.exchange(source_id, access).await)
     }
 
     async fn run_mcp_inspection(
@@ -195,8 +188,8 @@ impl VaultState {
         };
         let bearer = if let Some(choice) = &choice {
             let source = self
-                .repository
-                .get(&CredentialSourceId(choice.source.id.clone()))
+                .application
+                .source(&CredentialSourceId(choice.source.id.clone()))
                 .await?;
             if u64::try_from(source.version).ok() != Some(choice.source.revision) {
                 return Err(CredentialError::MutationConflict(
@@ -204,26 +197,26 @@ impl VaultState {
                 ));
             }
             inspection_source_admitted(&source, workspace, url)?;
-            let record = self
-                .repository
-                .get_vault_credential(workspace, &choice.id)
-                .await?
-                .filter(|record| {
-                    record.lifecycle.is_active()
-                        && record.source_id.0 == choice.source.id
-                        && record.vault_id == choice.vault_id
-                })
-                .ok_or_else(|| CredentialError::NotActive(choice.id.clone()))?;
-            let _ = record;
+            match self
+                .application
+                .active_credential(workspace, &choice.vault_id, &choice.id)
+                .await
+            {
+                Ok(record) if record.source_id.0 == choice.source.id => {}
+                Ok(_) | Err(VaultCommandError::NotFound(_)) => {
+                    return Err(CredentialError::NotActive(choice.id.clone()));
+                }
+                Err(VaultCommandError::Store(error)) => return Err(error),
+                Err(error) => return Err(CredentialError::Storage(error.to_string())),
+            }
             if !self
-                .repository
-                .get_vault(workspace, &choice.vault_id)
+                .application
+                .has_vault(workspace, &choice.vault_id)
                 .await?
-                .is_some_and(|vault| vault.accepts_child_mutation())
             {
                 return Err(CredentialError::NotActive(choice.vault_id.clone()));
             }
-            Some(awaken_credential_vault::materialize(&source, self.secrets.as_ref()).await?)
+            Some(self.application.open_material(&source).await?)
         } else {
             None
         };
@@ -258,76 +251,16 @@ impl VaultState {
     }
 }
 
-/// Compile the exact OAuth refresh/reseal instruction for one credential
-/// revision from its persisted refresh configuration and sealed material refs.
-pub(super) fn oauth_refresh_access(
-    source: &awaken_credential_vault::CredentialSource,
-    revision: u64,
-    refresh: McpOauthRefreshRecord,
-) -> Result<
-    awaken_credential_contract::CredentialRefreshAccess,
-    awaken_credential_vault::CredentialError,
-> {
-    let source_id = &source.id;
-    let access_token_ref = source
-        .material_ref
-        .as_ref()
-        .ok_or_else(|| {
-            awaken_credential_vault::CredentialError::MissingMaterialRef(source_id.0.clone())
-        })?
-        .0
-        .clone();
-    let refresh_token_ref = source
-        .auxiliary_material_ref(OAUTH_REFRESH_TOKEN_SLOT)
-        .ok_or_else(|| {
-            awaken_credential_vault::CredentialError::MissingMaterialRef(format!(
-                "{}:{OAUTH_REFRESH_TOKEN_SLOT}",
-                source_id.0
-            ))
-        })?
-        .0
-        .clone();
-    let client_secret_ref = match refresh.token_endpoint_auth {
-        awaken_credential_contract::TokenEndpointAuth::None => None,
-        awaken_credential_contract::TokenEndpointAuth::ClientSecretBasic
-        | awaken_credential_contract::TokenEndpointAuth::ClientSecretPost => Some(
-            source
-                .auxiliary_material_ref(OAUTH_CLIENT_SECRET_SLOT)
-                .ok_or_else(|| {
-                    awaken_credential_vault::CredentialError::MissingMaterialRef(format!(
-                        "{}:{OAUTH_CLIENT_SECRET_SLOT}",
-                        source_id.0
-                    ))
-                })?
-                .0
-                .clone(),
-        ),
-    };
-    Ok(awaken_credential_contract::CredentialRefreshAccess::new(
-        revision,
-        refresh.token_endpoint,
-        refresh.client_id,
-        refresh.token_endpoint_auth,
-        client_secret_ref,
-        refresh_token_ref,
-        access_token_ref,
-        refresh.scope,
-        refresh.resource,
-    ))
-}
-
 pub(super) async fn validate_credential(
     State(state): State<Arc<VaultState>>,
     RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
     Path((vault_id, id)): Path<(String, String)>,
 ) -> Result<Json<CredentialValidation>, WireError> {
     let record = state
-        .repository
-        .get_vault_credential(&workspace_id, &id)
+        .application
+        .active_credential(&workspace_id, &vault_id, &id)
         .await
-        .map_err(storage_error)?
-        .filter(|c| c.vault_id == vault_id && c.lifecycle.is_active())
-        .ok_or_else(|| not_found("credential"))?;
+        .map_err(command_error)?;
     let (mcp_server_url, refresh_config) = match &record.auth {
         AuthRecord::McpOauth {
             mcp_server_url,
@@ -384,7 +317,10 @@ pub(super) async fn validate_credential(
         mcp_probe = evidence.failure.map(CredentialMcpProbe::from);
     }
     // The validation is performed now: stamp the instant its verdict settled.
-    let validated_at = state.clock_reading_rfc3339().map_err(storage_error)?;
+    let validated_at = state
+        .application
+        .clock_reading_rfc3339()
+        .map_err(storage_error)?;
     Ok(Json(CredentialValidation {
         credential_id: id,
         has_refresh_token,
@@ -445,6 +381,7 @@ fn inspection_source_admitted(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_credential_contract::{CredentialPurpose, CredentialUsage};
     #[test]
     fn inspection_admission_requires_every_source_authority_condition() {
         // Graph: Workspace AND active AND positive revision AND executable

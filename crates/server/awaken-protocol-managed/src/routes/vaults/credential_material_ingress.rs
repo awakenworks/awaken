@@ -12,20 +12,12 @@
 //! This adapter owns no consumer configuration, material, or source state. It
 //! compiles a caller-declared provider/target/usage/material tuple and delegates
 //! sealing, idempotent creation, exact-revision rotation, and retirement to the
-//! existing Credential WAL/CAS operations implemented by the parent `VaultState`.
-
-use std::collections::BTreeMap;
+//! existing Credential WAL/CAS operations of the credential context's
+//! `VaultApplication`.
 
 use awaken_credential_contract::{
-    CredentialDescriptor, CredentialMaterialDescriptor, CredentialSourceId,
-    CredentialTargetContract, OPAQUE_SECRET_MATERIAL_TYPE,
-};
-use awaken_credential_vault::repo::{
-    CredentialMaterialPatch, CredentialRetirement, revoke_credential_exact,
-    rotate_credential_materials_exact,
-};
-use awaken_credential_vault::{
-    CredentialCreateParams as DomainCredentialCreateParams, CredentialKind, CredentialStatus,
+    CredentialDescriptor, CredentialMaterialDescriptor, CredentialTargetContract,
+    OPAQUE_SECRET_MATERIAL_TYPE,
 };
 use awaken_session_application::{
     CredentialMaterialIngress, CredentialMaterialIngressCommand, CredentialMaterialIngressReceipt,
@@ -54,31 +46,12 @@ impl CredentialMaterialIngress for VaultState {
             material_descriptor,
             [CredentialTargetContract::new(target, usage)],
         );
-        let entry = awaken_credential_vault::repo::enter_credential_idempotent_described(
-            source_id,
-            DomainCredentialCreateParams {
-                workspace_id: workspace_id.to_string(),
-                kind: CredentialKind::Vault,
-                provider_id: None,
-                env_key: None,
-                secret: Some(material),
-                oauth_command: None,
-            },
-            None,
-            descriptor,
-            self.secrets.as_ref(),
-            self.repository.as_ref(),
-            self.clock.as_ref(),
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-        let revision = u64::try_from(entry.source.version)
-            .map_err(|_| "credential revision exceeds the Session range".to_string())?;
+        let entry = self
+            .application
+            .enter_material(source_id, &workspace_id, descriptor, material)
+            .await?;
         Ok(CredentialMaterialIngressReceipt {
-            credential: awaken_credential_contract::CredentialRef {
-                id: entry.source.id.0,
-                revision,
-            },
+            credential: entry.credential,
             provenance: if entry.created {
                 SessionParticipantProvenance::Applied
             } else {
@@ -105,53 +78,15 @@ impl CredentialMaterialIngress for VaultState {
             material_descriptor,
             [CredentialTargetContract::new(target, usage)],
         );
-        let current = self
-            .repository
-            .get(&source_id)
+        self.application
+            .rotate_material(
+                &source_id,
+                expected_revision,
+                &workspace_id,
+                &expected_descriptor,
+                encoded_material,
+            )
             .await
-            .map_err(|error| error.to_string())?;
-        if current.workspace_id != workspace_id
-            || current.descriptor.as_ref() != Some(&expected_descriptor)
-        {
-            return Err("credential binding is unavailable in this Workspace".into());
-        }
-        let expected_version = i64::try_from(expected_revision)
-            .map_err(|_| "credential revision exceeds the Vault range".to_string())?;
-        let completed_version = expected_version
-            .checked_add(1)
-            .ok_or_else(|| "credential revision exceeds the Vault range".to_string())?;
-        if current.version == completed_version {
-            if current.status != CredentialStatus::Active {
-                return Err("credential is not active".into());
-            }
-            let sealed = awaken_credential_vault::materialize(&current, self.secrets.as_ref())
-                .await
-                .map_err(|error| error.to_string())?;
-            if sealed.expose_secret() != encoded_material.expose_secret() {
-                return Err("credential revision changed before material rotation".into());
-            }
-            return u64::try_from(current.version)
-                .map_err(|_| "credential revision exceeds the Session range".into());
-        }
-        if current.version != expected_version {
-            return Err("credential revision changed before material rotation".into());
-        }
-        let rotated = rotate_credential_materials_exact(
-            &source_id,
-            expected_version,
-            CredentialMaterialPatch {
-                primary: Some(encoded_material),
-                auxiliary: BTreeMap::new(),
-                descriptor: None,
-            },
-            self.secrets.as_ref(),
-            self.repository.as_ref(),
-            self.clock.as_ref(),
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-        u64::try_from(rotated.version)
-            .map_err(|_| "credential revision exceeds the Session range".into())
     }
 
     async fn retire_material(
@@ -162,38 +97,9 @@ impl CredentialMaterialIngress for VaultState {
             credential,
             workspace_id,
         } = command;
-        let source_id = CredentialSourceId(credential.id);
-        let source = self
-            .repository
-            .get(&source_id)
+        self.application
+            .retire_material(credential, &workspace_id)
             .await
-            .map_err(|error| error.to_string())?;
-        if source.workspace_id != workspace_id {
-            return Err("credential binding is unavailable in this Workspace".into());
-        }
-        let expected = i64::try_from(credential.revision)
-            .map_err(|_| "credential revision exceeds the Vault range".to_string())?;
-        let completed = expected
-            .checked_add(1)
-            .ok_or_else(|| "credential revision exceeds the Vault range".to_string())?;
-        if source.version == completed
-            && source.status == CredentialStatus::Archived
-            && source.material_ref.is_none()
-            && source.auxiliary_material_refs.is_empty()
-        {
-            return Ok(());
-        }
-        revoke_credential_exact(
-            &source_id,
-            expected,
-            CredentialRetirement::Archive,
-            self.secrets.as_ref(),
-            self.repository.as_ref(),
-            self.clock.as_ref(),
-        )
-        .await
-        .map(|_| ())
-        .map_err(|error| error.to_string())
     }
 }
 
@@ -230,8 +136,12 @@ fn encode_material(
 mod tests {
     use super::*;
     use awaken_agent_contract::RedactedString;
+    use awaken_credential_contract::CredentialSourceId;
     use awaken_credential_contract::http_basic_material;
     use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo};
+    use awaken_credential_vault::{
+        CredentialCreateParams as DomainCredentialCreateParams, CredentialKind,
+    };
     use awaken_credential_vault::{InMemorySecretStore, SecretStore};
 
     fn material(provider: &str, token: &str) -> CredentialMaterialInput {

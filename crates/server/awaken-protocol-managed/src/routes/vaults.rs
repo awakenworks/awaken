@@ -5,7 +5,6 @@
 // @formal entrypoint credential.managed_vault_delete_fences_children_waits_for_rollout_and_is_absorbing
 // @formal entrypoint credential.managed_vault_replacement_rejects_stale_and_non_successor_revisions
 // @formal entrypoint credential_envelope.issuance_requires_exact_claim
-// awaken-file-limit-ceiling: 1628
 //! The Managed Agents **vault / credential** front door (ADR-0043).
 //!
 //! These are the public `/v1/vaults...` routes the official `@anthropic-ai/sdk`
@@ -14,6 +13,10 @@
 //! auth/create shapes, and `BetaManagedAgentsCredentialValidation`); the wire
 //! keeps Anthropic's snake_case tags (`vault` / `vault_credential` /
 //! `environment_variable` / `static_bearer` / `mcp_oauth`).
+//!
+//! Orchestration is the credential context's: every command below maps the
+//! wire onto [`VaultApplication`], which owns the stores, the clock, rollout
+//! delivery and exact access; this module only translates and projects.
 //!
 //! Storage is neutral: a credential's secret is sealed into the credential
 //! domain's [`SecretStore`](awaken_credential_vault::SecretStore) via the
@@ -38,35 +41,29 @@
 //! refresh/reseal execution value.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use crate::control::vault_acl::{
     WireEnvVarCreate, WireMcpOauthCreate, WireStaticBearerCreate, env_var_to_create_params,
     mcp_oauth_to_create_params, static_bearer_to_create_params,
 };
 use awaken_agent_contract::RedactedString;
-use awaken_credential_contract::{
-    CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialSourceId,
-    CredentialTarget, CredentialTargetContract, CredentialUsage, OPAQUE_SECRET_MATERIAL_TYPE,
-};
+use awaken_credential_contract::{CredentialDescriptor, CredentialSourceId};
 use awaken_credential_vault::catalog::{
     ManagedCredentialAdmissionError, ManagedCredentialAuth as AuthRecord,
     ManagedCredentialInjectionLocation, ManagedCredentialMutationError,
     ManagedCredentialNetworking, ManagedMcpOauthRefresh as McpOauthRefreshRecord,
     ManagedVault as VaultRecord, ManagedVaultCredential as CredentialRecord,
-    ManagedVaultMutationError, request_managed_vault_deletion,
+    ManagedVaultMutationError,
 };
 use awaken_credential_vault::repo::{
-    ApplicationMcpBearerCommand, CredentialMaterialPatch, ManagedCredentialAdoptionProgress,
-    ManagedCredentialCreateCommand, ManagedCredentialCreationError, ManagedCredentialOperation,
-    ManagedCredentialRepository, application_mcp_material_ref, application_mcp_operation_id,
-    create_managed_credential, prepare_application_mcp_bearer_rotation,
-    reconcile_managed_credential_rollout, reconcile_managed_vault_deletion,
-    retire_managed_credential, update_managed_credential, update_managed_credential_prepared,
+    CredentialMaterialPatch, ManagedCredentialAdoptionProgress, ManagedCredentialCreationError,
+    ManagedCredentialRepository,
 };
 use awaken_credential_vault::{
-    CredentialCreateParams as DomainCredentialCreateParams, CredentialKind,
-    OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretStore,
+    ApplicationMcpBearerEntry, McpCredentialTarget, OAUTH_CLIENT_SECRET_SLOT,
+    OAUTH_REFRESH_TOKEN_SLOT, SecretStore, VaultApplication, VaultCommandError,
+    VaultCredentialChange, VaultCredentialDraft, VaultObject,
 };
 use awaken_session_application::{SessionCredentialAccessRequest, SessionCredentialSource};
 use awaken_time::WallClock;
@@ -112,66 +109,25 @@ fn application_mcp_target_fingerprint(
     ))
 }
 
+/// The canonical MCP audience of `url`.
+fn mcp_audience(url: &str) -> Result<String, awaken_credential_vault::CredentialError> {
+    awaken_session_mcp_contract::McpTarget::identity(url)
+        .map(|identity| identity.canonical_url())
+        .map_err(|_| {
+            awaken_credential_vault::CredentialError::InvalidSource(
+                "MCP credential target must be an absolute HTTP(S) URL".into(),
+            )
+        })
+}
+
 fn mcp_credential_descriptor(
     url: &str,
 ) -> Result<(CredentialDescriptor, String), awaken_credential_vault::CredentialError> {
-    let identity = awaken_session_mcp_contract::McpTarget::identity(url).map_err(|_| {
-        awaken_credential_vault::CredentialError::InvalidSource(
-            "MCP credential target must be an absolute HTTP(S) URL".into(),
-        )
-    })?;
-    let audience = identity.canonical_url();
+    let audience = mcp_audience(url)?;
     Ok((
-        CredentialDescriptor::new(
-            audience.clone(),
-            CredentialMaterialDescriptor::secret(OPAQUE_SECRET_MATERIAL_TYPE),
-            [CredentialTargetContract::new(
-                CredentialTarget::new(CredentialPurpose::McpAuthorization, audience.clone()),
-                CredentialUsage::HttpHeader {
-                    name: "authorization".into(),
-                    scheme: Some("Bearer".into()),
-                },
-            )],
-        ),
+        awaken_credential_vault::mcp_bearer_descriptor(&audience),
         audience,
     ))
-}
-
-fn application_mcp_vault_id(workspace_id: &str, authority_id: &str) -> String {
-    format!(
-        "vlt_app_{}",
-        sha256_identity("application-mcp-vault-v1", &[workspace_id, authority_id])
-    )
-}
-
-fn application_mcp_source_id(vault_id: &str, target_fingerprint: &str) -> CredentialSourceId {
-    CredentialSourceId(format!(
-        "cred:app-mcp:{vault_id}:{}",
-        sha256_identity("application-mcp-target-v1", &[target_fingerprint])
-    ))
-}
-
-// Wire DTOs live in `crate::types::vault` (1:1 with @anthropic-ai/sdk
-// beta.vaults.*). This module owns the store, the secret sealing, the record→wire
-// projection, and the internal binding vocabulary below.
-
-/// Apply a metadata patch in place: a `Some(v)` upserts the key, a `None` (JSON
-/// `null`) deletes it, and any key absent from the patch is preserved. Shared by
-/// vault + credential update.
-fn apply_metadata_patch(
-    target: &mut BTreeMap<String, String>,
-    patch: BTreeMap<String, Option<String>>,
-) {
-    for (key, value) in patch {
-        match value {
-            Some(v) => {
-                target.insert(key, v);
-            }
-            None => {
-                target.remove(&key);
-            }
-        }
-    }
 }
 
 use awaken_session_configuration_contract::{McpProbe, McpProbeStatus};
@@ -199,15 +155,16 @@ fn create_injection_location(
         .ok_or_else(|| bad_request("injection_location must enable header, body, or both"))
 }
 
-/// The vault surface's state: the neutral credential domain stores plus the
-/// durable, secret-free Managed projection.
+/// The vault surface's state: the credential context's Vault application plus
+/// the MCP probe and refresh exchange the validation route consults.
 mod mcp_inspection;
+
+use mcp_inspection::validate_credential;
 pub use mcp_inspection::{McpCredentialChoice, McpInspectionView};
-use mcp_inspection::{oauth_refresh_access, validate_credential};
 
 pub struct VaultState {
-    secrets: Arc<dyn SecretStore>,
-    repository: Arc<dyn ManagedCredentialRepository>,
+    /// The Vault use cases: every store, clock and orchestration step.
+    application: VaultApplication,
     /// The live MCP probe the validate route consults for `mcp_oauth`
     /// credentials, when the process startup wires one. `None` keeps every
     /// validation `unknown` (never a false `valid`).
@@ -217,116 +174,28 @@ pub struct VaultState {
     /// attempt (`refresh: null`), never a fabricated outcome.
     refresh_exchange:
         Option<Arc<dyn awaken_session_configuration_contract::CredentialRefreshExchange>>,
-    material_delivery: Option<awaken_credential_contract::CredentialMaterialDelivery>,
-    rollout_target:
-        RwLock<Option<Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>>>,
-    /// The one wall clock this owner samples: object creation/update/archive
-    /// and deletion-request instants, validation instants, and the `now` of
-    /// exact credential access. Tests install a fixed clock.
-    clock: Arc<dyn WallClock>,
 }
 
 impl VaultState {
     /// Build the vault surface over the credential domain's secret store + repo.
-    /// `clock` is the composing process's one wall clock (see the `clock` field).
+    /// `clock` is the composing process's one wall clock.
     pub fn new(
         secrets: Arc<dyn SecretStore>,
         repository: Arc<dyn ManagedCredentialRepository>,
         clock: Arc<dyn WallClock>,
     ) -> Self {
         Self {
-            secrets,
-            repository,
+            application: VaultApplication::new(secrets, repository, clock),
             probe: None,
             refresh_exchange: None,
-            material_delivery: None,
-            rollout_target: RwLock::new(None),
-            clock,
         }
     }
 
-    /// Sample the owner clock once. The epoch itself is the system clock's
-    /// failure value, so it fails closed instead of backdating expiry checks
-    /// or stamping a fabricated instant on a durable object.
-    fn clock_reading_ms(&self) -> Result<u64, awaken_credential_vault::CredentialError> {
-        awaken_credential_vault::repo::credential_material_now_unix_ms(self.clock.as_ref())
-    }
-
-    /// The owner clock as the RFC 3339 wire/persistence instant.
-    fn clock_reading_rfc3339(&self) -> Result<String, awaken_credential_vault::CredentialError> {
-        self.clock_reading_ms()
-            .map(awaken_session_application_contract::epoch_millis_to_rfc3339)
-    }
-
-    /// Install the service-owned rolling replacement edge after process
-    /// composition has constructed both Control and Session applications.
-    pub fn set_rollout_target(
-        &self,
-        target: Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>,
-    ) {
-        *self.rollout_target.write().expect("Vault rollout target") = Some(target);
-    }
-
-    /// Best-effort one delivery pass. Durable events remain pending when no
-    /// target is available (split-service startup) or a Session is still busy.
-    pub async fn reconcile_rollouts(
-        &self,
-    ) -> Result<usize, awaken_credential_vault::CredentialError> {
-        let target = self
-            .rollout_target
-            .read()
-            .expect("Vault rollout target")
-            .clone();
-        let Some(target) = target else {
-            return Ok(0);
-        };
-        awaken_credential_vault::repo::reconcile_managed_credential_rollouts(
-            self.repository.as_ref(),
-            target.as_ref(),
-        )
-        .await
-    }
-
-    async fn reconcile_application_mcp_rollout(
-        &self,
-        event_id: Option<&str>,
-        workspace_id: &str,
-        vault_id: &str,
-        credential_id: &str,
-        source_id: &CredentialSourceId,
-        source_revision: u64,
-    ) -> Result<ManagedCredentialAdoptionProgress, awaken_credential_vault::CredentialError> {
-        let Some(event_id) = event_id else {
-            // Managed creation has no predecessor to replace and therefore no
-            // rollout.
-            return Ok(ManagedCredentialAdoptionProgress::Converged);
-        };
-        let Some(event) = self.repository.managed_rollout(event_id).await? else {
-            // An absent exact update event has already been exactly
-            // acknowledged by this same repository.
-            return Ok(ManagedCredentialAdoptionProgress::Converged);
-        };
-        if event.workspace_id != workspace_id
-            || event.vault_id != vault_id
-            || event.credential_id != credential_id
-            || event.source_id != *source_id
-            || event.source_version != source_revision
-            || event.operation != ManagedCredentialOperation::Update
-        {
-            return Err(awaken_credential_vault::CredentialError::MutationConflict(
-                "application MCP rollout identity conflicts with committed credential".into(),
-            ));
-        }
-        let target = self
-            .rollout_target
-            .read()
-            .expect("Vault rollout target")
-            .clone();
-        let Some(target) = target else {
-            return Ok(ManagedCredentialAdoptionProgress::Pending);
-        };
-        reconcile_managed_credential_rollout(&event, self.repository.as_ref(), target.as_ref())
-            .await
+    /// The Vault application this surface translates for; process
+    /// composition installs the rollout target and runs rollout delivery on it.
+    #[must_use]
+    pub fn application(&self) -> &VaultApplication {
+        &self.application
     }
 
     /// Create or rotate one hosted application's stable MCP bearer in the
@@ -349,189 +218,33 @@ impl VaultState {
         ),
         awaken_credential_vault::CredentialError,
     > {
-        let target_fingerprint =
-            application_mcp_target_fingerprint(mcp_server_url).map_err(|_| {
-                awaken_credential_vault::CredentialError::InvalidSource(
-                    "MCP server URL must be an absolute HTTP(S) URL".into(),
-                )
-            })?;
-        let vault_id = application_mcp_vault_id(workspace_id, application_authority_id);
-        let source_id = application_mcp_source_id(&vault_id, &target_fingerprint);
-        let command_key_fingerprint = sha256_identity(
-            "application-mcp-command-key-v1",
-            &[
-                workspace_id,
-                application_authority_id,
-                &target_fingerprint,
-                idempotency_key,
-            ],
-        );
-        let material_ref = application_mcp_material_ref(
-            &source_id,
-            &command_key_fingerprint,
-            credential_generation,
-        )?;
-        let (descriptor, target_audience) = mcp_credential_descriptor(mcp_server_url)?;
-        let now = self.clock_reading_rfc3339()?;
-        self.repository
-            .ensure_vault(
-                workspace_id,
-                VaultRecord {
-                    id: vault_id.clone(),
-                    workspace_id: workspace_id.to_owned(),
-                    display_name: application_authority_id.to_owned(),
-                    metadata: BTreeMap::new(),
-                    created_at: now.clone(),
-                    updated_at: now.clone(),
-                    archived_at: None,
-                    deletion: None,
-                    revision: 1,
-                },
-            )
-            .await?;
-        let credential_id = format!(
-            "crd_app_{}",
-            sha256_identity("application-mcp-credential-v1", &[&source_id.0])
-        );
-        let atomically_created = match self.repository.get(&source_id).await {
-            Err(awaken_credential_vault::CredentialError::SourceNotFound(_)) => {
-                match create_managed_credential(
-                    ManagedCredentialCreateCommand {
-                        source: DomainCredentialCreateParams {
-                            workspace_id: workspace_id.to_owned(),
-                            kind: CredentialKind::Vault,
-                            provider_id: None,
-                            env_key: None,
-                            secret: Some(bearer.clone()),
-                            oauth_command: None,
-                        },
-                        descriptor: Some(descriptor),
-                        source_id: Some(source_id.clone()),
-                        protocol_endpoint_id: Some(target_fingerprint.clone()),
-                        primary_material_ref: Some(material_ref),
-                        auxiliary_materials: BTreeMap::new(),
-                        credential_id: credential_id.clone(),
-                        vault_id: vault_id.clone(),
-                        auth: AuthRecord::StaticBearer {
-                            mcp_server_url: mcp_server_url.to_owned(),
-                        },
-                        metadata: BTreeMap::new(),
-                        display_name: None,
-                        created_at: now.clone(),
-                    },
-                    self.secrets.as_ref(),
-                    self.repository.as_ref(),
-                    self.clock.as_ref(),
-                )
-                .await
-                {
-                    Ok((source, _)) => Some(source),
-                    Err(ManagedCredentialCreationError::Credential(
-                        awaken_credential_vault::CredentialError::MutationConflict(_),
-                    ))
-                    | Err(ManagedCredentialCreationError::Admission(
-                        ManagedCredentialAdmissionError::Store(
-                            awaken_credential_vault::CredentialError::MutationConflict(_),
-                        ),
-                    )) => None,
-                    Err(ManagedCredentialCreationError::Credential(error))
-                    | Err(ManagedCredentialCreationError::Admission(
-                        ManagedCredentialAdmissionError::Store(error),
-                    )) => return Err(error),
-                    Err(ManagedCredentialCreationError::Admission(error)) => {
-                        return Err(awaken_credential_vault::CredentialError::InvalidSource(
-                            error.to_string(),
-                        ));
-                    }
-                }
-            }
-            Ok(_) => None,
-            Err(error) => return Err(error),
-        };
-        let (source, rollout_id) = if let Some(source) = atomically_created {
-            (source, None)
-        } else {
-            let before_source = self.repository.get(&source_id).await?;
-            let before_credential = self
-                .repository
-                .get_vault_credential_by_source(workspace_id, &source_id)
-                .await?
-                .ok_or_else(|| {
-                    awaken_credential_vault::CredentialError::MutationConflict(
-                        "application MCP Source has no matching Managed child".into(),
-                    )
-                })?;
-            let replay_command_key_fingerprint = command_key_fingerprint.clone();
-            let rotation = prepare_application_mcp_bearer_rotation(
-                ApplicationMcpBearerCommand {
-                    source_id: source_id.clone(),
-                    workspace_id: workspace_id.to_owned(),
-                    target_fingerprint,
-                    target_audience,
-                    command_key_fingerprint,
-                    credential_generation,
-                    bearer,
-                },
-                &before_source,
-                self.secrets.as_ref(),
-            )
-            .await?;
-            match rotation {
-                None => {
-                    let rollout_id = before_source
-                        .version
-                        .checked_sub(1)
-                        .filter(|prior_version| *prior_version > 0)
-                        .map(|prior_version| {
-                            application_mcp_operation_id(
-                                &source_id,
-                                prior_version,
-                                &replay_command_key_fingerprint,
-                                credential_generation,
-                            )
-                        })
-                        .transpose()?;
-                    (before_source, rollout_id)
-                }
-                Some(rotation) => {
-                    let rollout_id = rotation.operation_id.clone();
-                    let source = update_managed_credential_prepared(
-                        before_credential.clone(),
-                        before_credential,
-                        before_source,
-                        rotation,
-                        now.clone(),
-                        self.secrets.as_ref(),
-                        self.repository.as_ref(),
-                        self.clock.as_ref(),
-                    )
-                    .await
-                    .map_err(|error| {
-                        awaken_credential_vault::CredentialError::MutationConflict(
-                            error.to_string(),
-                        )
-                    })?
-                    .0;
-                    (source, Some(rollout_id))
-                }
-            }
-        };
-        let revision = u64::try_from(source.version).map_err(|_| {
+        let fingerprint = application_mcp_target_fingerprint(mcp_server_url).map_err(|_| {
             awaken_credential_vault::CredentialError::InvalidSource(
-                "application MCP credential revision is invalid".into(),
+                "MCP server URL must be an absolute HTTP(S) URL".into(),
             )
         })?;
-        let adoption = self
-            .reconcile_application_mcp_rollout(
-                rollout_id.as_deref(),
-                workspace_id,
-                &vault_id,
-                &credential_id,
-                &source.id,
-                revision,
-            )
+        let audience = mcp_audience(mcp_server_url)?;
+        let receipt = self
+            .application
+            .enter_application_mcp_bearer(ApplicationMcpBearerEntry {
+                workspace_id: workspace_id.to_owned(),
+                application_authority_id: application_authority_id.to_owned(),
+                mcp_server_url: mcp_server_url.to_owned(),
+                target: McpCredentialTarget {
+                    audience,
+                    fingerprint,
+                },
+                idempotency_key: idempotency_key.to_owned(),
+                credential_generation,
+                bearer,
+            })
             .await?;
-        Ok((vault_id, source.id, revision, adoption))
+        Ok((
+            receipt.vault_id,
+            receipt.source_id,
+            receipt.revision,
+            receipt.adoption,
+        ))
     }
 
     /// Wire the live MCP probe, so `POST .../mcp_oauth_validate` reports a real
@@ -563,54 +276,23 @@ impl VaultState {
         mut self,
         delivery: awaken_credential_contract::CredentialMaterialDelivery,
     ) -> Self {
-        self.material_delivery = Some(delivery);
+        self.application = self.application.with_material_delivery(delivery);
         self
-    }
-
-    /// Whether `id` names an active vault that may be attached to a new Session.
-    /// Archived vaults remain retrievable for audit but are not executable.
-    pub async fn has_vault(
-        &self,
-        workspace_id: &str,
-        id: &str,
-    ) -> Result<bool, awaken_credential_vault::CredentialError> {
-        Ok(self
-            .repository
-            .get_vault(workspace_id, id)
-            .await?
-            .is_some_and(|vault| vault.accepts_child_mutation()))
     }
 
     /// The neutral credential-domain row id for a wire credential id, if it lives
     /// in `vault_id`. This is the seam a session uses to bind a vault credential to
     /// a run: the resolver takes this `CredentialSourceId`, never the wire id.
+    /// Limited to the standalone installation Workspace; it cannot discover
+    /// another Workspace by id.
     pub async fn credential_source_id(
         &self,
         vault_id: &str,
         credential_id: &str,
     ) -> Option<CredentialSourceId> {
-        self.credential_source_id_in_workspace(crate::state::DEFAULT_SCOPE, vault_id, credential_id)
+        self.application
+            .credential_source_id(crate::state::DEFAULT_SCOPE, vault_id, credential_id)
             .await
-    }
-
-    /// Workspace-authoritative form used by hosted/session callers. The
-    /// compatibility helper above is limited to the standalone installation
-    /// Workspace and cannot discover another Workspace by id.
-    async fn credential_source_id_in_workspace(
-        &self,
-        workspace_id: &str,
-        vault_id: &str,
-        credential_id: &str,
-    ) -> Option<CredentialSourceId> {
-        self.repository
-            .get_vault_credential(workspace_id, credential_id)
-            .await
-            .ok()
-            .flatten()
-            .filter(|credential| {
-                credential.vault_id == vault_id && credential.lifecycle.is_active()
-            })
-            .map(|credential| credential.source_id)
     }
 
     /// The vault→MCP binding seam. Scan active vaults in caller-supplied order
@@ -627,55 +309,22 @@ impl VaultState {
             return Ok(None);
         };
         for vault_id in vault_ids {
-            let vault_is_active = self
-                .repository
-                .get_vault(workspace_id, vault_id)
+            let Some(credentials) = self
+                .application
+                .executable_credentials(workspace_id, vault_id)
                 .await?
-                .is_some_and(|vault| vault.accepts_child_mutation());
-            if !vault_is_active {
+            else {
                 continue;
-            }
-            let mut credentials = self
-                .repository
-                .list_vault_credentials(workspace_id, vault_id)
-                .await?;
-            credentials.sort_by(|left, right| left.id.cmp(&right.id));
-            if let Some(credential) = credentials
-                .into_iter()
-                .filter(|credential| credential.lifecycle.is_active())
-                .find(|credential| {
-                    auth_mcp_server_url(&credential.auth)
-                        .and_then(|url| awaken_session_mcp_contract::McpTarget::identity(url).ok())
-                        .is_some_and(|candidate| candidate == requested)
-                })
-            {
+            };
+            if let Some(credential) = credentials.into_iter().find(|credential| {
+                auth_mcp_server_url(&credential.auth)
+                    .and_then(|url| awaken_session_mcp_contract::McpTarget::identity(url).ok())
+                    .is_some_and(|candidate| candidate == requested)
+            }) {
                 return Ok(Some(credential.source_id));
             }
         }
         Ok(None)
-    }
-
-    async fn exact_access_for_source(
-        &self,
-        source_id: &CredentialSourceId,
-        request: awaken_credential_vault::ExactCredentialAccessRequest<'_>,
-    ) -> Result<
-        (
-            awaken_credential_vault::CredentialSource,
-            awaken_credential_contract::CredentialAccess,
-        ),
-        awaken_credential_vault::CredentialError,
-    > {
-        let source = self.repository.get(source_id).await?;
-        let access = awaken_credential_vault::publish_exact_credential_access(
-            &source,
-            request,
-            self.material_delivery
-                .as_ref()
-                .map(|delivery| (self.secrets.as_ref(), delivery)),
-        )
-        .await?;
-        Ok((source, access))
     }
 
     /// Compile one exact, secret-free execution pin for a previously selected
@@ -698,21 +347,20 @@ impl VaultState {
             selected_holder,
             binding,
         } = request;
-        let now_unix_ms = self.clock_reading_ms()?;
-        self.exact_access_for_source(
-            source_id,
-            awaken_credential_vault::ExactCredentialAccessRequest {
-                workspace_id: Some(workspace_id),
-                target: Some(target),
-                usage,
-                policy,
-                selected_holder: &selected_holder,
-                binding: &binding,
-                now_unix_ms,
-            },
-        )
-        .await
-        .map(|(_, access)| access)
+        self.application
+            .exact_access(source_id, |now_unix_ms| {
+                awaken_credential_vault::ExactCredentialAccessRequest {
+                    workspace_id: Some(workspace_id),
+                    target: Some(target),
+                    usage,
+                    policy,
+                    selected_holder: &selected_holder,
+                    binding: &binding,
+                    now_unix_ms,
+                }
+            })
+            .await
+            .map(|(_, access)| access)
     }
 
     /// Compile one exact, secret-free execution pin for a previously selected
@@ -736,10 +384,10 @@ impl VaultState {
             &source_id.0,
             &usage,
         );
-        let source = self.repository.get(source_id).await?;
+        let source = self.application.source(source_id).await?;
         let record = self
-            .repository
-            .get_vault_credential_by_source(&source.workspace_id, source_id)
+            .application
+            .credential_of_source(&source.workspace_id, source_id)
             .await?
             .ok_or_else(|| {
                 awaken_credential_vault::CredentialError::InvalidSource(
@@ -778,10 +426,6 @@ impl VaultState {
         awaken_credential_contract::CredentialAccess,
         awaken_credential_vault::CredentialError,
     > {
-        use awaken_credential_contract::{
-            CredentialExecutionPolicy, CredentialPurpose, CredentialTarget, CredentialUsage,
-        };
-
         let target_url = target.http_url().ok_or_else(|| {
             awaken_credential_vault::CredentialError::InvalidSource(
                 "MCP credentials require an HTTP target".into(),
@@ -794,40 +438,15 @@ impl VaultState {
                 )
             })?
             .canonical_url();
-
-        let (source, mut access) = self
-            .exact_access_for_source(
+        self.application
+            .mcp_access(
                 source_id,
-                awaken_credential_vault::ExactCredentialAccessRequest {
-                    workspace_id,
-                    target: Some(CredentialTarget::new(
-                        CredentialPurpose::McpAuthorization,
-                        target_audience,
-                    )),
-                    usage: CredentialUsage::HttpHeader {
-                        name: "authorization".into(),
-                        scheme: Some("Bearer".into()),
-                    },
-                    policy: CredentialExecutionPolicy::self_hosted_mcp(),
-                    selected_holder,
-                    binding,
-                    now_unix_ms: self.clock_reading_ms()?,
-                },
+                workspace_id,
+                target_audience,
+                selected_holder,
+                binding,
             )
-            .await?;
-        let revision = access.credential.revision;
-        let refresh = self
-            .repository
-            .get_vault_credential_by_source(&source.workspace_id, source_id)
-            .await?
-            .and_then(|record| match record.auth {
-                AuthRecord::McpOauth { refresh, .. } => refresh,
-                _ => None,
-            });
-        if let Some(refresh) = refresh {
-            access = access.with_refresh(oauth_refresh_access(&source, revision, refresh)?);
-        }
-        Ok(access)
+            .await
     }
 
     fn project_vault(record: &VaultRecord) -> Vault {
@@ -909,7 +528,8 @@ impl VaultState {
 #[async_trait::async_trait]
 impl SessionCredentialSource for VaultState {
     async fn has_vault(&self, workspace_id: &str, id: &str) -> Result<bool, String> {
-        VaultState::has_vault(self, workspace_id, id)
+        self.application
+            .has_vault(workspace_id, id)
             .await
             .map_err(|error| error.to_string())
     }
@@ -1014,6 +634,19 @@ fn storage_error(error: impl std::fmt::Display) -> WireError {
     )
 }
 
+/// The wire envelope of a Vault command outcome: each domain error keeps the
+/// mapping its route always had.
+fn command_error(error: VaultCommandError) -> WireError {
+    match error {
+        VaultCommandError::NotFound(VaultObject::Vault) => not_found("vault"),
+        VaultCommandError::NotFound(VaultObject::Credential) => not_found("credential"),
+        VaultCommandError::Store(error) => storage_error(error),
+        VaultCommandError::Vault(error) => vault_mutation_error(error),
+        VaultCommandError::Creation(error) => managed_creation_error(error),
+        VaultCommandError::Credential(error) => managed_mutation_error(error),
+    }
+}
+
 fn vault_mutation_error(error: ManagedVaultMutationError) -> WireError {
     match error {
         ManagedVaultMutationError::NotFound => not_found("vault"),
@@ -1087,26 +720,12 @@ async fn create_vault(
     if params.display_name.is_empty() || params.display_name.len() > 255 {
         return Err(bad_request("display_name must be 1-255 characters"));
     }
-    let id = format!("vlt_{}", uuid::Uuid::now_v7().simple());
-    let now = state.clock_reading_rfc3339().map_err(storage_error)?;
-    let record = VaultRecord {
-        id,
-        workspace_id: workspace_id.clone(),
-        display_name: params.display_name,
-        metadata: params.metadata,
-        created_at: now.clone(),
-        updated_at: now,
-        archived_at: None,
-        deletion: None,
-        revision: 1,
-    };
-    let vault = VaultState::project_vault(&record);
-    state
-        .repository
-        .insert_vault(&workspace_id, record)
+    let record = state
+        .application
+        .create_vault(&workspace_id, params.display_name, params.metadata)
         .await
-        .map_err(storage_error)?;
-    Ok((StatusCode::OK, Json(vault)))
+        .map_err(command_error)?;
+    Ok((StatusCode::OK, Json(VaultState::project_vault(&record))))
 }
 
 async fn retrieve_vault(
@@ -1115,12 +734,10 @@ async fn retrieve_vault(
     Path(id): Path<String>,
 ) -> Result<Json<Vault>, WireError> {
     let record = state
-        .repository
-        .get_vault(&workspace_id, &id)
+        .application
+        .visible_vault(&workspace_id, &id)
         .await
-        .map_err(storage_error)?
-        .filter(|record| record.deletion.is_none())
-        .ok_or_else(|| not_found("vault"))?;
+        .map_err(command_error)?;
     Ok(Json(VaultState::project_vault(&record)))
 }
 
@@ -1134,15 +751,11 @@ async fn list_vaults(
     ManagedQuery(query): ManagedQuery<ListQuery>,
     ManagedQuery(page): ManagedQuery<PageQuery>,
 ) -> Result<Json<PageCursor<Vault>>, WireError> {
-    let mut records = state
-        .repository
-        .list_vaults(&workspace_id)
+    let records = state
+        .application
+        .visible_vaults(&workspace_id, query.include_archived)
         .await
         .map_err(storage_error)?;
-    records.retain(|record| {
-        record.deletion.is_none() && (query.include_archived || record.archived_at.is_none())
-    });
-    records.sort_by(|left, right| left.id.cmp(&right.id));
     let data = records.iter().map(VaultState::project_vault).collect();
     Ok(Json(paginate(data, &page, |v| v.id.as_str())))
 }
@@ -1152,74 +765,15 @@ async fn delete_vault(
     RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> Result<Json<DeletedVault>, WireError> {
-    let current = state
-        .repository
-        .get_vault(&workspace_id, &id)
+    state
+        .application
+        .delete_vault(&workspace_id, &id)
         .await
-        .map_err(storage_error)?
-        .ok_or_else(|| not_found("vault"))?;
-    let requested_at = state.clock_reading_rfc3339().map_err(storage_error)?;
-    let (requested, changed) =
-        request_managed_vault_deletion(&current, requested_at).map_err(vault_mutation_error)?;
-    let requested = persist_vault_deletion_request(
-        state.repository.as_ref(),
-        &workspace_id,
-        &current,
-        requested,
-        changed,
-    )
-    .await?;
-    // The request is durable before child retirement starts. Cancellation or a
-    // transient failure therefore leaves a supervised, retryable root fact.
-    let _completed = reconcile_managed_vault_deletion(
-        &requested,
-        state.secrets.as_ref(),
-        state.repository.as_ref(),
-        state.clock.as_ref(),
-    )
-    .await
-    .map_err(managed_mutation_error)?;
+        .map_err(command_error)?;
     Ok(Json(DeletedVault {
         id,
         object_type: "vault_deleted",
     }))
-}
-
-/// Publish the root delete fence, or resume the durable winner when another
-/// request committed the fence after this handler read its snapshot.
-async fn persist_vault_deletion_request(
-    repository: &dyn ManagedCredentialRepository,
-    workspace_id: &str,
-    current: &VaultRecord,
-    requested: VaultRecord,
-    changed: bool,
-) -> Result<VaultRecord, WireError> {
-    if !changed {
-        return Ok(requested);
-    }
-    match repository
-        .replace_vault(workspace_id, current.revision, requested.clone())
-        .await
-    {
-        Ok(()) => Ok(requested),
-        Err(error)
-            if matches!(
-                error,
-                ManagedVaultMutationError::RevisionConflict
-                    | ManagedVaultMutationError::InvalidLifecycle
-            ) =>
-        {
-            let durable = repository
-                .get_vault(workspace_id, &current.id)
-                .await
-                .map_err(storage_error)?;
-            match durable {
-                Some(durable) if durable.deletion.is_some() => Ok(durable),
-                _ => Err(vault_mutation_error(error)),
-            }
-        }
-        Err(error) => Err(vault_mutation_error(error)),
-    }
 }
 
 /// `POST /v1/vaults/:id/archive` — soft-delete (the SDK `beta.vaults.archive`).
@@ -1231,28 +785,11 @@ async fn archive_vault(
     RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> Result<Json<Vault>, WireError> {
-    let mut record = state
-        .repository
-        .get_vault(&workspace_id, &id)
+    let record = state
+        .application
+        .archive_vault(&workspace_id, &id)
         .await
-        .map_err(storage_error)?
-        .filter(|record| record.deletion.is_none())
-        .ok_or_else(|| not_found("vault"))?;
-    if record.archived_at.is_some() {
-        return Ok(Json(VaultState::project_vault(&record)));
-    }
-    let expected_revision = record.revision;
-    let archived_at = state.clock_reading_rfc3339().map_err(storage_error)?;
-    record.updated_at.clone_from(&archived_at);
-    record.archived_at = Some(archived_at);
-    record.revision = expected_revision
-        .checked_add(1)
-        .ok_or_else(|| vault_mutation_error(ManagedVaultMutationError::RevisionExhausted))?;
-    state
-        .repository
-        .replace_vault(&workspace_id, expected_revision, record.clone())
-        .await
-        .map_err(vault_mutation_error)?;
+        .map_err(command_error)?;
     Ok(Json(VaultState::project_vault(&record)))
 }
 
@@ -1271,33 +808,11 @@ async fn update_vault(
     {
         return Err(bad_request("display_name must be 1-255 characters"));
     }
-    let mut record = state
-        .repository
-        .get_vault(&workspace_id, &id)
+    let record = state
+        .application
+        .update_vault(&workspace_id, &id, params.display_name, params.metadata)
         .await
-        .map_err(storage_error)?
-        .filter(|record| record.deletion.is_none())
-        .ok_or_else(|| not_found("vault"))?;
-    let before = record.clone();
-    let expected_revision = record.revision;
-    if let Some(name) = params.display_name {
-        record.display_name = name;
-    }
-    if let Some(patch) = params.metadata {
-        apply_metadata_patch(&mut record.metadata, patch);
-    }
-    if record == before {
-        return Ok(Json(VaultState::project_vault(&record)));
-    }
-    record.updated_at = state.clock_reading_rfc3339().map_err(storage_error)?;
-    record.revision = expected_revision
-        .checked_add(1)
-        .ok_or_else(|| vault_mutation_error(ManagedVaultMutationError::RevisionExhausted))?;
-    state
-        .repository
-        .replace_vault(&workspace_id, expected_revision, record.clone())
-        .await
-        .map_err(vault_mutation_error)?;
+        .map_err(command_error)?;
     Ok(Json(VaultState::project_vault(&record)))
 }
 
@@ -1461,42 +976,27 @@ async fn create_credential(
     };
 
     let idempotency_key = parse_idempotency_key_header(&headers).map_err(bad_request)?;
-    let command_identity = idempotency_key.as_ref().map(|key| {
-        sha256_identity(
-            "managed-vault-credential-create-v1",
-            &[&resource_workspace, &vault_id, key],
+    let record = state
+        .application
+        .create_credential(
+            &resource_workspace,
+            vault_id,
+            idempotency_key.as_deref(),
+            VaultCredentialDraft {
+                source,
+                descriptor,
+                auxiliary_materials,
+                auth,
+                metadata,
+                display_name,
+            },
         )
-    });
-    let id = command_identity.as_ref().map_or_else(
-        || format!("crd_{}", uuid::Uuid::now_v7().simple()),
-        |identity| format!("crd_{}", &identity[..32]),
-    );
-    let command = ManagedCredentialCreateCommand {
-        source,
-        descriptor,
-        source_id: command_identity
-            .as_ref()
-            .map(|identity| CredentialSourceId(format!("cred:managed:{identity}"))),
-        protocol_endpoint_id: None,
-        primary_material_ref: None,
-        auxiliary_materials,
-        credential_id: id,
-        vault_id,
-        auth,
-        metadata,
-        display_name,
-        created_at: state.clock_reading_rfc3339().map_err(storage_error)?,
-    };
-    let (_, record) = create_managed_credential(
-        command,
-        state.secrets.as_ref(),
-        state.repository.as_ref(),
-        state.clock.as_ref(),
-    )
-    .await
-    .map_err(managed_creation_error)?;
-    let credential = VaultState::project_credential(&record);
-    Ok((StatusCode::OK, Json(credential)))
+        .await
+        .map_err(command_error)?;
+    Ok((
+        StatusCode::OK,
+        Json(VaultState::project_credential(&record)),
+    ))
 }
 
 /// `GET /v1/vaults/:vault_id/credentials` — one full page of a vault's
@@ -1510,24 +1010,11 @@ async fn list_credentials(
     ManagedQuery(query): ManagedQuery<ListQuery>,
     ManagedQuery(page): ManagedQuery<PageQuery>,
 ) -> Result<Json<PageCursor<Credential>>, WireError> {
-    if state
-        .repository
-        .get_vault(&workspace_id, &vault_id)
+    let records = state
+        .application
+        .visible_credentials(&workspace_id, &vault_id, query.include_archived)
         .await
-        .map_err(storage_error)?
-        .is_none()
-    {
-        return Err(not_found("vault"));
-    }
-    let mut records = state
-        .repository
-        .list_vault_credentials(&workspace_id, &vault_id)
-        .await
-        .map_err(storage_error)?;
-    records.retain(|record| {
-        !record.lifecycle.is_deleted() && (query.include_archived || record.lifecycle.is_active())
-    });
-    records.sort_by(|left, right| left.id.cmp(&right.id));
+        .map_err(command_error)?;
     let data = records.iter().map(VaultState::project_credential).collect();
     Ok(Json(paginate(data, &page, |c| c.id.as_str())))
 }
@@ -1538,12 +1025,10 @@ async fn retrieve_credential(
     Path((vault_id, id)): Path<(String, String)>,
 ) -> Result<Json<Credential>, WireError> {
     let record = state
-        .repository
-        .get_vault_credential(&workspace_id, &id)
+        .application
+        .visible_credential(&workspace_id, &vault_id, &id)
         .await
-        .map_err(storage_error)?
-        .filter(|c| c.vault_id == vault_id && !c.lifecycle.is_deleted())
-        .ok_or_else(|| not_found("credential"))?;
+        .map_err(command_error)?;
     Ok(Json(VaultState::project_credential(&record)))
 }
 
@@ -1557,29 +1042,11 @@ async fn delete_credential(
     RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
     Path((vault_id, id)): Path<(String, String)>,
 ) -> Result<Json<DeletedCredential>, WireError> {
-    let visible = state
-        .repository
-        .get_vault_credential(&workspace_id, &id)
+    state
+        .application
+        .delete_credential(&workspace_id, &vault_id, &id)
         .await
-        .map_err(storage_error)?
-        .is_some_and(|credential| {
-            credential.vault_id == vault_id && !credential.lifecycle.is_deleted()
-        });
-    if !visible {
-        return Err(not_found("credential"));
-    }
-    retire_managed_credential(
-        &workspace_id,
-        &vault_id,
-        &id,
-        ManagedCredentialOperation::Delete,
-        state.clock_reading_rfc3339().map_err(storage_error)?,
-        state.secrets.as_ref(),
-        state.repository.as_ref(),
-        state.clock.as_ref(),
-    )
-    .await
-    .map_err(managed_mutation_error)?;
+        .map_err(command_error)?;
     Ok(Json(DeletedCredential {
         id,
         object_type: "vault_credential_deleted",
@@ -1594,18 +1061,11 @@ async fn archive_credential(
     RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
     Path((vault_id, id)): Path<(String, String)>,
 ) -> Result<Json<Credential>, WireError> {
-    let record = retire_managed_credential(
-        &workspace_id,
-        &vault_id,
-        &id,
-        ManagedCredentialOperation::Archive,
-        state.clock_reading_rfc3339().map_err(storage_error)?,
-        state.secrets.as_ref(),
-        state.repository.as_ref(),
-        state.clock.as_ref(),
-    )
-    .await
-    .map_err(managed_mutation_error)?;
+    let record = state
+        .application
+        .archive_credential(&workspace_id, &vault_id, &id)
+        .await
+        .map_err(command_error)?;
     Ok(Json(VaultState::project_credential(&record)))
 }
 
@@ -1625,15 +1085,10 @@ async fn update_credential(
 ) -> Result<Json<Credential>, WireError> {
     // Phase 1 — validate the kind match + refresh precondition, snapshot the id.
     let mut record = state
-        .repository
-        .get_vault_credential(&workspace_id, &id)
+        .application
+        .active_credential(&workspace_id, &vault_id, &id)
         .await
-        .map_err(storage_error)?
-        .filter(|c| c.vault_id == vault_id)
-        .ok_or_else(|| not_found("credential"))?;
-    if !record.lifecycle.is_active() {
-        return Err(not_found("credential"));
-    }
+        .map_err(command_error)?;
     if let Some(auth) = &params.auth {
         let kind_matches = matches!(
             (auth, &record.auth),
@@ -1826,29 +1281,17 @@ async fn update_credential(
         record.display_name = display_name;
     }
     if let Some(patch) = params.metadata {
-        apply_metadata_patch(&mut record.metadata, patch);
+        awaken_credential_vault::apply_metadata_patch(&mut record.metadata, patch);
     }
-    if record == before_record
-        && material_patch.primary.is_none()
-        && material_patch.auxiliary.is_empty()
-        && !advance_source_without_material
-    {
-        return Ok(Json(VaultState::project_credential(&record)));
-    }
-    let record = update_managed_credential(
-        before_record,
-        record,
-        material_patch,
-        advance_source_without_material,
-        state.clock_reading_rfc3339().map_err(storage_error)?,
-        state.secrets.as_ref(),
-        state.repository.as_ref(),
-        state.clock.as_ref(),
-    )
-    .await
-    .map_err(managed_mutation_error)?;
+    let record = state
+        .application
+        .change_credential(VaultCredentialChange {
+            before: before_record,
+            after: record,
+            material: material_patch,
+            advance_source_without_material,
+        })
+        .await
+        .map_err(command_error)?;
     Ok(Json(VaultState::project_credential(&record)))
 }
-
-#[cfg(test)]
-mod tests;
