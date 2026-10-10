@@ -67,6 +67,10 @@ pub use managed_rollout::{
     ManagedCredentialOperation, ManagedCredentialRollout, ManagedCredentialRolloutIdentityDecision,
     managed_credential_rollout_identity_decision,
 };
+mod mcp_requirement;
+pub use mcp_requirement::{
+    McpCredentialRequirement, McpCredentialRequirementError, McpCredentialUsageClass,
+};
 mod observation_admission;
 pub use observation_admission::require_exact_available_worker_reference;
 #[cfg(kani)]

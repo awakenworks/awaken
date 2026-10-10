@@ -593,7 +593,7 @@ async fn assemble_execution_host(
             publisher.clone()
                 as Arc<
                     dyn awaken_resource_contract::ArtifactPublisher<
-                            awaken_run_ingress::ArtifactPublicationFence,
+                            awaken_session_realization_contract::ResourceOperationFence,
                         >,
                 >
         });

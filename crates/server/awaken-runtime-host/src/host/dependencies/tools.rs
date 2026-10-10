@@ -162,7 +162,7 @@ impl HostDependencies {
         mut self,
         source: Arc<
             dyn awaken_session_configuration_contract::SkillBundleSource<
-                    awaken_run_ingress_contract::ResourceOperationFence,
+                    crate::ResourceOperationFence,
                 >,
         >,
     ) -> Self {

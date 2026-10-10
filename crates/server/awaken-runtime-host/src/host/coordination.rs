@@ -1083,7 +1083,9 @@ mod tests {
                 .session_resources
                 .as_ref()
                 .unwrap_or_else(|| panic!("{rule} child Resource envelope"))
-                .decode_manifest()
+                .decode_with(
+                    awaken_session_resource_contract::SessionResourceManifest::decode_resources,
+                )
                 .unwrap_or_else(|error| panic!("{rule} decode child Resource envelope: {error}"));
             assert_eq!(carried.revision, expected_revision, "{rule} generation");
             assert_eq!(

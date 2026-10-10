@@ -1,7 +1,11 @@
+// @formal entrypoint credential.mcp_claim_admits_only_when_every_requirement_is_installed
 // @formal entrypoint credential_effect.boundary_preserves_exact_materialization_authority
 use awaken_credential_contract::CredentialAccessAdmission;
 use awaken_credential_contract::CredentialRealizationCapabilities;
 use awaken_credential_contract::{AttemptCredentialBinding, AttemptCredentialBindingError};
+use awaken_credential_contract::{
+    McpCredentialRequirement, McpCredentialRequirementError, McpCredentialUsageClass,
+};
 use awaken_worker_contract::WorkerSnapshot;
 
 use crate::run_dispatch::RunDispatch;
@@ -9,8 +13,11 @@ use crate::run_dispatch::RunDispatch;
 /// Complete claim-time credential admission failure for one dispatch.
 ///
 /// Inference failures retain the Runtime contract's neutral vocabulary. Session
-/// MCP projection failures belong here because durable Run ingress is the only
-/// boundary that joins the frozen Session envelope to Worker claim admission.
+/// MCP failures belong here because durable Run ingress is the only boundary
+/// that joins the Session's published MCP credential requirements to Worker
+/// claim admission. `InvalidSessionCredentialProjection` and
+/// `InvalidSessionMcpCredentialBinding` arise only from rows written before the
+/// Session published those requirements.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DispatchCredentialAdmissionError {
     #[error(transparent)]
@@ -129,6 +136,227 @@ fn acp_mcp_client_injection_profile_admits(
         })
 }
 
+/// The only realization route one typed Session MCP credential requirement
+/// may take on the claiming Worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpRequirementRoute {
+    RejectUsage,
+    WorkerRelay,
+    ClientInjection,
+    RejectHolder,
+}
+
+/// Select the route from the requirement's usage class and selected holder.
+/// The Session validated the usage at admission; it is classified again here
+/// because the requirement is read back from a durable row, and an unsupported
+/// usage must still fail closed. A Platform holder has no MCP route.
+const fn mcp_requirement_route(
+    usage: McpCredentialUsageClass,
+    boundary: awaken_runtime_contract::PlaintextBoundary,
+) -> McpRequirementRoute {
+    match (usage, boundary) {
+        (McpCredentialUsageClass::Unsupported, _) => McpRequirementRoute::RejectUsage,
+        (
+            McpCredentialUsageClass::AuthorizationBearer,
+            awaken_runtime_contract::PlaintextBoundary::Worker,
+        ) => McpRequirementRoute::WorkerRelay,
+        (
+            McpCredentialUsageClass::AuthorizationBearer,
+            awaken_runtime_contract::PlaintextBoundary::Workload,
+        ) => McpRequirementRoute::ClientInjection,
+        (
+            McpCredentialUsageClass::AuthorizationBearer,
+            awaken_runtime_contract::PlaintextBoundary::Platform,
+        ) => McpRequirementRoute::RejectHolder,
+    }
+}
+
+/// A claim admits the Session MCP credentials only when every requirement is
+/// admitted. The first refusal is the claim's refusal; no requirement can be
+/// skipped, and an empty set admits.
+fn every_mcp_requirement_admitted<E>(
+    verdicts: impl IntoIterator<Item = Result<(), E>>,
+) -> Result<(), E> {
+    for verdict in verdicts {
+        verdict?;
+    }
+    Ok(())
+}
+
+impl From<McpCredentialRequirementError> for DispatchCredentialAdmissionError {
+    fn from(error: McpCredentialRequirementError) -> Self {
+        match error {
+            McpCredentialRequirementError::UnpairedHolder => {
+                Self::InvalidSessionMcpCredentialBinding
+            }
+            McpCredentialRequirementError::UnsupportedUsage => {
+                Self::InvalidSessionMcpCredentialUsage
+            }
+        }
+    }
+}
+
+/// The Session MCP credential requirements this claim must satisfy.
+///
+/// The typed requirements the Session published at admission are
+/// authoritative, and the runtime envelope is not read. A row written before
+/// they existed carries none; only then is its projection decoded in full
+/// exactly as before, and any decode or pairing failure rejects the claim.
+/// Remove this fallback once those rows have drained.
+fn session_mcp_credential_requirements(
+    request: &RunDispatch,
+) -> Result<std::borrow::Cow<'_, [McpCredentialRequirement]>, DispatchCredentialAdmissionError> {
+    if let Some(requirements) = &request.placement.session_mcp_credentials {
+        return Ok(std::borrow::Cow::Borrowed(requirements));
+    }
+    let Some(envelope) = &request.session_runtime else {
+        return Ok(std::borrow::Cow::Borrowed(&[]));
+    };
+    let projection = awaken_session_configuration_contract::SessionRuntimeProjection::decode(
+        &envelope.projection_json,
+    )
+    .map_err(|error| {
+        DispatchCredentialAdmissionError::InvalidSessionCredentialProjection(error.to_string())
+    })?;
+    Ok(std::borrow::Cow::Owned(
+        projection.mcp_credential_requirements()?,
+    ))
+}
+
+/// Admit one typed requirement against the installed Worker evidence. A Worker
+/// holder is the legacy relay; a Workload holder is client injection, which
+/// every effective execution backend must be an ACP adapter able to inject the
+/// exact process-private field from one installed profile.
+fn admit_session_mcp_requirement(
+    request: &RunDispatch,
+    requirement: &McpCredentialRequirement,
+    installed: &CredentialRealizationCapabilities,
+    now_unix_ms: u64,
+) -> Result<(), DispatchCredentialAdmissionError> {
+    let access = &requirement.credential;
+    let holder = &requirement.selected_plaintext_holder;
+    match mcp_requirement_route(requirement.usage_class(), holder.boundary) {
+        McpRequirementRoute::RejectUsage => {
+            Err(DispatchCredentialAdmissionError::InvalidSessionMcpCredentialUsage)
+        }
+        McpRequirementRoute::RejectHolder => {
+            Err(DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder)
+        }
+        McpRequirementRoute::WorkerRelay => access
+            .admit(
+                holder,
+                awaken_credential_contract::CredentialRealizationKind::WorkerRelay,
+                installed,
+                now_unix_ms,
+            )
+            .map(|_plan| ())
+            .map_err(DispatchCredentialAdmissionError::SessionAdmission),
+        McpRequirementRoute::ClientInjection => {
+            let execution_candidates = request
+                .activation
+                .snapshot
+                .resolved_spec
+                .execution_candidates(request.activation.model_ref_override.as_deref());
+            if execution_candidates.is_empty()
+                || execution_candidates.iter().any(|candidate| {
+                    !matches!(
+                        awaken_runtime_contract::resolved::Backend::from_ref(
+                            candidate.binding().identity().2
+                        ),
+                        awaken_runtime_contract::resolved::Backend::Acp(_)
+                    )
+                })
+            {
+                return Err(DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder);
+            }
+            access
+                .admit(
+                    holder,
+                    awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField,
+                    installed,
+                    now_unix_ms,
+                )
+                .map_err(DispatchCredentialAdmissionError::SessionAdmission)?;
+            if execution_candidates.iter().any(|candidate| {
+                !acp_mcp_client_injection_profile_admits(
+                    access,
+                    holder,
+                    candidate.binding().identity().2,
+                    installed,
+                    now_unix_ms,
+                )
+            }) {
+                return Err(DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder);
+            }
+            Ok(())
+        }
+    }
+}
+
+#[cfg(kani)]
+/// @obligation credential.mcp_claim_admits_only_when_every_requirement_is_installed
+#[kani::proof]
+fn mcp_requirement_route_admits_only_bearer_relay_or_workload_injection() {
+    // Cause/effect table: C1 usage class is Authorization Bearer or not; C2
+    // the selected holder boundary is Worker, Workload or Platform.
+    // R1 !C1 -> RejectUsage for every holder; R2 C1+Worker -> WorkerRelay;
+    // R3 C1+Workload -> ClientInjection; R4 C1+Platform -> RejectHolder. No
+    // route admits a requirement without first selecting exactly one holder
+    // mechanism that the installed evidence must then satisfy.
+    let usage = if kani::any() {
+        McpCredentialUsageClass::AuthorizationBearer
+    } else {
+        McpCredentialUsageClass::Unsupported
+    };
+    let boundary = match kani::any::<u8>() % 3 {
+        0 => awaken_runtime_contract::PlaintextBoundary::Worker,
+        1 => awaken_runtime_contract::PlaintextBoundary::Workload,
+        _ => awaken_runtime_contract::PlaintextBoundary::Platform,
+    };
+    let route = mcp_requirement_route(usage, boundary);
+    match usage {
+        McpCredentialUsageClass::Unsupported => {
+            assert_eq!(route, McpRequirementRoute::RejectUsage, "R1");
+        }
+        McpCredentialUsageClass::AuthorizationBearer => match boundary {
+            awaken_runtime_contract::PlaintextBoundary::Worker => {
+                assert_eq!(route, McpRequirementRoute::WorkerRelay, "R2");
+            }
+            awaken_runtime_contract::PlaintextBoundary::Workload => {
+                assert_eq!(route, McpRequirementRoute::ClientInjection, "R3");
+            }
+            awaken_runtime_contract::PlaintextBoundary::Platform => {
+                assert_eq!(route, McpRequirementRoute::RejectHolder, "R4");
+            }
+        },
+    }
+}
+
+#[cfg(kani)]
+/// @obligation credential.mcp_claim_admits_only_when_every_requirement_is_installed
+#[kani::proof]
+#[kani::unwind(5)]
+fn claim_admits_session_mcp_credentials_only_when_every_requirement_is_admitted() {
+    // Cause/effect table over up to three requirements: C1 how many there
+    // are; C2 which of them the installed evidence admits. E1 every admitted
+    // (including none present) -> the claim admits; E2 any refusal -> the
+    // claim is refused with the first refusal, in requirement order. No
+    // refused requirement can be skipped or outvoted by later admissions.
+    let admitted: [bool; 3] = kani::any();
+    let count = usize::from(kani::any::<u8>() % 4);
+    let verdict = every_mcp_requirement_admitted(
+        admitted[..count]
+            .iter()
+            .enumerate()
+            .map(|(index, ok)| if *ok { Ok(()) } else { Err(index) }),
+    );
+    let first_refusal = (0..count).find(|index| !admitted[*index]);
+    match first_refusal {
+        None => assert_eq!(verdict, Ok(()), "E1"),
+        Some(index) => assert_eq!(verdict, Err(index), "E2"),
+    }
+}
+
 /// Compile all credential-bearing candidates selected for this Run into exact
 /// attempt bindings. Every caller must pass installed capability evidence: an
 /// immutable registered Worker manifest or the in-process Worker's composed
@@ -151,96 +379,10 @@ pub fn compile_attempt_credential_bindings(
         claim_epoch,
         now_unix_ms,
     )?;
-    if let Some(envelope) = &request.session_runtime {
-        let projection = envelope.decode_projection().map_err(|error| {
-            DispatchCredentialAdmissionError::InvalidSessionCredentialProjection(error.to_string())
-        })?;
-        for stage in projection.mcp_stages.into_iter().flatten() {
-            match (
-                stage.credential.as_ref(),
-                stage.selected_plaintext_holder.as_ref(),
-            ) {
-                (None, None) => {}
-                (Some(access), Some(holder)) => {
-                    match &access.usage {
-                        awaken_runtime_contract::CredentialUsage::HttpHeader { name, scheme }
-                            if name.eq_ignore_ascii_case("authorization")
-                                && scheme.as_deref().is_some_and(|scheme| {
-                                    scheme.eq_ignore_ascii_case("bearer")
-                                }) => {}
-                        _ => {
-                            return Err(
-                                DispatchCredentialAdmissionError::InvalidSessionMcpCredentialUsage,
-                            );
-                        }
-                    }
-                    let realization = match holder.boundary {
-                        awaken_runtime_contract::PlaintextBoundary::Worker => {
-                            awaken_credential_contract::CredentialRealizationKind::WorkerRelay
-                        }
-                        awaken_runtime_contract::PlaintextBoundary::Workload => {
-                            let execution_candidates = request
-                                .activation
-                                .snapshot
-                                .resolved_spec
-                                .execution_candidates(
-                                    request.activation.model_ref_override.as_deref(),
-                                );
-                            if execution_candidates.is_empty()
-                                || execution_candidates.iter().any(|candidate| {
-                                    !matches!(
-                                        awaken_runtime_contract::resolved::Backend::from_ref(
-                                            candidate.binding().identity().2
-                                        ),
-                                        awaken_runtime_contract::resolved::Backend::Acp(_)
-                                    )
-                                })
-                            {
-                                return Err(
-                                    DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder,
-                                );
-                            }
-                            access
-                                .admit(
-                                    holder,
-                                    awaken_credential_contract::CredentialRealizationKind::ProcessProtocolField,
-                                    installed,
-                                    now_unix_ms,
-                                )
-                                .map_err(DispatchCredentialAdmissionError::SessionAdmission)?;
-                            if execution_candidates.iter().any(|candidate| {
-                                !acp_mcp_client_injection_profile_admits(
-                                    access,
-                                    holder,
-                                    candidate.binding().identity().2,
-                                    installed,
-                                    now_unix_ms,
-                                )
-                            }) {
-                                return Err(
-                                    DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder,
-                                );
-                            }
-                            continue;
-                        }
-                        awaken_runtime_contract::PlaintextBoundary::Platform => {
-                            return Err(
-                                DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder,
-                            );
-                        }
-                    };
-                    access
-                        .admit(holder, realization, installed, now_unix_ms)
-                        .map_err(DispatchCredentialAdmissionError::SessionAdmission)?;
-                }
-                _ => {
-                    return Err(
-                        DispatchCredentialAdmissionError::InvalidSessionMcpCredentialBinding,
-                    );
-                }
-            }
-        }
-    }
+    let requirements = session_mcp_credential_requirements(request)?;
+    every_mcp_requirement_admitted(requirements.iter().map(|requirement| {
+        admit_session_mcp_requirement(request, requirement, installed, now_unix_ms)
+    }))?;
     Ok(bindings)
 }
 

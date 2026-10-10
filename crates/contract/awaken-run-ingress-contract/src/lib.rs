@@ -12,7 +12,6 @@
 //! handles (G3). Worker wiring stays private to the host.
 
 mod claimed_commit;
-mod claimed_session;
 mod claimed_stream;
 pub mod dispatch;
 mod dispatch_transition;
@@ -44,9 +43,6 @@ pub use awaken_worker_contract::{
     WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally, place_assignment,
 };
 pub use claimed_commit::ClaimedRunCommit;
-pub use claimed_session::{
-    ClaimedSessionControlError, ClaimedSessionCoordinationControl, ClaimedSessionRealizationControl,
-};
 pub use claimed_stream::ClaimedStreamPublisher;
 pub use dispatch::{
     AttemptAdmission, AttemptCredentialBindingError, CasOutcome, ClaimCredentialOperation, Claimed,
@@ -87,43 +83,3 @@ pub use worker_transport::{
     StreamObservationRequest, WorkerHeartbeatReceipt, WorkerIdentityRequest,
     WorkerRegistrationReceipt,
 };
-
-/// The one closed fencing vocabulary for Runtime-authored Resource effects.
-/// Ordinary Run work retains its dispatch claim; terminal recovery carries the
-/// aggregate-derived cleanup command and realization lease; checkpoint source
-/// release carries the existing Environment operation whose root state already
-/// owns the durable checkpoint. Resources remains generic over this value and
-/// owns no execution authority of its own.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(
-    tag = "type",
-    content = "fence",
-    rename_all = "snake_case",
-    deny_unknown_fields
-)]
-// This is the single short-lived, closed transport union for mutually
-// exclusive Resource operations. Boxing only the terminal arm would change
-// the public Rust contract while preserving the same wire authority.
-#[allow(clippy::large_enum_variant)]
-pub enum ResourceOperationFence {
-    Run(RunClaim),
-    SessionMaterialization(
-        awaken_session_realization_contract::SessionResourceMaterializationIntent,
-    ),
-    RepositoryPublication {
-        command: Box<awaken_session_state_contract::SessionRepositoryPublicationCommand>,
-        lease: awaken_session_resource_contract::SessionRealizationLease,
-    },
-    CheckpointRelease(awaken_session_state_contract::SessionEnvironmentOperation),
-    Terminal(awaken_session_state_contract::SessionTerminalCleanupEffect),
-}
-
-impl From<RunClaim> for ResourceOperationFence {
-    fn from(claim: RunClaim) -> Self {
-        Self::Run(claim)
-    }
-}
-
-/// Source-compatible name retained for Artifact publishers. It is an alias,
-/// not a second fencing enum or wire grammar.
-pub type ArtifactPublicationFence = ResourceOperationFence;

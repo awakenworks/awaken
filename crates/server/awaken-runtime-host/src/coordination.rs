@@ -4,7 +4,7 @@
 //! Both adapters route through the Session application's existing authority. A
 //! co-located Host holds only its weak application edge; a database-less Worker
 //! uses the current dispatch claim and the existing authenticated
-//! [`awaken_run_ingress_contract::ClaimedSessionCoordinationControl`] transport.
+//! [`awaken_session_runtime_contract::ClaimedSessionCoordinationControl`] transport.
 
 use std::sync::{Arc, Weak};
 
@@ -12,25 +12,26 @@ use awaken_ext_builtin_tools::{
     AgentCoordinator, AgentListRequest, AgentMessageReceipt, AgentMessageRequest,
     AgentMessageTarget, AgentRosterEntry,
 };
-use awaken_run_ingress_contract::{ClaimedSessionCoordinationControl, RunClaim};
 use awaken_run_ingress_contract::{
-    DispatchSettlementError, DispatchSettlementObserver, RunDispatch,
+    DispatchSettlementError, DispatchSettlementObserver, RunClaim, RunDispatch,
 };
 use awaken_runtime_contract::llm::{
     ModelRequestAdmission, ModelRequestAdmissionRequest, ModelRequestGate,
 };
 use awaken_session_runtime_contract::{
-    SessionAgentBoundaryCommand, SessionAgentCoordination, SessionAgentMessageCommand,
-    SessionAgentMessageReceipt, SessionAgentRosterEntry, SessionAgentTarget,
-    SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
+    ClaimedSessionCoordinationControl, SessionAgentBoundaryCommand, SessionAgentCoordination,
+    SessionAgentMessageCommand, SessionAgentMessageReceipt, SessionAgentRosterEntry,
+    SessionAgentTarget, SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
 };
 use awaken_tool_contract::tool::ToolError;
+
+pub(crate) type ClaimedCoordination = dyn ClaimedSessionCoordinationControl<RunClaim>;
 
 #[derive(Clone)]
 pub(crate) enum CoordinationEndpoint {
     Local(Weak<dyn SessionAgentCoordination>),
     Remote {
-        control: Arc<dyn ClaimedSessionCoordinationControl>,
+        control: Arc<ClaimedCoordination>,
         slots: crate::session_slot::SessionRuntimeSlots,
     },
 }
@@ -732,7 +733,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_run_ingress_contract::ClaimedSessionRealizationControl for RemoteControl {
+    impl awaken_session_realization_contract::ClaimedSessionRealizationControl for RemoteControl {
         async fn resume_frozen(
             &self,
             _claim: &RunClaim,
@@ -741,24 +742,28 @@ mod tests {
             _continuation: Option<&awaken_session_resource_contract::SessionRealizationLease>,
         ) -> Result<
             Option<awaken_session_realization_contract::SessionRealizationDirective>,
-            awaken_run_ingress_contract::ClaimedSessionControlError,
+            awaken_session_realization_contract::ClaimedSessionControlError,
         > {
             Ok(None)
         }
     }
 
     #[async_trait::async_trait]
-    impl awaken_run_ingress_contract::ClaimedSessionCoordinationControl for RemoteControl {
+    impl
+        awaken_session_runtime_contract::ClaimedSessionCoordinationControl<
+            awaken_run_ingress_contract::RunClaim,
+        > for RemoteControl
+    {
         async fn list_session_agents(
             &self,
             _claim: &RunClaim,
             _session_id: &str,
         ) -> Result<
             Vec<awaken_session_runtime_contract::SessionAgentRosterEntry>,
-            awaken_run_ingress_contract::ClaimedSessionControlError,
+            awaken_session_realization_contract::ClaimedSessionControlError,
         > {
             Err(
-                awaken_run_ingress_contract::ClaimedSessionControlError::new(
+                awaken_session_realization_contract::ClaimedSessionControlError::new(
                     "remote coordination fixture does not list Agents",
                 ),
             )
@@ -770,7 +775,7 @@ mod tests {
             _session_id: &str,
             _thread_id: &awaken_agent_contract::agent::thread::Id,
             _run_id: &awaken_agent_contract::agent::run::Id,
-        ) -> Result<bool, awaken_run_ingress_contract::ClaimedSessionControlError> {
+        ) -> Result<bool, awaken_session_realization_contract::ClaimedSessionControlError> {
             self.model_calls.lock().unwrap().push(claim.clone());
             Ok(true)
         }
@@ -784,10 +789,10 @@ mod tests {
             _mode: awaken_session_runtime_contract::SessionRunActivityAdmissionMode,
         ) -> Result<
             awaken_session_runtime_contract::SessionRunActivityAdmission,
-            awaken_run_ingress_contract::ClaimedSessionControlError,
+            awaken_session_realization_contract::ClaimedSessionControlError,
         > {
             Err(
-                awaken_run_ingress_contract::ClaimedSessionControlError::new(
+                awaken_session_realization_contract::ClaimedSessionControlError::new(
                     "remote coordination fixture does not admit Session activity",
                 ),
             )
@@ -799,10 +804,10 @@ mod tests {
             _command: awaken_session_runtime_contract::SessionAgentMessageCommand,
         ) -> Result<
             awaken_session_runtime_contract::SessionAgentMessageReceipt,
-            awaken_run_ingress_contract::ClaimedSessionControlError,
+            awaken_session_realization_contract::ClaimedSessionControlError,
         > {
             Err(
-                awaken_run_ingress_contract::ClaimedSessionControlError::new(
+                awaken_session_realization_contract::ClaimedSessionControlError::new(
                     "remote coordination fixture does not send Agent messages",
                 ),
             )
@@ -812,9 +817,9 @@ mod tests {
             &self,
             _claim: &RunClaim,
             _command: awaken_session_runtime_contract::SessionAgentBoundaryCommand,
-        ) -> Result<(), awaken_run_ingress_contract::ClaimedSessionControlError> {
+        ) -> Result<(), awaken_session_realization_contract::ClaimedSessionControlError> {
             Err(
-                awaken_run_ingress_contract::ClaimedSessionControlError::new(
+                awaken_session_realization_contract::ClaimedSessionControlError::new(
                     "remote coordination fixture does not settle Agent boundaries",
                 ),
             )

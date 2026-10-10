@@ -6,8 +6,8 @@
 // @formal reason: crates/server/awaken-worker-runtime/src/worker_control_client.rs.
 //! Worker-side Session realization control over the authenticated Coordinator transport.
 
-use awaken_run_ingress_contract::ClaimedSessionControlError;
 use awaken_run_ingress_contract::{RunClaim, WorkerIdentity};
+use awaken_session_realization_contract::ClaimedSessionControlError;
 
 /// Standard client using the same registered identity-bound Worker transport as
 /// lifecycle, dispatch, recovery, and claimed commits.
@@ -52,7 +52,9 @@ impl awaken_session_runtime_contract::SessionEnvironmentBindingSink for WorkerCo
 }
 
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::ClaimedSessionRealizationControl for WorkerControlSessionClient {
+impl awaken_session_realization_contract::ClaimedSessionRealizationControl
+    for WorkerControlSessionClient
+{
     async fn resume_frozen(
         &self,
         claim: &RunClaim,
@@ -76,7 +78,11 @@ impl awaken_run_ingress_contract::ClaimedSessionRealizationControl for WorkerCon
 }
 
 #[async_trait::async_trait]
-impl awaken_run_ingress_contract::ClaimedSessionCoordinationControl for WorkerControlSessionClient {
+impl
+    awaken_session_runtime_contract::ClaimedSessionCoordinationControl<
+        awaken_run_ingress_contract::RunClaim,
+    > for WorkerControlSessionClient
+{
     async fn list_session_agents(
         &self,
         claim: &RunClaim,

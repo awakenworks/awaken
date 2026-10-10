@@ -1,7 +1,9 @@
 //! Session realization commands, projections, and control ports.
 
+mod claimed_control;
 #[cfg(feature = "test-support")]
 pub mod realization_observation;
+mod resource_operation_fence;
 mod session_realization;
 
 #[cfg(test)]
@@ -35,6 +37,8 @@ pub(crate) use awaken_session_state_contract::{
 pub(crate) use awaken_session_types::RunError;
 pub(crate) use awaken_session_types::{SessionId, SessionRevision};
 
+pub use claimed_control::{ClaimedSessionControlError, ClaimedSessionRealizationControl};
+pub use resource_operation_fence::ResourceOperationFence;
 pub use session_realization::*;
 
 #[cfg(test)]

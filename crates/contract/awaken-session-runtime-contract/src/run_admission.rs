@@ -16,7 +16,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
 use serde::{Deserialize, Serialize};
 
-pub use awaken_session_types::{SessionRunCommandFingerprint, SessionRunReplacement};
+use awaken_session_types::{SessionRunCommandFingerprint, SessionRunReplacement};
 
 /// Immutable execution restrictions contributed by the application that owns
 /// a Session Run. These values can only narrow tool authority or require a
