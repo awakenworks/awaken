@@ -15,13 +15,13 @@ fn exact_receipt(
     session_id: &str,
     run_id: &awaken_agent_contract::agent::run::Id,
     admitted: &awaken_session_execution_contract::AdmittedSessionRun,
-) -> Result<awaken_protocol_awaken::ProfiledSessionRunReceipt, WireErr> {
+) -> Result<crate::awaken_extensions::ProfiledSessionRunReceipt, WireErr> {
     if admitted.session_id() != session_id || admitted.run_id() != run_id {
         return Err(error_response(StateError::Run(RunError::internal(
             "Session Run admission returned a mismatched identity",
         ))));
     }
-    Ok(awaken_protocol_awaken::ProfiledSessionRunReceipt {
+    Ok(crate::awaken_extensions::ProfiledSessionRunReceipt {
         session_id: session_id.to_string(),
         run_id: run_id.clone(),
     })
@@ -32,7 +32,7 @@ pub async fn get_profiled_session_run_events(
     State(state): State<Arc<ManagedState>>,
     Path((id, run_id)): Path<(String, String)>,
     RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
-    Query(query): Query<awaken_protocol_awaken::ProfiledSessionRunEventsQuery>,
+    Query(query): Query<crate::awaken_extensions::ProfiledSessionRunEventsQuery>,
 ) -> Result<Json<awaken_dispatch_contract::SessionRunEventPage>, WireErr> {
     state
         .roles
@@ -55,8 +55,8 @@ pub async fn resume_profiled_session_run(
     State(state): State<Arc<ManagedState>>,
     Path((id, run_id)): Path<(String, String)>,
     RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
-    body: Result<Json<awaken_protocol_awaken::ProfiledSessionRunResume>, JsonRejection>,
-) -> Result<Json<awaken_protocol_awaken::ProfiledSessionRunReceipt>, WireErr> {
+    body: Result<Json<crate::awaken_extensions::ProfiledSessionRunResume>, JsonRejection>,
+) -> Result<Json<crate::awaken_extensions::ProfiledSessionRunReceipt>, WireErr> {
     let Json(body) = body.map_err(|rejection| {
         error_response(StateError::Run(RunError::bad_request(
             crate::routes::extractors::managed_json_message(rejection.body_text()),
@@ -67,7 +67,7 @@ pub async fn resume_profiled_session_run(
             "native reply call id is empty",
         ))));
     }
-    let receipt = awaken_protocol_awaken::ProfiledSessionRunReceipt {
+    let receipt = crate::awaken_extensions::ProfiledSessionRunReceipt {
         session_id: id.clone(),
         run_id: awaken_agent_contract::agent::run::Id(run_id),
     };
@@ -92,8 +92,8 @@ pub async fn submit_profiled_session_run(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
     RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
-    body: Result<Json<awaken_protocol_awaken::ProfiledSessionRunSubmit>, JsonRejection>,
-) -> Result<Json<awaken_protocol_awaken::ProfiledSessionRunReceipt>, WireErr> {
+    body: Result<Json<crate::awaken_extensions::ProfiledSessionRunSubmit>, JsonRejection>,
+) -> Result<Json<crate::awaken_extensions::ProfiledSessionRunReceipt>, WireErr> {
     let Json(body) = body.map_err(|rejection| {
         error_response(StateError::Run(RunError::bad_request(
             crate::routes::extractors::managed_json_message(rejection.body_text()),
@@ -164,7 +164,7 @@ mod tests {
         };
         assert_eq!(
             exact_receipt("session-1", &run_id, &exact).unwrap(),
-            awaken_protocol_awaken::ProfiledSessionRunReceipt {
+            crate::awaken_extensions::ProfiledSessionRunReceipt {
                 session_id: "session-1".into(),
                 run_id: run_id.clone(),
             },

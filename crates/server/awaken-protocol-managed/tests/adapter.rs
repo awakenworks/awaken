@@ -191,7 +191,7 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
     // surfaces sit behind the one composition-root tenancy layer.
     let app = support::edge_stamped(
         awaken_protocol_managed::router(state.clone()).merge(
-            awaken_protocol_awaken::session_event_admission_router(
+            awaken_protocol_managed::awaken_extensions::session_event_admission_router(
                 awaken_protocol_managed::close_event_admission,
             )
             .with_state(state.clone()),
@@ -313,7 +313,7 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
     let restarted = support::shared_state_over(EchoFake::default(), repo).await;
     let cold = support::edge_stamped(
         awaken_protocol_managed::router(restarted.clone()).merge(
-            awaken_protocol_awaken::session_event_admission_router(
+            awaken_protocol_managed::awaken_extensions::session_event_admission_router(
                 awaken_protocol_managed::close_event_admission,
             )
             .with_state(restarted),

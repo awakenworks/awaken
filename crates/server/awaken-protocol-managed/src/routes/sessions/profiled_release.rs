@@ -8,7 +8,7 @@ use crate::state::{lifecycle_event, lifecycle_fact};
 pub(super) fn command(
     owner_scope: &str,
     id: &str,
-    publication: awaken_protocol_awaken::ProfiledSessionRepositoryPublication,
+    publication: crate::awaken_extensions::ProfiledSessionRepositoryPublication,
     observed_at: u64,
 ) -> awaken_session_application::SessionArchiveWithRepositoryPublicationCommand {
     awaken_session_application::SessionArchiveWithRepositoryPublicationCommand {
@@ -41,7 +41,7 @@ mod tests {
         // identity and selector, different display/fact timestamps; P2 a
         // distinct business intent. The Application lost-CAS table checks that
         // P1 converges on one idempotency receipt, archive time and effect.
-        let publication: awaken_protocol_awaken::ProfiledSessionRepositoryPublication =
+        let publication: crate::awaken_extensions::ProfiledSessionRepositoryPublication =
             serde_json::from_value(serde_json::json!({
                 "binding_id": "source",
                 "expectation": {

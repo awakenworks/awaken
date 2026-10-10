@@ -74,6 +74,7 @@ pub use coordinator_persistence::{
 pub use extraction_references::ReferenceIndexedMemoryExtractions;
 pub use runtime_authority::postgres_local_commit;
 
+use awaken_protocol_managed::awaken_extensions;
 use std::sync::Arc;
 
 mod dream;
@@ -1305,10 +1306,10 @@ fn registered_worker_transport_with_broker(
 /// The read-only Awaken projections beside a Managed Session: its execution
 /// evidence and its content-capture decision (ADR-0050 D8).
 fn session_read_extensions() -> Router<Arc<ManagedState>> {
-    awaken_protocol_awaken::session_execution_evidence_router(
+    awaken_extensions::session_execution_evidence_router(
         awaken_protocol_managed::get_session_execution_evidence,
     )
-    .merge(awaken_protocol_awaken::session_content_capture_router(
+    .merge(awaken_extensions::session_content_capture_router(
         awaken_protocol_managed::get_session_content_capture,
     ))
 }
@@ -1477,30 +1478,30 @@ async fn mount_with_managed_over_and_models(
         }));
     }
     let dreams = awaken_protocol_managed::dreams_router(dream_application.clone());
-    let resource_manifests = awaken_protocol_awaken::session_resource_manifest_router(
+    let resource_manifests = awaken_extensions::session_resource_manifest_router(
         awaken_protocol_managed::replace_resource_manifest,
     )
     .with_state(managed_state.clone());
-    let session_extensions = awaken_protocol_awaken::profiled_session_router(
+    let session_extensions = awaken_extensions::profiled_session_router(
         awaken_protocol_managed::create_profiled_session,
     )
-    .merge(awaken_protocol_awaken::profiled_session_run_router(
+    .merge(awaken_extensions::profiled_session_run_router(
         awaken_protocol_managed::submit_profiled_session_run,
     ))
-    .merge(awaken_protocol_awaken::profiled_session_run_events_router(
+    .merge(awaken_extensions::profiled_session_run_events_router(
         awaken_protocol_managed::get_profiled_session_run_events,
     ))
-    .merge(awaken_protocol_awaken::profiled_session_run_resume_router(
+    .merge(awaken_extensions::profiled_session_run_resume_router(
         awaken_protocol_managed::resume_profiled_session_run,
     ))
-    .merge(awaken_protocol_awaken::profiled_session_release_router(
+    .merge(awaken_extensions::profiled_session_release_router(
         awaken_protocol_managed::release_profiled_session,
     ))
     .merge(session_read_extensions())
     .with_state(managed_state.clone());
     let managed = router(managed_state.clone())
         .merge(
-            awaken_protocol_awaken::session_event_admission_router(
+            awaken_extensions::session_event_admission_router(
                 awaken_protocol_managed::close_event_admission,
             )
             .with_state(managed_state.clone()),

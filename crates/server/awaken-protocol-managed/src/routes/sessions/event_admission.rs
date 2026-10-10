@@ -26,7 +26,7 @@ pub async fn close_event_admission(
     RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
     headers: HeaderMap,
     body: Result<Json<SendEventsRequest>, axum::extract::rejection::JsonRejection>,
-) -> Result<Json<awaken_protocol_awaken::EventAdmissionReceipt>, WireErr> {
+) -> Result<Json<crate::awaken_extensions::EventAdmissionReceipt>, WireErr> {
     let Json(req) = body.map_err(|rejection| {
         error_response(StateError::Run(RunError::bad_request(
             crate::routes::extractors::managed_json_message(rejection.body_text()),
@@ -60,7 +60,7 @@ pub async fn close_event_admission(
                 StateError::Run(error)
             })
         })?;
-    use awaken_protocol_awaken::{EventAdmissionProof, EventAdmissionStatus};
+    use crate::awaken_extensions::{EventAdmissionProof, EventAdmissionStatus};
     let (status, proof) = match admission {
         awaken_session_application_contract::SessionEventAdmission::Accepted {
             batch_id,
@@ -94,7 +94,7 @@ pub async fn close_event_admission(
             },
         ),
     };
-    Ok(Json(awaken_protocol_awaken::EventAdmissionReceipt {
+    Ok(Json(crate::awaken_extensions::EventAdmissionReceipt {
         session_id: id,
         idempotency_key: key,
         status,

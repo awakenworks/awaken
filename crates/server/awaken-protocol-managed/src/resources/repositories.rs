@@ -12,12 +12,12 @@
 //! enter this adapter, and authoring success does not assert remote Git access.
 
 use super::managed_resource_error as err;
+use crate::awaken_extensions::{CreateRepository, RepositoryObject};
 use crate::{
     common::{headers::parse_idempotency_key_header, scope::RequiredWorkspaceScope},
     routes::{ManagedJson, ManagedQuery},
     types::{PageCursor, PageQuery, paginate},
 };
-use awaken_protocol_awaken::{CreateRepository, RepositoryObject};
 use awaken_resource_contract::{
     CreateRepositoryCommand, RepositoryApplicationService, ResourceRegistryError,
 };
@@ -67,7 +67,7 @@ fn failure(error: ResourceRegistryError) -> axum::response::Response {
 }
 
 pub fn repositories_router(application: Arc<dyn RepositoryApplicationService>) -> Router {
-    awaken_protocol_awaken::repositories_router(list, create, retrieve).with_state(application)
+    crate::awaken_extensions::repositories_router(list, create, retrieve).with_state(application)
 }
 
 async fn list(
