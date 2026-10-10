@@ -14,6 +14,12 @@
 // | N2 | full | Y | structured | the next attributed turn persists no content |
 // | N3 | full | Y | (stale revision) | 409, the stored narrowing is unchanged |
 // | N4 | full | Y | cleared | content capture resumes on the next turn |
+// | N5 | full | Y | unset / structured / cleared | both read entry points --
+//   `GET /v1/user_profiles/:id/capture-decision` and
+//   `GET /v1/awaken/sessions/:id/content-capture` attributed to the subject --
+//   report the same decision as the Run (`ceiling` and `effective` follow the
+//   narrowing); an unattributed Session read reports `consent: null`, and the
+//   Managed Session object itself gains no field |
 //
 // A narrowing above the deployment ceiling cannot be authored: with the
 // ceiling at full there is no wider level, so N3 covers the CAS edge and the
@@ -46,6 +52,34 @@ async function putTelemetry(base, body) {
     body: JSON.stringify(body),
   });
   return { status: res.status, body: await res.json() };
+}
+
+// N5: the decision both read entry points report for SUBJECT in the request
+// Workspace. They share the Run boundary's kernel and sources, so they agree.
+async function readDecisions(base, sessionId) {
+  const profile = await fetch(`${base}/v1/user_profiles/${SUBJECT}/capture-decision`, {
+    headers: PROFILE_HEADERS,
+  });
+  assert.equal(profile.status, 200, `capture-decision status ${profile.status}`);
+  const projection = `${base}/v1/awaken/sessions/${sessionId}/content-capture`;
+  const attributed = await fetch(projection, {
+    headers: { 'anthropic-user-profile-id': SUBJECT },
+  });
+  assert.equal(attributed.status, 200, `content-capture status ${attributed.status}`);
+  const unattributed = await fetch(projection);
+  assert.equal(unattributed.status, 200, `content-capture status ${unattributed.status}`);
+  const session = await fetch(`${base}/v1/sessions/${sessionId}`, {
+    headers: { 'anthropic-beta': BETAS[0] },
+  });
+  assert.equal(session.status, 200, `session status ${session.status}`);
+  assert.equal((await session.json()).content_capture, undefined, 'N5 the Session wire is unchanged');
+  const fromProfile = await profile.json();
+  const fromSession = await attributed.json();
+  const open = await unattributed.json();
+  assert.deepEqual(fromSession, fromProfile, 'N5 both read entry points agree');
+  assert.equal(open.consent, null, 'N5 an unattributed read has no consent');
+  assert.equal(open.ceiling, fromProfile.ceiling, 'N5 one ceiling per Workspace');
+  return fromProfile;
 }
 
 async function main() {
@@ -99,6 +133,11 @@ async function main() {
           );
         };
 
+        const opened = await readDecisions(base, session.id);
+        assert.deepEqual(opened, {
+          requested: 'full', ceiling: 'full', consent: 'full', effective: 'full', reason: 'ok',
+        });
+
         await turn('captured under the deployment ceiling');
         const afterOpen = captured();
         assert.ok(afterOpen > 0, 'N1 an attributed turn persists subject-owned content');
@@ -110,6 +149,14 @@ async function main() {
         });
         assert.equal(narrowed.status, 200, JSON.stringify(narrowed.body));
         assert.equal(narrowed.body.effective, 'structured');
+        const narrowedRead = await readDecisions(base, session.id);
+        assert.deepEqual(narrowedRead, {
+          requested: 'full',
+          ceiling: 'structured',
+          consent: 'full',
+          effective: 'structured',
+          reason: 'clamped_by_ceiling',
+        });
         await turn('not captured under the Workspace narrowing');
         assert.equal(captured(), afterOpen, 'N2 the narrowed Workspace persists no content');
         pass('N2 Workspace narrowing to structured stops content capture on the next Run');
@@ -126,6 +173,10 @@ async function main() {
         await turn('captured again after clearing the narrowing');
         assert.ok(captured() > afterOpen, 'N4 capture resumes once the narrowing is cleared');
         pass('N4 clearing the narrowing restores the deployment ceiling');
+        const clearedRead = await readDecisions(base, session.id);
+        assert.equal(clearedRead.effective, 'full', 'N5 cleared narrowing reads full');
+        assert.equal(clearedRead.reason, 'ok');
+        pass('N5 the capture-decision and Session reads report the decision the Run makes');
       },
       { mode: 'management', extraEnv: env },
     );

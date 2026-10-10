@@ -725,9 +725,12 @@ fn assemble_session_plane(
         session_application.session_event_batch_cutover_validation_source();
     install_managed_agent_coordination(&host.host, &managed_host, &session_application)
         .expect("Managed Session coordination application binds before dispatch starts");
+    // The Session `content_capture` projection decides with the Host's own
+    // ceiling and the very policy sources its Run boundary reads.
     let mut managed_state = ManagedState::from_application(
         session_application.clone(),
         execution.environment_execution.clone(),
+        host.host.content_capture_policy(),
     );
     if let Some(policy) = base.process.managed_services.inference_geo_policy.clone() {
         managed_state = managed_state.with_inference_geo_policy(policy);

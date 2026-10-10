@@ -33,9 +33,14 @@ impl ContentCaptureCapability {
 }
 
 impl SharedHost {
-    /// Deployment-resolved capture ceiling used by protocol decision projections.
+    /// The deployment-resolved capture ceiling and the policy sources this
+    /// Host's Run boundary decides with, for protocol decision projections
+    /// (the Session `content_capture`) that must report the same decision.
     #[must_use]
-    pub fn content_capture_ceiling(&self) -> awaken_runtime_contract::ContentCapture {
-        self.capture.capture_decision.level
+    pub fn content_capture_policy(&self) -> awaken_data_governance_contract::CapturePolicy {
+        awaken_data_governance_contract::CapturePolicy::new(
+            self.capture.capture_decision.level,
+            self.capture.policy_sources.clone(),
+        )
     }
 }

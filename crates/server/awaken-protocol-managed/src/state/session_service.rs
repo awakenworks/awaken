@@ -63,12 +63,15 @@ impl ManagedState {
     }
 
     /// Construct the disposable Managed wire projection over the one canonical
-    /// Session application created during process startup.
+    /// Session application created during process startup. `capture_policy`
+    /// is the Host's (`SharedHost::content_capture_policy`), so the Session
+    /// `content_capture` projection decides exactly as its Runs do.
     pub fn from_application(
         application: Arc<SessionApplication>,
         environments: Arc<
             awaken_environment_execution_application::EnvironmentExecutionApplication,
         >,
+        capture_policy: awaken_data_governance_contract::CapturePolicy,
     ) -> Self {
         Self {
             roles: super::SessionApplicationRoles::of(&application),
@@ -81,6 +84,7 @@ impl ManagedState {
             event_seq: Arc::new(AtomicU64::new(0)),
             live: Mutex::new(HashMap::new()),
             inference_geo_policy: None,
+            capture_policy,
             #[cfg(test)]
             warm_cold_oracle: std::sync::atomic::AtomicBool::new(true),
         }
@@ -141,6 +145,7 @@ impl ManagedState {
             event_seq,
             live,
             inference_geo_policy,
+            capture_policy,
             #[cfg(test)]
             warm_cold_oracle,
         } = self;
@@ -159,6 +164,7 @@ impl ManagedState {
             event_seq,
             live,
             inference_geo_policy,
+            capture_policy,
             #[cfg(test)]
             warm_cold_oracle,
         }
@@ -197,6 +203,7 @@ impl ManagedState {
                 environments.clone(),
             )),
             environments,
+            awaken_data_governance_contract::CapturePolicy::default(),
         )
     }
 

@@ -38,6 +38,7 @@ use crate::types::{
 };
 use crate::types::{Event, StreamFrame};
 
+mod content_capture;
 mod event_admission;
 mod execution_evidence;
 pub(crate) mod pagination;
@@ -48,6 +49,7 @@ mod stream;
 use stream::replay_is_terminal_after;
 use stream::{LiveSseSource, SseTerminalScope, live_sse_stream};
 
+pub use content_capture::get_session_content_capture;
 pub use event_admission::close_event_admission;
 pub use execution_evidence::get_session_execution_evidence;
 use pagination::{parse_session_list, session_list_page};
