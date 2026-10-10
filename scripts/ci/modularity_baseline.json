@@ -399,7 +399,7 @@
     },
     "awaken-sandbox-container": {
       "deps": 11,
-      "lines": 23693,
+      "lines": 23792,
       "reason": "ADR-0092 quota/unschedulable/probe handling; removed when W34 moves the Kubernetes backend into its own crate"
     },
     "awaken-session-application": {

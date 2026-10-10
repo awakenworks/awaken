@@ -267,6 +267,10 @@ AWAKEN_K8S_E2E=1 AWAKEN_K8S_CONTROL_E2E=1 AWAKEN_K8S_ISOLATION_E2E=1 \
   --test k8s_e2e -- --nocapture --test-threads=1
 AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s \
   --test k8s_policy_drift -- --nocapture --test-threads=1
+# ADR-0092: a namespace quota refusal and an unschedulable Pod are both
+# CapacityUnavailable, leave no Pod behind, and succeed once there is room.
+AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s \
+  --test k8s_capacity_e2e -- --nocapture --test-threads=1
 AWAKEN_K8S_E2E=1 cargo test -p awaken-session-executor --features k8s-tests --lib \
   k8s_live_pvc_initialization_is_readable_and_reused -- --nocapture
 # Pod-bound Worker identity and independent stop are qualified by the existing

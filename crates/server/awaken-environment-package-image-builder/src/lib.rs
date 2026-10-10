@@ -150,6 +150,10 @@ mod tests {
 
     #[async_trait]
     impl awaken_sandbox_container::PackageImageProvisioner for RecordingProvisioner {
+        async fn probe_builder(&self) -> Result<(), awaken_sandbox_container::RuntimeError> {
+            Ok(())
+        }
+
         async fn package_base_image_identity(
             &self,
             reference: &str,

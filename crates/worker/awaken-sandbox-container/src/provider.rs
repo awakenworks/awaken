@@ -90,6 +90,11 @@ pub struct ContainerProvider<R: ContainerRuntime> {
     /// allowlist capabilities issued on it. A provider composed without one
     /// judges no fence and issues no capability (fail closed).
     pub(super) clock: Option<Arc<dyn awaken_time::WallClock>>,
+    /// What the engine proved at start-up ([`Self::attest_startup`]). Until
+    /// then the adapter's static answers stand; the execution composition
+    /// attests before the Worker derives its manifest.
+    pub(super) startup_evidence:
+        std::sync::OnceLock<crate::host_evidence::ContainerStartupEvidence>,
 }
 
 impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
@@ -98,11 +103,15 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             self.runtime.enforces_network_allowlist(),
             self.allowlist_proxy.is_some(),
         );
+        let evidence = self.startup_evidence.get();
+        let builder_proven = evidence.is_none_or(|evidence| evidence.package_builder);
         container_capabilities(
             self.runtime.enforces_network_none(),
             allowlist,
             self.worker_mcp_relay_substitution,
-            self.runtime.supports_package_provisioning() || self.package_provisioner.is_some(),
+            self.runtime.supports_package_provisioning()
+                || (self.package_provisioner.is_some() && builder_proven),
+            evidence.is_none_or(|evidence| evidence.resource_limits),
             self.runtime.sandbox_control_services(),
         )
     }
@@ -128,7 +137,31 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             memory_mounter: std::sync::RwLock::new(None),
             resident_hand: None,
             clock: None,
+            startup_evidence: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Prove, before registration, each capability this provider advertises
+    /// (ADR-0092 decision 5): the engine answers and its default image
+    /// resolves (else `Err`: no isolation tier would remain); CPU/memory/pid
+    /// limits and the configured package builder are withheld when unproven.
+    pub async fn attest_startup(
+        &self,
+    ) -> Result<crate::host_evidence::ContainerStartupEvidence, pc::SandboxError> {
+        self.runtime.probe_ready().await?;
+        let resource_limits = self
+            .runtime
+            .startup_resource_limits(&self.default_image)
+            .await?;
+        let package_builder = match &self.package_provisioner {
+            Some(builder) => builder.probe_builder().await.is_ok(),
+            None => true,
+        };
+        let evidence = crate::host_evidence::ContainerStartupEvidence {
+            resource_limits,
+            package_builder,
+        };
+        Ok(*self.startup_evidence.get_or_init(|| evidence))
     }
 
     /// A unit-test provider composed on the host clock.

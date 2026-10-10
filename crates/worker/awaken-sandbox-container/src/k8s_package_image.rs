@@ -810,6 +810,16 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
 
 #[async_trait]
 impl PackageImageProvisioner for K8sPackageImageProvisioner {
+    /// The BuildKit Jobs this builder creates live in its namespace; reading
+    /// one page proves the API answers and the identity may list them.
+    async fn probe_builder(&self) -> Result<(), RuntimeError> {
+        let jobs: Api<Job> = Api::namespaced(self.client.clone(), &self.namespace);
+        jobs.list(&ListParams::default().limit(1))
+            .await
+            .map(|_| ())
+            .map_err(crate::runtime::RuntimeFailure::into_runtime_error)
+    }
+
     async fn package_base_image_identity(&self, reference: &str) -> Result<String, RuntimeError> {
         // An operator-supplied digest is already the immutable identity required
         // by durable demand. Probing it again would create a second availability
