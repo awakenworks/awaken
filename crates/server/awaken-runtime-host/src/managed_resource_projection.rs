@@ -13,7 +13,7 @@ use crate::managed_input_layout::{
     ManagedLayoutProjection, ManagedLayoutValidationScope, ResourcePromptProjection,
     binding_layout_projection, managed_mount_access, resolved_input_layout_projection,
 };
-use crate::skill_catalog::skill_store_run_error;
+use crate::skill_delivery::skill_store_run_error;
 
 mod repository_error;
 mod transition;
@@ -397,8 +397,8 @@ impl crate::ManagedHost {
             None
         };
         self.host
-            .tools
-            .skills
+            .realizer
+            .staging
             .load_pinned(
                 desired.workspace_id.as_str(),
                 desired.resources.skills(),

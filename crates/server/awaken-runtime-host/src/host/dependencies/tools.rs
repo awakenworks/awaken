@@ -149,9 +149,8 @@ impl HostDependencies {
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_skill_store_ports(mut self, ports: crate::LocalSkillPorts) -> Self {
-        self.tools
-            .skills
-            .set_store(ports.store, ports.bundle_source, ports.application);
+        self.tools.skills.set_store(ports.store, ports.application);
+        self.skill_bundle_source = Some(ports.bundle_source);
         self
     }
 
@@ -166,7 +165,7 @@ impl HostDependencies {
                 >,
         >,
     ) -> Self {
-        self.tools.skills.set_bundle_source(source);
+        self.skill_bundle_source = Some(source);
         self
     }
 
