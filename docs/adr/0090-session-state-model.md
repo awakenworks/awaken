@@ -54,7 +54,7 @@ by construction.
    commands; they never set a sub-state.
 
 3. **The environment sub-state changes only through the transition function.** Under
-   ADR-0089 the aggregate decides each realization transition and the realizer reports
+   ADR-0089 the aggregate decides each realization transition and the realization executor reports
    what its effects did; both commands and those observations enter through the
    transition function. runtime-host stops constructing `SessionEnvironmentState`.
 
@@ -74,7 +74,7 @@ by construction.
    projections being pure.
 
 7. **Ratchet.** Construction of state variants outside the state contract (and, for the
-   environment sub-state, outside the realizer's observation mapping) may only shrink.
+   environment sub-state, outside the realization executor's observation mapping) may only shrink.
 
 ## Alternatives
 

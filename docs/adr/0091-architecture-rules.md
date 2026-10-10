@@ -120,8 +120,9 @@ many ADRs, and some of them pull the code apart. Measured on main `14ef08382e`:
    1. A name is context + responsibility + a suffix with one meaning: `-contract` a
       boundary, `-application` the use-case service owning an aggregate, `-store` a
       context's persistence adapter (`awaken-store-<medium>` remains the name of a
-      storage-medium backend, ADR-0039 D5), `-executor` something that executes,
-      `-realizer` the realization executor, `protocol-*` a protocol adapter, `sandbox-*`
+      storage-medium backend, ADR-0039 D5), `-executor` something that executes
+      (`SessionExecutor` runs Runs, `RealizationExecutor` executes realization effects),
+      `protocol-*` a protocol adapter, `sandbox-*`
       an environment provider.
    2. "Runtime" means the SDK engine. Container runtimes keep the industry term, always
       qualified (`ContainerRuntime`, `DockerRuntime`).
