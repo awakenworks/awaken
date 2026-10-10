@@ -419,6 +419,22 @@ async fn stop_hand_binding(
     }
 }
 
+fn hand_launch_environment(workdir: bool, host_path: Option<String>) -> Vec<pc::EnvVar> {
+    // TrustedHost Hand runs native tools after env_clear. Admit only the
+    // operator's tool lookup path; Namespace/Container use their own image.
+    if !workdir {
+        return Vec::new();
+    }
+    host_path
+        .map(|value| pc::EnvVar {
+            name: "PATH".into(),
+            value: pc::EnvValue::Inline { value },
+            visibility: pc::EnvVisibility::Process,
+        })
+        .into_iter()
+        .collect()
+}
+
 async fn launch_hand(
     launcher: Arc<SessionAgentLauncher>,
     factory: Arc<dyn HandExecutorFactory>,
@@ -487,7 +503,10 @@ async fn launch_hand(
     let command = pc::Command {
         argv,
         cwd: pc::WorkspaceLayout::ROOT.into(),
-        env: Vec::new(),
+        env: hand_launch_environment(
+            matches!(launcher.as_ref(), SessionAgentLauncher::Workdir(_)),
+            std::env::var("PATH").ok(),
+        ),
         stdio: pc::Stdio::Piped,
     };
     let (process, channel) = match launcher.spawn_agent(command).await {
@@ -1036,6 +1055,36 @@ mod tests {
     use super::*;
     use crate::test_support::{SandboxEnvironmentAccess as _, UnusedHandExecutorFactory};
     use std::sync::Barrier;
+
+    #[test]
+    fn hand_tool_lookup_is_local_and_preserves_only_the_exact_host_path() {
+        // H1 Workdir vs image-owned substrate x H2 absent/empty/nonempty PATH.
+        // H1+present => one process-only inline PATH, byte-for-byte; all other
+        // rows => no host environment. Empty is an explicit operator value.
+        // The Native host fixture separately executes Bash, Git and resources
+        // through the installed Hand, proving this reaches the real child.
+        for workdir in [false, true] {
+            for path in [
+                None,
+                Some(""),
+                Some("C:\\tools with spaces;D:\\工具;quote'\";$literal"),
+            ] {
+                let env = hand_launch_environment(workdir, path.map(str::to_owned));
+                if workdir && let Some(path) = path {
+                    assert_eq!(
+                        env,
+                        vec![pc::EnvVar {
+                            name: "PATH".into(),
+                            value: pc::EnvValue::Inline { value: path.into() },
+                            visibility: pc::EnvVisibility::Process,
+                        }]
+                    );
+                } else {
+                    assert!(env.is_empty());
+                }
+            }
+        }
+    }
 
     #[tokio::test]
     async fn workdir_unknown_hand_reap_retains_resources_until_exact_owner_is_reaped() {
