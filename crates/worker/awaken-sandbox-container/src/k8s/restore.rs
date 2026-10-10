@@ -313,7 +313,8 @@ pub(super) async fn recover(
         .ok_or_else(|| backend("Kubernetes restore target has no Pod UID"))?;
     realization::transfer_runtime_owner(&runtime.pods(), observation.pod, &uid, &runtime.owner_id)
         .await?;
-    realization::await_pod_ready(&runtime.pods(), &name).await?;
+    let wait = runtime.unschedulable_wait;
+    realization::await_pod_ready(&runtime.pods(), &name, wait, runtime.clock.as_ref()).await?;
     Ok(Some(crate::RuntimeRestoreTarget {
         container_id: name,
         disposition: pc::SandboxRestoreTargetDisposition::Recovered,

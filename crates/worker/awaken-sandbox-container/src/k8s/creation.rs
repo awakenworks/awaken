@@ -206,7 +206,27 @@ pub(super) async fn converge(
             context.attempt.as_str(),
         )?;
     }
-    realization::await_pod_ready(&runtime.pods(), pod_name).await?;
+    let wait = runtime.unschedulable_wait;
+    let pods = runtime.pods();
+    let ready = realization::await_pod_ready(&pods, pod_name, wait, runtime.clock.as_ref());
+    match ready.await {
+        Err(error @ RuntimeError::CapacityUnavailable(_)) => {
+            // Hand the claim back only once this exact Pending Pod is gone; a
+            // stale owner (fence) or a failed disposal returns its own error.
+            if let Some(effect_fence) = context.effect_fence {
+                runtime.validate_effect_fence(effect_fence)?;
+            }
+            dispose_unscheduled_pod(
+                runtime,
+                pod_name,
+                expected_pod_uid,
+                context.attempt.as_str(),
+            )
+            .await?;
+            return Err(error);
+        }
+        result => result?,
+    }
     if let Some(effect_fence) = context.effect_fence {
         runtime.validate_effect_fence(effect_fence)?;
     }
@@ -230,6 +250,37 @@ pub(super) async fn converge(
         }
         live_inputs::project_manifest(runtime, pod_name, plan).await
     }
+}
+
+/// Delete one exact unscheduled Pod incarnation through the UID- and
+/// resourceVersion-fenced Pod disposal, releasing the broker's original-Create
+/// guard this attempt's Create installed. Another incarnation under the stable
+/// name, or an absent Pod, is not ours to delete.
+async fn dispose_unscheduled_pod(
+    runtime: &K8sRuntime,
+    name: &str,
+    uid: &str,
+    attempt: &str,
+) -> Result<(), RuntimeError> {
+    let pod = match runtime.pods().get(name).await {
+        Err(error) if api_not_found(&error) => return Ok(()),
+        observed => observed.map_err(backend)?,
+    };
+    let Some(version) = pod
+        .metadata
+        .resource_version
+        .clone()
+        .filter(|_| pod.metadata.uid.as_deref() == Some(uid))
+    else {
+        return Ok(());
+    };
+    runtime
+        .begin_exact_pod_delete(&pod, uid, &version, Some(attempt), &|| Ok(()))
+        .await?;
+    if create_ledger::original_guard_release_required(Some(&pod), true)? {
+        create_ledger::release_original_guard(&runtime.pods(), name, uid, &|| Ok(())).await?;
+    }
+    runtime.await_exact_pod_deleted(name, uid, &|| Ok(())).await
 }
 
 /// Realize or adopt the one exact checkpoint-restore target. Ordinary
@@ -342,7 +393,8 @@ pub(super) async fn restore_or_adopt(
         &runtime.owner_id,
     )
     .await?;
-    realization::await_pod_ready(&runtime.pods(), &name).await?;
+    let wait = runtime.unschedulable_wait;
+    realization::await_pod_ready(&runtime.pods(), &name, wait, runtime.clock.as_ref()).await?;
     live_inputs::project_manifest(runtime, &name, plan).await?;
     Ok(crate::RuntimeRestoreTarget {
         container_id: name,

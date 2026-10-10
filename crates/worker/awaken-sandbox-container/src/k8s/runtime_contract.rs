@@ -327,6 +327,21 @@ async fn unmaterialized_after_join(
 }
 
 impl K8sRuntime {
+    /// Compose the runtime with the process's wall clock (see the `clock`
+    /// field). The execution composition always installs it.
+    #[must_use]
+    pub fn with_clock(mut self, clock: std::sync::Arc<dyn awaken_time::WallClock>) -> Self {
+        self.clock = Some(clock);
+        self
+    }
+
+    /// Bound the wait for the scheduler (`k8s_unschedulable_wait_secs`).
+    #[must_use]
+    pub fn with_unschedulable_wait(mut self, wait: std::time::Duration) -> Self {
+        self.unschedulable_wait = wait;
+        self
+    }
+
     pub(super) async fn admit_observed_creation_attempt(
         &self,
         context: &ContainerRealizationContext<'_>,

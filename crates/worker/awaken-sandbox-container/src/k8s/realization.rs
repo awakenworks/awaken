@@ -303,12 +303,7 @@ pub(super) async fn transfer_runtime_owner(
     Ok(replaced)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum PodReadiness {
-    Ready,
-    Waiting(String),
-    Failed(String),
-}
+pub(super) use awaken_container_contract::K8sPodReadiness as PodReadiness;
 
 pub(super) fn pod_readiness(pod: &Pod) -> PodReadiness {
     if pod.metadata.deletion_timestamp.is_some() {
@@ -405,24 +400,83 @@ pub(super) fn pod_readiness(pod: &Pod) -> PodReadiness {
     PodReadiness::Waiting(format!("Pod phase is {phase}"))
 }
 
-pub(super) async fn await_pod_ready(api: &Api<Pod>, name: &str) -> Result<(), RuntimeError> {
-    let deadline = awaken_time::mono::MonoDeadline::after(POD_READY_TIMEOUT);
+/// Await readiness of Pod `name`. While the scheduler refuses to place it the
+/// wait is bounded by `unschedulable_wait` measured from Pod creation (on the
+/// composed clock, never shorter than this wait) and ends in
+/// `CapacityUnavailable`; `POD_READY_TIMEOUT` bounds only the start-up of a
+/// scheduled Pod, measured from its last unschedulable observation (ADR-0092).
+pub(super) async fn await_pod_ready(
+    api: &Api<Pod>,
+    name: &str,
+    unschedulable_wait: Duration,
+    clock: Option<&std::sync::Arc<dyn awaken_time::WallClock>>,
+) -> Result<(), RuntimeError> {
+    use awaken_container_contract::{K8sPodScheduledCondition, K8sPodWait};
+    let (waited, mut startup) = (
+        awaken_time::mono::Stopwatch::start(),
+        awaken_time::mono::Stopwatch::start(),
+    );
     loop {
         let pod = api.get(name).await.map_err(backend)?;
-        match pod_readiness(&pod) {
-            PodReadiness::Ready => return Ok(()),
-            PodReadiness::Failed(reason) => {
+        let status = pod.status.as_ref();
+        let mut conditions = status
+            .and_then(|status| status.conditions.as_ref())
+            .into_iter()
+            .flatten();
+        let scheduled = conditions
+            .find(|condition| condition.type_ == "PodScheduled")
+            .map(|condition| K8sPodScheduledCondition {
+                status: &condition.status,
+                reason: condition.reason.as_deref(),
+                message: condition.message.as_deref(),
+            });
+        let unschedulable = awaken_container_contract::k8s_pod_unschedulable(
+            status.and_then(|status| status.phase.as_deref()),
+            scheduled,
+        );
+        if unschedulable.is_some() {
+            startup = awaken_time::mono::Stopwatch::start();
+        }
+        let created = pod
+            .metadata
+            .creation_timestamp
+            .as_ref()
+            .and_then(|time| serde_json::to_value(time).ok());
+        let created = created
+            .as_ref()
+            .and_then(|value| awaken_time::utc::rfc3339_to_epoch_millis(value.as_str()?));
+        let age = created.zip(clock).map(|(created, clock)| {
+            awaken_container_contract::k8s_pod_age(
+                created,
+                awaken_time::WallClockExt::now_ms(clock.as_ref()),
+            )
+        });
+        match awaken_container_contract::k8s_pod_wait(
+            pod_readiness(&pod),
+            unschedulable,
+            age.unwrap_or_default().max(waited.elapsed()),
+            unschedulable_wait,
+            startup.elapsed(),
+            POD_READY_TIMEOUT,
+        ) {
+            K8sPodWait::Ready => return Ok(()),
+            K8sPodWait::Poll => {}
+            K8sPodWait::CannotStart(reason) => {
                 return Err(backend(format!(
                     "Pod `{name}` cannot become ready: {reason}"
                 )));
             }
-            PodReadiness::Waiting(reason) => {
-                if deadline.has_passed() {
-                    return Err(backend(format!(
-                        "Pod `{name}` did not become ready within {}s: {reason}",
-                        POD_READY_TIMEOUT.as_secs()
-                    )));
-                }
+            K8sPodWait::StartupTimedOut(reason) => {
+                return Err(backend(format!(
+                    "Pod `{name}` did not become ready within {}s: {reason}",
+                    POD_READY_TIMEOUT.as_secs()
+                )));
+            }
+            K8sPodWait::Unschedulable(message) => {
+                return Err(RuntimeError::CapacityUnavailable(format!(
+                    "Pod `{name}` was not scheduled within {}s: {message}",
+                    unschedulable_wait.as_secs()
+                )));
             }
         }
         tokio::time::sleep(POD_READY_POLL).await;
