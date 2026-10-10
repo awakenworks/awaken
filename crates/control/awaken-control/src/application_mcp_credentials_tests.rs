@@ -34,7 +34,7 @@ impl ManagedCredentialRolloutTarget for AdoptionTarget {
         self.events.lock().unwrap().push(event.clone());
         if self.fail.load(Ordering::SeqCst) {
             return Err(ManagedCredentialAdoptionError::Unavailable(
-                "test target unavailable".into(),
+                awaken_credential_vault::repo::ManagedCredentialAdoptionUnavailable::Transport,
             ));
         }
         if self.pending.load(Ordering::SeqCst) {

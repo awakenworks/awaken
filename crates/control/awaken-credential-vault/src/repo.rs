@@ -100,7 +100,30 @@ pub enum ManagedCredentialAdoptionError {
     #[error("credential adoption is unauthorized")]
     Unauthorized,
     #[error("credential adoption target is unavailable: {0}")]
-    Unavailable(String),
+    Unavailable(ManagedCredentialAdoptionUnavailable),
+}
+
+/// Why an adoption target could not answer. Each cause is a closed fact the
+/// caller can classify; the participant's own error text never enters it (it
+/// may carry credentials), so each failing site logs its detail where it
+/// happens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ManagedCredentialAdoptionUnavailable {
+    /// The service credential for the private delivery could not be resolved.
+    #[error("the delivery service token is unavailable")]
+    ServiceToken,
+    /// The adoption event could not be encoded for delivery.
+    #[error("the adoption event could not be encoded")]
+    Encoding,
+    /// The private delivery to the adopting service did not complete.
+    #[error("the delivery transport failed")]
+    Transport,
+    /// The adopting service answered neither 204 (converged) nor 202 (pending).
+    #[error("the adopting service answered HTTP {0}")]
+    Status(u16),
+    /// The adopting service could not read the Sessions the event names.
+    #[error("the adopting service cannot read the Sessions the event names")]
+    SessionRead,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,7 +163,9 @@ fn managed_rollout_delivery_acknowledges_only_exact_convergence() {
         2 => Err(ManagedCredentialAdoptionError::InvalidEvent("e".into())),
         3 => Err(ManagedCredentialAdoptionError::IdentityCollision),
         4 => Err(ManagedCredentialAdoptionError::Unauthorized),
-        _ => Err(ManagedCredentialAdoptionError::Unavailable("u".into())),
+        _ => Err(ManagedCredentialAdoptionError::Unavailable(
+            ManagedCredentialAdoptionUnavailable::Transport,
+        )),
     };
     assert_eq!(
         managed_credential_rollout_delivery_decision(&outcome),
