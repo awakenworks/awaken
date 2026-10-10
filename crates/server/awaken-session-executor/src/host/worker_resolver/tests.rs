@@ -55,9 +55,7 @@ async fn session_run_reservation_repair_skips_execution_realization() {
     };
     let request = ingress::RunDispatch::new(activation)
         .for_session(awaken_agent_contract::agent::thread::Id(session_id.into()))
-        .with_session_command_fingerprint(
-            awaken_session_execution_contract::SessionRunCommandFingerprint::current(&command),
-        );
+        .with_session_command_fingerprint(command.command_fingerprint());
     assert_eq!(
         store
             .reserve_session_run(request, 1)

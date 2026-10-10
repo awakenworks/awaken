@@ -11,6 +11,9 @@ pub use error::{RunError, RunErrorKind};
 mod monotone;
 pub use monotone::{MonotoneAdmission, SourceOrder, monotone_admission};
 
+mod run_command;
+pub use run_command::{SessionRunCommandFingerprint, SessionRunReplacement};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionContractErrorDetail(String);
 

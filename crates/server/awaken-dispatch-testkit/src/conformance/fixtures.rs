@@ -80,7 +80,7 @@ fn current_session_command_with_operation(
         },
         replacement: request.session_run_replacement,
     };
-    request.with_session_command_fingerprint(SessionRunCommandFingerprint::current(&command))
+    request.with_session_command_fingerprint(command.command_fingerprint())
 }
 
 fn credential_dispatch(ns: &str, run: &str, thread: &str, holder: &PlaintextHolder) -> RunDispatch {
