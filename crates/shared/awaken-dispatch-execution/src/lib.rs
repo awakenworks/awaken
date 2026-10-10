@@ -15,6 +15,7 @@ pub mod pool;
 mod reconciliation;
 mod recovery_projection;
 mod service;
+mod session_admission;
 pub mod wake;
 mod worker;
 pub mod worker_context;
@@ -28,8 +29,7 @@ mod dispatch {
 
 pub use awaken_dispatch_contract::{
     ClaimedStreamPublisher, DispatchError, DispatchQueue, DispatchSettlementObserver,
-    DispatchState, DispatchSummary, RunClaim, RunDispatch, SessionRunAdmissionObserver,
-    SettleOutcome,
+    DispatchState, DispatchSummary, RunClaim, RunDispatch, SettleOutcome,
 };
 pub use commit_fence::{
     ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit, validate_commit_dispatch_binding,
@@ -42,6 +42,7 @@ pub use pool::{CompletionSink, DispatchPool, DispatchReconciler, PoolDrainFence,
 pub use reconciliation::TerminalReconciliationScan;
 pub use recovery_projection::{RecoveryProjection, RecoveryProjectionError};
 pub use service::{DispatchService, DispatchServiceConfig};
+pub use session_admission::SessionRunAdmissionObserver;
 pub use wake::{LocalWakeSignal, WakeSignal, publish_dispatch_hint};
 pub use worker::{DEFAULT_LEASE_MS, DispatchWorker, claim_bound_ownership_verifier};
 pub use worker_context::{ClaimedModelRequestGateFactory, InferenceMaterializerFn};
