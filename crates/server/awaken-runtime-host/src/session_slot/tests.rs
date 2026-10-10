@@ -428,3 +428,28 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
     );
     assert!(slots.mcp_realization_admitted("mcp-admission"), "F6/E4");
 }
+
+#[test]
+fn frozen_inputs_keep_their_agent_publication() {
+    // Decision table: C1 a publication is retained; C2 one is offered; C3 the
+    // offer equals the retained one. Only a different offer against a retained
+    // publication is refused (fail closed); every other row admits.
+    // | P1 | none | none | -   | admit  |
+    // | P2 | none | some | -   | admit  |
+    // | P3 | some | none | -   | admit  |
+    // | P4 | some | some | yes | admit  |
+    // | P5 | some | some | no  | refuse |
+    let retained = crate::host::test_activation("t", "r1").snapshot;
+    let other = crate::host::test_activation("t", "r2").snapshot;
+    let empty = FrozenSessionInputs::default();
+    assert!(empty.validate_publication(None).is_ok(), "P1");
+    assert!(empty.validate_publication(Some(&other)).is_ok(), "P2");
+    let frozen = FrozenSessionInputs {
+        published_snapshot: Some(retained.clone()),
+        ..FrozenSessionInputs::default()
+    };
+    assert!(frozen.validate_publication(None).is_ok(), "P3");
+    assert!(frozen.validate_publication(Some(&retained)).is_ok(), "P4");
+    let refused = frozen.validate_publication(Some(&other)).unwrap_err();
+    assert_eq!(refused.kind, crate::HostErrorKind::Internal, "P5");
+}

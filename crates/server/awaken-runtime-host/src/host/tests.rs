@@ -215,6 +215,7 @@ mod compaction_memory;
 mod context_construction;
 mod coordinated_thread_close;
 mod environment_binding;
+mod environment_capacity;
 mod environment_projection;
 pub(crate) mod fixtures;
 mod managed_interrupt;
