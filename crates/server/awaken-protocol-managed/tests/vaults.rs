@@ -16,11 +16,11 @@ use std::sync::{Arc, Mutex};
 use awaken_agent_contract::RedactedString;
 use awaken_config_resolver::resolve_inference;
 use awaken_credential_contract::CredentialSourceId;
+use awaken_credential_contract::ManagedCredentialAdoptionProgress;
 use awaken_credential_contract::TokenEndpointAuth;
 use awaken_credential_vault::catalog::{ManagedVaultDeletionPhase, ManagedVaultRepo};
 use awaken_credential_vault::repo::{
-    InMemoryCredentialRepo, ManagedCredentialAdoptionProgress, ManagedCredentialRepository,
-    reconcile_managed_vault_deletions,
+    InMemoryCredentialRepo, ManagedCredentialRepository, reconcile_managed_vault_deletions,
 };
 use awaken_credential_vault::{
     CredentialBinding, CredentialSource, InMemorySecretStore, SecretStore,

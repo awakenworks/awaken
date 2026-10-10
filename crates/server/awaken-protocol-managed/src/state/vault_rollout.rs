@@ -3,10 +3,11 @@
 //! Credential-outbox consumer for online Managed Sessions.
 
 use awaken_agent_contract::stable_fingerprint;
-use awaken_credential_vault::repo::{
-    ManagedCredentialAdoptionError, ManagedCredentialAdoptionProgress, ManagedCredentialOperation,
-    ManagedCredentialRollout, ManagedCredentialRolloutTarget,
+use awaken_credential_contract::{
+    ManagedCredentialAdoptionError, ManagedCredentialAdoptionProgress,
+    ManagedCredentialAdoptionUnavailable, ManagedCredentialRolloutTarget,
 };
+use awaken_credential_vault::repo::{ManagedCredentialOperation, ManagedCredentialRollout};
 use awaken_session_application::{
     McpAttachmentCandidate, McpAttachmentCandidateTarget, SessionMcpUpdate, SessionUpdateCommand,
     SessionUpdateError,
@@ -33,6 +34,17 @@ fn rollout_update_revision_is_monotonic_and_covers_event() {
     assert_eq!(target, current.max(event));
 }
 
+/// The Sessions an event names could not be read: log the store's own detail
+/// here, and answer the closed cause.
+fn sessions_unreadable(
+    event: &ManagedCredentialRollout,
+    error: &dyn std::fmt::Display,
+) -> ManagedCredentialAdoptionError {
+    tracing::warn!(rollout_id = %event.id, %error,
+        "Managed credential rollout cannot read the Sessions it names");
+    ManagedCredentialAdoptionError::Unavailable(ManagedCredentialAdoptionUnavailable::SessionRead)
+}
+
 impl ManagedState {
     async fn apply_vault_rollout(
         &self,
@@ -43,7 +55,7 @@ impl ManagedState {
             .roots
             .sessions_referencing_credential_source(&event.workspace_id, &event.source_id)
             .await
-            .map_err(|error| ManagedCredentialAdoptionError::Unavailable(error.to_string()))?;
+            .map_err(|error| sessions_unreadable(event, &error))?;
         let mut pending = false;
         for session in sessions {
             if session.execution != SessionExecutionState::Idle {

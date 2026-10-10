@@ -562,7 +562,9 @@ async fn managed_update_atomically_publishes_exact_rollout_until_service_acknowl
     // distinct stable diagnostic; payload-bearing variants must be redacted.
     for (error, code) in [
         (
-            ManagedCredentialAdoptionError::Unavailable("secret-diagnostic-canary".into()),
+            ManagedCredentialAdoptionError::Unavailable(
+                ManagedCredentialAdoptionUnavailable::SessionRead,
+            ),
             "unavailable",
         ),
         (

@@ -25,27 +25,16 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+#[cfg(any(test, kani))]
+use awaken_credential_contract::ManagedCredentialAdoptionUnavailable;
+use awaken_credential_contract::{
+    ManagedCredentialAdoptionError, ManagedCredentialAdoptionProgress,
+    ManagedCredentialRolloutTarget,
+};
 pub use awaken_credential_contract::{
     ManagedCredentialOperation, ManagedCredentialRollout, ManagedCredentialRolloutIdentityDecision,
     managed_credential_rollout_identity_decision,
 };
-
-/// Local adoption progress. The cross-service HTTP adapter maps these two
-/// states directly to 204 and 202, while command receipts serialize this same
-/// enum; no second JSON state vocabulary is needed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ManagedCredentialAdoptionProgress {
-    Converged,
-    Pending,
-}
-
-impl ManagedCredentialAdoptionProgress {
-    #[must_use]
-    pub const fn is_converged(self) -> bool {
-        matches!(self, Self::Converged)
-    }
-}
 
 /// Combine independent adoption targets without acknowledging a partial
 /// rollout. The operation is associative, commutative, and idempotent over the
@@ -89,20 +78,6 @@ fn managed_rollout_ack_requires_converged_progress() {
     );
 }
 
-/// Typed failures owned by the rollout target port. Pending convergence is a
-/// successful state and therefore is not represented as an error.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum ManagedCredentialAdoptionError {
-    #[error("credential adoption event is invalid: {0}")]
-    InvalidEvent(String),
-    #[error("credential adoption event id names a different payload")]
-    IdentityCollision,
-    #[error("credential adoption is unauthorized")]
-    Unauthorized,
-    #[error("credential adoption target is unavailable: {0}")]
-    Unavailable(String),
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ManagedCredentialRolloutDeliveryDecision {
     RetainPending,
@@ -140,7 +115,9 @@ fn managed_rollout_delivery_acknowledges_only_exact_convergence() {
         2 => Err(ManagedCredentialAdoptionError::InvalidEvent("e".into())),
         3 => Err(ManagedCredentialAdoptionError::IdentityCollision),
         4 => Err(ManagedCredentialAdoptionError::Unauthorized),
-        _ => Err(ManagedCredentialAdoptionError::Unavailable("u".into())),
+        _ => Err(ManagedCredentialAdoptionError::Unavailable(
+            ManagedCredentialAdoptionUnavailable::Transport,
+        )),
     };
     assert_eq!(
         managed_credential_rollout_delivery_decision(&outcome),
@@ -1259,17 +1236,6 @@ pub trait ManagedCredentialRepository: CredentialRepo + ManagedVaultRepo {
     /// every workspace because this method is consumed only by the supervised
     /// domain reconciler, never by an authorization surface.
     async fn pending_managed_vault_deletions(&self) -> Result<Vec<ManagedVault>, CredentialError>;
-}
-
-/// Service-owned rolling replacement edge. Credential never knows whether the
-/// consumer is a Session, Deployment, Kubernetes controller, or remote service;
-/// it only requires an idempotent adoption of the exact committed fence.
-#[async_trait::async_trait]
-pub trait ManagedCredentialRolloutTarget: Send + Sync {
-    async fn rollout(
-        &self,
-        event: &ManagedCredentialRollout,
-    ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError>;
 }
 
 /// Deliver all currently durable rollout events. A failed target leaves the
