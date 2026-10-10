@@ -378,9 +378,8 @@ mod startup_tests {
         // before construction, never a role change. A content port
         // cannot choose C1, and a Worker's transports exist only inside its
         // upstream authority; commit_ingest W1-W3 covers the port combinations.
-        let file: Arc<
-            dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>,
-        > = Arc::new(awaken_resource_contract::UnavailableFileContentSource);
+        let file: Arc<dyn crate::FileContentSource<crate::ResourceOperationFence>> =
+            Arc::new(awaken_resource_contract::UnavailableFileContentSource);
         let memory: Arc<dyn awaken_resource_contract::MemoryRepository> = Arc::new(
             awaken_memory_store::VolatileMemoryRepository::new(awaken_time::system_clock()),
         );

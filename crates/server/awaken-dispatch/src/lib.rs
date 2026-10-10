@@ -93,12 +93,11 @@ pub use awaken_dispatch_contract::operational::{
     DispatchPage, LeaseLossReason,
 };
 pub use awaken_dispatch_contract::{
-    ArtifactPublicationFence, AssignmentRejection, CURRENT_RUNTIME_PROTOCOL_VERSION,
-    ClaimedCommitCommand, ExecutionLocation, ExecutionScopeRef, HOST_EXECUTOR_CAPABILITY,
-    LeastLoadedPolicy, PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE,
-    PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, PlacementContext, PlacementError, PlacementPolicy,
-    PlacementRequirements, REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker, RegisteredWorker,
-    RegistryError, RegistryMutation, ResourceOperationFence, RunDispatch,
+    AssignmentRejection, CURRENT_RUNTIME_PROTOCOL_VERSION, ClaimedCommitCommand, ExecutionLocation,
+    ExecutionScopeRef, HOST_EXECUTOR_CAPABILITY, LeastLoadedPolicy,
+    PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, PlacementContext,
+    PlacementError, PlacementPolicy, PlacementRequirements, REPOSITORY_CREDENTIALS_CAPABILITY,
+    RankedWorker, RegisteredWorker, RegistryError, RegistryMutation, RunDispatch,
     SESSION_RESOURCES_CAPABILITY, SessionResourceEnvelope, SessionRuntimeEnvelope,
     TRUSTED_HOST_SANDBOX_BACKEND, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
     WorkerAcpCapabilityObservation, WorkerAcpCapabilityRequirement, WorkerAssignment,

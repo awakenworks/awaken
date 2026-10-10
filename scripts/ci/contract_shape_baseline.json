@@ -73,7 +73,7 @@
       "depth": 0
     },
     "awaken-dispatch-contract": {
-      "depth": 9,
+      "depth": 6,
       "catch_all_errors": 3,
       "growth_reasons": {
         "depth": "Removing the compatibility facade exposes direct domain-owner dependencies; retaining explicit state, realization, runtime, and ingress boundaries avoids a replacement aggregator.; then: the wall clock moved out of awaken-lease-contract into the Runtime SDK leaf awaken-time so the SDK no longer links the fence kernel; the fence keeps typed Expiry/UtcTime by depending on awaken-time, one level deeper on every chain through it; then: ADR-0086 amendment 2026-10-08 (item 7): the attempt-level credential bindings, deliveries and realization receipts (with their existing CredentialRealizationRecordError) move from awaken-runtime-contract into awaken-credential-contract, which now depends on awaken-runtime-contract (Platform to SDK); the added contract level propagates to the contracts above it"

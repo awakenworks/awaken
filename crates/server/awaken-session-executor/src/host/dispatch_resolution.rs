@@ -209,34 +209,43 @@ impl SharedHost {
             request = request.with_inference_plaintext_holder(holder);
         }
         if let Some(resources) = resources {
-            let envelope =
-                awaken_dispatch_contract::SessionResourceEnvelope::from_manifest(&resources)
-                    .map_err(|error| {
-                        HostError::internal(format!("serialize Session resource manifest: {error}"))
-                    })?;
+            let envelope = crate::dispatch_session_runtime::resource_envelope(&resources).map_err(
+                |error| {
+                    HostError::internal(format!("serialize Session resource manifest: {error}"))
+                },
+            )?;
             request = request.with_session_resources(envelope);
         }
+        let mut session_mcp_credentials = None;
         if let Some((environment, tools, mcp_stages)) = runtime_projection {
             // Remote warm capacity is container-backed and therefore preserves
             // the frozen network policy. Derive the preference from the same
             // canonical SandboxSpec identity used by Worker pool receipts.
             let preferred_shape =
                 crate::provisioning::environment_capacity_projection(&environment, true).shape_id;
-            let envelope = awaken_dispatch_contract::SessionRuntimeEnvelope::from_projection(
-                environment,
-                tools,
-                mcp_stages,
-            )
-            .map_err(|error| {
-                HostError::internal(format!("serialize Session runtime projection: {error}"))
-            })?;
+            // The Session validates its projection before the Run is durable and
+            // publishes the MCP credentials a claim must satisfy; claim admission
+            // compares them and never decodes the envelope.
+            let (projection_json, requirements) =
+                awaken_session_configuration_contract::SessionRuntimeProjection {
+                    environment,
+                    tools,
+                    mcp_stages: Some(mcp_stages),
+                }
+                .dispatch()
+                .map_err(|error| HostError::internal(error.to_string()))?;
+            session_mcp_credentials = Some(requirements);
             request = request
-                .with_session_runtime(envelope)
+                .with_session_runtime(awaken_dispatch_contract::SessionRuntimeEnvelope::new(
+                    projection_json,
+                ))
                 .with_preferred_environment_shape(preferred_shape);
         }
         if let Some(placement) = placement {
             request = request.with_placement(placement);
         }
+        // Published after the placement is pinned: `with_placement` replaces it whole.
+        request.placement.session_mcp_credentials = session_mcp_credentials;
         if request.activation.inherited_toolsets().is_some() {
             request.placement.required_capabilities.insert(
                 awaken_runtime_contract::activation::INHERITED_TOOLSETS_CAPABILITY.to_string(),

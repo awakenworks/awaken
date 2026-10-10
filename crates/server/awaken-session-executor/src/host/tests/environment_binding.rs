@@ -442,9 +442,7 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
             .expect("R2 non-zero registered capacity");
         let store = Arc::new(awaken_dispatch::MemoryDispatchStore::new(system_clock()));
         let file: Arc<
-            dyn awaken_resource_contract::FileContentSource<
-                    awaken_dispatch_contract::ResourceOperationFence,
-                >,
+            dyn awaken_resource_contract::FileContentSource<crate::ResourceOperationFence>,
         > = Arc::new(awaken_resource_contract::UnavailableFileContentSource);
         let memory: Arc<dyn awaken_resource_contract::MemoryRepository> = Arc::new(
             awaken_memory_store::VolatileMemoryRepository::new(system_clock()),

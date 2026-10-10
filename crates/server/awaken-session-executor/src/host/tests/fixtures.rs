@@ -864,7 +864,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
 }
 
 #[async_trait::async_trait]
-impl awaken_dispatch_contract::ClaimedSessionRealizationControl
+impl awaken_session_realization_contract::ClaimedSessionRealizationControl
     for RemoteTerminalCleanupControl
 {
     async fn resume_frozen(
@@ -875,7 +875,7 @@ impl awaken_dispatch_contract::ClaimedSessionRealizationControl
         _continuation: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> Result<
         Option<awaken_session_realization_contract::SessionRealizationDirective>,
-        awaken_dispatch_contract::ClaimedSessionControlError,
+        awaken_session_realization_contract::ClaimedSessionControlError,
     > {
         Ok(None)
     }

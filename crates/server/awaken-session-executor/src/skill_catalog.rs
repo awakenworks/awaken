@@ -91,8 +91,7 @@ pub(crate) struct SkillCatalog {
     /// Exact immutable custom-Skill bytes used during Session realization. A
     /// Coordinator installs the local store adapter; an execution Worker installs
     /// the claim-fenced HTTP adapter and never opens the authoring store.
-    bundle_source:
-        Option<Arc<dyn SkillBundleSource<awaken_dispatch_contract::ResourceOperationFence>>>,
+    bundle_source: Option<Arc<dyn SkillBundleSource<crate::ResourceOperationFence>>>,
     /// In-memory snapshot of the latest delivered versions, read
     /// *synchronously* by the capability advertisement (`ids`) and the run-loop
     /// `SkillSource` scan — refreshed from the async `store` on a write and at each
@@ -127,7 +126,7 @@ impl SkillCatalog {
         store: Arc<dyn awaken_resource_contract::SkillStore>,
         bundle_source: Arc<
             dyn awaken_session_configuration_contract::SkillBundleSource<
-                    awaken_dispatch_contract::ResourceOperationFence,
+                    crate::ResourceOperationFence,
                 >,
         >,
         application: Arc<dyn SkillCatalogApplication>,
@@ -144,7 +143,7 @@ impl SkillCatalog {
     /// Builder: wire only exact custom-Skill bundle reads for an execution Worker.
     pub(crate) fn set_bundle_source(
         &mut self,
-        source: Arc<dyn SkillBundleSource<awaken_dispatch_contract::ResourceOperationFence>>,
+        source: Arc<dyn SkillBundleSource<crate::ResourceOperationFence>>,
     ) {
         self.bundle_source = Some(source);
     }
@@ -295,7 +294,7 @@ impl SkillCatalog {
                 AgentSkillKind::Custom => {
                     let authority = match (claim, realization) {
                         (_, Some((session_id, revision, lease))) => Some(
-                            awaken_dispatch_contract::ResourceOperationFence::SessionMaterialization(
+                            crate::ResourceOperationFence::SessionMaterialization(
                                 awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new_skill(
                                     session_id,
                                     revision,
@@ -308,7 +307,7 @@ impl SkillCatalog {
                             ),
                         ),
                         (Some(claim), None) => {
-                            Some(awaken_dispatch_contract::ResourceOperationFence::Run(claim.clone()))
+                            Some(crate::ResourceOperationFence::Run(claim.clone()))
                         }
                         (None, None) => None,
                     };

@@ -701,11 +701,7 @@ pub(crate) mod tests {
     struct FailingExecutor;
 
     struct RecordingArtifactPublisher {
-        inner: Arc<
-            dyn awaken_resource_contract::ArtifactPublisher<
-                    awaken_dispatch_contract::ArtifactPublicationFence,
-                >,
-        >,
+        inner: Arc<dyn awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>>,
         claims: Arc<std::sync::Mutex<Vec<Option<awaken_dispatch_contract::RunClaim>>>>,
         dispatch: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
     }
@@ -715,21 +711,17 @@ pub(crate) mod tests {
         // resume, failure and cancellation cannot borrow a successor claim.
         async fn record_claim(
             &self,
-            fence: Option<&awaken_dispatch_contract::ArtifactPublicationFence>,
+            fence: Option<&crate::ResourceOperationFence>,
         ) -> Result<
             Option<awaken_dispatch_contract::CommitEpochGuard>,
             awaken_resource_contract::ArtifactPublicationError,
         > {
             let claim = fence.and_then(|fence| match fence {
-                awaken_dispatch_contract::ArtifactPublicationFence::Run(claim) => Some(claim),
-                awaken_dispatch_contract::ArtifactPublicationFence::SessionMaterialization(
-                    _,
-                )
-                | awaken_dispatch_contract::ArtifactPublicationFence::RepositoryPublication {
-                    ..
-                } => None,
-                awaken_dispatch_contract::ArtifactPublicationFence::CheckpointRelease(_) => None,
-                awaken_dispatch_contract::ArtifactPublicationFence::Terminal(_) => None,
+                crate::ResourceOperationFence::Run(claim) => Some(claim),
+                crate::ResourceOperationFence::SessionMaterialization(_)
+                | crate::ResourceOperationFence::RepositoryPublication { .. } => None,
+                crate::ResourceOperationFence::CheckpointRelease(_) => None,
+                crate::ResourceOperationFence::Terminal(_) => None,
             });
             let guard = if let Some(claim) = claim {
                 Some(
@@ -849,16 +841,14 @@ pub(crate) mod tests {
     }
 
     #[async_trait::async_trait]
-    impl
-        awaken_resource_contract::ArtifactPublisher<
-            awaken_dispatch_contract::ArtifactPublicationFence,
-        > for RecordingArtifactPublisher
+    impl awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>
+        for RecordingArtifactPublisher
     {
         async fn capture(
             &self,
             workspace_id: &str,
             session_id: &str,
-            fence: Option<&awaken_dispatch_contract::ArtifactPublicationFence>,
+            fence: Option<&crate::ResourceOperationFence>,
         ) -> Result<
             Option<awaken_resource_contract::ArtifactCapture>,
             awaken_resource_contract::ArtifactPublicationError,
@@ -870,7 +860,7 @@ pub(crate) mod tests {
         async fn replace_capture(
             &self,
             request: awaken_resource_contract::ReplaceArtifactCapture,
-            fence: Option<&awaken_dispatch_contract::ArtifactPublicationFence>,
+            fence: Option<&crate::ResourceOperationFence>,
         ) -> Result<
             awaken_resource_contract::ReplaceArtifactCaptureOutcome,
             awaken_resource_contract::ArtifactPublicationError,
@@ -882,7 +872,7 @@ pub(crate) mod tests {
         async fn publish(
             &self,
             publication: awaken_resource_contract::ArtifactPublication<
-                awaken_dispatch_contract::ArtifactPublicationFence,
+                crate::ResourceOperationFence,
             >,
         ) -> Result<
             awaken_resource_contract::ArtifactPublicationReceipt,
@@ -894,9 +884,7 @@ pub(crate) mod tests {
 
         async fn recover(
             &self,
-            _recovery: awaken_resource_contract::ArtifactRecovery<
-                awaken_dispatch_contract::ArtifactPublicationFence,
-            >,
+            _recovery: awaken_resource_contract::ArtifactRecovery<crate::ResourceOperationFence>,
         ) -> Result<
             Vec<awaken_resource_contract::ArtifactPublicationReceipt>,
             awaken_resource_contract::ArtifactPublicationError,

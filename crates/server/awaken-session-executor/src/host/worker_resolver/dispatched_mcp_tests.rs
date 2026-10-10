@@ -1,6 +1,8 @@
 //! Claimed-dispatch MCP projection tests kept beside the resolver behavior.
 
-use super::test_support::{AdoptionModel, deferred_environment};
+use super::test_support::{
+    AdoptionModel, deferred_environment, test_activation, with_empty_session_resources,
+};
 use super::*;
 
 #[tokio::test]
@@ -27,11 +29,12 @@ async fn dispatched_mcp_effect_projection_decision_table() {
         .to_string(),
     );
     assert!(
-        legacy
-            .decode_projection()
-            .expect("R1 legacy envelope")
-            .mcp_stages
-            .is_none(),
+        awaken_session_configuration_contract::SessionRuntimeProjection::decode(
+            &legacy.projection_json
+        )
+        .expect("R1 legacy envelope")
+        .mcp_stages
+        .is_none(),
         "R1"
     );
     let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await)
@@ -110,4 +113,60 @@ async fn dispatched_mcp_effect_projection_decision_table() {
         "R5 expired"
     );
     assert_eq!(host.active_mcp_projections("mcp-dispatch").len(), 1, "R5");
+}
+
+#[tokio::test]
+async fn undecodable_dispatched_runtime_projection_is_an_absorbing_resolution_failure() {
+    // Cause/effect table: C1 the claim admitted the row on the Session's
+    // published MCP requirements, so claim admission never decoded the
+    // envelope; C2 the Worker's full decode of that envelope fails.
+    // E1 resolution fails as a typed terminal resolution, so the claimed Run
+    // settles as failed instead of being retried against the same bytes; E2
+    // the failure names the invalid projection.
+    use awaken_dispatch::{DispatchQueue, WorkerResolver as _};
+
+    let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
+    let store = Arc::new(
+        awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock)
+            .await
+            .expect("dispatch store"),
+    );
+    let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+        .await
+        .with_ephemeral_dispatch(store.clone()))
+    .build()
+    .expect("validated Host dependencies");
+    let mut request = with_empty_session_resources(
+        awaken_dispatch_contract::RunDispatch::new(test_activation(
+            "corrupt-projection",
+            "run-corrupt-projection",
+        ))
+        .with_session_runtime(awaken_dispatch_contract::SessionRuntimeEnvelope::new(
+            "{",
+        )),
+        host.local_workspace(),
+    );
+    request.placement.session_mcp_credentials = Some(Vec::new());
+    store.enqueue(request).await.expect("enqueue");
+    let claimed = store
+        .claim("worker-a", 1_000, &Default::default())
+        .await
+        .expect("claim")
+        .expect("C1 the published requirements admit the claim");
+    let error = match (HostWorkerResolver {
+        host: Arc::downgrade(&host),
+    })
+    .worker_for_claimed(&claimed)
+    .await
+    {
+        Ok(_) => panic!("C2 an undecodable projection must not execute"),
+        Err(error) => error,
+    };
+    assert!(error.is_terminal_resolution(), "E1: {error}");
+    assert!(
+        error
+            .to_string()
+            .contains("invalid Session runtime projection"),
+        "E2: {error}"
+    );
 }

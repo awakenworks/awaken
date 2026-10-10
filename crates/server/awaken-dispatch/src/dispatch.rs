@@ -525,7 +525,7 @@ pub(crate) fn validate_session_run_reservation_request(
     if !request
         .session_command_fingerprint
         .as_ref()
-        .is_some_and(awaken_session_execution_contract::SessionRunCommandFingerprint::is_current)
+        .is_some_and(awaken_session_types::SessionRunCommandFingerprint::is_current)
     {
         return Err(DispatchError::Rejected(
             "Session Run reservation requires a current command fingerprint".to_string(),

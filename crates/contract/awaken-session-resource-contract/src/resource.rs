@@ -351,6 +351,26 @@ impl SessionResourceManifest {
             resources,
         }
     }
+
+    /// Encode the resolved resources into the one string a dispatch resource
+    /// envelope carries beside this manifest's Workspace and generation.
+    pub fn encode_resources(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(&self.resources)
+    }
+
+    /// Restore a manifest from a dispatch resource envelope's three parts
+    /// before validation or realization. Malformed resources are refused.
+    pub fn decode_resources(
+        workspace_id: &str,
+        revision: u64,
+        resolved_resources_json: &str,
+    ) -> Result<Self, serde_json::Error> {
+        Ok(Self::at_revision(
+            workspace_id,
+            revision,
+            serde_json::from_str(resolved_resources_json)?,
+        ))
+    }
 }
 
 /// One authoritative physical Resource transition.
@@ -1762,6 +1782,30 @@ mod tests {
             )
             .expect("deserialize current manifest"),
             current
+        );
+    }
+}
+
+#[cfg(test)]
+mod dispatch_codec_tests {
+    use super::SessionResourceManifest;
+
+    #[test]
+    fn manifest_resources_codec_is_lossless_and_fails_closed() {
+        // C1 a manifest with Workspace and generation; C2 malformed resources.
+        // E1 encode then decode with the same coordinates restores it exactly;
+        // E2 C2 is refused instead of defaulting to an empty manifest.
+        let manifest = SessionResourceManifest::at_revision("workspace-a", 7, Default::default());
+        let encoded = manifest.encode_resources().expect("C1 encodes");
+        assert_eq!(
+            SessionResourceManifest::decode_resources("workspace-a", 7, &encoded)
+                .expect("C1 decodes"),
+            manifest,
+            "E1"
+        );
+        assert!(
+            SessionResourceManifest::decode_resources("workspace-a", 7, "{").is_err(),
+            "E2"
         );
     }
 }

@@ -425,15 +425,13 @@ struct GatedFileSource {
 }
 
 #[async_trait::async_trait]
-impl crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>
-    for GatedFileSource
-{
+impl crate::FileContentSource<crate::ResourceOperationFence> for GatedFileSource {
     async fn read(
         &self,
         _workspace: &str,
         file_id: &str,
         _purpose: &awaken_resource_contract::FileReadPurpose,
-        _authority: Option<&awaken_dispatch_contract::ResourceOperationFence>,
+        _authority: Option<&crate::ResourceOperationFence>,
     ) -> Result<
         Option<awaken_resource_contract::ResolvedFileContent>,
         awaken_resource_contract::FileContentSourceError,

@@ -13,7 +13,8 @@ use awaken_resource_contract::{
     MemoryMaterializationReferenceEncoder, MemoryMaterializationReferenceError, MemoryRepository,
     ResourceAccess,
 };
-use awaken_dispatch_contract::{DispatchQueue, ResourceOperationFence, RunClaim};
+use awaken_dispatch_contract::{DispatchQueue, RunClaim};
+use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_session_realization_contract::SessionResourceMaterializationIntent;
 use awaken_session_state_contract::{SessionTerminalMemoryIntent, SessionTerminalMemoryTarget};
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
@@ -500,25 +501,24 @@ fn manifest_allows(
         .execution_scope
         .as_ref()
         .is_some_and(|scope| scope.0.0 == reference.workspace_id);
-    let binding_matches = dispatch
-        .session_resources
-        .as_ref()
-        .filter(|envelope| envelope.workspace_id == reference.workspace_id)
-        .and_then(|envelope| envelope.decode_manifest().ok())
-        .is_some_and(|manifest| {
-            manifest.resources.inputs().iter().any(|input| {
-                matches!(
-                    &input.source,
-                    awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
-                        memory_store_id,
-                        config,
-                    } if memory_store_id.as_str() == reference.memory_store_id
-                        && config.version == reference.config_version
-                        && input.access == reference.access
-                        && (!writes || input.access == ResourceAccess::ReadWrite)
-                )
-            })
-        });
+    let binding_matches = crate::worker_authority::frozen_resource_manifest(
+        dispatch.session_resources.as_ref(),
+        &reference.workspace_id,
+    )
+    .is_some_and(|manifest| {
+        manifest.resources.inputs().iter().any(|input| {
+            matches!(
+                &input.source,
+                awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
+                    memory_store_id,
+                    config,
+                } if memory_store_id.as_str() == reference.memory_store_id
+                    && config.version == reference.config_version
+                    && input.access == reference.access
+                    && (!writes || input.access == ResourceAccess::ReadWrite)
+            )
+        })
+    });
     scope_matches && binding_matches
 }
 

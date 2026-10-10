@@ -7015,7 +7015,7 @@ async fn profiled_run_submission_preserves_one_canonical_command_across_replay_a
     );
     assert_eq!(
         primary_command.replacement,
-        awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
+        awaken_session_types::SessionRunReplacement::PreservePrior,
         "R1"
     );
 
@@ -7082,7 +7082,7 @@ async fn profiled_run_submission_preserves_one_canonical_command_across_replay_a
     );
     assert_eq!(
         repair_command.replacement,
-        awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
+        awaken_session_types::SessionRunReplacement::PreservePrior,
         "R4"
     );
     assert_eq!(runtime.reserved_runs.lock().unwrap().len(), 2, "R4/E4");

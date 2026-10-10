@@ -364,7 +364,7 @@ pub(super) async fn session_resume(
         let expected_resources = dispatch
             .session_resources
             .as_ref()
-            .map(awaken_dispatch::SessionResourceEnvelope::decode_manifest)
+            .map(|envelope| envelope.decode_with(SessionResourceManifest::decode_resources))
             .transpose()
             .map_err(|error| {
                 RealizationHttpError::from(HostError::bad_request(error.to_string()))

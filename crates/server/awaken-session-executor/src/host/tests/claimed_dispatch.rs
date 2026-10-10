@@ -484,7 +484,9 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
             .session_resources
             .as_ref()
             .unwrap_or_else(|| panic!("{rule} resource envelope"))
-            .decode_manifest()
+            .decode_with(
+                awaken_session_resource_contract::SessionResourceManifest::decode_resources,
+            )
             .unwrap_or_else(|error| panic!("{rule} decode resource envelope: {error}"));
 
         assert_eq!(carried.revision, expected_revision, "{rule} selection");
@@ -507,6 +509,11 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
             dispatch.session_runtime.is_some(),
             runtime_projection,
             "{rule}/E6 runtime projection presence",
+        );
+        assert_eq!(
+            dispatch.placement.session_mcp_credentials,
+            runtime_projection.then(Vec::new),
+            "{rule}/E6 the Session publishes its MCP credential requirements with its projection",
         );
         assert_eq!(
             dispatch.session_thread_id,

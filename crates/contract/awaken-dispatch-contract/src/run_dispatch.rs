@@ -12,9 +12,6 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_provisioning_contract::SandboxCapacityShapeId;
 use awaken_runtime_contract::{PlaintextHolder, activation::RunActivation};
-use awaken_session_configuration_contract::{EnvironmentSnapshot, SessionToolConfiguration};
-use awaken_session_mcp_contract::StageMcpAttachment;
-use awaken_session_resource_contract::SessionResourceManifest;
 use awaken_session_types::{SessionRunCommandFingerprint, SessionRunReplacement};
 pub use awaken_tenancy::ExecutionScopeRef;
 pub use awaken_worker_contract::PlacementRequirements;
@@ -62,42 +59,19 @@ impl SessionResourceEnvelope {
         }
     }
 
-    /// Encode the Session-owned manifest into its one durable dispatch shape.
-    pub fn from_manifest(manifest: &SessionResourceManifest) -> Result<Self, serde_json::Error> {
-        Ok(Self::at_revision(
-            manifest.workspace_id.clone(),
-            manifest.revision,
-            serde_json::to_string(&manifest.resources)?,
-        ))
-    }
-
-    /// Restore the Session-owned manifest before validation or realization.
-    pub fn decode_manifest(&self) -> Result<SessionResourceManifest, serde_json::Error> {
-        Ok(SessionResourceManifest::at_revision(
-            self.workspace_id.clone(),
+    /// Restore the carried manifest through its owner's codec, which receives
+    /// the Workspace, generation and resource string exactly as persisted.
+    /// Dispatch never interprets the payload itself.
+    pub fn decode_with<M, E>(
+        &self,
+        decode: impl FnOnce(&str, u64, &str) -> Result<M, E>,
+    ) -> Result<M, E> {
+        decode(
+            &self.workspace_id,
             self.resource_revision,
-            serde_json::from_str(&self.resolved_resources_json)?,
-        ))
+            &self.resolved_resources_json,
+        )
     }
-}
-
-/// Canonical secret-free payload carried by [`SessionRuntimeEnvelope`].
-///
-/// The durable ingress contract owns this wire shape because both claim
-/// admission and Runtime realization must inspect the same frozen facts. The
-/// Session aggregate remains the desired-state authority; this is only its
-/// dispatch projection.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DispatchedSessionRuntimeProjection {
-    pub environment: EnvironmentSnapshot,
-    /// `None` retains publication inheritance; `Some(default())` explicitly
-    /// clears the complete Session tool configuration.
-    #[serde(default)]
-    pub tools: Option<SessionToolConfiguration>,
-    /// `None` is reserved for legacy rows predating MCP effect projection. New
-    /// dispatches always carry `Some`, including `Some([])`.
-    #[serde(default)]
-    pub mcp_stages: Option<Vec<StageMcpAttachment>>,
 }
 
 /// Dispatch-neutral envelope for the immutable Session runtime projection.
@@ -119,24 +93,10 @@ impl SessionRuntimeEnvelope {
         }
     }
 
-    pub fn from_projection(
-        environment: EnvironmentSnapshot,
-        tools: Option<SessionToolConfiguration>,
-        mcp_stages: Vec<StageMcpAttachment>,
-    ) -> Result<Self, serde_json::Error> {
-        Ok(Self::new(serde_json::to_string(
-            &DispatchedSessionRuntimeProjection {
-                environment,
-                tools,
-                mcp_stages: Some(mcp_stages),
-            },
-        )?))
-    }
-
-    pub fn decode_projection(
-        &self,
-    ) -> Result<DispatchedSessionRuntimeProjection, serde_json::Error> {
-        serde_json::from_str(&self.projection_json)
+    /// Restore the carried projection through its owner's codec. Dispatch
+    /// never interprets the payload itself.
+    pub fn decode_with<P, E>(&self, decode: impl FnOnce(&str) -> Result<P, E>) -> Result<P, E> {
+        decode(&self.projection_json)
     }
 }
 
@@ -622,6 +582,10 @@ fn dispatch_admission_shape_keeps_child_affinity_independent() {
 mod tests {
     use super::*;
     use awaken_agent_contract::RedactedString;
+    use awaken_session_configuration_contract::{
+        EnvironmentSnapshot, SessionRuntimeProjection, SessionToolConfiguration,
+    };
+    use awaken_session_resource_contract::SessionResourceManifest;
 
     #[test]
     fn dispatch_admission_shape_is_total_and_port_neutral() {
@@ -1081,13 +1045,17 @@ mod tests {
                 }),
             }],
         };
-        let runtime = SessionRuntimeEnvelope::from_projection(
-            environment.clone(),
-            Some(tools.clone()),
-            Vec::new(),
-        )
-        .expect("P1 encode");
-        let projection = runtime.decode_projection().expect("P1 decode");
+        let runtime = SessionRuntimeEnvelope::new(
+            SessionRuntimeProjection {
+                environment: environment.clone(),
+                tools: Some(tools.clone()),
+                mcp_stages: Some(Vec::new()),
+            }
+            .encode()
+            .expect("P1 encode"),
+        );
+        let projection =
+            SessionRuntimeProjection::decode(&runtime.projection_json).expect("P1 decode");
         assert_eq!(projection.environment, environment, "P1/E1");
         assert_eq!(projection.tools, Some(tools), "P1/E1");
         assert_eq!(projection.mcp_stages, Some(Vec::new()), "P1/E1");
@@ -1342,12 +1310,26 @@ mod tests {
     #[test]
     fn session_resource_envelope_is_the_single_lossless_fail_closed_acl() {
         let manifest = SessionResourceManifest::at_revision("workspace-a", 7, Default::default());
-        let envelope = SessionResourceEnvelope::from_manifest(&manifest).expect("A1 encode");
+        let envelope = SessionResourceEnvelope::at_revision(
+            manifest.workspace_id.clone(),
+            manifest.revision,
+            manifest.encode_resources().expect("A1 encode"),
+        );
         assert_eq!(envelope.workspace_id, "workspace-a", "A1");
         assert_eq!(envelope.resource_revision, 7, "A1");
-        assert_eq!(envelope.decode_manifest().expect("A2 decode"), manifest);
+        assert_eq!(
+            envelope
+                .decode_with(SessionResourceManifest::decode_resources)
+                .expect("A2 decode"),
+            manifest
+        );
 
         let malformed = SessionResourceEnvelope::at_revision("workspace-a", 7, "{");
-        assert!(malformed.decode_manifest().is_err(), "A3");
+        assert!(
+            malformed
+                .decode_with(SessionResourceManifest::decode_resources)
+                .is_err(),
+            "A3"
+        );
     }
 }

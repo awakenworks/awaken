@@ -13,9 +13,8 @@ pub(crate) struct WorkerTransports {
     /// Outbound claim-fenced Control client used to realize an already-frozen
     /// Session projection on this Worker.
     pub(crate) session_control:
-        Option<Arc<dyn awaken_dispatch_contract::ClaimedSessionRealizationControl>>,
-    pub(crate) session_coordination_control:
-        Option<Arc<dyn awaken_dispatch_contract::ClaimedSessionCoordinationControl>>,
+        Option<Arc<dyn awaken_session_realization_contract::ClaimedSessionRealizationControl>>,
+    pub(crate) session_coordination_control: Option<Arc<crate::coordination::ClaimedCoordination>>,
     /// Sole adapter for opaque credentials owned by this Worker process. Control
     /// and Session code retain only exact non-secret references.
     pub(crate) worker_credential_resolver:

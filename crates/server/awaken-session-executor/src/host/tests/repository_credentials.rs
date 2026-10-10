@@ -35,7 +35,7 @@ fn repository_credential_descriptor(url: &str) -> awaken_credential_contract::Cr
 struct GatewayThenDirectRepositoryTransport(AtomicUsize);
 
 #[async_trait::async_trait]
-impl crate::RepositoryBindingVerifier<awaken_dispatch_contract::ResourceOperationFence>
+impl crate::RepositoryBindingVerifier<crate::ResourceOperationFence>
     for GatewayThenDirectRepositoryTransport
 {
     async fn verify(
@@ -43,7 +43,7 @@ impl crate::RepositoryBindingVerifier<awaken_dispatch_contract::ResourceOperatio
         _workspace_id: &str,
         _repository_id: &str,
         _config_version: awaken_resource_contract::ConfigVersion,
-        _authority: Option<&awaken_dispatch_contract::ResourceOperationFence>,
+        _authority: Option<&crate::ResourceOperationFence>,
     ) -> Result<
         awaken_resource_contract::RepositoryTransport,
         awaken_resource_contract::RepositoryBindingVerifierError,

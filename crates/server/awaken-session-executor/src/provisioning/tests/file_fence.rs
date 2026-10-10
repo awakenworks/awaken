@@ -1,33 +1,31 @@
 use super::*;
 
 struct FileFenceProbe {
-    accepted: Option<awaken_dispatch_contract::ResourceOperationFence>,
-    seen: std::sync::Mutex<Vec<Option<awaken_dispatch_contract::ResourceOperationFence>>>,
+    accepted: Option<crate::ResourceOperationFence>,
+    seen: std::sync::Mutex<Vec<Option<crate::ResourceOperationFence>>>,
 }
 
 impl FileFenceProbe {
-    fn new(accepted: Option<awaken_dispatch_contract::ResourceOperationFence>) -> Self {
+    fn new(accepted: Option<crate::ResourceOperationFence>) -> Self {
         Self {
             accepted,
             seen: std::sync::Mutex::new(Vec::new()),
         }
     }
 
-    fn seen(&self) -> Vec<Option<awaken_dispatch_contract::ResourceOperationFence>> {
+    fn seen(&self) -> Vec<Option<crate::ResourceOperationFence>> {
         self.seen.lock().unwrap().clone()
     }
 }
 
 #[async_trait::async_trait]
-impl crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>
-    for FileFenceProbe
-{
+impl crate::FileContentSource<crate::ResourceOperationFence> for FileFenceProbe {
     async fn read(
         &self,
         _workspace: &str,
         file_id: &str,
         _purpose: &awaken_resource_contract::FileReadPurpose,
-        fence: Option<&awaken_dispatch_contract::ResourceOperationFence>,
+        fence: Option<&crate::ResourceOperationFence>,
     ) -> Result<
         Option<awaken_resource_contract::ResolvedFileContent>,
         awaken_resource_contract::FileContentSourceError,
@@ -59,7 +57,8 @@ async fn file_staging_passes_one_exact_prepared_fence_to_one_source_read() {
     // revision, input, owner and epoch; R4 stale claim or foreign Session reads
     // once, rejects, and returns no mount; R5 zero revision rejects before any
     // source read. No second File-specific fence may be constructed downstream.
-    use awaken_dispatch_contract::{ResourceOperationFence as Fence, RunClaim};
+    use crate::ResourceOperationFence as Fence;
+    use awaken_dispatch_contract::RunClaim;
     use awaken_session_realization_contract::SessionResourceMaterializationIntent as Intent;
 
     let input = awaken_session_resource_contract::ResolvedInput {

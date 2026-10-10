@@ -7,7 +7,8 @@ use awaken_resource_contract::{
     ConfigVersion, LiveResourceBindingVerifier, RepositoryBindingVerifier,
     RepositoryBindingVerifierError, RepositoryTransport,
 };
-use awaken_dispatch_contract::{DispatchQueue, ResourceOperationFence, RunClaim};
+use awaken_dispatch_contract::{DispatchQueue, RunClaim};
+use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, WorkerUpstream, authenticate_worker_request,
@@ -447,11 +448,10 @@ async fn verify_run_repository_binding(
         .execution_scope
         .as_ref()
         .is_some_and(|scope| scope.0.0 == request.workspace_id);
-    let manifest = dispatch
-        .session_resources
-        .as_ref()
-        .filter(|envelope| envelope.workspace_id == request.workspace_id)
-        .and_then(|envelope| envelope.decode_manifest().ok());
+    let manifest = crate::worker_authority::frozen_resource_manifest(
+        dispatch.session_resources.as_ref(),
+        &request.workspace_id,
+    );
     let frozen_input = manifest.as_ref().and_then(|manifest| {
         manifest.resources.inputs().iter().find(|input| {
             matches!(

@@ -287,15 +287,13 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     struct FailingRepositoryVerifier;
 
     #[async_trait::async_trait]
-    impl crate::RepositoryBindingVerifier<awaken_dispatch_contract::ResourceOperationFence>
-        for RepositoryClaimRecorder
-    {
+    impl crate::RepositoryBindingVerifier<crate::ResourceOperationFence> for RepositoryClaimRecorder {
         async fn verify(
             &self,
             _workspace_id: &str,
             _repository_id: &str,
             _config_version: awaken_resource_contract::ConfigVersion,
-            authority: Option<&awaken_dispatch_contract::ResourceOperationFence>,
+            authority: Option<&crate::ResourceOperationFence>,
         ) -> Result<
             awaken_resource_contract::RepositoryTransport,
             awaken_resource_contract::RepositoryBindingVerifierError,
@@ -304,9 +302,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 .lock()
                 .unwrap()
                 .push(authority.and_then(|authority| match authority {
-                    awaken_dispatch_contract::ResourceOperationFence::Run(claim) => {
-                        Some(claim.clone())
-                    }
+                    crate::ResourceOperationFence::Run(claim) => Some(claim.clone()),
                     _ => None,
                 }));
             Ok(awaken_resource_contract::RepositoryTransport::Direct)
@@ -314,15 +310,13 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     }
 
     #[async_trait::async_trait]
-    impl crate::RepositoryBindingVerifier<awaken_dispatch_contract::ResourceOperationFence>
-        for FailingRepositoryVerifier
-    {
+    impl crate::RepositoryBindingVerifier<crate::ResourceOperationFence> for FailingRepositoryVerifier {
         async fn verify(
             &self,
             _workspace_id: &str,
             _repository_id: &str,
             _config_version: awaken_resource_contract::ConfigVersion,
-            _authority: Option<&awaken_dispatch_contract::ResourceOperationFence>,
+            _authority: Option<&crate::ResourceOperationFence>,
         ) -> Result<
             awaken_resource_contract::RepositoryTransport,
             awaken_resource_contract::RepositoryBindingVerifierError,
@@ -1159,7 +1153,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
                 "application:test-session-envelope/v1".to_string(),
             ]),
         },
-        replacement: awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
+        replacement: awaken_session_types::SessionRunReplacement::PreservePrior,
     };
     let expected_fingerprint = command.command_fingerprint();
 

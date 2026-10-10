@@ -7,7 +7,8 @@ use awaken_resource_contract::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
     ArtifactRecovery,
 };
-use awaken_dispatch::{AnyDispatchStore, ArtifactPublicationFence, DispatchQueue};
+use awaken_dispatch::{AnyDispatchStore, DispatchQueue};
+use awaken_session_realization_contract::ResourceOperationFence;
 
 use awaken_time::WallClockExt as _;
 
@@ -15,7 +16,7 @@ use awaken_time::WallClockExt as _;
 /// used by the remote Worker endpoint. The Runtime Host therefore has one
 /// topology-independent publication contract.
 pub struct ClaimFencedArtifactPublisher {
-    inner: Arc<dyn ArtifactPublisher<ArtifactPublicationFence>>,
+    inner: Arc<dyn ArtifactPublisher<ResourceOperationFence>>,
     dispatch: Arc<AnyDispatchStore>,
     terminal_preparation_control:
         OnceLock<Arc<dyn awaken_session_realization_contract::SessionTerminalPreparationControl>>,
@@ -29,7 +30,7 @@ pub struct ClaimFencedArtifactPublisher {
 impl ClaimFencedArtifactPublisher {
     #[must_use]
     pub fn new(
-        inner: Arc<dyn ArtifactPublisher<ArtifactPublicationFence>>,
+        inner: Arc<dyn ArtifactPublisher<ResourceOperationFence>>,
         dispatch: Arc<AnyDispatchStore>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
@@ -62,19 +63,19 @@ impl ClaimFencedArtifactPublisher {
 
     async fn authorize_effect(
         &self,
-        fence: Option<&ArtifactPublicationFence>,
+        fence: Option<&ResourceOperationFence>,
         workspace_id: &str,
         session_id: &str,
         idempotency_scope: Option<&str>,
     ) -> Result<Option<awaken_dispatch::CommitEpochGuard>, ArtifactPublicationError> {
         let guard = match fence {
-            Some(ArtifactPublicationFence::SessionMaterialization(_))
-            | Some(ArtifactPublicationFence::RepositoryPublication { .. }) => {
+            Some(ResourceOperationFence::SessionMaterialization(_))
+            | Some(ResourceOperationFence::RepositoryPublication { .. }) => {
                 return Err(ArtifactPublicationError::InvalidRequest {
                     detail: "Session Resource materialization cannot publish Artifacts".into(),
                 });
             }
-            Some(ArtifactPublicationFence::Run(claim)) => {
+            Some(ResourceOperationFence::Run(claim)) => {
                 if idempotency_scope.is_some() {
                     return Err(ArtifactPublicationError::InvalidRequest {
                         detail:
@@ -98,7 +99,7 @@ impl ClaimFencedArtifactPublisher {
                 }
                 Some(guard)
             }
-            Some(ArtifactPublicationFence::CheckpointRelease(operation)) => {
+            Some(ResourceOperationFence::CheckpointRelease(operation)) => {
                 self.authorize_checkpoint_release_artifact(
                     operation,
                     workspace_id,
@@ -108,7 +109,7 @@ impl ClaimFencedArtifactPublisher {
                 .await?;
                 None
             }
-            Some(ArtifactPublicationFence::Terminal(effect)) => {
+            Some(ResourceOperationFence::Terminal(effect)) => {
                 self.authorize_terminal_artifact(
                     effect,
                     workspace_id,
@@ -230,15 +231,15 @@ impl ClaimFencedArtifactPublisher {
 }
 
 #[async_trait::async_trait]
-impl ArtifactPublisher<ArtifactPublicationFence> for ClaimFencedArtifactPublisher {
+impl ArtifactPublisher<ResourceOperationFence> for ClaimFencedArtifactPublisher {
     async fn capture(
         &self,
         workspace_id: &str,
         session_id: &str,
-        fence: Option<&ArtifactPublicationFence>,
+        fence: Option<&ResourceOperationFence>,
     ) -> Result<Option<awaken_resource_contract::ArtifactCapture>, ArtifactPublicationError> {
         let scope = match fence {
-            Some(ArtifactPublicationFence::Terminal(effect)) => Some(effect.operation_id()),
+            Some(ResourceOperationFence::Terminal(effect)) => Some(effect.operation_id()),
             _ => None,
         };
         let _guard = self
@@ -250,11 +251,11 @@ impl ArtifactPublisher<ArtifactPublicationFence> for ClaimFencedArtifactPublishe
     async fn replace_capture(
         &self,
         request: awaken_resource_contract::ReplaceArtifactCapture,
-        fence: Option<&ArtifactPublicationFence>,
+        fence: Option<&ResourceOperationFence>,
     ) -> Result<awaken_resource_contract::ReplaceArtifactCaptureOutcome, ArtifactPublicationError>
     {
         let scope = match fence {
-            Some(ArtifactPublicationFence::Terminal(effect)) => Some(effect.operation_id()),
+            Some(ResourceOperationFence::Terminal(effect)) => Some(effect.operation_id()),
             _ => None,
         };
         let _guard = self
@@ -265,7 +266,7 @@ impl ArtifactPublisher<ArtifactPublicationFence> for ClaimFencedArtifactPublishe
 
     async fn publish(
         &self,
-        publication: ArtifactPublication<ArtifactPublicationFence>,
+        publication: ArtifactPublication<ResourceOperationFence>,
     ) -> Result<ArtifactPublicationReceipt, ArtifactPublicationError> {
         let _guard = self
             .authorize_effect(
@@ -280,9 +281,9 @@ impl ArtifactPublisher<ArtifactPublicationFence> for ClaimFencedArtifactPublishe
 
     async fn recover(
         &self,
-        recovery: ArtifactRecovery<ArtifactPublicationFence>,
+        recovery: ArtifactRecovery<ResourceOperationFence>,
     ) -> Result<Vec<ArtifactPublicationReceipt>, ArtifactPublicationError> {
-        let ArtifactPublicationFence::Terminal(effect) = &recovery.fence else {
+        let ResourceOperationFence::Terminal(effect) = &recovery.fence else {
             return Err(ArtifactPublicationError::InvalidRequest {
                 detail: "artifact recovery requires an exact terminal effect".into(),
             });
@@ -332,12 +333,12 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl ArtifactPublisher<ArtifactPublicationFence> for RecordingPublisher {
+    impl ArtifactPublisher<ResourceOperationFence> for RecordingPublisher {
         async fn capture(
             &self,
             _workspace: &str,
             _session: &str,
-            _fence: Option<&ArtifactPublicationFence>,
+            _fence: Option<&ResourceOperationFence>,
         ) -> Result<Option<awaken_resource_contract::ArtifactCapture>, ArtifactPublicationError>
         {
             self.capture_reads.fetch_add(1, Ordering::SeqCst);
@@ -346,7 +347,7 @@ mod tests {
         async fn replace_capture(
             &self,
             request: awaken_resource_contract::ReplaceArtifactCapture,
-            _fence: Option<&ArtifactPublicationFence>,
+            _fence: Option<&ResourceOperationFence>,
         ) -> Result<awaken_resource_contract::ReplaceArtifactCaptureOutcome, ArtifactPublicationError>
         {
             self.capture_replaces.fetch_add(1, Ordering::SeqCst);
@@ -357,7 +358,7 @@ mod tests {
 
         async fn publish(
             &self,
-            _publication: ArtifactPublication<ArtifactPublicationFence>,
+            _publication: ArtifactPublication<ResourceOperationFence>,
         ) -> Result<ArtifactPublicationReceipt, ArtifactPublicationError> {
             self.publications.fetch_add(1, Ordering::SeqCst);
             Err(ArtifactPublicationError::new(
@@ -367,7 +368,7 @@ mod tests {
 
         async fn recover(
             &self,
-            _recovery: ArtifactRecovery<ArtifactPublicationFence>,
+            _recovery: ArtifactRecovery<ResourceOperationFence>,
         ) -> Result<Vec<ArtifactPublicationReceipt>, ArtifactPublicationError> {
             self.recoveries.fetch_add(1, Ordering::SeqCst);
             Ok(Vec::new())
@@ -503,7 +504,7 @@ mod tests {
             workspace_id: workspace_id.into(),
             session_id: "session".into(),
             idempotency_scope: scope.into(),
-            fence: ArtifactPublicationFence::Terminal(effect),
+            fence: ResourceOperationFence::Terminal(effect),
         };
         let publication = |workspace_id: &str, scope: &str, effect| ArtifactPublication {
             effect_id: "artifact-effect".into(),
@@ -514,7 +515,7 @@ mod tests {
             content_id: "artifact-content".into(),
             bytes: b"artifact".to_vec(),
             idempotency_scope: Some(scope.into()),
-            fence: Some(ArtifactPublicationFence::Terminal(effect)),
+            fence: Some(ResourceOperationFence::Terminal(effect)),
         };
 
         let renewed = awaken_session_resource_contract::SessionRealizationLease {
@@ -647,7 +648,7 @@ mod tests {
             expected_revision: 0,
             file_ids: Vec::new(),
         };
-        let exact_fence = ArtifactPublicationFence::Terminal(asserted.clone());
+        let exact_fence = ResourceOperationFence::Terminal(asserted.clone());
         assert!(
             publisher
                 .capture("workspace", "session", Some(&exact_fence))
@@ -679,7 +680,7 @@ mod tests {
             (
                 &foreign_publisher,
                 &foreign_inner,
-                ArtifactPublicationFence::Terminal(foreign),
+                ResourceOperationFence::Terminal(foreign),
             ),
         ] {
             assert!(
@@ -777,7 +778,7 @@ mod tests {
                 Arc::new(AnyDispatchStore::from_dispatch(queue as Arc<dyn Dispatch>)),
                 awaken_time::system_clock(),
             );
-            let fence = ArtifactPublicationFence::Run(claim);
+            let fence = ResourceOperationFence::Run(claim);
             let bytes = b"result".to_vec();
             let digest = awaken_resource_contract::content_id(&bytes);
             let publication = ArtifactPublication {
@@ -903,7 +904,7 @@ mod tests {
             if cause == "changed" {
                 operation.effect_id.push_str("-changed");
             }
-            let fence = ArtifactPublicationFence::CheckpointRelease(operation);
+            let fence = ResourceOperationFence::CheckpointRelease(operation);
             let workspace = if cause == "workspace" {
                 "foreign"
             } else {

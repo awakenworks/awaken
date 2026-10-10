@@ -106,6 +106,24 @@ pub(crate) fn clock_ms(clock: &dyn awaken_time::WallClock) -> u64 {
     duration_millis(clock.now().duration_since_epoch())
 }
 
+/// The claimed Run's frozen Session resource manifest when it belongs to
+/// `workspace_id` and decodes. A foreign or malformed manifest is absent, so
+/// every caller fails closed on it.
+pub(crate) fn frozen_resource_manifest(
+    envelope: Option<&awaken_dispatch_contract::SessionResourceEnvelope>,
+    workspace_id: &str,
+) -> Option<awaken_session_resource_contract::SessionResourceManifest> {
+    envelope
+        .filter(|envelope| envelope.workspace_id == workspace_id)
+        .and_then(|envelope| {
+            envelope
+                .decode_with(
+                    awaken_session_resource_contract::SessionResourceManifest::decode_resources,
+                )
+                .ok()
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

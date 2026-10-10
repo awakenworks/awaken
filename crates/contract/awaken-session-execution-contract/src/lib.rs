@@ -1,5 +1,6 @@
 //! Runtime-facing Session roles, coordination, and Run admission.
 
+mod claimed_coordination;
 mod coordination;
 mod durable_run_operations;
 mod run_admission;
@@ -46,6 +47,7 @@ pub(crate) use awaken_session_types::RunError;
 pub(crate) use awaken_session_types::RunErrorKind;
 pub(crate) use awaken_session_types::SessionId;
 
+pub use claimed_coordination::ClaimedSessionCoordinationControl;
 pub use coordination::{
     CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadKind, CoordinatedThreadLink,
     CoordinatedThreadTarget, SessionAgentBoundaryAction, SessionAgentBoundaryCommand,
@@ -65,9 +67,8 @@ pub use durable_run_operations::{
 };
 pub use run_admission::{
     AdmitSessionRun, AdmittedSessionRun, SessionRunActivation, SessionRunActivityReceiptPlan,
-    SessionRunCommandFingerprint, SessionRunDelivery, SessionRunExecutionRequirements,
-    SessionRunReplacement, SessionRunReservation, session_run_activity_receipt_plan,
-    session_run_id,
+    SessionRunDelivery, SessionRunExecutionRequirements, SessionRunReservation,
+    session_run_activity_receipt_plan, session_run_id,
 };
 pub use session::{
     BudgetRuntime, CapabilityRuntime, CommittedEvidenceError, CommittedOutcomeProjection,

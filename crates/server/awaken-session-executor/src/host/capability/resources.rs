@@ -9,7 +9,7 @@ use crate::host::*;
 /// silently opening a local content authority for the missing half.
 pub(in crate::host) struct WorkerContentAdapters {
     pub(in crate::host) file_content_source:
-        Arc<dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>>,
+        Arc<dyn crate::FileContentSource<crate::ResourceOperationFence>>,
     pub(in crate::host) memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
 }
 
@@ -38,9 +38,7 @@ pub struct LocalResourcePorts {
 pub struct LocalSkillPorts {
     pub store: Arc<dyn awaken_resource_contract::SkillStore>,
     pub bundle_source: Arc<
-        dyn awaken_session_configuration_contract::SkillBundleSource<
-                awaken_dispatch_contract::ResourceOperationFence,
-            >,
+        dyn awaken_session_configuration_contract::SkillBundleSource<crate::ResourceOperationFence>,
     >,
     pub application: Arc<dyn awaken_session_configuration_contract::SkillCatalogApplication>,
 }
@@ -74,7 +72,7 @@ pub(crate) struct ResourcePorts {
     /// the local catalog/store pair; a database-less Worker replaces it with the
     /// claim-fenced HTTP adapter before accepting work.
     pub(crate) file_content_source:
-        Arc<dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>>,
+        Arc<dyn crate::FileContentSource<crate::ResourceOperationFence>>,
     /// Logical Files-API truth: public identity, metadata, Workspace visibility,
     /// Session scope, and harvest idempotency. Bytes remain in `file_store` only.
     #[cfg(any(test, feature = "test-support"))]
@@ -87,11 +85,8 @@ pub(crate) struct ResourcePorts {
     /// Sole Runtime-to-Resources artifact command edge. Embedded deployments
     /// install the local application adapter; database-less Workers install the
     /// claim-fenced HTTP client.
-    pub(crate) artifact_publisher: Arc<
-        dyn awaken_resource_contract::ArtifactPublisher<
-                awaken_dispatch_contract::ArtifactPublicationFence,
-            >,
-    >,
+    pub(crate) artifact_publisher:
+        Arc<dyn awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>>,
     /// Durable resource-plane lifecycle/reference state. It contains intrinsic
     /// Workspace/resource edges only and is independent of the IAM deployment.
     #[cfg(any(test, feature = "test-support"))]
@@ -110,16 +105,13 @@ pub(crate) struct ResourceSelection {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) file_store: Arc<dyn FileStore>,
     pub(crate) file_content_source:
-        Arc<dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>>,
+        Arc<dyn crate::FileContentSource<crate::ResourceOperationFence>>,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) file_catalog: Arc<dyn FileCatalog>,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) file_application: Option<Arc<dyn awaken_resource_contract::FileApplicationService>>,
-    pub(crate) artifact_publisher: Arc<
-        dyn awaken_resource_contract::ArtifactPublisher<
-                awaken_dispatch_contract::ArtifactPublicationFence,
-            >,
-    >,
+    pub(crate) artifact_publisher:
+        Arc<dyn awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>>,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) resource_reclamation:
         Option<Arc<dyn awaken_resource_contract::ResourceReclamationRepository>>,
@@ -251,31 +243,24 @@ impl ResourceSelection {
                 clock.clone(),
             )) as Arc<dyn awaken_resource_contract::FileApplicationService>
         });
-        let file_content_source: Arc<
-            dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>,
-        > = worker_content
-            .as_ref()
-            .map(|content| content.file_content_source.clone())
-            .unwrap_or_else(|| {
-                #[cfg(test)]
-                if let Some(application) = &file_application {
-                    return Arc::new(
-                        awaken_resource_application::ApplicationFileContentSource::new(
-                            application.clone(),
-                        ),
-                    );
-                }
-                Arc::new(awaken_resource_contract::UnavailableFileContentSource)
-                    as Arc<
-                        dyn crate::FileContentSource<
-                                awaken_dispatch_contract::ResourceOperationFence,
-                            >,
-                    >
-            });
+        let file_content_source: Arc<dyn crate::FileContentSource<crate::ResourceOperationFence>> =
+            worker_content
+                .as_ref()
+                .map(|content| content.file_content_source.clone())
+                .unwrap_or_else(|| {
+                    #[cfg(test)]
+                    if let Some(application) = &file_application {
+                        return Arc::new(
+                            awaken_resource_application::ApplicationFileContentSource::new(
+                                application.clone(),
+                            ),
+                        );
+                    }
+                    Arc::new(awaken_resource_contract::UnavailableFileContentSource)
+                        as Arc<dyn crate::FileContentSource<crate::ResourceOperationFence>>
+                });
         let artifact_publisher: Arc<
-            dyn awaken_resource_contract::ArtifactPublisher<
-                    awaken_dispatch_contract::ArtifactPublicationFence,
-                >,
+            dyn awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>,
         > = {
             #[cfg(test)]
             if let Some(application) = &file_application {
