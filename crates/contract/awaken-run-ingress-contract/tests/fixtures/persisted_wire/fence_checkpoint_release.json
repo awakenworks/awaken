@@ -1,0 +1,1 @@
+{"type":"checkpoint_release","fence":{"effect_id":"checkpoint-effect","activity_epoch":3,"started_at_unix_ms":12000,"realization":{"owner":"worker-golden","runtime_incarnation":"worker-golden/boot","epoch":7,"expires_at_unix_ms":20000}}}

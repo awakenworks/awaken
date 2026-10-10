@@ -38,6 +38,7 @@ thiserror.workspace = true
 # Drive the async port default methods (enqueue → enqueue_with, bind_sandbox) in unit tests.
 tokio = { workspace = true, features = ["rt", "macros"] }
 awaken-environment-contract.workspace = true
+awaken-session-types.workspace = true
 
 [lints]
 workspace = true
