@@ -330,11 +330,41 @@ impl RunDispatch {
         format!("sha256:{fingerprint}")
     }
 
-    /// Canonical-byte replay comparison for a live row. Hashes are needed only
-    /// once the full dispatch has been compacted into a completion tombstone.
+    /// Canonical-byte replay comparison of an incoming retry (`other`) with
+    /// this stored row. Hashes are needed only once the full dispatch has been
+    /// compacted into a completion tombstone.
+    ///
+    /// A row stored before the Session published typed MCP credential
+    /// requirements lacks that field, while a retry of the same command now
+    /// carries it, derived from the same runtime envelope. Only then is the
+    /// retry compared in the form that build would have written; the stored
+    /// bytes are never rewritten and every other field must still be equal.
     #[must_use]
     pub fn same_canonical_dispatch(&self, other: &Self) -> bool {
         self.canonical_bytes() == other.canonical_bytes()
+            || (self.placement.session_mcp_credentials.is_none()
+                && other
+                    .without_published_mcp_requirements()
+                    .is_some_and(|legacy| self.canonical_bytes() == legacy.canonical_bytes()))
+    }
+
+    /// Tombstone twin of the upgrade-window rule in
+    /// [`Self::same_canonical_dispatch`]: the canonical fingerprint this retry
+    /// would have had before the Session published typed MCP requirements, or
+    /// `None` when it carries none. A completion tombstone written before that
+    /// change matches only this form; one written since matches only
+    /// [`Self::canonical_fingerprint`].
+    #[must_use]
+    pub fn pre_mcp_requirement_canonical_fingerprint(&self) -> Option<String> {
+        self.without_published_mcp_requirements()
+            .map(|legacy| legacy.canonical_fingerprint())
+    }
+
+    fn without_published_mcp_requirements(&self) -> Option<Self> {
+        self.placement.session_mcp_credentials.as_ref()?;
+        let mut legacy = self.clone();
+        legacy.placement.session_mcp_credentials = None;
+        Some(legacy)
     }
 
     /// Compare only the immutable Session command identity. This method is for
@@ -1288,6 +1318,61 @@ mod tests {
             !serde_json::to_string(&candidate)
                 .unwrap()
                 .contains("secret")
+        );
+    }
+
+    #[test]
+    fn upgrade_window_identity_normalizes_only_a_retry_against_a_pre_requirement_row() {
+        // Cause/effect table: C1 the stored row lacks or carries published MCP
+        // requirements; C2 the retry lacks or carries them; C3 the rest of the
+        // retry is the same command or not.
+        // | Rule | stored | retry | rest | live replay | tombstone replay |
+        // | U1 | legacy | current | same | yes | yes |
+        // | U2 | current | current | same | yes | yes |
+        // | U3 | legacy | legacy | same | yes | yes |
+        // | U4 | legacy | current | different | no | no |
+        // | U5 | current | legacy | same | no | no |
+        // The stored value is never changed by a comparison.
+        let envelope =
+            |id: &str| SessionRuntimeEnvelope::new(format!("{{\"projection\":\"{id}\"}}"));
+        let row = |id: &str, published: bool| {
+            let mut request = RunDispatch::new(activation()).with_session_runtime(envelope(id));
+            if published {
+                request.placement.session_mcp_credentials = Some(Vec::new());
+            }
+            request
+        };
+        let tombstone_replays = |stored: &RunDispatch, retry: &RunDispatch| {
+            let tombstone = stored.canonical_fingerprint();
+            retry.canonical_fingerprint() == tombstone
+                || retry.pre_mcp_requirement_canonical_fingerprint().as_deref()
+                    == Some(tombstone.as_str())
+        };
+        let cases = [
+            ("U1", row("a", false), row("a", true), true),
+            ("U2", row("a", true), row("a", true), true),
+            ("U3", row("a", false), row("a", false), true),
+            ("U4", row("a", false), row("b", true), false),
+            ("U5", row("a", true), row("a", false), false),
+        ];
+        for (rule, stored, retry, replays) in cases {
+            let before = stored.clone();
+            assert_eq!(
+                stored.same_canonical_dispatch(&retry),
+                replays,
+                "{rule} live"
+            );
+            assert_eq!(
+                tombstone_replays(&stored, &retry),
+                replays,
+                "{rule} tombstone"
+            );
+            assert_eq!(stored, before, "{rule} the stored row is unchanged");
+        }
+        assert_eq!(
+            row("a", false).pre_mcp_requirement_canonical_fingerprint(),
+            None,
+            "a retry without requirements has no pre-requirement form"
         );
     }
 

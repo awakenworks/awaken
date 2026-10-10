@@ -407,6 +407,8 @@ pub async fn assert_dispatch_conformance_with_clock<S: ControlDispatchQueue + In
     incompatible_credentials_do_not_poison_broad_claims(store, namespace, clock).await;
     parent_mediated_commands_are_atomic(store, namespace, clock).await;
     caller_owned_run_identity_is_exact(store, namespace, clock).await;
+    upgrade_window_retry_replays_rows_written_before_typed_requirements(store, namespace, clock)
+        .await;
     session_run_reservation_is_atomic_and_recoverable(store, namespace, capabilities, clock).await;
     current_claim_guard_is_exact(store, namespace, capabilities, clock).await;
     sandbox_binding_survives_recovery(store, namespace, capabilities, clock).await;
@@ -447,3 +449,5 @@ include!("conformance/reservations.rs");
 include!("conformance/fixtures.rs");
 
 include!("conformance/reliability.rs");
+
+include!("conformance/upgrade_window.rs");

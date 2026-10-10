@@ -466,7 +466,14 @@ pub(crate) fn decide_run_identity(
                 completed_run_identity_replays(
                     existing,
                     CompletedIncomingIdentity::FullDispatch(canonical.as_str()),
-                )
+                ) || incoming
+                    .pre_mcp_requirement_canonical_fingerprint()
+                    .is_some_and(|legacy| {
+                        completed_run_identity_replays(
+                            existing,
+                            CompletedIncomingIdentity::FullDispatch(legacy.as_str()),
+                        )
+                    })
             }
         },
     };
