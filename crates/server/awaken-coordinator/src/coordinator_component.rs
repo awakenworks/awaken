@@ -385,12 +385,12 @@ pub async fn build_coordinator_component(
         .await?;
     let managed = crate::with_local_workspace_scope(managed, default_workspace.clone());
     let private_router = match service_authenticator {
-        Some(authenticator) => private_router.merge(
-            awaken_protocol_managed::credential_rollout_router_with_authenticator(
+        Some(authenticator) => {
+            private_router.merge(crate::credential_rollout_router_with_authenticator(
                 managed_state.clone(),
                 authenticator,
-            ),
-        ),
+            ))
+        }
         None => private_router,
     };
     let private_router = private_router.merge(worker_transport);

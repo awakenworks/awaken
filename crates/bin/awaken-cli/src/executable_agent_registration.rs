@@ -118,7 +118,7 @@ impl ExecutableAgentWiring {
             )?,
         );
         let credential_rollout_target = Arc::new(
-            awaken_protocol_managed::HttpManagedCredentialRolloutTarget::with_token_source(
+            awaken_coordinator::HttpManagedCredentialRolloutTarget::with_token_source(
                 coordinator_url,
                 token_source,
             )?,

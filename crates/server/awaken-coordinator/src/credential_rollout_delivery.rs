@@ -1,13 +1,15 @@
 // @formal entrypoint credential.managed_rollout_abstract_ack_requires_every_target_adoption
-//! Private Control→Coordinator delivery of durable Vault rollout events.
+//! Private Control→Coordinator delivery of durable Vault rollout events: the
+//! Coordinator's service-authenticated route and the Control-side HTTP client.
+//! Both ends of this internal channel live here so its path is defined once.
 
 use std::sync::Arc;
 
+use awaken_credential_contract::ManagedCredentialRollout;
 use awaken_credential_contract::{
     ManagedCredentialAdoptionError, ManagedCredentialAdoptionProgress,
     ManagedCredentialAdoptionUnavailable, ManagedCredentialRolloutTarget,
 };
-use awaken_credential_vault::repo::ManagedCredentialRollout;
 use awaken_service_auth_contract::{
     COORDINATOR_SERVICE_AUDIENCE, ServiceAuthError, ServiceAuthorizationRequirement,
     ServiceBearerTokenSource, ServiceRequestAuthenticator,
@@ -19,24 +21,24 @@ use axum::{
     routing::post,
 };
 
-use crate::ManagedState;
-
 const PATH: &str = "/internal/v1/managed-credential-rollouts";
 
 #[derive(Clone)]
 struct RolloutHttpState {
-    managed: Arc<ManagedState>,
+    target: Arc<dyn ManagedCredentialRolloutTarget>,
     authenticator: Arc<dyn ServiceRequestAuthenticator>,
 }
 
+/// The private route the Control rollout reconciler delivers to; `target` is
+/// this Coordinator's Session adoption of a rollout.
 pub fn credential_rollout_router_with_authenticator(
-    state: Arc<ManagedState>,
+    target: Arc<dyn ManagedCredentialRolloutTarget>,
     authenticator: Arc<dyn ServiceRequestAuthenticator>,
 ) -> Router {
     Router::new()
         .route(PATH, post(apply_rollout))
         .with_state(RolloutHttpState {
-            managed: state,
+            target,
             authenticator,
         })
 }
@@ -66,7 +68,9 @@ async fn apply_rollout(
                 (StatusCode::SERVICE_UNAVAILABLE, error.to_string())
             }
         })?;
-    ManagedCredentialRolloutTarget::rollout(state.managed.as_ref(), &event)
+    state
+        .target
+        .rollout(&event)
         .await
         .map(|progress| match progress {
             ManagedCredentialAdoptionProgress::Converged => StatusCode::NO_CONTENT,
@@ -172,7 +176,19 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::state::test_support::RehydrateFake;
+
+    /// An adopting Coordinator whose Sessions have all adopted the event.
+    struct ConvergedTarget;
+
+    #[async_trait::async_trait]
+    impl ManagedCredentialRolloutTarget for ConvergedTarget {
+        async fn rollout(
+            &self,
+            _event: &ManagedCredentialRollout,
+        ) -> Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError> {
+            Ok(ManagedCredentialAdoptionProgress::Converged)
+        }
+    }
 
     fn event() -> ManagedCredentialRollout {
         ManagedCredentialRollout {
@@ -190,7 +206,7 @@ mod tests {
     #[tokio::test]
     async fn private_rollout_requires_service_authentication_before_delivery() {
         let router = credential_rollout_router_with_authenticator(
-            Arc::new(ManagedState::new(RehydrateFake::default()).await),
+            Arc::new(ConvergedTarget),
             awaken_service_auth_contract::static_token_authenticator("rollout-test").unwrap(),
         );
         let body = serde_json::to_vec(&event()).unwrap();
@@ -270,5 +286,41 @@ mod tests {
                 "C3/{status}"
             );
         }
+    }
+
+    /// A token source that answers once (at construction) and then fails, as
+    /// a rotated-away credential file does.
+    struct ExpiringTokenSource(std::sync::atomic::AtomicBool);
+
+    impl ServiceBearerTokenSource for ExpiringTokenSource {
+        fn current_token(&self) -> Result<Arc<str>, String> {
+            if self.0.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                Err("secret-token-path-canary is unreadable".into())
+            } else {
+                Ok(Arc::from("rollout-test"))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unresolvable_service_token_is_the_service_token_cause() {
+        // Cause C4: the delivery credential cannot be read at send time.
+        // Effect: Unavailable(ServiceToken) before any request leaves, and the
+        // source's own text never reaches the error.
+        let target = HttpManagedCredentialRolloutTarget::with_token_source(
+            "http://127.0.0.1:9",
+            Arc::new(ExpiringTokenSource(std::sync::atomic::AtomicBool::new(
+                false,
+            ))),
+        )
+        .unwrap();
+        let error = target.rollout(&event()).await.unwrap_err();
+        assert_eq!(
+            error,
+            ManagedCredentialAdoptionError::Unavailable(
+                ManagedCredentialAdoptionUnavailable::ServiceToken
+            )
+        );
+        assert!(!error.to_string().contains("canary"));
     }
 }
