@@ -184,6 +184,9 @@ fn terminal_commit() -> ThreadCommit {
 /// C3=>E2; R4=C1+current C2+replayed C3=>E3. Run/Thread/operation/hash mismatch
 /// partitions are owned by the existing Host claimed-child table; this real HTTP
 /// table cross-checks authentication, ABA fencing and idempotent transport.
+/// C4 payload is above the incidental 2 MiB JSON default but below the finite
+/// commit wire budget; C5 it exceeds that budget. R5=C1+current C2+C4=>E2/E3
+/// with exact large bytes; R6=C1+C5=>413 before any additional committed truth.
 #[tokio::test(flavor = "multi_thread")]
 async fn registered_worker_commits_one_idempotent_versioned_operation() {
     let manifest = WorkerManifest::default();
@@ -265,7 +268,13 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
         "R1/E1"
     );
 
-    let commit = terminal_commit();
+    let mut commit = terminal_commit();
+    let large_text = "x".repeat(3 * 1024 * 1024);
+    commit.messages = vec![Message::text(
+        MessageId("typed-commit-message".into()),
+        Role::Assistant,
+        large_text.clone(),
+    )];
     let operation = CommitOperation {
         operation_id: CommitOperationId::new(RunId("typed-commit-run".into()), 0),
         expected_thread_version: 0,
@@ -340,7 +349,36 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
         &ThreadId("typed-commit-thread".into()),
     );
     assert_eq!(messages.len(), 1, "R3-R4/E2-E3");
-    assert_eq!(messages[0].text_content(), "typed commit", "R3-R4/E2-E3");
+    assert_eq!(messages[0].text_content(), large_text, "R3-R5/E2-E3");
+    let oversized = reqwest::Client::new()
+        .post(format!("http://{address}/v1/worker/commit-claimed"))
+        .header(
+            awaken_worker_transport_security::WORKER_ID_HEADER,
+            "typed-worker",
+        )
+        .header("content-type", "application/json")
+        .body(vec![
+            b' ';
+            awaken_dispatch_contract::MAX_CLAIMED_COMMIT_BODY_BYTES
+                + 1
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        oversized.status(),
+        reqwest::StatusCode::PAYLOAD_TOO_LARGE,
+        "R6"
+    );
+    assert_eq!(
+        CommittedThreadView::committed_messages(
+            &*coordinator,
+            &ThreadId("typed-commit-thread".into())
+        )
+        .len(),
+        1,
+        "R6 leaves truth unchanged"
+    );
 }
 
 /// Cause graph for ambiguous remote commit responses:

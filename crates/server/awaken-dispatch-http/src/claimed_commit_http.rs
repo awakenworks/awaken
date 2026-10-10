@@ -7,11 +7,12 @@ use std::sync::Arc;
 use awaken_dispatch::{
     ApplicationErrorKind, ClaimedCommitRequest, ClaimedCommitService, WorkerDirectory,
 };
+use awaken_dispatch_contract::MAX_CLAIMED_COMMIT_BODY_BYTES;
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, authenticate_worker_request,
     verify_current_worker_identity,
 };
-use axum::extract::{Extension, State};
+use axum::extract::{DefaultBodyLimit, Extension, State};
 use axum::http::StatusCode;
 use axum::{Json, Router};
 use serde_json::{Value, json};
@@ -49,6 +50,7 @@ pub fn claimed_commit_router(service: Arc<ClaimedCommitHttpService>) -> Router {
             "/v1/worker/commit-claimed",
             axum::routing::post(commit_claimed),
         )
+        .layer(DefaultBodyLimit::max(MAX_CLAIMED_COMMIT_BODY_BYTES))
         .route_layer(axum::middleware::from_fn_with_state(
             service.authenticator.clone(),
             authenticate_worker_request,
