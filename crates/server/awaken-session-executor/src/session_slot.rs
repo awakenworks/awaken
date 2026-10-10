@@ -344,7 +344,7 @@ pub(crate) struct SessionRealizationState {
     /// Managed-filesystem Skill discovery metadata. Full instructions remain
     /// in the exact frozen bundle (and its later filesystem projection) and
     /// are read on demand by the ordinary `read` tool.
-    pub skill_prompt: Option<crate::skill_prompt::FilesystemSkillPrompt>,
+    pub skill_prompt: Option<crate::skill_delivery::FilesystemSkillPrompt>,
     pub resources: StagedResources,
     pub manifest: Option<awaken_session_resource_contract::SessionResourceManifest>,
     /// Exact aggregate-owned physical replacement currently being replayed.

@@ -75,6 +75,9 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "managed_input_layout",
         "frozen_inputs",
     )),
+    (REALIZER, "Skill resource projection: the delivered-bundle installer and its prompt (plan 10.3 item 3)", (
+        "skill_delivery",
+    )),
     (REALIZER, "the error vocabulary realization and the run path both return; the host re-exports it", (
         "host_error",
     )),
@@ -164,7 +167,6 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "memory",
         "memory_stores",
         "session_memory_tools",
-        "skill_prompt",
         "skills",
     )),
     (HOST, "worker and sandbox stand-ins the host installs when nothing else is configured", (

@@ -27,10 +27,6 @@
     "managed_resource_projection -> skill_catalog": [
       "skill_store_run_error"
     ],
-    "managed_resource_projection -> skills": [
-      "DELIVERED_SKILLS_SUBDIR",
-      "materialize_delivered_skill"
-    ],
     "provisioning -> host": [
       "SharedHost"
     ],
