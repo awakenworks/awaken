@@ -30,11 +30,12 @@ seam harder to consume and evolve, and every one of them predates this gate:
    that refuses on purpose (any other ``Err``) is neither.
 
 Every count is compared with ``scripts/ci/contract_shape_baseline.json``. A
-count above its baseline fails and names the instances; a count below it fails
-too, asking for the baseline to be lowered so the gained ground is held (line
-counts only once they shrink by ``LINE_SLACK`` or fall under budget, so ordinary
-edits do not churn the file). ``--write-baseline`` records the current tree; it
-refuses to raise a number unless ``--reason`` explains the growth, and that
+count above its baseline fails and names the instances. A fall is admitted;
+``--tighten`` records it so the gained ground is held (line counts only once
+they shrink by ``LINE_SLACK`` or fall under budget, so ordinary edits do not
+churn the file). Default/``--check`` reads without writing.
+``--write-baseline`` records the current tree; it refuses to raise a number
+unless ``--reason`` explains the growth, and that
 reason is kept next to the number for review.
 
 Production source is the structural module graph from each Cargo target root,
@@ -44,15 +45,14 @@ projection every crate-boundary fitness check uses.
 
 from __future__ import annotations
 
-import argparse
 import subprocess
 import json
 import re
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import _crate_boundary_workspace as workspace
+import _architecture_ratchet
 
 # Every Cargo manifest and production Rust file can add, remove or reshape a
 # contract crate; the baseline and the shared lexer define the comparison.
@@ -60,6 +60,7 @@ INPUT_GLOBS: tuple[str, ...] = (
     "crates/**/*.rs",
     "crates/**/Cargo.toml",
     "scripts/ci/_crate_boundary_workspace.py",
+    "scripts/ci/_architecture_ratchet.py",
     "scripts/ci/contract_shape_baseline.json",
 )
 
@@ -481,14 +482,18 @@ def render_baseline(
     growth: list[str] = []
     crates: dict[str, dict] = {}
     for name, current in sorted(measurements.items()):
-        entry: dict = {"depth": current.depth}
+        prior = old.get(name, {})
+        entry: dict = {key: value for key, value in prior.items()
+                       if key not in (*RULES, "growth_reasons", "production_lines")}
+        entry["depth"] = current.depth
         if current.over_budget():
             entry["module_lines"] = current.over_budget()
         for rule in RULES[2:]:
             if current.count(rule):
                 entry[rule] = current.count(rule)
-        prior = old.get(name, {})
-        reasons = {rule: text for rule, text in prior.get("growth_reasons", {}).items() if rule in RULES}
+        # ADR-0091 D3 retired the known per-crate production_lines metric
+        # (W5 below); reasons for unknown/foreign metrics are not ours to retire.
+        reasons = {rule: text for rule, text in prior.get("growth_reasons", {}).items() if rule != "production_lines"}
         for rule in RULES:
             if rule not in entry:
                 reasons.pop(rule, None)
@@ -510,11 +515,12 @@ def render_baseline(
                 # Each growth keeps the reasons recorded for earlier growth:
                 # the baseline is the history of why a number may be this high.
                 earlier = reasons.get(rule)
-                reasons[rule] = reason if not earlier or reason in earlier else f"{earlier}; then: {reason}"
+                reasons[rule] = _architecture_ratchet.growth_reason(earlier, reason)
         if reasons:
             entry["growth_reasons"] = reasons
         crates[name] = entry
     document = {
+        **previous,
         "$comment": (
             "Contract-shape ratchet (scripts/ci/check_contract_shape.py, ADR-0081). Numbers may "
             "only fall; raising one requires --write-baseline --reason, recorded in growth_reasons."
@@ -736,80 +742,114 @@ def self_test() -> None:
         "W5 a reason for a retired rule is dropped"
     lowered, growth = render_baseline({"k": Measurement(depth=0)}, previous, None)
     assert not growth and lowered["crates"]["k"] == {"depth": 0}, "W lowering needs no reason"
+    _selftest_cli()
     print("check_contract_shape self-test: the decision table holds")
+
+
+def _selftest_cli() -> None:
+    """CLI cause/effect table, keeping this guard's original fall-is-admitted rule.
+
+    SCLI1 default/check/report never write; a fall remains admitted. SCLI2
+    tighten+stage writes/stages a real fall once, equal does neither; growth
+    refuses both. SCLI3 reviewed writes retain root/crate metadata and reason
+    history; hard DAG/kind failures still refuse before writing. SCLI4 absent
+    baseline, empty reasons and invalid modes/stage precede measurement; the
+    existing --tighten --stage hook and --report combinations remain valid.
+    SCLI5 explicit write with an existing empty crates map is its first record,
+    retaining metadata; nonempty growth still requires a reason and neither
+    check nor tighten borrows this authorization.
+    """
+    from types import SimpleNamespace
+
+    foreign = "  foreign review; expiry unchanged  "
+    held = {"owner": "shape", "expiry": "review", "growth_reasons": {"future-counter": {"root": foreign}},
+            "future-counter": {"root": 9}, "crates": {"c": {"depth": 0, "catch_all_errors": 2,
+            "future-counter": 8,
+            "owner": "contract", "expiry": "extraction", "growth_reasons": {"catch_all_errors": "first", "future-counter": foreign}}}}
+    stage_calls = []
+
+    def invoke(argv, count=2, baseline=held, errors=()):
+        return _architecture_ratchet._cli_fixture(
+            main, argv, baseline, "measure", (list(errors), {"c": Measurement(depth=0, catch_all_errors=["x"] * count)}),
+            load_contract_crates=lambda: {}, subprocess=SimpleNamespace(run=lambda *a, **kw: stage_calls.append((a, kw))))
+
+    for argv in ([], ["--check"], ["--report"], ["--report", "--check"]):
+        status, before, after, observed, output = invoke(argv, 1)
+        assert status == 0 and before == after and observed, f"SCLI1 fall admitted/read-only {argv}"
+        if "--report" in argv:
+            assert output.startswith(table({"c": Measurement(depth=0, catch_all_errors=["x"])})), "SCLI1 table"
+    for argv in (["--tighten", "--stage"], ["--report", "--tighten", "--stage"]):
+        stage_calls.clear()
+        status, _, after, _, _ = invoke(argv, 1)
+        document = json.loads(after)
+        assert status == 0 and document["crates"]["c"]["catch_all_errors"] == 1, "SCLI2 hook-compatible fall"
+        assert len(stage_calls) == 1 and stage_calls[0][0][0][:2] == ["git", "add"], "SCLI2 original staging"
+        assert document["owner"] == held["owner"] and document["expiry"] == held["expiry"], "SCLI2 root metadata"
+        assert document["crates"]["c"]["owner"] == "contract" and document["crates"]["c"]["expiry"] == "extraction", \
+            "SCLI2 crate metadata"
+        assert document["future-counter"] == held["future-counter"] and document["growth_reasons"] == held["growth_reasons"], \
+            "SCLI2 foreign root metadata/reason"
+        assert document["crates"]["c"]["future-counter"] == 8 and document["crates"]["c"]["growth_reasons"]["future-counter"] == foreign, \
+            "SCLI2 unknown crate counter and its reason stay together"
+    stage_calls.clear()
+    status, before, after, _, _ = invoke(["--tighten", "--stage"])
+    assert status == 0 and before == after and not stage_calls, "SCLI2 equal never stages"
+    status, before, after, _, _ = invoke(["--tighten", "--stage"], 3)
+    assert status == 1 and before == after and not stage_calls, "SCLI2 growth never stages"
+    status, before, after, _, _ = invoke(["--write-baseline"], 3)
+    assert status == 1 and before == after, "SCLI3 growth needs reason"
+    status, _, after, _, _ = invoke(["--write-baseline", "--reason", "reviewed"], 3)
+    document = json.loads(after)
+    assert status == 0 and document["crates"]["c"]["growth_reasons"]["catch_all_errors"] == "first; then: reviewed", \
+        "SCLI3 review history"
+    assert document["crates"]["c"]["future-counter"] == 8 and document["crates"]["c"]["growth_reasons"]["future-counter"] == foreign, \
+        "SCLI3 explicit write preserves foreign metadata/reasons"
+    # SCLI5 exists + crates={} is the original first-record authorization,
+    # only for explicit writes. Existing nonempty growth above remains reasoned.
+    empty = {**held, "crates": {}}
+    status, _, after, _, _ = invoke(["--write-baseline"], 3, empty)
+    initial = json.loads(after)
+    assert status == 0 and initial["crates"]["c"]["catch_all_errors"] == 3, "SCLI5 existing empty initializes"
+    assert initial["owner"] == held["owner"] and initial["expiry"] == held["expiry"] and initial["growth_reasons"] == held["growth_reasons"], \
+        "SCLI5 initial root metadata/reasons retained"
+    for argv in (["--check"], ["--tighten"]):
+        status, before, after, _, _ = invoke(argv, 3, empty)
+        assert status == 1 and before == after, "SCLI5 initialization is not check/tighten authorization"
+    status, before, after, _, _ = invoke(["--write-baseline"], 3, empty, errors=("cycle / wrong kind",))
+    assert status == 1 and before == after, "SCLI5 initial recording cannot waive hard rules"
+    for argv in (["--check"], ["--tighten", "--stage"], ["--write-baseline", "--reason", "reviewed"]):
+        stage_calls.clear()
+        status, before, after, _, _ = invoke(argv, 1, errors=("cycle / wrong kind",))
+        assert status == 1 and before == after and not stage_calls, "SCLI3 hard rules cannot be waived"
+    for argv in ([], ["--check"], ["--tighten", "--stage"]):
+        status, before, after, observed, _ = invoke(argv, baseline=None)
+        assert status == 1 and before is None and after is None and not observed, "SCLI4 missing baseline"
+    for argv in (["--check", "--tighten"], ["--self-test", "--write-baseline"], ["--stage"],
+                 ["--write-baseline", "--stage", "--reason", "reviewed"], ["--tighten", "--reason", "x"],
+                 ["--write-baseline", "--reason", "   "], ["--self-test", "--report"]):
+        status, before, after, observed, _ = invoke(argv)
+        assert status == 2 and before == after and not observed, f"SCLI4 {argv}"
 
 
 # --------------------------------------------------------------------------- main
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--self-test", action="store_true", help="run the decision table")
-    parser.add_argument("--report", action="store_true", help="print the per-crate measurement table")
-    parser.add_argument("--write-baseline", action="store_true", help="record the current tree")
-    parser.add_argument("--reason", help="why a recorded number is allowed to grow")
-    parser.add_argument(
-        "--tighten",
-        action="store_true",
-        help="check, then lower every recorded number the tree has fallen below (never raises one)",
+    def lower(measurements, previous):
+        if compare(measurements, previous) or not tightenable(measurements, previous):
+            return previous
+        document, growth = render_baseline(measurements, previous, None)
+        # The original comparison admitted the tree. A disagreement with its
+        # existing renderer must never silently write a higher allowance.
+        assert not growth, growth
+        return document
+
+    return _architecture_ratchet.baseline_cli(
+        argv, prog="check_contract_shape.py", description=__doc__, baseline_path=BASELINE, self_test=self_test,
+        measure=lambda: measure(load_contract_crates()), check=compare, tighten=lower, write=render_baseline,
+        report=table, is_initialization=lambda previous: not previous.get("crates"),
+        stage=lambda: subprocess.run(["git", "add", str(BASELINE)], cwd=ROOT, check=True),
     )
-    parser.add_argument(
-        "--stage", action="store_true", help="with --tighten: git-add the lowered baseline"
-    )
-    args = parser.parse_args(argv)
-
-    if args.self_test:
-        self_test()
-        return 0
-
-    errors, measurements = measure(load_contract_crates())
-    if errors:
-        for error in errors:
-            print(f"ERROR: {error}", file=sys.stderr)
-        return 1
-    if args.report:
-        print(table(measurements))
-    previous = json.loads(BASELINE.read_text(encoding="utf-8")) if BASELINE.exists() else {"crates": {}}
-
-    if args.write_baseline:
-        document, growth = render_baseline(measurements, previous, args.reason)
-        if growth and not args.reason and previous.get("crates"):
-            for item in growth:
-                print(f"ERROR: baseline would grow: {item}", file=sys.stderr)
-            print("Pass --reason '<why this contract must grow>' to record the growth.", file=sys.stderr)
-            return 1
-        BASELINE.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
-        print(f"wrote {BASELINE.relative_to(ROOT)} for {len(measurements)} contract crates")
-        return 0
-
-    if args.stage and not args.tighten:
-        print("usage: --stage only applies to --tighten", file=sys.stderr)
-        return 2
-    problems = compare(measurements, previous)
-    if args.tighten and not problems:
-        gains = tightenable(measurements, previous)
-        if gains:
-            document, growth = render_baseline(measurements, previous, None)
-            # compare() admitted the tree, so nothing may have grown; a growth
-            # here would be a disagreement between the two and must not be
-            # written silently.
-            assert not growth, growth
-            BASELINE.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
-            for gain in gains:
-                print(f"tightened {gain}")
-            if args.stage:
-                subprocess.run(["git", "add", str(BASELINE)], cwd=ROOT, check=True)
-    if problems:
-        for problem in problems:
-            print(f"ERROR: {problem}", file=sys.stderr)
-        print(
-            f"\n{len(problems)} contract-shape ratchet violation(s). Reproduce with "
-            "`python3 scripts/ci/check_contract_shape.py --report`.",
-            file=sys.stderr,
-        )
-        return 1
-    print(f"OK - contract shape held for {len(measurements)} contract crates.")
-    return 0
 
 
 if __name__ == "__main__":

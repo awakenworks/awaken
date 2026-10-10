@@ -194,10 +194,10 @@ pre-commit:
     #    flag was `--self-test`, so that self-test never once ran. The rule is
     #    over the whole set of entry points, so a new checker inherits it.
     gate-arguments:
-      # >>> generated glob from check_gate_arguments.py INPUT_GLOBS — do not edit
+      # >>> generated glob from check_gate_arguments.py, guards.py INPUT_GLOBS — do not edit
       glob: "{CONTRIBUTING.md,deploy/images/sandbox/build.sh,deploy/k3d/test_image_contract.py,e2e/*.sh,e2e/k3d/*.py,e2e/k3d/*.sh,e2e/k6/*.sh,lefthook.yml,scripts/ci/*.py,scripts/ci/*.sh,scripts/contract/*.sh,scripts/e2e/*.sh,scripts/release/*.py,scripts/release/*.sh}"
       # <<< generated glob
-      run: python3 scripts/ci/check_gate_arguments.py
+      run: python3 scripts/ci/check_gate_arguments.py && python3 scripts/ci/guards.py --self-test
 
     # 3a'. A shell or YAML gate that hands a crate file path to a tool must name
     #    a file that exists. A refactor moved a UTC codec and the reliability
@@ -256,7 +256,7 @@ pre-commit:
     # (ADR-0081). A lowered number must be recorded in the checked-in baseline.
     contract-shape:
       # >>> generated glob from check_contract_shape.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/_crate_boundary_workspace.py,scripts/ci/check_contract_shape.py,scripts/ci/contract_shape_baseline.json}"
+      glob: "{crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/_architecture_ratchet.py,scripts/ci/_crate_boundary_workspace.py,scripts/ci/check_contract_shape.py,scripts/ci/contract_shape_baseline.json}"
       # <<< generated glob
       # A fall is recorded here, by the tool, and staged with the commit that
       # achieved it; only growth needs a person (--write-baseline --reason).

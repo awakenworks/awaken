@@ -67,19 +67,25 @@ documentation with `python3 scripts/ci/guards.py explain duplicate-type`.
 The navigator reads source without executing checks or writing baselines;
 use `<guard>:<rule>` when two guards declare the same rule id.
 
-Ratchets only shrink. Each guard owns its own flags today:
+Architecture naming, single-owner, contract-map, modularity, module-layer and
+contract shape share one CLI. Default/`--check` is read-only. `--tighten`
+records decreases in an existing baseline, refuses growth even alongside a
+decrease, and checks the guard's hard rules before writing. Explicit growth
+requires `--write-baseline --reason "why"`; a reason never waives a hard rule.
+Each guard preserves its own first-initialization rule and recorded metadata.
+
+Use each owning script:
 
 - contract shape: `python3 scripts/ci/check_contract_shape.py --tighten` records
   a fall (the hook does this with `--stage`); growth needs
   `python3 scripts/ci/check_contract_shape.py --write-baseline --reason "why"`.
 - modularity: `python3 scripts/ci/_modularity_fitness.py --tighten`.
-- architecture naming, single-owner and contract-map guards: their
+- module-layer: `python3 scripts/ci/_module_layer_fitness.py --tighten`.
+  `python3 scripts/ci/_module_layer_fitness.py --report` prints the original
+  JSON measurements; it is a report, not a passing ratchet check.
+- architecture naming, single-owner and contract-map: their
   `_naming_fitness.py`, `_single_owner_fitness.py` and `_contract_map_fitness.py`
-  commands accept `--check` (also the default) without changing files, and
-  `--tighten` to record decreases in an existing baseline. Tightening refuses
-  every increase, including a new rule, and checks hard rules before writing.
-  Initialize a baseline with `--write-baseline`; an increase in an existing
-  rule requires `--write-baseline --reason "why"`.
+  scripts use the same check/tighten/reasoned-write modes.
 - test waits: `python3 scripts/ci/check_test_waits.py --write-baseline`.
 - test inventory: `python3 scripts/ci/check_test_inventory.py --write`; a
   removed or renamed test is also recorded in
