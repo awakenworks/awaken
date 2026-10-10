@@ -43,6 +43,7 @@ pub use mutation::{
 };
 pub use persisted_session::{
     PersistedSession, SessionEventDispatchSettlementEffect, VisibleMcpServer, session_is_terminal,
+    session_is_unattempted_profiled_preparation,
 };
 pub use placement::{SessionPlacementClass, SessionPublicStatus};
 pub use recovery::{

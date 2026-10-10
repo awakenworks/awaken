@@ -861,3 +861,10 @@
   retires an exact closed-idle Kubernetes Pod before releasing its evidence,
   allowing the Deployment to supply a new UID without reviving old admission.
   Deletion intent grants no process-exit, Session cleanup, or replay receipt.
+
+## 2026-10-10 — Share the existing claimed-commit composition binding
+
+- [ADR-0075](../adr/0075-unified-managed-session-worker-execution.md) keeps
+  `ClaimedCommitService` as the sole claim-guarded writer. Coordinator embeddings
+  reuse its existing `SessionCommitOwner` binding; the Host remains a read-only
+  owner selector with no dependency on the RunIngress implementation.

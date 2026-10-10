@@ -904,6 +904,14 @@ Coordinator composition -> RunIngress implementation (durable queue/claimed comm
 Managed GET/SSE projection <------------- committed Session/Thread/Run truth
 ```
 
+The Coordinator's existing `SessionCommitOwner` composition binding is shared
+with downstream Coordinator embeddings such as Flow. It only delegates to the
+Host's `session_commit_owner` read; `ClaimedCommitService` still validates the
+claim and invokes the sole authoritative write. The Host must not depend on the
+RunIngress implementation, and downstream compositions must not copy this
+binding or revive the retired Host resolver. No new commit service, owner,
+storage path or retry policy is introduced.
+
 Public Managed Event mutation remains the compatibility surface for Managed
 clients, and committed Managed Events remain a valid observation/resume/cancel
 projection for product adapters. They are not a fallback for profiled Run

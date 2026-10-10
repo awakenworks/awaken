@@ -46,6 +46,7 @@ pub use managed_lifecycle::{
 };
 mod runtime_authority;
 mod session_commit_owner;
+pub use session_commit_owner::SessionCommitOwner;
 pub mod webhooks;
 pub mod worker_fleet;
 pub mod worker_observation_boundary;

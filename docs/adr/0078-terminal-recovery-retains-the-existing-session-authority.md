@@ -828,3 +828,11 @@ one command selection; no new wire route, queue, Session state or force-release
 flag is introduced. Cause-effect tests cover each independent admission
 refusal, accepted Event fences, cleanup failure/replay and the real profiled
 route. Live product recovery must still retain the original Issue and root.
+
+The pure never-attempted predicate lives on the existing `PersistedSession`
+aggregate beside its activity and tombstone predicates. Session Application
+remains its only release-admission consumer and rechecks it in the root CAS;
+the value query cannot grant a command or certify cleanup. Repository-publication
+owner, read and CAS failures share one existing error conversion instead of
+four parallel matches. This consolidation preserves every refusal and retry
+outcome without increasing the large application or protocol package budgets.

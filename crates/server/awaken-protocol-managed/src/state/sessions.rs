@@ -1014,41 +1014,34 @@ impl ManagedState {
         let owner = self.resolve_owner(id).await?;
         let (archived_at, terminated_fact) =
             managed_archive_command(id, owner, self.roles.clock.now_ms());
-        if verified_cleanup {
+        let termination = &self.roles.termination;
+        let release = if verified_cleanup {
             // This read selects a safe command, not a second status authority.
             // Application commands reload and recheck the durable root.
             let execution = self
                 .roles
                 .roots
                 .session(&awaken_session_types::SessionId::from(id))
-                .await
-                .map_err(StateError::from)?
+                .await?
                 .execution;
-            if execution == awaken_session_state_contract::SessionExecutionState::Preparing {
-                self.roles
-                    .termination
-                    .release_unattempted_profiled_session(id, &archived_at, terminated_fact.clone())
-                    .await
-                    .map_err(Self::map_preparation_error)?;
-            } else if !execution.is_terminal() {
-                self.roles
-                    .termination
-                    .terminate_session(id, &archived_at, terminated_fact.clone())
-                    .await
-                    .map_err(Self::map_preparation_error)?;
+            if !execution.is_terminal() {
+                let initial_fact = terminated_fact.clone();
+                let initial_release = match execution {
+                    SessionExecutionState::Preparing => termination
+                        .release_unattempted_profiled_session(id, &archived_at, initial_fact),
+                    _ => termination.terminate_session(id, &archived_at, initial_fact),
+                };
+                initial_release.await.map_err(Self::map_preparation_error)?;
             }
-            self.roles
-                .termination
+            termination
                 .release_terminal_session(id, &archived_at, terminated_fact)
                 .await
-                .map_err(Self::map_preparation_error)?;
         } else {
-            self.roles
-                .termination
+            termination
                 .terminate_session(id, &archived_at, terminated_fact)
                 .await
-                .map_err(Self::map_preparation_error)?;
-        }
+        };
+        release.map_err(Self::map_preparation_error)?;
         // No direct cache mutation or bespoke terminal append belongs here. The
         // canonical refresh rereads PersistedSession and projects root + every
         // derived child terminal with identical warm/restart behavior.
