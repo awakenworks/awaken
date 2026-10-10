@@ -15,9 +15,14 @@
       "methods": 158,
       "reason": "W13 step 2 and W20: event projection and orchestration leave; the adapter keeps its wire cache"
     },
+    "awaken-runtime-host::ManagedHost": {
+      "files": 6,
+      "methods": 35,
+      "reason": "slice H (plan 10.4): each Session role moves to the component that owns its state; ManagedHost only composes"
+    },
     "awaken-runtime-host::SharedHost": {
-      "files": 33,
-      "methods": 269,
+      "files": 42,
+      "methods": 324,
       "reason": "slice H: each of the eleven session-runtime roles gets one owning component (plan 10.3 item 11)"
     },
     "awaken-session-application::SessionApplication": {

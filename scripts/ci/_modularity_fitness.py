@@ -52,7 +52,12 @@ MAX_IMPL_METHODS = 60
 MAX_FUNCTION_LINES = 150
 BUDGET_LINE_SLACK = 1000
 
-_IMPL = re.compile(r"^\s*impl(?:<[^>{]*>)?\s+([A-Z][A-Za-z0-9_]*)(?:<[^>{]*>)?\s*(?:where[^{]*)?\{", re.M)
+# An inherent impl may name its type through a crate path (`impl crate::host::SharedHost`);
+# that block belongs to the same type, so the path prefix is part of the match.
+_IMPL = re.compile(
+    r"^\s*impl(?:<[^>{]*>)?\s+(?:crate::(?:[a-z_][a-z0-9_]*::)*)?([A-Z][A-Za-z0-9_]*)(?:<[^>{]*>)?\s*(?:where[^{]*)?\{",
+    re.M,
+)
 _FN = re.compile(r"\bfn\s+[A-Za-z_]\w*")
 _FN_ITEM = re.compile(r"^[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+(\w+)", re.M)
 _SUPER_GLOB = re.compile(r"^\s*use\s+super::\*\s*;", re.M)
@@ -358,6 +363,8 @@ def selftest() -> None:
     """
     spread = impl_spread({"a.rs": "impl Big { fn x(&self) {} fn y(&self) {} }", "b.rs": "impl<T> Big { fn z() {} }"})
     assert spread == {"Big": (2, 3)}, "impl-spread counting"
+    pathed = impl_spread({"a.rs": "impl crate::host::Big { fn x(&self) {} }", "b.rs": "impl crate::Big for X { fn y() {} }"})
+    assert pathed == {"Big": (1, 1)}, "impl-spread counts a crate-path inherent impl, not a trait impl"
 
     def measure(spread=None, globs=0, cycle=0, adopted=True, long=None):
         return {"impl-spread": spread or {}, "super-glob": globs, "module-cycle": cycle, "unreachable-pub": adopted,
