@@ -100,6 +100,7 @@ async fn conflicting_revocation_preserves_active_worker_relay_until_compatible_d
     let (relay, mcp_generation) = install_active_worker_relay(&host, thread).await;
     let route_before = relay.route_url(&mcp_generation).unwrap();
     let terminal = host
+        .realizer
         .retire_current_environment(
             thread,
             SessionEnvironmentRetirementCause::Terminal {
@@ -238,7 +239,7 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
         "R19/E1"
     );
     assert_eq!(
-        host.durable_session_environment_binding(thread).as_deref(),
+        host.realizer.durable_environment_binding(thread).as_deref(),
         Some("not-a-sandbox-handle"),
         "R20/E2"
     );
@@ -559,7 +560,10 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
     let candidate = host
         .prepared_session_environment(thread)
         .expect("R19/E1 hidden Candidate before cancellation");
-    assert!(host.session_environment(thread).await.is_none(), "R19/E1");
+    assert!(
+        host.realizer.session_environment(thread).await.is_none(),
+        "R19/E1"
+    );
     adoption.abort();
     let cancellation = match adoption.await {
         Err(error) => error,
@@ -591,6 +595,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
         "R20/E3 no by-value duplicate or rebuild path"
     );
     let resident = host
+        .realizer
         .session_environment(thread)
         .await
         .expect("R20/E3 published Resident");

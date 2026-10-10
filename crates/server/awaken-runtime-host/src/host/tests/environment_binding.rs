@@ -201,7 +201,12 @@ async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use
     assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 1);
     assert_eq!(sink.calls.load(Ordering::SeqCst), 1);
     assert!(sink.observed_before_publish.load(Ordering::SeqCst));
-    assert!(host.session_environment("binding-order").await.is_some());
+    assert!(
+        host.realizer
+            .session_environment("binding-order")
+            .await
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -224,7 +229,8 @@ async fn root_response_loss_is_read_back_without_recreating_the_environment() {
     };
     assert_eq!(first_error.kind, HostErrorKind::Unavailable, "R1");
     assert!(
-        host.session_environment("binding-response-loss")
+        host.realizer
+            .session_environment("binding-response-loss")
             .await
             .is_none(),
         "R1 hidden Candidate is not published"
@@ -536,7 +542,10 @@ async fn recovered_environment_waits_for_replacement_realization_before_publish(
     assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 1, "R1");
     assert_eq!(sink.calls.load(Ordering::SeqCst), 0, "R1");
     assert!(
-        host.session_environment("binding-restart").await.is_none(),
+        host.realizer
+            .session_environment("binding-restart")
+            .await
+            .is_none(),
         "R1"
     );
     host.install_session_realization_lease(
@@ -552,7 +561,12 @@ async fn recovered_environment_waits_for_replacement_realization_before_publish(
     host.ctx_for("binding-restart", None).await.expect("R2");
     assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 2, "R2");
     assert_eq!(sink.calls.load(Ordering::SeqCst), 1, "R2");
-    assert!(host.session_environment("binding-restart").await.is_some());
+    assert!(
+        host.realizer
+            .session_environment("binding-restart")
+            .await
+            .is_some()
+    );
 }
 
 /// Multi-renewal FMECA: C1 no lease, C2 stale epoch 2, C3 accepted epoch 3.
@@ -602,7 +616,8 @@ async fn environment_binding_catches_up_across_multiple_realization_fences() {
     assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 3, "E1/E2");
     assert_eq!(sink.calls.load(Ordering::SeqCst), 1, "E2");
     assert!(
-        host.session_environment("binding-moving-fence")
+        host.realizer
+            .session_environment("binding-moving-fence")
             .await
             .is_some()
     );
@@ -640,7 +655,10 @@ async fn missing_durable_environment_adoption_is_deferred_only_for_coordination(
     };
     assert!(error.to_string().contains("was not adopted"), "B1");
     assert!(
-        host.session_environment("binding-corrupt").await.is_none(),
+        host.realizer
+            .session_environment("binding-corrupt")
+            .await
+            .is_none(),
         "B1"
     );
 
@@ -650,13 +668,17 @@ async fn missing_durable_environment_adoption_is_deferred_only_for_coordination(
         .expect("B2/B3 Coordinator-only projection does not adopt Worker substrate");
     assert!(reserved.env.is_none(), "B2/B3");
     assert_eq!(
-        host.durable_session_environment_binding("binding-corrupt")
+        host.realizer
+            .durable_environment_binding("binding-corrupt")
             .as_deref(),
         Some("opaque"),
         "B2/B3 durable identity is retained",
     );
     assert!(
-        host.session_environment("binding-corrupt").await.is_none(),
+        host.realizer
+            .session_environment("binding-corrupt")
+            .await
+            .is_none(),
         "B2/B3 no substitute or local adoption",
     );
 }
@@ -702,7 +724,12 @@ async fn binding_commit_failure_is_retryable_and_never_publishes_the_environment
     assert!(candidate.exact_matches(&retried), "R2 no provider recreate");
     assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 2);
     assert_eq!(sink.calls.load(Ordering::SeqCst), 2);
-    assert!(host.session_environment("binding-failure").await.is_none());
+    assert!(
+        host.realizer
+            .session_environment("binding-failure")
+            .await
+            .is_none()
+    );
 }
 
 /// L3/L4: concurrent first Hand calls join one creator and only observe the
@@ -771,7 +798,12 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
     assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 1);
     assert_eq!(sink.calls.load(Ordering::SeqCst), 1);
     assert!(sink.observed_before_publish.load(Ordering::SeqCst));
-    assert!(host.session_environment("deferred-hand").await.is_some());
+    assert!(
+        host.realizer
+            .session_environment("deferred-hand")
+            .await
+            .is_some()
+    );
 }
 
 /// L5: persistence failure fails closed; no deferred environment becomes visible.
@@ -844,5 +876,10 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
     assert!(candidate.exact_matches(&retried), "L6/E3");
     assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 2);
     assert_eq!(sink.calls.load(Ordering::SeqCst), 2);
-    assert!(host.session_environment("deferred-failure").await.is_none());
+    assert!(
+        host.realizer
+            .session_environment("deferred-failure")
+            .await
+            .is_none()
+    );
 }

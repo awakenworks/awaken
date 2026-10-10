@@ -950,7 +950,10 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     });
     tokio::task::yield_now().await;
     assert!(
-        host.session_environment("memory-replay").await.is_none(),
+        host.realizer
+            .session_environment("memory-replay")
+            .await
+            .is_none(),
         "preparation cannot expose Environment before the lifecycle owner commits the manifest"
     );
     drop(lifecycle_guard);
@@ -967,6 +970,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     .await
     .unwrap();
     let environment = host
+        .realizer
         .session_environment("memory-replay")
         .await
         .expect("live environment");
@@ -1036,7 +1040,11 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     right.expect("concurrent exact durable replay");
     assert!(Arc::ptr_eq(
         &environment,
-        &host.session_environment("memory-replay").await.unwrap()
+        &host
+            .realizer
+            .session_environment("memory-replay")
+            .await
+            .unwrap()
     ));
 
     let installed = host.realizer.thread_resource_manifest("memory-replay");

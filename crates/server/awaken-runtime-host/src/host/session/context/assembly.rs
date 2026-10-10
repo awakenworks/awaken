@@ -419,9 +419,9 @@ pub(super) async fn assemble(
     // executor; one canonical RuntimeRunContext crosses the ingress boundary.
     let workspace_id = host.thread_workspace(thread).to_owned();
     let environment_generation = match env.as_ref() {
-        Some(environment) => {
-            host.resident_environment_activity_generation_id(thread, environment)?
-        }
+        Some(environment) => host
+            .realizer
+            .resident_environment_activity_generation_id(thread, environment)?,
         None => "brain".to_string(),
     };
     let run_context = awaken_runtime_contract::RuntimeRunContext::new()

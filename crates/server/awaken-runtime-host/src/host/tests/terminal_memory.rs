@@ -634,7 +634,10 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
         Some(source_binding.as_str()),
         "HS1/E2 binding retained"
     );
-    assert!(host.session_environment(thread).await.is_none(), "HS1/E2");
+    assert!(
+        host.realizer.session_environment(thread).await.is_none(),
+        "HS1/E2"
+    );
 }
 
 struct RecordingTerminalArtifactRecovery {
@@ -2024,7 +2027,10 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 "H1/C3 exact same-process owner is retained behind Preparation"
             );
         } else {
-            assert!(host.session_environment(&thread).await.is_none(), "H2/C3");
+            assert!(
+                host.realizer.session_environment(&thread).await.is_none(),
+                "H2/C3"
+            );
         }
         events.lock().unwrap().clear();
 
@@ -2190,6 +2196,9 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             Some(&"dispose-physical"),
             "HM1/E5 physical disposal is the final effect",
         );
-        assert!(host.session_environment(&thread).await.is_none(), "HM1/E5");
+        assert!(
+            host.realizer.session_environment(&thread).await.is_none(),
+            "HM1/E5"
+        );
     }
 }

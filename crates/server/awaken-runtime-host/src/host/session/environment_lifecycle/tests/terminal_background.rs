@@ -38,6 +38,7 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
         });
     });
     let activity_generation = host
+        .realizer
         .resident_environment_activity_generation_id(thread, &environment)
         .expect("C1 exact Resident activity projection");
     assert_eq!(activity_generation, durable_generation.id(), "E1");
@@ -609,7 +610,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         "U1 no fabricated receipt"
     );
     assert!(
-        host.session_environment(thread).await.is_none(),
+        host.realizer.session_environment(thread).await.is_none(),
         "U1 hidden"
     );
     // U6 crosses foreign terminal operation and stale lease with both phases.
@@ -788,5 +789,8 @@ async fn cold_checkpoint_disposal_cannot_seed_an_owner_without_preparation() {
         error.to_string().contains("no retained Preparation owner"),
         "R20/E1: {error}"
     );
-    assert!(host.session_environment_owner_is_vacant(thread), "R20/E2");
+    assert!(
+        host.realizer.session_environment_owner_is_vacant(thread),
+        "R20/E2"
+    );
 }

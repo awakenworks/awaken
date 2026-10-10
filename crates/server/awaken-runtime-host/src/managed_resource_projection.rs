@@ -277,7 +277,7 @@ impl crate::ManagedHost {
                 "the resident active Resource generation is outside the aggregate transition",
             ));
         }
-        let live_environment = self.host.session_environment(thread).await;
+        let live_environment = self.host.realizer.session_environment(thread).await;
         let awaiting_adoption = live_environment.is_none()
             && (prospective_environment_binding
                 || self
@@ -524,7 +524,7 @@ impl crate::ManagedHost {
         self.host.session_slots.update_realization(thread, |r| {
             r.resource_transition = Some(transition.clone());
         });
-        let live_environment = self.host.session_environment(thread).await;
+        let live_environment = self.host.realizer.session_environment(thread).await;
         let awaiting_adoption = live_environment.is_none()
             && self
                 .host

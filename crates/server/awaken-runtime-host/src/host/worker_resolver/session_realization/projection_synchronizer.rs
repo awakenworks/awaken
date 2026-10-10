@@ -120,6 +120,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         lease: &awaken_session_realization_contract::ObservedSessionRealizationLease,
         prepare_session: bool,
     ) -> Result<(), awaken_session_types::RunError> {
+        let exec = &self.host.realizer;
         let retained_publication = self
             .host
             .session_slots
@@ -204,24 +205,23 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
             }
             if self.rebuild_unavailable_environment && !a2a_only {
                 let provider = if let Some(candidate) = model_candidate.as_ref() {
-                    self.host.realizer.session_environment_provider_for_thread(
+                    exec.session_environment_provider_for_thread(
                         session_id.as_str(),
                         candidate.provisioning(),
                     )
                 } else {
-                    self.host.realizer.session_environment_provider_for_thread(
+                    exec.session_environment_provider_for_thread(
                         session_id.as_str(),
                         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
                     )
                 }
                 .map_err(to_run_error)?;
-                self.host
-                    .rebuild_claimed_legacy_environment_after_revocation(
-                        session_id.as_str(),
-                        provider,
-                    )
-                    .await
-                    .map_err(to_run_error)?;
+                exec.rebuild_claimed_legacy_environment_after_revocation(
+                    session_id.as_str(),
+                    provider,
+                )
+                .await
+                .map_err(to_run_error)?;
             }
         }
         // A claim authorizes live Resource revalidation. A preparation Stage
@@ -318,8 +318,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
             // provider has proved the exact durable binding unavailable; the new
             // Environment receipt must still pass the ordinary durable sink.
             debug_assert!(
-                self.host
-                    .durable_session_environment_binding(session_id.as_str())
+                exec.durable_environment_binding(session_id.as_str())
                     .is_none(),
                 "terminated recovery owner clears its durable binding"
             );
@@ -869,7 +868,7 @@ mod tests {
             host.retain_committed_session_environment_candidate(thread, &candidate, identity)
                 .unwrap();
             assert!(
-                host.session_environment(thread).await.is_none(),
+                host.realizer.session_environment(thread).await.is_none(),
                 "SC1 still hidden"
             );
             None
@@ -945,7 +944,7 @@ mod tests {
             .unwrap();
             assert!(Arc::ptr_eq(&original, &owned_environment()));
             assert_eq!(
-                host.session_environment(thread).await.is_none(),
+                host.realizer.session_environment(thread).await.is_none(),
                 committed_candidate,
                 "SR4/SC2 renewal preserves publication phase"
             );
@@ -1094,7 +1093,7 @@ mod tests {
                 );
                 assert!(Arc::ptr_eq(&original, &owned_environment()));
                 assert_eq!(
-                    host.session_environment(thread).await.is_none(),
+                    host.realizer.session_environment(thread).await.is_none(),
                     committed_candidate,
                     "SR5/SC2 foreign projection preserves publication phase"
                 );
@@ -1256,7 +1255,7 @@ mod tests {
                     .prepared_session_environment(thread)
                     .expect("MC cancelled successor retains Candidate");
                 assert!(
-                    host.session_environment(thread).await.is_none(),
+                    host.realizer.session_environment(thread).await.is_none(),
                     "MC hidden owner"
                 );
                 assert_eq!(candidate.environment.lifecycle().handle(), original_handle);
@@ -1292,6 +1291,7 @@ mod tests {
         }
 
         let rebuilt = host
+            .realizer
             .session_environment(thread)
             .await
             .expect("DH1/E1-E2 fresh Resident Environment B");
@@ -1611,6 +1611,7 @@ mod tests {
         .expect("CR1/E1-E3 cleanup precedes merge and projection installation");
 
         let rebuilt = host
+            .realizer
             .session_environment(thread)
             .await
             .expect("CR1/E3 fresh Resident Environment B");

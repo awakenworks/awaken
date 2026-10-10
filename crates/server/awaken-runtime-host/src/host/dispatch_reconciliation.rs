@@ -819,9 +819,17 @@ mod tests {
         let rows = store.list_dispatches().await.expect("remaining dispatches");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].run_id, RunId("run-control".to_string()), "R1");
-        assert!(host.session_environment("thread-control").await.is_none());
         assert!(
-            host.session_environment("thread-terminal").await.is_none(),
+            host.realizer
+                .session_environment("thread-control")
+                .await
+                .is_none()
+        );
+        assert!(
+            host.realizer
+                .session_environment("thread-terminal")
+                .await
+                .is_none(),
             "R3"
         );
         let completions = store
@@ -1041,7 +1049,10 @@ mod tests {
             "H1"
         );
         assert!(
-            host.session_environment("thread-exhausted").await.is_none(),
+            host.realizer
+                .session_environment("thread-exhausted")
+                .await
+                .is_none(),
             "H2"
         );
         assert!(store.list_dispatches().await.expect("H1 rows").is_empty());
@@ -1139,6 +1150,9 @@ mod tests {
         assert_eq!(reconciled.len(), 1, "P1/E2");
         assert_eq!(reconciled[0].0, run, "P1/E2");
         assert!(store.list_dispatches().await.unwrap().is_empty(), "P1/E2");
-        assert!(host.session_environment(&child.0).await.is_none(), "P1/E3");
+        assert!(
+            host.realizer.session_environment(&child.0).await.is_none(),
+            "P1/E3"
+        );
     }
 }

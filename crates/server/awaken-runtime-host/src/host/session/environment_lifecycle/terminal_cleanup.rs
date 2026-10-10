@@ -378,7 +378,7 @@ impl SharedHost {
                             .map(|transition| transition.previous().resources.clone())
                     })
                     .flatten();
-                let spec = self.session_environment_adoption_spec(
+                let spec = self.realizer.session_environment_adoption_spec(
                     session_id.as_str(),
                     provider,
                     previous_resources.as_ref(),

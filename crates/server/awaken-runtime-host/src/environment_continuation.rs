@@ -157,6 +157,7 @@ impl ManagedHost {
         let _lifecycle = self.host.session_slots.lock_lifecycle(thread).await;
         let environment = self
             .host
+            .realizer
             .resident_checkpoint_source_environment(
                 thread,
                 operation,
@@ -282,6 +283,7 @@ impl ManagedHost {
         let _lifecycle = self.host.session_slots.lock_lifecycle(thread).await;
         let environment = self
             .host
+            .realizer
             .resident_checkpoint_source_environment(
                 thread,
                 &request.operation,
@@ -331,8 +333,9 @@ impl ManagedHost {
         generation: &awaken_session_state_contract::SandboxGeneration,
         source_binding: &str,
     ) -> Result<awaken_session_state_contract::SourceReleasePreparedReceipt, RunError> {
+        let exec = &self.host.realizer;
         self.continuation_preparation_effect_fence(thread, preparation)?;
-        let Some(resources) = self.host.realizer.thread_resource_manifest(thread) else {
+        let Some(resources) = exec.thread_resource_manifest(thread) else {
             return Err(RunError::unavailable_classified(
                 "session_environment_continuation_resources_missing",
                 "Checkpoint source preparation has no frozen active Resource manifest",
@@ -473,15 +476,14 @@ impl ManagedHost {
                 error.to_string(),
             )
         })?;
-        self.host
-            .retain_checkpoint_source_environment_for_disposal(
-                thread,
-                preparation.operation(),
-                generation,
-                source_binding,
-                environment,
-            )
-            .map_err(to_run_error)?;
+        exec.retain_checkpoint_source_environment_for_disposal(
+            thread,
+            preparation.operation(),
+            generation,
+            source_binding,
+            environment,
+        )
+        .map_err(to_run_error)?;
         Ok(receipt)
     }
 
@@ -530,6 +532,7 @@ impl ManagedHost {
             .await
             .map_err(to_run_error)?;
         self.host
+            .realizer
             .begin_session_environment_restore(&thread, &request)
             .map_err(to_run_error)?;
         let store = self

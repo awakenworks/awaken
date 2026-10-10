@@ -697,6 +697,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
     .await
     .expect("materialize Skill");
     let environment = host
+        .realizer
         .session_environment("skill-revoke")
         .await
         .expect("resident Skill environment");

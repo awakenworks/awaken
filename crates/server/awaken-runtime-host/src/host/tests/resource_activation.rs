@@ -231,7 +231,10 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         .unwrap();
 
     assert!(
-        host.session_environment("semantic-memory").await.is_none(),
+        host.realizer
+            .session_environment("semantic-memory")
+            .await
+            .is_none(),
         "M1/E1"
     );
     assert!(
@@ -267,7 +270,10 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         "M1/E1 fail closed"
     );
     assert!(
-        host.session_environment("semantic-memory").await.is_none(),
+        host.realizer
+            .session_environment("semantic-memory")
+            .await
+            .is_none(),
         "M1/E1 rejected file call cannot awaken Sandbox"
     );
     assert!(
@@ -301,7 +307,10 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         "M1/E3 model descriptor reaches the bound executor through host.run"
     );
     assert!(
-        host.session_environment("semantic-memory").await.is_none(),
+        host.realizer
+            .session_environment("semantic-memory")
+            .await
+            .is_none(),
         "M1/E1 semantic Runtime execution remains Sandbox-free"
     );
 
@@ -329,7 +338,10 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         runtime_fetch.new_messages
     );
     assert!(
-        host.session_environment("semantic-memory").await.is_none(),
+        host.realizer
+            .session_environment("semantic-memory")
+            .await
+            .is_none(),
         "M7/E5 rejected WebFetch remains Sandbox-free"
     );
 
@@ -447,7 +459,10 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         "M6 preserves the Session-owned semantic Memory tools"
     );
     assert!(
-        host.session_environment("semantic-memory").await.is_none(),
+        host.realizer
+            .session_environment("semantic-memory")
+            .await
+            .is_none(),
         "M6 does not materialize a Sandbox while rebuilding"
     );
 }
@@ -967,7 +982,10 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             error.message
         );
         assert!(
-            host.session_environment(session_id).await.is_none(),
+            host.realizer
+                .session_environment(session_id)
+                .await
+                .is_none(),
             "P0 rejection happens before a publishable environment is exposed"
         );
         let published = std::process::Command::new("git")
@@ -983,6 +1001,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     }
     realization.expect("P1 realize Session Environment");
     let environment = host
+        .realizer
         .session_environment(session_id)
         .await
         .expect("P1 retained Environment");
@@ -1174,7 +1193,10 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             slot.run.runtime = None;
         });
         assert!(
-            host.session_environment(session_id).await.is_none(),
+            host.realizer
+                .session_environment(session_id)
+                .await
+                .is_none(),
             "P5 ordinary execution remains closed"
         );
         // P6: the generic live/checkpoint source path remains denied, even with
@@ -1250,7 +1272,10 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             "P7 exact physical target"
         );
         assert!(
-            host.session_environment(session_id).await.is_none(),
+            host.realizer
+                .session_environment(session_id)
+                .await
+                .is_none(),
             "P7 ordinary execution stays closed"
         );
     }
@@ -1320,7 +1345,10 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     git(&divergent, &["commit", "-am", "remote changed"]);
     git(&divergent, &["push", "origin", "awf/work"]);
     assert_eq!(
-        host.session_environment(session_id).await.is_some(),
+        host.realizer
+            .session_environment(session_id)
+            .await
+            .is_some(),
         !retained_terminal,
         "P1-P2/P5 publication preserves ordinary residency or retirement",
     );
@@ -1433,6 +1461,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     );
     assert!(
         replacement_host
+            .realizer
             .session_environment(session_id)
             .await
             .is_none(),
@@ -1493,6 +1522,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     );
     assert!(
         replacement_host
+            .realizer
             .session_environment(session_id)
             .await
             .is_none(),

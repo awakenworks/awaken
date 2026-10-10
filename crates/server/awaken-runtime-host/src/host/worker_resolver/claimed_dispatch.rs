@@ -354,7 +354,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         // into the queue's existing delivery cache under this exact claim.
         if canonical_session_realization
             && run_thread_id == thread_id
-            && let Some(binding) = host.durable_session_environment_binding(&thread_id.0)
+            && let Some(binding) = host.realizer.durable_environment_binding(&thread_id.0)
         {
             let outcome = host
                 .dispatch_store()

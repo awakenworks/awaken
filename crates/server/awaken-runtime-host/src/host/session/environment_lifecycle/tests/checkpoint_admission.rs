@@ -428,7 +428,8 @@ async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen
             None,
         );
         assert_eq!(
-            host.validate_suspend_operation(rule, &operation, &generation)
+            host.realizer
+                .validate_suspend_operation(rule, &operation, &generation)
                 .is_ok(),
             suspension,
             "{rule}/suspend"

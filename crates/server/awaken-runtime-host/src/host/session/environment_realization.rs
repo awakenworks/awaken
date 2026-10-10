@@ -554,6 +554,7 @@ impl SharedHost {
             )
             .await?;
             return self
+                .realizer
                 .session_environment(thread)
                 .await
                 .map(Some)
@@ -733,11 +734,14 @@ impl SharedHost {
                 "root-committed Session Environment was not ready during receipt replay",
             ));
         }
-        self.session_environment(thread).await.ok_or_else(|| {
-            HostError::internal(
-                "root-committed Session Environment was not published after adoption",
-            )
-        })
+        self.realizer
+            .session_environment(thread)
+            .await
+            .ok_or_else(|| {
+                HostError::internal(
+                    "root-committed Session Environment was not published after adoption",
+                )
+            })
     }
 
     /// Gate every Environment consumer on completion of the exact transition
@@ -883,7 +887,7 @@ impl SharedHost {
                 .await;
         }
         let provider = self.projected_session_environment_provider(thread, None)?;
-        if let Some(binding) = self.durable_session_environment_binding(thread) {
+        if let Some(binding) = self.realizer.durable_environment_binding(thread) {
             let disposition = self
                 .adopt_bound_session_environment_under_lifecycle(
                     thread,
@@ -899,9 +903,13 @@ impl SharedHost {
                     "durable Session Environment did not become Resident",
                 ));
             }
-            return self.session_environment(thread).await.ok_or_else(|| {
-                HostError::internal("durable Session Environment adoption published no owner")
-            });
+            return self
+                .realizer
+                .session_environment(thread)
+                .await
+                .ok_or_else(|| {
+                    HostError::internal("durable Session Environment adoption published no owner")
+                });
         }
         self.create_reserved_session_environment_under_lifecycle(thread, provider)
             .await

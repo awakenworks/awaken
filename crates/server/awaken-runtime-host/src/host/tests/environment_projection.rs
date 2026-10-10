@@ -86,6 +86,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         .await
         .expect("first Run");
     let environment_before = host
+        .realizer
         .session_environment("t-attach")
         .await
         .expect("session environment");
@@ -200,6 +201,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         .await
         .expect("runtime rebuild over retained environment");
     let environment_after = host
+        .realizer
         .session_environment("t-attach")
         .await
         .expect("retained environment");
@@ -314,6 +316,7 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     .await
     .unwrap();
     let environment = host
+        .realizer
         .session_environment("invalid-live-repository")
         .await
         .expect("resident environment");
@@ -511,13 +514,17 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
             error.message
         );
         assert!(
-            host.session_environment("t-repo-detach").await.is_none(),
+            host.realizer
+                .session_environment("t-repo-detach")
+                .await
+                .is_none(),
             "RD0 rejection happens before a resident environment or checkout is exposed"
         );
         return;
     }
     realization.expect("RD1 path-fidelitous Namespace realizes the Repository");
     let environment = host
+        .realizer
         .session_environment("t-repo-detach")
         .await
         .expect("resident environment");
@@ -592,6 +599,7 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
     .await
     .expect("first Run");
     let environment = host
+        .realizer
         .session_environment("t-local-attach")
         .await
         .expect("live Workdir environment");
@@ -744,7 +752,8 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
         "Q1: {reservation_error}"
     );
     assert!(
-        host.session_environment("t-query-after-provisioning-denial")
+        host.realizer
+            .session_environment("t-query-after-provisioning-denial")
             .await
             .is_none(),
         "Q1 reservation preflight has no physical effect"
@@ -767,7 +776,8 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
     };
     assert!(error.message.contains("resource limits"), "Q2: {error}");
     assert!(
-        host.session_environment("t-query-after-provisioning-denial")
+        host.realizer
+            .session_environment("t-query-after-provisioning-denial")
             .await
             .is_none(),
         "Q2 failed provisioning must not publish an environment"
@@ -786,7 +796,8 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
     .expect("read empty committed lifecycle page");
     assert!(page.events.is_empty(), "Q3 inference never committed a Run");
     assert!(
-        host.session_environment("t-query-after-provisioning-denial")
+        host.realizer
+            .session_environment("t-query-after-provisioning-denial")
             .await
             .is_none(),
         "Q3 committed query remains free of environment side effects"
@@ -1016,7 +1027,10 @@ async fn install_test_session_init_is_lazy_and_first_run_materializes_the_enviro
         .unwrap();
 
     assert!(
-        host.session_environment("lazy-environment").await.is_none(),
+        host.realizer
+            .session_environment("lazy-environment")
+            .await
+            .is_none(),
         "preparation must not create a Hand/Sandbox"
     );
     run_prepared_session_messages(
@@ -1031,7 +1045,12 @@ async fn install_test_session_init_is_lazy_and_first_run_materializes_the_enviro
     )
     .await
     .expect("first Run waits for environment readiness");
-    assert!(host.session_environment("lazy-environment").await.is_some());
+    assert!(
+        host.realizer
+            .session_environment("lazy-environment")
+            .await
+            .is_some()
+    );
 }
 
 /// Cause/effect graph: C1 the Host is Coordinator-only; C2 the frozen
@@ -1114,7 +1133,8 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
         .expect("D1 builds a sandbox-free dispatch context");
     assert!(context.skill_registry.is_some(), "D1/E1");
     assert!(
-        host.session_environment("coordinator-dispatch-only")
+        host.realizer
+            .session_environment("coordinator-dispatch-only")
             .await
             .is_none(),
         "D1/E3"
@@ -1192,7 +1212,8 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
 
     assert!(context.env.is_none(), "B1/E2");
     assert!(
-        host.session_environment("coordinator-backend-owned")
+        host.realizer
+            .session_environment("coordinator-backend-owned")
             .await
             .is_none(),
         "B1/E2"
@@ -1349,7 +1370,8 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     .await
     .expect("P4 Worker Dispatch needs no Coordinator provider");
     assert!(
-        host.session_environment("worker-dispatch-valid")
+        host.realizer
+            .session_environment("worker-dispatch-valid")
             .await
             .is_none(),
         "P4/E5"
@@ -1450,6 +1472,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
     );
     assert!(
         local
+            .realizer
             .session_environment("local-backend-owned")
             .await
             .is_none(),
@@ -1598,7 +1621,12 @@ async fn on_tool_use_text_only_run_keeps_the_environment_absent() {
     )
     .await
     .unwrap();
-    assert!(host.session_environment("deferred-text").await.is_none());
+    assert!(
+        host.realizer
+            .session_environment("deferred-text")
+            .await
+            .is_none()
+    );
 }
 
 /// Delegation/provisioning cause-effect graph: C1=`on_tool_use`; C2=the exact
@@ -1672,7 +1700,8 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
         "L9/E4: {missing}"
     );
     assert!(
-        host.session_environment("deferred-delegate")
+        host.realizer
+            .session_environment("deferred-delegate")
             .await
             .is_none(),
         "L9/E4 no environment side effect"
@@ -1700,7 +1729,8 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
         .expect("L9 delegate context");
     assert!(context.env.is_some(), "L9/E2 runtime environment");
     assert!(
-        host.session_environment("deferred-delegate")
+        host.realizer
+            .session_environment("deferred-delegate")
             .await
             .is_some(),
         "L9/E2 single Session owner"

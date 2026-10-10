@@ -88,10 +88,7 @@ async fn session_run_reservation_repair_skips_execution_realization() {
     .worker_for_claimed(&claimed)
     .await
     .expect("R1/E2 environment-free worker");
-    assert!(
-        host.session_environment(session_id).await.is_none(),
-        "R1/E3"
-    );
+    assert!(!has_environment(&host, session_id).await, "R1/E3");
 }
 
 #[tokio::test]
@@ -667,10 +664,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
         .worker_for_claimed(&claimed)
         .await
         .expect("D1 resolves Brain worker without Sandbox");
-    assert!(
-        host.session_environment("durable-lazy").await.is_none(),
-        "D1"
-    );
+    assert!(!has_environment(&host, "durable-lazy").await, "D1");
 
     clock.set(now + 2_000);
     let replacement = store
@@ -695,17 +689,14 @@ async fn durable_deferred_sandbox_publication_decision_table() {
         error.to_string().contains("replacement claim"),
         "D3: {error}"
     );
-    assert!(
-        host.session_environment("durable-lazy").await.is_none(),
-        "D2"
-    );
+    assert!(!has_environment(&host, "durable-lazy").await, "D2");
 
     resolver
         .worker_for_claimed(&replacement)
         .await
         .expect("D3 replacement repairs the root-first Candidate");
     assert!(
-        host.session_environment("durable-lazy").await.is_some(),
+        has_environment(&host, "durable-lazy").await,
         "D3 exact Candidate published"
     );
     assert_eq!(sink.calls.load(Ordering::SeqCst), 2, "D2+D3");
@@ -766,6 +757,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
     );
     assert!(
         loss_host
+            .realizer
             .session_environment("durable-loss")
             .await
             .is_none(),
@@ -790,6 +782,7 @@ async fn durable_deferred_sandbox_publication_decision_table() {
     );
     assert!(
         loss_host
+            .realizer
             .session_environment("durable-loss")
             .await
             .is_some(),
@@ -1307,10 +1300,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         vec![None, None, None, Some(installed)],
         "CR1-CR3"
     );
-    assert!(
-        host.session_environment("ordinary-remote").await.is_some(),
-        "O1/E3"
-    );
+    assert!(has_environment(&host, "ordinary-remote").await, "O1/E3");
     assert!(
         host.session_slots
             .read("ordinary-remote", |slot| {
@@ -1452,10 +1442,7 @@ async fn claimed_resource_conflict_is_terminal_before_realization() {
             phases.lock().unwrap().is_empty(),
             "{rule}/E2: no realization phase"
         );
-        assert!(
-            host.session_environment("conflict").await.is_none(),
-            "{rule}/E2"
-        );
+        assert!(!has_environment(&host, "conflict").await, "{rule}/E2");
     }
 }
 
@@ -1505,9 +1492,7 @@ async fn resource_manifest_must_match_the_durable_execution_scope() {
     };
     assert!(error.to_string().contains("outside its execution scope"));
     assert!(
-        host.session_environment("thread-scope-mismatch")
-            .await
-            .is_none(),
+        !has_environment(&host, "thread-scope-mismatch").await,
         "scope rejection happens before sandbox creation"
     );
 }
@@ -1561,11 +1546,7 @@ async fn malformed_resource_manifest_is_rejected_before_sandbox_creation() {
             .to_string()
             .contains("invalid Session resource manifest")
     );
-    assert!(
-        host.session_environment("thread-malformed-resources")
-            .await
-            .is_none()
-    );
+    assert!(!has_environment(&host, "thread-malformed-resources").await);
 }
 
 #[tokio::test]
@@ -1707,6 +1688,7 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
     );
     assert!(
         !host
+            .realizer
             .session_environment("thread-cold-resource")
             .await
             .expect("F3 resident environment")
@@ -1727,7 +1709,8 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         .await
         .expect("F4 exact live replacement");
     assert!(
-        host.session_environment("thread-cold-resource")
+        host.realizer
+            .session_environment("thread-cold-resource")
             .await
             .expect("resident environment")
             .harvest()
@@ -2669,7 +2652,7 @@ async fn a_dead_resident_environment_fails_continuity_and_is_fenced_before_rebui
         adopted,
         crate::host::session::SessionEnvironmentAdoptionDisposition::RebuildRequired
     );
-    assert!(host.session_environment(thread).await.is_none());
+    assert!(host.realizer.session_environment(thread).await.is_none());
     assert!(
         !host
             .session_slots
@@ -2746,6 +2729,7 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
     .await
     .expect("C1 publish first exact owner");
     let observed = host
+        .realizer
         .session_environment(thread)
         .await
         .expect("observed owner");
@@ -2781,6 +2765,7 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
         "object identity fences a stale observer even when the handle is reused"
     );
     let current = host
+        .realizer
         .session_environment(thread)
         .await
         .expect("replacement kept");
@@ -2851,7 +2836,7 @@ async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
         .worker_for_claimed(&claimed)
         .await
         .expect("terminal control bypasses sandbox decoding/adoption");
-    assert!(host.session_environment(&thread.0).await.is_none());
+    assert!(host.realizer.session_environment(&thread.0).await.is_none());
     assert!(
         !host
             .session_slots
@@ -2930,7 +2915,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
         .await;
         if invalid_receipt {
             assert!(result.is_err());
-            assert!(host.session_environment(&thread).await.is_none());
+            assert!(host.realizer.session_environment(&thread).await.is_none());
             continue;
         }
         result.expect("Outcome Work receipt realizes exact baseline");
@@ -2941,7 +2926,7 @@ async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session
                     && slot.run.runtime.is_some())
                 .unwrap_or(false)
         );
-        assert!(host.session_environment(&thread).await.is_some());
+        assert!(host.realizer.session_environment(&thread).await.is_some());
         assert_eq!(
             claimed.request.admission_shape(),
             ingress::DispatchAdmissionShape::OrdinaryRoot
@@ -2997,5 +2982,10 @@ async fn outcome_projection_read_does_not_adopt_worker_owned_environment() {
             .expect("read remote-owned outcome")
             .is_none()
     );
-    assert!(host.session_environment(thread).await.is_none());
+    assert!(host.realizer.session_environment(thread).await.is_none());
+}
+
+/// Whether the realizer holds a live Environment for `thread`.
+async fn has_environment(host: &SharedHost, thread: &str) -> bool {
+    host.realizer.session_environment(thread).await.is_some()
 }

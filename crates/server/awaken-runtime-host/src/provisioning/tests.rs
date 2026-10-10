@@ -1743,7 +1743,8 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .await
         .unwrap();
     assert!(
-        host.session_environment("session-artifacts")
+        host.realizer
+            .session_environment("session-artifacts")
             .await
             .is_none()
     );

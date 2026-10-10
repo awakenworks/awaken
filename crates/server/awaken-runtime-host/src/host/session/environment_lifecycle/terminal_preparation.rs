@@ -118,6 +118,7 @@ impl SharedHost {
         mode: BoundEnvironmentPreparationMode,
     ) -> Result<Option<(Arc<crate::session_environment::SessionEnvironment>, bool)>, HostError>
     {
+        let exec = &self.realizer;
         let TerminalEnvironmentInstallation {
             thread,
             binding,
@@ -366,7 +367,7 @@ impl SharedHost {
                 } else if adopted {
                     if let Some(binding) = binding {
                         let (identity, pending_binding) =
-                            self.pending_environment_adoption(thread).ok_or_else(|| {
+                            exec.pending_environment_adoption(thread).ok_or_else(|| {
                                 HostError::internal(
                                     "terminal bound Environment has no pending durable owner",
                                 )
@@ -391,34 +392,26 @@ impl SharedHost {
                         // Unbound retirement owner; it gains no durable binding
                         // and can only be disposed by this terminal fence.
                         self.begin_session_environment_preparation(thread, environment.clone())?;
-                        self.retire_current_environment(
+                        exec.retire_exact_environment(
                             thread,
                             cause,
-                            RetirementSelection::Exact(&environment),
-                        )?
-                        .ok_or_else(|| {
-                            HostError::unavailable_classified(
-                                "session_terminal_environment_owner_changed",
-                                "terminal unbound Environment lost its exact owner fence",
-                            )
-                        })?;
+                            &environment,
+                            "session_terminal_environment_owner_changed",
+                            "terminal unbound Environment lost its exact owner fence",
+                        )?;
                     }
                 } else {
                     let retained_terminal_preparation = mode
                         == BoundEnvironmentPreparationMode::TerminalDisposal
                         && self.retained_terminal_preparation_owner(thread, &environment);
                     if !retained_terminal_preparation {
-                        self.retire_current_environment(
+                        exec.retire_exact_environment(
                             thread,
                             cause,
-                            RetirementSelection::Exact(&environment),
-                        )?
-                        .ok_or_else(|| {
-                            HostError::unavailable_classified(
-                                "session_terminal_environment_owner_changed",
-                                "terminal Environment lost its exact owner fence",
-                            )
-                        })?;
+                            &environment,
+                            "session_terminal_environment_owner_changed",
+                            "terminal Environment lost its exact owner fence",
+                        )?;
                     }
                 }
                 self.session_slots.update_realization(thread, |r| {
@@ -442,6 +435,7 @@ impl SharedHost {
         resolved_resources: Option<&awaken_session_resource_contract::ResolvedSessionResources>,
         mode: BoundEnvironmentPreparationMode,
     ) -> Result<PreparedBoundEnvironment, HostError> {
+        let exec = &self.realizer;
         if mode.requires_live_source()
             && self
                 .session_slots
@@ -464,7 +458,7 @@ impl SharedHost {
             ));
         }
         let provider = self.projected_session_environment_provider(thread, None)?;
-        let (handle, spec, resident, candidate) = self.validated_session_environment_adoption(
+        let (handle, spec, resident, candidate) = exec.validated_session_environment_adoption(
             thread,
             binding,
             provider,
@@ -579,17 +573,7 @@ impl SharedHost {
                             == BoundEnvironmentPreparationMode::TerminalDisposal
                             && self.retained_terminal_preparation_owner(thread, &environment);
                         if !retained_terminal_preparation {
-                            self.retire_current_environment(
-                                thread,
-                                cause,
-                                RetirementSelection::Exact(&environment),
-                            )?
-                            .ok_or_else(|| {
-                                HostError::unavailable_classified(
-                                    "session_environment_effect_fence_lost",
-                                    "lost the exact unavailable Environment owner",
-                                )
-                            })?;
+                            exec.retire_exact_environment(thread, cause, &environment, "session_environment_effect_fence_lost", "lost the exact unavailable Environment owner")?;
                         }
                     }
                     // Provider-proved absence closes physical I/O, but the
@@ -867,7 +851,7 @@ impl SharedHost {
                 .sandbox_effect_fence(create_intent.effect_id())
                 .map_err(|error| HostError::internal(error.to_string()))?;
             let provider = self.projected_session_environment_provider(thread, None)?;
-            let spec = self.session_environment_adoption_spec(
+            let spec = self.realizer.session_environment_adoption_spec(
                 thread,
                 provider,
                 previous_resources.as_ref(),

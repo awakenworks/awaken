@@ -275,7 +275,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
             "U4 no physical delete"
         );
         assert!(
-            host.session_environment("t-end").await.is_none(),
+            host.realizer.session_environment("t-end").await.is_none(),
             "U4 no publication"
         );
         return;
@@ -304,7 +304,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         "T1/E2 exact owner is hidden from tools but retained for Disposal"
     );
     assert!(
-        host.session_environment("t-end").await.is_none(),
+        host.realizer.session_environment("t-end").await.is_none(),
         "U no terminal publication"
     );
     if initial == "uncommitted" || initial == "lost-response" {
@@ -348,7 +348,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         "terminal cleanup evicts the cached ctx"
     );
     assert!(
-        host.session_environment("t-end").await.is_none(),
+        host.realizer.session_environment("t-end").await.is_none(),
         "terminal end removes the independent environment owner"
     );
     // ... and the sandbox is ACTUALLY disposed: its workspace dir was reaped, so a
@@ -945,7 +945,10 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
         "T1/E1+E2"
     );
     assert!(
-        host.session_environment(&session.0).await.is_none(),
+        host.realizer
+            .session_environment(&session.0)
+            .await
+            .is_none(),
         "T1/E3"
     );
 }
@@ -1283,5 +1286,8 @@ async fn coordinator_terminal_quiescence_waits_for_remote_parent_and_child_settl
         dispatch.list_dispatches().await.unwrap().is_empty(),
         "Q2/E2"
     );
-    assert!(host.session_environment(&parent.0).await.is_none(), "Q2/E4");
+    assert!(
+        host.realizer.session_environment(&parent.0).await.is_none(),
+        "Q2/E4"
+    );
 }
