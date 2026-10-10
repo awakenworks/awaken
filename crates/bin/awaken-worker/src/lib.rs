@@ -9,6 +9,7 @@
 // @formal entrypoint worker_drain.bounded_cleanup_eventually_exits_without_fabricating_quiescence
 // @formal entrypoint worker_drain.grace_expiry_retains_cancellation_observer
 // @formal evidence worker_drain.registry_transition_follows_local_fence
+// awaken-file-limit-ceiling: 1651
 //! `awaken-worker` — the production authority-store-isolated executor.
 //!
 //! A peer of the control and data planes. It owns no Run, Session, Resource, or

@@ -5,6 +5,7 @@
 // @formal entrypoint credential.managed_vault_delete_fences_children_waits_for_rollout_and_is_absorbing
 // @formal entrypoint credential.managed_vault_replacement_rejects_stale_and_non_successor_revisions
 // @formal entrypoint credential_envelope.issuance_requires_exact_claim
+// awaken-file-limit-ceiling: 1628
 //! The Managed Agents **vault / credential** front door (ADR-0043).
 //!
 //! These are the public `/v1/vaults...` routes the official `@anthropic-ai/sdk`

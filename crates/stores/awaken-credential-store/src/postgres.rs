@@ -11,6 +11,7 @@
 // @formal entrypoint credential.material_is_always_published_or_intent_tracked
 // @formal entrypoint credential.rotation_revision_cas
 // @formal entrypoint credential.vault_workspace_authority_admission_is_exact_and_non_widening
+// awaken-file-limit-ceiling: 1624
 //! Postgres adapters (feature `postgres`, ADR-0043) for the credential domain,
 //! over the crate's own `credential` migration scope ([`credential_bundle`]) —
 //! the network-DB siblings of the sqlite backends: [`PostgresCredentialRepo`]

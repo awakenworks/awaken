@@ -2,6 +2,7 @@
 // @formal entrypoint session_realization.publication_excludes_staged_retired_generation
 // @formal entrypoint session_resources.terminal_assignment_retains_desired_generation
 // @formal evidence session_realization.renewal_preserves_owner_incarnation_epoch_and_expiry_fence
+// awaken-file-limit-ceiling: 1827
 //! Durable realization and terminal-cleanup control state machine.
 
 use super::*;

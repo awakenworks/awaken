@@ -4,6 +4,7 @@
 // @formal reason: descriptor-relative no-follow reads, writes, shredding, exact removal, and atomic
 // @formal reason: no-replace publication; external filesystem durability remains the declared Resource
 // @formal reason: boundary and this is not a direct formal-proof claim.
+// awaken-file-limit-ceiling: 1667
 //! Policy-free filesystem primitives shared by sandbox providers.
 //!
 //! Repository identity, sandbox realization ownership, retry, and cleanup

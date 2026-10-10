@@ -5,6 +5,7 @@
 // @formal entrypoint session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
 // @formal entrypoint session_work.release_requires_exact_owner_and_epoch
 // @formal entrypoint worker.incarnation_generation_fences_stale_processes
+// awaken-file-limit-ceiling: 1611
 //! Authenticated worker-facing dispatch transport.
 //!
 //! Wire callers submit only business data. Worker ownership, time, and lease

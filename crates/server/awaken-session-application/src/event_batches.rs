@@ -5,6 +5,7 @@
 // @formal entrypoint session_event_batch.processed_requires_commit_observation_activity_and_dispatch_settlement
 // @formal entrypoint session_execution.initial_event_path_reaches_idle_only_after_full_settlement
 // @formal entrypoint tool_result.one_pending_occurrence_has_one_admitted_reply
+// awaken-file-limit-ceiling: 1543
 //! Admission and reconciliation of the Session root's durable Event batches.
 //!
 //! This module coordinates existing owners only. It does not persist an Event
