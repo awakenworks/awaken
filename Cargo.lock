@@ -1987,6 +1987,7 @@ dependencies = [
  "awaken-session-application-contract",
  "awaken-session-budget-contract",
  "awaken-session-configuration-contract",
+ "awaken-session-mcp-contract",
  "awaken-session-realization-contract",
  "awaken-session-repository-contract",
  "awaken-session-resource-contract",
