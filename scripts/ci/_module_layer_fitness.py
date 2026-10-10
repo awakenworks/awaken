@@ -81,6 +81,9 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (REALIZER, "the error vocabulary realization and the run path both return; the host re-exports it", (
         "host_error",
     )),
+    (REALIZER, "the Session MemoryStore binding realization projects; host extraction wraps it (plan 10.4 R)", (
+        "memory_binding",
+    )),
     (HOST, _MIXED_REASON, (
         "host",
         "host::session",

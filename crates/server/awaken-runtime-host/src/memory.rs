@@ -14,7 +14,7 @@ use awaken_credential_contract::{
 };
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -41,10 +41,9 @@ use crate::agent_runner::{AgentRunError, run_configured_agent_with_id};
 use crate::background::{BackgroundRuns, BackgroundWorkClass};
 use crate::store::HostCommit;
 
-mod platform;
 mod selector;
 mod terminal_observer;
-pub(crate) use platform::PlatformMemoryHandle;
+pub(crate) use crate::memory_binding::{MemoryBinding, PlatformMemoryHandle};
 pub(crate) use selector::AgentSelector;
 
 static EXTRACTION_OWNER_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -54,7 +53,8 @@ use captured_writes::{CapturedMemoryWrites, writes_from_committed_agent};
 
 /// Host-level extraction/selection capability. It owns the auxiliary-agent
 /// machinery but deliberately owns no MemoryStore identity or content handle.
-/// A Session must create a [`BoundMemory`] from its resolved resource manifest.
+/// A Session's realization projects a [`MemoryBinding`] from its resolved
+/// resource manifest; [`MemoryRuntime::bound`] pairs it with this runtime.
 pub struct MemoryRuntime {
     llm: Arc<dyn LlmExecutor>,
     /// The Host's runtime-only inference materialization, when its
@@ -71,22 +71,12 @@ pub struct MemoryRuntime {
     clock: Arc<dyn awaken_time::WallClock>,
 }
 
-/// One Session-scoped MemoryStore binding shared by recall and extraction.
+/// One realized Session MemoryStore binding paired with the host's extraction
+/// runtime: recall reads through the binding, extraction runs on the runtime.
 #[derive(Clone)]
-pub struct BoundMemory {
+pub(crate) struct BoundMemory {
     runtime: Arc<MemoryRuntime>,
-    /// Physical Session/commit partition that owns extraction execution. A
-    /// delegated child's logical Thread remains in its transcript snapshot.
-    session_thread_id: String,
-    store: Arc<dyn MemoryStoreHandle>,
-    platform: Arc<PlatformMemoryHandle>,
-    resource_validator: Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
-    workspace_id: String,
-    memory_store_id: String,
-    memory_config_version: u64,
-    recall_enabled: bool,
-    extraction_enabled: bool,
-    execution: Arc<RwLock<Option<Arc<HostCommit>>>>,
+    binding: Arc<MemoryBinding>,
 }
 
 /// Adapter from the Memory bounded context's durable claim to the common
@@ -212,30 +202,10 @@ impl MemoryRuntime {
         }
     }
 
-    pub(crate) fn bind(
-        self: &Arc<Self>,
-        session_thread_id: impl Into<String>,
-        workspace_id: impl Into<String>,
-        platform: Arc<PlatformMemoryHandle>,
-        resource_validator: Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
-        config: &awaken_resource_contract::MemoryStoreConfigVersion,
-        writable: bool,
-    ) -> BoundMemory {
+    pub(crate) fn bound(self: &Arc<Self>, binding: Arc<MemoryBinding>) -> BoundMemory {
         BoundMemory {
             runtime: self.clone(),
-            session_thread_id: session_thread_id.into(),
-            store: platform.clone(),
-            platform,
-            resource_validator,
-            workspace_id: workspace_id.into(),
-            memory_store_id: config.memory_store_id.to_string(),
-            memory_config_version: config.version.0,
-            // The binding grants data-plane availability only. Whether the main
-            // Agent activates recall/extraction and with which bounds is owned by
-            // its `memory` plugin configuration, never by a Store policy copy.
-            recall_enabled: true,
-            extraction_enabled: writable,
-            execution: Arc::new(RwLock::new(None)),
+            binding,
         }
     }
 
@@ -246,12 +216,6 @@ impl MemoryRuntime {
 
     pub(crate) fn background(&self) -> Arc<BackgroundRuns> {
         self.background.clone()
-    }
-
-    fn auxiliary_sandbox_provider(
-        &self,
-    ) -> Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider> {
-        self.provider.clone()
     }
 
     fn materialize_extractor(
@@ -321,87 +285,13 @@ impl MemoryRuntime {
 }
 
 impl BoundMemory {
-    #[cfg(test)]
-    pub(crate) fn memory_store_id(&self) -> &str {
-        &self.memory_store_id
-    }
-
-    pub(crate) fn recall_enabled(&self) -> bool {
-        self.recall_enabled
-    }
-
-    pub(crate) fn extraction_enabled(&self) -> bool {
-        self.extraction_enabled
-    }
-
-    fn bind_execution(&self, commit: Arc<HostCommit>) {
-        *self
-            .execution
-            .write()
-            .expect("Memory execution context lock poisoned") = Some(commit);
+    pub(crate) fn binding(&self) -> &Arc<MemoryBinding> {
+        &self.binding
     }
 
     async fn bind_recovery(&self, commit: Arc<HostCommit>) -> Result<bool, MemoryExtractionError> {
-        self.bind_execution(commit);
+        self.binding.attach_extraction_commit(commit);
         self.reconcile().await
-    }
-
-    fn matches_intent(&self, intent: &MemoryExtractionIntent) -> bool {
-        intent.session_id == self.session_thread_id
-            && intent.workspace_id == self.workspace_id
-            && intent.memory_store_id == self.memory_store_id
-            && intent.memory_config_version == self.memory_config_version
-    }
-
-    async fn validate_live_resource(&self) -> Result<(), String> {
-        let Some(validator) = self.resource_validator.as_ref() else {
-            return Ok(());
-        };
-        validator
-            .verify_memory_binding(
-                &self.workspace_id,
-                &self.memory_store_id,
-                awaken_resource_contract::ConfigVersion(self.memory_config_version),
-            )
-            .await
-            .map_err(|error| error.to_string())
-    }
-
-    pub(crate) async fn list_bound_memories(
-        &self,
-        prefix: &str,
-    ) -> Result<Vec<awaken_resource_contract::MemoryEntry>, String> {
-        self.validate_live_resource().await?;
-        self.platform.list(prefix).await
-    }
-
-    pub(crate) async fn read_bound_memory(
-        &self,
-        path: &str,
-    ) -> Result<Option<awaken_resource_contract::Memory>, String> {
-        self.validate_live_resource().await?;
-        self.platform.read(path).await
-    }
-
-    pub(crate) async fn write_bound_memory(
-        &self,
-        path: &str,
-        content: &str,
-        expected_generation: Option<&awaken_resource_contract::MemoryGeneration>,
-    ) -> Result<awaken_resource_contract::Memory, String> {
-        self.validate_live_resource().await?;
-        self.platform
-            .write_exact(path, content, expected_generation)
-            .await
-    }
-
-    pub(crate) async fn delete_bound_memory(
-        &self,
-        path: &str,
-        expected_generation: &awaken_resource_contract::MemoryGeneration,
-    ) -> Result<bool, String> {
-        self.validate_live_resource().await?;
-        self.platform.delete_exact(path, expected_generation).await
     }
 
     /// Durably enqueue one extraction keyed by the terminal commit, then drive it
@@ -416,11 +306,11 @@ impl BoundMemory {
         self.runtime
             .extraction_controller()
             .enqueue_terminal(MemoryTerminalExtractionRequest {
-                workspace_id: self.workspace_id.clone(),
-                session_id: self.session_thread_id.clone(),
+                workspace_id: self.binding.workspace_id.clone(),
+                session_id: self.binding.session_thread_id.clone(),
                 terminal_run_id: terminal_commit_id.to_string(),
-                memory_store_id: self.memory_store_id.clone(),
-                memory_config_version: self.memory_config_version,
+                memory_store_id: self.binding.memory_store_id.clone(),
+                memory_config_version: self.binding.memory_config_version,
                 committed_transcript: committed,
                 extractor,
             })
@@ -434,12 +324,7 @@ impl BoundMemory {
     /// rehydration, so a process crash cannot lose a delegated child's remaining
     /// extraction/store/receipt work.
     pub async fn reconcile(&self) -> Result<bool, MemoryExtractionError> {
-        if self
-            .execution
-            .read()
-            .expect("Memory execution context lock poisoned")
-            .is_none()
-        {
+        if self.binding.extraction_commit().is_none() {
             return Ok(false);
         }
         let controller = self.runtime.extraction_controller();
@@ -451,7 +336,10 @@ impl BoundMemory {
             .background
             .spawn(
                 BackgroundWorkClass::ExternalDurable {
-                    durable_intent_id: format!("memory-extraction:{}", self.session_thread_id),
+                    durable_intent_id: format!(
+                        "memory-extraction:{}",
+                        self.binding.session_thread_id
+                    ),
                 },
                 async move {
                     bound.drive_recoverable().await;
@@ -489,12 +377,7 @@ impl BoundMemory {
             Err(reason) => return MemoryExtractionOutcome::Retryable { reason },
         };
         let tool = erase(WriteMemoryTool::from_handle(capture.clone()));
-        let commit = match self
-            .execution
-            .read()
-            .expect("Memory execution context lock poisoned")
-            .clone()
-        {
+        let commit = match self.binding.extraction_commit() {
             Some(commit) => commit,
             None => {
                 return MemoryExtractionOutcome::Retryable {
@@ -504,10 +387,10 @@ impl BoundMemory {
             }
         };
         let context = context
-            .with_commit(commit.clone())
-            .with_reader(commit.clone());
+            .with_commit(commit.clone() as Arc<dyn awaken_agent_contract::CommitCoordinator>)
+            .with_reader(commit.clone() as Arc<dyn CommittedThreadView>);
         let auxiliary_thread_id = intent.auxiliary_thread_id();
-        let auxiliary_sandboxes = self.runtime.auxiliary_sandbox_provider();
+        let auxiliary_sandboxes = self.runtime.provider.clone();
         if let Err(error) = run_configured_agent_with_id(
             &catalog,
             crate::agent_runner::AgentRunSandbox::Fresh(auxiliary_sandboxes.as_ref()),
@@ -533,7 +416,7 @@ impl BoundMemory {
                 &commit.committed_messages(&ThreadId(auxiliary_thread_id)),
             );
         }
-        match self.platform.plan_mutations(writes).await {
+        match self.binding.platform().plan_mutations(writes).await {
             Ok(mutations) => MemoryExtractionOutcome::Mutations(mutations),
             Err(reason) => MemoryExtractionOutcome::Retryable { reason },
         }
@@ -542,19 +425,20 @@ impl BoundMemory {
     /// A live-validating Memory handle shared with the recall plugin. Returning
     /// the underlying data-plane handle would let an already-bound Session bypass
     /// a later suspend/archive transition.
-    pub fn store(&self) -> Arc<dyn MemoryStoreHandle> {
-        Arc::new(self.clone())
+    pub(crate) fn store(&self) -> Arc<dyn MemoryStoreHandle> {
+        self.binding.clone()
     }
 }
 
 #[async_trait]
 impl MemoryExtractionDriver for BoundMemory {
     fn accepts(&self, intent: &MemoryExtractionIntent) -> bool {
-        self.matches_intent(intent)
+        self.binding.matches_intent(intent)
     }
 
     async fn validate_binding(&self, _intent: &MemoryExtractionIntent) -> Result<(), String> {
-        self.validate_live_resource()
+        self.binding
+            .validate_live_resource()
             .await
             .map_err(|_| "MemoryStore is missing, suspended, archived, or deleted".to_string())
     }
@@ -568,7 +452,7 @@ impl MemoryExtractionDriver for BoundMemory {
         _intent: &MemoryExtractionIntent,
         mutation: &MemoryExtractionMutation,
     ) -> Result<MemoryMutationReceipt, String> {
-        self.platform.apply_mutation(mutation).await
+        self.binding.platform().apply_mutation(mutation).await
     }
 }
 
@@ -595,19 +479,6 @@ fn classify_extraction_run_error(
     }
 }
 
-#[async_trait]
-impl MemoryStoreHandle for BoundMemory {
-    async fn write(&self, name: &str, content: &str) -> Result<String, String> {
-        self.validate_live_resource().await?;
-        self.store.write(name, content).await
-    }
-
-    async fn entries(&self) -> Result<Vec<awaken_ext_memory::Entry>, String> {
-        self.validate_live_resource().await?;
-        self.store.entries().await
-    }
-}
-
 impl crate::host::SharedHost {
     /// The Memory content data-plane port used by an outer process startup to
     /// construct a worker-side mounter. It carries no principal or policy state.
@@ -628,7 +499,7 @@ impl crate::host::SharedHost {
         self.realizer.env.memory_mounter.clone()
     }
 
-    pub(crate) fn register_thread_memory(&self, thread: &str, memory: Option<Arc<BoundMemory>>) {
+    pub(crate) fn register_thread_memory(&self, thread: &str, memory: Option<Arc<MemoryBinding>>) {
         self.session_slots.update_realization(thread, |r| {
             r.memory_bindings.clear();
             r.memory = memory;
@@ -641,7 +512,7 @@ impl crate::host::SharedHost {
     pub(crate) fn register_thread_memory_bindings(
         &self,
         thread: &str,
-        bindings: std::collections::HashMap<String, Arc<BoundMemory>>,
+        bindings: std::collections::HashMap<String, Arc<MemoryBinding>>,
     ) {
         self.session_slots.update_realization(thread, |r| {
             r.memory_bindings = bindings;
@@ -656,7 +527,7 @@ impl crate::host::SharedHost {
         &self,
         thread: &str,
         binding_id: Option<&str>,
-    ) -> Result<Option<Arc<BoundMemory>>, String> {
+    ) -> Result<Option<BoundMemory>, String> {
         let selected = self.session_slots.update(thread, |slot| {
             let selected =
                 binding_id.and_then(|id| slot.realization.memory_bindings.get(id).cloned());
@@ -664,7 +535,7 @@ impl crate::host::SharedHost {
             selected
         });
         match (binding_id, selected) {
-            (_, Some(selected)) => Ok(Some(selected)),
+            (_, Some(selected)) => Ok(Some(self.resources.memory.bound(selected))),
             (None, None) => Ok(None),
             (Some(binding_id), None) => Err(format!(
                 "automatic memory binding `{binding_id}` is not mounted for this Session"
@@ -672,10 +543,11 @@ impl crate::host::SharedHost {
         }
     }
 
-    pub(crate) fn memory_for_thread(&self, thread: &str) -> Option<Arc<BoundMemory>> {
+    pub(crate) fn memory_for_thread(&self, thread: &str) -> Option<BoundMemory> {
         self.session_slots
             .read_realization(thread, |r| r.memory.clone())
             .flatten()
+            .map(|binding| self.resources.memory.bound(binding))
     }
 
     /// Attach the one physical Session commit authority to every writable
@@ -699,7 +571,7 @@ impl crate::host::SharedHost {
         let bindings = self
             .session_slots
             .read_realization(session_thread, |r| {
-                let mut bindings: Vec<Arc<BoundMemory>> = Vec::new();
+                let mut bindings: Vec<Arc<MemoryBinding>> = Vec::new();
                 for memory in r
                     .memory_bindings
                     .values()
@@ -717,9 +589,12 @@ impl crate::host::SharedHost {
             })
             .unwrap_or_default();
         let mut scheduled = 0;
-        for memory in bindings {
-            if memory.extraction_enabled()
-                && memory
+        for binding in bindings {
+            if binding.extraction_enabled
+                && self
+                    .resources
+                    .memory
+                    .bound(binding)
                     .bind_recovery(commit.clone())
                     .await
                     .map_err(|error| {
@@ -760,7 +635,7 @@ impl crate::host::SharedHost {
     ) {
         let writable = access == awaken_resource_contract::ResourceAccess::ReadWrite;
         let handle = self.platform_memory_handle(config.memory_store_id.to_string(), writable);
-        let bound = self.resources.memory.bind(
+        let binding = MemoryBinding::new(
             thread,
             workspace_id,
             handle,
@@ -768,7 +643,7 @@ impl crate::host::SharedHost {
             config,
             writable,
         );
-        self.register_thread_memory(thread, Some(Arc::new(bound)));
+        self.register_thread_memory(thread, Some(Arc::new(binding)));
     }
 }
 

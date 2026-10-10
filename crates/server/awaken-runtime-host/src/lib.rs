@@ -67,6 +67,7 @@ mod managed_outcome;
 mod managed_resource_projection;
 mod mcp_host;
 mod memory;
+mod memory_binding;
 mod memory_stores;
 mod model_content_materializer;
 mod no_model;

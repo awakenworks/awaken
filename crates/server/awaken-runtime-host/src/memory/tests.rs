@@ -272,19 +272,21 @@ async fn bound_test_memory(
         "test-store".into(),
         true,
     ));
-    let bound = runtime.bind(
+    let bound = runtime.bound(Arc::new(crate::memory_binding::MemoryBinding::new(
         session_id,
         "ws-test",
         platform,
         Some(crate::host::test_resource_validator()),
         &config,
         true,
-    );
-    bound.bind_execution(Arc::new(HostCommit::Local(Arc::new(
-        crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
-            awaken_time::system_clock(),
-        )),
-    ))));
+    )));
+    bound
+        .binding()
+        .attach_extraction_commit(Arc::new(HostCommit::Local(Arc::new(
+            crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
+                awaken_time::system_clock(),
+            )),
+        ))));
     (runtime, bound, repository, extractions)
 }
 
@@ -989,14 +991,14 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
         awaken_time::system_clock(),
         None,
     ));
-    let child_binding = first_runtime.bind(
+    let child_binding = first_runtime.bound(Arc::new(crate::memory_binding::MemoryBinding::new(
         parent,
         "ws-test",
         platform.clone(),
         Some(crate::host::test_resource_validator()),
         &config,
         true,
-    );
+    )));
     child_binding
         .trigger(
             terminal,
@@ -1035,7 +1037,7 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
             awaken_time::system_clock(),
         )),
     )));
-    let parent_binding = Arc::new(recovered_host.resources.memory.bind(
+    let parent_binding = Arc::new(crate::memory_binding::MemoryBinding::new(
         parent,
         "ws-test",
         platform.clone(),
@@ -1043,7 +1045,7 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
         &config,
         true,
     ));
-    let read_only_binding = Arc::new(recovered_host.resources.memory.bind(
+    let read_only_binding = Arc::new(crate::memory_binding::MemoryBinding::new(
         parent,
         "ws-test",
         platform.clone(),
@@ -1056,7 +1058,7 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
         version: awaken_resource_contract::ConfigVersion::INITIAL,
         retention_policy: Default::default(),
     };
-    let direct_binding = Arc::new(recovered_host.resources.memory.bind(
+    let direct_binding = Arc::new(crate::memory_binding::MemoryBinding::new(
         parent,
         "ws-test",
         Arc::new(PlatformMemoryHandle::new(
@@ -1102,15 +1104,15 @@ async fn parent_rehydration_recovers_a_child_intent_after_enqueue_crash() {
         "R2/E3 recovery drained"
     );
     assert!(
-        parent_binding.execution.read().unwrap().is_some(),
+        parent_binding.extraction_commit().is_some(),
         "R2/E6 mapped writable binding receives commit"
     );
     assert!(
-        direct_binding.execution.read().unwrap().is_some(),
+        direct_binding.extraction_commit().is_some(),
         "R3/E6 direct-only selected binding receives commit"
     );
     assert!(
-        read_only_binding.execution.read().unwrap().is_none(),
+        read_only_binding.extraction_commit().is_none(),
         "R2/R3 E6 read-only binding never drives extraction"
     );
 
@@ -1194,7 +1196,7 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
         version: awaken_resource_contract::ConfigVersion::INITIAL,
         retention_policy: Default::default(),
     };
-    let binding = Arc::new(host.resources.memory.bind(
+    let binding = Arc::new(crate::memory_binding::MemoryBinding::new(
         session,
         "worker-memory-workspace",
         Arc::new(PlatformMemoryHandle::new(
@@ -1229,7 +1231,7 @@ async fn database_less_worker_does_not_claim_memory_extraction_recovery() {
         "R4/E4 no Worker recovery is scheduled"
     );
     assert!(
-        binding.execution.read().unwrap().is_none(),
+        binding.extraction_commit().is_none(),
         "R4/E4 the Worker does not bind Coordinator extraction execution"
     );
 }

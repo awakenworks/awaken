@@ -97,7 +97,7 @@ impl PlatformMemoryHandle {
             .map_err(|error| error.to_string())
     }
 
-    pub(super) async fn plan_mutations(
+    pub(crate) async fn plan_mutations(
         &self,
         writes: BTreeMap<String, String>,
     ) -> Result<Vec<MemoryExtractionMutation>, String> {
@@ -125,7 +125,7 @@ impl PlatformMemoryHandle {
         Ok(mutations)
     }
 
-    pub(super) async fn apply_mutation(
+    pub(crate) async fn apply_mutation(
         &self,
         mutation: &MemoryExtractionMutation,
     ) -> Result<MemoryMutationReceipt, String> {
