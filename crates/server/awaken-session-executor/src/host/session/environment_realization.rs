@@ -9,25 +9,6 @@ use super::*;
 #[cfg(test)]
 mod fence_source_tests;
 
-impl crate::session_slot::SessionRuntimeSlot {
-    pub(crate) fn validate_session_publication(
-        &self,
-        publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-    ) -> Result<(), HostError> {
-        if publication.is_some_and(|publication| {
-            self.frozen
-                .published_snapshot
-                .as_ref()
-                .is_some_and(|retained| retained != publication)
-        }) {
-            return Err(HostError::internal(
-                "Session cannot replace its immutable Agent publication",
-            ));
-        }
-        Ok(())
-    }
-}
-
 impl SharedHost {
     /// Resolve one Session publication and its exact model candidate from
     /// explicit frozen coordinates. This is the sole selector used by cold
@@ -222,6 +203,7 @@ impl SharedHost {
     ) -> Result<&crate::session_environment::SessionEnvironmentProvider, HostError> {
         match provisioning {
             awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. } => self
+                .realizer
                 .env
                 .backend_owned_session_provider
                 .as_ref()
@@ -233,7 +215,7 @@ impl SharedHost {
             awaken_runtime_contract::resolved::ModelProvisioning::Provider { .. }
             | awaken_runtime_contract::resolved::ModelProvisioning::Remote { .. }
             | awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor => {
-                Ok(&self.env.session_provider)
+                Ok(&self.realizer.env.session_provider)
             }
         }
     }
@@ -257,12 +239,13 @@ impl SharedHost {
         if sandbox.as_ref().is_some_and(|sandbox| {
             sandbox.host_access == awaken_provisioning_contract::HostAccessPolicy::TrustedHost
         }) {
-            if self.env.trusted_host != crate::TrustedHostPolicy::Admitted {
+            if self.realizer.env.trusted_host != crate::TrustedHostPolicy::Admitted {
                 return Err(HostError::bad_request(
                     "trusted_host Environment is disabled on this Worker",
                 ));
             }
             let provider = self
+                .realizer
                 .env
                 .backend_owned_session_provider
                 .as_ref()
@@ -301,7 +284,7 @@ impl SharedHost {
         publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
     ) -> Result<(), HostError> {
         self.session_slots.update(thread, |slot| {
-            slot.validate_session_publication(publication)?;
+            slot.frozen.validate_publication(publication)?;
             if let Some(publication) = publication {
                 slot.replace_frozen_with(|next| {
                     next.published_snapshot = Some(publication.clone())
@@ -401,7 +384,7 @@ impl SharedHost {
             Some(sink) => sink
                 .authorize(&intent)
                 .await
-                .map_err(crate::managed_adapter_error::from_run_error)?,
+                .map_err(crate::host_error::from_run_error)?,
             None if intent.realization().is_none() => {
                 awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned
             }
@@ -447,10 +430,10 @@ impl SharedHost {
     pub(super) async fn persist_authorized_environment_before_publish(
         &self,
         thread: &str,
-        candidate: &crate::session_slot::UnboundSessionEnvironment,
+        candidate: &crate::environment_owner::UnboundSessionEnvironment,
         effect: &AuthorizedSessionEnvironmentEffect,
     ) -> Result<
-        crate::session_slot::BoundSessionEnvironmentIdentity,
+        crate::environment_owner::BoundSessionEnvironmentIdentity,
         EnvironmentBindingPersistenceError,
     > {
         if matches!(
@@ -517,7 +500,7 @@ impl SharedHost {
         binding: String,
         effect: &AuthorizedSessionEnvironmentEffect,
     ) -> Result<
-        crate::session_slot::BoundSessionEnvironmentIdentity,
+        crate::environment_owner::BoundSessionEnvironmentIdentity,
         EnvironmentBindingPersistenceError,
     > {
         let receipt = self
@@ -547,8 +530,8 @@ impl SharedHost {
                         })?;
                 }
                 return Ok(
-                    crate::session_slot::BoundSessionEnvironmentIdentity::LegacyDirect(
-                        crate::session_slot::LegacyDirectEnvironmentProvenance::Direct(receipt),
+                    crate::environment_owner::BoundSessionEnvironmentIdentity::LegacyDirect(
+                        crate::environment_owner::LegacyDirectEnvironmentProvenance::Direct(receipt),
                     ),
                 );
             }
@@ -584,7 +567,7 @@ impl SharedHost {
         let committed = sink
             .persist(receipt.clone())
             .await
-            .map_err(crate::managed_adapter_error::from_run_error)
+            .map_err(crate::host_error::from_run_error)
             .map_err(|error| EnvironmentBindingPersistenceError {
                 error,
                 committed_identity: None,
@@ -670,10 +653,10 @@ impl SharedHost {
         thread: &str,
     ) -> Result<Option<Arc<crate::session_environment::SessionEnvironment>>, HostError> {
         let revoked_binding = self.session_slots.read_realization(thread, |r| match &r.environment_owner {
-            crate::session_slot::SessionEnvironmentOwner::Retiring(retiring)
-                if retiring.cause == crate::session_slot::SessionEnvironmentRetirementCause::RealizationRevocation =>
+            crate::environment_owner::SessionEnvironmentOwner::Retiring(retiring)
+                if retiring.cause == crate::environment_owner::SessionEnvironmentRetirementCause::RealizationRevocation =>
                 match &retiring.owned {
-                    crate::session_slot::RetiringEnvironmentOwner::Unbound(candidate) => Some(candidate.binding.clone()),
+                    crate::environment_owner::RetiringEnvironmentOwner::Unbound(candidate) => Some(candidate.binding.clone()),
                     _ => None,
                 },
             _ => None,
@@ -731,13 +714,13 @@ impl SharedHost {
             }
         };
         let reconciliation = match &candidate.origin {
-            crate::session_slot::UnboundSessionEnvironmentOrigin::New
-            | crate::session_slot::UnboundSessionEnvironmentOrigin::DurableCreate(_) => {
+            crate::environment_owner::UnboundSessionEnvironmentOrigin::New
+            | crate::environment_owner::UnboundSessionEnvironmentOrigin::DurableCreate(_) => {
                 crate::staged_resources::EnvironmentResourceReconciliation::Fresh
             }
-            crate::session_slot::UnboundSessionEnvironmentOrigin::Adoption
-            | crate::session_slot::UnboundSessionEnvironmentOrigin::AdoptionFrom(_)
-            | crate::session_slot::UnboundSessionEnvironmentOrigin::DurableAdoption(_) => {
+            crate::environment_owner::UnboundSessionEnvironmentOrigin::Adoption
+            | crate::environment_owner::UnboundSessionEnvironmentOrigin::AdoptionFrom(_)
+            | crate::environment_owner::UnboundSessionEnvironmentOrigin::DurableAdoption(_) => {
                 crate::staged_resources::EnvironmentResourceReconciliation::Adopted
             }
         };
@@ -1041,7 +1024,8 @@ impl SharedHost {
                 .current_effect_fence(fence)
                 .map_err(|error| HostError::internal(error.to_string()))?;
         }
-        self.env
+        self.realizer
+            .env
             .cache_volume_prewarmer
             .prepare_mounts(&spec.mounts)
             .await

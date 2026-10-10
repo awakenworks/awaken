@@ -1,12 +1,13 @@
 // @formal surface requirement=session.lifecycle.session_state
 // @formal reason: Installers of the Session environment providers the Session lifecycle realizes through;
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
-//! ENV capability of [`SharedHost`]: the Session-owned environment provider,
-//! the trusted-host BackendOwned provider, deliberately fresh housekeeping
-//! sandboxes, checkpoint custody, CacheVolume preparation, and the Memory
-//! mount adapter every provider shares.
+//! The sandbox providers the Session realizer realizes through: the
+//! Session-owned environment provider, the trusted-host BackendOwned provider,
+//! deliberately fresh housekeeping sandboxes, checkpoint custody, CacheVolume
+//! preparation, and the Memory mount adapter every provider shares.
 
-use crate::host::*;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Whether this process may realize an exact `trusted_host` Environment: the
 /// boundary that preserves the local machine identity the author selected.
@@ -97,10 +98,10 @@ pub(crate) struct EnvironmentProviders {
 
 impl EnvironmentProviders {
     /// The providers a Host starts with: the construction-time fallback
-    /// Session provider (`crate::uninstalled_environment`), until startup
-    /// installs one.
-    pub(in crate::host) fn new(
-        sandbox_root: PathBuf,
+    /// Session provider the composition passes in, until startup installs one.
+    pub(crate) fn new(
+        #[cfg_attr(not(test), allow(unused_variables))] sandbox_root: PathBuf,
+        session_provider: crate::session_environment::SessionEnvironmentProvider,
         auxiliary_sandboxes: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxFactory>,
         trusted_host: TrustedHostPolicy,
         warm_pool: WarmPool,
@@ -108,10 +109,8 @@ impl EnvironmentProviders {
         Self {
             auxiliary_sandboxes,
             #[cfg(test)]
-            sandbox_root: sandbox_root.clone(),
-            session_provider: crate::uninstalled_environment::default_session_provider(
-                sandbox_root,
-            ),
+            sandbox_root,
+            session_provider,
             environment_checkpoint_store: None,
             cache_volume_prewarmer: crate::cache_volume::CacheVolumePrewarmer::default(),
             backend_owned_session_provider: None,

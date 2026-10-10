@@ -8,7 +8,7 @@
 //! each physical wrapper across every fallible or cancellable provider call.
 
 use super::*;
-use crate::session_slot::{
+use crate::environment_owner::{
     BoundSessionEnvironment, BoundSessionEnvironmentIdentity, LegacyDirectEnvironmentProvenance,
     RetiringEnvironmentOwner, RetiringSessionEnvironment, SessionEnvironmentOwner,
     SessionEnvironmentPreparation, SessionEnvironmentRetirementCause, UnboundSessionEnvironment,
@@ -22,39 +22,7 @@ mod terminal_preparation;
 pub(super) use state::committed_identity;
 use state::{
     RetirementSelection, checkpoint_source_identity, pending_revoked_resource_reservation,
-    projected_environment_owner,
 };
-
-impl crate::session_slot::SessionRuntimeSlot {
-    /// Stage only the rebuildable owner coordinates. No physical owner is
-    /// retired or published until the caller commits under this same slot lock.
-    pub(crate) fn projected_environment_owner_for_resource_reservation(
-        &self,
-        thread: &str,
-        workspace_id: &str,
-        state: &awaken_session_state_contract::SessionEnvironmentState,
-        newer: bool,
-        pending_resource_reservation: bool,
-    ) -> Result<SessionEnvironmentOwner, HostError> {
-        let projected = projected_environment_owner(state, workspace_id, thread)?;
-        let mut owner = self.realization.environment_owner.clone();
-        owner.install_projection_with_resource_reservation(
-            projected,
-            newer,
-            pending_resource_reservation,
-        )?;
-        Ok(owner)
-    }
-
-    pub(crate) fn install_projected_environment_owner(
-        &mut self,
-        owner: SessionEnvironmentOwner,
-        state: &awaken_session_state_contract::SessionEnvironmentState,
-    ) {
-        self.realization.environment_owner = owner;
-        self.reopen_mcp_realization_admission_from_projection(state);
-    }
-}
 
 /// One atomic process-local retirement transition. A successful transition
 /// detaches the Runtime together with its Environment owner; an unmatched
@@ -558,7 +526,7 @@ impl SharedHost {
         state: &awaken_session_state_contract::SessionEnvironmentState,
     ) -> Result<(), HostError> {
         self.session_slots.update(thread, |slot| {
-            let owner = slot.projected_environment_owner_for_resource_reservation(
+            let owner = slot.realization.environment_owner.after_projection(
                 thread,
                 workspace_id,
                 state,

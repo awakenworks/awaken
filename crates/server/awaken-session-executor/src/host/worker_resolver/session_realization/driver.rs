@@ -51,7 +51,7 @@ impl HostWorkerResolver {
         directive: awaken_session_realization_contract::SessionRealizationDirective,
         claimed: Option<&awaken_dispatch_contract::Claimed>,
         request_started: awaken_lease_contract::authority::AuthorityProofStarted,
-        realization: &crate::session_slot::SessionRealizationPermit,
+        realization: &awaken_session_realization_contract::SessionRealizationPermit,
     ) -> Result<(), awaken_dispatch_execution::Error> {
         let claim =
             claimed.map(|claimed| awaken_dispatch_contract::RunClaim::from(&claimed.lease));
@@ -80,7 +80,7 @@ impl HostWorkerResolver {
         directive: awaken_session_realization_contract::SessionRealizationDirective,
         synchronizer: WorkerProjectionSynchronizer<'_>,
         request_started: awaken_lease_contract::authority::AuthorityProofStarted,
-        realization: &crate::session_slot::SessionRealizationPermit,
+        realization: &awaken_session_realization_contract::SessionRealizationPermit,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationDriveError> {
         let host = synchronizer.host;
         awaken_session_realization_driver::drive_session_realization(

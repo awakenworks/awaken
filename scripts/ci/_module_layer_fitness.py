@@ -52,39 +52,45 @@ _LEAF_REASON = "leaf value types moved out of session_slot; go with the realizer
 _MIXED_REASON = "mixed: its own items stay in the host, each child is classified below"
 
 # (target, reason, modules). Module paths are `::`-joined from the crate root
-# and follow `#[path]` attributes (`host::build::environment_capacity` lives in
-# `host/environment_capacity.rs`).
+# and follow `#[path]` attributes.
 LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (REALIZER, _REALIZER_REASON, (
         "host::session::environment_lifecycle",
         "host::session::environment_realization",
         "host::worker_resolver::session_realization",
         "host::terminal_reconciliation",
-        "host::build::environment_capacity",
         "provisioning",
         "managed_resource_projection",
         "cache_volume",
         "environment_continuation",
         "terminal_repository_publication",
         "session_environment",
+        "environment_owner",
+        "session_realizer",
+        "environment_capacity",
+        "environment_providers",
     )),
     (REALIZER, _LEAF_REASON, (
         "staged_resources",
         "managed_input_layout",
         "frozen_inputs",
     )),
+    (REALIZER, "the error vocabulary realization and the run path both return; the host re-exports it", (
+        "host_error",
+    )),
     (HOST, _MIXED_REASON, (
         "host",
-        "host::build",
         "host::session",
         "host::worker_resolver",
     )),
     (HOST, "SharedHost run, coordination and capability assembly stay in the host (plan 10.2)", (
+        "host::build",
         "host::capability",
         "host::completion",
         "host::coordination",
         "host::credential_capabilities",
         "host::dependencies",
+        "host::dispatch_reconciliation",
         "host::dispatch_resolution",
         "host::durable_control",
         "host::placement",

@@ -23,10 +23,10 @@ pub(crate) struct DispatchCapability {
     /// This process's part in Run execution, selected by its composition
     /// root: ingress, local pool and its sizing, lease owner and schedule.
     pub(crate) execution: super::ExecutionTopology,
-    /// The coordinator-only maintenance loop and its terminal scan; owned by
-    /// [`super::super::terminal_reconciliation`], the only module that reads them.
+    /// The coordinator-only maintenance loop and its terminal scan
+    /// (`host::dispatch_reconciliation`).
     pub(crate) terminal_reconciliation:
-        crate::host::terminal_reconciliation::TerminalReconciliationState,
+        crate::host::dispatch_reconciliation::TerminalReconciliationState,
 }
 
 impl DispatchCapability {
@@ -217,5 +217,131 @@ impl SharedHost {
             .dispatch_pool
             .get()
             .map_or(0, |pool| pool.in_flight())
+    }
+
+    /// Bind the exact transport/Registry owners before maintenance startup.
+    /// Retention retry joins the original Dispatch reconciliation schedule.
+    pub fn bind_worker_evidence_reconciliation(
+        &self,
+        directory: Arc<dyn awaken_dispatch_contract::WorkerDirectory>,
+        source: Arc<dyn awaken_dispatch_execution::WorkerEvidenceRelease>,
+    ) -> Result<(), HostError> {
+        self.dispatch
+            .terminal_reconciliation
+            .worker_evidence
+            .set((directory, source))
+            .map_err(|_| HostError::internal("Worker evidence reconciliation already bound"))
+    }
+
+    pub(in crate::host) async fn reconcile_worker_evidence(
+        &self,
+    ) -> Result<(), awaken_dispatch_execution::Error> {
+        let Some((directory, source)) = self.dispatch.terminal_reconciliation.worker_evidence.get()
+        else {
+            return Ok(());
+        };
+        let dispatch = self
+            .dispatch_store()
+            .map_err(|e| HostWorkerResolver::execution_error(e.to_string()))?;
+        let now = awaken_time::WallClockExt::now_ms(self.clock.as_ref());
+        let mut records = directory
+            .list()
+            .await
+            .map_err(|e| HostWorkerResolver::execution_error(e.to_string()))?;
+        let Ok(mut after) = self
+            .dispatch
+            .terminal_reconciliation
+            .worker_evidence_after
+            .try_lock()
+        else {
+            return Ok(());
+        };
+        records.sort_by(|a, b| {
+            a.snapshot
+                .identity
+                .worker_id
+                .cmp(&b.snapshot.identity.worker_id)
+        });
+        let start = after.as_ref().map_or(0, |cursor| {
+            records.partition_point(|r| r.snapshot.identity.worker_id <= *cursor)
+        });
+        let start = if start == records.len() { 0 } else { start };
+        // One candidate per original maintenance tick. Advance scheduling before
+        // provider I/O so cancellation/failure cannot starve a later Worker.
+        for record in records.into_iter().skip(start).take(1) {
+            let identity = &record.snapshot.identity;
+            *after = Some(identity.worker_id.clone());
+            if record.snapshot.expires_at_ms <= now {
+                directory
+                    .expire_incarnation(identity, now)
+                    .await
+                    .map_err(|e| HostWorkerResolver::execution_error(e.to_string()))?;
+            }
+            // Registry expiry applies to every exact incarnation. Provider
+            // ownership controls evidence operations, never lease closure.
+            if !source.owns_worker_evidence(identity) {
+                continue;
+            }
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                source.release_closed_idle_worker_evidence(
+                    dispatch.as_ref(),
+                    directory.as_ref(),
+                    identity,
+                    now,
+                ),
+            )
+            .await;
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::warn!(%error, "exact Worker retention retry pending"),
+                Err(_) => tracing::warn!("exact Worker retention retry timed out"),
+            }
+        }
+        Ok(())
+    }
+
+    /// Start the one coordinator-side reconciliation loop when this Host owns
+    /// durable dispatch/commit truth but intentionally does not run an execution
+    /// pool. A local-pool Host already performs the same maintenance in its pool;
+    /// a database-less Worker has no global committed reader and must not start it.
+    /// Returns whether this call started the loop.
+    pub fn ensure_terminal_dispatch_reconciliation(self: &Arc<Self>) -> bool {
+        if !self.durable_ingress()
+            || self.runs_local_dispatch_pool()
+            || !self.authority.scans_committed_terminals()
+            || self
+                .dispatch
+                .terminal_reconciliation
+                .dispatch_reconciler
+                .get()
+                .is_some()
+        {
+            return false;
+        }
+        let Ok(store) = self.dispatch_store() else {
+            return false;
+        };
+        let resolver: Arc<dyn awaken_dispatch_execution::WorkerResolver<AnyDispatchStore>> =
+            Arc::new(HostWorkerResolver {
+                host: Arc::downgrade(self),
+            });
+        let wake = self
+            .authority
+            .dispatch_wake()
+            .unwrap_or_else(|| Arc::new(awaken_dispatch_execution::LocalWakeSignal::new()));
+        let reconciler = awaken_dispatch_execution::DispatchReconciler::spawn(
+            store,
+            self.clock.clone(),
+            wake,
+            self.dispatch.execution.dispatch_service_config(),
+            resolver,
+            Some(self.completion.clone()),
+        );
+        self.dispatch
+            .terminal_reconciliation
+            .dispatch_reconciler
+            .set(reconciler)
+            .is_ok()
     }
 }

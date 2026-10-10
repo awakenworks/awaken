@@ -728,7 +728,7 @@ impl crate::ManagedHost {
                         Some(&source_binding),
                     )
                     .await
-                    .map_err(crate::managed_adapter_error::to_run_error)?;
+                    .map_err(crate::host_error::to_run_error)?;
                 match &effect.authorization {
                     awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
                         binding,
@@ -753,7 +753,7 @@ impl crate::ManagedHost {
                             .persist_authorized_environment_binding(thread, binding, &effect)
                             .await
                             .map_err(|failure| {
-                                crate::managed_adapter_error::to_run_error(failure.error)
+                                crate::host_error::to_run_error(failure.error)
                             })?;
                     }
                 }
@@ -992,7 +992,7 @@ impl crate::SharedHost {
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
         environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
-    ) -> Result<(), crate::host::HostError> {
+    ) -> Result<(), crate::host_error::HostError> {
         let (resident_baseline, content_delivery, resident_environment, live_environment) = self
             .session_slots
             .read(thread, |slot| {
@@ -1048,7 +1048,7 @@ impl crate::SharedHost {
             && !repository_paths.is_empty()
             && historical_owned_paths.is_none()
         {
-            return Err(crate::host::HostError::internal(
+            return Err(crate::host_error::HostError::internal(
                 "legacy Session sandbox handle lacks complete owned-path evidence required for live Repository replacement",
             ));
         }
@@ -1069,7 +1069,7 @@ impl crate::SharedHost {
                     &spec,
                     &historical_owned_paths,
                 )
-                .map_err(|error| crate::host::HostError::internal(error.to_string()))
+                .map_err(|error| crate::host_error::HostError::internal(error.to_string()))
             }
             ManagedLayoutValidationScope::Exact(provider) => self
                 .validate_repository_environment_adoption_paths(
@@ -1090,7 +1090,7 @@ impl crate::SharedHost {
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
         environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
-    ) -> Result<(), crate::host::HostError> {
+    ) -> Result<(), crate::host_error::HostError> {
         self.validate_managed_layout_inputs(
             thread,
             resources
@@ -1111,7 +1111,7 @@ impl crate::SharedHost {
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
         environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
-    ) -> Result<(), crate::host::HostError> {
+    ) -> Result<(), crate::host_error::HostError> {
         self.validate_managed_layout_inputs(
             thread,
             resources
@@ -1133,7 +1133,7 @@ impl crate::SharedHost {
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
         environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
-    ) -> Result<(), crate::host::HostError> {
+    ) -> Result<(), crate::host_error::HostError> {
         self.validate_managed_layout_inputs(
             thread,
             resources.iter().map(binding_layout_projection),
@@ -1151,7 +1151,7 @@ impl crate::SharedHost {
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
         environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
-    ) -> Result<(), crate::host::HostError> {
+    ) -> Result<(), crate::host_error::HostError> {
         self.validate_managed_layout_inputs(
             thread,
             resources.iter().map(binding_layout_projection),
@@ -1174,7 +1174,7 @@ impl crate::ManagedHost {
             .host
             .resolve_canonical_session_projection(
                 &layout.workspace_id,
-                crate::host::CanonicalSessionProjection::Layout(layout),
+                crate::session_environment::CanonicalSessionProjection::Layout(layout),
                 None,
                 None,
             )

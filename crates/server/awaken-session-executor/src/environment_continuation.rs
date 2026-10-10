@@ -10,7 +10,8 @@ use std::time::Duration;
 
 use awaken_session_types::RunError;
 
-use crate::{ManagedHost, to_run_error};
+use crate::ManagedHost;
+use crate::host_error::to_run_error;
 
 /// The Runtime Host is the sole adapter from aggregate checkpoint intent to
 /// provider byte-custody input. Ordinary suspension and terminal takeover both
@@ -167,7 +168,7 @@ impl ManagedHost {
             .session_slots
             .close_mcp_realization_admission(
                 thread,
-                crate::session_slot::McpQuiescenceAdmissionFence::new(
+                awaken_session_mcp::McpQuiescenceAdmissionFence::new(
                     operation,
                     source_effect_id,
                     source_binding,
@@ -290,6 +291,7 @@ impl ManagedHost {
             .map_err(to_run_error)?;
         let store = self
             .host
+            .realizer
             .env
             .environment_checkpoint_store
             .as_ref()
@@ -386,7 +388,7 @@ impl ManagedHost {
                 source_binding,
                 &effect_fence,
                 Some(&resources.resources),
-                crate::host::BoundEnvironmentPreparationMode::LiveSource,
+                crate::session_environment::BoundEnvironmentPreparationMode::LiveSource,
             )
             .await
             .map_err(to_run_error)?;
@@ -533,6 +535,7 @@ impl ManagedHost {
             .map_err(to_run_error)?;
         let store = self
             .host
+            .realizer
             .env
             .environment_checkpoint_store
             .as_ref()
@@ -581,6 +584,7 @@ impl ManagedHost {
     ) -> Result<(), RunError> {
         let store = self
             .host
+            .realizer
             .env
             .environment_checkpoint_store
             .as_ref()

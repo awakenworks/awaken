@@ -118,6 +118,7 @@ pub use capability::{
 };
 mod completion;
 mod coordination;
+mod dispatch_reconciliation;
 mod dispatch_resolution;
 mod durable_control;
 pub use placement::{remote_worker_placement, self_hosted_inference_holder};
@@ -126,10 +127,6 @@ mod placement;
 pub(crate) use credential_capabilities::acp_mcp_client_injection_capabilities;
 mod run;
 mod session;
-pub(crate) use session::{
-    BoundEnvironmentPreparationMode, CanonicalSessionProjection,
-    SessionEnvironmentAdoptionDisposition,
-};
 mod session_ctx;
 mod terminal_reconciliation;
 #[cfg(test)]
@@ -243,8 +240,8 @@ pub struct SharedHost {
     /// ACP backend, attempt decoration, and the credential/session-blob
     /// adapters the attempt executors share.
     pub(crate) exec: capability::AttemptBackends,
-    /// Session-owned and housekeeping sandbox providers.
-    pub(crate) env: capability::EnvironmentProviders,
+    /// The Session realizer and the sandbox providers it realizes through.
+    pub(crate) realizer: crate::session_realizer::SessionRealizer,
     /// Tool, Skill, plugin, and gate offering installed on every thread.
     pub(crate) tools: capability::ToolOffering,
     /// Resources-context ports: Memory, Files, Artifacts.

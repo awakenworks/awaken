@@ -339,7 +339,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         None,
         None,
     );
-    let fence = crate::session_slot::McpQuiescenceAdmissionFence::new(
+    let fence = awaken_session_mcp::McpQuiescenceAdmissionFence::new(
         &operation,
         "source-effect",
         &serde_json::to_string(&environment.lifecycle().handle()).unwrap(),
@@ -533,7 +533,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
             host.adopt_bound_session_environment(
                 thread,
                 Some(&binding),
-                &host.env.session_provider,
+                &host.realizer.env.session_provider,
                 None,
                 false,
             )
@@ -573,7 +573,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
         host.adopt_bound_session_environment(
             thread,
             Some(&binding),
-            &host.env.session_provider,
+            &host.realizer.env.session_provider,
             None,
             false,
         ),

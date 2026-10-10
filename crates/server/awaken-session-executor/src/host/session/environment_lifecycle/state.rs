@@ -6,7 +6,7 @@
 //! of these phases is performed under the same Session lifecycle guard.
 
 use super::*;
-use crate::session_slot::{
+use crate::environment_owner::{
     LegacyEnvironmentEffect, SessionEnvironmentRestoration, UnboundSessionEnvironmentOrigin,
 };
 
@@ -53,7 +53,7 @@ pub(super) fn checkpoint_source_identity(
     }
 }
 
-pub(super) fn projected_environment_owner(
+fn projected_environment_owner(
     state: &awaken_session_state_contract::SessionEnvironmentState,
     workspace_id: &str,
     session_id: &str,
@@ -272,6 +272,26 @@ const fn durable_projection_identity_decision(
 }
 
 impl SessionEnvironmentOwner {
+    /// Stage only the rebuildable owner coordinates. No physical owner is
+    /// retired or published until the caller commits under this same slot lock.
+    pub(crate) fn after_projection(
+        &self,
+        thread: &str,
+        workspace_id: &str,
+        state: &awaken_session_state_contract::SessionEnvironmentState,
+        newer: bool,
+        pending_resource_reservation: bool,
+    ) -> Result<SessionEnvironmentOwner, HostError> {
+        let projected = projected_environment_owner(state, workspace_id, thread)?;
+        let mut owner = self.clone();
+        owner.install_projection_with_resource_reservation(
+            projected,
+            newer,
+            pending_resource_reservation,
+        )?;
+        Ok(owner)
+    }
+
     /// Retain Store-read proof when the Session root commit succeeded but a
     /// later derivative dispatch binding was fenced. The Candidate stays
     /// hidden, retains its exact Arc/handle, and preserves Create versus Adopt
