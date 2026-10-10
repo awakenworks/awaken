@@ -1481,7 +1481,9 @@ async fn expired_initial_heartbeat_cannot_start_dispatch() {
     // beyond the request-anchored proof window. E1 reject before enabling claim
     // polling; E2 deregister exactly once; E3 no periodic heartbeat or warmup.
     // H1 expiry and H2 observed shutdown while the initial Ready response is
-    // pending both withdraw exactly once without enabling dispatch. Remote
+    // pending both withdraw exactly once without enabling dispatch. The late
+    // H1 receipt is released only after the deregistration request reaches the
+    // fixture, rather than by guessing when the client request timer expires. Remote
     // delivery before cancellation is allowed; it cannot revive the local task.
     // The bounded startup request now expires BEFORE the delayed receipt can
     // be installed. This HTTP row owns timeout/withdrawal ordering, not receipt
@@ -1532,6 +1534,13 @@ async fn expired_initial_heartbeat_cannot_start_dispatch() {
             );
         }
         assert_eq!(upstream.heartbeat_sequences(), vec![1], "E3");
+        if !cancelled {
+            assert_eq!(
+                upstream.applied_heartbeat_sequence(),
+                1,
+                "H1 applied before withdrawal"
+            );
+        }
         let requests = upstream.requests();
         assert_eq!(
             requests
