@@ -1032,7 +1032,7 @@ pub(crate) fn project_session_mounts(
 mod provisioning_registry_tests;
 
 /// Test-only spec helpers over the default Session provider.
-impl crate::realization_executor::RealizationExecutor {
+impl crate::environment_holding::EnvironmentHolding {
     /// The provisioning request for a thread. Skills are not a sandbox mount
     /// (ADR-0036); the environment provisions isolation tools plus the session's
     /// staged resource mounts (ADR-0038), each realized read-only under `.mnt/`.

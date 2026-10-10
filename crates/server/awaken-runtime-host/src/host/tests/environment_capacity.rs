@@ -222,7 +222,14 @@ fn executor(
         warm_pool,
     );
     (
-        crate::RealizationExecutor::new(env, runs_local_dispatch_pool, sessions, None),
+        crate::RealizationExecutor {
+            environments: crate::environment_holding::EnvironmentHolding::new(
+                env,
+                runs_local_dispatch_pool,
+                sessions,
+                None,
+            ),
+        },
         recording,
     )
 }

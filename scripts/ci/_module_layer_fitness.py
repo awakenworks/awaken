@@ -69,6 +69,7 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "realization_executor",
         "resource_staging",
         "environment_capacity",
+        "environment_holding",
         "environment_providers",
     )),
     (REALIZATION, _LEAF_REASON, (

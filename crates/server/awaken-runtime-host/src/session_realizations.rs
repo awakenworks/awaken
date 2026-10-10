@@ -106,8 +106,7 @@ impl SessionRealizations {
         session: &str,
         fence: awaken_session_mcp::McpQuiescenceAdmissionFence,
     ) -> Result<bool, crate::host_error::HostError> {
-        self.update_session(session, |slot| slot.realization.mcp.close_admission(fence))
-            .map_err(crate::host_error::HostError::from)
+        Ok(self.update_session(session, |slot| slot.realization.mcp.close_admission(fence))?)
     }
 
     #[cfg(test)]
@@ -168,8 +167,7 @@ impl SessionRealizations {
         &self,
         session: &str,
     ) -> tokio::sync::OwnedMutexGuard<()> {
-        let projection =
-            self.update_session(session, |slot| slot.realization.resource_projection.clone());
+        let projection = self.update_realization(session, |r| r.resource_projection.clone());
         projection.lock_owned().await
     }
 

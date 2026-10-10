@@ -913,7 +913,7 @@ impl SharedHost {
     }
 }
 
-impl crate::realization_executor::RealizationExecutor {
+impl crate::environment_holding::EnvironmentHolding {
     pub(crate) fn session_environment_provider(
         &self,
         provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,

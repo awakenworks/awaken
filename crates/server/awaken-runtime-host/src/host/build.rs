@@ -118,12 +118,14 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         agent: capability::AgentExecution::new(agent, installed_sessions.clone()),
         exec,
         worker,
-        realizer: crate::RealizationExecutor::new(
-            env,
-            execution.local.runs_local_pool(),
-            installed_sessions.realizations(),
-            execution_authority,
-        ),
+        realizer: crate::RealizationExecutor {
+            environments: crate::environment_holding::EnvironmentHolding::new(
+                env,
+                execution.local.runs_local_pool(),
+                installed_sessions.realizations(),
+                execution_authority,
+            ),
+        },
         tools,
         resources: capability::ResourcePorts::new(resources, memory),
         mcp,

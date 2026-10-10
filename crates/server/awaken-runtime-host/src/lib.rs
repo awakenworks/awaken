@@ -48,6 +48,7 @@ mod dispatch_session_runtime;
 mod durable_operations;
 mod environment_capacity;
 mod environment_continuation;
+mod environment_holding;
 mod environment_owner;
 mod environment_providers;
 mod frozen_inputs;

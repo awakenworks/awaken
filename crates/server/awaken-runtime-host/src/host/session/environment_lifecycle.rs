@@ -1059,7 +1059,7 @@ mod terminal_output_tests {
 #[cfg(test)]
 mod tests;
 
-impl crate::realization_executor::RealizationExecutor {
+impl crate::environment_holding::EnvironmentHolding {
     /// Retire the exact current Environment owner; a changed owner fence fails
     /// with the caller's classified reason.
     pub(crate) fn retire_exact_environment(
