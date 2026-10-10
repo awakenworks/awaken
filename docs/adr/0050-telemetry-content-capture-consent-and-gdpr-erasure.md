@@ -544,15 +544,32 @@ Implemented:
   (`awaken-data-subject-application`, `awaken-data-subject-store`),
   `DataSubjectResolver`/`NullResolver` (`crates/contract/awaken-data-governance-contract/src/lib.rs:80`, `:127`),
   `RepoDataSubjectResolver`, User Profile routes with enrollment, and
-  `POST /v1/user_profiles/{id}/erasure` (`crates/control/awaken-control/src/data_subject.rs:32`).
+  `POST /v1/user_profiles/{id}/erasure` (`crates/control/awaken-control/src/data_subject.rs:32`);
+- one capture decision (amended 2026-10-10): `decide_capture` in
+  `crates/contract/awaken-data-governance-contract/src/decision.rs` computes
+  `{ requested, ceiling, consent, effective, reason }` from the top ceiling,
+  the Workspace narrowing answer and the subject's consent, and is the only
+  place the levels are composed. The Run boundary
+  (`CaptureContextAttemptExecutor`), `GET /v1/user_profiles/{id}/capture-decision`
+  (now for the request's Workspace) and the Session's read-only projection all
+  call it with the Host's `CapturePolicy` (ceiling plus
+  `CapturePolicySources`), so the transparency reads report what a Run
+  records. D8 placed the Session projection on `GET /v1/sessions/{id}`; the
+  Managed Session object carries only the official SDK fields (the adapter's
+  SDK-shape tests reject any other), so it is served beside it as the Awaken
+  extension `GET /v1/awaken/sessions/{id}/content-capture`, fenced to the
+  owning Workspace like the other `/v1/awaken/sessions` reads. A Run carries no
+  request of its own and asks for `full`; the Session read attributes consent
+  through the same `anthropic-user-profile-id` header that attributes a turn,
+  and reports `consent: null` without it. Per-Run decisions are not recorded:
+  the reads are current projections, not an audit history.
 
 Not implemented:
 
 - the Agent and Session layers of the narrowing chain, and the Org layer in a
-  deployment that has an Org (the cloud); the `capture-decision` projection on
-  `/v1/user_profiles/{id}` still reports the deployment ceiling, not a Workspace's;
-- the Session `content_capture` request field and the read-only decision
-  projection on `GET /v1/sessions/:id` (D8): `awaken-protocol-managed` has neither;
+  deployment that has an Org (the cloud);
+- the Session `content_capture` request field (D8), so `requested` is `full`
+  on the Session projection;
 - consent-gated eval recording: `crates/devtools/awaken-eval` can build a case from
   a transcript, but no product path records eval fixtures under `eval_recording`;
 - `GET /v1/user_profiles/:id/data` (Art. 15), marked optional in D8.

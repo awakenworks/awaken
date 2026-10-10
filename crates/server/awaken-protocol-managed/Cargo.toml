@@ -32,6 +32,9 @@ test-support = [
 [dependencies]
 awaken-tool-contract.workspace = true
 awaken-data-subject-application.workspace = true
+# The content-capture decision kernel and its policy sources (ADR-0050 D8): the
+# Session `content_capture` projection reports the decision its Runs make.
+awaken-data-governance-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-executable-agent-contract.workspace = true
 awaken-executable-environment-contract.workspace = true

@@ -429,7 +429,11 @@ mod tests {
                 ..Default::default()
             },
         );
-        let restarted = ManagedState::from_application(Arc::new(application), environments);
+        let restarted = ManagedState::from_application(
+            Arc::new(application),
+            environments,
+            awaken_data_governance_contract::CapturePolicy::default(),
+        );
 
         assert_eq!(
             restarted.reconcile_session_realizations().await,

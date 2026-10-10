@@ -2067,6 +2067,7 @@ dependencies = [
  "awaken-config-resolver",
  "awaken-credential-contract",
  "awaken-credential-vault",
+ "awaken-data-governance-contract",
  "awaken-data-subject-application",
  "awaken-data-subject-store",
  "awaken-deployment-application",

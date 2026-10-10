@@ -5,6 +5,7 @@
 //! application ports; concrete application services are injected only by the
 //! composition root.
 
+mod content_capture;
 mod dream_policies;
 mod event_admissions;
 mod execution_evidence;
@@ -16,6 +17,7 @@ mod repositories;
 mod resource_manifests;
 mod sandbox_policies;
 
+pub use content_capture::session_content_capture_router;
 pub use dream_policies::dream_policy_router;
 pub use event_admissions::{
     EventAdmissionProof, EventAdmissionReceipt, EventAdmissionStatus,
