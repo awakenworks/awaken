@@ -1652,7 +1652,8 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         .await
         .expect("F1 revalidate the exact desired manifest without republishing");
     assert!(
-        host.thread_resource_manifest("thread-cold-resource")
+        host.realizer
+            .thread_resource_manifest("thread-cold-resource")
             .is_none(),
         "F1 desired-only staging is not completion evidence"
     );
@@ -1666,6 +1667,7 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
     .expect("open environment after resource install");
 
     let mount = host
+        .realizer
         .sandbox_spec("thread-cold-resource")
         .mounts
         .into_iter()
@@ -1682,7 +1684,8 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
     };
     assert_eq!(contents, bytes);
     assert_eq!(
-        host.thread_resource_manifest("thread-cold-resource"),
+        host.realizer
+            .thread_resource_manifest("thread-cold-resource"),
         Some(manifest.clone())
     );
 
@@ -1697,7 +1700,8 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         .expect_err("F3 desired-only replacement must fail closed");
     assert_eq!(error.code, "session_resource_transition_conflict", "F3");
     assert_eq!(
-        host.thread_resource_manifest("thread-cold-resource"),
+        host.realizer
+            .thread_resource_manifest("thread-cold-resource"),
         Some(manifest.clone()),
         "F3 retains the active manifest"
     );
@@ -1734,11 +1738,15 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         "F4 removes the stale physical projection"
     );
     assert!(
-        host.sandbox_spec("thread-cold-resource").mounts.is_empty(),
+        host.realizer
+            .sandbox_spec("thread-cold-resource")
+            .mounts
+            .is_empty(),
         "F4 publishes the empty staged projection"
     );
     assert_eq!(
-        host.thread_resource_manifest("thread-cold-resource"),
+        host.realizer
+            .thread_resource_manifest("thread-cold-resource"),
         Some(cleared),
         "F4 publishes generation 2 only after realization"
     );
@@ -1804,12 +1812,13 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         .await
         .unwrap_or_else(|error| panic!("{thread}: complete projection producer: {error}"));
         assert!(
-            host.thread_resource_manifest(thread).is_none(),
+            host.realizer.thread_resource_manifest(thread).is_none(),
             "{thread}: C2 active truth remains absent"
         );
     }
     let active_thread = "active-previous-transition";
-    host.register_thread_resource_manifest(active_thread, revision_one.clone());
+    host.realizer
+        .register_thread_resource_manifest(active_thread, revision_one.clone());
     let mut active_projection =
         frozen_projection_for_manifest(deferred_environment(), &revision_two);
     active_projection.previous_resource_manifest = Some(revision_one.clone());
@@ -1840,7 +1849,8 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         "R1/E1 retains the exact producer transition"
     );
     assert!(
-        host.thread_resource_manifest("exact-cold-transition")
+        host.realizer
+            .thread_resource_manifest("exact-cold-transition")
             .is_none(),
         "R1/E1 staging does not publish active truth"
     );
@@ -1867,7 +1877,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         "R2/E1 retains the exact producer transition"
     );
     assert_eq!(
-        host.thread_resource_manifest(active_thread),
+        host.realizer.thread_resource_manifest(active_thread),
         Some(revision_one.clone()),
         "R2/E1 staging does not publish desired as active"
     );
@@ -1988,7 +1998,8 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
             "R2 rejects desired-only replacement: {rejected:?}"
         );
         assert_eq!(
-            host.thread_resource_manifest("thread-generation-fence"),
+            host.realizer
+                .thread_resource_manifest("thread-generation-fence"),
             Some(revision_four.clone())
         );
     }
@@ -2015,7 +2026,8 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
     .await
     .expect("R3 exact transition advances generation");
     assert_eq!(
-        host.thread_resource_manifest("thread-generation-fence"),
+        host.realizer
+            .thread_resource_manifest("thread-generation-fence"),
         Some(revision_five),
         "R3 publishes only after exact physical transition"
     );
@@ -2171,7 +2183,8 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         9,
         Default::default(),
     );
-    host.register_thread_resource_manifest(foreign_thread, foreign.clone());
+    host.realizer
+        .register_thread_resource_manifest(foreign_thread, foreign.clone());
     host.session_slots.update(foreign_thread, |slot| {
         slot.replace_frozen_with(|next| next.workspace = Some("sentinel-workspace".into()));
         slot.realization.staged_resource_effect_key = Some("sentinel-key".into());
@@ -2312,6 +2325,7 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
         .await
         .expect("W1");
     let mount = host
+        .realizer
         .sandbox_spec("remote-file-ok")
         .mounts
         .into_iter()
@@ -2326,7 +2340,9 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
         "W1"
     );
     assert!(
-        host.thread_resource_manifest("remote-file-ok").is_none(),
+        host.realizer
+            .thread_resource_manifest("remote-file-ok")
+            .is_none(),
         "W1 desired-only staging does not publish active completion"
     );
     managed
@@ -2340,7 +2356,10 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
         .expect_err("W2");
     assert!(error.to_string().contains("not found"), "W2: {error}");
     assert!(
-        host.sandbox_spec("remote-file-no-claim").mounts.is_empty(),
+        host.realizer
+            .sandbox_spec("remote-file-no-claim")
+            .mounts
+            .is_empty(),
         "W2"
     );
 }
@@ -2730,11 +2749,13 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
         .session_environment(thread)
         .await
         .expect("observed owner");
-    let spec = host.sandbox_spec_for_resolved_resources_and_provider(
-        thread,
-        &projection.resources,
-        &host.realizer.env.session_provider,
-    );
+    let spec = host
+        .realizer
+        .sandbox_spec_for_resolved_resources_and_provider(
+            thread,
+            &projection.resources,
+            &host.realizer.env.session_provider,
+        );
     let spec = host
         .validate_session_environment_capabilities(&host.realizer.env.session_provider, &spec)
         .expect("C2 exact adoption spec");

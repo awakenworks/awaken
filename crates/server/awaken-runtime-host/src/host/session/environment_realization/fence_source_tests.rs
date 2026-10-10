@@ -573,7 +573,9 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                     "unused",
                 )
                 .into_session_provider();
-                let spec = host.sandbox_spec_for_provider("session", &provider);
+                let spec = host
+                    .realizer
+                    .sandbox_spec_for_provider("session", &provider);
                 let handle =
                     crate::host::tests::terminal_fixture_container_handle("session", &spec);
                 let binding = serde_json::to_string(&handle).unwrap();

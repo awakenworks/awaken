@@ -244,7 +244,7 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
         &snapshot,
     )
     .await;
-    host.register_thread_resources(
+    host.realizer.register_thread_resources(
         "a2a-with-mount",
         crate::staged_resources::StagedResources {
             mounts: vec![awaken_provisioning_contract::MountRequirement {
@@ -521,7 +521,7 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
             "{rule}/E6 exact Session affinity",
         );
         assert_eq!(
-            host.thread_resource_manifest(&thread),
+            host.realizer.thread_resource_manifest(&thread),
             active,
             "{rule}/E5 dispatch staging must not publish active",
         );
@@ -1048,7 +1048,7 @@ async fn resident_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .realizer
         .env
         .session_provider
-        .create(&host.sandbox_spec("t-foreign-resident"))
+        .create(&host.realizer.sandbox_spec("t-foreign-resident"))
         .await
         .expect("foreign sandbox");
     let foreign_binding = serde_json::to_string(&foreign.lifecycle().handle()).unwrap();
@@ -1117,7 +1117,7 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .realizer
         .env
         .session_provider
-        .create(&host.sandbox_spec("t-foreign-retained"))
+        .create(&host.realizer.sandbox_spec("t-foreign-retained"))
         .await
         .expect("foreign sandbox");
     let foreign_binding = serde_json::to_string(&foreign.lifecycle().handle()).unwrap();

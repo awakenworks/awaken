@@ -284,11 +284,9 @@ pub(crate) async fn available_local_environment_binding(
     let provider = host
         .projected_session_environment_provider(thread, None)
         .expect("select available-Environment provider from frozen projection");
-    let spec = host.sandbox_spec_for_resolved_resources_and_provider(
-        thread,
-        &projection.resources,
-        provider,
-    );
+    let spec = host
+        .realizer
+        .sandbox_spec_for_resolved_resources_and_provider(thread, &projection.resources, provider);
     let spec = host
         .validate_session_environment_capabilities(provider, &spec)
         .expect("validate exact available-Environment fixture spec");

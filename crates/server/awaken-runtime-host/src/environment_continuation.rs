@@ -332,12 +332,12 @@ impl ManagedHost {
         source_binding: &str,
     ) -> Result<awaken_session_state_contract::SourceReleasePreparedReceipt, RunError> {
         self.continuation_preparation_effect_fence(thread, preparation)?;
-        let resources = self.host.thread_resource_manifest(thread).ok_or_else(|| {
-            RunError::unavailable_classified(
+        let Some(resources) = self.host.realizer.thread_resource_manifest(thread) else {
+            return Err(RunError::unavailable_classified(
                 "session_environment_continuation_resources_missing",
                 "Checkpoint source preparation has no frozen active Resource manifest",
-            )
-        })?;
+            ));
+        };
         let handle =
             serde_json::from_str::<awaken_provisioning_contract::SandboxHandle>(source_binding)
                 .map_err(|error| {
@@ -561,7 +561,10 @@ impl ManagedHost {
             .host
             .session_environment_provider_for_thread(&thread, provisioning)
             .map_err(to_run_error)?;
-        let spec = self.host.sandbox_spec_for_provider(&thread, provider);
+        let spec = self
+            .host
+            .realizer
+            .sandbox_spec_for_provider(&thread, provider);
         let handle = provider
             .terminal()
             .restore(&spec, &request, store.as_ref())

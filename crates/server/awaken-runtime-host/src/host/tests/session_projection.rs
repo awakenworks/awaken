@@ -1870,7 +1870,7 @@ async fn repository_layout_conflict_fails_before_cache_prewarm() {
         .await
         .expect("P1 stage Repository without opening an Environment");
 
-    let mut spec = host.sandbox_spec("repository-prewarm-fence");
+    let mut spec = host.realizer.sandbox_spec("repository-prewarm-fence");
     spec.mounts
         .push(awaken_provisioning_contract::MountRequirement {
             mount_id: "conflicting-cache".into(),

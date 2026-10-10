@@ -196,6 +196,7 @@ impl crate::ManagedHost {
         manifest: awaken_session_resource_contract::SessionResourceManifest,
     ) {
         self.host
+            .realizer
             .register_thread_resource_manifest(thread, manifest);
     }
 
@@ -267,7 +268,7 @@ impl crate::ManagedHost {
         realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
         prospective_environment_binding: bool,
     ) -> Result<(), RunError> {
-        let installed = self.host.thread_resource_manifest(thread);
+        let installed = self.host.realizer.thread_resource_manifest(thread);
         if installed.as_ref().is_some_and(|installed| {
             installed != transition.previous() && installed != transition.desired()
         }) {
@@ -585,7 +586,7 @@ impl crate::ManagedHost {
         // requirements cache. A lost aggregate acknowledgement may resend A→B
         // after this process completed B. Memory must compare against B while
         // the remaining Resource effects still replay the authored A→B command.
-        let installed_manifest = self.host.thread_resource_manifest(thread);
+        let installed_manifest = self.host.realizer.thread_resource_manifest(thread);
         let old_memory: Vec<_> = installed_manifest
             .as_ref()
             .unwrap_or(previous_manifest)
@@ -649,8 +650,7 @@ impl crate::ManagedHost {
             // same-generation adoption is continuity, not a replacement: the
             // provider adoption hook reattaches Namespace mounts and no Resource
             // path may be removed before terminal publication/cleanup.
-            self.host
-                .register_thread_resource_manifest(thread, desired_manifest);
+            self.publish_active_resource_manifest(thread, desired_manifest);
             return Ok(());
         }
         let mut previous_mounts = previous_manifest
@@ -1019,7 +1019,7 @@ impl crate::SharedHost {
                 }
             }
         }
-        let spec = self.sandbox_spec_for_projected_layout(
+        let spec = self.realizer.sandbox_spec_for_projected_layout(
             thread,
             crate::provisioning::ProjectedSandboxLayout {
                 resource_mounts: mounts,
@@ -1074,6 +1074,7 @@ impl crate::SharedHost {
                 .map_err(|error| crate::host_error::HostError::internal(error.to_string()))
             }
             ManagedLayoutValidationScope::Exact(provider) => self
+                .realizer
                 .validate_repository_environment_adoption_paths(
                     provider,
                     &spec,

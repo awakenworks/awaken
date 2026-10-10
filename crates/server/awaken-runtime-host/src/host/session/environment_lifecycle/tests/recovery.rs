@@ -40,7 +40,7 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
     let provider = host
         .projected_session_environment_provider(thread, None)
         .expect("RR1 canonical projected provider");
-    let spec = host.sandbox_spec_for_provider(thread, provider);
+    let spec = host.realizer.sandbox_spec_for_provider(thread, provider);
     let environment = Arc::new(
         host.create_session_environment(provider, &spec)
             .await

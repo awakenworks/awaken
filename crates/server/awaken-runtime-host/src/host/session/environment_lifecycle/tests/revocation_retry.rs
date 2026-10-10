@@ -187,7 +187,7 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
     host.session_slots.replace_frozen_with(thread, |next| {
         next.published_snapshot = Some(snapshot.clone())
     });
-    host.register_thread_resources(
+    host.realizer.register_thread_resources(
         thread,
         crate::staged_resources::StagedResources {
             mounts: vec![retry_input_mount()],
@@ -225,7 +225,7 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
     .expect("C1 pending owner");
     let (relay, mcp_generation) = install_active_worker_relay(&host, thread).await;
     let route_before = relay.route_url(&mcp_generation).unwrap();
-    let spec_before = host.sandbox_spec(thread);
+    let spec_before = host.realizer.sandbox_spec(thread);
     let lifecycle = host
         .session_slots
         .read_realization(thread, |r| r.lifecycle.clone())
@@ -243,7 +243,7 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
         "R20/E2"
     );
     assert_eq!(
-        host.sandbox_spec(thread),
+        host.realizer.sandbox_spec(thread),
         spec_before,
         "R20/E3 mounts/projection"
     );
@@ -315,7 +315,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     host.session_slots.replace_frozen_with(thread, |next| {
         next.published_snapshot = Some(snapshot.clone())
     });
-    host.register_thread_resources(
+    host.realizer.register_thread_resources(
         thread,
         crate::staged_resources::StagedResources {
             mounts: vec![retry_input_mount()],
@@ -348,7 +348,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     host.session_slots
         .close_mcp_realization_admission(thread, fence.clone())
         .unwrap();
-    let spec_before = host.sandbox_spec(thread);
+    let spec_before = host.realizer.sandbox_spec(thread);
     let lifecycle = host
         .session_slots
         .read_realization(thread, |r| r.lifecycle.clone())
@@ -384,7 +384,11 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         ),
         "E1"
     );
-    assert_eq!(host.sandbox_spec(thread), spec_before, "E2 SandboxSpec");
+    assert_eq!(
+        host.realizer.sandbox_spec(thread),
+        spec_before,
+        "E2 SandboxSpec"
+    );
     assert_eq!(
         host.session_slots
             .published_snapshot(thread)

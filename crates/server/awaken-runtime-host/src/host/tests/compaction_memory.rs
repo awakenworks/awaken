@@ -1038,7 +1038,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         &host.session_environment("memory-replay").await.unwrap()
     ));
 
-    let installed = host.thread_resource_manifest("memory-replay");
+    let installed = host.realizer.thread_resource_manifest("memory-replay");
     for field in [
         "store",
         "config",
@@ -1117,7 +1117,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
             );
         }
         assert_eq!(
-            host.thread_resource_manifest("memory-replay"),
+            host.realizer.thread_resource_manifest("memory-replay"),
             installed,
             "{field}"
         );

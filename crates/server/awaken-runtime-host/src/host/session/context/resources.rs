@@ -143,7 +143,7 @@ pub(super) async fn acquire(
     // mount remains `running` while the queue repeatedly relinquishes it.
     if force_defer_environment && host.runs_local_dispatch_pool() && !a2a_only && !can_defer {
         let provider = host.session_environment_provider_for_thread(thread, provisioning)?;
-        let spec = host.sandbox_spec_for_provider(thread, provider);
+        let spec = host.realizer.sandbox_spec_for_provider(thread, provider);
         let _ = host.validate_session_environment_capabilities(provider, &spec)?;
     }
     // Reservation is a projection-producing boundary, never an

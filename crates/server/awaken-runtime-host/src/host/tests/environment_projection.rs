@@ -96,7 +96,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
             .unwrap_or(false),
         "the first Run caches the Thread's sandbox ctx"
     );
-    let before = host.sandbox_spec("t-attach").mounts.len();
+    let before = host.realizer.sandbox_spec("t-attach").mounts.len();
 
     // Model the exact post-settlement residue observed by an idle durable
     // Session. No Dispatch store is installed, so any attempt to reinterpret
@@ -175,7 +175,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         "the live environment receives the file before attach returns"
     );
     // ... and the spec the next Run will build now carries the mount + its bytes.
-    let spec = host.sandbox_spec("t-attach");
+    let spec = host.realizer.sandbox_spec("t-attach");
     assert_eq!(spec.mounts.len(), before + 1, "one more mount staged");
     let dump = serde_json::to_string(&spec.mounts).expect("mounts serialize");
     assert!(
@@ -220,7 +220,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         )
         .await
         .expect("detach");
-    let spec = host.sandbox_spec("t-attach");
+    let spec = host.realizer.sandbox_spec("t-attach");
     assert_eq!(spec.mounts.len(), before, "the mount is dropped on detach");
     assert!(
         !serde_json::to_string(&spec.mounts)
@@ -319,9 +319,10 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
         .expect("resident environment");
     let before_handle = environment.lifecycle().handle();
     let before_manifest = host
+        .realizer
         .thread_resource_manifest("invalid-live-repository")
         .expect("installed manifest");
-    let before_spec = host.sandbox_spec("invalid-live-repository");
+    let before_spec = host.realizer.sandbox_spec("invalid-live-repository");
     let before_files = environment
         .harvest()
         .list_frozen_mount_files("/mnt/session/uploads")
@@ -366,12 +367,13 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     assert!(error.message.contains("/repo"), "L1/L2: {error:?}");
     assert_eq!(verifier.0.load(Ordering::SeqCst), 0, "L1/L2 verifier");
     assert_eq!(
-        host.thread_resource_manifest("invalid-live-repository"),
+        host.realizer
+            .thread_resource_manifest("invalid-live-repository"),
         Some(before_manifest),
         "L1/L2 manifest"
     );
     assert_eq!(
-        host.sandbox_spec("invalid-live-repository"),
+        host.realizer.sandbox_spec("invalid-live-repository"),
         before_spec,
         "L1/L2 mounts"
     );
@@ -397,7 +399,8 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
         "L1/L2 cached Runtime"
     );
     assert!(
-        host.thread_repository_activations("invalid-live-repository")
+        host.realizer
+            .thread_repository_activations("invalid-live-repository")
             .is_empty(),
         "L1/L2 Git activation"
     );
@@ -519,6 +522,7 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
         .await
         .expect("resident environment");
     let before_manifest = host
+        .realizer
         .thread_resource_manifest("t-repo-detach")
         .expect("installed manifest");
     let handle = environment.lifecycle().handle();
@@ -604,6 +608,7 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
         .expect("create File")
         .id;
     let before_manifest = host
+        .realizer
         .thread_resource_manifest("t-local-attach")
         .unwrap_or_else(|| {
             awaken_session_resource_contract::SessionResourceManifest::at_revision(
@@ -612,7 +617,7 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
                 awaken_session_resource_contract::ResolvedSessionResources::default(),
             )
         });
-    let before = host.sandbox_spec("t-local-attach");
+    let before = host.realizer.sandbox_spec("t-local-attach");
     let attached = effective_resources(vec![TestInput {
         kind: "file".into(),
         id: file_id,
@@ -644,7 +649,7 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
         .await
         .expect_err("Workdir cannot admit an official read-only File copy");
     assert!(error.message.contains("does not enforce read-only"));
-    assert_eq!(host.sandbox_spec("t-local-attach"), before);
+    assert_eq!(host.realizer.sandbox_spec("t-local-attach"), before);
     assert!(
         environment
             .sandbox_environment()
@@ -855,7 +860,7 @@ async fn frozen_environment_network_follows_the_decision_table() {
             )
             .await
             .unwrap_or_else(|error| panic!("{id}: {error}"));
-        let spec = host.sandbox_spec(&thread);
+        let spec = host.realizer.sandbox_spec(&thread);
         assert_eq!(spec.network, expected_network, "{id}");
         assert_eq!(denies(spec), expected_denial, "{id}");
     }
@@ -903,7 +908,7 @@ async fn install_test_session_init_overlays_the_environment_sandbox_onto_the_spe
         .await
         .unwrap();
 
-    let spec = host.sandbox_spec("t-sb");
+    let spec = host.realizer.sandbox_spec("t-sb");
     assert_eq!(
         spec.isolation,
         IsolationClass::Namespace,
@@ -968,10 +973,10 @@ async fn install_test_session_init_overlays_the_environment_sandbox_onto_the_spe
         "W2 Session ownership enters the one attempt context"
     );
     assert_eq!(
-        host.sandbox_spec("t-bare").isolation,
+        host.realizer.sandbox_spec("t-bare").isolation,
         IsolationClass::Workdir
     );
-    assert!(!host.sandbox_spec("t-bare").limits.is_set());
+    assert!(!host.realizer.sandbox_spec("t-bare").limits.is_set());
 }
 
 /// Cause/effect design: C1 eager Session preparation freezes configuration; C2 no

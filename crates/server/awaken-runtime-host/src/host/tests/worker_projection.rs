@@ -727,7 +727,8 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             .expect_err("F1 rejects the complete prospective layout");
         assert!(error.message.contains("overlaps"), "F1: {error:?}");
         assert!(
-            host.thread_resource_manifest("prospective-layout-conflict")
+            host.realizer
+                .thread_resource_manifest("prospective-layout-conflict")
                 .is_none(),
             "F1 no Resource projection"
         );
@@ -861,7 +862,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             "R1 stages the exact SessionResourceState generation without forging completion"
         );
 
-        let spec = host.sandbox_spec("flow-thread");
+        let spec = host.realizer.sandbox_spec("flow-thread");
         assert_eq!(spec.mounts.len(), 1);
         assert_eq!(spec.env.len(), 1);
         assert_eq!(

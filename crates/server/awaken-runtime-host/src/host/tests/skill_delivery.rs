@@ -734,6 +734,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         "L12 marker must leave the pinned Skill read-only"
     );
     let active = host
+        .realizer
         .thread_resource_manifest("deferred-managed-filesystem-skill")
         .unwrap();
     managed

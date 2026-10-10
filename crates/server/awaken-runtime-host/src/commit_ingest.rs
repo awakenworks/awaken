@@ -362,7 +362,9 @@ mod tests {
                 .with_agent_publications(Arc::new(publications)))
             .build()
             .expect("validated Host dependencies");
-        admission.register_thread_resource_manifest(thread, manifest);
+        admission
+            .realizer
+            .register_thread_resource_manifest(thread, manifest);
         let dispatch = admission
             .resolved_dispatch(activation)
             .expect("production root dispatch decoration");
@@ -515,7 +517,9 @@ mod tests {
                 .with_agent_publications(publications.clone()))
             .build()
             .expect("validated Host dependencies");
-        admission.register_thread_resource_manifest(thread, manifest.clone());
+        admission
+            .realizer
+            .register_thread_resource_manifest(thread, manifest.clone());
         let dispatch = admission
             .resolved_dispatch(activation)
             .expect("production root dispatch decoration");

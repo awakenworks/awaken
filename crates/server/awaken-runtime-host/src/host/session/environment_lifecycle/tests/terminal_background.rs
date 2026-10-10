@@ -147,7 +147,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         let create_fence = lease
             .sandbox_effect_fence(format!("terminal-background-create-{thread}"))
             .expect("C1 create exact durable Sandbox fence");
-        let spec = host.sandbox_spec(thread);
+        let spec = host.realizer.sandbox_spec(thread);
         let physical = host
             .test_local_provider()
             .create_sandbox_for_effect(
@@ -530,7 +530,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     )
     .for_environment(projection.baseline.environment.config_fingerprint.0.clone());
     let fence = lease.sandbox_effect_fence(intent.effect_id()).unwrap();
-    let spec = host.sandbox_spec(thread);
+    let spec = host.realizer.sandbox_spec(thread);
     let physical = host
         .test_local_provider()
         .create_sandbox_for_effect(

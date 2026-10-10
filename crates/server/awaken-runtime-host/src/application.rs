@@ -1079,21 +1079,6 @@ impl crate::SharedHost {
             .unwrap_or_default()
     }
 
-    pub(crate) fn thread_session_env(
-        &self,
-        thread: &str,
-    ) -> Vec<awaken_provisioning_contract::EnvVar> {
-        self.session_slots
-            .read(thread, |slot| {
-                slot.frozen
-                    .baseline
-                    .as_ref()
-                    .map(|baseline| baseline.env.clone())
-                    .unwrap_or_default()
-            })
-            .unwrap_or_default()
-    }
-
     /// Return the exact credential-custody profile frozen in this Session's
     /// Environment. Inference admission uses this projection only when the
     /// immutable Agent publication constrains a plaintext boundary without

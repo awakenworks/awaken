@@ -800,7 +800,9 @@ impl SharedHost {
         )
         .await
         .map_err(|error| HostError::internal(error.to_string()))?;
-        let spec = self.sandbox_substrate_spec_for_provider(thread, provider);
+        let spec = self
+            .realizer
+            .sandbox_substrate_spec_for_provider(thread, provider);
         let environment = Arc::new(
             self.create_session_environment_for_effect(provider, &spec, &effect)
                 .await?,
@@ -880,7 +882,7 @@ impl SharedHost {
             .ok_or_else(|| {
                 HostError::internal("published Session Environment lacks its Resource transition")
             })?;
-        let installed = self.thread_resource_manifest(thread);
+        let installed = self.realizer.thread_resource_manifest(thread);
         if reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::None
             && installed.as_ref() == Some(transition.desired())
         {
@@ -1078,7 +1080,7 @@ impl SharedHost {
         provider: &crate::session_environment::SessionEnvironmentProvider,
         spec: &awaken_provisioning_contract::SandboxSpec,
     ) -> Result<awaken_provisioning_contract::SandboxSpec, HostError> {
-        let resources = self.thread_resources_snapshot(&spec.scope);
+        let resources = self.realizer.thread_resources_snapshot(&spec.scope);
         let repository_paths = resources
             .repositories
             .iter()
