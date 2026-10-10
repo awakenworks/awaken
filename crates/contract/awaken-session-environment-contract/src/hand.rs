@@ -6,8 +6,44 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
 use awaken_tool_contract::tool::{ToolExecutor, ToolRecoveryCapability};
+
+/// Observation of the original invocation, never physical termination evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandRecoveryObservation {
+    NoPendingRequest,
+    Running,
+    Returned,
+    Indeterminate,
+}
+
+/// Framing of recovery on a fresh Environment-owned channel. The original
+/// executor retains the exact unresolved request; observation cannot invoke it.
+#[async_trait]
+pub trait HandRequestRecovery: Send + Sync {
+    async fn recover(
+        &self,
+        channel: Box<dyn AgentChannel>,
+        cancel: bool,
+    ) -> Result<HandRecoveryObservation, String>;
+}
+
+/// Roles selected together by startup for this one Hand connection.
+pub struct HandExecutorBinding {
+    pub executor: Arc<dyn ToolExecutor>,
+    pub recovery: Option<Arc<dyn HandRequestRecovery>>,
+}
+
+impl HandExecutorBinding {
+    pub fn execution_only(executor: Arc<dyn ToolExecutor>) -> Self {
+        Self {
+            executor,
+            recovery: None,
+        }
+    }
+}
 
 /// Binds a live Hand channel to the runtime's tool executor. The framing
 /// implementation belongs to an outer startup crate; the environment owns only
@@ -19,7 +55,7 @@ pub trait HandExecutorFactory: Send + Sync {
         channel: Box<dyn AgentChannel>,
         operation_scope: &str,
         recovery: ToolRecoveryCapability,
-    ) -> Arc<dyn ToolExecutor>;
+    ) -> HandExecutorBinding;
 }
 
 /// Lifetime of the Session container's Hand role. One enum drives both the Pod

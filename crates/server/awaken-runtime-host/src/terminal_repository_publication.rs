@@ -69,15 +69,13 @@ impl ManagedHost {
         current_lease = cleanup
             .authorize_lease(&command.session_id, lease)
             .map_err(to_run_error)?;
-        let (state, resolved_resources) = self
+        let (assignment, resolved_resources) = self
             .host
             .installed_sessions
             .read_realization(command.session_id.as_str(), |r| {
                 (
-                    r.terminal_environment_state.clone(),
-                    r.resource_transition
-                        .as_ref()
-                        .map(|transition| transition.previous().resources.clone()),
+                    r.terminal_cleanup_assignment.clone(),
+                    r.previous_resources(),
                 )
             })
             .ok_or_else(|| {
@@ -86,12 +84,13 @@ impl ManagedHost {
                     "terminal Repository publication has no installed Session projection",
                 )
             })?;
-        let state = state.ok_or_else(|| {
+        let assignment = assignment.ok_or_else(|| {
             RunError::unavailable_classified(
                 "session_repository_publication_state_missing",
                 "terminal Repository publication has no frozen Environment state",
             )
         })?;
+        let state = assignment.projection.environment;
         let binding = state
             .terminal_repository_publication_binding()
             .ok_or_else(|| {

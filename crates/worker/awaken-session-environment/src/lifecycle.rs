@@ -22,7 +22,9 @@ async fn dispose_container_after_closing_hand<S: pc::Sandbox + ?Sized>(
             "Hand reap was indeterminate; continuing with owning Environment disposal"
         );
     }
-    sandbox.dispose_unattached().await
+    sandbox.dispose_unattached().await?;
+    hand.forget_after_provider_disposal().await;
+    Ok(())
 }
 
 impl SandboxEnvironment {
@@ -204,7 +206,13 @@ impl SandboxEnvironment {
     ) -> Result<(), pc::SandboxError> {
         self.sandbox()
             .dispose_for_effect(authorization, authority)
-            .await
+            .await?;
+        if let Self::Container { hand, .. } = self {
+            // Effect-free projection release after the provider completes;
+            // never repeat a live Hand participant in this physical phase.
+            hand.forget_after_provider_disposal().await;
+        }
+        Ok(())
     }
 
     pub(crate) async fn checkpoint_for_effect(

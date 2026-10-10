@@ -876,6 +876,13 @@
   consumers no longer expose parallel import paths; persisted wire and
   fingerprint decision tables retain their compatibility authority.
 
+## 2026-10-10 — Keep archive identity and terminal assignments whole
+
+- [ADR-0090](../adr/0090-session-state-model.md) places the archive command's
+  existing pure identity law in the Session state contract. Mutation and receipt
+  observation share it; Runtime keeps the complete terminal assignment as one
+  disposable projection under the aggregate's existing authority.
+
 ## 2026-10-10 — Carry admitted no-Create evidence to terminal Workers
 
 - [ADR-0078](../adr/0078-terminal-recovery-retains-the-existing-session-authority.md)
@@ -891,3 +898,12 @@
   no-Create archive witness and an unprepared root-only request may release
   expired cleanup-only affinity; live ownership, unknown history and accepted
   source progress continue to protect their original Worker installation.
+
+## 2026-10-11 — Recover the same Hand operation within the authority budget
+
+- Control request queue residence and I/O now consume one monotonic deadline in
+  the existing realization driver; resident Hand controls reuse the original
+  operation ledger and never authorize a new invocation or physical retirement.
+  Owners: [ADR-0024](../adr/0024-daemon-lease-renewal.md),
+  [ADR-0044](../adr/0044-remote-hand-tool-executor-over-a-channel.md),
+  [ADR-0089](../adr/0089-session-realization-single-owner.md).

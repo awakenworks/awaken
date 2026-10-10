@@ -15,7 +15,11 @@ use awaken_session_state_contract::{
 use awaken_session_types::RunError;
 use awaken_time::WallClockExt as _;
 
-use crate::archive_intent::{ArchiveAdmission, ArchiveBusinessIntent, archive_idempotency_record};
+use awaken_session_state_contract::{
+    SessionArchiveAdmission as ArchiveAdmission,
+    SessionArchiveBusinessIntent as ArchiveBusinessIntent,
+    session_archive_idempotency_record as archive_idempotency_record,
+};
 
 use super::{
     SessionApplication, SessionMutationError, SessionPreparationError, SnapshotCommit,
@@ -668,27 +672,9 @@ impl SessionApplication {
                 self.wake_lifecycle_supervisor();
                 return Err(pending_event_batch_error());
             }
-            if admission == ArchiveAdmission::IdleOnly
-                && session.execution != SessionExecutionState::Idle
-            {
-                return Err(SessionPreparationError::Rejected(RunError::bad_request(
-                    "only an idle Session may be archived",
-                )));
-            }
-            if admission == ArchiveAdmission::TerminalOnly && !session.execution.is_terminal() {
-                return Err(SessionPreparationError::Rejected(RunError::bad_request(
-                    "terminal Session release requires already-terminal execution",
-                )));
-            }
-            if admission == ArchiveAdmission::UnattemptedProfiledPreparation
-                && !awaken_session_state_contract::session_is_unattempted_profiled_preparation(
-                    &session,
-                )
-            {
-                return Err(SessionPreparationError::Rejected(RunError::bad_request(
-                    "profiled preparation release requires an unattempted frozen Session",
-                )));
-            }
+            admission
+                .validate_execution(&session)
+                .map_err(SessionPreparationError::Rejected)?;
             let archive_time = self.clock.now_ms();
             session
                 .lifecycle()

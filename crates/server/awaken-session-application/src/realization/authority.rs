@@ -70,19 +70,16 @@ pub(super) async fn terminal_cleanup_worker_affinity_rejection(
     target: &awaken_session_realization_contract::SessionRealizationTarget,
     now_unix_ms: u64,
 ) -> Option<TerminalCleanupRootClaim> {
-    let current = session.realization.as_ref()?;
-    if !scope.is_external() || current.owner == target.owner {
+    use awaken_session_state_contract::{
+        SessionTerminalCleanupAffinity, session_terminal_cleanup_affinity_for,
+    };
+    if !scope.is_external() {
         return None;
     }
-    if awaken_session_realization_contract::realization_lease_is_live_at(
-        current.expires_at_unix_ms,
-        now_unix_ms,
-    ) || !matches!(session.environment, SessionEnvironmentState::Unmaterialized)
-        || !session
-            .terminal_cleanup
-            .has_unprepared_root_only_request(&session.session_id)
-    {
-        return Some(TerminalCleanupRootClaim::Skip);
+    match session_terminal_cleanup_affinity_for(session, &target.owner, now_unix_ms) {
+        SessionTerminalCleanupAffinity::Unchanged => return None,
+        SessionTerminalCleanupAffinity::Retained => return Some(TerminalCleanupRootClaim::Skip),
+        SessionTerminalCleanupAffinity::RequiresUnattemptedArchiveReceipt => {}
     }
     match crate::archive_intent::unattempted_profiled_archive_witness(
         repository,
@@ -95,105 +92,6 @@ pub(super) async fn terminal_cleanup_worker_affinity_rejection(
         Ok(false) => Some(TerminalCleanupRootClaim::Skip),
         Err(error) => Some(TerminalCleanupRootClaim::Failed(repository_control(error))),
     }
-}
-
-/// Lower one frozen terminal root into the static capabilities needed by the
-/// current Worker for every remaining source-dependent phase. Model execution,
-/// ACP, tool recovery, and inference credentials are deliberately absent: the
-/// cleanup driver never starts a new Run.
-pub(crate) fn terminal_cleanup_worker_requirements(
-    owner_scope: &str,
-    session: &PersistedSession,
-    action: &awaken_session_state_contract::SessionTerminalCleanupAction,
-) -> Result<awaken_worker_contract::PlacementRequirements, SessionRealizationControlFailure> {
-    // Model credentials are irrelevant to cleanup; the physical process owner
-    // is not. Preserve this requirement even after resource harvesting so the
-    // final Dispose cannot be handed to an incapable replacement Worker.
-    let physical_requirements =
-        |mut requirements: awaken_worker_contract::PlacementRequirements| {
-            if let Some(baseline) = session.frozen_baseline() {
-                requirements.sandbox.process_tree_supervision =
-                    baseline.environment.sandbox.process_tree_supervision;
-                if baseline.environment.sandbox.host_access
-                    == awaken_provisioning_contract::HostAccessPolicy::TrustedHost
-                {
-                    requirements.sandbox_backend =
-                        Some(awaken_worker_contract::TRUSTED_HOST_SANDBOX_BACKEND.to_owned());
-                }
-            }
-            requirements
-        };
-    if matches!(
-        action,
-        awaken_session_state_contract::SessionTerminalCleanupAction::Dispose { .. }
-    ) {
-        return Ok(physical_requirements(
-            awaken_worker_contract::PlacementRequirements::terminal_cleanup(false, false, None),
-        ));
-    }
-
-    let resource_facts = session
-        .resources
-        .active_generation()
-        .1
-        .compatibility_facts();
-    let publication_outcome_is_durable = session
-        .terminal_cleanup
-        .repository_publication_receipt(&session.session_id)
-        .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?
-        .is_some()
-        || session
-            .terminal_cleanup
-            .repository_publication_rejection(&session.session_id)
-            .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?
-            .is_some();
-    let pending_publication = (!publication_outcome_is_durable)
-        .then(|| session.terminal_cleanup.repository_publication_intent())
-        .flatten();
-    if pending_publication.is_some()
-        && session
-            .environment
-            .terminal_repository_publication_binding()
-            .is_none()
-    {
-        return Err(SessionRealizationControlFailure::Invalid(
-            "terminal Repository publication has no existing live Environment source".into(),
-        ));
-    }
-    let publication_has_credential = pending_publication.is_some_and(|intent| {
-        matches!(
-            &intent.input.source,
-            awaken_session_resource_contract::ResolvedInputSource::Repository { config, .. }
-                if config.credential_binding.is_some()
-        )
-    });
-
-    let baseline = session.frozen_baseline().ok_or_else(|| {
-        SessionRealizationControlFailure::Invalid(
-            "terminal cleanup requires one frozen Session baseline".into(),
-        )
-    })?;
-    let checkpoint_format = if let Some(checkpoint) = session.environment.checkpoint() {
-        Some(checkpoint.format.clone())
-    } else {
-        session
-            .environment
-            .checkpoint_request(
-                owner_scope,
-                &session.session_id,
-                &baseline.environment.idle_retention,
-            )
-            .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?
-            .map(|request| request.format)
-    };
-
-    Ok(physical_requirements(
-        awaken_worker_contract::PlacementRequirements::terminal_cleanup(
-            resource_facts.has_resources() || pending_publication.is_some(),
-            resource_facts.has_credentialed_repository() || publication_has_credential,
-            checkpoint_format,
-        ),
-    ))
 }
 
 pub(super) fn verify_lease(

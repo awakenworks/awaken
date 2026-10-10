@@ -44,7 +44,8 @@ pub use lease_receipt::{ObservedSessionRealizationLease, SessionRealizationLease
 mod terminal_cleanup_authorization;
 pub use terminal_cleanup_authorization::{
     SessionTerminalCleanupAssignment, SessionTerminalCleanupPreparationAuthorization,
-    SessionTerminalCleanupWork, validate_terminal_no_create_witness,
+    SessionTerminalCleanupWork, terminal_cleanup_worker_requirements,
+    validate_terminal_no_create_witness,
 };
 
 pub use awaken_session_resource_contract::{

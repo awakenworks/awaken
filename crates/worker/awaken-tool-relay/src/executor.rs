@@ -73,7 +73,10 @@ const fn hand_result_disposition(
 fn map_hand_result(tool_id: &str, result: HandResult) -> Result<ToolOutput, ToolError> {
     let disposition = hand_result_disposition(
         matches!(&result, HandResult::Ok { .. }),
-        matches!(&result, HandResult::Indeterminate),
+        matches!(
+            &result,
+            HandResult::Indeterminate | HandResult::Running { .. } | HandResult::Observed { .. }
+        ),
     );
 
     match (disposition, result) {
@@ -95,7 +98,10 @@ fn map_hand_result(tool_id: &str, result: HandResult) -> Result<ToolOutput, Tool
             HandErrorKind::UnknownTool => Err(ToolError::UnknownTool(tool_id.to_string())),
             _ => Err(ToolError::DefinitiveFailure(error.message)),
         },
-        (HandResultDisposition::Indeterminate, HandResult::Indeterminate) => {
+        (
+            HandResultDisposition::Indeterminate,
+            HandResult::Indeterminate | HandResult::Running { .. } | HandResult::Observed { .. },
+        ) => {
             // The same wire outcome covers lost replies and unresolved ledger
             // claims; do not invent a connection-loss cause or repeat the error
             // class in its detail. The Runtime already owns call coordinates.
@@ -117,11 +123,11 @@ pub struct RemoteToolExecutor<S> {
     catalog_fingerprint: Option<String>,
     operation_scope: Option<String>,
     recovery_capability: ToolRecoveryCapability,
+    pending_request: std::sync::Mutex<Option<HandRequest>>,
 }
 
 struct HandChannel<S> {
     framed: Framed<S, LengthDelimitedCodec>,
-    pending_operation: Option<String>,
 }
 
 impl<S> RemoteToolExecutor<S>
@@ -133,12 +139,12 @@ where
         Self {
             channel: Mutex::new(HandChannel {
                 framed: Framed::new(channel, LengthDelimitedCodec::new()),
-                pending_operation: None,
             }),
             next_id: AtomicU64::new(1),
             catalog_fingerprint: None,
             operation_scope: None,
             recovery_capability: ToolRecoveryCapability::NonRecoverable,
+            pending_request: std::sync::Mutex::new(None),
         }
     }
 
@@ -201,6 +207,7 @@ where
             _ => unreachable!("operation identity decision preserves token presence"),
         };
         let request = HandRequest {
+            action: crate::HandAction::Invoke,
             protocol_version: crate::wire::CURRENT_HAND_PROTOCOL_VERSION,
             correlation_id,
             operation_id,
@@ -208,6 +215,41 @@ where
             deadline_unix_ms: None,
             call: call.clone(),
         };
+        self.exchange_request(request).await
+    }
+
+    /// Observe or cancel the exact unresolved request on an Environment-owned
+    /// fresh channel. This never invokes a new operation and never clears the
+    /// original stream's uncertainty or creates physical-stop evidence.
+    pub async fn recover_pending<C: AgentChannel>(
+        &self,
+        channel: C,
+        action: crate::HandAction,
+    ) -> Result<Option<HandResult>, ToolError> {
+        if action == crate::HandAction::Invoke {
+            return Err(ToolError::InvalidArguments(
+                "recovery requires Observe or Cancel".into(),
+            ));
+        }
+        let Some(mut request) = self
+            .pending_request
+            .lock()
+            .expect("Hand pending request poisoned")
+            .clone()
+        else {
+            return Ok(None);
+        };
+        request.action = action;
+        request.protocol_version = crate::wire::CURRENT_HAND_PROTOCOL_VERSION;
+        request.correlation_id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        RemoteToolExecutor::new(channel)
+            .exchange_request(request)
+            .await
+            .map(Some)
+    }
+
+    async fn exchange_request(&self, request: HandRequest) -> Result<HandResult, ToolError> {
+        let correlation_id = request.correlation_id;
         let bytes = match serde_json::to_vec(&request) {
             Ok(b) => b,
             // A serialization failure is a local, pre-dispatch fault: the call
@@ -221,12 +263,17 @@ where
         };
 
         let mut channel = self.channel.lock().await;
-        if let Some(pending) = &channel.pending_operation {
+        if let Some(pending) = self
+            .pending_request
+            .lock()
+            .expect("Hand pending request poisoned")
+            .as_ref()
+        {
             // The prior operation may have executed. Its retry remains unknown;
             // a distinct operation has sent no bytes and can use the existing
             // Environment-owned pre-dispatch replacement path. Correlation ids
             // and changed wire call ids must never turn the old operation new.
-            return if pending == &request.operation_id {
+            return if pending.operation_id == request.operation_id {
                 Ok(HandResult::Indeterminate)
             } else {
                 Err(ToolError::UnavailableBeforeDispatch(
@@ -238,7 +285,10 @@ where
         // Mark the stream unusable before the first cancellable write. A dropped
         // caller cannot otherwise tell whether a partial/full frame or its reply
         // remains queued. Only the exact correlated reply restores readiness.
-        channel.pending_operation = Some(request.operation_id.clone());
+        *self
+            .pending_request
+            .lock()
+            .expect("Hand pending request poisoned") = Some(request.clone());
         if channel.framed.send(bytes.into()).await.is_err() {
             return Ok(HandResult::Indeterminate);
         }
@@ -252,7 +302,10 @@ where
                         reply.correlation_id == correlation_id,
                     ) =>
                 {
-                    channel.pending_operation = None;
+                    *self
+                        .pending_request
+                        .lock()
+                        .expect("Hand pending request poisoned") = None;
                     reply.result
                 }
                 Ok(_) => HandResult::Indeterminate,

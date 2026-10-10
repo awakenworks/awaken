@@ -16,10 +16,10 @@ impl Drop for EnteredRequest {
 async fn scheduler_capacity_observes_real_poll_drop_and_two_stage_cancellation() {
     // Causes: all eight permits occupied; request queued versus acquired;
     // inner outcome success/error/deadline/cancellation; completion queued
-    // versus held. Effects: queue residence does not start the request timer;
+    // versus held. Effects: queue residence consumes the same request timer;
     // every actual owned guard releases exactly once; queued cancellation
     // releases none; response completion uses the identical semaphore.
-    // R1-R7 separately cover four cancellation cuts and three returning outcomes.
+    // R1-R8 cover four cancellation cuts, three returning outcomes, and queued expiry before transport entry.
     // Completion-cancellation rows use a successful response prefix; this is
     // seven decision rules, not a Cartesian product of every outcome and cut.
     // Existing Host M1-M3 covers the subsequent *actual* Session mutex/cleanup
@@ -35,10 +35,11 @@ async fn scheduler_capacity_observes_real_poll_drop_and_two_stage_cancellation()
         "deadline",
         "cancel-request",
         "cancel-queued-request",
+        "queued-deadline",
         "cancel-queued-completion",
         "cancel-held-completion",
     ] {
-        let inner = crate::host::RemoteTerminalCleanupControl::default();
+        let inner = UnusedControl;
         let control =
             DeadlineSessionRealizationControl::new(&inner, std::time::Duration::from_millis(10));
         let scheduler = format!("{:p}", Arc::as_ptr(&control.scheduler.permits));
@@ -83,13 +84,27 @@ async fn scheduler_capacity_observes_real_poll_drop_and_two_stage_cancellation()
             "none",
             reserved.len(),
         );
-        tokio::time::advance(std::time::Duration::from_millis(20)).await;
+        tokio::time::advance(std::time::Duration::from_millis(1)).await;
         assert!(
             futures_util::poll!(&mut request).is_pending(),
-            "S2 queue has no request deadline"
+            "S2 live queued budget"
         );
         snapshot(&mut trace, "wait-queued", "queued", "none", reserved.len());
-        if outcome == "cancel-queued-request" {
+        if outcome == "queued-deadline" {
+            tokio::time::advance(std::time::Duration::from_millis(10)).await;
+            assert!(matches!(futures_util::poll!(&mut request), Poll::Ready(Err(
+                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(_)
+            ))), "S2 exhausted queue budget never polls transport");
+            assert!(!active.get(), "S2 no late transport entry");
+            drop(request);
+            snapshot(
+                &mut trace,
+                "queued-deadline",
+                "done",
+                "none",
+                reserved.len(),
+            );
+        } else if outcome == "cancel-queued-request" {
             drop(request);
             snapshot(
                 &mut trace,
@@ -104,7 +119,7 @@ async fn scheduler_capacity_observes_real_poll_drop_and_two_stage_cancellation()
             // only after the selected request has consumed that wakeup.
             assert!(
                 futures_util::poll!(&mut request).is_pending(),
-                "S2 timer starts only after admission"
+                "S2 admission retains the remaining budget"
             );
             assert!(
                 active.get(),
@@ -217,4 +232,54 @@ async fn scheduler_capacity_observes_real_poll_drop_and_two_stage_cancellation()
         "realization-capacity",
         serde_json::json!(rows),
     );
+}
+
+// This fixture supplies the unused Control role required by the decorator.
+// Every tested future is passed directly to production call(); reaching any
+// forwarding method is a test error, not an alternative Control implementation.
+struct UnusedControl;
+#[async_trait::async_trait]
+impl awaken_session_realization_contract::SessionRealizationControl for UnusedControl {
+    async fn begin_session_realization(
+        &self,
+        _: awaken_session_realization_contract::BeginSessionRealization,
+    ) -> Result<
+        awaken_session_realization_contract::SessionRealizationDirective,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
+    > {
+        unreachable!()
+    }
+    async fn renew_session_realization(
+        &self,
+        _: awaken_session_realization_contract::RenewSessionRealization,
+    ) -> Result<
+        awaken_session_realization_contract::SessionRealizationLeaseReceipt,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
+    > {
+        unreachable!()
+    }
+    async fn activate_session_realization(
+        &self,
+        _: awaken_session_realization_contract::ActivateSessionRealization,
+    ) -> Result<
+        awaken_session_realization_contract::SessionRealizationDirective,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
+    > {
+        unreachable!()
+    }
+    async fn acknowledge_session_realization(
+        &self,
+        _: awaken_session_realization_contract::AcknowledgeSessionRealization,
+    ) -> Result<
+        awaken_session_realization_contract::SessionRealizationDirective,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
+    > {
+        unreachable!()
+    }
+    async fn fail_session_realization(
+        &self,
+        _: awaken_session_realization_contract::FailSessionRealization,
+    ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
+        unreachable!()
+    }
 }

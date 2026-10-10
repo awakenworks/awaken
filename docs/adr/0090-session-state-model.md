@@ -105,3 +105,15 @@ them: moving a value cannot leave a second public contract path behind. This
 changes import ownership, not serialization, fingerprint framing, persistence
 or Run admission behavior; the existing persisted-wire and reservation decision
 tables remain the compatibility evidence.
+
+Archive admission and business-command identity are likewise pure Session values.
+The state contract owns their existing `session-archive-intent-v2` framing and the
+expected receipt record for an archived, never-attempted preparation. The application
+only reads and compares the repository receipt; mutation and recovery consume the
+same identity law. Sampling a route timestamp never changes that business identity.
+Runtime retains the complete terminal cleanup assignment as one disposable projection,
+rather than splitting its Environment state and no-Create witness into separate fields.
+Neither projection grants authority beside the root CAS and its realization lease.
+Expired pristine cleanup-affinity eligibility and receipt visibility are also pure
+queries of that same state owner; the application obtains the receipt and performs
+the existing fenced assignment CAS.

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 /// Independent Control requests are bounded per Worker. The same scheduler is
 /// shared by every due Session in one sweep; no per-call semaphore is created.
-pub(crate) const MAX_CONCURRENT_SESSION_REALIZATION_REQUESTS: usize = 8;
+pub const MAX_CONCURRENT_SESSION_REALIZATION_REQUESTS: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ControlPermitEvent {
@@ -76,7 +76,7 @@ impl SessionRealizationControlScheduler {
     }
 }
 
-pub(super) struct ControlRequestPermit {
+pub struct ControlRequestPermit {
     permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
@@ -126,14 +126,14 @@ impl Drop for ControlRequestPermit {
 }
 
 #[derive(Clone)]
-pub(super) struct DeadlineSessionRealizationControl<'a> {
+pub struct DeadlineSessionRealizationControl<'a> {
     inner: &'a dyn awaken_session_realization_contract::SessionRealizationControl,
     request_timeout: std::time::Duration,
     scheduler: SessionRealizationControlScheduler,
 }
 
 impl<'a> DeadlineSessionRealizationControl<'a> {
-    pub(super) fn new(
+    pub fn new(
         inner: &'a dyn awaken_session_realization_contract::SessionRealizationControl,
         request_timeout: std::time::Duration,
     ) -> Self {
@@ -148,7 +148,7 @@ impl<'a> DeadlineSessionRealizationControl<'a> {
     /// deadline. The request permit has already been returned, so queued peer
     /// calls can proceed before slow exact-owner cleanup. Holding this permit
     /// then keeps response application and cleanup inside the same global cap.
-    pub(super) async fn acquire_completion_permit(
+    pub async fn acquire_completion_permit(
         &self,
     ) -> Result<
         ControlRequestPermit,
@@ -171,22 +171,33 @@ impl<'a> DeadlineSessionRealizationControl<'a> {
             >,
         >,
     ) -> Result<T, awaken_session_realization_contract::SessionRealizationControlFailure> {
-        let permit = self.acquire_completion_permit().await?;
-        match tokio::time::timeout(self.request_timeout, future).await {
-            Ok(result) => {
-                permit.settle(ControlPermitEvent::Returned);
-                result
+        let deadline = awaken_time::mono::MonoDeadline::after(self.request_timeout);
+        let expired = || {
+            awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+                format!(
+                    "Session realization Control `{operation}` exceeded its authority-derived request deadline"
+                ),
+            )
+        };
+        let mut permit = None;
+        let response = tokio::time::timeout_at(deadline.instant(), async {
+            permit = Some(self.acquire_completion_permit().await?);
+            if deadline.has_passed() {
+                return Err(expired());
             }
-            Err(_) => {
-                permit.settle(ControlPermitEvent::DeadlineElapsed);
-                Err(
-                    awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
-                        format!(
-                            "Session realization Control `{operation}` exceeded its authority-derived request deadline"
-                        ),
-                    ),
-                )
-            }
+            future.await
+        })
+        .await;
+        if let Some(permit) = permit {
+            permit.settle(if response.is_ok() {
+                ControlPermitEvent::Returned
+            } else {
+                ControlPermitEvent::DeadlineElapsed
+            });
+        }
+        match response {
+            Ok(result) => result,
+            Err(_) => Err(expired()),
         }
     }
 }

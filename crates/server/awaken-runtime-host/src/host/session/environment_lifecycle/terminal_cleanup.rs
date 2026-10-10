@@ -524,7 +524,7 @@ impl SharedHost {
     ) -> bool {
         let projected_terminal = self
             .installed_sessions
-            .read_realization(session_id, |r| r.terminal_environment_state.is_some())
+            .read_realization(session_id, |r| r.terminal_cleanup_assignment.is_some())
             .unwrap_or(false);
         if !projected_terminal {
             return false;

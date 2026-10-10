@@ -767,7 +767,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             _channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,
             _operation_scope: &str,
             _recovery: awaken_tool_contract::tool::ToolRecoveryCapability,
-        ) -> Arc<dyn awaken_tool_contract::tool::ToolExecutor> {
+        ) -> awaken_session_environment_contract::HandExecutorBinding {
             panic!("H20 does not launch an Agent process")
         }
     }

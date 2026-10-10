@@ -347,6 +347,13 @@ cargo test -p awaken-session-application --lib failed_nonterminal_realization
 cargo test -p awaken-run-executor-acp --lib terminal_business_outcome
 cargo test -p awaken-protocol-acp --features real-acp --lib
 cargo test -p awaken-sandbox-container --features k8s --lib remote_completion_requires_explicit_process_exit_evidence
+# Exercise the production Hand control branch and real Bash cancellation.
+# Neither a control reply nor cancellation acceptance is physical stop proof;
+# the same Dispatch CAS still requires its exact contained-process evidence.
+cargo test -p awaken-tool-relay --features test-support
+cargo test -p awaken-session-environment --lib terminal_
+cargo test -p awaken-worker --lib relay_hand::tests::resident_request_recovery_cancels_real_bash_without_replaying_or_claiming_stop
+cargo test -p awaken-coordinator --features container-k8s --lib lost_hand_result_keeps_opaque_occupied_but_exact_contained_exit_retires_the_same_slot
 cargo test -p awaken-worker --lib lifecycle::tests
 cargo test -p awaken-protocol-managed --features test-support --lib rollout
 

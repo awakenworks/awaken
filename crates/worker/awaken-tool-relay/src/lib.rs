@@ -28,4 +28,6 @@ pub use ledger::{
     DEFAULT_FS_LEDGER_MAX_ENTRIES, FsOperationLedger, HandOperationLedger, LedgerAdmission,
 };
 pub use serve::{HandSession, ServeError, serve_hand};
-pub use wire::{CorrelationId, HandError, HandErrorKind, HandReply, HandRequest, HandResult};
+pub use wire::{
+    CorrelationId, HandAction, HandError, HandErrorKind, HandReply, HandRequest, HandResult,
+};

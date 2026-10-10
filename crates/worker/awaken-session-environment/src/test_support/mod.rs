@@ -85,8 +85,10 @@ impl HandExecutorFactory for FakeHandExecutorFactory {
         _channel: Box<dyn AgentChannelType>,
         _operation_scope: &str,
         _recovery: awaken_tool_contract::tool::ToolRecoveryCapability,
-    ) -> Arc<dyn ToolExecutor> {
-        Arc::new(FakeHandExecutor)
+    ) -> awaken_session_environment_contract::HandExecutorBinding {
+        awaken_session_environment_contract::HandExecutorBinding::execution_only(Arc::new(
+            FakeHandExecutor,
+        ))
     }
 }
 
@@ -438,6 +440,12 @@ impl FakeContainer {
     // are no longer a trait obligation or a reachable escape hatch. They stay
     // as this type's own implementation detail, used by its fenced edges.
     pub async fn dispose(&self) -> Result<(), pc::SandboxError> {
+        if self.shared.lock().unwrap().contains_key("__fail_dispose") {
+            return Err(pc::SandboxError::backend(
+                "dispose",
+                "injected disposal unavailable",
+            ));
+        }
         self.disposals
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(())
@@ -548,16 +556,18 @@ impl HandExecutorFactory for ScriptedHandFactory {
         _channel: Box<dyn AgentChannelType>,
         _operation_scope: &str,
         _recovery: awaken_tool_contract::tool::ToolRecoveryCapability,
-    ) -> Arc<dyn ToolExecutor> {
+    ) -> awaken_session_environment_contract::HandExecutorBinding {
         self.binds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Arc::new(ScriptedHandExecutor {
-            outcome: self
-                .outcomes
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or(ScriptedHandOutcome::Success),
-        })
+        awaken_session_environment_contract::HandExecutorBinding::execution_only(Arc::new(
+            ScriptedHandExecutor {
+                outcome: self
+                    .outcomes
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or(ScriptedHandOutcome::Success),
+            },
+        ))
     }
 }
 
@@ -774,7 +784,7 @@ impl HandExecutorFactory for UnusedHandExecutorFactory {
         _channel: Box<dyn AgentChannelType>,
         _operation_scope: &str,
         _recovery: awaken_tool_contract::tool::ToolRecoveryCapability,
-    ) -> Arc<dyn ToolExecutor> {
+    ) -> awaken_session_environment_contract::HandExecutorBinding {
         panic!("this test does not dispatch a Session Hand tool")
     }
 }

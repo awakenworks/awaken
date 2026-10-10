@@ -3,6 +3,7 @@
 use super::*;
 
 struct BlockingHandFactory {
+    recovery: Option<Arc<dyn awaken_session_environment_contract::HandRequestRecovery>>,
     started: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
     block_once: Arc<std::sync::atomic::AtomicBool>,
@@ -37,13 +38,92 @@ impl HandExecutorFactory for BlockingHandFactory {
         _channel: Box<dyn AgentChannelType>,
         _operation_scope: &str,
         _recovery: awaken_tool_contract::tool::ToolRecoveryCapability,
-    ) -> Arc<dyn ToolExecutor> {
-        Arc::new(BlockingHandExecutor {
-            started: self.started.clone(),
-            release: self.release.clone(),
-            block_once: self.block_once.clone(),
-        })
+    ) -> awaken_session_environment_contract::HandExecutorBinding {
+        awaken_session_environment_contract::HandExecutorBinding {
+            executor: Arc::new(BlockingHandExecutor {
+                started: self.started.clone(),
+                release: self.release.clone(),
+                block_once: self.block_once.clone(),
+            }),
+            recovery: self.recovery.clone(),
+        }
     }
+}
+
+#[tokio::test]
+async fn terminal_close_interrupts_an_active_hand_and_never_claims_resident_quiescence() {
+    // DT-HC: C1 invocation holds the binding mutex waiting for its reply;
+    // C2 the Environment owner closes admission. HC1 C1+C2 -> interrupt the
+    // caller as Indeterminate, release its mutex, finish the same stop without
+    // waiting for the reply. HC2 the resident process remains -> quiescence
+    // still refused. HC3 later invocation -> rejected before replacement.
+    let started = Arc::new(tokio::sync::Notify::new());
+    let factory = Arc::new(BlockingHandFactory {
+        recovery: None,
+        started: started.clone(),
+        release: Arc::new(tokio::sync::Notify::new()),
+        block_once: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    });
+    let provider = Arc::new(FakeContainerProvider::default());
+    let environment = SandboxEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
+        provider.clone(),
+        None,
+        Vec::new(),
+        factory,
+        "/usr/local/bin/awaken-sandbox",
+        std::time::Duration::ZERO,
+        awaken_session_environment_contract::ContainerHandResidency::Resident,
+        awaken_time::system_clock(),
+    )
+    .into_session_provider()
+    .create(&spec())
+    .await
+    .unwrap();
+    let hand = environment.agent_tools().tool_executor();
+    let request = ToolCall {
+        call_id: "closing".into(),
+        tool_id: "bash".into(),
+        arguments: serde_json::json!({}),
+    };
+    let invocation = {
+        let hand = hand.clone();
+        let request = request.clone();
+        tokio::spawn(async move { hand.invoke(&request).await })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        environment.lifecycle().stop_bound_processes(),
+    )
+    .await
+    .expect("HC1 stop must not wait behind the in-flight invocation")
+    .unwrap();
+    assert!(
+        matches!(
+            invocation.await.unwrap(),
+            Err(awaken_tool_contract::tool::ToolError::Indeterminate(_))
+        ),
+        "HC1"
+    );
+    assert!(
+        environment.lifecycle().quiesce().await.is_err(),
+        "HC2 resident is not stopped"
+    );
+    assert!(
+        matches!(
+            hand.invoke(&request).await,
+            Err(awaken_tool_contract::tool::ToolError::UnavailableBeforeDispatch(_))
+        ),
+        "HC3"
+    );
+    assert_eq!(
+        provider.resident_channel_opens.load(Ordering::SeqCst),
+        1,
+        "HC3 no second binding"
+    );
+    environment.lifecycle().dispose().await.unwrap();
 }
 
 #[tokio::test]
@@ -653,7 +733,7 @@ async fn checkpoint_quiescence_rejects_a_retained_resident_hand() {
     // durable operation retries; C5=terminal disposal follows. C2+C3 ->
     // E1=first attempt has no proof while the resident binding and sandbox
     // remain live; C2+C3+C4 -> E2=retry remains Retained, never Vacant;
-    // C5 -> E3=terminal stop may drop the channel before sandbox disposal.
+    // C5 -> E3=only completed Sandbox disposal releases the retained channel.
     // Rules QR1/QR2/QR3 distinguish retry-stable checkpoint safety from the
     // existing terminal owner.
     let provider = Arc::new(FakeContainerProvider::default());
@@ -912,6 +992,7 @@ async fn an_idle_deadline_cannot_reap_a_concurrent_hand_invocation() {
         None,
         Vec::new(),
         Arc::new(BlockingHandFactory {
+            recovery: None,
             started: started.clone(),
             release: release.clone(),
             block_once: Arc::new(std::sync::atomic::AtomicBool::new(true)),
@@ -1177,4 +1258,154 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
             pc::RepositoryPublicationRejection::LocalCommitMismatch { observed_commit }
         ) if observed_commit == third
     ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_recovery_observation_failures_and_timeouts_retain_the_same_binding() {
+    // DT-RS: C1 a resident binding is installed; C2 recovery returns no pending
+    // request, Running, Returned, Unknown, error, or never returns. Effects:
+    // RS1 first four rows finish stop but retain the resident binding; RS2
+    // error/timeout return failure and retain that exact binding for retry;
+    // RS3 every row keeps admission closed, refuses physical quiescence, and
+    // cannot create a new execution binding. Retry uses the same recovery role
+    // over another provider-owned channel, never a fabricated stop receipt.
+    use awaken_session_environment_contract::{HandRecoveryObservation as O, HandRequestRecovery};
+    struct ScriptedRecovery {
+        row: u8,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait]
+    impl HandRequestRecovery for ScriptedRecovery {
+        async fn recover(
+            &self,
+            _channel: Box<dyn AgentChannelType>,
+            cancel: bool,
+        ) -> Result<O, String> {
+            assert!(cancel, "RS original request cancellation only");
+            if self.calls.fetch_add(1, Ordering::SeqCst) > 0 {
+                return Ok(O::NoPendingRequest);
+            }
+            match self.row {
+                0 => Ok(O::NoPendingRequest),
+                1 => Ok(O::Running),
+                2 => Ok(O::Returned),
+                3 => Ok(O::Indeterminate),
+                4 => Err("injected control failure".into()),
+                5 => std::future::pending().await,
+                _ => unreachable!(),
+            }
+        }
+    }
+    for row in 0..6 {
+        let recovery = Arc::new(ScriptedRecovery {
+            row,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let provider = Arc::new(FakeContainerProvider::default());
+        let environment =
+            SandboxEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
+                provider.clone(),
+                None,
+                Vec::new(),
+                Arc::new(BlockingHandFactory {
+                    recovery: Some(recovery.clone()),
+                    started: Arc::new(tokio::sync::Notify::new()),
+                    release: Arc::new(tokio::sync::Notify::new()),
+                    block_once: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                }),
+                "/usr/local/bin/awaken-sandbox",
+                std::time::Duration::ZERO,
+                awaken_session_environment_contract::ContainerHandResidency::Resident,
+                awaken_time::system_clock(),
+            )
+            .into_session_provider()
+            .create(&spec())
+            .await
+            .unwrap();
+        let request = ToolCall {
+            call_id: "bound".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({}),
+        };
+        environment
+            .agent_tools()
+            .tool_executor()
+            .invoke(&request)
+            .await
+            .unwrap();
+        assert_eq!(
+            environment
+                .lifecycle()
+                .stop_bound_processes()
+                .await
+                .is_err(),
+            row >= 4,
+            "RS1/RS2 row {row}"
+        );
+        let SandboxEnvironment::Container { hand, .. } = environment.sandbox_environment() else {
+            panic!("container fixture")
+        };
+        assert!(
+            hand.has_tracked_binding().await,
+            "RS1/RS2 preserve exact owner"
+        );
+        assert!(
+            environment.lifecycle().quiesce().await.is_err(),
+            "RS3 no physical proof"
+        );
+        assert!(
+            matches!(
+                environment
+                    .agent_tools()
+                    .tool_executor()
+                    .invoke(&request)
+                    .await,
+                Err(awaken_tool_contract::tool::ToolError::UnavailableBeforeDispatch(_))
+            ),
+            "RS3 no replacement"
+        );
+        assert_eq!(
+            provider.resident_channel_opens.load(Ordering::SeqCst),
+            2,
+            "RS3 initial binding and private control channel only"
+        );
+        environment
+            .lifecycle()
+            .stop_bound_processes()
+            .await
+            .unwrap();
+        assert_eq!(
+            recovery.calls.load(Ordering::SeqCst),
+            2,
+            "RS2 same recovery role retries"
+        );
+        assert!(
+            hand.has_tracked_binding().await,
+            "RS2 retry still retains resident"
+        );
+        assert_eq!(
+            provider.disposals.load(Ordering::SeqCst),
+            0,
+            "RS no unproved disposal"
+        );
+        // RS4 provider refusal retains the same reference; only completed
+        // provider disposal may release it. This fixture is a port outcome,
+        // not Kubernetes deletion/exit evidence.
+        provider
+            .shared
+            .lock()
+            .unwrap()
+            .insert("__fail_dispose".into(), Vec::new());
+        assert!(
+            environment.lifecycle().dispose().await.is_err(),
+            "RS4 provider failure"
+        );
+        assert!(hand.has_tracked_binding().await, "RS4 no premature forget");
+        provider.shared.lock().unwrap().remove("__fail_dispose");
+        environment.lifecycle().dispose().await.unwrap();
+        assert!(
+            !hand.has_tracked_binding().await,
+            "RS4 provider completion releases reference"
+        );
+    }
 }

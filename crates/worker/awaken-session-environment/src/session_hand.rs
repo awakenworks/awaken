@@ -91,6 +91,7 @@ impl SessionAgentLauncher {
 struct HandBinding {
     process: Option<Box<dyn pc::ProcessHandle>>,
     executor: Arc<dyn ToolExecutor>,
+    recovery: Option<Arc<dyn awaken_session_environment_contract::HandRequestRecovery>>,
 }
 
 enum HandBindingState {
@@ -331,7 +332,15 @@ impl HandLifecycle {
             != HandAvailability::Closed as u8
         {
             let _ = self.touch();
+            // Wake active invocation observers even at the exhausted generation.
+            self.activity
+                .send_replace(self.generation.load(Ordering::Acquire));
         }
+    }
+
+    fn clear_binding(&self, binding: &mut HandBindingState) {
+        *binding = HandBindingState::Vacant;
+        self.binding_changed.notify_waiters();
     }
 
     async fn retire_binding(
@@ -356,8 +365,7 @@ impl HandLifecycle {
                 HandBindingPhase::Ready,
                 HandBindingPhase::Vacant,
             ));
-            *binding = HandBindingState::Vacant;
-            self.binding_changed.notify_waiters();
+            self.clear_binding(binding);
             Ok(RetireOutcome::Retired(proof))
         } else {
             // The process outcome is unknown. Starting another Hand could
@@ -466,12 +474,14 @@ async fn launch_hand(
             }
         };
         awaken_observability::record_hand_lifecycle("attach_resident", "ok", started.elapsed());
+        let bound = factory.bind(
+            channel,
+            &operation_scope,
+            ToolRecoveryCapability::DurableRequest,
+        );
         return Ok(HandBinding {
-            executor: factory.bind(
-                channel,
-                &operation_scope,
-                ToolRecoveryCapability::DurableRequest,
-            ),
+            executor: bound.executor,
+            recovery: bound.recovery,
             process: None,
         });
     }
@@ -518,12 +528,14 @@ async fn launch_hand(
     };
     awaken_observability::add_live_hand(1);
     awaken_observability::record_hand_lifecycle("launch", "ok", started.elapsed());
+    let bound = factory.bind(
+        channel,
+        &operation_scope,
+        ToolRecoveryCapability::NonRecoverable,
+    );
     Ok(HandBinding {
-        executor: factory.bind(
-            channel,
-            &operation_scope,
-            ToolRecoveryCapability::NonRecoverable,
-        ),
+        executor: bound.executor,
+        recovery: bound.recovery,
         process: Some(process),
     })
 }
@@ -893,7 +905,68 @@ impl SessionHandExecutor {
 
     pub(super) async fn stop(&self) -> Result<HandStopProof, pc::SandboxError> {
         self.lifecycle.close();
+        if self.mode == HandMode::Resident {
+            let binding = self.lifecycle.binding.lock().await;
+            if let HandBindingState::Ready(current) = &*binding
+                && let Some(recovery) = &current.recovery
+            {
+                let cancel = async {
+                    let channel = self.launcher.open_resident_channel().await?;
+                    recovery
+                        .recover(channel, true)
+                        .await
+                        .map_err(|error| pc::SandboxError::backend("hand_cancel", error))
+                };
+                tokio::time::timeout(HAND_STOP_GRACE, cancel)
+                    .await
+                    .map_err(|_| {
+                        pc::SandboxError::backend(
+                            "hand_cancel",
+                            "Hand cancellation observation exceeded its stop budget",
+                        )
+                    })??;
+            }
+            // Preserve the same resident binding on success as on error or
+            // timeout. Vacant would discard its unresolved request and turn a
+            // later stop into NoBinding although the Pod-owned process lives.
+            return Ok(HandStopProof::ResidentProcessRetained);
+        }
         self.finish_stop("terminal_stop").await
+    }
+
+    /// Forget only the process-local reference after the owning provider's
+    /// disposal completes. This issues no Hand I/O and grants no stop receipt.
+    pub(super) async fn forget_after_provider_disposal(&self) {
+        self.lifecycle.close();
+        let mut binding = self.lifecycle.binding.lock().await;
+        if matches!(*binding, HandBindingState::Ready(_)) {
+            self.lifecycle.clear_binding(&mut binding);
+        }
+        // A launch still in progress remains owned by its existing completion
+        // task, whose closed-lifecycle branch performs its own bounded reap.
+    }
+
+    async fn invoke_bound(
+        &self,
+        executor: &Arc<dyn ToolExecutor>,
+        call: &ToolCall,
+    ) -> Result<ToolOutput, ToolError> {
+        let mut activity = self.lifecycle.activity.subscribe();
+        let invocation = executor.invoke(call);
+        tokio::pin!(invocation);
+        loop {
+            if self.lifecycle.availability() == HandAvailability::Closed {
+                return Err(ToolError::Indeterminate(call.tool_id.clone()));
+            }
+            tokio::select! {
+                result = &mut invocation => return if self.lifecycle.availability() == HandAvailability::Closed {
+                    Err(ToolError::Indeterminate(call.tool_id.clone()))
+                } else { result },
+                changed = activity.changed() => {
+                    if changed.is_err() { return Err(ToolError::Indeterminate(call.tool_id.clone())); }
+                }
+            }
+        }
     }
 
     async fn replacement(&self) -> Result<(), ToolError> {
@@ -951,7 +1024,7 @@ impl ToolExecutor for SessionHandExecutor {
                 "Session hand launch did not install an owned binding".into(),
             ));
         };
-        let result = current.executor.invoke(call).await;
+        let result = self.invoke_bound(&current.executor, call).await;
         let result = if matches!(result, Err(ToolError::UnavailableBeforeDispatch(_))) {
             tracing::warn!(
                 session_environment = %self.operation_scope,
@@ -986,7 +1059,7 @@ impl ToolExecutor for SessionHandExecutor {
                     "replacement Session hand was not installed".into(),
                 ));
             };
-            current.executor.invoke(call).await
+            self.invoke_bound(&current.executor, call).await
         } else {
             result
         };
@@ -1150,6 +1223,7 @@ mod tests {
             *hand.lifecycle.binding.lock().await = HandBindingState::Ready(HandBinding {
                 process: Some(Box::new(UnreapableProcess)),
                 executor: Arc::new(FakeHandExecutor),
+                recovery: None,
             });
             assert!(environment.lifecycle().quiesce().await.is_err());
             assert!(environment.lifecycle().dispose().await.is_err());

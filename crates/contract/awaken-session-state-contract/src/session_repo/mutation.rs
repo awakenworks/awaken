@@ -60,6 +60,53 @@ pub struct SessionIdempotencyReceipt {
     pub committed_revision: SessionRevision,
 }
 
+impl IdempotencyRecord {
+    /// Compare the receipt read under this record's key with one root snapshot.
+    /// A receipt from a later root cannot witness admission in an older snapshot.
+    #[must_use]
+    pub fn confirmed_by(
+        &self,
+        receipt: &SessionIdempotencyReceipt,
+        revision: SessionRevision,
+    ) -> bool {
+        self.payload_hash == receipt.payload_hash && receipt.committed_revision.0 <= revision.0
+    }
+}
+
+#[cfg(test)]
+mod receipt_confirmation_tests {
+    use super::*;
+
+    #[test]
+    fn receipt_confirmation_requires_the_same_payload_and_a_visible_commit() {
+        // DT-RC: C1 exact/different payload; C2 receipt commit before/equal/after
+        // the observed root. RC1 exact+before/equal confirms; every other row
+        // rejects. The repository selects the key; this pure query cannot
+        // grant an archive command or infer an unseen future commit.
+        let expected = IdempotencyRecord {
+            key: "archive".into(),
+            payload_hash: "original".into(),
+        };
+        for (payload, committed, accepted) in [
+            ("original", 3, true),
+            ("original", 4, true),
+            ("original", 5, false),
+            ("changed", 3, false),
+            ("changed", 4, false),
+            ("changed", 5, false),
+        ] {
+            let receipt = SessionIdempotencyReceipt {
+                payload_hash: payload.into(),
+                committed_revision: SessionRevision(committed),
+            };
+            assert_eq!(
+                expected.confirmed_by(&receipt, SessionRevision(4)),
+                accepted
+            );
+        }
+    }
+}
+
 /// Atomic outcome of one Session-root create command. Both variants carry the
 /// repository's durable aggregate; callers must never continue from their
 /// locally compiled candidate after the repository classified a replay.

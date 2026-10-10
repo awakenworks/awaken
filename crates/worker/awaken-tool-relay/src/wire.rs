@@ -1,5 +1,6 @@
 // @formal entrypoint remote_tool.protocol_version_requires_stable_v2_operation_identity
 // @formal evidence remote_tool.stable_operation_identity
+// @formal entrypoint remote_tool.controls_never_admit_invocation
 //! The brain↔hand wire (ADR-0044 D2).
 //!
 //! The protocol carries the runtime's own neutral tool value objects —
@@ -15,7 +16,45 @@ use serde::{Deserialize, Serialize};
 /// its [`HandRequest`]. It is not an effect identity.
 pub type CorrelationId = u64;
 
-pub const CURRENT_HAND_PROTOCOL_VERSION: u16 = 2;
+pub const CURRENT_HAND_PROTOCOL_VERSION: u16 = 3;
+
+/// Control of an existing operation, never a second execution path.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandAction {
+    #[default]
+    Invoke,
+    Observe,
+    Cancel,
+}
+
+impl HandAction {
+    fn is_invoke(&self) -> bool {
+        *self == Self::Invoke
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HandDispatchPlan {
+    Invoke,
+    Observe,
+    Cancel,
+    Refuse,
+}
+
+/// The sole routing decision, before any ledger admission or registry call.
+pub(crate) fn hand_dispatch_plan(request: &HandRequest) -> HandDispatchPlan {
+    if !hand_protocol_envelope_admitted(request.protocol_version, !request.operation_id.is_empty())
+    {
+        return HandDispatchPlan::Refuse;
+    }
+    match request.action {
+        HandAction::Invoke => HandDispatchPlan::Invoke,
+        HandAction::Observe if request.protocol_version >= 3 => HandDispatchPlan::Observe,
+        HandAction::Cancel if request.protocol_version >= 3 => HandDispatchPlan::Cancel,
+        _ => HandDispatchPlan::Refuse,
+    }
+}
 
 #[must_use]
 pub(crate) const fn hand_protocol_envelope_admitted(
@@ -30,6 +69,8 @@ pub(crate) const fn hand_protocol_envelope_admitted(
 /// One tool call framed for a hand.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HandRequest {
+    #[serde(default, skip_serializing_if = "HandAction::is_invoke")]
+    pub action: HandAction,
     /// Version of the operation-identity contract. Legacy peers deserialize to
     /// v1; v2 requires an explicit stable operation id for every request.
     #[serde(default = "legacy_hand_protocol_version")]
@@ -70,6 +111,10 @@ pub struct HandReply {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "status")]
 pub enum HandResult {
+    /// A control read of the original cached invocation, not a control error.
+    Observed { result: Box<HandResult> },
+    /// The original invocation is live. Cancellation acceptance proves no stop.
+    Running { cancel_requested: bool },
     /// The tool ran and returned a (possibly model-visible-error) output.
     Ok { output: ToolOutput },
     /// The tool could not be dispatched (unknown id, arguments, fingerprint
@@ -124,6 +169,7 @@ impl HandRequest {
     /// A request with no fingerprint/deadline constraints.
     pub fn new(correlation_id: CorrelationId, call: ToolCall) -> Self {
         Self {
+            action: HandAction::Invoke,
             protocol_version: CURRENT_HAND_PROTOCOL_VERSION,
             correlation_id,
             operation_id: call.call_id.clone(),
@@ -142,18 +188,73 @@ const fn legacy_hand_protocol_version() -> u16 {
 mod verification {
     use super::*;
 
+    /// @obligation remote_tool.controls_never_admit_invocation
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn recovery_control_plan_never_selects_invocation_admission() {
+        // Raw request fields, not free admission facts: arbitrary wire version,
+        // each control action, and absent/present operation identity. The same
+        // production plan routes serve_hand before its only ledger.begin call.
+        let action = if kani::any::<bool>() {
+            HandAction::Observe
+        } else {
+            HandAction::Cancel
+        };
+        let mut request = HandRequest::new(
+            1,
+            ToolCall {
+                call_id: "c".into(),
+                tool_id: "t".into(),
+                arguments: serde_json::Value::Null,
+            },
+        );
+        request.action = action;
+        request.protocol_version = kani::any();
+        if kani::any::<bool>() {
+            request.operation_id.clear();
+        }
+        let plan = hand_dispatch_plan(&request);
+        assert_ne!(plan, HandDispatchPlan::Invoke);
+        if matches!(plan, HandDispatchPlan::Observe | HandDispatchPlan::Cancel) {
+            assert_eq!(request.protocol_version, 3);
+            assert!(!request.operation_id.is_empty());
+        }
+    }
+
     /// @obligation remote_tool.protocol_version_requires_stable_v2_operation_identity
     #[kani::proof]
+    #[kani::unwind(16)]
     fn hand_protocol_requires_supported_version_and_v2_operation_identity() {
-        let protocol_version = kani::any();
-        let has_operation_id = kani::any();
-        let admitted = hand_protocol_envelope_admitted(protocol_version, has_operation_id);
-        assert_eq!(
-            admitted,
-            protocol_version >= 1
-                && protocol_version <= CURRENT_HAND_PROTOCOL_VERSION
-                && (protocol_version == 1 || has_operation_id)
+        // The production caller derives identity presence from wire bytes.
+        // Empty/nonempty strings are the two equivalence classes of that
+        // derivation; do not substitute an unconstrained admission Boolean.
+        let mut request = HandRequest::new(
+            1,
+            ToolCall {
+                call_id: "c".into(),
+                tool_id: "t".into(),
+                arguments: serde_json::Value::Null,
+            },
         );
+        request.protocol_version = kani::any();
+        if kani::any::<bool>() {
+            request.operation_id.clear();
+        }
+        let admitted = hand_protocol_envelope_admitted(
+            request.protocol_version,
+            !request.operation_id.is_empty(),
+        );
+        if admitted {
+            assert!(request.protocol_version >= 1);
+            assert!(request.protocol_version <= CURRENT_HAND_PROTOCOL_VERSION);
+            assert!(request.protocol_version == 1 || !request.operation_id.is_empty());
+        }
+        if request.protocol_version == 1 {
+            assert!(admitted);
+        }
+        if request.protocol_version == 2 && request.operation_id.is_empty() {
+            assert!(!admitted);
+        }
     }
 }
 

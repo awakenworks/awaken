@@ -16,7 +16,6 @@
 mod agent_filesystem_context;
 pub(crate) mod attempt_context;
 mod execution_authority;
-mod realization_control_deadline;
 mod realization_renewal;
 mod resource_transition;
 
@@ -1038,9 +1037,7 @@ impl crate::SharedHost {
         .await?;
         self.installed_sessions
             .update_realization(assignment.session_id.as_str(), |r| {
-                r.terminal_environment_state = Some(assignment.projection.environment.clone());
-                r.terminal_environment_creation_not_attempted =
-                    assignment.environment_creation_not_attempted;
+                r.terminal_cleanup_assignment = Some(assignment.clone());
             });
         Ok(())
     }

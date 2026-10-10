@@ -393,7 +393,7 @@ SchedulerObservationStep(s, t, capacity) ==
         [] t.event \in {"return", "deadline", "cancel-request"} ->
           /\ s.request = "held"
           /\ SchedulerCut(t) = <<s.available + 1, s.reserved, "done", "none">>
-        [] t.event = "cancel-queued-request" ->
+        [] t.event \in {"cancel-queued-request", "queued-deadline"} ->
           /\ s.request = "queued"
           /\ SchedulerCut(t) = <<s.available, s.reserved, "done", "none">>
         [] t.event = "queue-completion" ->
@@ -423,7 +423,7 @@ ControlSchedulerObservation(trace, capacity) ==
 
 HeldRealizationMutexObservation(o) ==
     /\ o.capacity = 8 /\ o.peak = o.capacity
-    /\ o.entered = 2 * o.capacity
+    /\ o.entered = o.capacity
     /\ Len(o.before) = o.capacity /\ Len(o.after) = o.capacity
     /\ \A i \in 1..o.capacity :
          /\ o.before[i].locked /\ o.after[i].locked

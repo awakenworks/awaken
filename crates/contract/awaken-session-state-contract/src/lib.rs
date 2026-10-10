@@ -8,6 +8,7 @@ pub use aggregate::{
     SessionEventsOperations, SessionLifecycleOperations, SessionMcpOperations,
     SessionResourcesOperations, session_activity_open_plan, session_root_update_observation,
 };
+mod archive_intent;
 mod environment;
 mod event_history;
 pub use event_history::SessionEventHistory;
@@ -53,6 +54,11 @@ pub(crate) use awaken_session_resource_contract::{
 };
 pub(crate) use awaken_session_types::{SessionId, SessionRevision};
 
+pub use archive_intent::{
+    SessionArchiveAdmission, SessionArchiveBusinessIntent, SessionTerminalCleanupAffinity,
+    session_archive_idempotency_record, session_terminal_cleanup_affinity_for,
+    session_unattempted_profiled_archive_record,
+};
 pub use environment::{
     CheckpointReceipt, QuiescenceReceipt, RestoreReceipt, SandboxCheckpointRef,
     SandboxCheckpointRequest, SandboxGeneration, SandboxRestoreRequest,

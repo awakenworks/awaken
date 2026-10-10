@@ -53,6 +53,17 @@ struct TestOperationLedger {
 
 #[async_trait]
 impl HandOperationLedger for TestOperationLedger {
+    async fn observe(&self, operation_id: &str, cancel: bool) -> Result<HandResult, String> {
+        self.inner.observe(operation_id, cancel).await
+    }
+
+    async fn cancellation(
+        &self,
+        operation_id: &str,
+    ) -> Result<tokio_util::sync::CancellationToken, String> {
+        self.inner.cancellation(operation_id).await
+    }
+
     async fn begin(
         &self,
         operation_id: &str,
@@ -73,6 +84,155 @@ struct BlockingEcho {
     runs: Arc<AtomicU32>,
     started: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
+}
+
+#[tokio::test]
+async fn operation_controls_never_admit_an_unknown_operation_or_replay_a_cancelled_one() {
+    // DT-CTRL: C1 unknown/live/cached/previous-process operation; C2 Observe/Cancel;
+    // C3 protocol v2/v3. R1 unknown -> Unknown, no claim and zero invocation.
+    // R2 v2 control -> rejection before ledger admission. R3 live Observe ->
+    // Running; Cancel -> request recorded, original future ends Unknown, once.
+    // R4 cached/restarted -> return the original evidence/Unknown, never Execute.
+    // No control result claims process or external-effect termination.
+    use awaken_tool_relay::HandAction;
+    let directory = TestDirectory::create();
+    let ledger = Arc::new(FsOperationLedger::open(directory.path()).unwrap());
+    let runs = Arc::new(AtomicU32::new(0));
+    let started = Arc::new(tokio::sync::Notify::new());
+    let tool = Arc::new(BlockingEcho {
+        runs: runs.clone(),
+        started: started.clone(),
+        release: Arc::new(tokio::sync::Notify::new()),
+    }) as Arc<dyn RawTool>;
+    let mut observer =
+        HandSession::new([tool.clone()], ledger.clone(), awaken_time::system_clock());
+    let mut request = HandRequest::new(1, call("controlled", "blocking_echo", "x"));
+    request.action = HandAction::Observe;
+    assert_eq!(
+        observer.handle(request.clone()).await.result,
+        HandResult::Indeterminate,
+        "R1"
+    );
+    request.action = HandAction::Cancel;
+    assert_eq!(
+        observer.handle(request.clone()).await.result,
+        HandResult::Indeterminate,
+        "R1"
+    );
+    assert_eq!(
+        std::fs::read_dir(directory.path()).unwrap().count(),
+        0,
+        "R1 no durable claim"
+    );
+    request.protocol_version = 2;
+    assert!(
+        matches!(
+            observer.handle(request.clone()).await.result,
+            HandResult::Err { .. }
+        ),
+        "R2"
+    );
+    request.protocol_version = awaken_tool_relay::wire::CURRENT_HAND_PROTOCOL_VERSION;
+    request.action = HandAction::Invoke;
+    let mut original = HandSession::new([tool], ledger, awaken_time::system_clock());
+    let invoke = request.clone();
+    let original = tokio::spawn(async move { original.handle(invoke).await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
+        .await
+        .unwrap();
+    request.action = HandAction::Observe;
+    assert_eq!(
+        observer.handle(request.clone()).await.result,
+        HandResult::Running {
+            cancel_requested: false
+        },
+        "R3"
+    );
+    // R3V: rejected controls must not cancel an already-running operation.
+    // Crossing Observe/Cancel with version, missing identity, catalog and
+    // expired deadline covers each envelope cause before any ledger effect.
+    for action in [HandAction::Observe, HandAction::Cancel] {
+        for cause in [
+            "old-version",
+            "future-version",
+            "missing-id",
+            "catalog",
+            "expired",
+        ] {
+            let mut rejected = request.clone();
+            rejected.action = action;
+            match cause {
+                "old-version" => rejected.protocol_version = 2,
+                "future-version" => rejected.protocol_version = 4,
+                "missing-id" => rejected.operation_id.clear(),
+                "catalog" => rejected.catalog_fingerprint = Some("wrong".into()),
+                "expired" => rejected.deadline_unix_ms = Some(0),
+                _ => unreachable!(),
+            }
+            // The same observer and live ledger own all rows.
+            observer = observer.with_catalog_fingerprint("expected");
+            assert!(
+                matches!(
+                    observer.handle(rejected).await.result,
+                    HandResult::Err { .. }
+                ),
+                "R3V {action:?}/{cause}"
+            );
+            assert_eq!(
+                observer.handle(request.clone()).await.result,
+                HandResult::Running {
+                    cancel_requested: false
+                },
+                "R3V no hidden cancellation"
+            );
+        }
+        let mut other = request.clone();
+        other.action = action;
+        other.operation_id = "a-different-operation".into();
+        assert_eq!(
+            observer.handle(other).await.result,
+            HandResult::Indeterminate,
+            "R3V wrong identity never targets the live operation"
+        );
+        assert_eq!(
+            std::fs::read_dir(directory.path()).unwrap().count(),
+            1,
+            "R3V controls never add a durable claim"
+        );
+    }
+    request.action = HandAction::Cancel;
+    assert_eq!(
+        observer.handle(request.clone()).await.result,
+        HandResult::Running {
+            cancel_requested: true
+        },
+        "R3 only intent"
+    );
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(5), original)
+            .await
+            .unwrap()
+            .unwrap()
+            .result,
+        HandResult::Indeterminate,
+        "R3"
+    );
+    request.action = HandAction::Observe;
+    assert_eq!(
+        observer.handle(request.clone()).await.result,
+        HandResult::Observed {
+            result: Box::new(HandResult::Indeterminate)
+        },
+        "R4"
+    );
+    let restarted = Arc::new(FsOperationLedger::open(directory.path()).unwrap());
+    let mut restarted = HandSession::new([], restarted, awaken_time::system_clock());
+    assert_eq!(
+        restarted.handle(request).await.result,
+        HandResult::Indeterminate,
+        "R4"
+    );
+    assert_eq!(runs.load(Ordering::SeqCst), 1, "all rows: no re-execution");
 }
 
 #[async_trait]
@@ -1245,4 +1405,91 @@ async fn serve_hand_fails_closed_on_a_frame_that_is_not_a_request() {
         Err(e) => assert!(e.to_string().contains("not a HandRequest"), "got: {e}"),
         Ok(()) => panic!("expected the hand to fail closed on a non-request frame"),
     }
+}
+
+#[tokio::test]
+async fn completed_result_survives_lost_invocation_and_control_replies_without_replay() {
+    // DT-RC: C1 the original operation completed before its reply was lost;
+    // C2 Cancel then Observe use fresh channels; C3 the Cancel reply is also
+    // lost. RC1 C1 => original stream stays uncertain. RC2 C1+C2+Cancel =>
+    // original known result survives completion/cancel ordering. RC3 +C3 =>
+    // Unknown transport outcome; a subsequent Observe returns that same result.
+    // Every row preserves one effect, the original operation identity and the
+    // poisoned stream partition; no result is physical termination evidence.
+    use awaken_tool_relay::HandAction;
+    use futures_util::StreamExt;
+    use tokio_util::codec::{Framed, LengthDelimitedCodec};
+    let directory = TestDirectory::create();
+    let ledger = Arc::new(FsOperationLedger::open(directory.path()).unwrap());
+    let runs = Arc::new(AtomicU32::new(0));
+    let mut original = HandSession::new(
+        [Arc::new(CountingEcho {
+            id: "echo".into(),
+            runs: runs.clone(),
+        }) as Arc<dyn RawTool>],
+        ledger.clone(),
+        awaken_time::system_clock(),
+    );
+    let (brain, hand) = tokio::io::duplex(64 * 1024);
+    let peer = tokio::spawn(async move {
+        let mut framed = Framed::new(hand, LengthDelimitedCodec::new());
+        let frame = framed.next().await.unwrap().unwrap();
+        let request: HandRequest = serde_json::from_slice(&frame).unwrap();
+        let reply = original.handle(request).await;
+        // Original effect commits in the existing ledger, but this consumer
+        // loses the reply. Drop the actual framed channel without sending it.
+        assert!(matches!(reply.result, HandResult::Ok { .. }));
+    });
+    let executor = RemoteToolExecutor::new(brain);
+    assert_eq!(
+        executor
+            .call_hand(&call("c1", "echo", "known"))
+            .await
+            .unwrap(),
+        HandResult::Indeterminate,
+        "RC1"
+    );
+    peer.await.unwrap();
+    let (brain, hand) = tokio::io::duplex(64 * 1024);
+    let mut observer = HandSession::new([], ledger.clone(), awaken_time::system_clock());
+    let peer = tokio::spawn(async move {
+        let mut framed = Framed::new(hand, LengthDelimitedCodec::new());
+        let frame = framed.next().await.unwrap().unwrap();
+        let request: HandRequest = serde_json::from_slice(&frame).unwrap();
+        assert_eq!(request.action, HandAction::Cancel);
+        assert_eq!(request.operation_id, "c1", "RC2 original identity");
+        let reply = observer.handle(request).await;
+        assert!(
+            matches!(reply.result, HandResult::Observed { result } if matches!(*result, HandResult::Ok { .. })),
+            "RC2 completed result wins"
+        );
+        // Lose the control reply as well, without mutating the original result.
+    });
+    assert_eq!(
+        executor
+            .recover_pending(brain, HandAction::Cancel)
+            .await
+            .unwrap(),
+        Some(HandResult::Indeterminate),
+        "RC3"
+    );
+    peer.await.unwrap();
+    let (brain, hand) = tokio::io::duplex(64 * 1024);
+    let peer = tokio::spawn(serve_hand(
+        hand,
+        HandSession::new([], ledger, awaken_time::system_clock()),
+    ));
+    assert_eq!(
+        executor
+            .recover_pending(brain, HandAction::Observe)
+            .await
+            .unwrap(),
+        Some(HandResult::Observed {
+            result: Box::new(HandResult::ok(ToolOutput::ok("c1", "known")))
+        }),
+        "RC3 fresh observation"
+    );
+    peer.await.unwrap().unwrap();
+    assert_poisoned_operation_partition(&executor).await;
+    assert_eq!(runs.load(Ordering::SeqCst), 1, "RC1-RC3 at most once");
 }

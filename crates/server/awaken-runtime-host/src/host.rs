@@ -133,9 +133,8 @@ mod terminal_reconciliation;
 mod tests;
 #[cfg(test)]
 pub(crate) use tests::fixtures::{
-    MemoryHostModel, RemoteTerminalCleanupControl, SelectedOnly, test_resource_execution,
-    test_resource_validator, test_upstream_authority, with_test_memory_mounter,
-    with_test_resource_validation,
+    MemoryHostModel, SelectedOnly, test_resource_execution, test_resource_validator,
+    test_upstream_authority, with_test_memory_mounter, with_test_resource_validation,
 };
 mod types;
 mod worker_resolver;
