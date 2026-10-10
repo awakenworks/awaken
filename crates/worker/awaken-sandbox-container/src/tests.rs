@@ -152,7 +152,7 @@ fn future_host_bind_handle() -> pc::SandboxHandle {
 
 #[test]
 fn container_capabilities_are_the_strongest_tier() {
-    let c = container_capabilities(true, false, false, false, Default::default());
+    let c = container_capabilities(true, false, false, false, true, Default::default());
     assert_eq!(c.isolation, pc::IsolationClass::Container);
     assert!(c.tool_transparent && c.enforced_readonly && c.network_isolation);
     assert!(c.resource_limits && c.custom_rootfs);
@@ -256,7 +256,7 @@ fn current_container_provider_rejects_egress_only_secret_injection() {
     assert_eq!(
         pc::prepare_environment(
             &requested,
-            &container_capabilities(true, false, false, false, Default::default()),
+            &container_capabilities(true, false, false, false, true, Default::default()),
         ),
         Err(pc::PrepareError::EgressSecretUnsupported("API_KEY".into())),
         "an unsupported provider must fail before materializing or launching the sandbox"
@@ -275,7 +275,7 @@ fn container_runtime_without_package_builder_rejects_before_launch() {
     assert_eq!(
         pc::prepare_environment(
             &requested,
-            &container_capabilities(true, false, false, false, Default::default()),
+            &container_capabilities(true, false, false, false, true, Default::default()),
         ),
         Err(pc::PrepareError::PackageProvisioningUnsupported),
         "Kubernetes and out-of-tree runtimes without immutable image builds must fail before a workload exists"
@@ -286,10 +286,20 @@ fn container_runtime_without_package_builder_rejects_before_launch() {
 struct RecordingPackageProvisioner {
     calls: Mutex<Vec<(String, pc::PackageRequirements, pc::NetworkPolicy)>>,
     response_gate: Option<Arc<tokio::sync::Semaphore>>,
+    unreachable: bool,
 }
 
 #[async_trait]
 impl PackageImageProvisioner for RecordingPackageProvisioner {
+    async fn probe_builder(&self) -> Result<(), RuntimeError> {
+        if self.unreachable {
+            return Err(RuntimeError::Backend(
+                "package builder is unreachable".into(),
+            ));
+        }
+        Ok(())
+    }
+
     async fn prepare_package_image(
         &self,
         base_image: &str,
@@ -305,6 +315,26 @@ impl PackageImageProvisioner for RecordingPackageProvisioner {
             gate.acquire().await.unwrap().forget();
         }
         Ok("registry.test/awaken-packages@sha256:prepared".into())
+    }
+}
+
+#[tokio::test]
+async fn startup_attestation_withholds_an_unreachable_package_builder() {
+    // ADR-0092 decision 5. Causes: C1 the external builder answers or not.
+    // Effects: E1 package provisioning stays advertised; E2 it is withheld
+    // once attested (a non-building engine has no other builder); the engine's
+    // own evidence (limits) is unaffected by the builder.
+    for (unreachable, advertised) in [(false, true), (true, false)] {
+        let builder = Arc::new(RecordingPackageProvisioner {
+            unreachable,
+            ..Default::default()
+        });
+        let provider = provider(Arc::new(FakeRuntime::default())).with_package_provisioner(builder);
+        let evidence = provider.attest_startup().await.expect("the engine answers");
+        assert_eq!(evidence.package_builder, !unreachable, "builder evidence");
+        let capabilities = provider.capabilities();
+        assert_eq!(capabilities.package_provisioning, advertised, "E1/E2");
+        assert!(capabilities.resource_limits, "engine evidence unaffected");
     }
 }
 

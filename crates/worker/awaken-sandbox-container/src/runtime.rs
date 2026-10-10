@@ -281,6 +281,7 @@ pub(crate) fn container_capabilities(
     enforced_network_allowlist: bool,
     worker_relay_selected: bool,
     package_provisioning: bool,
+    resource_limits: bool,
     control_services: std::collections::BTreeSet<SandboxControlServiceKind>,
 ) -> pc::SandboxCapabilities {
     pc::SandboxCapabilities {
@@ -292,7 +293,7 @@ pub(crate) fn container_capabilities(
         network_isolation,
         enforced_network_allowlist,
         secret_egress_substitution: worker_relay_selected && enforced_network_allowlist,
-        resource_limits: true,
+        resource_limits,
         custom_rootfs: true,
         package_provisioning,
         control_services,
@@ -1379,6 +1380,10 @@ pub use awaken_container_contract::RuntimeAgentProcess;
 /// Independent package-image build/publish port.
 #[async_trait]
 pub trait PackageImageProvisioner: Send + Sync {
+    /// Whether the builder answers now; a builder that does not is not
+    /// advertised as package provisioning (ADR-0092).
+    async fn probe_builder(&self) -> Result<(), RuntimeError>;
+
     async fn package_base_image_identity(&self, reference: &str) -> Result<String, RuntimeError> {
         Ok(reference.to_owned())
     }
@@ -1461,6 +1466,15 @@ pub trait ContainerRuntime: Send + Sync {
     /// Every adapter must name its evidence source; readiness has no permissive
     /// default that could accidentally advertise stale authority.
     async fn probe_ready(&self) -> Result<(), RuntimeError>;
+
+    /// Start-up evidence before registration (ADR-0092): the configured
+    /// default image resolves (an error otherwise, since no isolation tier
+    /// would remain) and whether CPU, memory and pid limits are enforceable.
+    /// An orchestrator that enforces limits itself (Kubernetes' kubelet) keeps
+    /// this answer; engines that may lack cgroup delegation override it.
+    async fn startup_resource_limits(&self, _default_image: &str) -> Result<bool, RuntimeError> {
+        Ok(true)
+    }
 
     fn supports_package_provisioning(&self) -> bool {
         false

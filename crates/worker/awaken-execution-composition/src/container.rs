@@ -166,6 +166,12 @@ async fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     if policy.worker_mcp_relay_substitution {
         provider = provider.with_worker_mcp_relay_substitution();
     }
+    // Every advertised capability is proven before the Worker derives its
+    // manifest; an unproven one is withheld (ADR-0092 decision 5).
+    provider
+        .attest_startup()
+        .await
+        .map_err(|error| format!("container backend start-up evidence: {error}"))?;
     wrap(provider, leased, settings, clock).await
 }
 

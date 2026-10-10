@@ -940,6 +940,32 @@ impl ContainerRuntime for DockerRuntime {
         self.ping().await
     }
 
+    async fn startup_resource_limits(&self, default_image: &str) -> Result<bool, RuntimeError> {
+        if self.docker.inspect_image(default_image).await.is_err() {
+            let mut pull = self.docker.create_image(
+                Some(CreateImageOptions {
+                    from_image: default_image.to_owned(),
+                    ..Default::default()
+                }),
+                None,
+                None,
+            );
+            while let Some(progress) = pull.next().await {
+                progress.map_err(backend)?;
+            }
+            self.docker
+                .inspect_image(default_image)
+                .await
+                .map_err(backend)?;
+        }
+        let info = self.docker.info().await.map_err(backend)?;
+        Ok(crate::host_evidence::limits_enforceable(
+            info.cpu_cfs_quota.unwrap_or(false),
+            info.memory_limit.unwrap_or(false),
+            info.pids_limit.unwrap_or(false),
+        ))
+    }
+
     fn enforces_network_none(&self) -> bool {
         true
     }
@@ -1798,6 +1824,10 @@ impl ContainerRuntime for DockerRuntime {
 
 #[async_trait]
 impl PackageImageProvisioner for DockerRuntime {
+    async fn probe_builder(&self) -> Result<(), RuntimeError> {
+        self.ping().await
+    }
+
     async fn package_base_image_identity(&self, reference: &str) -> Result<String, RuntimeError> {
         self.docker
             .inspect_image(reference)
