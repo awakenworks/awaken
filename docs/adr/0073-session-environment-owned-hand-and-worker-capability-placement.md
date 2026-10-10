@@ -15,8 +15,8 @@
 - Amended by: ADR-0074 (clarifies that `SessionEnvironment` stays the sole live
   environment owner; Hand process hibernation is an orthogonal local optimization)
 - Amended by: ADR-0092 (proposed; the 2026-08-10 amendment's Kubernetes feasibility
-  authority reports unschedulable and over-quota sandboxes back to placement as a typed
-  observation)
+  authority answers an over-quota Create or a Pod still unschedulable after a
+  configurable wait with `CapacityUnavailable`, which returns the claim to placement)
 - Depends on: ADR-0065, ADR-0066, ADR-0071, ADR-0072
 
 ## Context
