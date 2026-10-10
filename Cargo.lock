@@ -839,6 +839,7 @@ dependencies = [
  "tokio",
  "tower",
  "tower-http",
+ "tracing",
  "url",
  "uuid",
 ]
@@ -2092,7 +2093,6 @@ dependencies = [
  "awaken-memory-store",
  "awaken-model-catalog",
  "awaken-observability",
- "awaken-outbound-http",
  "awaken-protocol-managed-testkit",
  "awaken-provisioning-contract",
  "awaken-reliability-testkit",
@@ -2101,7 +2101,6 @@ dependencies = [
  "awaken-resource-store",
  "awaken-runtime-contract",
  "awaken-sandbox-policy-store",
- "awaken-service-auth-contract",
  "awaken-service-lifecycle",
  "awaken-session-application",
  "awaken-session-application-contract",
