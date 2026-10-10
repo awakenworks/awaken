@@ -20,9 +20,12 @@ physical test limit. Other languages keep the physical CODE_* limits.
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 # Input set: `--staged` size-checks every staged file; the suffix tables below
@@ -218,6 +221,44 @@ def read_content(rel: str, staged: bool) -> str | None:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+# rustfmt runs as its own pre-commit command, in parallel with this one, and
+# restages what it rewrites (`stage_fixed`). Judging the staged bytes therefore
+# measured a file rustfmt was about to reflow: an expression broken over more
+# lines pushed the committed file past its limit, and the *next* commit to touch
+# it failed. Lefthook's parallel run cannot order the two without serialising
+# every check, so a staged Rust file is measured as rustfmt will leave it.
+def rustfmt_output(rel: str, text: str) -> str | None:
+    """`text` as the rustfmt hook leaves `rel`, or None when rustfmt cannot format it.
+
+    rustfmt reads its configuration (edition, newline style) from the
+    directory it starts in, so it starts where the file lives. None -- rustfmt
+    absent or the source unparsable -- keeps the staged bytes: the rustfmt hook
+    refuses that commit itself.
+    """
+    directory = (REPO_ROOT / rel).parent
+    try:
+        result = subprocess.run(
+            ["rustfmt", "--emit", "stdout"],
+            input=text.encode("utf-8"),
+            cwd=directory if directory.is_dir() else REPO_ROOT,
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.decode("utf-8", errors="replace")
+
+
+def as_committed(texts: dict[str, str], formatter=rustfmt_output) -> dict[str, str]:
+    """Staged texts as the commit will hold them: Rust sources after rustfmt."""
+    rust = [rel for rel in texts if rel.endswith(".rs")]
+    with ThreadPoolExecutor(max_workers=max(1, min(len(rust), os.cpu_count() or 1))) as pool:
+        formatted = dict(zip(rust, pool.map(lambda rel: formatter(rel, texts[rel]), rust)))
+    return {rel: formatted.get(rel) or text for rel, text in texts.items()}
+
+
 def without_formal_header(text: str) -> str:
     position = 0
     while (match := FORMAL_HEADER_LINE.match(text, position)) is not None and match.end() > position:
@@ -344,17 +385,17 @@ def rust_source_results(rel: str, text: str, previous: str | None, staged: bool)
     return warnings, errors
 
 
-def find_results(files: list[str], staged: bool) -> tuple[list[str], list[str], bool]:
+def find_results(files: list[str], staged: bool,
+                 formatter=rustfmt_output) -> tuple[list[str], list[str], bool]:
     errors: list[str] = []
     warnings: list[str] = []
     has_code_violation = False
-    for rel in sorted(files):
+    texts = {rel: text for rel in sorted(files)
+             if limit_for(rel) is not None and (text := read_content(rel, staged)) is not None}
+    if staged:
+        texts = as_committed(texts, formatter)
+    for rel, text in texts.items():
         limit = limit_for(rel)
-        if limit is None:
-            continue
-        text = read_content(rel, staged)
-        if text is None:
-            continue
         if is_rust_source(rel):
             previous = committed_text(rel) if staged else None
             found_warnings, found = rust_source_results(rel, text, previous, staged)
@@ -471,6 +512,34 @@ def self_test() -> int:
         warns, errs = rust_source_results("crates/x/src/lib.rs", text, None, False)
         if bool(warns) != warned or bool(errs) != rejected:
             failures.append(f"{name}: expected warn={warned} reject={rejected}, got {warns} {errs}")
+    # Cause/effect table for the rustfmt reflow. Causes: staged or whole-tree
+    # scan, Rust or not, what the formatter returns. Effect: the measured text.
+    # | W1 | staged | Rust     | reflows past the stop line | formatted text -> reject |
+    # | W2 | staged | Rust     | cannot format (None)       | staged bytes             |
+    # | W3 | staged | not Rust | (never called)             | staged bytes             |
+    # | W4 | tree   | Rust     | (never called)             | bytes on disk            |
+    # | W5 | real rustfmt, repository config                 | one line becomes several |
+    def refused(rel: str, text: str) -> str:
+        raise AssertionError(f"formatter called for {rel}")
+
+    reflowed = as_committed({"crates/x/src/lib.rs": "pub fn f() {}\n"}, lambda rel, text: body(1501))
+    if not rust_source_results("crates/x/src/lib.rs", reflowed["crates/x/src/lib.rs"], None, False)[1]:
+        failures.append("W1 a staged file rustfmt reflows past the stop line must be rejected")
+    if as_committed({"crates/x/src/lib.rs": "fn f( {\n"}, lambda rel, text: None) != {"crates/x/src/lib.rs": "fn f( {\n"}:
+        failures.append("W2 a file rustfmt cannot format keeps its staged bytes")
+    if as_committed({"docs/x.md": "# x\n"}, refused) != {"docs/x.md": "# x\n"}:
+        failures.append("W3 only Rust sources are formatted")
+    on_disk = next((rel for rel in tracked_files() if rel.endswith(".rs") and limit_for(rel)), None)
+    try:
+        find_results([on_disk] if on_disk else [], staged=False, formatter=refused)
+    except AssertionError:
+        failures.append("W4 the whole-tree scan measures committed files as they are")
+    if shutil.which("rustfmt"):
+        formatted = rustfmt_output("crates/x/src/lib.rs", "pub fn f() { let a = 1; let b = 2; }\n")
+        if formatted is None or count_lines(formatted) < 4:
+            failures.append(f"W5 real rustfmt must reflow a one-line body, got {formatted!r}")
+    else:
+        print("file-limit self-test: W5 not run -- rustfmt is not on PATH", file=sys.stderr)
     if failures:
         print("Self-test FAILED:", file=sys.stderr)
         for failure in failures:
