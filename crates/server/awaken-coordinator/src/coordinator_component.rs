@@ -113,6 +113,8 @@ pub struct CoordinatorDependencies {
     /// The process's one wall clock, chosen by the binary that composes the
     /// Coordinator; every Coordinator-owned judgement of time reads it.
     pub clock: Arc<dyn awaken_time::WallClock>,
+    /// The Org request limiter every runtime protocol entry admits through.
+    pub org_admission: Arc<dyn awaken_tenancy::org_admission::OrgRequestAdmission>,
 }
 
 /// Complete Coordinator application surface.
@@ -324,6 +326,7 @@ pub async fn build_coordinator_component(
         service_authenticator,
         relay_destination_authenticator,
         clock,
+        org_admission,
     } = dependencies;
 
     deployment_application.bind_executable_agents(executable_agents);
@@ -376,6 +379,7 @@ pub async fn build_coordinator_component(
                 worker_directory,
                 ai_sdk_browser_cors,
                 worker_clock: clock.clone(),
+                org_admission: Some(org_admission),
             },
         )
         .await?;

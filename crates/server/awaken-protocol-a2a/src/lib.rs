@@ -17,6 +17,7 @@ mod card;
 pub mod client;
 pub mod encoder;
 mod extract;
+pub mod org_admission;
 pub mod request;
 mod response;
 pub mod router;

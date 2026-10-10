@@ -918,6 +918,7 @@ async fn assemble_coordinator(
         service_authenticator: base.agents.service_authenticator.clone(),
         relay_destination_authenticator: base.process.relay_destination_authenticator.take(),
         clock: base.stores.clock.clone(),
+        org_admission: base.managed_rate_limiter.clone(),
     })
     .await
     .map_err(|error| format!("build Coordinator component: {error}"))

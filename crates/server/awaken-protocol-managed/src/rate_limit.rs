@@ -15,7 +15,7 @@ use crate::types::ErrorResponse;
 
 /// A metered Managed request without an edge-authored Workspace scope.
 #[must_use]
-pub fn managed_admission_scope_missing() -> Response {
+pub fn managed_admission_scope_missing(_path: &str) -> Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
         Json(ErrorResponse::new(
@@ -28,7 +28,7 @@ pub fn managed_admission_scope_missing() -> Response {
 
 /// The Org limiter could not decide a Managed request.
 #[must_use]
-pub fn managed_admission_unavailable(error: &OrgAdmissionUnavailable) -> Response {
+pub fn managed_admission_unavailable(_path: &str, error: &OrgAdmissionUnavailable) -> Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
         Json(ErrorResponse::new(
@@ -42,6 +42,7 @@ pub fn managed_admission_unavailable(error: &OrgAdmissionUnavailable) -> Respons
 /// The Org bucket refused a Managed request.
 #[must_use]
 pub fn managed_admission_rejected(
+    _path: &str,
     operation: OrgOperation,
     _decision: &OrgAdmissionDecision,
 ) -> Response {

@@ -309,12 +309,13 @@ pub struct OrgAdmissionEncoding {
     /// The bucket and resource family a request consumes; `None` passes it
     /// through unmetered.
     pub classify: fn(&Method, &str) -> Option<(OrgOperation, &'static str)>,
-    /// A metered request reached the edge without a trusted Workspace scope.
-    pub scope_missing: fn() -> Response,
-    /// The Org limiter could not decide.
-    pub unavailable: fn(&OrgAdmissionUnavailable) -> Response,
-    /// The bucket refused the request.
-    pub rejected: fn(OrgOperation, &OrgAdmissionDecision) -> Response,
+    /// A metered request to `path` reached the edge without a trusted
+    /// Workspace scope.
+    pub scope_missing: fn(&str) -> Response,
+    /// The Org limiter could not decide a request to `path`.
+    pub unavailable: fn(&str, &OrgAdmissionUnavailable) -> Response,
+    /// The bucket refused a request to `path`.
+    pub rejected: fn(&str, OrgOperation, &OrgAdmissionDecision) -> Response,
     /// Bucket state the protocol publishes on every metered response, when it
     /// has a wire shape for it.
     pub annotate: Option<fn(&mut HeaderMap, &OrgAdmissionDecision)>,
@@ -391,7 +392,8 @@ pub async fn admit_by_org_bucket(
     next: Next,
 ) -> Response {
     let encoding = edge.encoding;
-    let class = (encoding.classify)(request.method(), request.uri().path());
+    let path = request.uri().path().to_owned();
+    let class = (encoding.classify)(request.method(), &path);
     let workspace_id = request
         .extensions()
         .get::<awaken_tenancy::WorkspaceScope>()
@@ -412,11 +414,11 @@ pub async fn admit_by_org_bucket(
     .await
     {
         OrgAdmission::Unmetered => return next.run(request).await,
-        OrgAdmission::ScopeMissing => return (encoding.scope_missing)(),
-        OrgAdmission::Unavailable(error) => return (encoding.unavailable)(&error),
+        OrgAdmission::ScopeMissing => return (encoding.scope_missing)(&path),
+        OrgAdmission::Unavailable(error) => return (encoding.unavailable)(&path, &error),
         OrgAdmission::Admitted(decision) => (next.run(request).await, decision),
         OrgAdmission::Rejected(operation, decision) => {
-            ((encoding.rejected)(operation, &decision), decision)
+            ((encoding.rejected)(&path, operation, &decision), decision)
         }
     };
     if let Some(annotate) = encoding.annotate {
@@ -573,11 +575,11 @@ mod tests {
 
     const PROBE: OrgAdmissionEncoding = OrgAdmissionEncoding {
         classify: probe_classify,
-        scope_missing: || (StatusCode::SERVICE_UNAVAILABLE, "scope").into_response(),
-        unavailable: |error| {
+        scope_missing: |_| (StatusCode::SERVICE_UNAVAILABLE, "scope").into_response(),
+        unavailable: |_, error| {
             (StatusCode::SERVICE_UNAVAILABLE, error.message.clone()).into_response()
         },
-        rejected: |_, _| (StatusCode::TOO_MANY_REQUESTS, "probe-rejected").into_response(),
+        rejected: |_, _, _| (StatusCode::TOO_MANY_REQUESTS, "probe-rejected").into_response(),
         annotate: Some(probe_annotate),
     };
 
