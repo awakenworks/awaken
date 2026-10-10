@@ -28,11 +28,11 @@ pub(crate) struct CompiledEffectiveInputs {
         std::collections::HashMap<String, std::sync::Arc<crate::memory_binding::MemoryBinding>>,
 }
 fn validate_preparation_publication(
-    slot: &crate::session_slot::SessionRuntimeSlot,
+    realization: &crate::session_realizations::SessionRealizationState,
     asserted: Option<&awaken_session_resource_contract::SessionRealizationLease>,
 ) -> Result<(), RunError> {
-    if slot.realization.resource_preparation.is_some()
-        && !asserted.is_some_and(|lease| slot.realization.resource_preparation_authorized(lease))
+    if realization.resource_preparation.is_some()
+        && !asserted.is_some_and(|lease| realization.resource_preparation_authorized(lease))
     {
         return Err(RunError::unavailable_classified(
             "session_realization_authority_lost",
@@ -302,7 +302,7 @@ impl crate::ManagedHost {
                 )
                 .await?;
             self.host.session_slots.update(thread, |slot| {
-                validate_preparation_publication(slot, realization_lease)?;
+                validate_preparation_publication(&slot.realization, realization_lease)?;
                 slot.realization.skills = Some(versions);
                 Ok(())
             })?;
@@ -362,7 +362,10 @@ impl crate::ManagedHost {
             // The lease check and correlated cache publication share the slot
             // lock with renewal rejection. Neither a late read nor cancellation
             // may publish requirements after that rejection has linearized.
-            validate_preparation_publication(slot, realization.map(|(_, _, lease)| lease))?;
+            validate_preparation_publication(
+                &slot.realization,
+                realization.map(|(_, _, lease)| lease),
+            )?;
             slot.replace_frozen_with(|next| next.workspace = Some(workspace.to_owned()));
             slot.realization.resources = compiled.staged;
             slot.realization.memory_bindings = compiled.memory_bindings;
@@ -415,9 +418,7 @@ impl crate::ManagedHost {
         // This method is entered only through the SessionRuntime application
         // port. Preserve that neutral identity before dispatch so a claiming
         // Worker enters the frozen Session realization path.
-        self.host
-            .session_slots
-            .update_run(thread, |run| run.session_dispatch = true);
+        self.host.session_slots.enter_session_dispatch(thread);
         let checks = self
             .host
             .session_slots
@@ -532,10 +533,10 @@ impl crate::ManagedHost {
         let (baseline_is_staged, session_dispatch, reconciliation, environment_projection) = self
             .host
             .session_slots
-            .read(thread, |slot| {
+            .modify_session(thread, |slot| {
                 (
                     slot.frozen.baseline.is_some(),
-                    slot.run.session_dispatch,
+                    slot.run.session_dispatch(),
                     slot.realization.environment_resource_reconciliation,
                     slot.frozen.environment_projection.clone(),
                 )

@@ -330,11 +330,11 @@ impl SharedHost {
     ) -> Result<AuthorizedSessionEnvironmentEffect, HostError> {
         let (realization, claimed_ordinary_run, closed) = self
             .session_slots
-            .read(thread, |slot| {
+            .modify_session(thread, |slot| {
                 let realization = slot.realization.authority.lease().cloned();
                 let claimed_ordinary_run = realization.is_none()
-                    && slot.run.dispatch_claim.is_some()
-                    && !slot.run.session_dispatch
+                    && slot.run.dispatch_claim().is_some()
+                    && !slot.run.session_dispatch()
                     && slot.frozen.baseline.is_none();
                 (
                     realization,
@@ -752,9 +752,9 @@ impl SharedHost {
             })?;
         let (claim, realization_lease) = self
             .session_slots
-            .read(thread, |slot| {
+            .modify_session(thread, |slot| {
                 (
-                    slot.run.dispatch_claim.clone(),
+                    slot.run.dispatch_claim().cloned(),
                     slot.realization.authority.lease().cloned(),
                 )
             })
@@ -888,9 +888,9 @@ impl SharedHost {
         }
         let (claim, realization_lease) = self
             .session_slots
-            .read(thread, |slot| {
+            .modify_session(thread, |slot| {
                 (
-                    slot.run.dispatch_claim.clone(),
+                    slot.run.dispatch_claim().cloned(),
                     slot.realization.authority.lease().cloned(),
                 )
             })

@@ -234,6 +234,7 @@ mod resume_and_replies;
 use fixtures::*;
 mod run_boundary;
 mod session_projection;
+mod session_realizations;
 mod skill_delivery;
 mod terminal_disposal;
 mod terminal_memory;

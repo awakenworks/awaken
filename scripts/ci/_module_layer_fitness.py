@@ -84,6 +84,9 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (REALIZER, "the Session MemoryStore binding realization projects; host extraction wraps it (plan 10.4 R)", (
         "memory_binding",
     )),
+    (REALIZER, "the realizer's view of installed Sessions and the realization layer it owns (plan 9.15)", (
+        "session_realizations",
+    )),
     (HOST, _MIXED_REASON, (
         "host",
         "host::session",

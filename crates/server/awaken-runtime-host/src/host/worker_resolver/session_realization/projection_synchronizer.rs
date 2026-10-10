@@ -262,7 +262,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         // generation.
         self.host
             .session_slots
-            .update_run(session_id.as_str(), |run| run.session_dispatch = true);
+            .enter_session_dispatch(session_id.as_str());
         drop(lifecycle_guard);
         let published_snapshot = self
             .host
@@ -276,8 +276,8 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         let runtime_authority_resident = self
             .host
             .session_slots
-            .read(session_id.as_str(), |slot| {
-                slot.run.runtime.is_some() || slot.realization.environment_owner.is_resident()
+            .modify_session(session_id.as_str(), |slot| {
+                slot.run.holds_context() || slot.realization.environment_owner.is_resident()
             })
             .unwrap_or(false);
         if self.requires_runtime_before_effects

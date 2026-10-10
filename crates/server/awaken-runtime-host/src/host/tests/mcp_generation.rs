@@ -835,7 +835,7 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
     host.session_slots
         .close_mcp_realization_admission(
             "mcp-staging-quiescence",
-            crate::session_slot::McpQuiescenceAdmissionFence::new(
+            awaken_session_mcp::McpQuiescenceAdmissionFence::new(
                 &operation,
                 "source-effect",
                 "source-binding",

@@ -424,7 +424,7 @@ fn repository_http_basic_credential(
 impl SharedHost {
     pub(crate) fn artifact_harvester(&self) -> ArtifactHarvester {
         ArtifactHarvester {
-            session_slots: self.session_slots.clone(),
+            sessions: self.realizer.sessions.clone(),
             local_workspace: self.local_workspace.clone(),
             publisher: self.resources.artifact_publisher.clone(),
         }
@@ -1045,7 +1045,7 @@ impl SharedHost {
 /// same operation as an idempotent final retry before Sandbox disposal.
 #[derive(Clone)]
 pub(crate) struct ArtifactHarvester {
-    session_slots: crate::session_slot::SessionRuntimeSlots,
+    sessions: crate::session_realizations::SessionRealizations,
     local_workspace: String,
     publisher:
         std::sync::Arc<dyn awaken_resource_contract::ArtifactPublisher<ResourceOperationFence>>,
@@ -1070,9 +1070,7 @@ impl ArtifactHarvester {
         &self,
         thread: &str,
     ) -> Option<awaken_run_ingress_contract::RunClaim> {
-        self.session_slots
-            .read_run(thread, |run| run.dispatch_claim.clone())
-            .flatten()
+        self.sessions.dispatch_claim(thread)
     }
 
     pub(crate) async fn harvest(
@@ -1153,7 +1151,7 @@ impl ArtifactHarvester {
         let workspace_owner = terminal_effect
             .map(|effect| effect.command.session_id.as_str())
             .unwrap_or(thread);
-        let workspace = self.session_slots.frozen(workspace_owner).workspace.clone();
+        let workspace = self.sessions.frozen(workspace_owner).workspace.clone();
         let workspace = match (workspace, terminal_effect) {
             (Some(workspace), _) => workspace,
             (None, Some(_)) => {
@@ -1174,7 +1172,7 @@ impl ArtifactHarvester {
                 .await;
         }
         let projected_environment = exact_environment.cloned().or_else(|| {
-            self.session_slots
+            self.sessions
                 .read_realization(thread, |r| r.environment_owner.resident())
                 .flatten()
         });

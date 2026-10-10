@@ -78,6 +78,7 @@ mod run_application_host;
 mod run_exec;
 mod session_environment;
 mod session_memory_tools;
+mod session_realizations;
 mod session_realizer;
 mod session_slot;
 mod session_tools;

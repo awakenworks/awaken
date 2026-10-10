@@ -2,91 +2,6 @@ use super::*;
 use awaken_session_mcp::{McpGenerationProjection, McpProjectionState};
 
 #[test]
-fn realization_authority_close_and_renewal_have_one_projection() {
-    // Decision table: C1 absent/live/closed; C2 expected exact/stale/none;
-    // C3 renewal snapshot exact/stale; C4 renewed same-generation expiry
-    // shorter/equal/longer. Effects: close hides authority and cancels I/O;
-    // stale close changes nothing; only exact live monotonic renewal wins;
-    // closed replay cannot regain authority, a fresh generation can.
-    // Q1 absent+exact rejects; Q2 absent+none closes; Q3 live+stale rejects;
-    // Q4 live+exact closes; Q5 closed+exact retry succeeds; Q6-Q8 exact
-    // renewal crosses the three expiry partitions; Q9 stale reply rejects.
-    let base = crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000;
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
-        owner: "worker".into(),
-        runtime_incarnation: "worker/1".into(),
-        epoch: 1,
-        expires_at_unix_ms: base + 100,
-    };
-    let mut slot = SessionRuntimeSlot::default();
-    assert!(!slot.realization.close_authority(Some(&lease)), "Q1");
-    assert!(slot.realization.close_authority(None), "Q2");
-    assert!(
-        !slot.realization.resource_preparation_authorized(&lease),
-        "Q2 no-preparation fallback denied"
-    );
-    slot.realization
-        .install_lease(test_observed_lease(lease.clone()));
-    let mut stale = lease.clone();
-    stale.expires_at_unix_ms -= 1;
-    let cancellation = Arc::new(awaken_runtime_contract::CancellationToken::new());
-    slot.realization.resource_preparation = Some(cancellation.clone());
-    assert!(!slot.realization.close_authority(Some(&stale)), "Q3");
-    assert!(!cancellation.is_cancelled(), "Q3");
-    assert!(slot.realization.close_authority(Some(&lease)), "Q4");
-    assert!(cancellation.is_cancelled(), "Q4");
-    assert!(slot.realization.close_authority(Some(&lease)), "Q5");
-    for expiry in [base + 99, base + 100, base + 101] {
-        let mut renewed = lease.clone();
-        renewed.expires_at_unix_ms = expiry;
-        assert!(
-            !slot
-                .realization
-                .renew_lease(&lease, test_observed_lease(renewed.clone())),
-            "Q5 closed reply"
-        );
-        slot.realization
-            .install_lease(test_observed_lease(renewed.clone()));
-        assert!(
-            slot.realization.authority.lease().is_none(),
-            "Q5 closed assertion"
-        );
-        let mut live = SessionRuntimeSlot::default();
-        live.realization
-            .install_lease(test_observed_lease(lease.clone()));
-        assert_eq!(
-            live.realization
-                .renew_lease(&lease, test_observed_lease(renewed.clone())),
-            expiry >= base + 100,
-            "Q6-Q8"
-        );
-        assert_eq!(
-            live.realization.authority.lease(),
-            Some(if expiry >= base + 100 {
-                &renewed
-            } else {
-                &lease
-            })
-        );
-        assert!(
-            !live
-                .realization
-                .renew_lease(&stale, test_observed_lease(renewed)),
-            "Q9"
-        );
-    }
-    let mut next = lease;
-    next.epoch += 1;
-    slot.realization
-        .install_lease(test_observed_lease(next.clone()));
-    assert_eq!(
-        slot.realization.authority.lease(),
-        Some(&next),
-        "fresh Control generation"
-    );
-}
-
-#[test]
 fn dispatch_resource_manifest_has_one_session_generation_selector() {
     // Cause/effect graph: C1 the slot is ordinary/prepared Session; C2 a
     // desired transition is absent/present; C3 active is absent/present.
@@ -300,7 +215,7 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
         None,
         None,
     );
-    let fence = McpQuiescenceAdmissionFence::new(
+    let fence = awaken_session_mcp::McpQuiescenceAdmissionFence::new(
         &operation,
         "source-effect",
         "source-binding",

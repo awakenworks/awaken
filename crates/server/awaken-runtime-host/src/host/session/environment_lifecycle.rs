@@ -1330,13 +1330,13 @@ impl SharedHost {
         selection: RetirementSelection<'_>,
     ) -> Result<Option<LocalRetirementTransition>, HostError> {
         self.session_slots
-            .modify(thread, |slot| {
+            .modify_session(thread, |slot| {
                 let retirement = slot
                     .realization
                     .environment_owner
                     .begin_retirement(cause, selection)?;
                 Ok(retirement.map(|owner| {
-                    slot.run.runtime = None;
+                    slot.run.drop_context();
                     LocalRetirementTransition { owner }
                 }))
             })
@@ -1529,8 +1529,7 @@ impl SharedHost {
                 "checkpoint source owner changed after exact physical Disposal",
             ));
         }
-        self.session_slots
-            .update_run(thread, |run| run.runtime = None);
+        self.session_slots.drop_run_context(thread);
         Ok(())
     }
 

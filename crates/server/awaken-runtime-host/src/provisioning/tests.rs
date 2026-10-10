@@ -2081,7 +2081,7 @@ async fn terminal_artifact_recovery_requires_the_root_workspace_before_catalog_i
     );
     let publisher = Arc::new(RecordingArtifactRecovery::default());
     let harvester = ArtifactHarvester {
-        session_slots: Default::default(),
+        sessions: crate::session_slot::SessionRuntimeSlots::default().realizations(),
         local_workspace: "must-not-be-used".into(),
         publisher: publisher.clone(),
     };

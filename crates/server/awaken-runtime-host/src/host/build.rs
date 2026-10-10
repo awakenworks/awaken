@@ -121,6 +121,7 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         realizer: crate::SessionRealizer {
             env,
             runs_local_dispatch_pool: execution.local.runs_local_pool(),
+            sessions: session_slots.realizations(),
         },
         tools,
         resources: capability::ResourcePorts::new(resources, memory),

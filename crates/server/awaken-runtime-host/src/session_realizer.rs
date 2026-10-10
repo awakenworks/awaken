@@ -11,4 +11,6 @@ pub struct SessionRealizer {
     pub(crate) env: EnvironmentProviders,
     /// Warm capacity is kept only where a local dispatch pool realizes claims.
     pub(crate) runs_local_dispatch_pool: bool,
+    /// The installed Sessions, as far as realization may reach them.
+    pub(crate) sessions: crate::session_realizations::SessionRealizations,
 }

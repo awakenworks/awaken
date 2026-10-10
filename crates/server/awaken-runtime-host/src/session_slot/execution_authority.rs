@@ -90,7 +90,7 @@ impl SessionExecutionAuthority {
     ) -> Self {
         Self {
             worker: worker.cloned(),
-            slots: Arc::downgrade(&slots.0),
+            slots: Arc::downgrade(&slots.slots),
             session: session.into(),
             realization: slot.realization.realization.clone(),
             lifecycle: slot.realization.lifecycle.clone(),
@@ -200,7 +200,7 @@ impl SessionRuntimeSlots {
 
     #[cfg(target_os = "linux")]
     pub(crate) fn execution_environments(&self) -> Vec<Arc<SessionEnvironment>> {
-        self.0
+        self.slots
             .lock()
             .expect("session runtime slots mutex poisoned")
             .values()
@@ -293,7 +293,7 @@ mod tests {
                 r.environment_owner = Self::candidate(environment.clone());
                 Arc::new(SessionExecutionAuthority {
                     worker: Some(worker.clone()),
-                    slots: Arc::downgrade(&slots.0),
+                    slots: Arc::downgrade(&slots.slots),
                     session: "session".into(),
                     realization: r.realization.clone(),
                     lifecycle: r.lifecycle.clone(),
@@ -505,7 +505,7 @@ mod tests {
                 calls += 1;
                 assert!(remaining > Duration::ZERO && remaining <= Duration::from_secs(40));
                 assert!(matches!(
-                    f.slots.0.try_lock(),
+                    f.slots.slots.try_lock(),
                     Err(std::sync::TryLockError::WouldBlock)
                 ));
                 Ok(())
@@ -538,7 +538,7 @@ mod tests {
                 Err(std::sync::TryLockError::WouldBlock)
             ));
             assert!(matches!(
-                f.slots.0.try_lock(),
+                f.slots.slots.try_lock(),
                 Err(std::sync::TryLockError::WouldBlock)
             ));
             Err(io::Error::other("effect failed"))
@@ -578,7 +578,7 @@ mod tests {
                 Err(std::sync::TryLockError::WouldBlock)
             ));
             assert!(matches!(
-                f.slots.0.try_lock(),
+                f.slots.slots.try_lock(),
                 Err(std::sync::TryLockError::WouldBlock)
             ));
             Err(io::Error::other("provider effect failed"))
@@ -617,7 +617,7 @@ mod tests {
                 if callback {
                     let _ = f.authority.with_current(&mut |_| panic!("callback failed"));
                 } else {
-                    let _slot = f.slots.0.lock().unwrap();
+                    let _slot = f.slots.slots.lock().unwrap();
                     panic!("slot writer failed");
                 }
             }));
@@ -632,7 +632,7 @@ mod tests {
         // the ownership graph alive or authorize work (Weak edges, no cycle).
         let f = Fixture::new().await;
         let environment = Arc::downgrade(&f.environment);
-        let slots = Arc::downgrade(&f.slots.0);
+        let slots = Arc::downgrade(&f.slots.slots);
         let authority = f.authority.clone();
         drop(f);
         assert!(slots.upgrade().is_none());
