@@ -27,7 +27,7 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     .await)
         .build()
         .expect("validated Host dependencies");
-    host.session_slots.update_realization(thread, |r| {
+    host.installed_sessions.update_realization(thread, |r| {
         r.environment_owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
             identity: BoundSessionEnvironmentIdentity::Durable {
                 effect_id: format!("effect-{thread}"),
@@ -198,7 +198,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             generation: durable.then(|| durable_generation.clone()),
             idle_since_unix_ms: None,
         };
-        host.session_slots.update_realization(thread, |r| {
+        host.installed_sessions.update_realization(thread, |r| {
             r.environment_owner = SessionEnvironmentOwner::Resident(owned.clone());
         });
 
@@ -246,10 +246,10 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             )
             .await;
         if retiring {
-            let realization = host.session_slots.realization_lock(thread);
+            let realization = host.installed_sessions.realization_lock(thread);
             let _realization = realization.lock().await;
             let lifecycle = host
-                .session_slots
+                .installed_sessions
                 .read_realization(thread, |r| r.lifecycle.clone())
                 .unwrap();
             let _lifecycle = lifecycle.lock().await;
@@ -272,7 +272,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
                 session_id: thread.into(),
                 projection: projection.clone(),
-                authority: crate::session_slot::test_lease_receipt(lease.clone()),
+                authority: crate::installed_session::test_lease_receipt(lease.clone()),
             },
         )
         .await
@@ -356,7 +356,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             "E1"
         );
         let retained = host
-            .session_slots
+            .installed_sessions
             .read_realization(thread, |r| r.environment_owner.clone())
             .unwrap();
         assert!(
@@ -454,7 +454,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             "E4 one physical disposal"
         );
         assert!(
-            host.session_slots.contains(thread),
+            host.installed_sessions.contains(thread),
             "E4 waits for durable ack"
         );
         aggregate
@@ -468,7 +468,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         host.acknowledge_terminal_cleanup_disposal(&disposal_effect)
             .await;
         assert!(
-            !host.session_slots.contains(thread),
+            !host.installed_sessions.contains(thread),
             "E4 owner removed after ack"
         );
     }
@@ -519,7 +519,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
             session_id: thread.into(),
             projection: projection.clone(),
-            authority: crate::session_slot::test_lease_receipt(lease.clone()),
+            authority: crate::installed_session::test_lease_receipt(lease.clone()),
         },
     )
     .await
@@ -595,7 +595,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     );
     assert!(output.exists(), "U1 Preparation cannot delete");
     let retained = host
-        .session_slots
+        .installed_sessions
         .read_realization(thread, |r| r.environment_owner.clone())
         .unwrap();
     let SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
@@ -624,7 +624,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         },
     )];
     for wrong in &rejected_owners {
-        host.session_slots
+        host.installed_sessions
             .update_realization(thread, |r| r.environment_owner = wrong.clone());
         host.prepare_terminal_cleanup_effect(effect.clone(), authorization.clone())
             .await
@@ -634,7 +634,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
             "U6 rejected Preparation keeps physical bytes"
         );
     }
-    host.session_slots
+    host.installed_sessions
         .update_realization(thread, |r| r.environment_owner = retained.clone());
     let mut stale = effect.clone();
     stale.lease.epoch += 1;
@@ -655,7 +655,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         .expect("U2 identical Preparation after response loss");
     assert_eq!(first, preparation, "U2 stable receipt");
     let same_owner = || {
-        host.session_slots
+        host.installed_sessions
             .read_realization(thread, |r| match &r.environment_owner {
                 SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
                     owned: RetiringEnvironmentOwner::Unbound(current),
@@ -699,14 +699,14 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     // provider has supplied it. A retained unrelated terminal owner is not that
     // predecessor; neither a valid receipt nor its fingerprint relabels it.
     for wrong in rejected_owners.drain(..) {
-        host.session_slots
+        host.installed_sessions
             .update_realization(thread, |r| r.environment_owner = wrong);
         host.dispose_terminal_cleanup_effect(disposal.clone())
             .await
             .expect_err("U6 wrong ownership cannot dispose");
         assert!(output.exists(), "U6 rejected Disposal keeps physical bytes");
     }
-    host.session_slots
+    host.installed_sessions
         .update_realization(thread, |r| r.environment_owner = retained.clone());
     let mut stale_disposal = disposal.clone();
     stale_disposal.lease.epoch += 1;
@@ -737,7 +737,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         .unwrap();
     host.acknowledge_terminal_cleanup_disposal(&disposal).await;
     assert!(
-        !host.session_slots.contains(thread),
+        !host.installed_sessions.contains(thread),
         "U5 only durable ack releases slot"
     );
 }
@@ -776,6 +776,7 @@ async fn cold_checkpoint_disposal_cannot_seed_an_owner_without_preparation() {
     );
     let authorization = source_disposal_authorization(&operation.effect_id);
     let error = host
+        .realizer
         .dispose_prepared_checkpoint_source_environment(
             thread,
             &operation,

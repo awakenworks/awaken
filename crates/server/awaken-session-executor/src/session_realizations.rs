@@ -11,10 +11,12 @@ use std::sync::Arc;
 
 use crate::frozen_inputs::FrozenSessionInputs;
 
+mod execution_authority;
 mod projection_receipt;
 mod state;
+pub(crate) use execution_authority::ExecutionAuthority;
 pub(crate) use projection_receipt::FrozenProjectionReceipt;
-pub(crate) use state::{SessionRealizationAuthority, SessionRealizationState};
+pub(crate) use state::{SessionRealization, SessionRealizationAuthority};
 
 /// What the realizer may learn of a Session's run layer, and the only two
 /// changes it may make to it.
@@ -34,22 +36,27 @@ pub(crate) trait SessionRunQuery {
 
 /// One installed Session as the realizer sees it, borrowed under the lock.
 pub(crate) struct SessionRealizationAccess<'a> {
-    pub(crate) frozen: &'a Arc<FrozenSessionInputs>,
-    pub(crate) realization: &'a mut SessionRealizationState,
+    pub(crate) inputs: &'a Arc<FrozenSessionInputs>,
+    pub(crate) realization: &'a mut SessionRealization,
     pub(crate) run: &'a mut dyn SessionRunQuery,
 }
 
 /// Where the host keeps installed Sessions, as the realizer reaches them.
 pub(crate) trait SessionRealizationSource: Send + Sync {
     /// Visit one Session under the lock; with `create`, an absent Session is
-    /// installed empty first, otherwise an absent Session is not visited.
+    /// installed empty first, otherwise an absent Session is not visited. A
+    /// poisoned lock is reported, never unwound through.
     fn visit(
         &self,
         session: &str,
         create: bool,
         visit: &mut dyn FnMut(SessionRealizationAccess<'_>),
-    );
+    ) -> Result<(), InstalledSessionsPoisoned>;
 }
+
+/// A writer panicked while holding the installed Sessions' lock.
+#[derive(Debug)]
+pub(crate) struct InstalledSessionsPoisoned;
 
 /// The realizer's handle on installed Sessions (see the module docs).
 #[derive(Clone)]
@@ -67,9 +74,11 @@ impl SessionRealizations {
         f: impl FnOnce(SessionRealizationAccess<'_>) -> R,
     ) -> Option<R> {
         let (mut f, mut result) = (Some(f), None);
-        self.0.visit(session, create, &mut |access| {
-            result = f.take().map(|f| f(access));
-        });
+        self.0
+            .visit(session, create, &mut |access| {
+                result = f.take().map(|f| f(access));
+            })
+            .expect("installed sessions mutex poisoned");
         result
     }
 
@@ -97,8 +106,7 @@ impl SessionRealizations {
         session: &str,
         fence: awaken_session_mcp::McpQuiescenceAdmissionFence,
     ) -> Result<bool, crate::host_error::HostError> {
-        self.update_session(session, |slot| slot.realization.mcp.close_admission(fence))
-            .map_err(crate::host_error::HostError::from)
+        Ok(self.update_session(session, |slot| slot.realization.mcp.close_admission(fence))?)
     }
 
     #[cfg(test)]
@@ -135,7 +143,7 @@ impl SessionRealizations {
                     .iter()
                     .map(|prompt| prompt.render(delivery, path_view.clone())),
             );
-            if let Some(baseline) = &slot.frozen.baseline {
+            if let Some(baseline) = &slot.inputs.baseline {
                 prompts.extend(baseline.prompts.iter()
                     .filter(|prompt| !awaken_session_configuration_contract::SessionContextSeed::is_seed_prompt(prompt))
                     .cloned());
@@ -159,8 +167,7 @@ impl SessionRealizations {
         &self,
         session: &str,
     ) -> tokio::sync::OwnedMutexGuard<()> {
-        let projection =
-            self.update_session(session, |slot| slot.realization.resource_projection.clone());
+        let projection = self.update_realization(session, |r| r.resource_projection.clone());
         projection.lock_owned().await
     }
 
@@ -180,7 +187,7 @@ impl SessionRealizations {
     /// The Session's current frozen inputs, taken out of the lock as one
     /// value. An unknown Session reads as the empty projection.
     pub(crate) fn frozen(&self, session: &str) -> Arc<FrozenSessionInputs> {
-        self.modify_session(session, |slot| slot.frozen.clone())
+        self.modify_session(session, |slot| slot.inputs.clone())
             .unwrap_or_default()
     }
 
@@ -188,7 +195,7 @@ impl SessionRealizations {
     pub(crate) fn read_realization<R>(
         &self,
         session: &str,
-        f: impl FnOnce(&SessionRealizationState) -> R,
+        f: impl FnOnce(&SessionRealization) -> R,
     ) -> Option<R> {
         self.modify_session(session, |slot| f(slot.realization))
     }
@@ -197,7 +204,7 @@ impl SessionRealizations {
     pub(crate) fn update_realization<R>(
         &self,
         session: &str,
-        f: impl FnOnce(&mut SessionRealizationState) -> R,
+        f: impl FnOnce(&mut SessionRealization) -> R,
     ) -> R {
         self.update_session(session, |slot| f(slot.realization))
     }
@@ -206,7 +213,7 @@ impl SessionRealizations {
     pub(crate) fn modify_realization<R>(
         &self,
         session: &str,
-        f: impl FnOnce(&mut SessionRealizationState) -> R,
+        f: impl FnOnce(&mut SessionRealization) -> R,
     ) -> Option<R> {
         self.modify_session(session, |slot| f(slot.realization))
     }

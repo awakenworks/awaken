@@ -226,14 +226,16 @@ fn install_terminal_artifact_environment(
     host.install_session_environment_owner_projection(session_id, workspace_id, &state)
         .expect("F1/E1 project the canonical legacy durable binding");
     let candidate = host
+        .realizer
         .begin_session_environment_adoption(session_id, environment)
         .expect("F2/E2 retain the exact adoption candidate");
-    let crate::session_slot::UnboundSessionEnvironmentOrigin::AdoptionFrom(identity) =
+    let crate::installed_session::UnboundSessionEnvironmentOrigin::AdoptionFrom(identity) =
         &candidate.origin
     else {
         panic!("F3 aggregate projection must own the durable source identity");
     };
-    host.publish_prepared_session_environment(session_id, &candidate, identity.clone())
+    host.realizer
+        .publish_prepared_session_environment(session_id, &candidate, identity.clone())
         .expect("F2/E2 publish the exact durable owner");
 }
 
@@ -246,13 +248,13 @@ async fn root_terminal_cleanup_effect(
     awaken_session_state_contract::SessionTerminalCleanupEffect,
 ) {
     let environment = host
-        .session_slots
+        .installed_sessions
         .read_realization(session_id, |r| r.environment_owner.resident())
         .flatten()
         .expect("terminal test requires a resident Environment");
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
     let workspace_id = host
-        .session_slots
+        .installed_sessions
         .frozen(session_id)
         .workspace
         .clone()
@@ -298,7 +300,7 @@ async fn root_terminal_cleanup_effect(
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
             session_id: session_id.into(),
             projection,
-            authority: crate::session_slot::test_lease_receipt(lease.clone()),
+            authority: crate::installed_session::test_lease_receipt(lease.clone()),
         },
     )
     .await
@@ -416,7 +418,7 @@ async fn projected_sandbox_layout_preserves_one_complete_input_snapshot() {
     environment.network = awaken_session_configuration_contract::SessionNetworkPolicy::None;
     let environment = project_environment(&environment);
 
-    let spec = host.realizer.sandbox_spec_for_projected_layout(
+    let spec = host.realizer.staging.sandbox_spec_for_projected_layout(
         "complete-layout",
         ProjectedSandboxLayout {
             resource_mounts: vec![resource.clone()],
@@ -515,7 +517,7 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
         lifetime: pc::MountLifetime::PerRun,
         required: true,
     };
-    host.realizer.register_thread_resources(
+    host.realizer.staging.register_thread_resources(
         "checkpoint-memory",
         StagedResources {
             mounts: vec![
@@ -525,7 +527,7 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
             ..Default::default()
         },
     );
-    let fresh = host.realizer.sandbox_substrate_spec_for_provider(
+    let fresh = host.realizer.staging.sandbox_substrate_spec_for_provider(
         "checkpoint-memory",
         &host.realizer.env.session_provider,
     );
@@ -601,6 +603,7 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
     );
     let cold = host
         .realizer
+        .staging
         .sandbox_spec_for_resolved_resources_and_provider(
             "checkpoint-memory",
             &resolved,
@@ -618,7 +621,7 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
         "M4/E4"
     );
 
-    let readonly = host.realizer.sandbox_spec_for_projected_layout(
+    let readonly = host.realizer.staging.sandbox_spec_for_projected_layout(
         "readonly-memory",
         ProjectedSandboxLayout {
             resource_mounts: vec![memory_mount(pc::MountAccess::ReadOnly, None)],
@@ -639,7 +642,7 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
     let mut resident_environment = environment;
     resident_environment.idle_retention = Default::default();
     let resident_projection = project_environment(&resident_environment);
-    let resident = host.realizer.sandbox_spec_for_projected_layout(
+    let resident = host.realizer.staging.sandbox_spec_for_projected_layout(
         "resident-memory",
         ProjectedSandboxLayout {
             resource_mounts: vec![memory_mount(pc::MountAccess::ReadWrite, None)],
@@ -676,7 +679,7 @@ fn repository_activation(logical: &str) -> RepositoryActivation {
 #[tokio::test]
 async fn register_replaces_the_threads_staged_set() {
     let host = host().await;
-    host.realizer.register_thread_resources(
+    host.realizer.staging.register_thread_resources(
         "t",
         StagedResources {
             mounts: vec![resource_mount("a.md"), resource_mount("b.md")],
@@ -687,7 +690,7 @@ async fn register_replaces_the_threads_staged_set() {
         },
     );
     // A second register REPLACES (correct at create time, before any first Run).
-    host.realizer.register_thread_resources(
+    host.realizer.staging.register_thread_resources(
         "t",
         StagedResources {
             mounts: vec![resource_mount("c.md")],
@@ -705,7 +708,10 @@ async fn register_replaces_the_threads_staged_set() {
     );
     assert_eq!(host.thread_session_prompts("t"), vec!["second".to_string()]);
     assert!(
-        host.realizer.thread_repository_activations("t").is_empty(),
+        host.realizer
+            .staging
+            .thread_repository_activations("t")
+            .is_empty(),
         "old repository activation dropped"
     );
 }
@@ -744,7 +750,7 @@ async fn sandbox_spec_carries_deny_egress_and_the_staged_mounts() {
         },
     )
     .expect("freeze test Environment");
-    host.realizer.register_thread_resources(
+    host.realizer.staging.register_thread_resources(
         "t",
         StagedResources {
             mounts: vec![resource_mount("notes.md")],
@@ -786,7 +792,7 @@ async fn repository_workspace_rejects_a_provider_with_split_tool_and_process_pat
     let bare = host.realizer.sandbox_spec("bare");
     assert_eq!(bare.isolation, pc::IsolationClass::Workdir, "W2/E3");
 
-    host.realizer.register_thread_resources(
+    host.realizer.staging.register_thread_resources(
         "repository-session",
         StagedResources {
             repositories: vec![repository_activation("repo")],
@@ -838,7 +844,7 @@ async fn trusted_host_repository_projection_preserves_the_exact_tier() {
                 pc::HostAccessPolicy::Isolated
             };
             let environment = project_environment(&environment);
-            let spec = host.realizer.sandbox_spec_for_projected_layout(
+            let spec = host.realizer.staging.sandbox_spec_for_projected_layout(
                 "trust-matrix",
                 ProjectedSandboxLayout {
                     resource_mounts: Vec::new(),
@@ -965,9 +971,9 @@ async fn model_override_only_acp_candidate_rejects_split_process_paths() {
     .await
     .expect("install exact model-override-only frozen projection");
     assert!(
-        host.session_slots
+        host.installed_sessions
             .read("model-override-acp", |slot| slot
-                .frozen
+                .inputs
                 .published_snapshot
                 .is_none())
             .unwrap_or(false),
@@ -1039,7 +1045,7 @@ async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
     )
     .into_session_environment();
     let host = host().await;
-    host.realizer.register_thread_resources(
+    host.realizer.staging.register_thread_resources(
         "t",
         StagedResources {
             repositories: vec![RepositoryActivation {
@@ -1065,7 +1071,7 @@ async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
         "R9a unsafe repo mount must abort Session start"
     );
 
-    host.realizer.register_thread_resources(
+    host.realizer.staging.register_thread_resources(
         "clone-failure",
         StagedResources {
             repositories: vec![repository_activation("repo")],
@@ -1161,7 +1167,7 @@ async fn reverse_channels_are_safe_noops_without_a_live_session() {
     // Stage a repo, but never create a session for the thread: reverse channels
     // must early-return (no live env), not panic. Memory write-through is owned
     // by the MemoryMount guard and therefore has no Host-side reverse channel.
-    host.realizer.register_thread_resources(
+    host.realizer.staging.register_thread_resources(
         "t",
         StagedResources {
             repositories: vec![repository_activation("r")],
@@ -1679,7 +1685,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         root_terminal_cleanup_effect(host.as_ref(), "session-artifacts", lease).await;
     let managed = crate::ManagedHost::new(host.clone());
     let workspace_id = host
-        .session_slots
+        .installed_sessions
         .frozen("session-artifacts")
         .workspace
         .clone()
@@ -1697,7 +1703,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .await
         .unwrap();
     assert!(
-        host.session_slots
+        host.installed_sessions
             .read_realization("session-artifacts", |r| {
                 r.environment_owner.terminal_bound_environment().is_some()
             })
@@ -1846,9 +1852,9 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         "H1"
     );
 
-    host.session_slots
+    host.installed_sessions
         .update_realization("artifact-response-loss", |r| {
-            r.environment_owner = crate::session_slot::SessionEnvironmentOwner::Vacant;
+            r.environment_owner = crate::installed_session::SessionEnvironmentOwner::Vacant;
         });
     let recovered = host
         .artifact_harvester()
@@ -2092,7 +2098,7 @@ async fn terminal_artifact_recovery_requires_the_root_workspace_before_catalog_i
     );
     let publisher = Arc::new(RecordingArtifactRecovery::default());
     let harvester = ArtifactHarvester {
-        sessions: crate::session_slot::SessionRuntimeSlots::default().realizations(),
+        sessions: crate::installed_session::InstalledSessions::default().realizations(),
         local_workspace: "must-not-be-used".into(),
         publisher: publisher.clone(),
     };
@@ -2404,7 +2410,7 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
         .unwrap_err();
     assert!(error.message.contains("injected catalog failure"));
     assert!(
-        host.session_slots
+        host.installed_sessions
             .read_realization("session-harvest-failure", |r| {
                 r.environment_owner.terminal_bound_environment().is_some()
             })

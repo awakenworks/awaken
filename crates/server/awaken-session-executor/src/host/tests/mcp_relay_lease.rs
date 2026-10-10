@@ -92,11 +92,11 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
             "R2"
         );
     }
-    host.session_slots.update_realization(session, |r| {
+    host.installed_sessions.update_realization(session, |r| {
         let mut expired = lease.clone();
         expired.expires_at_unix_ms = 1;
-        r.authority = crate::session_slot::SessionRealizationAuthority::Live(
-            crate::session_slot::test_expired_observed_lease(expired),
+        r.authority = crate::installed_session::SessionRealizationAuthority::Live(
+            crate::installed_session::test_expired_observed_lease(expired),
         );
     });
     assert_eq!(
@@ -119,11 +119,11 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
     for remove in [false, true] {
         // Independent R5 allocations: a closed/expired owner cannot be revived
         // by reinstallation. Retain the relay route to test its stale authority.
-        host.session_slots.remove(session);
+        host.installed_sessions.remove(session);
         host.install_session_realization_lease(session, lease.clone())
             .unwrap();
         if remove {
-            host.session_slots.remove(session);
+            host.installed_sessions.remove(session);
         } else {
             host.invalidate_session_realization_lease(session, &lease);
         }

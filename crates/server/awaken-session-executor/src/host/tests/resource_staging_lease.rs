@@ -20,13 +20,13 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
                 epoch: 1,
                 expires_at_unix_ms: u64::MAX,
             };
-            host.session_slots.update_realization(SESSION, |r| {
+            host.installed_sessions.update_realization(SESSION, |r| {
                 if leased {
-                    r.install_lease(crate::session_slot::test_observed_lease(lease.clone()));
+                    r.install_lease(crate::installed_session::test_observed_lease(lease.clone()));
                 }
             });
             let lock = host
-                .session_slots
+                .installed_sessions
                 .read_realization(SESSION, |r| {
                     if lifecycle {
                         r.lifecycle.clone()
@@ -37,22 +37,24 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
                 .unwrap();
             let held = lock.lock().await;
             let selection = host.begin_session_realization_revocation();
-            host.session_slots.remove(SESSION);
+            host.installed_sessions.remove(SESSION);
             let claim = awaken_dispatch_contract::RunClaim {
                 run_id: RunId("replacement".into()),
                 owner: "worker".into(),
                 epoch: 2,
             };
-            host.session_slots.update(SESSION, |slot| {
+            host.installed_sessions.update(SESSION, |slot| {
                 if leased {
                     slot.realization
-                        .install_lease(crate::session_slot::test_observed_lease(lease.clone()));
+                        .install_lease(crate::installed_session::test_observed_lease(
+                            lease.clone(),
+                        ));
                 }
                 slot.run.dispatch_claim = Some(claim.clone());
             });
             let replacement = host.begin_session_realization_revocation();
             let replacement_lock = host
-                .session_slots
+                .installed_sessions
                 .read_realization(SESSION, |r| r.lifecycle.clone())
                 .unwrap();
             let replacement_held = replacement_lock.lock().await;
@@ -69,7 +71,7 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
                 "old selection does not enter replacement locks or cleanup"
             );
             assert_eq!(
-                host.session_slots
+                host.installed_sessions
                     .read_run(SESSION, |run| run.dispatch_claim.clone()),
                 Some(Some(claim))
             );
@@ -96,8 +98,8 @@ async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup
         .expect("validated Host dependencies");
     let mut cancellations = Vec::new();
     for session in ["held", "free"] {
-        host.session_slots.update_realization(session, |r| {
-            r.install_lease(crate::session_slot::test_observed_lease(
+        host.installed_sessions.update_realization(session, |r| {
+            r.install_lease(crate::installed_session::test_observed_lease(
                 awaken_session_resource_contract::SessionRealizationLease {
                     owner: "worker".into(),
                     runtime_incarnation: "worker/1".into(),
@@ -113,14 +115,14 @@ async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup
     // Observe the existing catalog order without inserting/removing keys.
     // Hold its FIRST selection so a serial-cleanup mutant cannot pass merely
     // because the free Session happened to be enumerated first.
-    let ids = host.session_slots.session_ids();
+    let ids = host.installed_sessions.session_ids();
     let held_session = &ids[0];
     let free_session = &ids[1];
-    let held_lock = host.session_slots.realization_lock(held_session);
+    let held_lock = host.installed_sessions.realization_lock(held_session);
     let held = held_lock.lock().await;
     let revocation = host.begin_session_realization_revocation();
     assert!(
-        host.session_slots.realization_leases().is_empty(),
+        host.installed_sessions.realization_leases().is_empty(),
         "W1 before any await"
     );
     assert!(
@@ -134,7 +136,7 @@ async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup
             .await
     });
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while host.session_slots.contains(free_session) {
+        while host.installed_sessions.contains(free_session) {
             tokio::task::yield_now().await;
         }
     })
@@ -147,7 +149,7 @@ async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup
     cleanup.abort();
     assert!(cleanup.await.unwrap_err().is_cancelled());
     assert!(
-        host.session_slots
+        host.installed_sessions
             .read_realization(held_session, |r| r.authority.is_closed())
             .unwrap(),
         "W3"
@@ -171,21 +173,21 @@ async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup
 // Repeating the failed batch cannot manufacture a successful cleanup receipt.
 #[tokio::test]
 async fn worker_revocation_error_does_not_short_circuit_other_sessions() {
-    use crate::session_slot::{
+    use crate::installed_session::{
         BoundSessionEnvironmentIdentity, SessionEnvironmentOwner, SessionEnvironmentPreparation,
     };
     let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     for id in ["left", "right"] {
-        host.session_slots.update(id, |_| ());
+        host.installed_sessions.update(id, |_| ());
     }
     // As in W2, make the first selected slot fail, independently of the
     // HashMap seed. A short-circuit implementation must leave the peer behind.
-    let ids = host.session_slots.session_ids();
+    let ids = host.installed_sessions.session_ids();
     let unknown = &ids[0];
     let free = &ids[1];
-    host.session_slots.update_realization(unknown, |r| {
+    host.installed_sessions.update_realization(unknown, |r| {
         r.environment_owner =
             SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::AwaitingAdoption {
                 identity: BoundSessionEnvironmentIdentity::Durable {
@@ -211,11 +213,11 @@ async fn worker_revocation_error_does_not_short_circuit_other_sessions() {
             "session_environment_revocation_pending_adoption"
         );
         assert!(
-            !host.session_slots.contains(free),
+            !host.installed_sessions.contains(free),
             "W4 independent cleanup completed"
         );
         assert!(
-            host.session_slots
+            host.installed_sessions
                 .read_realization(unknown, |r| {
                     r.authority.is_closed()
                         && matches!(
@@ -296,7 +298,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 .await
                 .expect("C2 request reached Control barrier");
                 let (lock, changed) = host
-                    .session_slots
+                    .installed_sessions
                     .read_realization(SESSION, |r| {
                         (
                             if lifecycle {
@@ -314,7 +316,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 closed.as_mut().enable();
                 let h = host.clone();
                 let expected = lease.clone();
-                let realization = host.session_slots.realization_lock(SESSION);
+                let realization = host.installed_sessions.realization_lock(SESSION);
                 let mut revocation = tokio::spawn(async move {
                     if all {
                         h.revoke_all_session_realizations().await.map(|n| n != 0)
@@ -327,7 +329,10 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     .await
                     .expect("C3 close precedes async lock wait");
                 assert!(!revocation.is_finished());
-                assert!(host.session_slots.realization_leases().is_empty(), "E1");
+                assert!(
+                    host.installed_sessions.realization_leases().is_empty(),
+                    "E1"
+                );
                 assert!(
                     host.authorize_environment_effect_before_io(
                         SESSION,
@@ -364,7 +369,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                         .is_err()
                 );
                 assert!(
-                    host.session_slots.realization_leases().is_empty(),
+                    host.installed_sessions.realization_leases().is_empty(),
                     "E3 assertion cannot reopen"
                 );
                 let managed = crate::ManagedHost::new(host.clone());
@@ -372,7 +377,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     awaken_session_execution_contract::RealizationRuntime::renew_session_realization_lease(
                         &managed,
                         SESSION,
-                        crate::session_slot::test_observed_lease(extended.clone()),
+                        crate::installed_session::test_observed_lease(extended.clone()),
                     )
                     .await
                     .is_err(),
@@ -381,7 +386,10 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 if !replace {
                     revocation.abort();
                     assert!((&mut revocation).await.unwrap_err().is_cancelled());
-                    assert!(host.session_slots.realization_leases().is_empty(), "E4");
+                    assert!(
+                        host.installed_sessions.realization_leases().is_empty(),
+                        "E4"
+                    );
                 }
                 extended.epoch += 1;
                 host.install_session_realization_lease(SESSION, extended.clone())
@@ -391,7 +399,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     owner: "worker".into(),
                     epoch: 2,
                 };
-                host.session_slots
+                host.installed_sessions
                     .update_run(SESSION, |run| run.dispatch_claim = Some(claim.clone()));
                 drop(held);
                 if replace {
@@ -405,7 +413,7 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                     );
                 }
                 assert_eq!(
-                    host.session_slots.read(SESSION, |slot| (
+                    host.installed_sessions.read(SESSION, |slot| (
                         slot.realization.authority.lease().cloned(),
                         slot.run.dispatch_claim.clone(),
                     )),
@@ -487,7 +495,7 @@ async fn expired_session_receipt_cannot_publish_any_complete_projection_facts() 
         }
         let resource_lock = f
             .host
-            .session_slots
+            .installed_sessions
             .update_realization(SESSION, |r| r.resource_projection.clone());
         let held = resource_lock.lock().await;
         let proof = awaken_session_realization_contract::SessionRealizationLeaseReceipt {
@@ -520,17 +528,17 @@ async fn expired_session_receipt_cannot_publish_any_complete_projection_facts() 
         );
         assert!(
             f.host
-                .session_slots
-                .read(SESSION, |slot| slot.frozen.workspace.is_none()
-                    && slot.frozen.agent_id.is_none()
-                    && slot.frozen.published_snapshot.is_none()
-                    && slot.frozen.environment_projection.is_none()
-                    && slot.frozen.environment_snapshot.is_none()
-                    && slot.frozen.baseline.is_none()
+                .installed_sessions
+                .read(SESSION, |slot| slot.inputs.workspace.is_none()
+                    && slot.inputs.agent_id.is_none()
+                    && slot.inputs.published_snapshot.is_none()
+                    && slot.inputs.environment_projection.is_none()
+                    && slot.inputs.environment_snapshot.is_none()
+                    && slot.inputs.baseline.is_none()
                     && slot.realization.frozen_projection_receipt.is_none()
                     && slot.realization.resource_transition.is_none()
                     && !slot.run.session_dispatch
-                    && slot.frozen.request_context.is_empty()
+                    && slot.inputs.request_context.is_empty()
                     && slot.realization.authority.lease().is_none())
                 .unwrap(),
             "R1/R2 no partial complete projection"
@@ -610,14 +618,14 @@ impl StagingFixture {
         let projection = self.projection.clone();
         let lease = self.lease.clone();
         let task = tokio::spawn(async move {
-            let lock = host.session_slots.realization_lock(&session);
+            let lock = host.installed_sessions.realization_lock(&session);
             let _guard = lock.lock().await;
             host.install_frozen_session_projection(
                 &session,
                 projection,
                 None,
                 true,
-                Some(crate::session_slot::test_observed_lease(lease)),
+                Some(crate::installed_session::test_observed_lease(lease)),
             )
             .await
         });
@@ -633,11 +641,11 @@ impl StagingFixture {
     fn assert_unpublished(&self) {
         assert!(
             self.host
-                .session_slots
+                .installed_sessions
                 .read(SESSION, |slot| {
-                    slot.frozen.baseline.is_none()
+                    slot.inputs.baseline.is_none()
                         && slot.realization.frozen_projection_receipt.is_none()
-                        && slot.run.runtime.is_none()
+                        && slot.run.context.is_none()
                         && !slot.run.session_dispatch
                         && slot.realization.resource_transition.is_none()
                 })
@@ -647,6 +655,7 @@ impl StagingFixture {
         assert!(
             self.host
                 .realizer
+                .staging
                 .thread_resource_manifest(SESSION)
                 .is_none()
         );
@@ -669,7 +678,7 @@ async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
     f.host
         .install_session_realization_lease(SESSION, old.clone())
         .unwrap();
-    f.host.session_slots.update_realization(SESSION, |r| {
+    f.host.installed_sessions.update_realization(SESSION, |r| {
         assert!(r.close_authority(Some(&old)), "R1");
     });
     assert!(
@@ -692,7 +701,7 @@ async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
     };
     f.lease.epoch = epoch;
     let task = f.start().await;
-    let lock = f.host.session_slots.realization_lock(SESSION);
+    let lock = f.host.installed_sessions.realization_lock(SESSION);
     assert!(
         !f.host
             .revoke_session_realization(SESSION, Some((&old, &lock)))
@@ -706,7 +715,10 @@ async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
         .unwrap()
         .expect("E1 successor publishes Resource projection");
     assert_eq!(
-        f.host.session_slots.realization_leases()[0].1.lease.epoch,
+        f.host.installed_sessions.realization_leases()[0]
+            .1
+            .lease
+            .epoch,
         epoch,
         "E1"
     );
@@ -714,10 +726,10 @@ async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
     // activation publishes the active manifest. Do not confuse these phases.
     assert_eq!(
         f.host
-            .session_slots
+            .installed_sessions
             .read(SESSION, |slot| {
                 assert!(
-                    slot.frozen.baseline.is_some()
+                    slot.inputs.baseline.is_some()
                         && slot.realization.frozen_projection_receipt.is_some(),
                     "E1"
                 );
@@ -760,7 +772,7 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
             .insert(rule.into(), lease.clone());
         host.install_session_realization_lease(rule, lease.clone())
             .unwrap();
-        host.session_slots.update_realization(rule, |r| {
+        host.installed_sessions.update_realization(rule, |r| {
             r.mcp.set_has_frozen_attachment(rule == "L2");
             if rule == "L5" {
                 assert!(r.close_authority(Some(&lease)));
@@ -790,7 +802,7 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
         if matches!(rule, "L1" | "L2") {
             lease.expires_at_unix_ms += 10_000;
         }
-        host.session_slots
+        host.installed_sessions
             .read(rule, |slot| {
                 assert_eq!(
                     slot.realization.authority.lease(),
@@ -799,7 +811,7 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
                 );
                 assert_eq!(slot.realization.mcp.has_frozen_attachment(), rule == "L2");
                 assert!(
-                    slot.frozen.baseline.is_none()
+                    slot.inputs.baseline.is_none()
                         && slot.realization.resource_transition.is_none()
                         && !slot.run.session_dispatch,
                     "{rule}/lease only"
@@ -837,9 +849,9 @@ async fn missing_control_is_required_only_for_due_leases_without_skipping_refres
         0,
         "D2"
     );
-    host.session_slots.update_realization(SESSION, |r| {
-        r.authority = crate::session_slot::SessionRealizationAuthority::Live(
-            crate::session_slot::test_expired_observed_lease(lease.clone()),
+    host.installed_sessions.update_realization(SESSION, |r| {
+        r.authority = crate::installed_session::SessionRealizationAuthority::Live(
+            crate::installed_session::test_expired_observed_lease(lease.clone()),
         );
     });
     assert!(
@@ -847,7 +859,7 @@ async fn missing_control_is_required_only_for_due_leases_without_skipping_refres
         "D3"
     );
     assert_eq!(
-        host.session_slots
+        host.installed_sessions
             .read_realization(SESSION, |r| r.authority.lease().cloned()),
         Some(Some(lease)),
         "D3 retained cleanup identity"
@@ -948,10 +960,12 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
     assert!(sandbox.spawn(command()).await.is_err());
     assert!(sandbox.spawn_agent(command()).await.is_err());
     let first = host
+        .realizer
         .begin_session_environment_preparation(SESSION, environment.clone())
         .unwrap();
     assert!(!sandbox.needs_execution_authority());
     let retry = host
+        .realizer
         .begin_session_environment_preparation(SESSION, environment.clone())
         .unwrap();
     assert!(Arc::ptr_eq(&first.environment, &retry.environment));
@@ -976,10 +990,10 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
         "no-due early return must not bypass physical refresh"
     );
     assert!(host.worker.session_control.is_none());
-    host.session_slots.update_realization(SESSION, |r| {
+    host.installed_sessions.update_realization(SESSION, |r| {
         assert!(r.close_authority(Some(&lease)));
     });
-    assert!(host.session_slots.realization_leases().is_empty());
+    assert!(host.installed_sessions.realization_leases().is_empty());
     assert!(
         host.renew_due_session_realizations(timing).await.is_err(),
         "no Control and an empty live-lease cohort must still refresh the retained tree"
@@ -1037,7 +1051,9 @@ async fn worker_root_denies_fresh_and_replaced_projection_before_resource_io() {
                     f.projection.clone(),
                     None,
                     true,
-                    Some(crate::session_slot::test_observed_lease(f.lease.clone())),
+                    Some(crate::installed_session::test_observed_lease(
+                        f.lease.clone(),
+                    )),
                 ),
             )
             .await;
@@ -1047,12 +1063,15 @@ async fn worker_root_denies_fresh_and_replaced_projection_before_resource_io() {
             );
             f.assert_unpublished();
             assert_eq!(
-                f.host.session_slots.realization_leases().len(),
+                f.host.installed_sessions.realization_leases().len(),
                 usize::from(existing)
             );
             if existing {
                 assert_eq!(
-                    f.host.session_slots.realization_leases()[0].1.lease.epoch,
+                    f.host.installed_sessions.realization_leases()[0]
+                        .1
+                        .lease
+                        .epoch,
                     f.lease.epoch - 1
                 );
             }
@@ -1073,7 +1092,7 @@ async fn worker_root_close_during_preparation_prevents_completion_and_reentry() 
     f.source.release.notify_one();
     assert!(task.await.unwrap().is_err());
     f.assert_unpublished();
-    assert!(f.host.session_slots.realization_leases().is_empty());
+    assert!(f.host.installed_sessions.realization_leases().is_empty());
     let mut replacement = f.lease.clone();
     replacement.epoch += 1;
     assert!(
@@ -1113,13 +1132,13 @@ async fn worker_root_denies_renewal_even_before_cohort_close() {
             .expect("runtime role")
             .renew_session_realization_lease(
                 SESSION,
-                crate::session_slot::test_observed_lease(renewed)
+                crate::installed_session::test_observed_lease(renewed)
             )
             .await
             .is_err()
     );
     assert_eq!(
-        f.host.session_slots.realization_leases()[0].1.lease,
+        f.host.installed_sessions.realization_leases()[0].1.lease,
         f.lease,
         "A7 no mutation"
     );
@@ -1132,7 +1151,7 @@ async fn worker_root_denies_renewal_even_before_cohort_close() {
             .unwrap(),
         0
     );
-    assert!(f.host.session_slots.realization_leases().is_empty());
+    assert!(f.host.installed_sessions.realization_leases().is_empty());
 }
 
 // Cause/effect graph: C1 a cold exact lease is assigned; C2 immutable File I/O
@@ -1168,7 +1187,7 @@ async fn cold_resource_staging_is_renewable_before_projection_publication() {
     );
     assert_eq!(
         f.host
-            .session_slots
+            .installed_sessions
             .read_realization(SESSION, |r| r.authority.lease().cloned())
             .flatten()
             .unwrap()
@@ -1197,17 +1216,17 @@ async fn failed_or_cancelled_resource_preparation_drops_only_its_unpublished_lea
         f.assert_unpublished();
         assert!(
             f.host
-                .session_slots
+                .installed_sessions
                 .read(SESSION, |slot| {
                     slot.realization.authority.lease().is_none()
                         && slot.realization.resource_preparation.is_none()
-                        && slot.frozen.workspace.is_none()
+                        && slot.inputs.workspace.is_none()
                         && slot.realization.skills.is_none()
                         && slot.realization.staged_resource_effect_key.is_none()
                 })
                 .unwrap()
         );
-        let lock = f.host.session_slots.realization_lock(SESSION);
+        let lock = f.host.installed_sessions.realization_lock(SESSION);
         assert!(lock.try_lock().is_ok());
     }
 }
@@ -1243,7 +1262,7 @@ async fn renewal_rejection_cancels_resource_io_before_waiting_for_realization_lo
         assert_eq!(renewal.expect("S4/S5 no lock cycle").unwrap(), 0);
         assert!(result.unwrap().is_err());
         f.assert_unpublished();
-        assert!(f.host.session_slots.realization_leases().is_empty());
+        assert!(f.host.installed_sessions.realization_leases().is_empty());
     }
 }
 
@@ -1270,7 +1289,7 @@ async fn temporary_renewal_failure_does_not_abort_live_resource_preparation() {
     f.source.release.notify_one();
     task.await.unwrap().unwrap();
     assert_eq!(
-        f.host.session_slots.realization_leases()[0]
+        f.host.installed_sessions.realization_leases()[0]
             .1
             .lease
             .expires_at_unix_ms,
@@ -1298,7 +1317,7 @@ async fn resource_preparation_expires_even_without_another_renewal_sweep() {
             .is_err()
     );
     f.assert_unpublished();
-    assert!(f.host.session_slots.realization_leases().is_empty());
+    assert!(f.host.installed_sessions.realization_leases().is_empty());
 }
 
 // S8/S9/S10: generation replacement / exact invalidation / slot removal while
@@ -1320,7 +1339,7 @@ async fn obsolete_resource_preparation_cannot_publish_or_erase_a_successor() {
                 .host
                 .invalidate_session_realization_lease(SESSION, &f.lease),
             _ => {
-                f.host.session_slots.remove(SESSION);
+                f.host.installed_sessions.remove(SESSION);
             }
         }
         // Make success and cancellation ready together: cancellation/fencing
@@ -1340,16 +1359,16 @@ async fn obsolete_resource_preparation_cannot_publish_or_erase_a_successor() {
         f.assert_unpublished();
         let current = f
             .host
-            .session_slots
+            .installed_sessions
             .read_realization(SESSION, |r| r.authority.lease().cloned())
             .flatten();
         assert_eq!(current, (mutation == "replace").then_some(successor));
         if mutation == "remove" {
-            assert!(!f.host.session_slots.contains(SESSION));
+            assert!(!f.host.installed_sessions.contains(SESSION));
             f.host
                 .invalidate_session_realization_lease(SESSION, &f.lease);
             assert!(
-                !f.host.session_slots.contains(SESSION),
+                !f.host.installed_sessions.contains(SESSION),
                 "invalidation cannot resurrect a removed slot"
             );
         }
@@ -1370,12 +1389,14 @@ async fn preflight_failure_has_no_lease_and_failed_replay_preserves_existing_ren
                 f.projection.clone(),
                 None,
                 true,
-                Some(crate::session_slot::test_observed_lease(f.lease.clone()))
+                Some(crate::installed_session::test_observed_lease(
+                    f.lease.clone()
+                ))
             )
             .await
             .is_err()
     );
-    assert!(f.host.session_slots.realization_leases().is_empty());
+    assert!(f.host.installed_sessions.realization_leases().is_empty());
     let f = StagingFixture::new().await;
     let mut renewed = f.lease.clone();
     renewed.expires_at_unix_ms += 30_000;
@@ -1384,14 +1405,14 @@ async fn preflight_failure_has_no_lease_and_failed_replay_preserves_existing_ren
         .unwrap();
     let task = f.start().await;
     assert_eq!(
-        f.host.session_slots.realization_leases()[0].1.lease,
+        f.host.installed_sessions.realization_leases()[0].1.lease,
         renewed
     );
     f.source.fail.store(true, Ordering::SeqCst);
     f.source.release.notify_one();
     assert!(task.await.unwrap().is_err());
     assert_eq!(
-        f.host.session_slots.realization_leases()[0].1.lease,
+        f.host.installed_sessions.realization_leases()[0].1.lease,
         renewed
     );
 }
@@ -1421,9 +1442,9 @@ async fn many_cold_resource_reads_share_the_existing_renewal_scheduler() {
         .await;
     let unpublished = (0..16).all(|index| {
         f.host
-            .session_slots
+            .installed_sessions
             .read(&format!("cold-{index}"), |slot| {
-                slot.frozen.baseline.is_none() && !slot.run.session_dispatch
+                slot.inputs.baseline.is_none() && !slot.run.session_dispatch
             })
             .unwrap()
     });
@@ -1456,7 +1477,7 @@ async fn worker_revocation_cancels_blocked_resource_preparation() {
         .unwrap();
     assert!(result.unwrap().is_err());
     f.assert_unpublished();
-    assert!(f.host.session_slots.realization_leases().is_empty());
+    assert!(f.host.installed_sessions.realization_leases().is_empty());
 }
 
 // S15: crossing the initial deadline after a successful renewal is not lease
@@ -1553,7 +1574,7 @@ async fn cold_staging_discards_a_renewal_response_delivered_after_newer_authorit
         f.source.release.notify_one();
         assert_eq!(preparation.await.unwrap().is_err(), takeover);
         assert_eq!(
-            f.host.session_slots.realization_leases()[0].1.lease,
+            f.host.installed_sessions.realization_leases()[0].1.lease,
             expected
         );
         if takeover {
@@ -1561,8 +1582,8 @@ async fn cold_staging_discards_a_renewal_response_delivered_after_newer_authorit
         } else {
             assert!(
                 f.host
-                    .session_slots
-                    .read(SESSION, |slot| slot.frozen.baseline.is_some()
+                    .installed_sessions
+                    .read(SESSION, |slot| slot.inputs.baseline.is_some()
                         && slot.run.session_dispatch
                         && slot.realization.resource_preparation.is_none())
                     .unwrap()
@@ -1605,9 +1626,9 @@ async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
             assert!(!task.is_finished(), "L1 session {index}");
             assert!(
                 f.host
-                    .session_slots
+                    .installed_sessions
                     .read(&format!("soak-{index:02}"), |slot| slot
-                        .frozen
+                        .inputs
                         .baseline
                         .is_none()
                         && slot.realization.resource_preparation.is_some()
@@ -1642,6 +1663,7 @@ async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
     assert!(
         f.host
             .realizer
+            .staging
             .thread_resource_manifest("soak-00")
             .is_none()
     );

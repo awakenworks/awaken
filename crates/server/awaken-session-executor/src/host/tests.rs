@@ -2355,7 +2355,7 @@ async fn install_terminal_recovery_projection(
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
             session_id: thread.into(),
             projection: projection.clone(),
-            authority: crate::session_slot::test_lease_receipt(lease),
+            authority: crate::installed_session::test_lease_receipt(lease),
         },
     )
     .await

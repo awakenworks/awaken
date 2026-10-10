@@ -751,7 +751,7 @@ pub(crate) mod tests {
     }
 
     struct ReplacingClaimExecutor {
-        slots: crate::session_slot::SessionRuntimeSlots,
+        slots: crate::installed_session::InstalledSessions,
         thread: String,
         replacement: awaken_dispatch_contract::RunClaim,
         failure: Option<&'static str>,
@@ -759,7 +759,7 @@ pub(crate) mod tests {
 
     impl ReplacingClaimExecutor {
         fn succeeding(
-            slots: crate::session_slot::SessionRuntimeSlots,
+            slots: crate::installed_session::InstalledSessions,
             thread: &str,
             replacement: awaken_dispatch_contract::RunClaim,
         ) -> Self {
@@ -772,7 +772,7 @@ pub(crate) mod tests {
         }
 
         fn failing(
-            slots: crate::session_slot::SessionRuntimeSlots,
+            slots: crate::installed_session::InstalledSessions,
             thread: &str,
             replacement: awaken_dispatch_contract::RunClaim,
             failure: &'static str,
@@ -1046,7 +1046,7 @@ pub(crate) mod tests {
             dispatch: dispatch.clone(),
         });
         let host = (raw_host).build().expect("validated Host dependencies");
-        host.session_slots.update_run(thread, |run| {
+        host.installed_sessions.update_run(thread, |run| {
             run.dispatch_claim = Some(expected_claim.clone());
         });
         host.register_thread_workspace(thread, "workspace-a");
@@ -1150,7 +1150,7 @@ pub(crate) mod tests {
         let recorded_before = claims.lock().expect("recorded claims mutex poisoned").len();
         ArtifactHarvestAttemptExecutor::new(
             Arc::new(ReplacingClaimExecutor::succeeding(
-                host.session_slots.clone(),
+                host.installed_sessions.clone(),
                 thread,
                 replacement,
             )),
@@ -1171,7 +1171,7 @@ pub(crate) mod tests {
             "R6"
         );
 
-        host.session_slots.update_run(thread, |run| {
+        host.installed_sessions.update_run(thread, |run| {
             run.dispatch_claim = Some(expected_claim.clone());
         });
 
@@ -1189,7 +1189,7 @@ pub(crate) mod tests {
         let resumed = activation("awaken");
         ArtifactHarvestAttemptExecutor::new(
             Arc::new(ReplacingClaimExecutor::succeeding(
-                host.session_slots.clone(),
+                host.installed_sessions.clone(),
                 thread,
                 replacement,
             )),
@@ -1210,7 +1210,7 @@ pub(crate) mod tests {
             "R8"
         );
 
-        host.session_slots.update_run(thread, |run| {
+        host.installed_sessions.update_run(thread, |run| {
             run.dispatch_claim = Some(expected_claim.clone());
         });
         let replacement = awaken_dispatch_contract::RunClaim {
@@ -1226,7 +1226,7 @@ pub(crate) mod tests {
         let recorded_before = claims.lock().expect("recorded claims mutex poisoned").len();
         let error = ArtifactHarvestAttemptExecutor::new(
             Arc::new(ReplacingClaimExecutor::failing(
-                host.session_slots.clone(),
+                host.installed_sessions.clone(),
                 thread,
                 replacement,
                 "in-flight replacement failed",
@@ -1252,7 +1252,7 @@ pub(crate) mod tests {
             "R9"
         );
 
-        host.session_slots
+        host.installed_sessions
             .update_run(thread, |run| run.dispatch_claim = None);
         let replacement = awaken_dispatch_contract::RunClaim {
             run_id: expected_claim.run_id.clone(),
@@ -1263,7 +1263,7 @@ pub(crate) mod tests {
         let recorded_before = claims.lock().expect("recorded claims mutex poisoned").len();
         ArtifactHarvestAttemptExecutor::new(
             Arc::new(ReplacingClaimExecutor::succeeding(
-                host.session_slots.clone(),
+                host.installed_sessions.clone(),
                 thread,
                 replacement,
             )),
@@ -1284,7 +1284,7 @@ pub(crate) mod tests {
             "R10"
         );
 
-        host.session_slots.update_run(thread, |run| {
+        host.installed_sessions.update_run(thread, |run| {
             run.dispatch_claim = Some(expected_claim.clone());
         });
 

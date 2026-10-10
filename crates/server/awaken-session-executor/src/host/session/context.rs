@@ -71,8 +71,8 @@ async fn install(
         &active_mcp,
         ctx.config.resolved_spec.plugin_config.plugins(),
     )?;
-    host.session_slots
-        .update_run(thread, |run| run.runtime = Some(ctx.clone()));
+    host.installed_sessions
+        .update_run(thread, |run| run.context = Some(ctx.clone()));
     // A prior process may have crashed after atomically ending the parent
     // and before delivering its remote child cancellations. Re-entering the
     // session redelivers those idempotent outbox entries.

@@ -70,7 +70,7 @@ impl crate::host::SharedHost {
     }
 
     pub(crate) fn register_thread_backend_projection(&self, thread: &str, backend_ref: &str) {
-        self.session_slots.replace_frozen_with(thread, |next| {
+        self.installed_sessions.replace_frozen_with(thread, |next| {
             next.backend_ref = crate::frozen_inputs::backend_projection(backend_ref);
         });
     }
@@ -101,9 +101,12 @@ mod tests {
         // Cause/effect graph: C1=explicit sandbox root; C2=durable runtime root.
         // Effects: E1=use explicit operator root; E2=derive stable sandboxes
         // below runtime storage; E3=use process-temporary root only for a fully
-        // ephemeral host. Constraint: C1 has precedence over C2.
+        // ephemeral host. Constraint: C1 has precedence over C2. C3=an earlier
+        // process with the same pid left its root; E4=E3 never reuses it and
+        // stays one root for this whole process.
         //
-        // Decision table: S1 C1+C2=>E1; S2 !C1+C2=>E2; S3 !C1+!C2=>E3.
+        // Decision table: S1 C1+C2=>E1; S2 !C1+C2=>E2; S3 !C1+!C2=>E3;
+        // S4 !C1+!C2+C3=>E3+E4.
         let mut deployment = crate::DeploymentConfig::ephemeral();
         deployment.storage_dir = Some("/durable/runtime".into());
         deployment.sandbox_dir = Some("/operator/sandboxes".into());
@@ -126,6 +129,17 @@ mod tests {
                 .file_name()
                 .is_some_and(|name| name.to_string_lossy().starts_with("awaken-acp-sbx-")),
             "S3"
+        );
+        let pid_only = std::env::temp_dir().join(format!("awaken-acp-sbx-{}", std::process::id()));
+        let root = session_sandbox_base(&deployment);
+        assert_ne!(
+            root, pid_only,
+            "S4 a root keyed by the pid alone is never reused"
+        );
+        assert_eq!(
+            root,
+            session_sandbox_base(&deployment),
+            "S4 one root per process"
         );
     }
     #[async_trait::async_trait]
@@ -210,7 +224,7 @@ mod tests {
         host.register_thread_backend_projection("t", "acp:claude");
         assert!(host.exec.acp.is_some(), "A1 executor");
         assert_eq!(
-            host.session_slots
+            host.installed_sessions
                 .frozen("t")
                 .backend_ref
                 .clone()
@@ -219,7 +233,7 @@ mod tests {
             "A1"
         );
         assert_eq!(
-            host.session_slots
+            host.installed_sessions
                 .frozen("unstaged-thread")
                 .backend_ref
                 .clone(),

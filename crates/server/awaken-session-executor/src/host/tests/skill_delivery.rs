@@ -330,7 +330,7 @@ async fn direct_on_tool_use_brain_skill_adapter_keeps_the_environment_absent() {
     let deferred: Arc<dyn awaken_tool_contract::tool::ToolExecutor> = Arc::new(
         crate::lazy_sandbox::DeferredSandboxExecutor::new(Arc::downgrade(&host), thread),
     );
-    host.session_slots.update(thread, |slot| {
+    host.installed_sessions.update(thread, |slot| {
         slot.replace_frozen_with(|next| {
             next.tools = Some(
                 awaken_session_configuration_contract::SessionToolConfiguration {
@@ -484,7 +484,7 @@ async fn managed_session_ignores_unbound_host_skill_sources() {
         "A1/E1 no semantic Skill compatibility surface"
     );
     assert_eq!(
-        host.session_slots
+        host.installed_sessions
             .read_realization("managed-no-frozen-skill", |r| r.skill_prompt.clone())
             .flatten(),
         None,
@@ -610,7 +610,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         "L9/E1 no reservation side effect"
     );
     let provisional_metadata = host
-        .session_slots
+        .installed_sessions
         .read_realization("deferred-managed-filesystem-skill", |r| {
             r.skill_prompt.clone()
         })
@@ -654,7 +654,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         "L10/E2 Skill reads remain sandbox-free"
     );
     let deferred = host
-        .session_slots
+        .installed_sessions
         .read_run("deferred-managed-filesystem-skill", |run| {
             run.deferred_executor.clone()
         })
@@ -706,7 +706,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         "L11 exact pre/post materialization bytes"
     );
     assert_eq!(
-        host.session_slots
+        host.installed_sessions
             .read_realization("deferred-managed-filesystem-skill", |r| {
                 r.skill_prompt.clone()
             })
@@ -744,6 +744,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
     );
     let active = host
         .realizer
+        .staging
         .thread_resource_manifest("deferred-managed-filesystem-skill")
         .unwrap();
     managed

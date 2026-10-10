@@ -37,7 +37,7 @@ impl ToolExecutor for DeferredSandboxExecutor {
         if call.tool_id == "read" {
             let args = awaken_tool_contract::tool::parse_tool_args(call.arguments.clone())?;
             if host
-                .session_slots
+                .installed_sessions
                 .read(&self.thread, |slot| {
                     crate::skills::read_pinned_skill(slot, &args)
                 })
@@ -59,7 +59,7 @@ impl ToolExecutor for DeferredSandboxExecutor {
         self.host
             .upgrade()
             .and_then(|host| {
-                host.session_slots
+                host.installed_sessions
                     .read_realization(&self.thread, |r| r.environment_owner.resident())
                     .flatten()
             })
@@ -77,7 +77,7 @@ impl ToolExecutor for DeferredSandboxExecutor {
             let args: awaken_ext_builtin_tools::ReadArgs =
                 awaken_tool_contract::tool::parse_tool_args(call.arguments.clone())?;
             if let Some(result) = host
-                .session_slots
+                .installed_sessions
                 .read(&self.thread, |slot| {
                     crate::skills::read_pinned_skill(slot, &args)
                 })

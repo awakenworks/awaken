@@ -130,7 +130,7 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
     });
     install_test_dispatch_runtime(&host).install_test_environment_binding_sink(sink.clone());
     let thread = "claimed-ordinary-environment-authority";
-    host.session_slots.update_run(thread, |run| {
+    host.installed_sessions.update_run(thread, |run| {
         run.dispatch_claim = Some(awaken_dispatch_contract::RunClaim {
             run_id: RunId("claimed-ordinary-run".into()),
             owner: "worker-a".into(),
@@ -155,7 +155,7 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
     );
     assert_eq!(sink.authorize_calls.load(Ordering::SeqCst), 0, "R1/E1");
 
-    host.session_slots
+    host.installed_sessions
         .update_run(thread, |run| run.session_dispatch = true);
     let managed = host
         .authorize_environment_effect_before_io(

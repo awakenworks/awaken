@@ -199,8 +199,8 @@ async fn worker_authority_loss_interrupts_active_session_before_revocation() {
     // loss must fence every process-local projection, not only the caller thread.
     let revocation = host.begin_session_realization_revocation();
     assert!(
-        host.session_slots.session_ids().iter().all(|id| {
-            host.session_slots
+        host.installed_sessions.session_ids().iter().all(|id| {
+            host.installed_sessions
                 .read_realization(id, |r| r.authority.is_closed())
                 .unwrap()
         }),
@@ -264,8 +264,8 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
             awaken_runtime_contract::execution::LiveInput::None,
         );
         *ctx.active_run.lock().unwrap() = direct.then(|| run_id.clone());
-        worker.session_slots.update_run("worker-stop", |run| {
-            run.runtime = Some(ctx.clone());
+        worker.installed_sessions.update_run("worker-stop", |run| {
+            run.context = Some(ctx.clone());
             run.dispatch_claim = Some(awaken_dispatch_contract::RunClaim {
                 run_id,
                 owner: "worker-old".into(),
@@ -285,7 +285,7 @@ async fn worker_interrupt_uses_resident_claim_without_coordinator_queue_operatio
     }
     worker.interrupt("absent-worker-session").await.unwrap();
     assert!(
-        !worker.session_slots.contains("absent-worker-session"),
+        !worker.installed_sessions.contains("absent-worker-session"),
         "D4 no materialization"
     );
 }
@@ -932,7 +932,10 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
         unsupported.message
     );
     assert!(
-        direct.session_slots.read(cold_thread, |_| ()).is_none(),
+        direct
+            .installed_sessions
+            .read(cold_thread, |_| ())
+            .is_none(),
         "W0/E4 direct control must not create a Session slot"
     );
 
@@ -973,7 +976,10 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
         "W1/E2"
     );
     assert!(
-        durable.session_slots.read(cold_thread, |_| ()).is_none(),
+        durable
+            .installed_sessions
+            .read(cold_thread, |_| ())
+            .is_none(),
         "W1/E4 live-only control must not materialize a Session or Environment"
     );
     assert!(
@@ -1042,8 +1048,8 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
     .build()
     .expect("validated Host dependencies");
     assert!(
-        host.session_slots
-            .read_run(thread, |run| run.runtime.clone())
+        host.installed_sessions
+            .read_run(thread, |run| run.context.clone())
             .flatten()
             .is_none(),
         "C2 precondition"
@@ -1063,8 +1069,8 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
     );
     assert!(rows[0].cancellation_requested, "E2 durable cancellation");
     assert!(
-        host.session_slots
-            .read_run(thread, |run| run.runtime.clone())
+        host.installed_sessions
+            .read_run(thread, |run| run.context.clone())
             .flatten()
             .is_none(),
         "E3 interrupt must not realize a cold Runtime/Environment"

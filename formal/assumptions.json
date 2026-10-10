@@ -266,7 +266,7 @@
       "obligation": "external.async_runtime_synchronization_and_scheduling",
       "kind": "infrastructure",
       "integration_evidence": [
-        "crates/server/awaken-session-executor/src/session_slot/realization_permit.rs",
+        "crates/server/awaken-session-executor/src/installed_session/realization_permit.rs",
         "crates/server/awaken-session-executor/src/application/realization_control_deadline.rs",
         "crates/server/awaken-session-executor/src/host/tests/realization_renewal.rs"
       ],

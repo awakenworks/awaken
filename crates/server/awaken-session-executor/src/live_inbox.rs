@@ -14,8 +14,8 @@ impl SharedHost {
     /// handlers can probe without side effects.
     pub async fn live_inbox(&self, thread: &str) -> Option<LiveInbox> {
         let ctx = self
-            .session_slots
-            .read_run(thread, |run| run.runtime.clone())
+            .installed_sessions
+            .read_run(thread, |run| run.context.clone())
             .flatten()?;
         // Runtime execution and Worker RAII both install their exact attempt
         // bundle here. The generation and ownership fences make deployment

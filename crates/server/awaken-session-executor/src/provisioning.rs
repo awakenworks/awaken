@@ -440,7 +440,7 @@ impl SharedHost {
         thread: &str,
         realizer: &dyn pc::RepositoryRealizer,
     ) -> Result<(), crate::host_error::HostError> {
-        let resources = self.realizer.thread_resources_snapshot(thread);
+        let resources = self.realizer.staging.thread_resources_snapshot(thread);
         for repository in &resources.repositories {
             self.realize_repository_activation(
                 thread,
@@ -1031,16 +1031,52 @@ pub(crate) fn project_session_mounts(
 #[path = "provisioning/tests.rs"]
 mod provisioning_registry_tests;
 
-impl crate::session_realizer::SessionRealizer {
+/// Test-only spec helpers over the default Session provider.
+#[cfg(test)]
+impl crate::environment_holding::EnvironmentHolding {
     /// The provisioning request for a thread. Skills are not a sandbox mount
     /// (ADR-0036); the environment provisions isolation tools plus the session's
     /// staged resource mounts (ADR-0038), each realized read-only under `.mnt/`.
     #[cfg(test)]
     pub(crate) fn sandbox_spec(&self, thread: &str) -> pc::SandboxSpec {
-        let resources = self.thread_resources_snapshot(thread);
+        let resources = self.staging.thread_resources_snapshot(thread);
         self.sandbox_spec_for_resources(thread, &resources)
     }
 
+    #[cfg(test)]
+    pub(crate) fn sandbox_spec_for_resources(
+        &self,
+        thread: &str,
+        resources: &StagedResources,
+    ) -> pc::SandboxSpec {
+        self.sandbox_spec_for_mount_layout(
+            thread,
+            resources.mounts.clone(),
+            !resources.repositories.is_empty(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sandbox_spec_for_mount_layout(
+        &self,
+        thread: &str,
+        resource_mounts: Vec<pc::MountRequirement>,
+        has_repositories: bool,
+    ) -> pc::SandboxSpec {
+        self.staging.sandbox_spec_for_mount_layout_with_network(
+            thread,
+            resource_mounts,
+            has_repositories,
+            self.env
+                .session_provider
+                .realizer()
+                .capabilities()
+                .network_isolation,
+        )
+    }
+}
+
+impl crate::resource_staging::ResourceStaging {
     /// Build the exact neutral Session spec for the provider selected by the
     /// immutable Agent publication. Network projection is provider capability
     /// dependent, so create/adopt/restore must not build with the process-wide
@@ -1089,19 +1125,6 @@ impl crate::session_realizer::SessionRealizer {
             create_time_mounts,
             has_repositories,
             provider.realizer().capabilities().network_isolation,
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn sandbox_spec_for_resources(
-        &self,
-        thread: &str,
-        resources: &StagedResources,
-    ) -> pc::SandboxSpec {
-        self.sandbox_spec_for_mount_layout(
-            thread,
-            resources.mounts.clone(),
-            !resources.repositories.is_empty(),
         )
     }
 
@@ -1155,25 +1178,6 @@ impl crate::session_realizer::SessionRealizer {
         )
     }
 
-    #[cfg(test)]
-    pub(crate) fn sandbox_spec_for_mount_layout(
-        &self,
-        thread: &str,
-        resource_mounts: Vec<pc::MountRequirement>,
-        has_repositories: bool,
-    ) -> pc::SandboxSpec {
-        self.sandbox_spec_for_mount_layout_with_network(
-            thread,
-            resource_mounts,
-            has_repositories,
-            self.env
-                .session_provider
-                .realizer()
-                .capabilities()
-                .network_isolation,
-        )
-    }
-
     fn sandbox_spec_for_mount_layout_with_network(
         &self,
         thread: &str,
@@ -1185,9 +1189,9 @@ impl crate::session_realizer::SessionRealizer {
             .sessions
             .modify_session(thread, |slot| {
                 (
-                    slot.frozen.baseline.clone(),
+                    slot.inputs.baseline.clone(),
                     slot.realization.content_delivery,
-                    slot.frozen.environment_projection.clone(),
+                    slot.inputs.environment_projection.clone(),
                 )
             })
             .unwrap_or_default();
@@ -1311,7 +1315,7 @@ impl crate::session_realizer::SessionRealizer {
     ) -> Vec<awaken_provisioning_contract::EnvVar> {
         self.sessions
             .modify_session(thread, |slot| {
-                slot.frozen
+                slot.inputs
                     .baseline
                     .as_ref()
                     .map(|baseline| baseline.env.clone())

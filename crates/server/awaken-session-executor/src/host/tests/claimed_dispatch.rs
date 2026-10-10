@@ -248,7 +248,7 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
         &snapshot,
     )
     .await;
-    host.realizer.register_thread_resources(
+    host.realizer.staging.register_thread_resources(
         "a2a-with-mount",
         crate::staged_resources::StagedResources {
             mounts: vec![awaken_provisioning_contract::MountRequirement {
@@ -458,7 +458,7 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
         let expected = desired
             .or_else(|| active.clone())
             .expect("selected manifest");
-        host.session_slots.update(&thread, |slot| {
+        host.installed_sessions.update(&thread, |slot| {
             slot.run.session_dispatch = prepared_session;
             slot.realization.manifest = active.clone();
             slot.realization.resource_transition = transition;
@@ -528,7 +528,7 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
             "{rule}/E6 exact Session affinity",
         );
         assert_eq!(
-            host.realizer.thread_resource_manifest(&thread),
+            host.realizer.staging.thread_resource_manifest(&thread),
             active,
             "{rule}/E5 dispatch staging must not publish active",
         );
@@ -601,7 +601,7 @@ async fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realizat
         .build()
         .expect("validated Host dependencies");
     let thread = "prepared-root-session";
-    host.session_slots
+    host.installed_sessions
         .update_run(thread, |run| run.session_dispatch = true);
     let activation = awaken_runtime_contract::RunActivation::new(
         awaken_agent_contract::agent::run::Id("run-prepared-root-session".into()),
@@ -636,7 +636,7 @@ async fn thread_extension_dispatch_reuses_frozen_inputs_without_session_admissio
         .build()
         .expect("validated Host dependencies");
     let thread = "prepared-outcome-thread";
-    host.session_slots
+    host.installed_sessions
         .update_run(thread, |run| run.session_dispatch = true);
     let activation = awaken_runtime_contract::RunActivation::new(
         awaken_agent_contract::agent::run::Id("outcome-worker-run".into()),

@@ -67,12 +67,12 @@ pub(super) async fn acquire(
             .await?;
     }
     let retained = host
-        .session_slots
+        .installed_sessions
         .read_realization(thread, |r| r.environment_owner.resident())
         .flatten();
     let environment_owner_is_vacant = exec.session_environment_owner_is_vacant(thread);
     let environment_owner_has_unpublished_candidate = host
-        .session_slots
+        .installed_sessions
         .read_realization(thread, |r| {
             r.environment_owner.unpublished_candidate().is_some()
         })
@@ -237,7 +237,7 @@ pub(super) async fn acquire(
         .as_ref()
         .map(|snapshot| snapshot.resolved_spec.plugin_config.agent.toolsets.clone())
         .unwrap_or_default();
-    let session_tools = host.session_slots.frozen(thread).tools.clone();
+    let session_tools = host.installed_sessions.frozen(thread).tools.clone();
     let toolsets = session_tools
         .as_ref()
         .map(|tools| tools.toolsets.clone())

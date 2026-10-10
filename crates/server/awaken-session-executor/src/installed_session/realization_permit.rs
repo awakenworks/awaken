@@ -2,7 +2,7 @@
 // @formal entrypoint session_realization.cross_session_reconciliation_is_bounded_and_each_control_deadline_releases_capacity_without_weakening_per_session_mutex
 //! Worker-side identity source for the canonical Session realization permit.
 //!
-//! `SessionRuntimeSlot::realization` remains the sole mutex and the sole
+//! `InstalledSession::realization` remains the sole mutex and the sole
 //! exclusion identity on this side: it is the same `Arc` allocation the slot's
 //! revocation selection compares, so a removed/recreated slot is automatically
 //! a replaced registration. This adapter only feeds that identity and its
@@ -14,9 +14,9 @@ use std::sync::Arc;
 
 use awaken_session_realization_contract::SessionRealizationPermit;
 
-use super::{SessionRuntimeSlot, SessionRuntimeSlots};
+use super::{InstalledSession, InstalledSessions};
 
-impl SessionRuntimeSlots {
+impl InstalledSessions {
     /// Acquire the current slot's realization owner and atomically apply the
     /// caller's admission projection. If removal/recreation happened while
     /// awaiting Tokio, the contract kernel retries against the replacement
@@ -24,7 +24,7 @@ impl SessionRuntimeSlots {
     pub(crate) async fn acquire_realization_with<R>(
         &self,
         session: &str,
-        mut on_admit: impl FnMut(&mut SessionRuntimeSlot) -> R,
+        mut on_admit: impl FnMut(&mut InstalledSession) -> R,
     ) -> (SessionRealizationPermit, R) {
         let slots = self;
         SessionRealizationPermit::acquire(
@@ -63,7 +63,7 @@ mod tests {
         // removed and recreated while it waits; C4 the first permit is dropped.
         // E1 C2 waits; E2 after C3+C4 it is admitted only against the *current*
         // allocation. Rules: R1=C1+C2=>E1; R2=C1+C2+C3+C4=>E2.
-        let slots = SessionRuntimeSlots::default();
+        let slots = InstalledSessions::default();
         let held = slots.acquire_realization("session-a").await;
         let waiting = slots
             .acquire_realization_with("session-a", |slot| slot.realization.realization.clone());

@@ -1,5 +1,5 @@
 use super::*;
-use crate::session_slot::test_observed_lease;
+use crate::installed_session::test_observed_lease;
 
 #[test]
 fn realization_authority_close_and_renewal_have_one_projection() {
@@ -18,7 +18,7 @@ fn realization_authority_close_and_renewal_have_one_projection() {
         epoch: 1,
         expires_at_unix_ms: base + 100,
     };
-    let mut realization = SessionRealizationState::default();
+    let mut realization = SessionRealization::default();
     assert!(!realization.close_authority(Some(&lease)), "Q1");
     assert!(realization.close_authority(None), "Q2");
     assert!(
@@ -47,7 +47,7 @@ fn realization_authority_close_and_renewal_have_one_projection() {
             realization.authority.lease().is_none(),
             "Q5 closed assertion"
         );
-        let mut live = SessionRealizationState::default();
+        let mut live = SessionRealization::default();
         live.install_lease(test_observed_lease(lease.clone()));
         assert_eq!(
             live.renew_lease(&lease, test_observed_lease(renewed.clone())),

@@ -76,6 +76,7 @@ async fn durable_adoption_without_an_owning_sink_preserves_exact_projected_ident
                 .install_test_environment_binding_sink(Arc::new(NonOwningEnvironmentBindingSink));
         }
         let candidate = host
+            .realizer
             .begin_session_environment_adoption(&thread, environment)
             .expect("C2 hidden adoption candidate");
         assert_eq!(
@@ -123,10 +124,10 @@ async fn ordinary_candidate_without_a_sink_gets_an_explicit_direct_receipt() {
             .expect("validated Host dependencies");
         let candidate = match kind {
             awaken_session_state_contract::SessionEnvironmentEffectKind::Create => host
-                .begin_session_environment_preparation(thread, environment)
+                .realizer.begin_session_environment_preparation(thread, environment)
                 .expect("O1 create candidate"),
             awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt => host
-                .begin_session_environment_adoption(thread, environment)
+                .realizer.begin_session_environment_adoption(thread, environment)
                 .expect("O2 adoption candidate"),
             awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild { .. }
             | awaken_session_state_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation {
@@ -171,6 +172,7 @@ async fn durable_projection_cannot_publish_a_hidden_candidate() {
         .build()
         .expect("validated Host dependencies");
     let candidate = host
+        .realizer
         .begin_session_environment_preparation(thread, environment.clone())
         .expect("C1 Candidate");
     let generation = generation(thread);
@@ -196,6 +198,7 @@ async fn durable_projection_cannot_publish_a_hidden_candidate() {
     );
 
     let published = host
+        .realizer
         .publish_prepared_session_environment(
             thread,
             &candidate,
@@ -245,12 +248,14 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
         )
         .unwrap();
         let candidate = host
+            .realizer
             .begin_session_environment_adoption(thread, environment.clone())
             .unwrap();
         if warm {
-            host.publish_prepared_session_environment(thread, &candidate, source.clone())
+            host.realizer
+                .publish_prepared_session_environment(thread, &candidate, source.clone())
                 .unwrap();
-            host.session_slots.update_realization(thread, |r| {
+            host.installed_sessions.update_realization(thread, |r| {
                 let retiring = r
                     .environment_owner
                     .begin_retirement(
@@ -277,15 +282,17 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
         };
         for publish in [false, true] {
             let result = if publish {
-                host.publish_prepared_session_environment(thread, &candidate, foreign.clone())
+                host.realizer
+                    .publish_prepared_session_environment(thread, &candidate, foreign.clone())
                     .map(|_| ())
             } else {
-                host.retain_committed_session_environment_candidate(
-                    thread,
-                    &candidate,
-                    foreign.clone(),
-                )
-                .map(|_| ())
+                host.realizer
+                    .retain_committed_session_environment_candidate(
+                        thread,
+                        &candidate,
+                        foreign.clone(),
+                    )
+                    .map(|_| ())
             };
             assert!(result.is_err(), "A4");
             assert!(
@@ -295,17 +302,20 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
             );
         }
         let retained = host
+            .realizer
             .retain_committed_session_environment_candidate(thread, &candidate, successor.clone())
             .expect("A1 source receipt is not this adoption's committed receipt");
         assert_eq!(retained.durable_identity(), Some(&successor));
         assert!(Arc::ptr_eq(&retained.environment, &environment));
         assert!(host.realizer.session_environment(thread).await.is_none());
         let replay = host
+            .realizer
             .retain_committed_session_environment_candidate(thread, &retained, successor.clone())
             .unwrap();
         assert!(replay.exact_matches(&retained), "A2");
         assert!(
-            host.retain_committed_session_environment_candidate(thread, &retained, source)
+            host.realizer
+                .retain_committed_session_environment_candidate(thread, &retained, source)
                 .is_err(),
             "A3"
         );
@@ -315,11 +325,13 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
                 .exact_matches(&retained)
         );
         assert!(
-            host.publish_prepared_session_environment(thread, &retained, foreign)
+            host.realizer
+                .publish_prepared_session_environment(thread, &retained, foreign)
                 .is_err(),
             "A3 publication uses the same receipt guard"
         );
         let published = host
+            .realizer
             .publish_prepared_session_environment(thread, &retained, successor)
             .unwrap();
         assert!(Arc::ptr_eq(&published, &environment));
@@ -392,7 +404,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
         } else {
             old.clone()
         };
-        host.session_slots.update_run(thread, |run| {
+        host.installed_sessions.update_run(thread, |run| {
             run.session_dispatch = true;
             run.dispatch_claim = Some(awaken_dispatch_contract::RunClaim::from(&old.lease));
         });
@@ -434,7 +446,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
                 );
                 assert!(host.realizer.session_environment(thread).await.is_none());
             }
-            host.session_slots.update_run(thread, |run| {
+            host.installed_sessions.update_run(thread, |run| {
                 run.dispatch_claim =
                     Some(awaken_dispatch_contract::RunClaim::from(&current.lease));
             });
@@ -445,7 +457,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
                 .unwrap();
             assert!(Arc::ptr_eq(&published, &environment), "B3");
             assert!(
-                host.session_slots
+                host.installed_sessions
                     .read_realization(thread, |r| matches!(&r.environment_owner,
                 SessionEnvironmentOwner::Resident(owned) if owned.identity == expected))
                     .unwrap()
@@ -456,7 +468,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
                 "B direct success"
             );
         }
-        assert!(host.session_slots.read_realization(thread, |r| matches!(&r.environment_owner,
+        assert!(host.installed_sessions.read_realization(thread, |r| matches!(&r.environment_owner,
             SessionEnvironmentOwner::Resident(owned) if matches!(&owned.identity,
                 BoundSessionEnvironmentIdentity::Durable { effect_id, generation }
                     if effect_id == effect.intent.effect_id() && Some(generation) == source.generation()
@@ -503,10 +515,12 @@ async fn committed_hidden_create_candidate_is_terminally_retired_without_publica
         .build()
         .expect("validated Host dependencies");
     let candidate = host
+        .realizer
         .begin_session_environment_preparation(thread, environment.clone())
         .expect("C1 hidden Create Candidate");
     let identity = identity(thread);
     let committed = host
+        .realizer
         .retain_committed_session_environment_candidate(thread, &candidate, identity.clone())
         .expect("C2/C3 retain Store-read identity");
     assert!(matches!(
@@ -532,7 +546,7 @@ async fn committed_hidden_create_candidate_is_terminally_retired_without_publica
         effect_id: "terminal-candidate-takeover".into(),
     };
     let retirement = host
-        .session_slots
+        .installed_sessions
         .update_realization(thread, |r| {
             r.environment_owner
                 .begin_retirement_with_committed_candidate(&committed, cause)
@@ -769,6 +783,7 @@ async fn unacknowledged_candidate_adoption_requires_aggregate_authority() {
         .build()
         .expect("validated Host dependencies");
     let candidate = host
+        .realizer
         .begin_session_environment_preparation(thread, environment.clone())
         .unwrap();
     let retirement = host
@@ -793,7 +808,7 @@ async fn unacknowledged_candidate_adoption_requires_aggregate_authority() {
             .contains("requires current aggregate adoption authority"),
         "UA1: {error}"
     );
-    host.session_slots
+    host.installed_sessions
         .read_realization(thread, |r| {
             assert!(matches!(&r.environment_owner,
         SessionEnvironmentOwner::Retiring(current) if current.exact_matches(&retirement.owner)))
@@ -828,6 +843,7 @@ async fn stale_unmaterialized_projection_cannot_unbind_a_candidate_or_resident()
         .build()
         .expect("validated Host dependencies");
     let candidate = host
+        .realizer
         .begin_session_environment_preparation(thread, environment.clone())
         .expect("S1 Candidate");
 
@@ -847,6 +863,7 @@ async fn stale_unmaterialized_projection_cannot_unbind_a_candidate_or_resident()
     );
 
     let published = host
+        .realizer
         .publish_prepared_session_environment(thread, &candidate, identity(thread))
         .expect("S2 publish exact Candidate");
     host.install_session_environment_owner_projection(

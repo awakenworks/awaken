@@ -664,9 +664,9 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     let _ = cancelled.await;
     assert!(
         runtime_host
-            .session_slots
+            .installed_sessions
             .read_run(runtime_thread, |run| run
-                .runtime
+                .context
                 .as_ref()
                 .is_some_and(|owner| Arc::ptr_eq(owner, &runtime)))
             .unwrap_or(false),
@@ -693,9 +693,9 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     );
     assert!(
         runtime_host
-            .session_slots
+            .installed_sessions
             .read_run(runtime_thread, |run| run
-                .runtime
+                .context
                 .as_ref()
                 .is_some_and(|owner| Arc::ptr_eq(owner, &runtime)))
             .unwrap_or(false),
@@ -731,9 +731,9 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     );
     assert!(
         runtime_host
-            .session_slots
+            .installed_sessions
             .read_run(runtime_thread, |run| run
-                .runtime
+                .context
                 .as_ref()
                 .is_some_and(|owner| Arc::ptr_eq(owner, &runtime)))
             .unwrap_or(false),
@@ -832,7 +832,7 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
         None,
         None,
     );
-    host.session_slots
+    host.installed_sessions
         .close_mcp_realization_admission(
             "mcp-staging-quiescence",
             awaken_session_mcp::McpQuiescenceAdmissionFence::new(
@@ -859,7 +859,7 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
     .unwrap();
     assert!(
         !host
-            .session_slots
+            .installed_sessions
             .mcp_realization_admitted("mcp-staging-quiescence"),
         "S5 residual staging owner keeps expiry projection closed"
     );
@@ -989,7 +989,7 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
     )
     .unwrap();
     assert!(
-        host.session_slots
+        host.installed_sessions
             .mcp_realization_admitted("mcp-staging-quiescence"),
         "S5 exact source-free projection reopens only after residual cleanup"
     );
@@ -1085,13 +1085,14 @@ async fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epo
             // A4/A5 keep exact generation bytes but carry exhausted local
             // observations. Managed root admission must not use Worker wall time.
             let proof = if matches!(rule, "A4" | "A5") {
-                crate::session_slot::test_expired_observed_lease(lease)
+                crate::installed_session::test_expired_observed_lease(lease)
             } else {
-                crate::session_slot::test_observed_lease(lease)
+                crate::installed_session::test_observed_lease(lease)
             };
-            host.session_slots
+            host.installed_sessions
                 .update_realization(expired.session_id().as_str(), |r| {
-                    r.authority = crate::session_slot::SessionRealizationAuthority::Live(proof);
+                    r.authority =
+                        crate::installed_session::SessionRealizationAuthority::Live(proof);
                 });
         }
         assert_eq!(
@@ -1182,7 +1183,7 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
             McpProjectionState::Active,
             McpProjectionState::Draining,
         ] {
-            host.session_slots
+            host.installed_sessions
                 .modify_realization(old_generation.session_id().as_str(), |r| {
                     r.mcp.projections_mut()[0].state = live_state
                 });
@@ -1195,7 +1196,7 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
                 "R6 retains owner"
             );
         }
-        host.session_slots
+        host.installed_sessions
             .modify_realization(old_generation.session_id().as_str(), |r| {
                 r.mcp.projections_mut()[0].state = state
             });
@@ -1227,7 +1228,7 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
             "{rule}/E1"
         );
         assert_eq!(
-            host.session_slots
+            host.installed_sessions
                 .read_realization(renewed.generation.session_id().as_str(), |r| {
                     r.mcp.projection_count()
                 }),
@@ -1440,7 +1441,7 @@ async fn worker_authority_loss_revokes_every_session_projection() {
         1,
         "A1"
     );
-    assert!(!host.session_slots.contains("authority-loss"), "A1");
+    assert!(!host.installed_sessions.contains("authority-loss"), "A1");
     assert!(relay.route_url(&generation).is_none(), "A1");
     assert_eq!(
         host.revoke_all_session_realizations().await.unwrap(),
@@ -1509,12 +1510,15 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
 
     // The repo is staged for a host-side clone...
     assert_eq!(
-        host.realizer.thread_repository_activations("t-gh").len(),
+        host.realizer
+            .staging
+            .thread_repository_activations("t-gh")
+            .len(),
         1,
         "repo staged for cloning"
     );
 
-    let activations = host.realizer.thread_repository_activations("t-gh");
+    let activations = host.realizer.staging.thread_repository_activations("t-gh");
     let activation = &activations[0];
     assert_eq!(
         activation

@@ -92,7 +92,7 @@ impl SessionRealizationAuthority {
 /// generations are staged for it. Built while realizing; revocation keeps
 /// only what a retry of a retained Environment owner still needs.
 #[derive(Default)]
-pub(crate) struct SessionRealizationState {
+pub(crate) struct SessionRealization {
     /// Serializes the canonical realization phase driver for this Session.
     /// Lease renewal may advance authority while this lock is held, but it must
     /// not start a second Stage/Publish driver. This is deliberately separate
@@ -178,7 +178,7 @@ pub(crate) struct SessionRealizationState {
     pub environment_resource_reconciliation: EnvironmentResourceReconciliation,
 }
 
-impl SessionRealizationState {
+impl SessionRealization {
     /// Resources the Environment held before an in-flight resource transition.
     pub(crate) fn previous_resources(
         &self,

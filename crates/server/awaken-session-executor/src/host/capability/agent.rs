@@ -72,13 +72,13 @@ impl AgentExecution {
     /// The selected executor/model with routing over the Host's Session slots.
     pub(in crate::host) fn new(
         selection: AgentSelection,
-        session_slots: crate::session_slot::SessionRuntimeSlots,
+        installed_sessions: crate::installed_session::InstalledSessions,
     ) -> Self {
         Self {
             llm: selection.llm,
             model_ref: selection.model_ref,
             inference_routing: crate::inference_routing::InferenceRouting::new(
-                session_slots,
+                installed_sessions,
                 selection.inference_materializer,
             ),
             remote_attempt_executor: selection.remote_attempt_executor,

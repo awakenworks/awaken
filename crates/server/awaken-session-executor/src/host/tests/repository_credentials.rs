@@ -154,12 +154,15 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
             .await;
         result.unwrap_or_else(|error| panic!("{rule}: {error}"));
         assert_eq!(
-            host.realizer.thread_repository_activations(&thread).len(),
+            host.realizer
+                .staging
+                .thread_repository_activations(&thread)
+                .len(),
             1,
             "{rule}"
         );
         assert!(
-            host.realizer.thread_repository_activations(&thread)[0]
+            host.realizer.staging.thread_repository_activations(&thread)[0]
                 .credential_pin
                 .is_some(),
             "{rule}: staging retains only the exact pin"
@@ -256,6 +259,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         .expect("P1 Gateway mediation needs no Worker materializer");
     let activations = host
         .realizer
+        .staging
         .thread_repository_activations("platform-mediated");
     let activation = &activations[0];
     assert_eq!(
@@ -274,7 +278,10 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         Some("credential-platform"),
         "P1 retains the secret-free pin, never the staged capability"
     );
-    let resources = host.realizer.thread_resources_snapshot("platform-mediated");
+    let resources = host
+        .realizer
+        .staging
+        .thread_resources_snapshot("platform-mediated");
     let mut wrong_target = activation.clone();
     wrong_target
         .credential_pin
@@ -391,6 +398,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     assert!(
         direct_host
             .realizer
+            .staging
             .thread_repository_activations("platform-direct-denied")
             .is_empty(),
         "P2"
@@ -403,12 +411,14 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     assert!(
         direct_host
             .realizer
+            .staging
             .thread_repository_activations("platform-coordinator-stage")
             .is_empty(),
         "P3 no Direct Git activation or anonymous fallback before a Run claim"
     );
     let staged = direct_host
         .realizer
+        .staging
         .thread_resources_snapshot("platform-coordinator-stage");
     assert_eq!(staged.binding_checks.len(), 1, "P3 exact binding retained");
     assert!(
@@ -694,7 +704,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
         );
         if rule.expected_error.is_none() || rejects_at_effect {
             result.unwrap_or_else(|error| panic!("{}: {error}", rule.id));
-            let staged = host.realizer.thread_repository_activations(&thread);
+            let staged = host.realizer.staging.thread_repository_activations(&thread);
             assert_eq!(staged.len(), 1, "{}", rule.id);
             assert_eq!(
                 staged[0].credential_pin.is_some(),
@@ -818,7 +828,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
         .expect("compile the exact initial Repository transition");
 
     let clone_credential_id = |h: &SharedHost| {
-        h.realizer.thread_repository_activations("t-rot")[0]
+        h.realizer.staging.thread_repository_activations("t-rot")[0]
             .credential_pin
             .as_ref()
             .map(|pin| pin.access.credential.id.clone())

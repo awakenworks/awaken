@@ -92,6 +92,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         idle_since_unix_ms: None,
     };
     let candidate = host
+        .realizer
         .begin_session_environment_preparation("remote-terminal-worker", environment.clone())
         .expect("R1 retain the exact Worker-local candidate");
     host.install_session_environment_owner_projection(
@@ -100,19 +101,20 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         &projection.environment,
     )
     .expect("R1 project the durable Worker-local Environment identity");
-    host.publish_prepared_session_environment(
-        "remote-terminal-worker",
-        &candidate,
-        crate::session_slot::BoundSessionEnvironmentIdentity::Durable {
-            effect_id: environment_effect_id.to_owned(),
-            generation: environment_generation,
-        },
-    )
-    .expect("R1 publish the exact Worker-local Environment owner");
+    host.realizer
+        .publish_prepared_session_environment(
+            "remote-terminal-worker",
+            &candidate,
+            crate::installed_session::BoundSessionEnvironmentIdentity::Durable {
+                effect_id: environment_effect_id.to_owned(),
+                generation: environment_generation,
+            },
+        )
+        .expect("R1 publish the exact Worker-local Environment owner");
     let assignment = awaken_session_realization_contract::SessionTerminalCleanupAssignment {
         session_id: "remote-terminal-worker".into(),
         projection: projection.clone(),
-        authority: crate::session_slot::test_lease_receipt(lease.clone()),
+        authority: crate::installed_session::test_lease_receipt(lease.clone()),
     };
     control
         .assignments
@@ -154,7 +156,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         "R1/E6 identifies the failing assignment"
     );
     assert!(
-        host.session_slots.contains("remote-terminal-worker"),
+        host.installed_sessions.contains("remote-terminal-worker"),
         "R1/E4 keeps the exact projection for aggregate readback"
     );
     assert_eq!(
@@ -183,7 +185,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         "R2/E5 reconciles the completed terminal generation without renewal"
     );
     assert!(
-        !host.session_slots.contains("remote-terminal-worker"),
+        !host.installed_sessions.contains("remote-terminal-worker"),
         "R2/E5 retires the exact local tree"
     );
     assert_eq!(
@@ -265,7 +267,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
         awaken_session_realization_contract::SessionTerminalCleanupAssignment {
             session_id: terminal_id.into(),
             projection: terminal_projection.clone(),
-            authority: crate::session_slot::test_lease_receipt(terminal_lease.clone()),
+            authority: crate::installed_session::test_lease_receipt(terminal_lease.clone()),
         },
     );
     *control.session.lock().unwrap() = Some(terminal_test_session(
@@ -320,7 +322,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
         "R1/E2 both Sessions use the sole lease-only renewal port"
     );
     assert_eq!(
-        host.session_slots
+        host.installed_sessions
             .read_realization(ordinary_id, |r| {
                 r.authority.lease().map(|lease| lease.expires_at_unix_ms)
             })
@@ -329,7 +331,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
         "R1/E2"
     );
     assert_eq!(
-        host.session_slots
+        host.installed_sessions
             .read_realization(terminal_id, |r| {
                 r.authority.lease().map(|lease| lease.expires_at_unix_ms)
             })
@@ -370,7 +372,7 @@ fn enqueue_completed_terminal_assignments(
             awaken_session_realization_contract::SessionTerminalCleanupAssignment {
                 session_id: session_id.clone().into(),
                 projection: remote_terminal_cleanup_projection(),
-                authority: crate::session_slot::test_lease_receipt(lease.clone()),
+                authority: crate::installed_session::test_lease_receipt(lease.clone()),
             },
         );
         control
@@ -743,7 +745,7 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
         awaken_session_realization_contract::SessionTerminalCleanupAssignment {
             session_id: session_id.into(),
             projection: projection.clone(),
-            authority: crate::session_slot::test_lease_receipt(lease.clone()),
+            authority: crate::installed_session::test_lease_receipt(lease.clone()),
         },
     );
     let terminal_session = terminal_test_session(
@@ -767,7 +769,7 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
         lease_expires_at_unix_ms: lease.expires_at_unix_ms,
         reassign_existing_lease: false,
     };
-    assert!(!host.session_slots.contains(session_id), "C1");
+    assert!(!host.installed_sessions.contains(session_id), "C1");
 
     let recovery = tokio::spawn({
         let host = host.clone();
@@ -781,7 +783,7 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
     .await
     .expect("C2 canonical driver reaches authorization after its unique install");
     assert_eq!(
-        host.session_slots
+        host.installed_sessions
             .frozen(session_id)
             .baseline
             .clone()
@@ -791,13 +793,13 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
         "C1/E1"
     );
     assert!(
-        host.session_slots
+        host.installed_sessions
             .read_realization(session_id, |r| r.resources.mounts.is_empty())
             .unwrap_or(false),
         "C1/E1 terminal installation must not materialize active Resources"
     );
     assert_eq!(
-        host.session_slots
+        host.installed_sessions
             .read_realization(session_id, |r| r.authority.lease().cloned())
             .flatten(),
         Some(lease.clone()),
@@ -809,7 +811,7 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
         1,
         "C2/E2"
     );
-    assert!(!host.session_slots.contains(session_id), "C2/E2/E3");
+    assert!(!host.installed_sessions.contains(session_id), "C2/E2/E3");
     let disposals = control.disposals.lock().unwrap();
     assert_eq!(disposals.len(), 1, "C2/E3");
     assert_eq!(

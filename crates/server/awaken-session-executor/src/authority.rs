@@ -594,21 +594,16 @@ impl SessionAuthority for LocalAuthority {
         &self,
         thread: &str,
     ) -> Result<crate::store::HostCommit, crate::HostError> {
-        self.runtime
-            .open_commit(thread)
-            .await
-            .map(crate::store::HostCommit::Local)
-            .map_err(crate::HostError::from)
+        Ok(crate::store::HostCommit::Local(
+            self.runtime.open_commit(thread).await?,
+        ))
     }
 
     fn stream_checkpoint(
         &self,
         thread: &str,
     ) -> Result<Option<Arc<dyn StreamCheckpointStore>>, crate::HostError> {
-        self.runtime
-            .stream_checkpoint(thread)
-            .map(Some)
-            .map_err(crate::HostError::from)
+        Ok(Some(self.runtime.stream_checkpoint(thread)?))
     }
 
     fn claimed_commit(
@@ -631,10 +626,7 @@ impl SessionAuthority for LocalAuthority {
     }
 
     async fn durable_thread_exists(&self, thread: &str) -> Result<bool, crate::HostError> {
-        self.runtime
-            .durable_thread_exists(thread)
-            .await
-            .map_err(crate::HostError::from)
+        Ok(self.runtime.durable_thread_exists(thread).await?)
     }
 
     fn dispatch_store(&self) -> Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>> {
