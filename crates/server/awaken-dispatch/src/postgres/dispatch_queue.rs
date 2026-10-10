@@ -15,6 +15,7 @@
 // @formal entrypoint worker.durable_dispatch_contains_no_plaintext_secret
 // @formal evidence ingress.epoch_reclaim
 // @formal evidence ingress.single_owner
+// awaken-file-limit-ceiling: 1805
 // PostgreSQL realization of the one neutral DispatchQueue contract. Included by
 // `postgres.rs` so public type and implementation paths remain unchanged.
 impl PostgresDispatchStore {
