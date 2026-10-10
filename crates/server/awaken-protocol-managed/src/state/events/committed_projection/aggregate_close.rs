@@ -111,7 +111,14 @@ impl ManagedState {
                 }
             };
             let usage = session_usage_value(
-                evidence.usage_as_of(persisted, &session_id, close.source_commit_cursor)?,
+                awaken_managed_session_events::session_usage_as_of(
+                    &persisted.closed_runtime_intervals,
+                    &session_id,
+                    evidence.root.as_ref(),
+                    &evidence.children,
+                    close.source_commit_cursor,
+                )
+                .map_err(projection_error)?,
                 evidence.price_snapshot.as_ref(),
             )
             .map_err(StateError::Run)?;

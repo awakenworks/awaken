@@ -409,13 +409,17 @@ pub trait SandboxCheckpointStore: Send + Sync {
     async fn delete(&self, id: &str) -> Result<(), SandboxError>;
 }
 
-/// Exact, provider-neutral request for one idempotent filesystem checkpoint.
+/// Exact, provider-neutral input for capturing and persisting one filesystem
+/// checkpoint, including its format, byte bound and immutable object metadata.
 ///
-/// Session lifecycle types deliberately do not cross this port. The Runtime
-/// adapter projects its operation/generation into these immutable facts and
-/// later wraps the returned artifact in a Session-owned receipt.
+/// Session lifecycle authorization deliberately does not cross this value.
+/// The Runtime adapter projects the committed operation/generation into these
+/// facts; the provider separately requires an exact effect fence and current
+/// execution authority before capture, persistence and receipt replay. The
+/// adapter later wraps the artifact in a Session-owned receipt. Terminal takeover
+/// reuses this input to recover the original capture before deleting its object.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SandboxCheckpointRequest {
+pub struct SandboxCheckpointCaptureRequest {
     pub workspace_id: String,
     pub session_id: String,
     pub generation_id: String,
@@ -897,7 +901,7 @@ pub trait CheckpointingSandbox: Sandbox {
     /// effects, after awaited responses and on cached receipt replay.
     async fn checkpoint_for_effect(
         &self,
-        request: &SandboxCheckpointRequest,
+        request: &SandboxCheckpointCaptureRequest,
         store: &dyn SandboxCheckpointStore,
         effect_fence: &SandboxEffectFence,
         authority: &dyn crate::CurrentExecutionAuthority,
@@ -913,7 +917,7 @@ pub trait CheckpointingSandbox: Sandbox {
     /// the checkpoint port's terminal edge, not a second cleanup state machine.
     async fn cleanup_checkpoint_for_terminal(
         &self,
-        request: &SandboxCheckpointRequest,
+        request: &SandboxCheckpointCaptureRequest,
         store: &dyn SandboxCheckpointStore,
         expected_effect_fence: &SandboxEffectFence,
         terminal_effect_fence: &SandboxEffectFence,
