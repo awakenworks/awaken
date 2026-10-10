@@ -186,6 +186,39 @@ impl CapturePolicySources {
     }
 }
 
+/// The binding top-layer ceiling with the sources that narrow it: everything a
+/// capture decision reads besides the request. The Host holds one; the
+/// transparency reads receive the same value, so they decide as its Runs do.
+/// The default is the open standalone Host's: the default `Structured`
+/// ceiling and the null sources.
+#[derive(Clone, Default)]
+pub struct CapturePolicy {
+    /// The top layer's binding ceiling (the deployment configuration in a
+    /// self-hosted deployment).
+    pub top: ContentCapture,
+    pub sources: CapturePolicySources,
+}
+
+impl CapturePolicy {
+    #[must_use]
+    pub const fn new(top: ContentCapture, sources: CapturePolicySources) -> Self {
+        Self { top, sources }
+    }
+
+    /// The decision for one request in `workspace`; see [`WorkspaceCapturePolicy::decide`].
+    pub async fn decide(
+        &self,
+        workspace: &str,
+        requested: ContentCapture,
+        subject: Option<&awaken_runtime_contract::DataSubjectId>,
+    ) -> crate::CapturePolicyDecision {
+        self.sources
+            .for_workspace(workspace.to_owned())
+            .decide(self.top, requested, subject)
+            .await
+    }
+}
+
 /// [`CapturePolicySources`] bound to one Workspace: what a Run boundary asks.
 #[derive(Clone)]
 pub struct WorkspaceCapturePolicy {
@@ -209,6 +242,41 @@ impl WorkspaceCapturePolicy {
             .content_capture
     }
 
+    /// The Workspace narrowing as its source answers, error included; only
+    /// [`crate::decide_capture`] turns an error into a closed ceiling.
+    pub async fn narrowing(&self) -> Result<TelemetryNarrowing, TelemetryPolicyError> {
+        self.sources
+            .narrowing
+            .workspace_narrowing(&self.workspace)
+            .await
+    }
+
+    /// The capture decision for one request in this Workspace: reads the
+    /// Workspace narrowing and, when `subject` is attributed, its telemetry
+    /// consent from these sources, then applies [`crate::decide_capture`].
+    pub async fn decide(
+        &self,
+        top: ContentCapture,
+        requested: ContentCapture,
+        subject: Option<&awaken_runtime_contract::DataSubjectId>,
+    ) -> crate::CapturePolicyDecision {
+        let workspace = self.narrowing().await;
+        let consent = match subject {
+            Some(subject) => Some(
+                self.sources
+                    .consent
+                    .consent_ceiling(subject, awaken_runtime_contract::Purpose::TelemetryContent)
+                    .await,
+            ),
+            None => None,
+        };
+        crate::decide_capture(crate::CapturePolicyInputs {
+            requested,
+            top,
+            workspace,
+            consent,
+        })
+    }
     /// The consent ceiling of `subject` for `purpose` (see [`crate::DataSubjectConsentSource`]).
     pub async fn consent_ceiling(
         &self,
@@ -453,6 +521,56 @@ mod tests {
             serde_json::from_value::<TelemetryNarrowing>(serde_json::json!({"retention_days": 1}))
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn workspace_policy_decision_equals_the_kernel_for_every_cause() {
+        // Equivalence row set: every (requested, top, Workspace answer,
+        // consent) combination of the kernel's decision table. The policy only
+        // reads the two ports; whatever they answer, its decision is exactly
+        // `decide_capture` over those answers, and the consent port is asked
+        // only for an attributed request.
+        struct Fixed(Result<TelemetryNarrowing, TelemetryPolicyError>);
+        #[async_trait]
+        impl TelemetryNarrowingSource for Fixed {
+            async fn workspace_narrowing(
+                &self,
+                workspace: &str,
+            ) -> Result<TelemetryNarrowing, TelemetryPolicyError> {
+                assert_eq!(workspace, "ws");
+                self.0
+            }
+        }
+        struct Consent(Option<ContentCapture>);
+        #[async_trait]
+        impl crate::DataSubjectConsentSource for Consent {
+            async fn consent_ceiling(
+                &self,
+                subject: &awaken_runtime_contract::DataSubjectId,
+                purpose: awaken_runtime_contract::Purpose,
+            ) -> ContentCapture {
+                assert_eq!(subject.as_str(), "dsub");
+                assert_eq!(purpose, awaken_runtime_contract::Purpose::TelemetryContent);
+                self.0.expect("an unattributed request never reads consent")
+            }
+        }
+        let subject = awaken_runtime_contract::DataSubjectId("dsub".into());
+        for inputs in crate::decision::tests::every_input() {
+            let sources = CapturePolicySources {
+                consent: Arc::new(Consent(inputs.consent)),
+                narrowing: Arc::new(Fixed(inputs.workspace)),
+            };
+            let subject = inputs.consent.map(|_| &subject);
+            let decided = sources
+                .for_workspace("ws".into())
+                .decide(inputs.top, inputs.requested, subject)
+                .await;
+            assert_eq!(decided, crate::decide_capture(inputs), "{inputs:?}");
+            let held = CapturePolicy::new(inputs.top, sources)
+                .decide("ws", inputs.requested, subject)
+                .await;
+            assert_eq!(held, decided, "the held policy decides identically");
+        }
     }
 
     #[tokio::test]
