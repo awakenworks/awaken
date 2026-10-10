@@ -77,5 +77,11 @@
     "Sandbox": 15,
     "SessionRuntime": 14,
     "WorkQueue": 24
+  },
+  "duplicate-type": {
+    "Command": 2,
+    "Error": 2,
+    "Lease": 2,
+    "SandboxCheckpointRequest": 2
   }
 }

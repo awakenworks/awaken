@@ -37,6 +37,11 @@ string literals and `cfg(test)` code are not scanned):
   ratchet this is an admission rule (a hard error that `--reason` cannot lift):
   a trait the baseline does not record may not exceed 12 methods, and a recorded
   count may only fall -- a count recorded through `--reason` is an error too.
+* `duplicate-type`: a name declared `pub struct`, `pub enum`, `pub trait` or
+  `pub type` (exactly `pub`, so `pub(crate)` is not public) in two or more
+  contract crates, keyed by name with the number of contract crates declaring it.
+  One concept has one definition (plan 9.19 item 4); a name repeated inside one
+  crate is not counted.
 
 Every ratchet is held at or below `contract_map_baseline.json`; see
 `_architecture_ratchet.py` for how a fall is recorded
@@ -113,6 +118,8 @@ RULES = (
          "persistence is private to its context (ADR-0091 D2, plan 9.19 item 1)"),
     Rule("fat-trait", "split the trait into one role trait per caller; the implementation implements every role "
          "(ADR-0091 D4, plan 9.19 item 3)"),
+    Rule("duplicate-type", "keep one definition of the concept, or name each by its own meaning "
+         "(ADR-0091 D2, plan 9.19 item 4)"),
 )
 
 _TRAIT = re.compile(r"\bpub\s+trait\s+([A-Z]\w*)[^{;]*\{")
@@ -122,6 +129,7 @@ _OPTIONAL_ROLE = re.compile(
 )
 _IMPL = re.compile(r"\bimpl\b")
 _BODY_TOKEN = re.compile(r"[{}]|\bfn\s+\w+")
+_PUBLIC_TYPE = re.compile(r"\bpub\s+(?:unsafe\s+)?(?:struct|enum|trait|type)\s+([A-Za-z_]\w*)")
 
 
 def target_map_errors(contracts: set[str], target_map=TARGET_MAP) -> list[str]:
@@ -180,6 +188,11 @@ def contract_traits(syntax: str) -> list[tuple[str, int, int]]:
         opening = match.end() - 1
         found.append((match.group(1), match.start(), trait_methods(syntax[opening + 1:_block_end(syntax, opening)])))
     return found
+
+
+def public_types(syntax: str) -> list[tuple[str, int]]:
+    """(name, offset) of every `pub struct|enum|trait|type` declaration in one file."""
+    return [(match.group(1), match.start()) for match in _PUBLIC_TYPE.finditer(syntax)]
 
 
 def fat_trait_errors(counts: Counts, baseline: dict) -> list[str]:
@@ -264,6 +277,7 @@ def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) 
     implemented_by: dict[str, set[str]] = defaultdict(set)
     declared: dict[str, list[str]] = defaultdict(list)
     ports: dict[str, list[_architecture_ratchet.CrateSource]] = defaultdict(list)
+    typed: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))  # name -> crate -> places
     for crate in sources:
         for path, syntax in crate.syntax.items():
             relative = path.relative_to(root) if root in path.parents else path
@@ -283,10 +297,16 @@ def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) 
                 if not methods:
                     counts["bundle-trait"][name] += 1
                     places["bundle-trait"][name].append(where)
+            for name, offset in public_types(syntax):
+                typed[name][crate.name].append(f"{relative}:{_architecture_ratchet.line_of(syntax, offset)}")
             for key, offset in optional_roles(syntax):
                 counts["optional-role"][key] += 1
                 places["optional-role"][key].append(f"{relative}:{_architecture_ratchet.line_of(syntax, offset)}")
     _foreign_persistence_ports(sources, ports, implemented_by, root, counts, places)
+    for name, crates in typed.items():
+        if len(crates) > 1:
+            counts["duplicate-type"][name] = len(crates)
+            places["duplicate-type"][name] = [where for found in crates.values() for where in found]
     for name, where in declared.items():
         if name not in implemented:
             counts["unimplemented-trait"][name] += len(where)
@@ -346,6 +366,8 @@ def selftest() -> None:
     | F2   | 12 methods (a `fn` nested in a default body, a `fn(..)` type, a private trait do not count) | not counted |
     | F3   | fat trait the baseline records at its count                            | accept |
     | F4   | fat trait the baseline does not record, or recorded through --reason   | hard error naming --reason |
+    | D1   | `pub` struct / enum / trait / type alias of one name in two contract crates | counted, value = crates |
+    | D2   | the name twice in one crate; `pub(crate)` or private in the other; declared in a non-contract crate | not counted |
     """
     pending = {"t": ("b", ("old",))}
     assert target_map_errors({"t", "old"}, pending) == [], "T1"
@@ -393,6 +415,7 @@ def selftest() -> None:
     assert counts["bundle-trait"] == {"Bundle": 1} and places["bundle-trait"]["Bundle"] == ["c/src/lib.rs:4"], "B1"
     _selftest_persistence_ports()
     _selftest_fat_traits()
+    _selftest_duplicate_types()
     print("_contract_map_fitness selftest: the decision tables hold")
 
 
@@ -415,6 +438,21 @@ def _selftest_fat_traits() -> None:
     assert len(unrecorded) == 1 and "no baseline records it" in unrecorded[0] and "--reason" in unrecorded[0], "F4"
     reasoned = fat_trait_errors(counts, {"fat-trait": {"Wide": 13}, "growth_reasons": {"fat-trait": {"Wide": "x"}}})
     assert len(reasoned) == 1 and "raised with --reason" in reasoned[0], "F4 reason"
+
+
+def _selftest_duplicate_types() -> None:
+    sources = (
+        _crate("a", "contract", "x", "pub struct Lease;\npub enum Error {}\npub type Alias = u8;\n"
+                                     "pub trait Port { fn p(&self); }\npub struct Twice;\nmod m { pub struct Twice; }\n"
+                                     "pub(crate) struct Inner;\nstruct Private;\n"),
+        _crate("b", "contract", "y", "pub struct Lease { id: u8 }\npub struct Error;\npub(crate) type Alias = u8;\n"
+                                     "pub unsafe trait Port {}\npub struct Inner;\npub struct Private;\n"),
+        _crate("c", "contract", "z", "pub type Lease<T> = Vec<T>;\n"),
+        _crate("d", "application", "x", "pub struct Twice;\npub struct Alias;\n"),
+    )
+    counts, places, _contracts = measure(sources, Path("/w"))
+    assert counts["duplicate-type"] == {"Lease": 3, "Error": 2, "Port": 2}, f"D1/D2 {counts['duplicate-type']}"
+    assert places["duplicate-type"]["Error"] == ["a/src/lib.rs:2", "b/src/lib.rs:2"], "D1 where"
 
 
 def _selftest_persistence_ports() -> None:
