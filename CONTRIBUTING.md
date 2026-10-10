@@ -68,6 +68,13 @@ Ratchets only shrink. Each guard owns its own flags today:
   a fall (the hook does this with `--stage`); growth needs
   `python3 scripts/ci/check_contract_shape.py --write-baseline --reason "why"`.
 - modularity: `python3 scripts/ci/_modularity_fitness.py --tighten`.
+- architecture naming, single-owner and contract-map guards: their
+  `_naming_fitness.py`, `_single_owner_fitness.py` and `_contract_map_fitness.py`
+  commands accept `--check` (also the default) without changing files, and
+  `--tighten` to record decreases in an existing baseline. Tightening refuses
+  every increase, including a new rule, and checks hard rules before writing.
+  Initialize a baseline with `--write-baseline`; an increase in an existing
+  rule requires `--write-baseline --reason "why"`.
 - test waits: `python3 scripts/ci/check_test_waits.py --write-baseline`.
 - test inventory: `python3 scripts/ci/check_test_inventory.py --write`; a
   removed or renamed test is also recorded in

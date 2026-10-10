@@ -1,8 +1,8 @@
-//! The Session timeline domain: what a protocol projection of committed
-//! Session, Thread, Run and Outcome truth publishes, and in what order.
+//! Managed protocol Session event semantics: what committed Session, Thread,
+//! Run and Outcome facts publish, and in what order.
 //!
-//! Pure and synchronous over borrowed evidence: no I/O, clock, cache or wire
-//! vocabulary. A protocol adapter reads the evidence through the Session
+//! Pure and synchronous over borrowed evidence: no I/O, clock or cache.
+//! The Managed protocol adapter reads the evidence through the Session
 //! application, asks this crate which facts exist and where each one sits,
 //! mints its own public ids from [`EventIdentity`]s and encodes each fact on its
 //! wire. The evidence itself is the Session's (`CommittedSessionFacts` in
@@ -97,6 +97,6 @@ pub use transcript_plan::{
     ChildTranscript, ChildTranscriptPlan, ChildTranscriptStep, MessageFold, plan_child_transcript,
     plan_folds,
 };
-pub use usage::committed_thread_usage;
+pub use usage::{committed_thread_usage, session_usage_as_of};
 
 pub use permission::{RecordedToolPermission, RecordedToolPermissions, recorded_tool_permissions};

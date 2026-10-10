@@ -12,7 +12,7 @@
     },
     "awaken-protocol-managed::ManagedState": {
       "files": 29,
-      "methods": 158,
+      "methods": 157,
       "reason": "W13 step 2 and W20: event projection and orchestration leave; the adapter keeps its wire cache"
     },
     "awaken-session-executor::ManagedHost": {

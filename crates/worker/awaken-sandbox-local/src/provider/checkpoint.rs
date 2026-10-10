@@ -88,7 +88,7 @@ fn append_snapshot<W: Write>(
 }
 
 fn validate_checkpoint_effect(
-    request: &pc::SandboxCheckpointRequest,
+    request: &pc::SandboxCheckpointCaptureRequest,
     effect_fence: &pc::SandboxEffectFence,
 ) -> Result<(), pc::SandboxError> {
     if request.effect_id == effect_fence.operation_id() {
@@ -101,7 +101,7 @@ fn validate_checkpoint_effect(
 }
 
 fn checkpoint_request_fingerprint(
-    request: &pc::SandboxCheckpointRequest,
+    request: &pc::SandboxCheckpointCaptureRequest,
     effect_fence: &pc::SandboxEffectFence,
 ) -> String {
     let mut hasher = blake3::Hasher::new();
@@ -133,7 +133,7 @@ fn checkpoint_request_fingerprint(
 }
 
 fn validate_checkpoint_reference(
-    request: &pc::SandboxCheckpointRequest,
+    request: &pc::SandboxCheckpointCaptureRequest,
     reference: &pc::SandboxCheckpointRef,
 ) -> Result<(), pc::SandboxError> {
     if reference.format != request.format
@@ -332,7 +332,7 @@ impl LocalSandbox {
 
     async fn create_checkpoint_inner(
         &self,
-        request: &pc::SandboxCheckpointRequest,
+        request: &pc::SandboxCheckpointCaptureRequest,
         store: &dyn pc::SandboxCheckpointStore,
         mut operation: Option<(
             &mut dyn crate::realization_marker::CheckpointParticipantGuard,
@@ -410,7 +410,7 @@ impl LocalSandbox {
 
     async fn cleanup_checkpoint_with_participant(
         &self,
-        request: &pc::SandboxCheckpointRequest,
+        request: &pc::SandboxCheckpointCaptureRequest,
         store: &dyn pc::SandboxCheckpointStore,
         request_fingerprint: &str,
         participant: &mut dyn crate::realization_marker::CheckpointParticipantGuard,
@@ -439,7 +439,7 @@ impl LocalSandbox {
     #[cfg(test)]
     pub(crate) async fn create_checkpoint(
         &self,
-        request: &pc::SandboxCheckpointRequest,
+        request: &pc::SandboxCheckpointCaptureRequest,
         store: &dyn pc::SandboxCheckpointStore,
     ) -> Result<pc::SandboxCheckpointRef, pc::SandboxError> {
         if self.realization.current().is_some() {
@@ -452,7 +452,7 @@ impl LocalSandbox {
 
     pub(super) async fn create_checkpoint_for_effect(
         &self,
-        request: &pc::SandboxCheckpointRequest,
+        request: &pc::SandboxCheckpointCaptureRequest,
         store: &dyn pc::SandboxCheckpointStore,
         effect_fence: &pc::SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
@@ -489,7 +489,7 @@ impl LocalSandbox {
 
     pub(super) async fn cleanup_checkpoint_for_terminal(
         &self,
-        request: &pc::SandboxCheckpointRequest,
+        request: &pc::SandboxCheckpointCaptureRequest,
         store: &dyn pc::SandboxCheckpointStore,
         expected_effect_fence: &pc::SandboxEffectFence,
         terminal_effect_fence: &pc::SandboxEffectFence,
@@ -1016,8 +1016,8 @@ mod tests {
         }
     }
 
-    fn request(effect_id: &str) -> pc::SandboxCheckpointRequest {
-        pc::SandboxCheckpointRequest {
+    fn request(effect_id: &str) -> pc::SandboxCheckpointCaptureRequest {
+        pc::SandboxCheckpointCaptureRequest {
             workspace_id: "workspace".into(),
             session_id: "session".into(),
             generation_id: "generation".into(),
@@ -1041,6 +1041,10 @@ mod tests {
         // operation; R3 differing ids reject before snapshot/store. Marker phase,
         // root, incarnation, expiry, and terminal collision combinations are
         // owned by `ready_operation_admission_holds_one_exact_effect_boundary`.
+        // The capture request supplies immutable snapshot/object facts; it is
+        // not the Session lifecycle request or a grant. R2/R3 keep its exact
+        // effect admission separate from current execution authority, whose
+        // loss/replay combinations are covered by the upload tests above.
         let snapshot = awaken_sandbox_fs::TreeSnapshot {
             directories: vec![awaken_sandbox_fs::TreeDirectory {
                 relative_path: "empty".into(),

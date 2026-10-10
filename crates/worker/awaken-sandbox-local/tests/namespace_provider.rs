@@ -34,41 +34,25 @@ fn spec(scope: &str) -> pc::SandboxSpec {
     }
 }
 
-/// True only when bwrap exists AND unprivileged user namespaces are enabled.
+/// Linux tests consume the provider's actual launch-profile observation.
 async fn bwrap_works() -> bool {
-    tokio::process::Command::new("bwrap")
-        .args(["--unshare-user", "--ro-bind", "/", "/", "--", "true"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false)
+    cfg!(target_os = "linux") && os_native_sandbox_works().await
 }
 
-/// True only when macOS `sandbox-exec` (Seatbelt) can run a trivial profile.
+/// Seatbelt-specific assertions run only on the platform that owns them.
 async fn seatbelt_works() -> bool {
-    tokio::process::Command::new("sandbox-exec")
-        .args([
-            "-p",
-            "(version 1)(deny default)(import \"system.sb\")(allow process-fork)(allow process-exec)",
-            "/usr/bin/true",
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .map(|s| s.success())
-        .unwrap_or(false)
+    cfg!(target_os = "macos") && os_native_sandbox_works().await
 }
 
-/// Whether the OS-native isolator this platform uses actually runs here.
+/// Reuse the one production readiness probe instead of a second, weaker argv
+/// profile. Production exercises runtime-directory descriptors and confinement;
+/// a raw user-namespace command observes a different host capability.
 async fn os_native_sandbox_works() -> bool {
-    if cfg!(target_os = "macos") {
-        seatbelt_works().await
-    } else {
-        bwrap_works().await
-    }
+    let tmp = tempfile::tempdir().expect("readiness fixture");
+    NamespaceProvider::new(tmp.path())
+        .probe_ready()
+        .await
+        .is_ok()
 }
 
 #[tokio::test]
@@ -89,16 +73,36 @@ async fn capabilities_are_tool_transparent_namespace() {
 
 #[tokio::test]
 async fn probe_ready_reflects_the_os_native_sandbox_availability() {
-    // Ungated: the probe must return exactly whether the OS-native isolator runs here
-    // — bwrap userns on Linux, Seatbelt on macOS. This is the signal `select_provider`
-    // fails closed on.
+    // Cause/effect table: C1 the actual production confinement profile runs;
+    // C2 the provider's probe reports ready. R1=C1+C2 -> an ordinary provider
+    // create/spawn/wait crosses that same profile and exits successfully;
+    // R2=!C1 -> typed Unsupported, no readiness claim. The existing probe unit
+    // tables cover missing/revoked/newly enabled launchers and bounded failure.
+    // Do not compare readiness with a separate raw user-namespace command or
+    // require memoization: every production observation is fresh.
     let tmp = tempfile::tempdir().unwrap();
     let provider = NamespaceProvider::new(tmp.path());
-    let first = provider.probe_ready().await.is_ok();
-    assert_eq!(first, os_native_sandbox_works().await);
-    // Memoized: a second call (even from a different provider) yields the same result.
-    let other = NamespaceProvider::new(tmp.path());
-    assert_eq!(other.probe_ready().await.is_ok(), first);
+    if let Err(error) = provider.probe_ready().await {
+        assert!(
+            matches!(error, pc::SandboxError::Unsupported(_)),
+            "R2 {error}"
+        );
+        return;
+    }
+    let sandbox = provider
+        .create_sandbox(&spec("native-readiness"))
+        .await
+        .expect("R1 create through the ready provider");
+    let (process, _channel) = sandbox
+        .spawn_agent(pc::Command::new(["/usr/bin/true"]))
+        .await
+        .expect("R1 ordinary confined launch");
+    assert_eq!(
+        process.wait().await.unwrap().code,
+        Some(0),
+        "R1 physical exit"
+    );
+    sandbox.dispose_unattached().await.unwrap();
 }
 
 #[tokio::test]

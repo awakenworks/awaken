@@ -1120,7 +1120,7 @@ impl pc::SandboxCheckpointStore for CheckpointStore {
     }
 }
 
-pub(super) fn checkpoint_request_for(session_id: &str) -> pc::SandboxCheckpointRequest {
+pub(super) fn checkpoint_request_for(session_id: &str) -> pc::SandboxCheckpointCaptureRequest {
     let generation = awaken_session_state_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from(session_id),
         10,
@@ -1128,7 +1128,7 @@ pub(super) fn checkpoint_request_for(session_id: &str) -> pc::SandboxCheckpointR
         "environment",
         "base-image",
     );
-    pc::SandboxCheckpointRequest {
+    pc::SandboxCheckpointCaptureRequest {
         workspace_id: "workspace-a".into(),
         session_id: session_id.into(),
         generation_id: generation.id().to_owned(),
@@ -1142,7 +1142,7 @@ pub(super) fn checkpoint_request_for(session_id: &str) -> pc::SandboxCheckpointR
     }
 }
 
-fn checkpoint_request() -> pc::SandboxCheckpointRequest {
+fn checkpoint_request() -> pc::SandboxCheckpointCaptureRequest {
     checkpoint_request_for("checkpoint-session")
 }
 
