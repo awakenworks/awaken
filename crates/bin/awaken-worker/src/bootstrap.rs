@@ -1019,6 +1019,8 @@ mod tests {
         // authority. W4 malformed file => build rejects. Native/no ACP is covered
         // by standalone_config_boundary_decision_table, which uses public build().
         // W5 all selected CLIs missing => startup fails, never a fabricated route.
+        // W6 Windows Namespace is unsupported => startup rejects explicitly;
+        // Local still executes the full wiring/projection table on every OS.
         use awaken_run_executor_acp::host::AcpLocalCredentialBinding;
         use awaken_runtime_contract::CredentialRef;
         let directory = tempfile::tempdir().unwrap();
@@ -1059,10 +1061,20 @@ mod tests {
                     .err()
                     .expect("W5");
                 assert!(error.contains("no configured host ACP CLI"), "W5 {error}");
-                let worker = config
-                    .build_with_acp_adapters(host_adapters())
-                    .await
-                    .unwrap();
+                let worker = config.build_with_acp_adapters(host_adapters()).await;
+                if tier == "namespace" && cfg!(target_os = "windows") {
+                    let error = worker
+                        .err()
+                        .expect("W6 unsupported Namespace rejects startup");
+                    assert!(
+                        error.contains(
+                            "OS-native Namespace sandbox is unsupported on this platform"
+                        ),
+                        "W6: {error}"
+                    );
+                    continue;
+                }
+                let worker = worker.expect("W1 supported backend assembly");
                 assert!(worker.manifest().capabilities.contains("acp:codex"));
                 assert!(worker.manifest().capabilities.contains("acp:claude"));
                 assert_eq!(
@@ -1219,11 +1231,23 @@ mod tests {
             r#"{"worker_id":"worker-a","key_id":"key-a","credential_id":"credential-a","secret_base64":"c2VjcmV0"}"#,
         )
         .unwrap();
-        write(&format!(
+        let default_source = format!(
             "role='worker'\nmode='server'\ndata_dir='{}'\nworker_server='https://coordinator:3000'\nworker_id='worker-a'\nworker_request_credential_file='{}'\n",
             directory.path().display(),
             credential.display()
-        ));
+        );
+        write(&default_source);
+        assert_eq!(
+            WorkerDaemonConfig::load(&path, None)
+                .expect("R1 default syntax")
+                .runtime
+                .sandbox_tier,
+            awaken_session_executor::SandboxTier::Namespace,
+            "omitted tier preserves the Native default"
+        );
+        // R1 owns portable configuration/assembly. Native backend availability
+        // is independently required by the platform portability gate.
+        write(&format!("{default_source}sandbox_tier='local'\n"));
         let resolved = WorkerDaemonConfig::load(&path, None).expect("R1");
         assert!(resolved.runtime.database_url.is_none(), "R1");
         assert_eq!(

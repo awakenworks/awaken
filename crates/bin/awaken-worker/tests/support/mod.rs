@@ -51,7 +51,10 @@ impl FakeWorkerUpstream {
     }
 
     pub fn start_with_expired_initial_receipt() -> Self {
-        Self::start_with_options(None, None, HeartbeatFault::DelayInitial, 60, None)
+        // Real HTTP must reach the fixture before the bounded request expires.
+        // Lease arithmetic is covered with controlled clocks in its owner;
+        // this row holds the response until exact withdrawal is observed.
+        Self::start_with_options(None, None, HeartbeatFault::DelayInitial, 3_000, None)
     }
 
     #[allow(dead_code)] // Lifecycle startup admission tests only.
@@ -405,7 +408,16 @@ fn handle(mut stream: TcpStream, context: HandleContext<'_>) {
                 std::thread::sleep(Duration::from_millis(2));
             }
             if ordinal == 0 && heartbeat_fault == HeartbeatFault::DelayInitial {
-                std::thread::sleep(Duration::from_millis(registry_ttl_ms));
+                applied_heartbeat_sequence.store(sequence, Ordering::Release);
+                while !stop.load(Ordering::Acquire)
+                    && !requests
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|path| path == "/v1/worker/deregister")
+                {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
             }
             if ordinal == 1 && heartbeat_fault == HeartbeatFault::DropResponseOnce {
                 applied_heartbeat_sequence.store(sequence, Ordering::Release);
