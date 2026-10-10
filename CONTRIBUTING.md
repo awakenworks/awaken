@@ -62,6 +62,11 @@ Kani needs; `scripts/ci/bootstrap_kani.sh` installs the qualified Kani.
 
 ## Baselines
 
+Find a guard with `python3 scripts/ci/guards.py list`, then read its own rule
+documentation with `python3 scripts/ci/guards.py explain duplicate-type`.
+The navigator reads source without executing checks or writing baselines;
+use `<guard>:<rule>` when two guards declare the same rule id.
+
 Ratchets only shrink. Each guard owns its own flags today:
 
 - contract shape: `python3 scripts/ci/check_contract_shape.py --tighten` records
