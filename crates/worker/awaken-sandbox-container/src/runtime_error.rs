@@ -17,6 +17,12 @@ pub enum RuntimeError {
     /// (HTTP 401/403).
     #[error("container runtime refused authority: {0}")]
     Unauthorized(String),
+    /// The backend has no room for this request now: a Kubernetes namespace
+    /// quota refused the Create (which therefore had no API effect), or the
+    /// scheduler could not place the Pod within the configured bound
+    /// (ADR-0092). Another Worker, a raised quota or a new node may succeed.
+    #[error("container runtime has no capacity: {0}")]
+    CapacityUnavailable(String),
     /// The adapter crossed a backend mutation boundary and could not prove
     /// whether that exact effect converged. Callers must retain every staged
     /// participant that the physical object may still reference; treating this
@@ -43,6 +49,7 @@ impl From<RuntimeError> for pc::SandboxError {
             RuntimeError::MayHaveCommitted(_) => Self::Transport(detail),
             RuntimeError::Conflict(_) => Self::Conflict(detail),
             RuntimeError::Unauthorized(_) => Self::Unauthorized(detail),
+            RuntimeError::CapacityUnavailable(_) => Self::CapacityUnavailable(detail),
             RuntimeError::Backend(cause) => Self::backend("container runtime", cause),
         }
     }
@@ -64,10 +71,15 @@ impl RuntimeError {
 
     /// Classify an error observed after this invocation crossed its first
     /// backend mutation boundary. The wrapper is idempotent so nested runtime
-    /// adapters cannot erase the stronger outcome.
+    /// adapters cannot erase the stronger outcome. A capacity refusal keeps its
+    /// class: the refused request itself had no effect, and every participant
+    /// an earlier step created belongs to the same exact effect identity, which
+    /// the next attempt recovers or the existing disposal removes.
     pub(crate) fn after_mutation(self) -> Self {
         match self {
-            Self::MayHaveCommitted(_) | Self::EffectFenceExpired => self,
+            Self::MayHaveCommitted(_) | Self::EffectFenceExpired | Self::CapacityUnavailable(_) => {
+                self
+            }
             error => Self::MayHaveCommitted(error.to_string()),
         }
     }
@@ -131,9 +143,16 @@ impl RuntimeFailure for bollard::errors::Error {
 impl RuntimeFailure for kube::Error {
     fn into_runtime_error(self) -> RuntimeError {
         match self {
+            // Only the quota admission's refusal means "no room now"; every
+            // other refusal keeps its status class (ADR-0092 decision 1).
             kube::Error::Api(response) => {
-                let status = response.code;
-                RuntimeError::from_api_status(status, kube::Error::Api(response).to_string())
+                let (status, message) = (response.code, response.message.clone());
+                let detail = kube::Error::Api(response).to_string();
+                if awaken_container_contract::kubernetes_refusal_is_capacity(status, &message) {
+                    RuntimeError::CapacityUnavailable(detail)
+                } else {
+                    RuntimeError::from_api_status(status, detail)
+                }
             }
             other => RuntimeError::Backend(other.to_string()),
         }
@@ -149,6 +168,7 @@ mod api_status_classification_tests {
             pc::SandboxError::NotFound(_) => "NotFound",
             pc::SandboxError::Conflict(_) => "Conflict",
             pc::SandboxError::Unauthorized(_) => "Unauthorized",
+            pc::SandboxError::CapacityUnavailable(_) => "CapacityUnavailable",
             pc::SandboxError::Backend { .. } => "Backend",
             other => panic!("unexpected class for an API response: {other:?}"),
         }
@@ -226,6 +246,84 @@ mod api_status_classification_tests {
             if expected != "Backend" {
                 assert!(detail.contains("apiserver said no"), "{rule}: {detail}");
             }
+        }
+    }
+
+    #[cfg(feature = "k8s")]
+    #[test]
+    fn kubernetes_quota_exhaustion_is_capacity_and_every_other_refusal_keeps_its_class() {
+        // Decision table (ADR-0092 decision 1). Causes: C1 HTTP status; C2 the
+        // `Status` message carries the quota admission's `exceeded quota`
+        // marker. Effects: E1 CapacityUnavailable (Transient at the port, see
+        // the provisioning-contract construction table); E2 Unauthorized; E3
+        // the existing status class.
+        // Q1 403+C2 => E1; Q2 403 from RBAC, the broker's own `Forbidden`, a
+        // quota that demands explicit requests (`failed quota: … must
+        // specify`) or a LimitRange => E2; Q3 401 => E2 even with the marker;
+        // Q4 404/409/422/500 => E3 even with the marker.
+        let quota = "pods \"awaken-s\" is forbidden: exceeded quota: compute, requested: \
+                     requests.cpu=2, used: requests.cpu=4, limited: requests.cpu=4";
+        let rows = [
+            ("Q1", 403, quota, "CapacityUnavailable"),
+            (
+                "Q2 RBAC",
+                403,
+                "pods is forbidden: User \"system:serviceaccount:w:w\" cannot create \
+                 resource \"pods\" in API group \"\" in the namespace \"s\"",
+                "Unauthorized",
+            ),
+            ("Q2 broker stale Worker", 403, "Forbidden", "Unauthorized"),
+            (
+                "Q2 quota requires requests",
+                403,
+                "pods \"awaken-s\" is forbidden: failed quota: compute: must specify \
+                 limits.cpu for: agent",
+                "Unauthorized",
+            ),
+            (
+                "Q2 LimitRange",
+                403,
+                "pods \"awaken-s\" is forbidden: maximum cpu usage per Container is 2, \
+                 but limit is 4",
+                "Unauthorized",
+            ),
+            ("Q3", 401, quota, "Unauthorized"),
+            ("Q4", 404, quota, "NotFound"),
+            ("Q4", 409, quota, "Conflict"),
+            ("Q4", 422, quota, "Backend"),
+            ("Q4", 500, quota, "Backend"),
+        ];
+        for (rule, status, message, expected) in rows {
+            let response = kube::Error::Api(kube::core::ErrorResponse {
+                status: "Failure".into(),
+                message: message.into(),
+                reason: "Forbidden".into(),
+                code: status,
+            });
+            let runtime = response.into_runtime_error();
+            let port = pc::SandboxError::from(runtime);
+            assert_eq!(port_class_of(&port), expected, "{rule}: {port}");
+            if expected == "CapacityUnavailable" {
+                assert!(port.detail().contains("exceeded quota"), "{rule}: {port}");
+            }
+        }
+        // Q5 a refused Create had no effect: the post-mutation wrapper keeps
+        // the capacity class instead of turning it into MayHaveCommitted.
+        assert!(matches!(
+            RuntimeError::CapacityUnavailable(quota.into()).after_mutation(),
+            RuntimeError::CapacityUnavailable(_)
+        ));
+    }
+
+    #[cfg(feature = "k8s")]
+    fn port_class_of(error: &pc::SandboxError) -> &'static str {
+        match error {
+            pc::SandboxError::CapacityUnavailable(_) => "CapacityUnavailable",
+            pc::SandboxError::NotFound(_) => "NotFound",
+            pc::SandboxError::Conflict(_) => "Conflict",
+            pc::SandboxError::Unauthorized(_) => "Unauthorized",
+            pc::SandboxError::Backend { .. } => "Backend",
+            other => panic!("unexpected class for an API response: {other:?}"),
         }
     }
 
