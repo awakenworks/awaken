@@ -18,15 +18,14 @@ use std::sync::{Arc, Mutex};
 use crate::memory::BoundMemory;
 use crate::staged_resources::StagedResources;
 
-mod environment_owner;
-pub(crate) use environment_owner::*;
+pub(crate) use crate::environment_owner::*;
 mod execution_authority;
 mod projection_receipt;
 pub(crate) use projection_receipt::FrozenProjectionReceipt;
+/// The exclusion every realization phase driver must hold is contract-owned
+/// (`SessionRealizationPermit`); this crate only supplies the Session slot
+/// allocation as its identity.
 mod realization_permit;
-/// The exclusion every realization phase driver must hold is contract-owned;
-/// this crate only supplies the Session slot allocation as its identity.
-pub(crate) use awaken_session_realization_contract::SessionRealizationPermit;
 
 /// Host fixtures use the actual Control-clock coordinate for live replies.
 /// Deliberately rejects expired input: an expiry test must construct and age
@@ -146,6 +145,18 @@ impl SessionRealizationAuthority {
 }
 
 impl SessionRuntimeSlot {
+    /// Install a projected Environment owner and, in the same slot lock, let
+    /// the canonical projection reopen MCP admission when the run layer holds
+    /// no local effect.
+    pub(crate) fn install_projected_environment_owner(
+        &mut self,
+        owner: SessionEnvironmentOwner,
+        state: &awaken_session_state_contract::SessionEnvironmentState,
+    ) {
+        self.realization.environment_owner = owner;
+        self.reopen_mcp_realization_admission_from_projection(state);
+    }
+
     /// Select the one Resource manifest carried by a newly authored durable
     /// Run dispatch. A prepared Session carries the aggregate's desired
     /// generation so a cold Worker can realize that exact transition; legacy

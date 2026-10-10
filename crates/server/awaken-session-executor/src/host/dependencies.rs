@@ -115,7 +115,8 @@ fn select(
         exec: capability::AttemptBackends::new(acp_profile),
         worker: capability::WorkerTransports::default(),
         env: capability::EnvironmentProviders::new(
-            sandbox_root,
+            sandbox_root.clone(),
+            crate::uninstalled_environment::default_session_provider(sandbox_root),
             crate::auxiliary_sandbox::default_auxiliary_sandboxes(),
             trusted_host,
             warm_pool,

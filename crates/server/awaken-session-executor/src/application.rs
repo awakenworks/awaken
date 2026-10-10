@@ -744,7 +744,7 @@ impl crate::SharedHost {
             .update(thread, |slot| slot.validate_projection_receipt(&receipt))?;
         let (publication, model_candidate) = self.resolve_canonical_session_projection(
             &projection.workspace_id,
-            crate::host::CanonicalSessionProjection::Baseline(&projection.baseline),
+            crate::session_environment::CanonicalSessionProjection::Baseline(&projection.baseline),
             projection.agent_publication.clone(),
             Some(projection.resources.skills()),
         )?;
@@ -887,14 +887,14 @@ impl crate::SharedHost {
             // object. Publication still revalidates this same canonical kernel.
             self.session_slots.update(thread, |slot| {
                 let newer = slot.validate_projection_receipt(&receipt)?;
-                slot.projected_environment_owner_for_resource_reservation(
+                slot.realization.environment_owner.after_projection(
                     thread,
                     &projection.workspace_id,
                     &projection.environment,
                     newer,
                     pending_resource_reservation,
-                )
-                .map(|_| ())
+                )?;
+                Ok::<_, crate::HostError>(())
             })?;
             self.retire_replaced_scoped_execution(thread, proof).await?;
         }
@@ -936,10 +936,10 @@ impl crate::SharedHost {
                 // Revalidate fallible coordinates and stage the existing owner
                 // transition under the final slot lock. No correlated field is
                 // published before the time proof/preparation is admitted.
-                slot.validate_session_publication(publication.as_ref())?;
+                slot.frozen.validate_publication(publication.as_ref())?;
                 slot.validate_environment_projection(thread, &environment_projection)?;
                 let newer = slot.validate_projection_receipt(&receipt)?;
-                let owner = slot.projected_environment_owner_for_resource_reservation(
+                let owner = slot.realization.environment_owner.after_projection(
                     thread,
                     &projection.workspace_id,
                     &projection.environment,

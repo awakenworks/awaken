@@ -4,6 +4,7 @@
 
 use super::credential_capabilities::model_realization_capability;
 use super::{HostError, RunActivation};
+use crate::session_environment::requires_local_environment;
 use awaken_dispatch_contract::PlacementRequirements;
 use awaken_runtime_contract::CredentialMaterialSource;
 use std::collections::BTreeSet;
@@ -61,24 +62,6 @@ fn worker_acp_capabilities(
             _ => None,
         })
         .collect()
-}
-
-/// Whether any publication-pinned execution candidate needs the Session's local
-/// Environment. This is deliberately a set-wide decision: an A2A primary with a
-/// Native/ACP fallback is not A2A-only and must retain one realizable Environment.
-pub(crate) fn requires_local_environment(
-    models: &awaken_runtime_contract::resolved::ResolvedSpec,
-) -> bool {
-    std::iter::once(&models.model_binding)
-        .chain(models.model_candidates.iter())
-        .any(|candidate| {
-            !matches!(
-                awaken_runtime_contract::resolved::Backend::from_ref(
-                    candidate.binding().identity().2
-                ),
-                awaken_runtime_contract::resolved::Backend::Remote(_)
-            )
-        })
 }
 
 /// Resolve the canonical cold-start inference holder from immutable candidate

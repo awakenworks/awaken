@@ -7,8 +7,8 @@
 
 #[cfg(test)]
 use super::placement::remote_worker_placement;
-pub(crate) use super::placement::requires_local_environment;
 use super::*;
+pub(crate) use crate::session_environment::requires_local_environment;
 use awaken_dispatch_contract::ControlDispatchQueue;
 #[cfg(test)]
 use awaken_dispatch_contract::{

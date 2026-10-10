@@ -635,7 +635,7 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
     host.session_slots
         .close_mcp_realization_admission(
             thread,
-            crate::session_slot::McpQuiescenceAdmissionFence::new(
+            awaken_session_mcp::McpQuiescenceAdmissionFence::new(
                 &operation,
                 "source-effect",
                 "source-binding",

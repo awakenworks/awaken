@@ -1809,17 +1809,18 @@ async fn session_creation_and_explicit_cache_warmup_share_one_preparation_path()
         });
 
     let environment = host
-        .create_session_environment(&host.env.session_provider, &spec)
+        .create_session_environment(&host.realizer.env.session_provider, &spec)
         .await
         .expect("cache preparation precedes Session environment creation");
     assert_eq!(initializer.0.load(Ordering::SeqCst), 1, "E1/E2");
 
-    host.prewarm_cache_volume(crate::CacheVolumeWarmup::host_path(
-        "build-cache-v1",
-        "/tmp/awaken-cache-volume-wiring",
-    ))
-    .await
-    .expect("same identity is already prepared");
+    host.realizer()
+        .prewarm_cache_volume(crate::CacheVolumeWarmup::host_path(
+            "build-cache-v1",
+            "/tmp/awaken-cache-volume-wiring",
+        ))
+        .await
+        .expect("same identity is already prepared");
     assert_eq!(initializer.0.load(Ordering::SeqCst), 1, "E3");
     environment
         .lifecycle()
@@ -1885,7 +1886,7 @@ async fn repository_layout_conflict_fails_before_cache_prewarm() {
             required: false,
         });
     let error = match host
-        .create_session_environment(&host.env.session_provider, &spec)
+        .create_session_environment(&host.realizer.env.session_provider, &spec)
         .await
     {
         Ok(_) => panic!("P2 must fail before cache preparation"),

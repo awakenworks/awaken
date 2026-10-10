@@ -19,7 +19,10 @@ below `single_owner_baseline.json`:
   named for realization -- a module path segment in `REALIZATION_MODULES`, or one
   whose words include one of `REALIZATION_WORDS` -- per crate, outside the
   realizer, its contract, the provisioning contract and the sandbox providers
-  (crates of bounded context `sandbox`). Lines may float below the baseline and
+  (crates of bounded context `sandbox`). Modules of `awaken-session-executor` that
+  the module-layer guard classifies as `realizer` are the realizer still being
+  extracted (plan slice R); the module-layer guard governs them, so moving code
+  into them is consolidation, not growth. Lines may float below the baseline and
   must be re-recorded once they fall `LINE_SLACK` or more below it.
 
 A count above its baseline is an error; see `_architecture_ratchet.py` for how a
@@ -36,6 +39,7 @@ from pathlib import Path
 
 import _architecture_ratchet
 import _crate_boundary_workspace
+import _module_layer_fitness
 from _architecture_ratchet import Counts, Places, Rule
 
 BASELINE = Path(__file__).with_name("single_owner_baseline.json")
@@ -142,6 +146,22 @@ def is_realization_module(relative: Path) -> bool:
     return any(part in REALIZATION_MODULES or REALIZATION_WORDS & set(part.split("_")) for part in parts)
 
 
+def module_of(relative: Path) -> tuple[str, ...]:
+    """Module path of a source file relative to `src/` (`lib.rs` is the root, `x/mod.rs` is `x`)."""
+    parts = list(relative.with_suffix("").parts)
+    if parts and parts[-1] in ("mod", "lib", "main"):
+        parts.pop()
+    return tuple(parts)
+
+
+def in_extracting_realizer(crate_name: str, relative: Path, table=None) -> bool:
+    """A runtime-host module the module-layer guard classifies as `realizer`."""
+    if crate_name != _module_layer_fitness.CRATE:
+        return False
+    table = _module_layer_fitness.layer_table() if table is None else table
+    return _module_layer_fitness.target_of(module_of(relative), table) == _module_layer_fitness.REALIZER
+
+
 def realization_owner(name: str, metadata: dict) -> bool:
     return name in REALIZATION_OWNERS or metadata.get("bounded_context") == PROVIDER_CONTEXT
 
@@ -153,6 +173,7 @@ def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) 
         enums = {enum for enum, allowed in STATE_ENUMS.items() if crate.name != STATE_CONTRACT
                  and crate.name not in allowed}
         owner = realization_owner(crate.name, crate.metadata)
+        layers = _module_layer_fitness.layer_table()
         for path, syntax in crate.syntax.items():
             relative = path.relative_to(root) if root in path.parents else path
             for enum, offset in state_constructions(syntax, enums):
@@ -160,7 +181,9 @@ def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) 
                 counts["state-construction"][key] += 1
                 places["state-construction"][key].append(f"{relative}:{_architecture_ratchet.line_of(syntax, offset)}")
             source_root = crate.directory / "src"
-            if not owner and source_root in path.parents and is_realization_module(path.relative_to(source_root)):
+            if (not owner and source_root in path.parents
+                    and is_realization_module(path.relative_to(source_root))
+                    and not in_extracting_realizer(crate.name, path.relative_to(source_root), layers)):
                 lines = sum(1 for line in syntax.splitlines() if line.strip())
                 counts["realization-code"][crate.name] += lines
                 places["realization-code"][crate.name].append(str(relative))
@@ -224,6 +247,13 @@ def selftest() -> None:
     assert realization_owner("awaken-session-realization-contract", {}), "S8 contract"
     assert realization_owner("awaken-sandbox-local", {"bounded_context": "sandbox"}), "S8 provider"
     assert not realization_owner("awaken-session-executor", {"bounded_context": "session"}), "S8 other"
+    assert module_of(Path("host/session/environment_lifecycle/mod.rs")) == ("host", "session", "environment_lifecycle")
+    assert in_extracting_realizer("awaken-session-executor", Path("host/session/environment_lifecycle/renewal.rs")), \
+        "S9 realizer-layer module of runtime-host is the extracting realizer"
+    assert not in_extracting_realizer("awaken-session-executor", Path("host/session/realization_view.rs")), \
+        "S9 host-layer module stays counted"
+    assert not in_extracting_realizer("awaken-session-application", Path("realization/control.rs")), \
+        "S9 other crates stay counted"
 
     source = _architecture_ratchet.CrateSource(
         "awaken-x", {}, Path("/w/x"),

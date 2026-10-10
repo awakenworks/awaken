@@ -15,9 +15,14 @@
       "methods": 158,
       "reason": "W13 step 2 and W20: event projection and orchestration leave; the adapter keeps its wire cache"
     },
+    "awaken-session-executor::ManagedHost": {
+      "files": 6,
+      "methods": 35,
+      "reason": "slice H (plan 10.4): each Session role moves to the component that owns its state; ManagedHost only composes"
+    },
     "awaken-session-executor::SharedHost": {
-      "files": 34,
-      "methods": 279,
+      "files": 42,
+      "methods": 324,
       "reason": "slice H: each of the eleven session-runtime roles gets one owning component (plan 10.3 item 11)"
     },
     "awaken-session-application::SessionApplication": {
@@ -54,7 +59,7 @@
     "awaken-dispatch-contract": 1,
     "awaken-dispatch-http": 2,
     "awaken-runtime": 10,
-    "awaken-session-executor": 39,
+    "awaken-session-executor": 38,
     "awaken-sandbox-container": 15,
     "awaken-sandbox-fs": 6,
     "awaken-sandbox-local": 13,
@@ -83,7 +88,7 @@
     "awaken-dispatch": 2,
     "awaken-runtime": 2,
     "awaken-runtime-contract": 3,
-    "awaken-session-executor": 19,
+    "awaken-session-executor": 18,
     "awaken-sandbox-container": 3,
     "awaken-sandbox-local": 3,
     "awaken-session-application": 2,
@@ -323,7 +328,7 @@
     "awaken-session-executor::host/session/environment_lifecycle/terminal_preparation.rs::prepare_bound_environment_for_effect_under_lifecycle": 228,
     "awaken-session-executor::host/session/environment_lifecycle/terminal_preparation.rs::prepare_terminal_environment_under_lifecycle": 256,
     "awaken-session-executor::host/worker_resolver/claimed_dispatch.rs::worker_for_claimed": 253,
-    "awaken-session-executor::host/worker_resolver/session_realization/projection_synchronizer.rs::synchronize_session_projection": 246,
+    "awaken-session-executor::host/worker_resolver/session_realization/projection_synchronizer.rs::synchronize_session_projection": 244,
     "awaken-session-executor::managed_resource_projection.rs::apply_session_inputs_body": 477,
     "awaken-session-executor::managed_resource_projection.rs::stage_resolved_input_with_resource_authority": 319,
     "awaken-session-executor::provisioning.rs::repository_operation_credential": 203,
@@ -384,10 +389,25 @@
     "awaken-worker::lifecycle.rs::renew_registry_authority": 176
   },
   "crate-budget": {
+    "awaken-protocol-managed": {
+      "deps": 41,
+      "lines": 27087,
+      "reason": "W20 (plan 9.11): Session lifecycle and deployment decisions move to their application services; the adapter keeps protocol translation only"
+    },
     "awaken-session-executor": {
-      "lines": 71937,
       "deps": 47,
+      "lines": 35907,
       "reason": "runtime-host split (plan 10.4 slices F, S, T, R, H): new behavior lands in its future crate; target < 20000 lines, about 26-28 dependencies"
+    },
+    "awaken-sandbox-container": {
+      "deps": 11,
+      "lines": 23581,
+      "reason": "plan W34: the Kubernetes backend (optional feature with the kube dependency tree) leaves for its own crate"
+    },
+    "awaken-session-application": {
+      "deps": 24,
+      "lines": 18558,
+      "reason": "W21 (plan 9.12): split by use case around one SessionMutations core; if it stays one aggregate after W21, record that review here"
     }
   }
 }

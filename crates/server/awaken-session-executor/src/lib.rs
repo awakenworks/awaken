@@ -46,9 +46,13 @@ mod delegate;
 mod deployment_config;
 mod dispatch_session_runtime;
 mod durable_operations;
+mod environment_capacity;
 mod environment_continuation;
+mod environment_owner;
+mod environment_providers;
 mod frozen_inputs;
 mod host;
+mod host_error;
 mod hub;
 mod inference_routing;
 mod judge;
@@ -73,6 +77,7 @@ mod run_application_host;
 mod run_exec;
 mod session_environment;
 mod session_memory_tools;
+mod session_realizer;
 mod session_slot;
 mod session_tools;
 mod skill_catalog;
@@ -144,6 +149,7 @@ pub use crate::host::{
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
 pub use crate::run_application_host::RunApplicationHost;
+pub use crate::session_realizer::SessionRealizer;
 use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialMaterializer};
 use awaken_resource_contract::FileContentSource;
 #[cfg(test)]
@@ -857,7 +863,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ManagedHost {
             .adopt_bound_session_environment(thread, Some(binding), provider, None, false)
             .await
             .map_err(to_run_error)?;
-        if disposition != crate::host::SessionEnvironmentAdoptionDisposition::Ready {
+        if disposition != crate::session_environment::SessionEnvironmentAdoptionDisposition::Ready {
             return Err(RunError::internal(
                 "durable Session Environment adoption did not publish a ready binding",
             ));

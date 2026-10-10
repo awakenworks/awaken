@@ -24,9 +24,12 @@ adds an entry):
   lines (crates of layer `tooling` are not scanned). Today's are recorded by
   `crate::file::function` with their length and may only get shorter; a moved or
   renamed one renames its key in the same commit.
-* `crate-budget`: a crate being split (listed with a reason) may not grow in
-  production lines or in workspace dependencies while the split runs, so new
-  behavior lands in its future home instead. Dependencies are exact (a lower
+* `crate-budget`: a crate over `CRATE_REVIEW_LINES` production code lines (non-blank,
+  comments and `cfg(test)` code excluded, production-compiled files only) must be
+  listed with a reason -- the review that it is still one boundary (ADR-0091 D2) or
+  the work item that shrinks it. A listed crate may not grow in code lines or in
+  workspace dependencies, so new behavior lands in its future home instead; once it
+  falls to the threshold or below, its entry is removed. Dependencies are exact (a lower
   count is recorded in the same commit); lines may float below the budget and
   must be re-recorded once they fall `BUDGET_LINE_SLACK` or more below it.
 
@@ -51,8 +54,14 @@ MAX_IMPL_FILES = 5
 MAX_IMPL_METHODS = 60
 MAX_FUNCTION_LINES = 150
 BUDGET_LINE_SLACK = 1000
+CRATE_REVIEW_LINES = 15000
 
-_IMPL = re.compile(r"^\s*impl(?:<[^>{]*>)?\s+([A-Z][A-Za-z0-9_]*)(?:<[^>{]*>)?\s*(?:where[^{]*)?\{", re.M)
+# An inherent impl may name its type through a crate path (`impl crate::host::SharedHost`);
+# that block belongs to the same type, so the path prefix is part of the match.
+_IMPL = re.compile(
+    r"^\s*impl(?:<[^>{]*>)?\s+(?:crate::(?:[a-z_][a-z0-9_]*::)*)?([A-Z][A-Za-z0-9_]*)(?:<[^>{]*>)?\s*(?:where[^{]*)?\{",
+    re.M,
+)
 _FN = re.compile(r"\bfn\s+[A-Za-z_]\w*")
 _FN_ITEM = re.compile(r"^[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+(\w+)", re.M)
 _SUPER_GLOB = re.compile(r"^\s*use\s+super::\*\s*;", re.M)
@@ -186,7 +195,7 @@ def crate_measures(manifest_path: Path) -> dict:
     layer = _crate_boundary_workspace.load_manifest(manifest_path).get("package", {}).get("metadata", {}).get(
         "awaken", {}).get("layer", "")
     return {
-        "lines": sum(source.count("\n") for source in files.values()),
+        "lines": sum(1 for source in files.values() for line in source.splitlines() if line.strip()),
         "deps": _crate_boundary_workspace.normal_dependency_names(
             _crate_boundary_workspace.load_manifest(manifest_path)),
         "long-function": {} if layer == "tooling" else long_functions(files),
@@ -259,7 +268,14 @@ def modularity_errors(measures: dict[str, dict], baseline: dict) -> list[str]:
             elif lines < held:
                 errors.append(f"long-function: {key} is {lines} lines, below the baseline {held}; lower "
                               f"{BASELINE.name} in this commit")
-    for crate, held in sorted(baseline.get("crate-budget", {}).items()):
+    budgeted = baseline.get("crate-budget", {})
+    for crate, measure in sorted(measures.items()):
+        lines = measure.get("lines", 0)
+        if lines > CRATE_REVIEW_LINES and crate not in budgeted:
+            errors.append(f"crate-budget: {crate} has {lines} production code lines, over the review threshold "
+                          f"{CRATE_REVIEW_LINES}; check it is still one boundary (ADR-0091 D2) and record it in "
+                          f"{BASELINE.name} with the review or the work item that shrinks it")
+    for crate, held in sorted(budgeted.items()):
         measure = measures.get(crate)
         if measure is None:
             errors.append(f"crate-budget: {crate} is no longer a crate; remove it from {BASELINE.name} in this commit")
@@ -267,6 +283,10 @@ def modularity_errors(measures: dict[str, dict], baseline: dict) -> list[str]:
         if not str(held.get("reason", "")).strip():
             errors.append(f"crate-budget: baseline entry {crate} must name the split it guards")
         lines, deps = measure.get("lines", 0), len(measure.get("workspace-deps", ()))
+        if lines <= CRATE_REVIEW_LINES:
+            errors.append(f"crate-budget: {crate} is at {lines} production code lines, within the review "
+                          f"threshold {CRATE_REVIEW_LINES}; remove it from {BASELINE.name} in this commit")
+            continue
         if lines > held["lines"]:
             errors.append(f"crate-budget: {crate} grew to {lines} production lines, budget {held['lines']}; "
                           "put the new behavior in the crate it is moving to")
@@ -322,6 +342,8 @@ def tightened(measures: dict[str, dict], baseline: dict) -> dict:
         if measure is None:
             continue
         lines, deps = measure.get("lines", 0), len(measure.get("workspace-deps", ()))
+        if lines <= CRATE_REVIEW_LINES:
+            continue
         budget[crate] = {**held,
                          "lines": lines if lines <= held["lines"] - BUDGET_LINE_SLACK else held["lines"],
                          "deps": min(held["deps"], deps)}
@@ -358,6 +380,8 @@ def selftest() -> None:
     """
     spread = impl_spread({"a.rs": "impl Big { fn x(&self) {} fn y(&self) {} }", "b.rs": "impl<T> Big { fn z() {} }"})
     assert spread == {"Big": (2, 3)}, "impl-spread counting"
+    pathed = impl_spread({"a.rs": "impl crate::host::Big { fn x(&self) {} }", "b.rs": "impl crate::Big for X { fn y() {} }"})
+    assert pathed == {"Big": (1, 1)}, "impl-spread counts a crate-path inherent impl, not a trait impl"
 
     def measure(spread=None, globs=0, cycle=0, adopted=True, long=None):
         return {"impl-spread": spread or {}, "super-glob": globs, "module-cycle": cycle, "unreachable-pub": adopted,
@@ -391,30 +415,35 @@ def selftest() -> None:
     assert "below the baseline" in modularity_errors({"c": measure(long={"a.rs::big": 190})}, held)[0], "M7 shorter"
     assert modularity_errors({"c": measure(long={"a.rs::big": 200})}, held) == [], "M7 equal"
     assert "no longer over" in modularity_errors({"c": measure()}, held)[0], "M7 gone"
-    budget = {"crate-budget": {"c": {"lines": 5000, "deps": 3, "reason": "split"}}}
+    budget = {"crate-budget": {"c": {"lines": 20000, "deps": 3, "reason": "split"}}}
 
     def sized(lines, deps):
         return {"c": {**measure(), "lines": lines, "workspace-deps": frozenset(f"d{i}" for i in range(deps))}}
 
-    assert modularity_errors(sized(5000, 3), budget) == [], "M8 equal"
-    assert "grew to 5001" in modularity_errors(sized(5001, 3), budget)[0], "M8 lines grow"
-    assert modularity_errors(sized(5000 - BUDGET_LINE_SLACK + 1, 3), budget) == [], "M8 float"
-    assert "lower" in modularity_errors(sized(5000 - BUDGET_LINE_SLACK, 3), budget)[0], "M8 fall"
-    assert "workspace dependencies, budget" in modularity_errors(sized(5000, 4), budget)[0], "M8 deps grow"
-    assert "below the budget" in modularity_errors(sized(5000, 2), budget)[0], "M8 deps shrink"
+    assert modularity_errors(sized(20000, 3), budget) == [], "M8 equal"
+    assert "grew to 20001" in modularity_errors(sized(20001, 3), budget)[0], "M8 lines grow"
+    assert modularity_errors(sized(20000 - BUDGET_LINE_SLACK + 1, 3), budget) == [], "M8 float"
+    assert "lower" in modularity_errors(sized(20000 - BUDGET_LINE_SLACK, 3), budget)[0], "M8 fall"
+    assert "workspace dependencies, budget" in modularity_errors(sized(20000, 4), budget)[0], "M8 deps grow"
+    assert "below the budget" in modularity_errors(sized(20000, 2), budget)[0], "M8 deps shrink"
+    # M10 review threshold: an unrecorded crate over it is an error; a recorded one at or below it is removed.
+    assert "review threshold" in modularity_errors(sized(CRATE_REVIEW_LINES + 1, 3), {})[0], "M10 unrecorded over"
+    assert modularity_errors(sized(CRATE_REVIEW_LINES, 3), {}) == [], "M10 unrecorded at threshold"
+    assert "remove it" in modularity_errors(sized(CRATE_REVIEW_LINES, 3), budget)[0], "M10 recorded fell to threshold"
+    assert "c" not in tightened(sized(CRATE_REVIEW_LINES, 3), budget)["crate-budget"], "M10 tighten drops it"
     # M9 `--tighten`: lowers or removes held entries, never adds or raises one.
     held = {"impl-spread": {"c::T": {"files": 10, "methods": 100, "reason": "r"}, "c::Gone": {"files": 9,
             "methods": 90, "reason": "r"}}, "super-glob": {"c": 3}, "module-cycle": {"c": 2},
             "unreachable-pub-pending": ["c", "gone"], "long-function": {"c::a.rs::big": 200, "c::a.rs::gone": 300},
-            "crate-budget": {"c": {"lines": 5000, "deps": 3, "reason": "split"}}}
+            "crate-budget": {"c": {"lines": 20000, "deps": 3, "reason": "split"}}}
     now = {"c": {**measure({"T": (8, 120)}, globs=1, cycle=4, adopted=True, long={"a.rs::big": 180}),
-                 "lines": 5000 - BUDGET_LINE_SLACK, "workspace-deps": frozenset({"d0", "d1"})}}
+                 "lines": 20000 - BUDGET_LINE_SLACK, "workspace-deps": frozenset({"d0", "d1"})}}
     tight = tightened(now, held)
     assert tight["impl-spread"] == {"c::T": {"files": 8, "methods": 100, "reason": "r"}}, "M9 spread"
     assert tight["super-glob"] == {"c": 1} and tight["module-cycle"] == {"c": 2}, "M9 counts never rise"
     assert tight["unreachable-pub-pending"] == [], "M9 pending"
     assert tight["long-function"] == {"c::a.rs::big": 180}, "M9 long-function"
-    assert tight["crate-budget"]["c"] == {"lines": 5000 - BUDGET_LINE_SLACK, "deps": 2, "reason": "split"}, "M9 budget"
+    assert tight["crate-budget"]["c"] == {"lines": 20000 - BUDGET_LINE_SLACK, "deps": 2, "reason": "split"}, "M9 budget"
     assert modularity_errors({"c": {**now["c"], "impl-spread": {"T": (8, 100)}, "module-cycle": 2}}, tight) == [], \
         "M9 a tightened baseline holds"
     print("_modularity_fitness selftest: the decision tables hold")

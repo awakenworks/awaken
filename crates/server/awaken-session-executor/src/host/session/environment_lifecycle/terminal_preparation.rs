@@ -306,7 +306,7 @@ impl SharedHost {
                 if adopted {
                     let candidate =
                         self.begin_session_environment_adoption(thread, environment.clone())?;
-                    let crate::session_slot::UnboundSessionEnvironmentOrigin::AdoptionFrom(
+                    let crate::environment_owner::UnboundSessionEnvironmentOrigin::AdoptionFrom(
                         identity,
                     ) = &candidate.origin
                     else {
@@ -785,8 +785,8 @@ impl SharedHost {
             &state,
             awaken_session_state_contract::SessionEnvironmentState::Restoring { .. }
         ) {
-            let crate::session_slot::SessionEnvironmentOwner::Restoring(
-                crate::session_slot::SessionEnvironmentRestoration::Awaiting { request },
+            let crate::environment_owner::SessionEnvironmentOwner::Restoring(
+                crate::environment_owner::SessionEnvironmentRestoration::Awaiting { request },
             ) = owner
             else {
                 return Err(HostError::classified(
@@ -1076,6 +1076,7 @@ impl SharedHost {
             return Ok(());
         }
         let store = self
+            .realizer
             .env
             .environment_checkpoint_store
             .as_ref()

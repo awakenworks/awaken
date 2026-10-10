@@ -1654,7 +1654,8 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
                 .sandbox_effect_fence("unacknowledged-auxiliary-create")
                 .unwrap();
             let environment = Arc::new(
-                host.env
+                host.realizer
+                    .env
                     .session_provider
                     .terminal()
                     .prepare_terminal_effective_for_effect(
@@ -1980,6 +1981,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 .sandbox_effect_fence("unacknowledged-memory-create")
                 .unwrap();
             let environment = host
+                .realizer
                 .env
                 .session_provider
                 .terminal()
@@ -2019,7 +2021,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 &binding,
                 &warm_fence,
                 Some(&resources),
-                crate::host::BoundEnvironmentPreparationMode::LiveSource,
+                crate::session_environment::BoundEnvironmentPreparationMode::LiveSource,
             )
             .await
             .unwrap_or_else(|error| panic!("{} prepares resident owner: {error}", rule.name));
@@ -2156,7 +2158,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                     &binding,
                     &effect.sandbox_effect_fence().unwrap(),
                     Some(&resources),
-                    crate::host::BoundEnvironmentPreparationMode::LiveSource,
+                    crate::session_environment::BoundEnvironmentPreparationMode::LiveSource,
                 )
                 .await
                 .err()
@@ -2166,7 +2168,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 .adopt_bound_session_environment(
                     &thread,
                     Some(&binding),
-                    &host.env.session_provider,
+                    &host.realizer.env.session_provider,
                     None,
                     false,
                 )
