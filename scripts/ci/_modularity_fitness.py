@@ -42,6 +42,9 @@ adds an entry):
 
 A count above its baseline is an error; a count below it is an error until the
 baseline is lowered in the same commit, so the file records the real state.
+Default/`--check` only reads. `--tighten` validates the clamped candidate and
+refuses growth; `--write-baseline --reason` records reviewed growth without
+waiving lint, review-metadata or extracting-realization size requirements.
 """
 
 from __future__ import annotations
@@ -54,6 +57,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 import _crate_boundary_workspace
+import _architecture_ratchet
 import _module_layer_fitness
 from _context_map_fitness import _flatten_path_tree
 
@@ -342,53 +346,82 @@ def modularity_errors(measures: dict[str, dict], baseline: dict) -> list[str]:
     return [f"modularity: {error}" for error in errors]
 
 
-def tightened(measures: dict[str, dict], baseline: dict) -> dict:
-    """The baseline lowered to today's measures: entries only shrink or disappear.
+def tightened(measures: dict[str, dict], baseline: dict, *, record: bool = False, reason: str | None = None) -> dict:
+    """The existing candidate writer, shrink-only unless explicitly recording.
 
-    Nothing is ever added or raised, so `--tighten` cannot admit growth; the
-    crate budget keeps its reason and drops to today's line count only when the
-    guard would demand it (a fall of the slack or more).
+    Shrink mode never adds/raises an allowance. The CLI checks its candidate
+    with modularity_errors, so a clamp cannot hide growth. Explicit recording
+    uses the same fields and preserves metadata; it cannot add lint exemptions
+    or excuse the realization-size hard rule.
     """
     out = json.loads(json.dumps(baseline))
+    reasons = out.pop("growth_reasons", {})
+    owned = {"impl-spread", "super-glob", "module-cycle", "long-function", "crate-budget"}
+    kept_reasons: dict[str, dict[str, str]] = {name: value for name, value in reasons.items() if name not in owned}
+
+    def count(rule: str, key: str, now: int, was: int, slack: int = 1) -> int:
+        earlier = kept_reasons.get(rule, {}).get(key, reasons.get(rule, {}).get(key))
+        if record and now > was and reason:
+            earlier = _architecture_ratchet.growth_reason(earlier, reason)
+        if earlier:
+            kept_reasons.setdefault(rule, {})[key] = earlier
+        return now if record or now <= was - slack else was
+
     spread = {}
-    for key, held in baseline.get("impl-spread", {}).items():
+    held_spread = baseline.get("impl-spread", {})
+    keys = set(held_spread)
+    if record:
+        keys |= {f"{crate}::{ty}" for crate, measure in measures.items()
+                 for ty, (files, methods) in measure["impl-spread"].items()
+                 if files > MAX_IMPL_FILES or methods > MAX_IMPL_METHODS}
+    for key in sorted(keys):
         crate, _, ty = key.partition("::")
         now = measures.get(crate, {}).get("impl-spread", {}).get(ty)
         if now is not None:
-            spread[key] = {**held, "files": min(held["files"], now[0]), "methods": min(held["methods"], now[1])}
+            held = held_spread.get(key, {"files": MAX_IMPL_FILES, "methods": MAX_IMPL_METHODS, "reason": reason or ""})
+            spread[key] = {**held, "files": count("impl-spread", key, now[0], held["files"]),
+                           "methods": count("impl-spread", key, now[1], held["methods"])}
     out["impl-spread"] = spread
     for rule in ("super-glob", "module-cycle"):
-        out[rule] = {
-            crate: min(was, measures[crate].get(rule, 0))
-            for crate, was in baseline.get(rule, {}).items()
-            if crate in measures and min(was, measures[crate].get(rule, 0)) > 0
-        }
+        held = baseline.get(rule, {})
+        keys = set(held) | (set(measures) if record else set())
+        out[rule] = {crate: count(rule, crate, measures[crate].get(rule, 0), held.get(crate, 0))
+                     for crate in sorted(keys) if crate in measures and measures[crate].get(rule, 0) > 0}
     out["unreachable-pub-pending"] = [
         crate for crate in baseline.get("unreachable-pub-pending", [])
         if crate in measures and not measures[crate]["unreachable-pub"]
     ]
+    held_long = baseline.get("long-function", {})
+    keys = set(held_long)
+    if record:
+        keys |= {f"{crate}::{function}" for crate, measure in measures.items()
+                 for function in measure.get("long-function", {})}
     long_held = {}
-    for key, was in baseline.get("long-function", {}).items():
+    for key in sorted(keys):
         crate, _, function = key.partition("::")
         now = measures.get(crate, {}).get("long-function", {}).get(function)
         if now is not None:
-            long_held[key] = min(was, now)
+            long_held[key] = count("long-function", key, now, held_long.get(key, MAX_FUNCTION_LINES))
     out["long-function"] = long_held
+    held_budget = baseline.get("crate-budget", {})
+    keys = set(held_budget) | (set(measures) if record else set())
     budget = {}
-    for crate, held in baseline.get("crate-budget", {}).items():
+    for crate in sorted(keys):
         measure = measures.get(crate)
         if measure is None:
             continue
         lines, deps = measure.get("lines", 0), len(measure.get("workspace-deps", ()))
         if lines <= CRATE_REVIEW_LINES:
             continue
-        budget[crate] = {**held,
-                         "lines": lines if lines <= held["lines"] - BUDGET_LINE_SLACK else held["lines"],
-                         "deps": min(held["deps"], deps)}
+        held = held_budget.get(crate, {"lines": CRATE_REVIEW_LINES, "deps": 0, "reason": reason or ""})
+        budget[crate] = {**held, "lines": count("crate-budget", crate, lines, held["lines"], BUDGET_LINE_SLACK),
+                         "deps": count("crate-budget", crate, deps, held["deps"])}
         if "host_lines" in held:
             host = measure.get("host-lines", lines)
-            budget[crate]["host_lines"] = host if host <= held["host_lines"] - BUDGET_LINE_SLACK else held["host_lines"]
+            budget[crate]["host_lines"] = count("crate-budget", crate, host, held["host_lines"], BUDGET_LINE_SLACK)
     out["crate-budget"] = budget
+    if kept_reasons:
+        out["growth_reasons"] = kept_reasons
     return out
 
 
@@ -515,29 +548,101 @@ def selftest() -> None:
     assert tight["crate-budget"]["c"] == {"lines": 20000 - BUDGET_LINE_SLACK, "deps": 2, "reason": "split"}, "M9 budget"
     assert modularity_errors({"c": {**now["c"], "impl-spread": {"T": (8, 100)}, "module-cycle": 2}}, tight) == [], \
         "M9 a tightened baseline holds"
+    _selftest_cli()
     print("_modularity_fitness selftest: the decision tables hold")
 
 
-def parse(argv: list[str]):
-    import argparse
-    parser = argparse.ArgumentParser(prog="_modularity_fitness.py", description=__doc__, allow_abbrev=False)
-    parser.add_argument("--self-test", action="store_true", help="run the decision tables")
-    parser.add_argument("--tighten", action="store_true",
-                        help=f"lower {BASELINE.name} to today's measures (never raises or adds an entry)")
-    return parser.parse_args(argv)
+def _selftest_cli() -> None:
+    """CLI causes/effects, retaining the original M1-M12 comparison table.
+
+    MCLI1 default/check are read-only; tighten validates its clamped candidate
+    and rejects any growing metric, including mixed shrink/growth. MCLI2 pure
+    shrink writes, equality preserves bytes, owner/expiry/foreign counters and
+    their unknown reasons survive.
+    MCLI3 explicit growth needs a reason and keeps its history, but a reason
+    cannot waive lint, missing review metadata or realization-size hard rules.
+    MCLI4 invalid modes/blank reasons/missing baseline precede measurement.
+    """
+    measure = {"impl-spread": {"T": (8, 80)}, "super-glob": 2, "module-cycle": 2, "unreachable-pub": True,
+               "long-function": {"a.rs::big": 200}, "lines": 20000, "host-lines": 18000,
+               "workspace-deps": frozenset({"a", "b"})}
+    foreign = {"future-counter": {"k": "  foreign review  "}}
+    held = {"owner": "modularity", "expiry": "split", "future-counter": {"k": 9}, "growth_reasons": foreign, "impl-spread": {"c::T": {"files": 8, "methods": 80,
+            "reason": "extract component"}}, "super-glob": {"c": 2}, "module-cycle": {"c": 2},
+            "unreachable-pub-pending": [], "long-function": {"c::a.rs::big": 200},
+            "crate-budget": {"c": {"lines": 20000, "host_lines": 18000, "deps": 2, "reason": "split c"}}}
+
+    def invoke(argv, current=measure, baseline=held):
+        return _architecture_ratchet._cli_fixture(main, argv, baseline, "workspace_measures", {"c": current})
+
+    for argv in ([], ["--check"], ["--tighten"]):
+        status, before, after, observed, _ = invoke(argv)
+        assert status == 0 and before == after and observed, f"MCLI1/MCLI2 equal {argv}"
+    rows = ({"impl-spread": {"T": (8, 81)}}, {"impl-spread": {"T": (8, 80), "New": (6, 10)}},
+            {"super-glob": 3}, {"module-cycle": 3}, {"long-function": {"a.rs::big": 201}},
+            {"long-function": {"new.rs::big": 180}}, {"lines": 20001}, {"host-lines": 18001},
+            {"workspace-deps": frozenset({"a", "b", "new"})})
+    for change in rows:
+        # One growing field while super-glob shrinks: a successful min() must
+        # not be mistaken for a successful check of the actual tree.
+        current = {**measure, "super-glob": 1, **change}
+        status, before, after, _, _ = invoke(["--tighten"], current)
+        assert status == 1 and before == after, f"MCLI1 growth {change}"
+    smaller = {**measure, "super-glob": 1, "lines": 19000, "host-lines": 17000}
+    status, _, after, _, _ = invoke(["--tighten"], smaller)
+    document = json.loads(after)
+    assert status == 0 and document["super-glob"] == {"c": 1}, "MCLI2 shrink"
+    assert document["crate-budget"]["c"] == {**held["crate-budget"]["c"], "lines": 19000, "host_lines": 17000}, \
+        "MCLI2 slack and held review reason"
+    assert document["owner"] == held["owner"] and document["expiry"] == held["expiry"], "MCLI2 metadata"
+    assert document["future-counter"] == held["future-counter"] and document["growth_reasons"] == foreign, \
+        "MCLI2 foreign metadata/reason retained"
+    current = {**measure, "super-glob": 3, "impl-spread": {"T": (9, 81)}}
+    status, before, after, _, _ = invoke(["--write-baseline"], current)
+    assert status == 1 and before == after, "MCLI3 unreasoned growth"
+    prior = {**held, "growth_reasons": {**foreign, "impl-spread": {"c::T": "first"}}}
+    status, _, after, _, _ = invoke(["--write-baseline", "--reason", "reviewed"], current, prior)
+    document = json.loads(after)
+    assert status == 0 and document["impl-spread"]["c::T"] == {"files": 9, "methods": 81,
+                                                              "reason": "extract component"}, "MCLI3 exact facts"
+    assert document["growth_reasons"] == {**foreign, "impl-spread": {"c::T": "first; then: reviewed"},
+                                          "super-glob": {"c": "reviewed"}}, "MCLI3 reason history"
+    assert document["future-counter"] == held["future-counter"], "MCLI3 foreign counter retained"
+    # Unlike shape's explicit crates={} initial state, an existing empty
+    # modularity file is not a global authorization to grow a held metric.
+    ordinary = {**measure, "impl-spread": {}, "long-function": {}, "lines": 0, "super-glob": 1}
+    status, before, after, _, _ = invoke(["--write-baseline"], ordinary, {})
+    assert status == 1 and before == after, "MCLI3 no borrowed initialization waiver"
+    for change in ({"unreachable-pub": False}, {"extracting-realization-lines": CRATE_REVIEW_LINES + 1}):
+        status, before, after, _, _ = invoke(["--write-baseline", "--reason", "reviewed"], {**measure, **change})
+        assert status == 1 and before == after, "MCLI3 hard rule cannot be reasoned away"
+    no_reason = {**held, "crate-budget": {"c": {**held["crate-budget"]["c"], "reason": ""}}}
+    status, before, after, _, _ = invoke(["--write-baseline", "--reason", "reviewed"], baseline=no_reason)
+    assert status == 1 and before == after, "MCLI3 original review metadata remains mandatory"
+    # A new recorded exception must itself satisfy the original metadata
+    # rule. First-write mode does not silently invent a review or lint waiver.
+    for argv, expected in ((["--write-baseline"], 1), (["--write-baseline", "--reason", "reviewed"], 0)):
+        status, _, after, _, _ = invoke(argv, baseline=None)
+        assert status == expected and ((after is not None) == (expected == 0)), "MCLI3 first review"
+    for argv in ([], ["--check"], ["--tighten"]):
+        status, before, after, observed, _ = invoke(argv, baseline=None)
+        assert status == 1 and before is None and after is None and not observed, "MCLI4 missing baseline"
+    for argv in (["--check", "--tighten"], ["--self-test", "--write-baseline"], ["--check", "--reason", "x"],
+                 ["--write-baseline", "--reason", ""], ["--write-baseline", "--reason", "   "]):
+        status, before, after, observed, _ = invoke(argv)
+        assert status == 2 and before == after and not observed, f"MCLI4 {argv}"
+
+
+def main(argv: list[str] | None = None) -> int:
+    return _architecture_ratchet.baseline_cli(
+        argv, prog="_modularity_fitness.py", description=__doc__, baseline_path=BASELINE, self_test=selftest,
+        measure=lambda: ([], workspace_measures(_crate_boundary_workspace.CRATES)), check=modularity_errors,
+        tighten=tightened,
+        write=lambda measured, previous, reason: (
+            tightened(measured, previous, record=True, reason=reason),
+            modularity_errors(measured, tightened(measured, previous))),
+    )
 
 
 if __name__ == "__main__":
-    args = parse(sys.argv[1:])
-    if args.self_test:
-        selftest()
-        raise SystemExit(0)
-    if args.tighten:
-        baseline = json.loads(BASELINE.read_text(encoding="utf-8"))
-        BASELINE.write_text(json.dumps(tightened(workspace_measures(_crate_boundary_workspace.CRATES), baseline),
-                                       indent=2) + "\n", encoding="utf-8")
-        print(f"tightened {BASELINE.name}")
-        raise SystemExit(0)
-    errors = check_all(_crate_boundary_workspace.CRATES)
-    print("\n".join(errors) if errors else "OK - modularity ratchets hold.")
-    raise SystemExit(1 if errors else 0)
+    raise SystemExit(main())

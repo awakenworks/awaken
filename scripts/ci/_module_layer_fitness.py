@@ -29,7 +29,10 @@ Counted from production code (comments and `cfg(test)` code are not scanned):
 
 When an edge or a method goes, lower the baseline with
 `python3 scripts/ci/_module_layer_fitness.py --tighten`; it only removes or
-lowers held entries, never adds or raises one.
+lowers held entries, never adds or raises one; growth is refused, not silently
+left in the tree. Default/`--check` is read-only checking. `--report` preserves
+the JSON measurement view; explicit `--write-baseline --reason` records reviewed
+growth but cannot waive classification rules.
 """
 
 from __future__ import annotations
@@ -40,6 +43,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import _crate_boundary_workspace
+import _architecture_ratchet
 from _context_map_fitness import _flatten_path_tree
 
 BASELINE = Path(__file__).with_name("module_layer_baseline.json")
@@ -349,48 +353,61 @@ def layer_errors(edges: dict[str, set[str]], shared_host: dict[str, int], baseli
     return [f"module-layer: {error}" for error in errors]
 
 
-def check_all(crates: Path, baseline_path: Path = BASELINE) -> list[str]:
+def workspace_measures(crates: Path) -> tuple[list[str], tuple[dict[str, set[str]], dict[str, int]]]:
     manifest = _crate_boundary_workspace.crate_manifest(CRATE, crates)
     if manifest is None:
-        return [f"module-layer: {CRATE} is not a crate any more; retire {Path(__file__).name}"]
+        return [f"module-layer: {CRATE} is not a crate any more; retire {Path(__file__).name}"], ({}, {})
     table = layer_table()
     sources = module_sources(manifest)
     errors = classification_errors(set(sources), table)
-    if errors:
-        return errors
-    edges, shared_host = measure(sources, table)
-    return layer_errors(edges, shared_host, json.loads(baseline_path.read_text(encoding="utf-8")))
+    return (errors, ({}, {})) if errors else ([], measure(sources, table))
 
 
-def tightened(edges: dict[str, set[str]], shared_host: dict[str, int], baseline: dict) -> dict:
-    """The baseline lowered to today's measures: entries only shrink or disappear.
+def check_all(crates: Path, baseline_path: Path = BASELINE) -> list[str]:
+    errors, current = workspace_measures(crates)
+    return errors or layer_errors(*current, json.loads(baseline_path.read_text(encoding="utf-8")))
 
-    A held pair keeps only the items still named, and goes when none is; a held
-    SharedHost count drops to today's and goes at zero. Nothing is ever added or
-    raised, so `--tighten` cannot admit a new edge or a new method.
+
+def tightened(edges: dict[str, set[str]], shared_host: dict[str, int], baseline: dict,
+              *, record: bool = False, reason: str | None = None) -> dict:
+    """One candidate writer; held sets/counts only shrink unless explicitly recording.
+
+    An intersection alone does not prove that the tree has no new edge. The
+    shared CLI always validates this document using the original layer_errors.
+    Metadata stays with its owner, and reasoned growth keeps its review history.
     """
     held_edges: dict[str, list[str]] = baseline.get("upward-edges", {})
-    kept_edges = {
-        pair: sorted(set(items) & edges.get(pair, set()))
-        for pair, items in held_edges.items()
-    }
+    recorded = summary(edges, shared_host) if record else {}
+    kept_edges = recorded["upward-edges"] if record else {
+        pair: items if set(items) <= edges.get(pair, set()) else sorted(set(items) & edges.get(pair, set()))
+        for pair, items in held_edges.items()}
     held_impl: dict[str, int] = baseline.get("shared-host-impl", {})
-    kept_impl = {module: min(was, shared_host.get(module, 0)) for module, was in held_impl.items()}
-    return {
-        **baseline,
-        "upward-edges": {pair: items for pair, items in sorted(kept_edges.items()) if items},
-        "shared-host-impl": {module: count for module, count in sorted(kept_impl.items()) if count > 0},
-    }
+    kept_impl = recorded["shared-host-impl"] if record else {
+        module: min(was, shared_host.get(module, 0)) for module, was in held_impl.items()}
+    document = {**baseline,
+                "upward-edges": {pair: items for pair, items in sorted(kept_edges.items()) if items},
+                "shared-host-impl": {module: count for module, count in sorted(kept_impl.items()) if count > 0}}
+    reasons = {name: value for name, value in baseline.get("growth_reasons", {}).items()
+               if name not in {"upward-edges", "shared-host-impl"}}
+    for rule in ("upward-edges", "shared-host-impl"):
+        held_reasons = baseline.get("growth_reasons", {}).get(rule, {})
+        for key, value in document[rule].items():
+            earlier = held_reasons.get(key)
+            grown = (set(value) - set(held_edges.get(key, []))) if rule == "upward-edges" else value > held_impl.get(key, 0)
+            if record and grown and reason:
+                earlier = _architecture_ratchet.growth_reason(earlier, reason)
+            if earlier:
+                reasons.setdefault(rule, {})[key] = earlier
+    document.pop("growth_reasons", None)
+    if reasons:
+        document["growth_reasons"] = reasons
+    return document
 
 
-def summary(crates: Path) -> dict:
-    """The current measures in baseline shape (used to write and review the baseline)."""
-    manifest = _crate_boundary_workspace.crate_manifest(CRATE, crates)
-    edges, shared_host = measure(module_sources(manifest), layer_table())
-    return {
-        "upward-edges": {pair: sorted(items) for pair, items in sorted(edges.items())},
-        "shared-host-impl": dict(sorted(shared_host.items())),
-    }
+def summary(edges: dict[str, set[str]], shared_host: dict[str, int]) -> dict:
+    """The original JSON measurement shape, now requested explicitly by --report."""
+    return {"upward-edges": {pair: sorted(items) for pair, items in sorted(edges.items())},
+            "shared-host-impl": dict(sorted(shared_host.items()))}
 
 
 def selftest() -> None:
@@ -446,31 +463,83 @@ def selftest() -> None:
     assert tightened(edges, {}, baseline)["shared-host-impl"] == {}, "L9 zero drops the entry"
     assert layer_errors({"real -> top": {"Alpha"}, "mix::env -> mix::run": {"Delta"}}, {"real": 2}, tight) == [], \
         "L9 a tightened baseline holds"
+    _selftest_cli()
     print("_module_layer_fitness selftest: the decision tables hold")
 
 
-def parse(argv: list[str]):
-    import argparse
-    parser = argparse.ArgumentParser(prog="_module_layer_fitness.py", description=__doc__, allow_abbrev=False,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--self-test", action="store_true", help="run the decision tables")
-    parser.add_argument("--tighten", action="store_true",
-                        help=f"lower {BASELINE.name} to today's measures (never raises or adds an entry)")
-    return parser.parse_args(argv)
+def _selftest_cli() -> None:
+    """CLI decision table on the authoritative set/count comparison.
+
+    Causes: mode, held/new/removed host items and methods, classification
+    failure, baseline presence and a valid/empty reason. Effects: status,
+    exact bytes, report format and measurement. LCLI1 default/check reject
+    growth (the old default only printed JSON); report only shows the same
+    JSON. LCLI2 tighten rejects new item/pair/method even alongside removal.
+    LCLI3 shrink succeeds, equal does not rewrite, including unknown metadata/reasons. LCLI4
+    explicit reviewed growth retains reasons; unreasoned growth is refused.
+    LCLI5 no reason overrides classification, even in report mode. LCLI6
+    missing baseline and invalid mode/reason combinations precede measurement.
+    """
+    foreign = {"future-counter": {"k": "  foreign review  "}}
+    held = {"owner": "layer", "expiry": "extraction", "future-counter": {"k": 9}, "growth_reasons": foreign, "upward-edges": {"r -> h": ["old", "gone"]},
+            "shared-host-impl": {"r": 2}}
+
+    def invoke(argv, edges, methods, baseline=held, errors=()):
+        return _architecture_ratchet._cli_fixture(main, argv, baseline, "workspace_measures",
+                                                   (list(errors), (edges, methods)))
+
+    grown = {"r -> h": {"old", "new"}}
+    for argv in ([], ["--check"], ["--tighten"]):
+        status, before, after, observed, _ = invoke(argv, grown, {"r": 1})
+        assert status == 1 and before == after and observed, f"LCLI1/LCLI2 {argv}"
+    status, before, after, _, output = invoke(["--report"], grown, {"r": 1})
+    assert status == 0 and before == after and json.loads(output) == summary(grown, {"r": 1}), "LCLI1 old JSON"
+    for edges, methods in (({"new -> h": {"x"}}, {"r": 1}),
+                           ({"r -> h": {"old"}}, {"r": 3}), ({"r -> h": {"old"}}, {"new": 1})):
+        status, before, after, _, _ = invoke(["--tighten"], edges, methods)
+        assert status == 1 and before == after, "LCLI2 new pair/new or grown methods"
+    status, _, after, _, _ = invoke(["--tighten"], {"r -> h": {"old"}}, {"r": 1})
+    document = json.loads(after)
+    assert status == 0 and document == {**held, "upward-edges": {"r -> h": ["old"]},
+                                        "shared-host-impl": {"r": 1}}, "LCLI3 only shrink, owner/expiry retained"
+    status, before, after, _, _ = invoke(["--tighten"], {"r -> h": {"old", "gone"}}, {"r": 2})
+    assert status == 0 and before == after, "LCLI3 equal bytes"
+    status, before, after, _, _ = invoke(["--write-baseline"], grown, {"r": 3})
+    assert status == 1 and before == after, "LCLI4 reason needed"
+    prior = {**held, "growth_reasons": {**foreign, "upward-edges": {"r -> h": "first"}}}
+    status, _, after, _, _ = invoke(["--write-baseline", "--reason", "reviewed"], grown, {"r": 3}, prior)
+    document = json.loads(after)
+    assert status == 0 and document["upward-edges"] == {"r -> h": ["new", "old"]}, "LCLI4 exact facts"
+    assert document["growth_reasons"] == {**foreign, "upward-edges": {"r -> h": "first; then: reviewed"},
+                                          "shared-host-impl": {"r": "reviewed"}}, "LCLI4 reason history"
+    assert document["owner"] == held["owner"] and document["expiry"] == held["expiry"], "LCLI4 metadata"
+    assert document["future-counter"] == held["future-counter"], "LCLI4 foreign counter/reason retained"
+    status, before, after, _, _ = invoke(["--write-baseline"], grown, {"r": 3}, {})
+    assert status == 1 and before == after, "LCLI4 no borrowed shape initialization waiver"
+    for argv in (["--tighten"], ["--write-baseline", "--reason", "reviewed"], ["--report"]):
+        status, before, after, _, output = invoke(argv, grown, {"r": 1}, errors=("unclassified module",))
+        assert status == 1 and before == after and not output, "LCLI5 hard classification"
+    for argv in ([], ["--check"], ["--tighten"]):
+        status, before, after, observed, _ = invoke(argv, {}, {}, None)
+        assert status == 1 and before is None and after is None and not observed, "LCLI6 missing baseline"
+    for argv in (["--check", "--tighten"], ["--report", "--check"], ["--write-baseline", "--tighten"],
+                 ["--tighten", "--reason", "x"], ["--write-baseline", "--reason", "   "], ["--stage"]):
+        status, before, after, observed, _ = invoke(argv, grown, {"r": 3})
+        assert status == 2 and before == after and not observed, f"LCLI6 {argv}"
+
+
+def main(argv: list[str] | None = None) -> int:
+    return _architecture_ratchet.baseline_cli(
+        argv, prog="_module_layer_fitness.py", description=__doc__, baseline_path=BASELINE, self_test=selftest,
+        measure=lambda: workspace_measures(_crate_boundary_workspace.CRATES),
+        check=lambda current, previous: layer_errors(*current, previous),
+        tighten=lambda current, previous: tightened(*current, previous),
+        write=lambda current, previous, reason: (
+            tightened(*current, previous, record=True, reason=reason),
+            layer_errors(*current, tightened(*current, previous))),
+        report=lambda current: json.dumps(summary(*current), indent=2), report_only=True,
+    )
 
 
 if __name__ == "__main__":
-    import sys
-    args = parse(sys.argv[1:])
-    selftest()
-    if args.self_test:
-        raise SystemExit(0)
-    if args.tighten:
-        manifest = _crate_boundary_workspace.crate_manifest(CRATE, _crate_boundary_workspace.CRATES)
-        measured_edges, measured_impl = measure(module_sources(manifest), layer_table())
-        held = json.loads(BASELINE.read_text(encoding="utf-8"))
-        BASELINE.write_text(json.dumps(tightened(measured_edges, measured_impl, held), indent=2) + "\n",
-                            encoding="utf-8")
-        print(f"tightened {BASELINE.name}")
-        raise SystemExit(0)
-    print(json.dumps(summary(_crate_boundary_workspace.CRATES), indent=2))
+    raise SystemExit(main())
