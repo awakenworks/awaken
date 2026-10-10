@@ -27,7 +27,7 @@
     "awaken-session-environment -> awaken-sandbox-local": "depend on the sandbox contract, not its implementations; the composition root wires them",
     "awaken-session-mcp-contract -> awaken-resource-contract": "resource reference values the Session reads move into its own resource contract; resource-contract keeps the store ports",
     "awaken-session-realization-contract -> awaken-provisioning-contract": "W7: the Session names environments through identity and reference values a small environment contract provides",
-    "awaken-session-realization-contract -> awaken-worker-contract": "S3: Session-specific remote ports and work-item language leave dispatch",
+    "awaken-session-realization-contract -> awaken-worker-contract": "removed when the realization contract takes the claim as a type parameter (as the coordination port does) and PlacementRequirements moves down",
     "awaken-session-resource-contract -> awaken-provisioning-contract": "W7: the Session names environments through identity and reference values a small environment contract provides",
     "awaken-session-resource-contract -> awaken-resource-contract": "resource reference values the Session reads move into its own resource contract; resource-contract keeps the store ports",
     "awaken-session-execution-contract -> awaken-resource-contract": "resource reference values the Session reads move into its own resource contract; resource-contract keeps the store ports",

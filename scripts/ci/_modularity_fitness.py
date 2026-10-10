@@ -33,9 +33,12 @@ adds an entry):
   count is recorded in the same commit); lines may float below the budget and
   must be re-recorded once they fall `BUDGET_LINE_SLACK` or more below it.
   Modules of `awaken-session-executor` that the module-layer guard classifies as
-  `realizer` are the realizer still being extracted (plan slice R): they are
-  measured as that future crate, not as the host, so assembling it in place is
-  not host growth; the extracting realizer meets the same review threshold.
+  `realizer` are the realizer still being extracted (plan slice R). The crate
+  budget still holds the whole crate (`lines`, host plus realizer), so code
+  moved between the two inside the crate is not growth and nothing grows
+  unseen; an entry may also hold `host_lines`, the host part alone, which may
+  only fall (same slack rule), so moving code out of the host is recorded.
+  The extracting realizer meets the same review threshold.
 
 A count above its baseline is an error; a count below it is an error until the
 baseline is lowered in the same commit, so the file records the real state.
@@ -214,7 +217,8 @@ def crate_measures(manifest_path: Path) -> dict:
         return sum(1 for relative in selected for line in files[relative].splitlines() if line.strip())
 
     return {
-        "lines": code_lines(set(files) - extracting),
+        "lines": code_lines(files),
+        "host-lines": code_lines(set(files) - extracting),
         "extracting-realizer-lines": code_lines(extracting),
         "deps": _crate_boundary_workspace.normal_dependency_names(
             _crate_boundary_workspace.load_manifest(manifest_path)),
@@ -319,6 +323,14 @@ def modularity_errors(measures: dict[str, dict], baseline: dict) -> list[str]:
         elif lines <= held["lines"] - BUDGET_LINE_SLACK:
             errors.append(f"crate-budget: {crate} is at {lines} production lines, {BUDGET_LINE_SLACK}+ below the "
                           f"budget {held['lines']}; lower {BASELINE.name} in this commit")
+        if "host_lines" in held:
+            host = measure.get("host-lines", lines)
+            if host > held["host_lines"]:
+                errors.append(f"crate-budget: {crate} host part grew to {host} production lines, budget "
+                              f"{held['host_lines']}; put the new behavior in the crate it is moving to")
+            elif host <= held["host_lines"] - BUDGET_LINE_SLACK:
+                errors.append(f"crate-budget: {crate} host part is at {host} production lines, {BUDGET_LINE_SLACK}+ "
+                              f"below the budget {held['host_lines']}; lower {BASELINE.name} in this commit")
         if deps > held["deps"]:
             errors.append(f"crate-budget: {crate} grew to {deps} workspace dependencies, budget {held['deps']}")
         elif deps < held["deps"]:
@@ -373,6 +385,9 @@ def tightened(measures: dict[str, dict], baseline: dict) -> dict:
         budget[crate] = {**held,
                          "lines": lines if lines <= held["lines"] - BUDGET_LINE_SLACK else held["lines"],
                          "deps": min(held["deps"], deps)}
+        if "host_lines" in held:
+            host = measure.get("host-lines", lines)
+            budget[crate]["host_lines"] = host if host <= held["host_lines"] - BUDGET_LINE_SLACK else held["host_lines"]
     out["crate-budget"] = budget
     return out
 
@@ -404,6 +419,7 @@ def selftest() -> None:
     | M7   | function over the limit: unrecorded / grew / shorter / equal / gone or under | error / error / error (lower) / accept / stale |
     | M8   | budgeted crate: lines grow / float < slack / fall >= slack; deps grow / shrink / equal | error / accept / error (lower); error / error (lower) / accept |
     | M11  | runtime-host file in a realizer / host module; other crate; extracting realizer over / at threshold | extracting / host lines; host lines; error / accept |
+    | M12  | split crate: whole grows / host grows / host falls >= slack / move host->realizer at equal whole; tighten | error / error / error (lower) / accept; host_lines lowered, never raised |
     """
     spread = impl_spread({"a.rs": "impl Big { fn x(&self) {} fn y(&self) {} }", "b.rs": "impl<T> Big { fn z() {} }"})
     assert spread == {"Big": (2, 3)}, "impl-spread counting"
@@ -472,6 +488,18 @@ def selftest() -> None:
     assert "realizer being extracted" in modularity_errors(over, {})[0], "M11 extracting over threshold"
     over["c"]["extracting-realizer-lines"] = CRATE_REVIEW_LINES
     assert modularity_errors(over, {}) == [], "M11 extracting at threshold"
+    # M12 a crate being split holds its whole size and, separately, its host part.
+    split = {"crate-budget": {"c": {"lines": 20000, "host_lines": 15000, "deps": 3, "reason": "split"}}}
+
+    def parts(whole: int, host: int) -> dict:
+        return {"c": {**measure(), "lines": whole, "host-lines": host, "extracting-realizer-lines": whole - host,
+                      "workspace-deps": frozenset({"d0", "d1", "d2"})}}
+    assert any("grew to 20001" in e for e in modularity_errors(parts(20001, 15000), split)), "M12 whole grows"
+    assert any("host part grew" in e for e in modularity_errors(parts(20000, 15001), split)), "M12 host grows"
+    assert any("host part is at" in e for e in modularity_errors(parts(20000, 14000), split)), "M12 host falls"
+    assert modularity_errors(parts(20000, 14500), split) == [], "M12 move inside the crate is not growth"
+    assert tightened(parts(20000, 14000), split)["crate-budget"]["c"]["host_lines"] == 14000, "M12 tighten lowers"
+    assert tightened(parts(20000, 15500), split)["crate-budget"]["c"]["host_lines"] == 15000, "M12 never raises"
     # M9 `--tighten`: lowers or removes held entries, never adds or raises one.
     held = {"impl-spread": {"c::T": {"files": 10, "methods": 100, "reason": "r"}, "c::Gone": {"files": 9,
             "methods": 90, "reason": "r"}}, "super-glob": {"c": 3}, "module-cycle": {"c": 2},
