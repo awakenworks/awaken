@@ -65,5 +65,17 @@
     "SessionStore <- awaken-protocol-managed": 1,
     "SkillStore <- awaken-protocol-managed": 1,
     "SkillStore <- awaken-runtime-host": 1
+  },
+  "fat-trait": {
+    "ContainerEnvironmentProvider": 16,
+    "ControlDispatchQueue": 16,
+    "CoordinationRuntime": 15,
+    "DispatchQueue": 37,
+    "DurableRunOperations": 15,
+    "EnvRegistry": 13,
+    "MemoryRepository": 20,
+    "Sandbox": 15,
+    "SessionRuntime": 14,
+    "WorkQueue": 24
   }
 }

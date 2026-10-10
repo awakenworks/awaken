@@ -30,6 +30,13 @@ string literals and `cfg(test)` code are not scanned):
   use and are not counted. A name declared in several contract crates is allowed
   when any declaring crate allows it. "Names" is a whole-word match in production
   code, so a `use`, a bound or a `dyn` all count, once per crate.
+* `fat-trait`: a `pub trait` of a contract crate declaring more than
+  `FAT_TRAIT_METHODS` (12) methods (each `fn` directly in the trait body, so a
+  `fn` nested in a default body is not one), keyed by trait name with its method
+  count. One trait serves one caller role (D4): split it by caller. Besides the
+  ratchet this is an admission rule (a hard error that `--reason` cannot lift):
+  a trait the baseline does not record may not exceed 12 methods, and a recorded
+  count may only fall -- a count recorded through `--reason` is an error too.
 
 Every ratchet is held at or below `contract_map_baseline.json`; see
 `_architecture_ratchet.py` for how a fall is recorded
@@ -42,6 +49,7 @@ import json
 import re
 import sys
 from collections import Counter, defaultdict
+from functools import lru_cache
 from pathlib import Path
 
 import _architecture_ratchet
@@ -94,6 +102,7 @@ COMPOSITION_LAYER = "bootstrap"
 TOOLING_LAYER = "tooling"
 STORAGE_LAYER = "infrastructure"
 STORAGE_NAME = "store"
+FAT_TRAIT_METHODS = 12
 
 RULES = (
     Rule("contract-crates", "merge contracts on the same boundary instead of adding one (ADR-0091 D2)"),
@@ -102,6 +111,8 @@ RULES = (
     Rule("unimplemented-trait", "implement the trait in production or delete it (ADR-0091 D4)"),
     Rule("foreign-persistence-port", "use the owning context's application port or a narrow observation; "
          "persistence is private to its context (ADR-0091 D2, plan 9.19 item 1)"),
+    Rule("fat-trait", "split the trait into one role trait per caller; the implementation implements every role "
+         "(ADR-0091 D4, plan 9.19 item 3)"),
 )
 
 _TRAIT = re.compile(r"\bpub\s+trait\s+([A-Z]\w*)[^{;]*\{")
@@ -110,6 +121,7 @@ _OPTIONAL_ROLE = re.compile(
     r"\bfn\s+(\w+)[^;{]*?->\s*Option\s*<\s*(?:&\s*(?:'\w+\s+)?(?:mut\s+)?dyn\b|(?:(?:std|alloc)::sync::)?Arc\s*<\s*dyn\b)"
 )
 _IMPL = re.compile(r"\bimpl\b")
+_BODY_TOKEN = re.compile(r"[{}]|\bfn\s+\w+")
 
 
 def target_map_errors(contracts: set[str], target_map=TARGET_MAP) -> list[str]:
@@ -148,13 +160,39 @@ def _blocks(syntax: str) -> list[tuple[int, int, str, str]]:
     return blocks
 
 
-def contract_traits(syntax: str) -> list[tuple[str, int, bool]]:
-    """(name, offset, declares a method) of every `pub trait` in one file."""
+def trait_methods(body: str) -> int:
+    """Methods declared directly in a trait body (the text between its braces)."""
+    depth = methods = 0
+    for token in _BODY_TOKEN.finditer(body):
+        if token.group(0) == "{":
+            depth += 1
+        elif token.group(0) == "}":
+            depth -= 1
+        elif depth == 0:
+            methods += 1
+    return methods
+
+
+def contract_traits(syntax: str) -> list[tuple[str, int, int]]:
+    """(name, offset, declared methods) of every `pub trait` in one file."""
     found = []
     for match in _TRAIT.finditer(syntax):
         opening = match.end() - 1
-        found.append((match.group(1), match.start(), bool(re.search(r"\bfn\s+\w+", syntax[opening:_block_end(syntax, opening)]))))
+        found.append((match.group(1), match.start(), trait_methods(syntax[opening + 1:_block_end(syntax, opening)])))
     return found
+
+
+def fat_trait_errors(counts: Counts, baseline: dict) -> list[str]:
+    """The admission half of `fat-trait`: no new fat trait, and no recorded growth."""
+    recorded = baseline.get("fat-trait", {})
+    grown = baseline.get("growth_reasons", {}).get("fat-trait", {})
+    return [
+        f"fat-trait: {name} declares {methods} methods, above {FAT_TRAIT_METHODS}"
+        + (" and its count was raised with --reason" if name in grown else ", and no baseline records it")
+        + "; a trait serves one caller role (ADR-0091 D4): split it by caller -- --reason cannot admit it"
+        for name, methods in sorted(counts.get("fat-trait", {}).items())
+        if name not in recorded or name in grown
+    ]
 
 
 def optional_roles(syntax: str) -> list[tuple[str, int]]:
@@ -234,12 +272,15 @@ def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) 
                 implemented |= implemented_by[crate.name]
             if crate.name not in contracts:
                 continue
-            for name, offset, has_method in contract_traits(syntax):
+            for name, offset, methods in contract_traits(syntax):
                 where = f"{relative}:{_architecture_ratchet.line_of(syntax, offset)}"
                 declared[name].append(where)
+                if methods > FAT_TRAIT_METHODS:
+                    counts["fat-trait"][name] += methods
+                    places["fat-trait"][name].append(where)
                 if PERSISTENCE_PORT.search(name) and crate not in ports[name]:
                     ports[name].append(crate)
-                if not has_method:
+                if not methods:
                     counts["bundle-trait"][name] += 1
                     places["bundle-trait"][name].append(where)
             for key, offset in optional_roles(syntax):
@@ -254,15 +295,29 @@ def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) 
             {rule: dict(found) for rule, found in places.items()}, contracts)
 
 
-def _measure_workspace(crates: Path = _crate_boundary_workspace.CRATES) -> tuple[Counts, Places]:
-    counts, places, _contracts = measure(_architecture_ratchet.crate_sources(crates), _crate_boundary_workspace.REPO_ROOT)
+@lru_cache(maxsize=2)
+def _workspace(crates: Path = _crate_boundary_workspace.CRATES) -> tuple[Counts, Places, set[str]]:
+    return measure(_architecture_ratchet.crate_sources(crates), _crate_boundary_workspace.REPO_ROOT)
+
+
+def _measure_workspace() -> tuple[Counts, Places]:
+    counts, places, _contracts = _workspace()
     return counts, places
 
 
+def hard_errors(counts: Counts, contracts: set[str], baseline: dict) -> list[str]:
+    return target_map_errors(contracts) + fat_trait_errors(counts, baseline)
+
+
+def _workspace_hard_errors() -> list[str]:
+    counts, _places, contracts = _workspace()
+    return hard_errors(counts, contracts, json.loads(BASELINE.read_text(encoding="utf-8")))
+
+
 def check_all(crates: Path, baseline_path: Path = BASELINE) -> list[str]:
-    counts, places, contracts = measure(_architecture_ratchet.crate_sources(crates), _crate_boundary_workspace.REPO_ROOT)
+    counts, places, contracts = _workspace(crates)
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
-    errors = target_map_errors(contracts)
+    errors = hard_errors(counts, contracts, baseline)
     errors += _architecture_ratchet.compare(RULES, counts, places, baseline, baseline_path.name)
     return [f"contract-map: {error}" for error in errors]
 
@@ -287,6 +342,10 @@ def selftest() -> None:
     | P4   | infrastructure crate named `*store*` implementing the port (storage backend) | not counted |
     | P5   | implements the port but is not a `*store*` infrastructure crate; names a `*store*` port without implementing it | counted |
     | P6   | port declared in an `SDK release` contract; name not ending in Repository/Store; named only in a comment or literal | not counted |
+    | F1   | contract `pub trait` with 13 methods                                   | counted with value 13 |
+    | F2   | 12 methods (a `fn` nested in a default body, a `fn(..)` type, a private trait do not count) | not counted |
+    | F3   | fat trait the baseline records at its count                            | accept |
+    | F4   | fat trait the baseline does not record, or recorded through --reason   | hard error naming --reason |
     """
     pending = {"t": ("b", ("old",))}
     assert target_map_errors({"t", "old"}, pending) == [], "T1"
@@ -310,8 +369,8 @@ def selftest() -> None:
     syntax = _crate_boundary_workspace.rust_syntax(code)
     assert [key for key, _ in optional_roles(syntax)] == ["Session::realization", "Session::shared",
                                                           "Registry::lookup"], f"O1/O2 {optional_roles(syntax)}"
-    assert [(name, has) for name, _, has in contract_traits(syntax)] == [
-        ("Session", True), ("Bundle", False), ("Marker", False), ("Scope", False)], "B1/B2"
+    assert [(name, methods) for name, _, methods in contract_traits(syntax)] == [
+        ("Session", 4), ("Bundle", 0), ("Marker", 0), ("Scope", 0)], "B1/B2"
     impls = implemented_traits(
         "impl Alpha for X {}\nimpl<T: Bound> Beta for T {}\nimpl a::b::Gamma<u8> for Y {}\n"
         "unsafe impl<'a, T, F: Fn() -> u8> Delta<'a, T> for Z<T> where T: Bound {}\nimpl !Epsilon for X {}\n"
@@ -333,12 +392,29 @@ def selftest() -> None:
     assert counts["unimplemented-trait"] == {"Unused": 1, "OnlyTooling": 1}, f"U1/U2 measure {counts}"
     assert counts["bundle-trait"] == {"Bundle": 1} and places["bundle-trait"]["Bundle"] == ["c/src/lib.rs:4"], "B1"
     _selftest_persistence_ports()
+    _selftest_fat_traits()
     print("_contract_map_fitness selftest: the decision tables hold")
 
 
 def _crate(name: str, layer: str, context: str | None, code: str) -> _architecture_ratchet.CrateSource:
     metadata = {"layer": layer} | ({"bounded_context": context} if context else {})
     return _architecture_ratchet.CrateSource(name, metadata, Path(f"/w/{name}"), {Path(f"/w/{name}/src/lib.rs"): code})
+
+
+def _selftest_fat_traits() -> None:
+    methods = "".join(f"    fn m{index}(&self);\n" for index in range(11))
+    nested = "    fn last(&self) -> u8 { fn helper() -> u8 { 1 } let f: fn(u8) = drop; helper() }\n"
+    code = (f"pub trait Wide {{\n{methods}{nested}    fn extra(&self);\n}}\n"
+            f"pub trait Twelve {{\n{methods}{nested}}}\ntrait Hidden {{\n{methods}{nested}    fn extra(&self);\n}}\n")
+    sources = (_crate("c", "contract", "c", code), _crate("u", "infrastructure", "c",
+                                                          "impl Wide for X {}\nimpl Twelve for X {}\n"))
+    counts, places, contracts = measure(sources, Path("/w"))
+    assert counts["fat-trait"] == {"Wide": 13} and places["fat-trait"]["Wide"] == ["c/src/lib.rs:1"], f"F1/F2 {counts}"
+    assert fat_trait_errors(counts, {"fat-trait": {"Wide": 13}}) == [] and contracts == {"c"}, "F3"
+    unrecorded = fat_trait_errors(counts, {"fat-trait": {}})
+    assert len(unrecorded) == 1 and "no baseline records it" in unrecorded[0] and "--reason" in unrecorded[0], "F4"
+    reasoned = fat_trait_errors(counts, {"fat-trait": {"Wide": 13}, "growth_reasons": {"fat-trait": {"Wide": "x"}}})
+    assert len(reasoned) == 1 and "raised with --reason" in reasoned[0], "F4 reason"
 
 
 def _selftest_persistence_ports() -> None:
@@ -374,6 +450,4 @@ def _selftest_persistence_ports() -> None:
 if __name__ == "__main__":
     raise SystemExit(_architecture_ratchet.main(
         sys.argv[1:], prog=Path(__file__).name, description=__doc__, rules=RULES, measure=_measure_workspace,
-        baseline_path=BASELINE, self_test=selftest,
-        hard_rules=lambda: target_map_errors({crate.name for crate in _architecture_ratchet.crate_sources(
-            _crate_boundary_workspace.CRATES) if crate.metadata.get("layer") == "contract"})))
+        baseline_path=BASELINE, self_test=selftest, hard_rules=_workspace_hard_errors))
