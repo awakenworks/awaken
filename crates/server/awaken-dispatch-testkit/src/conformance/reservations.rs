@@ -1645,7 +1645,10 @@ async fn completion_is_atomic_and_prevents_resurrection(
             "a completed claim cannot settle twice",
         );
         assert_eq!(
-            store.completion_events_after(cursor, 2).await.expect("observe retained completion"),
+            store
+                .completion_events_after(cursor, 2)
+                .await
+                .expect("observe retained completion"),
             first_page,
             "response loss preserves exactly one durable completion",
         );
