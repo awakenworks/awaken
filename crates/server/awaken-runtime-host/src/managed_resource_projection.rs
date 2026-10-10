@@ -985,7 +985,7 @@ impl crate::ManagedHost {
     }
 }
 
-impl crate::SharedHost {
+impl crate::session_realizer::SessionRealizer {
     fn validate_managed_layout_inputs(
         &self,
         thread: &str,
@@ -996,8 +996,8 @@ impl crate::SharedHost {
         environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
     ) -> Result<(), crate::host_error::HostError> {
         let (resident_baseline, content_delivery, resident_environment, live_environment) = self
-            .session_slots
-            .read(thread, |slot| {
+            .sessions
+            .modify_session(thread, |slot| {
                 (
                     slot.frozen.baseline.clone(),
                     slot.realization.content_delivery,
@@ -1019,7 +1019,7 @@ impl crate::SharedHost {
                 }
             }
         }
-        let spec = self.realizer.sandbox_spec_for_projected_layout(
+        let spec = self.sandbox_spec_for_projected_layout(
             thread,
             crate::provisioning::ProjectedSandboxLayout {
                 resource_mounts: mounts,
@@ -1074,7 +1074,6 @@ impl crate::SharedHost {
                 .map_err(|error| crate::host_error::HostError::internal(error.to_string()))
             }
             ManagedLayoutValidationScope::Exact(provider) => self
-                .realizer
                 .validate_repository_environment_adoption_paths(
                     provider,
                     &spec,
@@ -1185,13 +1184,15 @@ impl crate::ManagedHost {
         let result = if layout.runtime_placement
             == awaken_session_configuration_contract::SessionRuntimePlacement::Worker
         {
-            self.host.validate_structural_managed_binding_layout(
-                thread,
-                &layout.resources,
-                Some(&layout.mounts),
-                Some(&layout.env),
-                Some(&environment),
-            )
+            self.host
+                .realizer
+                .validate_structural_managed_binding_layout(
+                    thread,
+                    &layout.resources,
+                    Some(&layout.mounts),
+                    Some(&layout.env),
+                    Some(&environment),
+                )
         } else {
             let provider = if let Some(candidate) = candidate.as_ref() {
                 self.host
@@ -1203,7 +1204,7 @@ impl crate::ManagedHost {
                 )
             }
             .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
-            self.host.validate_managed_binding_layout(
+            self.host.realizer.validate_managed_binding_layout(
                 thread,
                 &layout.resources,
                 provider,
@@ -1225,6 +1226,7 @@ impl crate::ManagedHost {
             .projected_session_environment_provider(thread, None)
             .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
         self.host
+            .realizer
             .validate_managed_resource_layout(thread, resources, provider, None, None, None)
             .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))
     }
