@@ -5,9 +5,10 @@
 
 use std::sync::Arc;
 
+use awaken_data_governance_contract::{CapturePolicy, CapturePolicyDecision};
 use awaken_data_governance_contract::{DataSubjectResolver, ErasureReceipt};
 use awaken_data_subject_application::{
-    CaptureDecisionRecord, ConsentRecord, DataSubjectApplication, DataSubjectApplicationError,
+    ConsentRecord, DataSubjectApplication, DataSubjectApplicationError,
 };
 use awaken_runtime_contract::{ContentCapture, Purpose};
 use axum::extract::{Path, Query, State};
@@ -73,42 +74,23 @@ impl From<ConsentRecord> for ConsentView {
     }
 }
 
-#[derive(Debug, Serialize)]
-struct CaptureDecisionView {
-    requested: ContentCapture,
-    ceiling: ContentCapture,
-    consent: ContentCapture,
-    effective: ContentCapture,
-    reason: &'static str,
-}
-
-impl From<CaptureDecisionRecord> for CaptureDecisionView {
-    fn from(record: CaptureDecisionRecord) -> Self {
-        Self {
-            requested: record.requested,
-            ceiling: record.ceiling,
-            consent: record.consent,
-            effective: record.effective,
-            reason: record.reason,
-        }
-    }
-}
-
 struct ConsentHttpState {
     application: Arc<DataSubjectApplication>,
     org: String,
-    ceiling: ContentCapture,
+    /// The Run boundary's ceiling and policy sources, so the decision read
+    /// reports what a Run in the request's Workspace decides.
+    capture_policy: CapturePolicy,
 }
 
 pub fn consent_router(
     application: Arc<DataSubjectApplication>,
     org: String,
-    ceiling: ContentCapture,
+    capture_policy: CapturePolicy,
 ) -> Router {
     let state = Arc::new(ConsentHttpState {
         application,
         org,
-        ceiling,
+        capture_policy,
     });
     Router::new()
         .route(
@@ -169,21 +151,24 @@ struct DecisionQuery {
     requested: Option<ContentCapture>,
 }
 
+/// The decision a Run attributed to this profile makes in the request's
+/// Workspace (ADR-0050 D8): the same kernel and sources as the Run boundary.
 async fn capture_decision(
     State(state): State<Arc<ConsentHttpState>>,
     Path(id): Path<String>,
     Query(query): Query<DecisionQuery>,
-) -> Result<Json<CaptureDecisionView>, StatusCode> {
+    crate::webhook_authoring::RequiredWorkspaceScope(workspace): crate::webhook_authoring::RequiredWorkspaceScope,
+) -> Result<Json<CapturePolicyDecision>, StatusCode> {
     state
         .application
         .capture_decision(
             &state.org,
             &id,
             query.requested.unwrap_or(ContentCapture::Full),
-            state.ceiling,
+            &state.capture_policy,
+            &workspace,
         )
         .await
-        .map(CaptureDecisionView::from)
         .map(Json)
         .map_err(status_of)
 }
@@ -284,7 +269,7 @@ mod tests {
         let state = Arc::new(ConsentHttpState {
             application,
             org: "org_1".into(),
-            ceiling: ContentCapture::Full,
+            capture_policy: CapturePolicy::new(ContentCapture::Full, Default::default()),
         });
         let Json(granted) = grant_consent(
             State(state.clone()),
@@ -299,5 +284,154 @@ mod tests {
         assert_eq!(granted.telemetry_content_ceiling, ContentCapture::Full);
         let Json(read) = read_consent(State(state), Path(profile.id)).await.unwrap();
         assert_eq!(read.telemetry_content_ceiling, ContentCapture::Full);
+    }
+
+    #[tokio::test]
+    async fn capture_decision_reads_the_request_workspace_narrowing() {
+        // Causes: C1 deployment ceiling = full; C2 consent granted; C3 the
+        // request Workspace's narrowing as authored through
+        // /v1/config/telemetry (unset, each level) or unreadable; C4 requested.
+        // Effects: E1 the read is exactly the Run boundary's kernel over the
+        // same sources; E2 a narrowing authored in one Workspace is reflected
+        // by the next read in that Workspace and never in another; E3 an
+        // unreadable narrowing reads as off; E4 an unscoped request is 404.
+        use crate::telemetry_policy::tests::MapRepository;
+        use awaken_data_governance_contract::{
+            CapturePolicyInputs, CapturePolicySources, NullResolver, TelemetryNarrowing,
+            decide_capture,
+        };
+        use awaken_tenancy::WorkspaceScope;
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        async fn call(
+            router: &Router,
+            workspace: Option<&str>,
+            method: &str,
+            uri: &str,
+            body: Option<serde_json::Value>,
+        ) -> (StatusCode, serde_json::Value) {
+            let mut request = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json");
+            if let Some(workspace) = workspace {
+                request = request.extension(WorkspaceScope(workspace.into()));
+            }
+            let response = router
+                .clone()
+                .oneshot(
+                    request
+                        .body(body.map_or_else(Body::empty, |body| Body::from(body.to_string())))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            (status, serde_json::from_slice(&bytes).unwrap_or_default())
+        }
+
+        let application = application();
+        let profile = application
+            .create_user_profile(CreateUserProfileCommand {
+                org: "org_1".into(),
+                metadata: Default::default(),
+                relationship: UserProfileRelationship::External,
+                access_type: None,
+                external_id: None,
+                external_user_onboarded_at: None,
+                external_user_details: None,
+                name: None,
+            })
+            .await
+            .unwrap();
+        application
+            .grant_consent_for_purpose("org_1", &profile.id, Purpose::TelemetryContent, "v1".into())
+            .await
+            .unwrap();
+        let routes = |repository: Arc<MapRepository>| {
+            let service = crate::TelemetryPolicyService::new(repository, ContentCapture::Full);
+            crate::telemetry_policy::router(service.clone()).merge(consent_router(
+                application.clone(),
+                "org_1".into(),
+                CapturePolicy::new(
+                    ContentCapture::Full,
+                    CapturePolicySources {
+                        consent: Arc::new(NullResolver),
+                        narrowing: service.narrowing_source(),
+                    },
+                ),
+            ))
+        };
+        let router = routes(Arc::new(MapRepository::default()));
+        let decision = |requested: &str| {
+            format!(
+                "/v1/user_profiles/{}/capture-decision?requested={requested}",
+                profile.id
+            )
+        };
+        let levels = [
+            ("off", ContentCapture::Off),
+            ("structured", ContentCapture::Structured),
+            ("full", ContentCapture::Full),
+        ];
+        let mut revision = 0;
+        for narrowing in [None, Some("full"), Some("structured"), Some("off"), None] {
+            let (status, _) = call(
+                &router,
+                Some("ws-a"),
+                "PUT",
+                "/v1/config/telemetry",
+                Some(serde_json::json!({
+                    "expected_revision": revision,
+                    "content_capture": narrowing,
+                })),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            revision = if revision == 0 && narrowing.is_none() {
+                0
+            } else {
+                revision + 1
+            };
+            let narrowing = narrowing.map(|name| {
+                levels
+                    .iter()
+                    .find(|(wire, _)| *wire == name)
+                    .map(|(_, level)| *level)
+                    .unwrap()
+            });
+            for (wire, requested) in levels {
+                let (status, read) =
+                    call(&router, Some("ws-a"), "GET", &decision(wire), None).await;
+                assert_eq!(status, StatusCode::OK);
+                let expected = decide_capture(CapturePolicyInputs {
+                    requested,
+                    top: ContentCapture::Full,
+                    workspace: Ok(TelemetryNarrowing {
+                        content_capture: narrowing,
+                    }),
+                    consent: Some(ContentCapture::Full),
+                });
+                assert_eq!(read, serde_json::to_value(expected).unwrap(), "E1 E2");
+                let (_, other) = call(&router, Some("ws-b"), "GET", &decision(wire), None).await;
+                assert_eq!(other["ceiling"], "full", "E2 other Workspace is unchanged");
+            }
+        }
+
+        let unreadable = routes(Arc::new(MapRepository {
+            unavailable: true,
+            ..MapRepository::default()
+        }));
+        let (status, read) = call(&unreadable, Some("ws-a"), "GET", &decision("full"), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(read["ceiling"], "off", "E3");
+        assert_eq!(read["effective"], "off", "E3");
+        assert_eq!(read["reason"], "clamped_by_ceiling", "E3");
+
+        let (status, _) = call(&router, None, "GET", &decision("full"), None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "E4");
     }
 }
