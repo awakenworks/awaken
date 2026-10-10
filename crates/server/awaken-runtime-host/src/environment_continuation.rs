@@ -329,7 +329,7 @@ impl ManagedHost {
     ) -> Result<awaken_session_state_contract::SourceReleasePreparedReceipt, RunError> {
         let exec = &self.host.realizer;
         self.continuation_preparation_effect_fence(thread, preparation)?;
-        let Some(resources) = exec.thread_resource_manifest(thread) else {
+        let Some(resources) = exec.staging.thread_resource_manifest(thread) else {
             return Err(RunError::unavailable_classified(
                 "session_environment_continuation_resources_missing",
                 "Checkpoint source preparation has no frozen active Resource manifest",
@@ -516,6 +516,7 @@ impl ManagedHost {
         &self,
         request: awaken_session_state_contract::SandboxRestoreRequest,
     ) -> Result<awaken_session_state_contract::RestoreReceipt, RunError> {
+        let staging = &self.host.realizer.staging;
         request
             .validate()
             .map_err(|error| RunError::unavailable(error.to_string()))?;
@@ -559,10 +560,7 @@ impl ManagedHost {
             .realizer
             .session_environment_provider_for_thread(&thread, provisioning)
             .map_err(to_run_error)?;
-        let spec = self
-            .host
-            .realizer
-            .sandbox_spec_for_provider(&thread, provider);
+        let spec = staging.sandbox_spec_for_provider(&thread, provider);
         let handle = provider
             .terminal()
             .restore(&spec, &request, store.as_ref())

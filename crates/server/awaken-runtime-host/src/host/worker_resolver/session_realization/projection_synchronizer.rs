@@ -1486,10 +1486,11 @@ mod tests {
         String,
         std::path::PathBuf,
     ) {
+        let staging = &host.realizer.staging;
         let provider = host
             .projected_session_environment_provider(thread, None)
             .expect("select frozen provider for LegacyDirect fixture");
-        let spec = host.realizer.sandbox_spec_for_provider(thread, provider);
+        let spec = staging.sandbox_spec_for_provider(thread, provider);
         let environment = Arc::new(
             host.create_session_environment(provider, &spec)
                 .await
@@ -1695,7 +1696,7 @@ mod tests {
                 )
             })
             .expect("RA1 retained slot caches");
-        let cached_resources = host.realizer.thread_resource_manifest(thread);
+        let cached_resources = host.realizer.staging.thread_resource_manifest(thread);
 
         let remote_snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
             .model(awaken_runtime_contract::resolved::ModelBinding::new(
@@ -1787,7 +1788,7 @@ mod tests {
             "RA1/E2 publication, lease, Environment, and MCP caches are unchanged"
         );
         assert_eq!(
-            host.realizer.thread_resource_manifest(thread),
+            host.realizer.staging.thread_resource_manifest(thread),
             cached_resources,
             "RA1/E2 Resource projection is unchanged"
         );

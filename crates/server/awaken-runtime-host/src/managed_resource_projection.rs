@@ -195,9 +195,8 @@ impl crate::ManagedHost {
         thread: &str,
         manifest: awaken_session_resource_contract::SessionResourceManifest,
     ) {
-        self.host
-            .realizer
-            .register_thread_resource_manifest(thread, manifest);
+        let staging = &self.host.realizer.staging;
+        staging.register_thread_resource_manifest(thread, manifest);
     }
 
     /// Install one already-resolved Session resource manifest. This is shared by
@@ -268,7 +267,7 @@ impl crate::ManagedHost {
         realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
         prospective_environment_binding: bool,
     ) -> Result<(), RunError> {
-        let installed = self.host.realizer.thread_resource_manifest(thread);
+        let installed = self.host.realizer.staging.thread_resource_manifest(thread);
         if installed.as_ref().is_some_and(|installed| {
             installed != transition.previous() && installed != transition.desired()
         }) {
@@ -584,7 +583,7 @@ impl crate::ManagedHost {
         // requirements cache. A lost aggregate acknowledgement may resend A→B
         // after this process completed B. Memory must compare against B while
         // the remaining Resource effects still replay the authored A→B command.
-        let installed_manifest = self.host.realizer.thread_resource_manifest(thread);
+        let installed_manifest = self.host.realizer.staging.thread_resource_manifest(thread);
         let old_memory: Vec<_> = installed_manifest
             .as_ref()
             .unwrap_or(previous_manifest)
@@ -977,7 +976,7 @@ impl crate::ManagedHost {
     }
 }
 
-impl crate::realization_executor::RealizationExecutor {
+impl crate::resource_staging::ResourceStaging {
     fn validate_managed_layout_inputs(
         &self,
         thread: &str,
@@ -1076,7 +1075,7 @@ impl crate::realization_executor::RealizationExecutor {
         }
     }
 
-    pub(crate) fn validate_managed_resource_layout(
+    pub(crate) fn validate_resource_layout(
         &self,
         thread: &str,
         resources: &awaken_session_resource_contract::ResolvedSessionResources,
@@ -1098,7 +1097,7 @@ impl crate::realization_executor::RealizationExecutor {
         )
     }
 
-    pub(crate) fn validate_structural_managed_resource_layout(
+    pub(crate) fn validate_structural_resource_layout(
         &self,
         thread: &str,
         resources: &awaken_session_resource_contract::ResolvedSessionResources,
@@ -1119,7 +1118,7 @@ impl crate::realization_executor::RealizationExecutor {
         )
     }
 
-    pub(crate) fn validate_managed_binding_layout(
+    pub(crate) fn validate_binding_layout(
         &self,
         thread: &str,
         resources: &[awaken_resource_contract::InputBinding],
@@ -1138,7 +1137,7 @@ impl crate::realization_executor::RealizationExecutor {
         )
     }
 
-    pub(crate) fn validate_structural_managed_binding_layout(
+    pub(crate) fn validate_structural_binding_layout(
         &self,
         thread: &str,
         resources: &[awaken_resource_contract::InputBinding],
@@ -1163,6 +1162,7 @@ impl crate::ManagedHost {
         thread: &str,
         layout: &awaken_session_configuration_contract::SessionSandboxLayout,
     ) -> Result<(), awaken_session_types::RunError> {
+        let staging = &self.host.realizer.staging;
         let environment = crate::provisioning::project_environment(&layout.environment);
         let (_, candidate) = self
             .host
@@ -1176,15 +1176,13 @@ impl crate::ManagedHost {
         let result = if layout.runtime_placement
             == awaken_session_configuration_contract::SessionRuntimePlacement::Worker
         {
-            self.host
-                .realizer
-                .validate_structural_managed_binding_layout(
-                    thread,
-                    &layout.resources,
-                    Some(&layout.mounts),
-                    Some(&layout.env),
-                    Some(&environment),
-                )
+            staging.validate_structural_binding_layout(
+                thread,
+                &layout.resources,
+                Some(&layout.mounts),
+                Some(&layout.env),
+                Some(&environment),
+            )
         } else {
             let provider = if let Some(candidate) = candidate.as_ref() {
                 self.host
@@ -1197,7 +1195,7 @@ impl crate::ManagedHost {
                 )
             }
             .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
-            self.host.realizer.validate_managed_binding_layout(
+            staging.validate_binding_layout(
                 thread,
                 &layout.resources,
                 provider,
@@ -1214,13 +1212,13 @@ impl crate::ManagedHost {
         thread: &str,
         resources: &awaken_session_resource_contract::ResolvedSessionResources,
     ) -> Result<(), awaken_session_types::RunError> {
+        let staging = &self.host.realizer.staging;
         let provider = self
             .host
             .projected_session_environment_provider(thread, None)
             .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
-        self.host
-            .realizer
-            .validate_managed_resource_layout(thread, resources, provider, None, None, None)
+        staging
+            .validate_resource_layout(thread, resources, provider, None, None, None)
             .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))
     }
 

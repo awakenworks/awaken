@@ -744,6 +744,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
     );
     let active = host
         .realizer
+        .staging
         .thread_resource_manifest("deferred-managed-filesystem-skill")
         .unwrap();
     managed

@@ -712,6 +712,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
     );
     let before_manifest = host
         .realizer
+        .staging
         .thread_resource_manifest("skill-revoke")
         .expect("installed manifest");
 

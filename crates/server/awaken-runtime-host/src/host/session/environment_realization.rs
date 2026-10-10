@@ -620,6 +620,7 @@ impl SharedHost {
         thread: &str,
         provider: &crate::session_environment::SessionEnvironmentProvider,
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, HostError> {
+        let staging = &self.realizer.staging;
         let transition = self
             .installed_sessions
             .read_realization(thread, |r| r.resource_transition.clone())
@@ -679,9 +680,7 @@ impl SharedHost {
         )
         .await
         .map_err(|error| HostError::internal(error.to_string()))?;
-        let spec = self
-            .realizer
-            .sandbox_substrate_spec_for_provider(thread, provider);
+        let spec = staging.sandbox_substrate_spec_for_provider(thread, provider);
         let environment = Arc::new(
             self.realizer
                 .create_session_environment_for_effect(provider, &spec, &effect)
@@ -765,7 +764,7 @@ impl SharedHost {
             .ok_or_else(|| {
                 HostError::internal("published Session Environment lacks its Resource transition")
             })?;
-        let installed = self.realizer.thread_resource_manifest(thread);
+        let installed = self.realizer.staging.thread_resource_manifest(thread);
         if reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::None
             && installed.as_ref() == Some(transition.desired())
         {
@@ -1144,7 +1143,7 @@ impl crate::realization_executor::RealizationExecutor {
         provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
     ) -> Result<(), HostError> {
         let provider = self.session_environment_provider_for_thread(thread, provisioning)?;
-        let spec = self.sandbox_spec_for_provider(thread, provider);
+        let spec = self.staging.sandbox_spec_for_provider(thread, provider);
         self.validate_session_environment_capabilities(provider, &spec)
             .map(|_| ())
     }
@@ -1154,7 +1153,7 @@ impl crate::realization_executor::RealizationExecutor {
         provider: &crate::session_environment::SessionEnvironmentProvider,
         spec: &awaken_provisioning_contract::SandboxSpec,
     ) -> Result<awaken_provisioning_contract::SandboxSpec, HostError> {
-        let resources = self.thread_resources_snapshot(&spec.scope);
+        let resources = self.staging.thread_resources_snapshot(&spec.scope);
         let repository_paths = resources
             .repositories
             .iter()

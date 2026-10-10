@@ -1666,21 +1666,22 @@ impl crate::realization_executor::RealizationExecutor {
         resolved_resources: Option<&awaken_session_resource_contract::ResolvedSessionResources>,
     ) -> awaken_provisioning_contract::SandboxSpec {
         match resolved_resources {
-            Some(resources) => {
-                self.sandbox_spec_for_resolved_resources_and_provider(thread, resources, provider)
-            }
+            Some(resources) => self
+                .staging
+                .sandbox_spec_for_resolved_resources_and_provider(thread, resources, provider),
             None => self
                 .sessions
                 .read_realization(thread, |r| r.resource_transition.clone())
                 .flatten()
                 .map_or_else(
-                    || self.sandbox_spec_for_provider(thread, provider),
+                    || self.staging.sandbox_spec_for_provider(thread, provider),
                     |transition| {
-                        self.sandbox_spec_for_resolved_resources_and_provider(
-                            thread,
-                            &transition.desired().resources,
-                            provider,
-                        )
+                        self.staging
+                            .sandbox_spec_for_resolved_resources_and_provider(
+                                thread,
+                                &transition.desired().resources,
+                                provider,
+                            )
                     },
                 ),
         }

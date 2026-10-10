@@ -681,7 +681,10 @@ async fn install_test_session_init_mounts_effective_file_and_stages_effective_re
     assert_eq!(content_hash.as_deref(), Some(record.blob_id.as_str()));
 
     // The repo is staged for a host-side clone (not a byte mount).
-    let repositories = host.realizer.thread_repository_activations("t-multi");
+    let repositories = host
+        .realizer
+        .staging
+        .thread_repository_activations("t-multi");
     assert_eq!(
         repositories.len(),
         1,
@@ -765,11 +768,13 @@ async fn complete_projection_preserves_the_canonical_repository_path_without_rel
         .expect("compile the exact cold Repository transition");
     let activations = host
         .realizer
+        .staging
         .thread_repository_activations("canonical-repository-path");
     assert_eq!(activations.len(), 1, "one exact Repository activation");
     assert_eq!(activations[0].plan.mount_path, "/workspace/repo");
     assert!(
         host.realizer
+            .staging
             .thread_resource_manifest("canonical-repository-path")
             .is_none(),
         "staging is not physical completion"

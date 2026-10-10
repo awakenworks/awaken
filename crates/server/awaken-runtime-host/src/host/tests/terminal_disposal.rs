@@ -68,6 +68,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     // reusing the opaque thread id cannot inherit stale scope or model state.
     host.register_thread_memory("t-end", None);
     host.realizer
+        .staging
         .register_thread_resources("t-end", crate::staged_resources::StagedResources::default());
     host.register_thread_model("t-end", "private-model");
     let mut lease = awaken_session_resource_contract::SessionRealizationLease {

@@ -76,6 +76,7 @@ mod outcome_controller;
 mod provisioning;
 mod realization_executor;
 mod redact;
+mod resource_staging;
 mod run_application_host;
 mod run_exec;
 mod session_environment;

@@ -65,7 +65,10 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             )
             .await
             .unwrap();
-        let spec = host.realizer.sandbox_spec_for_provider(thread, &provider);
+        let spec = host
+            .realizer
+            .staging
+            .sandbox_spec_for_provider(thread, &provider);
         let original = Arc::new(provider.create(&spec).await.unwrap());
         let handle = original.lifecycle().handle();
         let binding = serde_json::to_string(&handle).unwrap();

@@ -118,11 +118,11 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         agent: capability::AgentExecution::new(agent, installed_sessions.clone()),
         exec,
         worker,
-        realizer: crate::RealizationExecutor {
+        realizer: crate::RealizationExecutor::new(
             env,
-            runs_local_dispatch_pool: execution.local.runs_local_pool(),
-            sessions: installed_sessions.realizations(),
-        },
+            execution.local.runs_local_pool(),
+            installed_sessions.realizations(),
+        ),
         tools,
         resources: capability::ResourcePorts::new(resources, memory),
         mcp,
@@ -293,7 +293,7 @@ impl SharedHost {
                 owner: self.dispatch_owner().to_owned(),
                 claimed_commit,
                 recovery_projection,
-                session_resources: self.realizer.thread_resource_manifest(thread),
+                session_resources: self.realizer.staging.thread_resource_manifest(thread),
                 publication_source: Some(publication_source.clone()),
                 claimed_model_request_gate: self.coordination_endpoint().map(|endpoint| {
                     crate::coordination::claimed_model_request_gate_factory(endpoint, thread)

@@ -364,6 +364,7 @@ mod tests {
             .expect("validated Host dependencies");
         admission
             .realizer
+            .staging
             .register_thread_resource_manifest(thread, manifest);
         let dispatch = admission
             .resolved_dispatch(activation)
@@ -519,6 +520,7 @@ mod tests {
             .expect("validated Host dependencies");
         admission
             .realizer
+            .staging
             .register_thread_resource_manifest(thread, manifest.clone());
         let dispatch = admission
             .resolved_dispatch(activation)

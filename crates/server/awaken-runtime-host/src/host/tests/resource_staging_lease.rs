@@ -655,6 +655,7 @@ impl StagingFixture {
         assert!(
             self.host
                 .realizer
+                .staging
                 .thread_resource_manifest(SESSION)
                 .is_none()
         );
@@ -1660,6 +1661,7 @@ async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
     assert!(
         f.host
             .realizer
+            .staging
             .thread_resource_manifest("soak-00")
             .is_none()
     );

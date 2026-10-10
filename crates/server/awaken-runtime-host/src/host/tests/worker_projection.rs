@@ -728,6 +728,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         assert!(error.message.contains("overlaps"), "F1: {error:?}");
         assert!(
             host.realizer
+                .staging
                 .thread_resource_manifest("prospective-layout-conflict")
                 .is_none(),
             "F1 no Resource projection"

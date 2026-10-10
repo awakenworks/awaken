@@ -559,6 +559,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
     .await
     .expect("HS1 install frozen source projection");
     host.realizer
+        .staging
         .register_thread_resource_manifest(thread, source_manifest);
 
     let handle = terminal_fixture_container_handle(thread, &host.realizer.sandbox_spec(thread));

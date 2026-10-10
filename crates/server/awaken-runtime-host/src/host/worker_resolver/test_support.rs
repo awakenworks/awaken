@@ -286,6 +286,7 @@ pub(crate) async fn available_local_environment_binding(
         .expect("select available-Environment provider from frozen projection");
     let spec = host
         .realizer
+        .staging
         .sandbox_spec_for_resolved_resources_and_provider(thread, &projection.resources, provider);
     let spec = host
         .realizer

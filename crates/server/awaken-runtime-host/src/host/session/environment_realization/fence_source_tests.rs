@@ -575,6 +575,7 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                 .into_session_provider();
                 let spec = host
                     .realizer
+                    .staging
                     .sandbox_spec_for_provider("session", &provider);
                 let handle =
                     crate::host::tests::terminal_fixture_container_handle("session", &spec);

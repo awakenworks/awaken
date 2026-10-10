@@ -899,7 +899,10 @@ mod tests {
             .await
             .expect("M1 lease-only renewal reuses resident projection");
         assert!(
-            host.realizer.thread_resource_manifest(thread).is_none(),
+            host.realizer
+                .staging
+                .thread_resource_manifest(thread)
+                .is_none(),
             "M1"
         );
         assert_eq!(

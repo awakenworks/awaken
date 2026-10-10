@@ -914,7 +914,10 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     let provider = host
         .projected_session_environment_provider(thread, None)
         .expect("C1 frozen Environment provider");
-    let spec = host.realizer.sandbox_spec_for_provider(thread, provider);
+    let spec = host
+        .realizer
+        .staging
+        .sandbox_spec_for_provider(thread, provider);
     // LegacyDirect is the aggregate-Unowned creation row. Reuse the single
     // unfenced test entry into production creation so the handle is the exact
     // marker-free V1 that this compatibility path owns; a fenced V2 fixture

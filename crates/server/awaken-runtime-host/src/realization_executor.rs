@@ -13,4 +13,25 @@ pub struct RealizationExecutor {
     pub(crate) runs_local_dispatch_pool: bool,
     /// The installed Sessions, as far as realization may reach them.
     pub(crate) sessions: crate::session_realizations::SessionRealizations,
+    /// Resource staging: spec projection, registration and layout validation.
+    pub(crate) staging: crate::resource_staging::ResourceStaging,
+}
+
+impl RealizationExecutor {
+    /// Build the executor over the installed Sessions with the sandbox
+    /// providers it realizes through.
+    pub(crate) fn new(
+        env: EnvironmentProviders,
+        runs_local_dispatch_pool: bool,
+        sessions: crate::session_realizations::SessionRealizations,
+    ) -> Self {
+        Self {
+            env,
+            runs_local_dispatch_pool,
+            staging: crate::resource_staging::ResourceStaging {
+                sessions: sessions.clone(),
+            },
+            sessions,
+        }
+    }
 }

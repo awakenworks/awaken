@@ -323,6 +323,7 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     let before_handle = environment.lifecycle().handle();
     let before_manifest = host
         .realizer
+        .staging
         .thread_resource_manifest("invalid-live-repository")
         .expect("installed manifest");
     let before_spec = host.realizer.sandbox_spec("invalid-live-repository");
@@ -371,6 +372,7 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     assert_eq!(verifier.0.load(Ordering::SeqCst), 0, "L1/L2 verifier");
     assert_eq!(
         host.realizer
+            .staging
             .thread_resource_manifest("invalid-live-repository"),
         Some(before_manifest),
         "L1/L2 manifest"
@@ -403,6 +405,7 @@ async fn invalid_repository_live_replacement_preserves_the_installed_generation(
     );
     assert!(
         host.realizer
+            .staging
             .thread_repository_activations("invalid-live-repository")
             .is_empty(),
         "L1/L2 Git activation"
@@ -530,6 +533,7 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
         .expect("resident environment");
     let before_manifest = host
         .realizer
+        .staging
         .thread_resource_manifest("t-repo-detach")
         .expect("installed manifest");
     let handle = environment.lifecycle().handle();
@@ -617,6 +621,7 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
         .id;
     let before_manifest = host
         .realizer
+        .staging
         .thread_resource_manifest("t-local-attach")
         .unwrap_or_else(|| {
             awaken_session_resource_contract::SessionResourceManifest::at_revision(

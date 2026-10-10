@@ -1633,9 +1633,7 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         .await
         .expect("F1 revalidate the exact desired manifest without republishing");
     assert!(
-        host.realizer
-            .thread_resource_manifest("thread-cold-resource")
-            .is_none(),
+        active_manifest(&host, "thread-cold-resource").is_none(),
         "F1 desired-only staging is not completion evidence"
     );
     let activation = test_activation("thread-cold-resource", "run-cold-resource");
@@ -1665,8 +1663,7 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
     };
     assert_eq!(contents, bytes);
     assert_eq!(
-        host.realizer
-            .thread_resource_manifest("thread-cold-resource"),
+        active_manifest(&host, "thread-cold-resource"),
         Some(manifest.clone())
     );
 
@@ -1681,8 +1678,7 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         .expect_err("F3 desired-only replacement must fail closed");
     assert_eq!(error.code, "session_resource_transition_conflict", "F3");
     assert_eq!(
-        host.realizer
-            .thread_resource_manifest("thread-cold-resource"),
+        active_manifest(&host, "thread-cold-resource"),
         Some(manifest.clone()),
         "F3 retains the active manifest"
     );
@@ -1728,8 +1724,7 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         "F4 publishes the empty staged projection"
     );
     assert_eq!(
-        host.realizer
-            .thread_resource_manifest("thread-cold-resource"),
+        active_manifest(&host, "thread-cold-resource"),
         Some(cleared),
         "F4 publishes generation 2 only after realization"
     );
@@ -1795,12 +1790,13 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         .await
         .unwrap_or_else(|error| panic!("{thread}: complete projection producer: {error}"));
         assert!(
-            host.realizer.thread_resource_manifest(thread).is_none(),
+            active_manifest(&host, thread).is_none(),
             "{thread}: C2 active truth remains absent"
         );
     }
     let active_thread = "active-previous-transition";
     host.realizer
+        .staging
         .register_thread_resource_manifest(active_thread, revision_one.clone());
     let mut active_projection =
         frozen_projection_for_manifest(deferred_environment(), &revision_two);
@@ -1832,9 +1828,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         "R1/E1 retains the exact producer transition"
     );
     assert!(
-        host.realizer
-            .thread_resource_manifest("exact-cold-transition")
-            .is_none(),
+        active_manifest(&host, "exact-cold-transition").is_none(),
         "R1/E1 staging does not publish active truth"
     );
 
@@ -1860,7 +1854,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         "R2/E1 retains the exact producer transition"
     );
     assert_eq!(
-        host.realizer.thread_resource_manifest(active_thread),
+        active_manifest(&host, active_thread),
         Some(revision_one.clone()),
         "R2/E1 staging does not publish desired as active"
     );
@@ -1981,8 +1975,7 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
             "R2 rejects desired-only replacement: {rejected:?}"
         );
         assert_eq!(
-            host.realizer
-                .thread_resource_manifest("thread-generation-fence"),
+            active_manifest(&host, "thread-generation-fence"),
             Some(revision_four.clone())
         );
     }
@@ -2009,8 +2002,7 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
     .await
     .expect("R3 exact transition advances generation");
     assert_eq!(
-        host.realizer
-            .thread_resource_manifest("thread-generation-fence"),
+        active_manifest(&host, "thread-generation-fence"),
         Some(revision_five),
         "R3 publishes only after exact physical transition"
     );
@@ -2170,6 +2162,7 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         Default::default(),
     );
     host.realizer
+        .staging
         .register_thread_resource_manifest(foreign_thread, foreign.clone());
     host.installed_sessions.update(foreign_thread, |slot| {
         slot.replace_frozen_with(|next| next.workspace = Some("sentinel-workspace".into()));
@@ -2326,9 +2319,7 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
         "W1"
     );
     assert!(
-        host.realizer
-            .thread_resource_manifest("remote-file-ok")
-            .is_none(),
+        active_manifest(&host, "remote-file-ok").is_none(),
         "W1 desired-only staging does not publish active completion"
     );
     managed
@@ -2738,6 +2729,7 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
         .expect("observed owner");
     let spec = host
         .realizer
+        .staging
         .sandbox_spec_for_resolved_resources_and_provider(
             thread,
             &projection.resources,
@@ -2991,4 +2983,12 @@ async fn outcome_projection_read_does_not_adopt_worker_owned_environment() {
 /// Whether the realizer holds a live Environment for `thread`.
 async fn has_environment(host: &SharedHost, thread: &str) -> bool {
     host.realizer.session_environment(thread).await.is_some()
+}
+
+/// The Session's active Resource manifest as Resource staging recorded it.
+fn active_manifest(
+    host: &SharedHost,
+    thread: &str,
+) -> Option<awaken_session_resource_contract::SessionResourceManifest> {
+    host.realizer.staging.thread_resource_manifest(thread)
 }

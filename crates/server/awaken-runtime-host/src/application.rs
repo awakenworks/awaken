@@ -777,7 +777,7 @@ impl crate::SharedHost {
             && projection.baseline.runtime_placement
                 == awaken_session_configuration_contract::SessionRuntimePlacement::Worker
         {
-            self.realizer.validate_structural_managed_resource_layout(
+            self.realizer.staging.validate_structural_resource_layout(
                 thread,
                 &projection.resources,
                 Some(&baseline.mounts),
@@ -792,7 +792,7 @@ impl crate::SharedHost {
             let provider = self
                 .realizer
                 .session_environment_provider_for_thread(thread, provisioning)?;
-            self.realizer.validate_managed_resource_layout(
+            self.realizer.staging.validate_resource_layout(
                 thread,
                 &projection.resources,
                 provider,

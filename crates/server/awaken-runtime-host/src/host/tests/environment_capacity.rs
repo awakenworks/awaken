@@ -213,6 +213,7 @@ fn executor(
         images: Mutex::default(),
         fail,
     });
+    let sessions = crate::installed_session::InstalledSessions::default().realizations();
     let env = crate::environment_providers::EnvironmentProviders::new(
         root,
         SessionEnvironmentProvider::new(recording.clone()),
@@ -221,11 +222,7 @@ fn executor(
         warm_pool,
     );
     (
-        crate::RealizationExecutor {
-            env,
-            runs_local_dispatch_pool,
-            sessions: crate::installed_session::InstalledSessions::default().realizations(),
-        },
+        crate::RealizationExecutor::new(env, runs_local_dispatch_pool, sessions),
         recording,
     )
 }
