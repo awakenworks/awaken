@@ -513,18 +513,20 @@ pub struct DeploymentConfig {
 /// The base dir the Session sandbox roots and per-thread config homes live
 /// under, or a per-process temp dir when unset.
 pub fn session_sandbox_base(deployment: &DeploymentConfig) -> std::path::PathBuf {
-    deployment
-        .sandbox_dir
+    if let Some(sandbox) = &deployment.sandbox_dir {
+        return sandbox.clone();
+    }
+    if let Some(storage) = &deployment.storage_dir {
+        return storage.join("sandboxes");
+    }
+    // One process-temporary root per process start: a pid alone is reused by
+    // later processes, and a reused root still holds the realization markers
+    // they left, so a fixed Session id could meet another process's sandbox.
+    static BASE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    let nonce = || uuid::Uuid::new_v4().simple().to_string();
+    let leaf = || format!("awaken-acp-sbx-{}-{}", std::process::id(), nonce());
+    BASE.get_or_init(|| std::env::temp_dir().join(leaf()))
         .clone()
-        .or_else(|| {
-            deployment
-                .storage_dir
-                .as_ref()
-                .map(|storage| storage.join("sandboxes"))
-        })
-        .unwrap_or_else(|| {
-            std::env::temp_dir().join(format!("awaken-acp-sbx-{}", std::process::id()))
-        })
 }
 
 /// The default wake channel/subject, shared by the `pg_notify` channel and the NATS
