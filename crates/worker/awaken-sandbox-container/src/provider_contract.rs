@@ -4,6 +4,7 @@
 //! Backend-erased contracts for Session-owned container environments.
 
 use crate::ContainerHandleCodec as _;
+use awaken_container_contract::ContainerEffect;
 
 /// Source-compatible container name for the provider-neutral effect fence.
 /// The contract crate is the sole field/validation authority.
@@ -206,6 +207,9 @@ pub struct ContainerRealizationContext<'a> {
     pub effect_fence: Option<&'a ContainerEffectFence>,
     pub intent: &'a ContainerRealizationIntent,
     pub attempt: &'a ContainerCreateAttempt,
+    // Borrow the provider's original effect; this context owns
+    // neither a lease nor permission to substitute a newly observed grant.
+    effect: ContainerEffect<'a>,
 }
 
 impl<'a> ContainerRealizationContext<'a> {
@@ -223,6 +227,28 @@ impl<'a> ContainerRealizationContext<'a> {
             effect_fence,
             intent,
             attempt,
+            effect: ContainerEffect::Unattached,
+        }
+    }
+
+    pub(crate) fn with_effect(mut self, effect: ContainerEffect<'a>) -> Self {
+        self.effect = effect;
+        self
+    }
+
+    #[cfg(any(feature = "k8s", test))]
+    pub(crate) fn admit_current_effect(&self) -> Result<(), pc::SandboxError> {
+        // Renewal may change the copied expiry; the original captured effect
+        // still owns admission. Reconcile cannot attach another operation,
+        // owner, incarnation or epoch to this static physical projection.
+        match (self.effect_fence, self.effect.fence()) {
+            (None, None) => self.effect.admit(),
+            (Some(current), Some(captured)) if current.same_effect_identity(captured) => {
+                self.effect.admit()
+            }
+            _ => Err(pc::SandboxError::fence_rejected(
+                "container effect cleanup lacks its captured current authority",
+            )),
         }
     }
 
@@ -231,13 +257,7 @@ impl<'a> ContainerRealizationContext<'a> {
         &'b self,
         attempt: &'b ContainerCreateAttempt,
     ) -> ContainerRealizationContext<'b> {
-        ContainerRealizationContext {
-            scope: self.scope,
-            adoption_fingerprint: self.adoption_fingerprint,
-            effect_fence: self.effect_fence,
-            intent: self.intent,
-            attempt,
-        }
+        ContainerRealizationContext { attempt, ..*self }
     }
 }
 
@@ -254,6 +274,13 @@ mod realization_context_tests {
         // borrows the existing intent/fence/attempt authorities and creates no
         // parallel identity. Phase-specific physical fingerprints remain typed
         // arguments on the runtime ports and are covered by the provider test.
+        // Q3 no fence needs no aggregate authority; a copied fence alone cannot
+        // admit cleanup. Q4 attach the original current authority, then revoke
+        // it after with_attempt: recovery must reject that same captured proof,
+        // rather than forgetting its checkpoint or substituting another grant.
+        // Q5 renewed copied expiry preserves exact effect identity and the
+        // original admission; different operation/owner/incarnation/epoch or
+        // omitted fence rejects before cleanup. The copied expiry is no grant.
         let spec = pc::SandboxSpec {
             process_tree_supervision: false,
             scope: "session-a".into(),
@@ -274,7 +301,8 @@ mod realization_context_tests {
         };
         let adoption = pc::SandboxRealizationFingerprint::from_spec(&spec);
         let fence =
-            ContainerEffectFence::new("operation-a", "owner-a", "runtime-a", 1, u64::MAX).unwrap();
+            ContainerEffectFence::new("operation-a", "owner-a", "runtime-a", 1, u64::MAX - 1)
+                .unwrap();
         let intent = ContainerRealizationIntent::Create;
         let attempt = ContainerCreateAttempt::new("attempt-a");
         let recovery_attempt = ContainerCreateAttempt::new("attempt-recovery");
@@ -298,6 +326,54 @@ mod realization_context_tests {
         assert_eq!(
             recovery.adoption_fingerprint, context.adoption_fingerprint,
             "Q2 adoption"
+        );
+
+        let unattached =
+            ContainerRealizationContext::new(&spec.scope, &adoption, None, &intent, &attempt);
+        unattached.admit_current_effect().expect("Q3 unattached");
+        assert!(
+            context.admit_current_effect().is_err(),
+            "Q3 fence is not a grant"
+        );
+
+        let authority = pc::test_support::EffectAuthority::new(&fence);
+        let attached = context.with_effect(ContainerEffect::Fenced {
+            fence: &fence,
+            authority: &authority,
+        });
+        attached.admit_current_effect().expect("Q4 current");
+        for (operation, owner, incarnation, epoch, admitted) in [
+            ("operation-a", "owner-a", "runtime-a", 1, true),
+            ("operation-b", "owner-a", "runtime-a", 1, false),
+            ("operation-a", "owner-b", "runtime-a", 1, false),
+            ("operation-a", "owner-a", "runtime-b", 1, false),
+            ("operation-a", "owner-a", "runtime-a", 2, false),
+        ] {
+            let projected =
+                ContainerEffectFence::new(operation, owner, incarnation, epoch, u64::MAX).unwrap();
+            let projected_context = ContainerRealizationContext {
+                effect_fence: Some(&projected),
+                ..attached
+            };
+            assert_eq!(
+                projected_context.admit_current_effect().is_ok(),
+                admitted,
+                "Q5 exact identity; copied expiry may renew"
+            );
+        }
+        let omitted = ContainerRealizationContext {
+            effect_fence: None,
+            ..attached
+        };
+        assert!(
+            omitted.admit_current_effect().is_err(),
+            "Q5 no omitted fence selects unattached"
+        );
+        let recovered = attached.with_attempt(&recovery_attempt);
+        *authority.current.lock().unwrap() = None;
+        assert!(
+            recovered.admit_current_effect().is_err(),
+            "Q4 captured proof revoked"
         );
     }
 }
@@ -359,47 +435,6 @@ impl<'a> ContainerObservationExpectation<'a> {
         Self {
             effect_fence: Some(effect_fence),
             ..Self::from_decoded(handle)
-        }
-    }
-}
-
-/// Who owns one container realization effect. A fence travels together with
-/// the current authority that admits it, so a fence without authority, or an
-/// omitted fence that silently selects the unfenced path, cannot be written.
-#[derive(Clone, Copy)]
-pub(crate) enum ContainerEffect<'a> {
-    /// No aggregate effect owns the environment.
-    Unattached,
-    /// An aggregate-authorized effect and its current authority.
-    Fenced {
-        fence: &'a ContainerEffectFence,
-        authority: &'a dyn pc::CurrentExecutionAuthority,
-    },
-}
-
-impl<'a> ContainerEffect<'a> {
-    pub(crate) const fn fence(self) -> Option<&'a ContainerEffectFence> {
-        match self {
-            Self::Unattached => None,
-            Self::Fenced { fence, .. } => Some(fence),
-        }
-    }
-
-    pub(crate) fn authority(self) -> Option<&'a dyn pc::CurrentExecutionAuthority> {
-        match self {
-            Self::Unattached => None,
-            Self::Fenced { authority, .. } => Some(authority),
-        }
-    }
-
-    /// Enter current authority for a fenced effect; an unattached effect has
-    /// no authority to enter.
-    pub(crate) fn admit(self) -> Result<(), pc::SandboxError> {
-        match self {
-            Self::Unattached => Ok(()),
-            Self::Fenced { fence, authority } => {
-                pc::with_current_sandbox_effect(fence, authority, |_| Ok(()))
-            }
         }
     }
 }

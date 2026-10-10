@@ -37,12 +37,13 @@ fn check_receipt(kind: u8, revision: u64) {
         3 => SessionMutationResult::IdempotencyMismatch,
         _ => unreachable!(),
     };
-    let actual = applied_root_revision(receipt);
+    let actual = snapshot_commit_receipt(receipt);
     // Independent closed decision table: accepting the candidate requires an
-    // Applied receipt; replay's revision never authorizes that candidate.
+    // Applied receipt; replay retains its receipt revision without authorizing
+    // that candidate or substituting a later aggregate revision.
     match kind {
-        0 => assert_eq!(actual, Ok(Some(revision))),
-        1 => assert_eq!(actual, Ok(None)),
+        0 => assert_eq!(actual, Ok((revision, true))),
+        1 => assert_eq!(actual, Ok((revision, false))),
         2 => assert_eq!(actual, Err(SessionMutationError::Conflict)),
         3 => assert_eq!(actual, Err(SessionMutationError::IdempotencyMismatch)),
         _ => unreachable!(),
@@ -66,7 +67,8 @@ fn session_root_observation_is_total_monotonic_and_idempotent() {
 #[kani::proof]
 fn session_root_receipt_selects_candidate_only_for_applied_revision() {
     // C1 actual repository receipt variant; C2 arbitrary revision. Effects:
-    // R1 Applied=>publish that exact revision; R2 Replayed=>reload durable root;
+    // R1 Applied=>publish that exact revision; R2 Replayed=>retain the original
+    // receipt revision and reload durable root, without accepting a candidate;
     // R3 Conflict=>typed conflict; R4 mismatch=>typed mismatch. C2 cannot turn
     // R2-R4 into candidate acceptance. SQL/async wiring is tested separately.
     let kind: u8 = kani::any();
