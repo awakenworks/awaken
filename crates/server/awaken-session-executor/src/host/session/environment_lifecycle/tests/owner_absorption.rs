@@ -1028,3 +1028,44 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
         "CP2/E2 or CP3/E3 exact Retiring fence is consumed"
     );
 }
+
+#[test]
+fn owner_after_projection_derives_a_new_owner_and_keeps_the_held_one() {
+    // Decision table over a vacant held owner. C1 the durable Environment
+    // state; effects: A1 Unmaterialized projects Vacant; A2 a Resident with
+    // effect and generation projects an exact durable adoption; A3 a
+    // generation without its effect is refused (fail closed); A4 in every row
+    // the held owner is unchanged, because installing waits for the slot lock.
+    let thread = "after-projection";
+    let held = SessionEnvironmentOwner::Vacant;
+    let unmaterialized = awaken_session_state_contract::SessionEnvironmentState::Unmaterialized;
+    let projected = held
+        .after_projection(thread, "ws", &unmaterialized, true, false)
+        .expect("A1");
+    assert!(matches!(projected, SessionEnvironmentOwner::Vacant), "A1");
+    let resident = |effect_id: Option<&str>| {
+        awaken_session_state_contract::SessionEnvironmentState::Resident {
+            binding: "binding-a".into(),
+            effect_id: effect_id.map(str::to_owned),
+            generation: Some(generation(thread)),
+            idle_since_unix_ms: None,
+        }
+    };
+    let projected = held
+        .after_projection(thread, "ws", &resident(Some("effect-a")), true, false)
+        .expect("A2");
+    assert!(
+        matches!(&projected,
+            SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::AwaitingAdoption {
+                identity: BoundSessionEnvironmentIdentity::Durable { effect_id, .. },
+                binding,
+            }) if effect_id == "effect-a" && binding == "binding-a"),
+        "A2"
+    );
+    assert!(
+        held.after_projection(thread, "ws", &resident(None), true, false)
+            .is_err(),
+        "A3"
+    );
+    assert!(matches!(held, SessionEnvironmentOwner::Vacant), "A4");
+}

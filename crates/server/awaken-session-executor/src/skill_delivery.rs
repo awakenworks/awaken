@@ -1,7 +1,10 @@
-//! The Agent-facing Skill catalogue prompt: rebuildable metadata derived from the
-//! frozen Skill registry. The Session slot holds it; Skills behavior builds it.
+// @formal surface requirement=resource.skills.version_pinning
+// @formal reason: The installer refuses a bundle whose bytes no longer match its pinned hash before writing.
+// @formal entrypoint skill.invalid_workspace_or_hash_fails_closed
+//! Delivered Skill bundles: their physical installer and the Session's catalogue prompt.
 
 use awaken_ext_skills::SkillRegistry;
+use awaken_resource_contract::{SkillVersion, skill_stem};
 
 /// Rebuildable metadata only, derived from the one frozen registry. Keep the
 /// directory unrendered until the attempt selects its filesystem view; an ACP
@@ -64,4 +67,48 @@ pub(crate) fn filesystem_skill_prompt(
         .filter_map(|skill| skill.dir.map(|dir| (skill.name, skill.description, dir)))
         .collect::<Vec<_>>();
     Ok((!entries.is_empty()).then_some(FilesystemSkillPrompt { entries }))
+}
+
+pub(crate) const DELIVERED_SKILLS_SUBDIR: &str =
+    awaken_provisioning_contract::WorkspaceLayout::DELIVERED_SKILLS_SUBDIR;
+
+pub(crate) fn delivered_skill_directory(id: &str) -> String {
+    format!("{DELIVERED_SKILLS_SUBDIR}/{}", skill_stem(id))
+}
+
+pub(crate) fn delivered_skill_content(version: &SkillVersion) -> Result<&str, String> {
+    if awaken_resource_contract::skill_bundle_sha256(&version.files) != version.bundle_sha256 {
+        return Err(format!(
+            "Skill {} version {} bundle hash mismatch",
+            version.skill_id, version.version
+        ));
+    }
+    version
+        .skill_md()
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .ok_or_else(|| {
+            format!(
+                "Skill {} version {} has no UTF-8 SKILL.md",
+                version.skill_id, version.version
+            )
+        })
+}
+
+/// One physical bundle installer. Managed Resource realization owns its call;
+/// direct compatibility construction calls the same installer when necessary.
+pub(crate) async fn materialize_delivered_skill(
+    env: &crate::session_environment::SessionEnvironment,
+    version: &SkillVersion,
+) -> Result<(), String> {
+    delivered_skill_content(version)?;
+    let files = version
+        .files
+        .iter()
+        .map(|file| (file.path.clone(), file.content.clone(), file.executable))
+        .collect::<Vec<_>>();
+    let directory = delivered_skill_directory(version.skill_id.as_str());
+    env.skills()
+        .materialize_read_only_tree(&directory, &files)
+        .await
+        .map_err(|error| error.to_string())
 }
