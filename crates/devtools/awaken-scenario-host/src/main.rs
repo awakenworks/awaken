@@ -58,16 +58,14 @@ fn management_scenario_adapters(rate_limit_transition: bool) -> awaken_cli::Mana
     if !rate_limit_transition {
         return adapters;
     }
-    adapters.with_request_limiter(Arc::new(
-        awaken_protocol_managed::ManagedRateLimiter::with_limits(
-            "scenario-organization",
-            awaken_protocol_managed::ManagedRateLimits {
-                create_per_minute: 3,
-                read_per_minute: 1_200,
-            },
-            awaken_time::system_clock(),
-        ),
-    ))
+    adapters.with_request_limiter(Arc::new(awaken_authz_enforce::OrgRateLimiter::with_limits(
+        "scenario-organization",
+        awaken_tenancy::org_admission::OrgRateLimits {
+            create_per_minute: 3,
+            read_per_minute: 1_200,
+        },
+        awaken_time::system_clock(),
+    )))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

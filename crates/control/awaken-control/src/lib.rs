@@ -49,6 +49,8 @@ pub mod worker_stores;
 mod application_mcp_credentials_tests;
 #[cfg(test)]
 mod audit_tests;
+#[cfg(test)]
+mod managed_org_admission_tests;
 
 use std::sync::Arc;
 
@@ -381,7 +383,8 @@ pub struct ControlRouterInput {
         Option<Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>>,
     pub inference_geo_policy: Option<Arc<dyn awaken_protocol_managed::ManagedInferenceGeoPolicy>>,
     /// Optional admission port installed inside IAM and audit.
-    pub managed_request_limiter: Option<Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>>,
+    pub managed_request_limiter:
+        Option<Arc<dyn awaken_tenancy::org_admission::OrgRequestAdmission>>,
     /// The embedded IAM guard, when enabled by typed deployment identity mode.
     pub iam: Option<Arc<ManagementAuthz>>,
     /// Canonical local setup/session routes, mounted outside the protected
@@ -612,6 +615,17 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     mgmt
 }
 
+/// The Managed protocol's Org admission: its route classification and its
+/// Anthropic encoding of every outcome, over the access edge's bucket decision.
+pub const MANAGED_ORG_ADMISSION: awaken_authz_enforce::OrgAdmissionEncoding =
+    awaken_authz_enforce::OrgAdmissionEncoding {
+        classify: awaken_protocol_managed::managed_org_admission_class,
+        scope_missing: awaken_protocol_managed::managed_admission_scope_missing,
+        unavailable: awaken_protocol_managed::managed_admission_unavailable,
+        rejected: awaken_protocol_managed::managed_admission_rejected,
+        annotate: Some(awaken_protocol_managed::annotate_managed_rate_limit),
+    };
+
 /// Apply the canonical management audit and IAM edge to a domain router.
 ///
 /// Deployment is execution-owned, but its public management API must retain the
@@ -622,15 +636,15 @@ pub fn protect_management_router(
     audit_plane: ManagementAuditPlane,
     iam: Option<Arc<ManagementAuthz>>,
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
-    request_limiter: Option<Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>>,
+    request_limiter: Option<Arc<dyn awaken_tenancy::org_admission::OrgRequestAdmission>>,
 ) -> Router {
     if let Some(request_limiter) = request_limiter {
         // Axum layers wrap in reverse installation order. Install admission
         // first so IAM and then audit are outside it; only an authenticated
         // WorkspaceScope can reach the organization resolver.
         router = router.layer(axum::middleware::from_fn_with_state(
-            request_limiter,
-            awaken_protocol_managed::enforce_managed_rate_limit,
+            awaken_authz_enforce::OrgAdmissionEdge::new(request_limiter, MANAGED_ORG_ADMISSION),
+            awaken_authz_enforce::admit_by_org_bucket,
         ));
     }
     // Layer order is outside-in in reverse application order: audit is

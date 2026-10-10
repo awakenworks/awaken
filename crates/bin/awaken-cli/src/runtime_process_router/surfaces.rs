@@ -16,7 +16,7 @@ pub(super) fn protect(
     iam: Option<Arc<ManagementAuthz>>,
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
     audit_plane: ManagementAuditPlane,
-    managed_rate_limiter: Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>,
+    managed_rate_limiter: Arc<dyn awaken_tenancy::org_admission::OrgRequestAdmission>,
 ) -> ProtectedSurfaces {
     let coordinator_data = awaken_control::protect_runtime_protocol_routers(
         coordinator.router,

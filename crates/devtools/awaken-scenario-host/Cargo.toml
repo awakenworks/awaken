@@ -38,6 +38,8 @@ awaken-sandbox-local = { workspace = true, features = ["test-support"] }
 awaken-worker-transport-security.workspace = true
 awaken-admin-assistant = { workspace = true }
 awaken-tenancy = { workspace = true }
+# The open Org request limiter (`OrgRateLimiter`) every protocol entry admits through.
+awaken-authz-enforce.workspace = true
 # Cross-cutting telemetry: the tracing subscriber + OTLP/AWAKEN_TRACE_FILE span
 # export + W3C traceparent propagator + ingress span middleware (not an ext).
 awaken-observability = { workspace = true }

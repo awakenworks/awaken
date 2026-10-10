@@ -11,7 +11,7 @@ use awaken_deployment_application::{
 
 pub struct ManagedDeploymentSessionLauncher {
     state: Arc<crate::ManagedState>,
-    rate_limiter: Option<Arc<dyn crate::ManagedRequestLimiter>>,
+    rate_limiter: Option<Arc<dyn awaken_tenancy::org_admission::OrgRequestAdmission>>,
 }
 
 impl ManagedDeploymentSessionLauncher {
@@ -24,7 +24,10 @@ impl ManagedDeploymentSessionLauncher {
     }
 
     #[must_use]
-    pub fn with_rate_limiter(mut self, limiter: Arc<dyn crate::ManagedRequestLimiter>) -> Self {
+    pub fn with_rate_limiter(
+        mut self,
+        limiter: Arc<dyn awaken_tenancy::org_admission::OrgRequestAdmission>,
+    ) -> Self {
         self.rate_limiter = Some(limiter);
         self
     }
@@ -59,12 +62,12 @@ impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
         };
         if let Some(limiter) = &self.rate_limiter {
             match limiter
-                .admit(crate::ManagedRateLimitRequest {
+                .admit(awaken_tenancy::org_admission::OrgAdmissionRequest {
                     workspace_id: request.workspace_id.clone(),
-                    operation: crate::ManagedOperation::Create,
+                    operation: awaken_tenancy::org_admission::OrgOperation::Create,
                     resource: "sessions",
                     operation_id: Some(request.deployment_run_id.clone()),
-                    source: crate::ManagedRequestSource::Deployment,
+                    source: awaken_tenancy::org_admission::OrgRequestSource::Deployment,
                 })
                 .await
             {
