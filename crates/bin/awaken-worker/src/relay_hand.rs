@@ -8,9 +8,46 @@
 use std::sync::Arc;
 
 use awaken_run_executor_acp::AgentChannelType;
-use awaken_tool_contract::tool::ToolExecutor;
 
 struct RelayHandExecutorFactory;
+
+struct RelayRequestRecovery {
+    executor: Arc<awaken_tool_relay::RemoteToolExecutor<Box<dyn AgentChannelType>>>,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_environment_contract::HandRequestRecovery for RelayRequestRecovery {
+    async fn recover(
+        &self,
+        channel: Box<dyn AgentChannelType>,
+        cancel: bool,
+    ) -> Result<awaken_session_environment_contract::HandRecoveryObservation, String> {
+        use awaken_session_environment_contract::HandRecoveryObservation;
+        use awaken_tool_relay::{HandAction, HandResult};
+        match self
+            .executor
+            .recover_pending(
+                channel,
+                if cancel {
+                    HandAction::Cancel
+                } else {
+                    HandAction::Observe
+                },
+            )
+            .await
+        {
+            Ok(None) => Ok(HandRecoveryObservation::NoPendingRequest),
+            Ok(Some(HandResult::Running { .. })) => Ok(HandRecoveryObservation::Running),
+            Ok(Some(HandResult::Indeterminate)) => Ok(HandRecoveryObservation::Indeterminate),
+            Ok(Some(HandResult::Observed { .. })) => Ok(HandRecoveryObservation::Returned),
+            Ok(Some(HandResult::Err { error })) => Err(error.message),
+            Ok(Some(HandResult::Ok { .. })) => {
+                Err("Hand control returned an invocation response".into())
+            }
+            Err(error) => Err(error.to_string()),
+        }
+    }
+}
 
 impl awaken_session_environment_contract::HandExecutorFactory for RelayHandExecutorFactory {
     fn bind(
@@ -18,16 +55,25 @@ impl awaken_session_environment_contract::HandExecutorFactory for RelayHandExecu
         channel: Box<dyn AgentChannelType>,
         operation_scope: &str,
         recovery: awaken_tool_contract::tool::ToolRecoveryCapability,
-    ) -> Arc<dyn ToolExecutor> {
+    ) -> awaken_session_environment_contract::HandExecutorBinding {
         let executor = awaken_tool_relay::RemoteToolExecutor::new(channel)
             .with_operation_scope(operation_scope);
-        Arc::new(
+        let executor = Arc::new(
             if recovery == awaken_tool_contract::tool::ToolRecoveryCapability::DurableRequest {
                 executor.with_durable_request_recovery()
             } else {
                 executor
             },
-        )
+        );
+        let recovery = (recovery
+            == awaken_tool_contract::tool::ToolRecoveryCapability::DurableRequest)
+            .then(|| {
+                Arc::new(RelayRequestRecovery {
+                    executor: executor.clone(),
+                })
+                    as Arc<dyn awaken_session_environment_contract::HandRequestRecovery>
+            });
+        awaken_session_environment_contract::HandExecutorBinding { executor, recovery }
     }
 }
 
@@ -44,6 +90,124 @@ mod tests {
     use async_trait::async_trait;
     use awaken_runtime_contract::llm::ToolCall;
     use awaken_tool_contract::tool::{RawTool, ToolError, ToolOutput};
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn resident_request_recovery_cancels_real_bash_without_replaying_or_claiming_stop() {
+        // DT-RB: C1 a real Bash child has produced its pid/entry files; C2 its
+        // Worker-side future disappears after dispatch; C3 the same factory's
+        // recovery role uses a fresh private channel and stable operation id.
+        // RB1 C1+C2 => old stream remains uncertain. RB2 +C3 Cancel => one
+        // cancellation intent, original invocation ends Indeterminate, actual
+        // descendant exits. RB3 Observe => cached invocation evidence; neither
+        // result is Sandbox/remote termination proof and neither re-invokes.
+        use awaken_session_environment_contract::HandRecoveryObservation;
+        use awaken_tool_contract::tool::{
+            ToolOperationContext, ToolRecoveryCapability, with_tool_operation_context,
+        };
+        use awaken_tool_relay::HandOperationLedger;
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Arc::new(
+            awaken_tool_relay::FsOperationLedger::open(dir.path().join("ledger")).unwrap(),
+        );
+        let tools = awaken_ext_builtin_tools::all_hand_tools_in(
+            awaken_ext_builtin_tools::HandToolContext::new(dir.path()),
+        );
+        let (brain, hand) = tokio::io::duplex(64 * 1024);
+        let peer = tokio::spawn(awaken_tool_relay::serve_hand(
+            hand,
+            awaken_tool_relay::HandSession::new(tools, ledger.clone(), awaken_time::system_clock()),
+        ));
+        let bound = relay_hand_executor_factory().bind(
+            Box::new(brain),
+            "session-rb",
+            ToolRecoveryCapability::DurableRequest,
+        );
+        let request = ToolCall {
+            call_id: "bash".into(),
+            tool_id: "bash".into(),
+            arguments: serde_json::json!({
+                "command": "printf 'one\\n' >> calls; sh -c 'sleep 30' & printf '%s' $! > child; printf entered > started; wait"
+            }),
+        };
+        let call = {
+            let executor = bound.executor.clone();
+            tokio::spawn(async move {
+                with_tool_operation_context(
+                    ToolOperationContext::for_run("run-rb", "op-rb"),
+                    executor.invoke(&request),
+                )
+                .await
+            })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !dir.path().join("started").is_file() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("RB1 actual Bash entry fact");
+        let pid = std::fs::read_to_string(dir.path().join("child"))
+            .unwrap()
+            .parse::<u32>()
+            .unwrap();
+        call.abort();
+        let _ = call.await;
+        let recovery = bound
+            .recovery
+            .clone()
+            .expect("resident role selected at startup");
+        let (brain, hand) = tokio::io::duplex(64 * 1024);
+        let control_peer = tokio::spawn(awaken_tool_relay::serve_hand(
+            hand,
+            awaken_tool_relay::HandSession::new([], ledger.clone(), awaken_time::system_clock()),
+        ));
+        assert_eq!(
+            recovery.recover(Box::new(brain), true).await.unwrap(),
+            HandRecoveryObservation::Running
+        );
+        control_peer.await.unwrap().unwrap();
+        let operation = awaken_tool_contract::tool::ToolOperationToken::from_context(
+            &ToolOperationContext::for_run("run-rb", "op-rb"),
+        )
+        .unwrap()
+        .ledger_id(Some("session-rb"));
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if matches!(
+                    ledger.observe(&operation, false).await.unwrap(),
+                    awaken_tool_relay::HandResult::Observed { .. }
+                ) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("RB2 original ledger completion");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let status = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok();
+                if status.as_ref().is_none_or(|s| {
+                    s.rsplit_once(')')
+                        .is_some_and(|(_, tail)| tail.trim_start().starts_with('Z'))
+                }) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("RB2 real descendant exit");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("calls")).unwrap(),
+            "one\n",
+            "RB3 no replay"
+        );
+        drop(recovery);
+        drop(bound);
+        peer.await.unwrap().unwrap();
+    }
 
     struct Echo;
 
@@ -71,11 +235,12 @@ mod tests {
                 awaken_time::system_clock(),
             ),
         ));
-        let executor = relay_hand_executor_factory().bind(
+        let bound = relay_hand_executor_factory().bind(
             Box::new(brain),
             "session-a",
             awaken_tool_contract::tool::ToolRecoveryCapability::NonRecoverable,
         );
+        let executor = bound.executor;
         let output = executor
             .invoke(&ToolCall {
                 call_id: "call-a".into(),
@@ -145,7 +310,7 @@ mod tests {
                 ),
             ));
             let factory = relay_hand_executor_factory();
-            let executor = factory.bind(Box::new(brain), "session", recovery);
+            let executor = factory.bind(Box::new(brain), "session", recovery).executor;
             let request = ToolCall {
                 call_id: "call".into(),
                 tool_id: "echo".into(),
@@ -205,7 +370,7 @@ mod tests {
                     awaken_time::system_clock(),
                 ),
             ));
-            let replacement = factory.bind(Box::new(brain), "session", recovery);
+            let replacement = factory.bind(Box::new(brain), "session", recovery).executor;
             let result = with_tool_operation_context(
                 ToolOperationContext::for_run("run", "new"),
                 replacement.invoke(&request),

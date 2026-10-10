@@ -569,8 +569,8 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   Sessions and proves both one driver per Session and a bounded number of
   cross-Session phase drivers; its fair deadline releases that abstract owner.
   This is not a mapping of request/completion permits onto a Session mutex.
-  The same module checks seven actual adapter return/cancellation traces and
-  three Host held-mutex frames on one eight-slot scheduler per sweep; twelve
+  The same module checks eight actual adapter return/cancellation/queued-expiry traces and
+  three Host held-mutex frames on one eight-slot scheduler per sweep; fourteen
   semantic trace mutants qualify the relation. Admission closes before waiting;
   cancellation retains the exact lease for the existing revocation retry.
   Arbitrary Tokio schedules, overlapping sweeps and unbounded fairness remain

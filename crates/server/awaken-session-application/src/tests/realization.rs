@@ -172,12 +172,13 @@ fn terminal_cleanup_retains_exact_process_owner_requirements_through_dispose() {
                 &SessionTerminalCleanupAction::Prepare { commands: vec![] },
                 &disposal,
             ] {
-                let requirements = crate::realization::terminal_cleanup_worker_requirements(
-                    "workspace",
-                    &session,
-                    action,
-                )
-                .unwrap();
+                let requirements =
+                    awaken_session_realization_contract::terminal_cleanup_worker_requirements(
+                        "workspace",
+                        &session,
+                        action,
+                    )
+                    .unwrap();
                 assert_eq!(requirements.sandbox.process_tree_supervision, supervised);
                 assert_eq!(
                     requirements.sandbox_backend.as_deref(),

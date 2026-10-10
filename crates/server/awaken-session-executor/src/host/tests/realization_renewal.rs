@@ -564,13 +564,13 @@ async fn per_request_deadlines_release_every_renewal_capacity_slot() {
      * answer; C2 the renewal cap is eight; C3 the
      * authority timing yields a 50s virtual per-request deadline; C4 all old leases
      * remain live. Effects: E1 the first eight enter, time out, and release
-     * their slots; E2 the second eight then enter; E3 no cancelled future leaks
+     * their slots; E2 the queued eight exhaust the SAME budget before entry; E3 no cancelled future leaks
      * an active slot; E4 all local projections remain for retry.
      *
      * | Rule | renewals | response | deadline/cap | Effect |
      * |---|---:|---|---|---|
      * | D1 | 16 | never | 50s virtual / 8 | E1 + E2 + E3 + E4 |
-     * Tokio auto-advances the two timeout waves; the real 90s proof horizon
+     * Tokio auto-advances one timeout wave; the real 90s proof horizon
      * remains live. The test does not equate scheduling time and OS elapsed time.
      */
     const SESSION_COUNT: usize = 16;
@@ -605,11 +605,11 @@ async fn per_request_deadlines_release_every_renewal_capacity_slot() {
         ),
     )
     .await
-    .expect("D1 the batch finishes within two bounded virtual timeout waves")
+    .expect("D1 one deadline includes both capacity waiting and Control IO")
     .expect_err("D1 each live Session retains a retry diagnostic");
     assert_eq!(
         control.renewal_sessions.lock().unwrap().len(),
-        SESSION_COUNT,
+        crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS,
         "D1/E1-E2"
     );
     assert_eq!(control.renewals_active.load(Ordering::SeqCst), 0, "D1/E3");
@@ -634,23 +634,23 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
     /* Deadline/mutex composition table: C1 sixteen due Control calls never
      * answer; C2 the first eight expired Sessions have their canonical
      * realization mutex held by an earlier phase; C3 the Control capacity is
-     * eight; C4 both timeout waves elapse. Effects: E1 the first wave releases
+     * eight; C4 one request budget elapses, including queue residence. Effects: E1 the first wave releases
      * all Control permits at its deadline even though revocation must wait; E2
-     * the second wave enters without weakening or bypassing any held Session
+     * queued requests expire before entering Control, without weakening or bypassing any held Session
      * mutex; E3 concurrency never exceeds eight; E4 releasing the original
      * guards lets exact revocation finish and leaves no local authority.
      *
      * | Rule | Control | first-wave mutex | Effect |
      * |---|---|---|---|
      * | M1 | first eight time out | held | E1; cleanup waits |
-     * | M2 | second eight pending/time out | first still held | E2 + E3 |
+     * | M2 | queued eight expire before entry | first still held | E2 + E3 |
      * | M3 | all timed out | released | E4 |
      * Tokio semaphore/mutex wakeups and virtual-time scheduling are the test
      * platform boundary; the production typed permit kernels own admission,
      * identity recheck, bounded capacity, and terminal release decisions.
      */
     // M4 cancellation while first-wave completions hold scheduler permits and
-    // wait for exact mutexes also drops second-wave queued completions. No
+    // wait for exact mutexes also drops queued-request timeout completions. No
     // physical cleanup may consume a held Session. Synchronous admission close
     // is required before waiting; cancellation keeps Closed and its exact lease.
     // Existing revocation selection (not Live-only renewal) owns cleanup retry.
@@ -726,13 +726,13 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
                 )
                 .await
         });
-        // Yield to both 50s request-deadline waves without a runnable spin loop
+        // Yield past the one 50s request deadline without a runnable spin loop
         // that would prevent Tokio's paused clock from advancing.
-        tokio::time::sleep(std::time::Duration::from_secs(110)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         assert_eq!(
             control.renewal_sessions.lock().unwrap().len(),
-            SESSION_COUNT,
-            "M1-M2 both deadline waves enter while first cleanup waits"
+            crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS,
+            "M1-M2 queued calls never receive another deadline wave"
         );
         assert_eq!(
             control.max_renewals_active.load(Ordering::SeqCst),

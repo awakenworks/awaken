@@ -822,6 +822,7 @@ dependencies = [
  "awaken-tenancy",
  "awaken-time",
  "awaken-tool-contract",
+ "awaken-tool-relay",
  "awaken-webhook",
  "awaken-work-store",
  "awaken-worker",
@@ -3188,6 +3189,7 @@ dependencies = [
  "awaken-environment-contract",
  "awaken-lease-contract",
  "awaken-provisioning-contract",
+ "awaken-reliability-testkit",
  "awaken-session-application-contract",
  "awaken-session-configuration-contract",
  "awaken-session-execution-contract",
@@ -3197,6 +3199,7 @@ dependencies = [
  "awaken-session-state-contract",
  "awaken-session-types",
  "awaken-time",
+ "futures-util",
  "serde_json",
  "tokio",
 ]

@@ -14,7 +14,7 @@ use awaken_session_realization_contract::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
     FailSessionRealization, RenewSessionRealization, SessionRealizationAction,
     SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationDirective,
-    SessionTerminalCleanupAssignment,
+    SessionTerminalCleanupAssignment, terminal_cleanup_worker_requirements,
 };
 use awaken_session_resource_contract::SessionRealizationLease;
 use awaken_session_execution_contract::RealizationRuntime;
@@ -46,7 +46,6 @@ mod recovery_backoff;
 
 use publication::{draining_generations, publication_action, publication_generations};
 
-pub(super) use authority::terminal_cleanup_worker_requirements;
 use authority::{
     TerminalCleanupClaimConflict, TerminalCleanupClaimScope, TerminalCleanupRootClaim,
     exact_generation_key, generation_set_authorizes, terminal_cleanup_worker_affinity_rejection,

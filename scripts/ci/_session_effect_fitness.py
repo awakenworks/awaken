@@ -74,9 +74,9 @@ SQLITE_SESSION_STORE = "crates/stores/awaken-session-store/src/sqlite.rs"
 POSTGRES_SESSION_STORE = "crates/stores/awaken-session-store/src/postgres.rs"
 RUNTIME_HOST = "crates/server/awaken-session-executor/src/lib.rs"
 RUNTIME_HOST_APPLICATION = "crates/server/awaken-session-executor/src/application.rs"
-RUNTIME_HOST_REALIZATION_CONTROL_DEADLINE = (
-    "crates/server/awaken-session-executor/src/application/"
-    "realization_control_deadline.rs"
+SESSION_REALIZATION_CONTROL_DEADLINE = (
+    "crates/server/awaken-session-realization-driver/src/"
+    "control_deadline.rs"
 )
 RUNTIME_REPOSITORY_PUBLICATION = (
     "crates/server/awaken-session-executor/src/terminal_repository_publication.rs"
@@ -287,7 +287,7 @@ REQUIRED = {
         "async fn acknowledge_completed_terminal_cleanup",
     ),
     RUNTIME_HOST_APPLICATION: ("drive_session_terminal_cleanup(",),
-    RUNTIME_HOST_REALIZATION_CONTROL_DEADLINE: (
+    SESSION_REALIZATION_CONTROL_DEADLINE: (
         "async fn renew_session_realization(",
         ".renew_session_realization(",
     ),
@@ -649,7 +649,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
     errors.extend(
         _require_ordered_function(
             sources,
-            RUNTIME_HOST_REALIZATION_CONTROL_DEADLINE,
+            SESSION_REALIZATION_CONTROL_DEADLINE,
             "renew_session_realization",
             (
                 "self.call(",
@@ -1195,7 +1195,7 @@ async fn session_repository_publication_reject() {
     terminal_cleanup_control(&service).record_terminal_repository_publication_rejection(...);
 }
 """
-    canonical[RUNTIME_HOST_REALIZATION_CONTROL_DEADLINE] = """
+    canonical[SESSION_REALIZATION_CONTROL_DEADLINE] = """
 async fn renew_session_realization() {
     self.call(
         "renew",
@@ -1398,7 +1398,7 @@ fn recover_terminal_receipts() {
         ),
         (
             "hosted renewal forwarding",
-            RUNTIME_HOST_REALIZATION_CONTROL_DEADLINE,
+            SESSION_REALIZATION_CONTROL_DEADLINE,
             ".renew_session_realization(",
         ),
         (
@@ -1508,11 +1508,11 @@ fn recover_terminal_receipts() {
             "    .await"
         )
         direct = f"    self.inner.{forwarding}(...).await"
-        assert bounded in mutant[RUNTIME_HOST_REALIZATION_CONTROL_DEADLINE], (
+        assert bounded in mutant[SESSION_REALIZATION_CONTROL_DEADLINE], (
             f"canonical {function} deadline fixture"
         )
-        mutant[RUNTIME_HOST_REALIZATION_CONTROL_DEADLINE] = mutant[
-            RUNTIME_HOST_REALIZATION_CONTROL_DEADLINE
+        mutant[SESSION_REALIZATION_CONTROL_DEADLINE] = mutant[
+            SESSION_REALIZATION_CONTROL_DEADLINE
         ].replace(bounded, direct, 1)
         assert session_effect_violations(mutant), f"removed {rule} rejected"
 
@@ -1521,8 +1521,8 @@ fn recover_terminal_receipts() {
             bounded.replace("    self.call(", "    let _ = self.call(", 1)
             + ";\n    Ok(())"
         )
-        swallowed[RUNTIME_HOST_REALIZATION_CONTROL_DEADLINE] = swallowed[
-            RUNTIME_HOST_REALIZATION_CONTROL_DEADLINE
+        swallowed[SESSION_REALIZATION_CONTROL_DEADLINE] = swallowed[
+            SESSION_REALIZATION_CONTROL_DEADLINE
         ].replace(bounded, swallowed_call, 1)
         assert session_effect_violations(swallowed), (
             f"swallowed {rule} Control outcome rejected"

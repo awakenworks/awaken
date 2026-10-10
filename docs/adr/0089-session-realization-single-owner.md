@@ -124,3 +124,18 @@ crates.
   claimed roles.
 - Persisted data and wire shapes are unchanged: commands, receipts, the lease and
   `FrozenSessionProjection` keep their shapes.
+
+Terminal cleanup's Worker requirements are a pure projection of the frozen
+Session root and its next cleanup action. Their existing lowering belongs to
+the published realization contract, alongside the terminal assignment and its
+authorization vocabulary. The application still selects and commits the one
+root claim; this projection owns no lease, scheduler, provider call or cache.
+
+### Control request deadlines are an executor concern
+
+The existing realization driver owns the topology-neutral Control deadline
+adapter and its single shared semaphore. Runtime Host supplies authority-derived
+timing and retains the exact Session mutex and response-application checks.
+Queue residence and transport I/O consume one absolute monotonic deadline; an
+expired queued request must not enter Control. Completion reacquires the same
+semaphore. The adapter owns no durable lease, phase, receipt or retry queue.

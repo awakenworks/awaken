@@ -944,3 +944,9 @@ same selection owner for migration and external-schema verification.
   (`crates/server/awaken-dispatch/src/postgres_helpers.rs:16-25`,
   `postgres/claim.rs:258,381,434`, `postgres/dispatch_queue.rs:714`). The edge
   clock still drives renewal cadence and local proof deadlines.
+
+The authority-derived Control request deadline includes shared-capacity waiting
+and remote IO together. A queued request does not receive a fresh timeout after
+a previous wave releases its permit. Timeout or cancellation releases exactly
+the permit actually acquired; local response application and per-Session cleanup
+retain their existing exclusion and never mint a grace period.

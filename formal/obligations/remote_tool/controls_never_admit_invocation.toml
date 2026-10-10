@@ -1,0 +1,12 @@
+claim_scope = "repository_safety"
+proof_grade = "production_kernel_proved"
+status = "kernel_proved"
+tcb_assumptions = [
+  "external.orchestrator_correctness",
+  "external.worker_host_executor_equivalence",
+]
+evidence = ["formal/tla/RemoteTool.tla"]
+production_entrypoints = []
+
+[[bounds]]
+text = '''Kani calls the production Hand request plan with raw version, action and operation-identity fields: Observe/Cancel never select invocation admission, and only v3 with an identity can reach control handling. The same plan routes serve_hand before its only ledger.begin call. TLC separates durable fencing metadata from process-local result cache and checks observation/cancellation/crash/restart without duplicate invocation or fabricated completion. This does not prove authenticated transport, Tokio cancellation, filesystem durability, process-tree exit or remote side-effect termination; those remain adapter/runtime evidence.'''

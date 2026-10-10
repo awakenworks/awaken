@@ -564,28 +564,26 @@ impl SharedHost {
         mode: BoundEnvironmentPreparationMode,
     ) -> Result<TerminalEnvironmentPreparation, HostError> {
         let (
-            state,
+            assignment,
             owner,
             previous_resources,
             workspace_id,
             checkpoint_policy,
             realization_lease,
             environment_fingerprint,
-            creation_not_attempted,
         ) = self
             .installed_sessions
             .read(thread, |slot| {
                 let baseline = slot.inputs.baseline.as_ref();
                 let r = &slot.realization;
                 (
-                    r.terminal_environment_state.clone(),
+                    r.terminal_cleanup_assignment.clone(),
                     r.environment_owner.clone(),
                     r.previous_resources(),
                     slot.inputs.workspace.clone(),
                     baseline.map(|baseline| baseline.environment.idle_retention.clone()),
                     r.authority.lease().cloned(),
                     baseline.map(|baseline| baseline.environment.config_fingerprint.0.clone()),
-                    r.terminal_environment_creation_not_attempted,
                 )
             })
             .ok_or_else(|| {
@@ -594,12 +592,13 @@ impl SharedHost {
                     "terminal cleanup root projection is not installed",
                 )
             })?;
-        let state = state.ok_or_else(|| {
+        let assignment = assignment.ok_or_else(|| {
             HostError::unavailable_classified(
                 "session_terminal_environment_state_missing",
                 "terminal cleanup has no frozen aggregate Environment state",
             )
         })?;
+        let state = assignment.projection.environment;
         let pending_checkpoint = if matches!(
             &state,
             awaken_session_state_contract::SessionEnvironmentState::Suspending {
@@ -637,7 +636,7 @@ impl SharedHost {
             None
         };
         awaken_session_realization_contract::validate_terminal_no_create_witness(
-            creation_not_attempted,
+            assignment.environment_creation_not_attempted,
             &state,
             matches!(owner, SessionEnvironmentOwner::Vacant),
         )
@@ -710,7 +709,7 @@ impl SharedHost {
                     "terminal aggregate has no binding but Runtime retains an Environment",
                 ));
             }
-            if creation_not_attempted
+            if assignment.environment_creation_not_attempted
                 || matches!(
                     &state,
                     awaken_session_state_contract::SessionEnvironmentState::Hibernated { .. }

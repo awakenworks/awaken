@@ -14,6 +14,9 @@ authority = "session-realization"
 separation = "sole-in-layer"
 
 [dependencies]
+async-trait.workspace = true
+awaken-time.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros"] }
 awaken-agent-contract.workspace = true
 awaken-lease-contract.workspace = true
 awaken-session-mcp-contract.workspace = true
@@ -23,15 +26,14 @@ awaken-session-execution-contract.workspace = true
 awaken-session-state-contract.workspace = true
 awaken-session-types.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["macros", "time"] }
 
 [features]
 # The realization observation checkpoints scenario tests read.
 test-support = ["awaken-session-realization-contract/test-support"]
 
 [dev-dependencies]
-awaken-time.workspace = true
-async-trait.workspace = true
+awaken-reliability-testkit.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 awaken-credential-contract.workspace = true
 awaken-environment-contract.workspace = true
 awaken-provisioning-contract.workspace = true

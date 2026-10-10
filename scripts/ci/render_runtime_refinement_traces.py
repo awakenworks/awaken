@@ -406,7 +406,7 @@ def validate_observation_rule(name: str, step: dict[str, Any]) -> None:
         validate_observation_schema(step, {"rule": "text", "observation": {
             "kind": ("adapter",), "capacity": "uint", "trace": [state]}}, name)
         events = ["initial", "queue-request", "wait-queued"]
-        if rule == "cancel-queued-request":
+        if rule in ("cancel-queued-request", "queued-deadline"):
             events += [rule]
         else:
             events += ["admit-request"]

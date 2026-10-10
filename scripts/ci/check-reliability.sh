@@ -42,7 +42,7 @@ if [ "${1:-}" = "--session-observations" ]; then
     -p awaken-session-application \
     -p awaken-store-inmem -p awaken-store-fs -p awaken-store-sqlite -p awaken-protocol-managed
   cargo test --locked -p awaken-session-executor --lib projection_convergence::
-  cargo test --locked -p awaken-session-executor --lib scheduler_capacity_observes_real_poll_drop_and_two_stage_cancellation
+  cargo test --locked -p awaken-session-realization-driver --lib scheduler_capacity_observes_real_poll_drop_and_two_stage_cancellation
   cargo test --locked -p awaken-session-executor --lib control_deadline_releases_capacity_before_expired_session_mutex_cleanup
   cargo test --locked -p awaken-coordinator --lib runtime_authority::tests
   cargo test --locked -p awaken-dispatch --features test-support --test pool_memory only_the_queue_owner_runs_maintenance_without_disabling_worker_drains
