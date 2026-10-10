@@ -1089,7 +1089,13 @@ async fn storage_outage_never_masquerades_as_missing_consent() {
     .unwrap();
     assert!(matches!(
         application
-            .capture_decision("org", "id", ContentCapture::Full, ContentCapture::Full)
+            .capture_decision(
+                "org",
+                "id",
+                ContentCapture::Full,
+                &awaken_data_governance_contract::CapturePolicy::default(),
+                "ws",
+            )
             .await,
         Err(DataSubjectApplicationError::Repository(
             DataSubjectError::Storage(_)
@@ -1530,4 +1536,129 @@ async fn erasure_and_profile_writes_stamp_one_timeline() {
         ConsentStatus::Withdrawn,
         "R3 consent"
     );
+}
+
+#[tokio::test]
+async fn capture_decision_read_equals_the_run_boundary_decision() {
+    // Causes: C1 profile state in `org` (granted, ungranted, absent, granted
+    // only in another org); C2 Workspace narrowing answer (unset, each level,
+    // unreadable); C3 top ceiling; C4 requested level.
+    // Effects: E1 for a profile of `org` the read equals the decision a Run
+    // attributed to it makes through the same sources (consent from
+    // `RepoDataSubjectResolver`, the Run's consent source); E2 an absent or
+    // other-org profile reads as ungranted (`structured`), never another org's
+    // grant; E3 an unreadable narrowing closes the read to `off`.
+    use awaken_data_governance_contract::{
+        CapturePolicy, CapturePolicySources, TelemetryNarrowing, TelemetryNarrowingSource,
+        TelemetryPolicyError, decide_capture,
+    };
+    struct Fixed(Result<TelemetryNarrowing, TelemetryPolicyError>);
+    #[async_trait]
+    impl TelemetryNarrowingSource for Fixed {
+        async fn workspace_narrowing(
+            &self,
+            _workspace: &str,
+        ) -> Result<TelemetryNarrowing, TelemetryPolicyError> {
+            self.0
+        }
+    }
+    let repo = Arc::new(InMemoryDataSubjectRepo::new());
+    let clock = Arc::new(ManualClock::new(1_000));
+    let application =
+        DataSubjectApplication::new(repo.clone(), vec![9; 32], clock.clone()).expect("strong key");
+    let resolver = Arc::new(RepoDataSubjectResolver::new(
+        repo.clone(),
+        repo.clone(),
+        clock,
+    ));
+    let create = |org: &str| CreateUserProfileCommand {
+        org: org.into(),
+        metadata: BTreeMap::new(),
+        relationship: UserProfileRelationship::External,
+        access_type: None,
+        external_id: None,
+        external_user_onboarded_at: None,
+        external_user_details: None,
+        name: None,
+    };
+    let granted = application
+        .create_user_profile(create("org"))
+        .await
+        .unwrap();
+    application
+        .grant_consent_for_purpose("org", &granted.id, Purpose::TelemetryContent, "v1".into())
+        .await
+        .unwrap();
+    let ungranted = application
+        .create_user_profile(create("org"))
+        .await
+        .unwrap();
+    let foreign = application
+        .create_user_profile(create("other"))
+        .await
+        .unwrap();
+    application
+        .grant_consent_for_purpose("other", &foreign.id, Purpose::TelemetryContent, "v1".into())
+        .await
+        .unwrap();
+
+    let levels = [
+        ContentCapture::Off,
+        ContentCapture::Structured,
+        ContentCapture::Full,
+    ];
+    let mut answers = vec![
+        Ok(TelemetryNarrowing::default()),
+        Err(TelemetryPolicyError::StoreUnavailable),
+        Err(TelemetryPolicyError::AuthorityUnreachable),
+    ];
+    answers.extend(levels.map(|level| {
+        Ok(TelemetryNarrowing {
+            content_capture: Some(level),
+        })
+    }));
+    for answer in answers {
+        for top in levels {
+            let policy = CapturePolicy::new(
+                top,
+                CapturePolicySources {
+                    consent: resolver.clone(),
+                    narrowing: Arc::new(Fixed(answer)),
+                },
+            );
+            for requested in levels {
+                for id in [&granted.id, &ungranted.id] {
+                    let read = application
+                        .capture_decision("org", id, requested, &policy, "ws")
+                        .await
+                        .unwrap();
+                    let run = policy
+                        .decide("ws", requested, Some(&DataSubjectId(id.clone())))
+                        .await;
+                    assert_eq!(read, run, "E1 {answer:?} {top:?} {requested:?}");
+                }
+                for id in ["dsub_absent", foreign.id.as_str()] {
+                    let read = application
+                        .capture_decision("org", id, requested, &policy, "ws")
+                        .await
+                        .unwrap();
+                    let expected =
+                        decide_capture(awaken_data_governance_contract::CapturePolicyInputs {
+                            requested,
+                            top,
+                            workspace: answer,
+                            consent: Some(ContentCapture::Structured),
+                        });
+                    assert_eq!(read, expected, "E2 {id}");
+                }
+                if answer.is_err() {
+                    let read = application
+                        .capture_decision("org", &granted.id, requested, &policy, "ws")
+                        .await
+                        .unwrap();
+                    assert_eq!(read.effective, ContentCapture::Off, "E3");
+                }
+            }
+        }
+    }
 }

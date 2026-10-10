@@ -25,6 +25,7 @@ use awaken_config_service::{
 };
 use awaken_credential_vault::SecretStore;
 use awaken_credential_vault::repo::CredentialRepo;
+use awaken_data_governance_contract::CapturePolicy;
 use awaken_data_subject_application::{
     DataSubjectApplication, DataSubjectRepo, ErasureJobRepo, ErasureTarget,
     RepoDataSubjectResolver, RepoOrganizationPrivacyResolver,
@@ -403,7 +404,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
     .merge(crate::consent_router(
         data_subject_application.clone(),
         data_subject_org.clone(),
-        content_capture_ceiling,
+        CapturePolicy::new(content_capture_ceiling, capture_policy.clone()),
     ))
     .merge(crate::erasure_router(
         data_subject_application,

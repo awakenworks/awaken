@@ -195,7 +195,7 @@ pub(crate) fn router(service: TelemetryPolicyService) -> Router {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
@@ -204,9 +204,9 @@ mod tests {
     use tower::ServiceExt;
 
     #[derive(Default)]
-    struct MapRepository {
-        rows: Mutex<BTreeMap<String, WorkspaceTelemetryConfiguration>>,
-        unavailable: bool,
+    pub(crate) struct MapRepository {
+        pub(crate) rows: Mutex<BTreeMap<String, WorkspaceTelemetryConfiguration>>,
+        pub(crate) unavailable: bool,
     }
 
     #[async_trait::async_trait]
