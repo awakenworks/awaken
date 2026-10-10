@@ -1,5 +1,3 @@
-// @formal surface requirement=resource.skills.version_pinning
-// @formal reason: The installer refuses a bundle whose bytes no longer match its pinned hash before writing.
 // @formal entrypoint skill.invalid_workspace_or_hash_fails_closed
 //! Delivered Skill bundles: their physical installer and the Session's catalogue prompt.
 
