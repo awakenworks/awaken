@@ -19,6 +19,8 @@
 //               and encode wire responses; no resource business state lives here.
 // `state` holds the `SessionRuntime` port and the session record store the routes
 // drive and the projection writes into; `session_repo` is its persistence port.
+/// Awaken's `/v1/awaken` extensions of this protocol.
+pub mod awaken_extensions;
 mod common;
 mod control;
 /// Conversion/projection: committed `Message`s and engine events → public wire events.

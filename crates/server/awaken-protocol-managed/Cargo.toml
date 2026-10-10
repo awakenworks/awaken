@@ -81,7 +81,6 @@ awaken-service-auth-contract.workspace = true
 # the Anthropic `BetaEnvironment.networking` wire config onto this typed policy, so
 # the egress decision is a shared neutral fact rather than an inline string match.
 awaken-provisioning-contract.workspace = true
-awaken-protocol-awaken.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-observability.workspace = true
 awaken-ext-skills.workspace = true

@@ -5,7 +5,7 @@
 // @formal reason: Evidence: this module's equivalence and fence tables; a product-requirement
 // @formal reason: classification, not a direct proof claim.
 //! Awaken-only read projection of a Session's content-capture decision
-//! (ADR-0050 D8), mounted by `awaken_protocol_awaken::session_content_capture_router`.
+//! (ADR-0050 D8), mounted by `crate::awaken_extensions::session_content_capture_router`.
 //!
 //! The answer is `{ requested, ceiling, consent, effective, reason }`: the
 //! decision a Run of this Session makes now, computed by the Run boundary's own
@@ -115,7 +115,7 @@ mod tests {
         session: &str,
         subject: Option<&str>,
     ) -> (StatusCode, serde_json::Value) {
-        let app = awaken_protocol_awaken::session_content_capture_router(
+        let app = crate::awaken_extensions::session_content_capture_router(
             super::get_session_content_capture,
         )
         .with_state(state.clone())

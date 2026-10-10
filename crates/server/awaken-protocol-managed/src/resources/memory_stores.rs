@@ -487,7 +487,7 @@ pub fn memory_stores_router(
                 .delete(delete_memory),
         )
         .route("/v1/memory_stores/{id}/memory_versions", get(list_versions))
-        .merge(awaken_protocol_awaken::memory_copy_conflicts_router(
+        .merge(crate::awaken_extensions::memory_copy_conflicts_router(
             copy_conflicts::list,
         ))
         .route(

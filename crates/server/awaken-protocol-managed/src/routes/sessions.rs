@@ -1182,11 +1182,11 @@ fn historical_profiled_repository_binding_id(
 pub async fn create_profiled_session(
     State(state): State<Arc<ManagedState>>,
     RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
-    Json(body): Json<awaken_protocol_awaken::ProfiledSessionCreate>,
+    Json(body): Json<crate::awaken_extensions::ProfiledSessionCreate>,
 ) -> Result<
     (
         StatusCode,
-        Json<awaken_protocol_awaken::ProfiledSessionCreated>,
+        Json<crate::awaken_extensions::ProfiledSessionCreated>,
     ),
     (StatusCode, Json<ErrorResponse>),
 > {
@@ -1213,7 +1213,7 @@ pub async fn create_profiled_session(
     {
         return Ok((
             StatusCode::ACCEPTED,
-            Json(awaken_protocol_awaken::ProfiledSessionCreated {
+            Json(crate::awaken_extensions::ProfiledSessionCreated {
                 id: existing.session_id.into_string(),
                 metadata: existing.metadata,
             }),
@@ -1294,7 +1294,7 @@ pub async fn create_profiled_session(
         .map_err(|error| error_response(ManagedState::map_creation_error(error)))?;
     Ok((
         StatusCode::ACCEPTED,
-        Json(awaken_protocol_awaken::ProfiledSessionCreated {
+        Json(crate::awaken_extensions::ProfiledSessionCreated {
             id: session.session_id.into_string(),
             metadata: session.metadata,
         }),
@@ -1324,8 +1324,8 @@ pub async fn release_profiled_session(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
     RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
-    Json(body): Json<awaken_protocol_awaken::ProfiledSessionRelease>,
-) -> Result<Json<awaken_protocol_awaken::ProfiledSessionReleased>, WireErr> {
+    Json(body): Json<crate::awaken_extensions::ProfiledSessionRelease>,
+) -> Result<Json<crate::awaken_extensions::ProfiledSessionReleased>, WireErr> {
     let request_scope = WorkspaceScope(owner_scope.clone());
     ensure_session_scope(state.as_ref(), &id, Some(&request_scope)).await?;
 
@@ -1334,7 +1334,7 @@ pub async fn release_profiled_session(
             .release_profiled_session_without_publication(&id)
             .await
             .map_err(error_response)?;
-        return Ok(Json(awaken_protocol_awaken::ProfiledSessionReleased {
+        return Ok(Json(crate::awaken_extensions::ProfiledSessionReleased {
             id,
             repository_publication: None,
         }));
@@ -1355,12 +1355,14 @@ pub async fn release_profiled_session(
     .await
     .map_err(profiled_release_error_response)?;
 
-    Ok(Json(awaken_protocol_awaken::ProfiledSessionReleased {
+    Ok(Json(crate::awaken_extensions::ProfiledSessionReleased {
         id,
-        repository_publication: Some(awaken_protocol_awaken::ProfiledSessionRepositoryPublished {
-            binding_id,
-            receipt: outcome.publication_receipt.effect_receipt,
-        }),
+        repository_publication: Some(
+            crate::awaken_extensions::ProfiledSessionRepositoryPublished {
+                binding_id,
+                receipt: outcome.publication_receipt.effect_receipt,
+            },
+        ),
     }))
 }
 

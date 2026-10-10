@@ -57,7 +57,7 @@ use tower::ServiceExt;
 fn router(state: std::sync::Arc<ManagedState>) -> Router {
     support::edge_stamped(
         managed_router(state.clone()).merge(
-            awaken_protocol_awaken::session_resource_manifest_router(
+            awaken_protocol_managed::awaken_extensions::session_resource_manifest_router(
                 awaken_protocol_managed::replace_resource_manifest,
             )
             .with_state(state),
@@ -66,18 +66,24 @@ fn router(state: std::sync::Arc<ManagedState>) -> Router {
 }
 
 fn profiled_router(state: std::sync::Arc<ManagedState>, workspace: &str) -> Router {
-    let extensions = awaken_protocol_awaken::profiled_session_router(
+    let extensions = awaken_protocol_managed::awaken_extensions::profiled_session_router(
         awaken_protocol_managed::create_profiled_session,
     )
-    .merge(awaken_protocol_awaken::profiled_session_run_router(
-        awaken_protocol_managed::submit_profiled_session_run,
-    ))
-    .merge(awaken_protocol_awaken::profiled_session_release_router(
-        awaken_protocol_managed::release_profiled_session,
-    ))
-    .merge(awaken_protocol_awaken::session_execution_evidence_router(
-        awaken_protocol_managed::get_session_execution_evidence,
-    ))
+    .merge(
+        awaken_protocol_managed::awaken_extensions::profiled_session_run_router(
+            awaken_protocol_managed::submit_profiled_session_run,
+        ),
+    )
+    .merge(
+        awaken_protocol_managed::awaken_extensions::profiled_session_release_router(
+            awaken_protocol_managed::release_profiled_session,
+        ),
+    )
+    .merge(
+        awaken_protocol_managed::awaken_extensions::session_execution_evidence_router(
+            awaken_protocol_managed::get_session_execution_evidence,
+        ),
+    )
     .with_state(state);
     extensions.layer(axum::Extension(awaken_tenancy::WorkspaceScope(
         workspace.to_string(),
@@ -6282,7 +6288,7 @@ async fn profiled_create_replays_and_releases_activation_failed_root_without_res
     failed.revision = Default::default();
 
     let sessions = support::session_repository("target Session repository").await;
-    let typed: awaken_protocol_awaken::ProfiledSessionCreate =
+    let typed: awaken_protocol_managed::awaken_extensions::ProfiledSessionCreate =
         serde_json::from_value(request.clone()).expect("typed private request");
     let receipt = awaken_session_state_contract::IdempotencyRecord {
         key: "profiled:create:profiled-failed-replay".into(),
@@ -6636,7 +6642,7 @@ async fn profiled_create_receipt_replays_a_historical_repository_path_without_re
     };
 
     let sessions = support::session_repository("target Session repository").await;
-    let typed_legacy: awaken_protocol_awaken::ProfiledSessionCreate =
+    let typed_legacy: awaken_protocol_managed::awaken_extensions::ProfiledSessionCreate =
         serde_json::from_value(legacy_wire.clone()).expect("legacy private wire");
     let receipt = awaken_session_state_contract::IdempotencyRecord {
         key: "profiled:create:profiled-legacy-path-replay".into(),
@@ -7404,7 +7410,7 @@ async fn profiled_run_submission_fails_closed_by_target_and_error_class() {
     .await
     .expect_for(StatusCode::BAD_REQUEST, "R7 unknown field");
 
-    let unscoped = awaken_protocol_awaken::profiled_session_run_router(
+    let unscoped = awaken_protocol_managed::awaken_extensions::profiled_session_run_router(
         awaken_protocol_managed::submit_profiled_session_run,
     )
     .with_state(state);

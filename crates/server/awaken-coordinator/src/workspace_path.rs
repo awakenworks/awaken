@@ -206,13 +206,15 @@ mod tests {
         async fn submit(
             Path(session_id): Path<String>,
             axum::Extension(scope): axum::Extension<WorkspaceScope>,
-            axum::Json(body): axum::Json<awaken_protocol_awaken::ProfiledSessionRunSubmit>,
+            axum::Json(body): axum::Json<
+                awaken_protocol_managed::awaken_extensions::ProfiledSessionRunSubmit,
+            >,
         ) -> String {
             format!("{session_id}|{}|{}", scope.0, body.run_id.0)
         }
 
         let flat = with_platform_workspace(
-            awaken_protocol_awaken::profiled_session_run_router(submit),
+            awaken_protocol_managed::awaken_extensions::profiled_session_run_router(submit),
             "ws_local".into(),
         );
         let app = with_workspace_path_addressing(flat);
