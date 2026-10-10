@@ -179,7 +179,7 @@ mod tests {
             isolation: pc::IsolationClass::Container,
             mounts: Vec::new(),
             env: Vec::new(),
-            packages: pc::PackageRequirements::default(),
+            packages: awaken_environment_contract::PackageRequirements::default(),
             network: pc::NetworkPolicy::None,
             outputs_path: output.into(),
             requests: pc::ResourceRequests::default(),

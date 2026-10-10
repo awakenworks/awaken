@@ -90,7 +90,7 @@ pub(crate) fn project_environment(
         }
     };
     let packages = environment.prepared_image.as_ref().map_or_else(
-        || pc::PackageRequirements {
+        || awaken_environment_contract::PackageRequirements {
             managers: environment
                 .packages
                 .manager_packages()
@@ -103,7 +103,7 @@ pub(crate) fn project_environment(
                 environment.environment_id, environment.revision.0
             )),
         },
-        |_| pc::PackageRequirements::default(),
+        |_| awaken_environment_contract::PackageRequirements::default(),
     );
     let mut sandbox = environment.sandbox.clone();
     // EnvironmentSnapshot.network is the sole reachability authority. The

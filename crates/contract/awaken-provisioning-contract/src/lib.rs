@@ -95,6 +95,6 @@ pub use spec::{
 };
 pub use vocab::{
     Artifact, CacheVolumeLocation, EnvValue, EnvVar, EnvVisibility, MemoryWriteConsistency,
-    MountAccess, MountLifetime, MountRequirement, MountSource, NetworkPolicy, PackageRequirements,
-    RESERVED_ENV_KEYS, Realization, RealizedMount, ResourceLimits, ResourceRequests,
+    MountAccess, MountLifetime, MountRequirement, MountSource, NetworkPolicy, RESERVED_ENV_KEYS,
+    Realization, RealizedMount, ResourceLimits, ResourceRequests,
 };

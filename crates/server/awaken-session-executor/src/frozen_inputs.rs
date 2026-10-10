@@ -31,7 +31,7 @@ pub(crate) type FrozenBaselineInputs = awaken_session_configuration_contract::Se
 pub(crate) struct FrozenEnvironmentInputs {
     pub fingerprint: awaken_session_configuration_contract::EnvironmentFingerprint,
     pub network: awaken_provisioning_contract::NetworkPolicy,
-    pub packages: awaken_provisioning_contract::PackageRequirements,
+    pub packages: awaken_environment_contract::PackageRequirements,
     pub sandbox: Option<awaken_provisioning_contract::SandboxOverride>,
     pub provisioning: awaken_session_configuration_contract::SandboxProvisioning,
     pub idle_retention: awaken_session_configuration_contract::EnvironmentIdleRetentionPolicy,

@@ -705,11 +705,7 @@ impl EnvRegistry for SqliteEnvRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_environment_contract::{
-        EnvironmentConfigMutation, EnvironmentFieldUpdate, EnvironmentNetworking,
-        EnvironmentNetworkingMutation, EnvironmentPackages, EnvironmentStoreError,
-        InvalidEnvironmentConfig,
-    };
+    use awaken_environment_contract::{EnvironmentStoreError, InvalidEnvironmentConfig};
 
     #[test]
     fn environment_schema_is_versioned_and_unconditional() {
@@ -750,7 +746,7 @@ mod tests {
 
     #[test]
     fn persisted_invalid_environment_fails_closed_on_rehydration() {
-        // C1 legacy/corrupt storage contains an unreachable package plan -> E1
+        // C1 legacy/corrupt storage contains a malformed package plan -> E1
         // rehydration returns the same typed domain error rather than admitting
         // an invalid aggregate through a read-side bypass.
         let row = PersistedEnvRow {
@@ -764,7 +760,7 @@ mod tests {
                     "type": "limited",
                     "allow_package_managers": false
                 },
-                "packages": { "npm": ["tsx"] }
+                "packages": { "npm": ["--invalid"] }
             })
             .to_string(),
             archived_at: None,
@@ -777,7 +773,7 @@ mod tests {
         assert_eq!(
             row.try_into_item().unwrap_err(),
             EnvironmentStoreError::InvalidConfig(
-                InvalidEnvironmentConfig::PackagesRequirePackageManager
+                InvalidEnvironmentConfig::InvalidPackageRequirement { manager: "npm" }
             )
         );
     }
@@ -1338,100 +1334,9 @@ mod tests {
         // this is adapter parity, not a PostgreSQL-specific reinterpretation.
         registration_outbox_conformance(&r).await;
 
-        // Cross-backend invariant parity: C1 limited networking denies package
-        // managers while C2 packages are configured -> E1 create/update reject;
-        // E2 the failed update appends neither a revision nor an outbox intent.
-        // C3 the invariant fixture is complete -> E3 archive it through the
-        // canonical terminal transition so later lifecycle rules own the only
-        // active row without discarding this fixture's durable history.
-        let invalid_config = EnvironmentConfig::Cloud {
-            networking: EnvironmentNetworking::Limited {
-                allowed_hosts: Vec::new(),
-                allow_mcp_servers: false,
-                allow_package_managers: false,
-            },
-            packages: EnvironmentPackages {
-                npm: vec!["tsx".into()],
-                ..Default::default()
-            },
-        };
-        assert_eq!(
-            r.create(
-                "invalid".into(),
-                String::new(),
-                BTreeMap::new(),
-                invalid_config,
-            )
-            .await
-            .unwrap_err(),
-            CreateEnvironmentError::InvalidConfig(
-                InvalidEnvironmentConfig::PackagesRequirePackageManager
-            )
-        );
-        let valid = r
-            .create(
-                "valid".into(),
-                String::new(),
-                BTreeMap::new(),
-                EnvironmentConfig::Cloud {
-                    networking: EnvironmentNetworking::Limited {
-                        allowed_hosts: Vec::new(),
-                        allow_mcp_servers: false,
-                        allow_package_managers: true,
-                    },
-                    packages: EnvironmentPackages {
-                        npm: vec!["tsx".into()],
-                        ..Default::default()
-                    },
-                },
-            )
-            .await
-            .unwrap();
-        let intent_count = r
-            .registration_intents(EnvironmentRegistrationIntentFilter::All)
-            .await
-            .unwrap()
-            .len();
-        assert_eq!(
-            r.update(
-                &valid.id,
-                valid.revision,
-                EnvUpdate {
-                    config: Some(EnvironmentConfigMutation::PatchCloud {
-                        networking: Some(EnvironmentNetworkingMutation::Limited {
-                            allowed_hosts: None,
-                            allow_mcp_servers: None,
-                            allow_package_managers: Some(EnvironmentFieldUpdate::Replace(false)),
-                        }),
-                        packages: None,
-                    }),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap_err(),
-            EnvironmentStoreError::InvalidConfig(
-                InvalidEnvironmentConfig::PackagesRequirePackageManager
-            )
-        );
-        assert_eq!(r.get(&valid.id).await.unwrap(), Some(valid.clone()));
-        assert!(
-            r.get_revision(&valid.id, EnvironmentRevision(2))
-                .await
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            r.registration_intents(EnvironmentRegistrationIntentFilter::All)
-                .await
-                .unwrap()
-                .len(),
-            intent_count
-        );
-        r.archive(&valid.id)
-            .await
-            .expect("archive invariant fixture")
-            .expect("invariant fixture exists");
+        // The same I1-I7 decision table owns operand admission, atomic rollback,
+        // prepared-package persistence and fixture archival on all backends.
+        awaken_store_conformance::env_registry::package_network_invariant_is_atomic(&r).await;
 
         // PostgreSQL transaction-failure parity for the SQLite rollback rule:
         // C1 the final intent insert raises -> E1 create fails and E2 every table
@@ -1496,16 +1401,6 @@ mod tests {
             .execute(&r.pool)
             .await
             .unwrap();
-
-        // Fixture-isolation rule P3: C1 the invalid-update fixture remains active
-        // after proving rollback; C2 the following create/list parity rule assumes
-        // no pre-existing active Environment. E1 archive the fixture through the
-        // public contract (and therefore preserve its revision/outbox history);
-        // E2 the next active count observes only the Environment it creates.
-        r.archive(&valid.id)
-            .await
-            .expect("archive parity fixture")
-            .expect("parity fixture exists");
 
         let e = r
             .create("prod".into(), "d".into(), BTreeMap::new(), config())

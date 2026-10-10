@@ -8,11 +8,13 @@
 //! closed when the backend cannot honor a requested guarantee. Pure and
 //! deterministic: no I/O, safe to run at admission time and to unit-test.
 
+use awaken_environment_contract::PackageRequirements;
+
 use crate::sandbox::SandboxCapabilities;
 use crate::spec::SandboxSpec;
 use crate::vocab::{
-    EnvVar, EnvVisibility, MountAccess, MountRequirement, NetworkPolicy, PackageRequirements,
-    RESERVED_ENV_KEYS, ResourceLimits, ResourceRequests,
+    EnvVar, EnvVisibility, MountAccess, MountRequirement, NetworkPolicy, RESERVED_ENV_KEYS,
+    ResourceLimits, ResourceRequests,
 };
 
 /// A validated, normalized plan ready to hand to [`crate::SandboxProvider::create`].
