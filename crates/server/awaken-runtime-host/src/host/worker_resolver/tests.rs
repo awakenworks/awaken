@@ -2757,6 +2757,7 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
             &host.realizer.env.session_provider,
         );
     let spec = host
+        .realizer
         .validate_session_environment_capabilities(&host.realizer.env.session_provider, &spec)
         .expect("C2 exact adoption spec");
     let replacement = Arc::new(

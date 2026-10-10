@@ -1497,6 +1497,7 @@ async fn frozen_environment_selects_trusted_host_exactly() {
     trusted.self_hosted = true;
     host.install_environment_projection("T1", &trusted).unwrap();
     let selected = host
+        .realizer
         .session_environment_provider_for_thread(
             "T1",
             &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
@@ -1519,7 +1520,7 @@ async fn frozen_environment_selects_trusted_host_exactly() {
     absent
         .install_environment_projection("T2", &trusted)
         .unwrap();
-    let error = match absent.session_environment_provider_for_thread(
+    let error = match absent.realizer.session_environment_provider_for_thread(
         "T2",
         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
     ) {
@@ -1548,11 +1549,13 @@ async fn frozen_environment_selects_trusted_host_exactly() {
             Default::default(),
         )
         .unwrap();
-    let error =
-        match host.session_environment_provider_for_thread("I1", backend_owned.provisioning()) {
-            Ok(_) => panic!("I1/E3"),
-            Err(error) => error,
-        };
+    let error = match host
+        .realizer
+        .session_environment_provider_for_thread("I1", backend_owned.provisioning())
+    {
+        Ok(_) => panic!("I1/E3"),
+        Err(error) => error,
+    };
     assert!(error.message.contains("trusted_host Workdir"), "I1/E3");
 }
 

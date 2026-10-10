@@ -204,12 +204,12 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
             }
             if self.rebuild_unavailable_environment && !a2a_only {
                 let provider = if let Some(candidate) = model_candidate.as_ref() {
-                    self.host.session_environment_provider_for_thread(
+                    self.host.realizer.session_environment_provider_for_thread(
                         session_id.as_str(),
                         candidate.provisioning(),
                     )
                 } else {
-                    self.host.session_environment_provider_for_thread(
+                    self.host.realizer.session_environment_provider_for_thread(
                         session_id.as_str(),
                         &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
                     )

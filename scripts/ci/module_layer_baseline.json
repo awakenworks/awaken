@@ -30,7 +30,7 @@
   },
   "shared-host-impl": {
     "host::session::environment_lifecycle": 47,
-    "host::session::environment_realization": 25,
+    "host::session::environment_realization": 16,
     "host::terminal_reconciliation": 1,
     "provisioning": 5
   }

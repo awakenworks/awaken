@@ -692,7 +692,9 @@ impl SharedHost {
             )));
         }
         let spec = self.session_environment_adoption_spec(thread, provider, resolved_resources);
-        let spec = self.validate_session_environment_adoption(provider, &spec, &handle)?;
+        let spec = self
+            .realizer
+            .validate_session_environment_adoption(provider, &spec, &handle)?;
         let (retained, candidate) = self
             .session_slots
             .read_realization(thread, |r| match &r.environment_owner {

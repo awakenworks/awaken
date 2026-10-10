@@ -1527,7 +1527,7 @@ mod tests {
         // Publication deliberately evicts the rebuildable SessionCtx before the
         // final claimed resolve. A heartbeat may enter this exact gap; the
         // retained Environment remains the publication-authorized effect owner.
-        host.evict_session_for_rebuild(thread).await;
+        host.realizer.evict_session_for_rebuild(thread).await;
         assert!(
             host.session_slots
                 .read(thread, |slot| slot.run.runtime.is_none()
@@ -1573,7 +1573,7 @@ mod tests {
                     .await
                     .expect("R9 warm Runtime");
             } else {
-                host.evict_session_for_rebuild(thread).await;
+                host.realizer.evict_session_for_rebuild(thread).await;
             }
             assert_eq!(
                 host.session_slots

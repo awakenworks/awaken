@@ -253,7 +253,8 @@ async fn generated_compaction_config_survives_claimed_rebuild() {
     };
     assert_exact_config(&provisional.config, "C7/E1");
 
-    host.evict_session_for_rebuild("durable-compact-config")
+    host.realizer
+        .evict_session_for_rebuild("durable-compact-config")
         .await;
     let executable = host
         .ctx_for_snapshot(

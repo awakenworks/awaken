@@ -288,6 +288,7 @@ pub(crate) async fn available_local_environment_binding(
         .realizer
         .sandbox_spec_for_resolved_resources_and_provider(thread, &projection.resources, provider);
     let spec = host
+        .realizer
         .validate_session_environment_capabilities(provider, &spec)
         .expect("validate exact available-Environment fixture spec");
     let create_fence = awaken_provisioning_contract::SandboxEffectFence::new(

@@ -29,6 +29,7 @@ pub(super) async fn adopt_bound_sandbox(
     awaken_dispatch_execution::Error,
 > {
     let provider = host
+        .realizer
         .session_environment_provider_for_thread(expected_sandbox_id, provisioning)
         .map_err(HostWorkerResolver::map_host_resolution_error)?;
     host.adopt_bound_session_environment(

@@ -1751,7 +1751,7 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
     };
     // Eviction also exercises cold Coordinator reconstruction, rather than
     // accidentally succeeding through a previously cached envelope.
-    host.evict_session_for_rebuild(thread).await;
+    host.realizer.evict_session_for_rebuild(thread).await;
     for _ in 0..2 {
         host.continue_session_agent_report(report.clone())
             .await
@@ -1768,7 +1768,7 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
     assert!(host.continue_session_agent_report(invalid).await.is_err());
     assert_eq!(dispatch.list_dispatches().await.unwrap().len(), 1, "R5");
 
-    host.evict_session_for_rebuild(thread).await;
+    host.realizer.evict_session_for_rebuild(thread).await;
     let error = match host
         .ctx_for_snapshot(thread, Some("assistant"), Some(reserved.config.clone()))
         .await
@@ -1806,7 +1806,7 @@ async fn rebuilt_coordination_context_never_borrows_a_retained_environment() {
         .await
         .expect("C1 create executable context");
     let retained = executable.env.clone().expect("C1 resident Environment");
-    host.evict_session_for_rebuild(thread).await;
+    host.realizer.evict_session_for_rebuild(thread).await;
 
     let coordination = host
         .ctx_for_session_coordination(thread, None)

@@ -1110,7 +1110,9 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
         .expect("eager environment")
         .lifecycle()
         .handle();
-    host.evict_session_for_rebuild("t-retained-adoption").await;
+    host.realizer
+        .evict_session_for_rebuild("t-retained-adoption")
+        .await;
     drop(original);
 
     let foreign = host

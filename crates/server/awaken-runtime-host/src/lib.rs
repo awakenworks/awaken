@@ -520,6 +520,7 @@ impl awaken_session_runtime_contract::CoordinationRuntime for ManagedHost {
         .await;
         if reservation_context_is_ephemeral {
             self.host
+                .realizer
                 .evict_session_for_rebuild(session_id.as_str())
                 .await;
         }
@@ -816,7 +817,7 @@ impl awaken_session_runtime_contract::StreamingRunRuntime for ManagedHost {
         // Run rebuilds with the newly resolved executor (native switch is O(1); an
         // ACP thread's cached context relaunches its CLI on rebuild).
         self.host.register_thread_model(thread, model);
-        self.host.evict_session_for_rebuild(thread).await;
+        self.host.realizer.evict_session_for_rebuild(thread).await;
         Ok(())
     }
 
@@ -841,7 +842,7 @@ impl awaken_session_runtime_contract::EnvironmentRuntime for ManagedHost {
         self.host
             .session_slots
             .replace_frozen_with(thread, |next| next.tools = Some(tools));
-        self.host.evict_session_for_rebuild(thread).await;
+        self.host.realizer.evict_session_for_rebuild(thread).await;
         Ok(())
     }
 

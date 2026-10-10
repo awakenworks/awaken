@@ -980,7 +980,7 @@ impl crate::ManagedHost {
             r.environment_resource_reconciliation =
                 crate::staged_resources::EnvironmentResourceReconciliation::None;
         });
-        self.host.evict_session_for_rebuild(thread).await;
+        self.host.realizer.evict_session_for_rebuild(thread).await;
         Ok(())
     }
 }
@@ -1196,9 +1196,10 @@ impl crate::ManagedHost {
         } else {
             let provider = if let Some(candidate) = candidate.as_ref() {
                 self.host
+                    .realizer
                     .session_environment_provider_for_thread(thread, candidate.provisioning())
             } else {
-                self.host.session_environment_provider_for_thread(
+                self.host.realizer.session_environment_provider_for_thread(
                     thread,
                     &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
                 )
