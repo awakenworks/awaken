@@ -114,7 +114,8 @@ tests execute on every run; a cache hit is never execution evidence.
 
 `check-rust.sh` retains each stage's live output, exact argv, status and elapsed
 seconds under `target/test-timings/rust-gate.*/`. Its `test-build` stage uses the
-same canonical feature graph with `nextest --no-run --timings`; `test` then
+same canonical feature graph with `cargo test --no-run --timings`, Nextest's
+underlying build command. Test discovery happens once in `test`, which then
 executes that graph under the existing per-test deadline. Cargo's HTML timeline
 in `target/cargo-timings/` separates the dependency path and native linking from
 test enumeration/runtime. Preserve both cold and warm runs before attributing

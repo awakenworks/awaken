@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import sys
 import tempfile
 import tomllib
@@ -852,6 +853,27 @@ def deadline_seconds(slow_timeout: object) -> float | None:
     return float(match["value"]) * DURATION_UNITS[match["unit"]] * terminate
 
 
+def unbounded_workspace_test(line: str) -> bool:
+    """Distinguish Cargo build modes from libtest arguments and other commands."""
+    lexer = shlex.shlex(line.rstrip().removesuffix("\\"), posix=True, punctuation_chars=";&|")
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return bool(re.search(r"cargo test --workspace", line))
+    for index in range(len(tokens) - 2):
+        if tokens[index:index + 3] != ["cargo", "test", "--workspace"]:
+            continue
+        options = []
+        for token in tokens[index + 3:]:
+            if token == "--" or set(token) <= set(";&|"):
+                break
+            options.append(token)
+        if not {"--no-run", "--doc"}.intersection(options):
+            return True
+    return False
+
+
 def test_deadline_errors(config_text: str, rust_gate: str) -> list[str]:
     """Require one runner-enforced deadline on every Rust test.
 
@@ -909,9 +931,7 @@ def test_deadline_errors(config_text: str, rust_gate: str) -> list[str]:
     unbounded = [
         line.strip()
         for line in rust_gate.splitlines()
-        if re.search(r"(?<!nextest run )cargo test --workspace", line)
-        and "--doc" not in line
-        and not line.strip().startswith("#")
+        if unbounded_workspace_test(line)
     ]
     if unbounded:
         errors.append(
@@ -1194,6 +1214,20 @@ def self_test() -> None:
     assert not test_deadline_errors(
         deadline_config, deadline_gate + "\n      cargo test --workspace --doc\n"
     ), "D1 doctest line is not an unbounded suite"
+    for suffix, unbounded in (
+        ("--locked --no-run --timings", False), ('"--no-run"', False),
+        ("--no-run \\", False), ("--locked \\", True),
+        ("--locked", True), ("-- --no-run", True),
+        ("; echo --no-run", True), ("# --no-run", True),
+        ("--test=contains--no-run", True), ("--no-run=false", True),
+        ("--no-run; cargo test --workspace", True),
+        ("--no-run && cargo test --workspace", True),
+        ("-- --doc", True), ("--locked 'unterminated", True),
+    ):
+        errors = test_deadline_errors(
+            deadline_config, deadline_gate + f"\ncargo test --workspace {suffix}\n"
+        )
+        assert bool(errors) == unbounded, f"D6 Cargo execution mode: {suffix}"
     assert 'failure-output = "immediate-final"' in deadline_config, "D8 fixture"
     for lost in ('failure-output = "immediate"', 'failure-output = "final"', ""):
         assert test_deadline_errors(
