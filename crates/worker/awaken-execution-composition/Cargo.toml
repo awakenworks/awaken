@@ -45,6 +45,9 @@ tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 
 [features]
+# Native process fixtures use a local bare Git remote. Keep that aperture on
+# the Local transport owner; production builds continue to admit HTTPS only.
+test-support = ["awaken-sandbox-local/test-support"]
 # Container Session tiers (AWAKEN_SANDBOX_TIER=docker|podman|k8s). Off by default:
 # a build without them fails closed when the deployment names a container backend.
 docker = ["awaken-sandbox-container/docker"]
