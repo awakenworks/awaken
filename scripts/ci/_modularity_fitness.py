@@ -32,6 +32,10 @@ adds an entry):
   falls to the threshold or below, its entry is removed. Dependencies are exact (a lower
   count is recorded in the same commit); lines may float below the budget and
   must be re-recorded once they fall `BUDGET_LINE_SLACK` or more below it.
+  Modules of `awaken-session-executor` that the module-layer guard classifies as
+  `realizer` are the realizer still being extracted (plan slice R): they are
+  measured as that future crate, not as the host, so assembling it in place is
+  not host growth; the extracting realizer meets the same review threshold.
 
 A count above its baseline is an error; a count below it is an error until the
 baseline is lowered in the same commit, so the file records the real state.
@@ -47,6 +51,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 import _crate_boundary_workspace
+import _module_layer_fitness
 from _context_map_fitness import _flatten_path_tree
 
 BASELINE = Path(__file__).with_name("modularity_baseline.json")
@@ -181,6 +186,15 @@ def _components(nodes: Iterable[str], edges: dict[str, set[str]]) -> list[list[s
     return found
 
 
+def extracting_realizer_files(crate: str, files: Iterable[str], table=None) -> set[str]:
+    """Files of the runtime-host modules the module-layer guard classifies as `realizer`."""
+    if crate != _module_layer_fitness.CRATE:
+        return set()
+    table = _module_layer_fitness.layer_table() if table is None else table
+    return {relative for relative in files if _module_layer_fitness.target_of(
+        tuple(_module_of(relative)), table) == _module_layer_fitness.REALIZER}
+
+
 def crate_measures(manifest_path: Path) -> dict:
     root = manifest_path.parent / "src"
     files: dict[str, str] = {}
@@ -192,10 +206,16 @@ def crate_measures(manifest_path: Path) -> dict:
     top = {_module_of(relative)[0] for relative in files if _module_of(relative)}
     crate_root = next((root / name for name in ("lib.rs", "main.rs") if (root / name).exists()), None)
     adopted = bool(crate_root and _UNREACHABLE_PUB.search(crate_root.read_text(encoding="utf-8")))
-    layer = _crate_boundary_workspace.load_manifest(manifest_path).get("package", {}).get("metadata", {}).get(
-        "awaken", {}).get("layer", "")
+    manifest = _crate_boundary_workspace.load_manifest(manifest_path)
+    layer = manifest.get("package", {}).get("metadata", {}).get("awaken", {}).get("layer", "")
+    extracting = extracting_realizer_files(_crate_boundary_workspace.package_name(manifest), files)
+
+    def code_lines(selected: Iterable[str]) -> int:
+        return sum(1 for relative in selected for line in files[relative].splitlines() if line.strip())
+
     return {
-        "lines": sum(1 for source in files.values() for line in source.splitlines() if line.strip()),
+        "lines": code_lines(set(files) - extracting),
+        "extracting-realizer-lines": code_lines(extracting),
         "deps": _crate_boundary_workspace.normal_dependency_names(
             _crate_boundary_workspace.load_manifest(manifest_path)),
         "long-function": {} if layer == "tooling" else long_functions(files),
@@ -275,6 +295,12 @@ def modularity_errors(measures: dict[str, dict], baseline: dict) -> list[str]:
             errors.append(f"crate-budget: {crate} has {lines} production code lines, over the review threshold "
                           f"{CRATE_REVIEW_LINES}; check it is still one boundary (ADR-0091 D2) and record it in "
                           f"{BASELINE.name} with the review or the work item that shrinks it")
+    for crate, measure in sorted(measures.items()):
+        extracting = measure.get("extracting-realizer-lines", 0)
+        if extracting > CRATE_REVIEW_LINES:
+            errors.append(f"crate-budget: the realizer being extracted from {crate} has {extracting} production "
+                          f"code lines, over the review threshold {CRATE_REVIEW_LINES}; review its boundary "
+                          "(ADR-0091 D2) before it grows further")
     for crate, held in sorted(budgeted.items()):
         measure = measures.get(crate)
         if measure is None:
@@ -377,6 +403,7 @@ def selftest() -> None:
     | M6   | lint adopted while pending / missing while not pending       | error / error |
     | M7   | function over the limit: unrecorded / grew / shorter / equal / gone or under | error / error / error (lower) / accept / stale |
     | M8   | budgeted crate: lines grow / float < slack / fall >= slack; deps grow / shrink / equal | error / accept / error (lower); error / error (lower) / accept |
+    | M11  | runtime-host file in a realizer / host module; other crate; extracting realizer over / at threshold | extracting / host lines; host lines; error / accept |
     """
     spread = impl_spread({"a.rs": "impl Big { fn x(&self) {} fn y(&self) {} }", "b.rs": "impl<T> Big { fn z() {} }"})
     assert spread == {"Big": (2, 3)}, "impl-spread counting"
@@ -431,6 +458,20 @@ def selftest() -> None:
     assert modularity_errors(sized(CRATE_REVIEW_LINES, 3), {}) == [], "M10 unrecorded at threshold"
     assert "remove it" in modularity_errors(sized(CRATE_REVIEW_LINES, 3), budget)[0], "M10 recorded fell to threshold"
     assert "c" not in tightened(sized(CRATE_REVIEW_LINES, 3), budget)["crate-budget"], "M10 tighten drops it"
+    # M11 the realizer being extracted from runtime-host is measured as its future crate.
+    layers = _module_layer_fitness.layer_table((
+        (_module_layer_fitness.REALIZER, "r", ("host::session::environment_lifecycle", "provisioning")),
+        (_module_layer_fitness.HOST, "h", ("host", "host::session", "host::run"))))
+    host_files = ["host/session/environment_lifecycle/renewal.rs", "provisioning/mod.rs", "host/run.rs", "lib.rs"]
+    assert extracting_realizer_files("awaken-session-executor", host_files, layers) == {
+        "host/session/environment_lifecycle/renewal.rs", "provisioning/mod.rs"}, "M11 realizer vs host modules"
+    assert extracting_realizer_files("awaken-session-application", ["provisioning.rs"], layers) == set(), \
+        "M11 other crates are measured whole"
+    over = {"c": {**measure(), "lines": 10, "extracting-realizer-lines": CRATE_REVIEW_LINES + 1,
+                  "workspace-deps": frozenset()}}
+    assert "realizer being extracted" in modularity_errors(over, {})[0], "M11 extracting over threshold"
+    over["c"]["extracting-realizer-lines"] = CRATE_REVIEW_LINES
+    assert modularity_errors(over, {}) == [], "M11 extracting at threshold"
     # M9 `--tighten`: lowers or removes held entries, never adds or raises one.
     held = {"impl-spread": {"c::T": {"files": 10, "methods": 100, "reason": "r"}, "c::Gone": {"files": 9,
             "methods": 90, "reason": "r"}}, "super-glob": {"c": 3}, "module-cycle": {"c": 2},
