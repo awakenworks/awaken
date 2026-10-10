@@ -84,6 +84,10 @@ pub struct ManagedState {
     /// Current Workspace geography policy. Hosted composition supplies this
     /// authority; self-managed mode leaves it absent and retains local policy.
     pub(super) inference_geo_policy: Option<Arc<dyn crate::ManagedInferenceGeoPolicy>>,
+    /// The Host's content-capture ceiling and policy sources, so the
+    /// Session's `content_capture` projection reports the decision its Runs
+    /// make (ADR-0050 D8).
+    pub(crate) capture_policy: awaken_data_governance_contract::CapturePolicy,
     /// Whether every published refresh is checked against a cold rebuild of
     /// the same committed prefix. Only a test that counts source reads turns
     /// it off, because the check reads the prefix a second time.

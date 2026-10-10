@@ -557,12 +557,14 @@ async fn local_managed_state_over(
     let application = Arc::new(application);
     install_managed_agent_coordination(&host, &runtime, &application)
         .expect("scenario Session coordination application binds once");
+    let managed = ManagedState::from_application(
+        application.clone(),
+        environments,
+        host.content_capture_policy(),
+    );
     ScenarioManagedState {
         host,
-        managed: Arc::new(ManagedState::from_application(
-            application.clone(),
-            environments,
-        )),
+        managed: Arc::new(managed),
         sessions: application,
     }
 }
@@ -1293,6 +1295,17 @@ fn registered_worker_transport_with_broker(
     }
 }
 
+/// The read-only Awaken projections beside a Managed Session: its execution
+/// evidence and its content-capture decision (ADR-0050 D8).
+fn session_read_extensions() -> Router<Arc<ManagedState>> {
+    awaken_protocol_awaken::session_execution_evidence_router(
+        awaken_protocol_managed::get_session_execution_evidence,
+    )
+    .merge(awaken_protocol_awaken::session_content_capture_router(
+        awaken_protocol_managed::get_session_content_capture,
+    ))
+}
+
 async fn mount_with_managed_over_and_models(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
@@ -1475,9 +1488,7 @@ async fn mount_with_managed_over_and_models(
     .merge(awaken_protocol_awaken::profiled_session_release_router(
         awaken_protocol_managed::release_profiled_session,
     ))
-    .merge(awaken_protocol_awaken::session_execution_evidence_router(
-        awaken_protocol_managed::get_session_execution_evidence,
-    ))
+    .merge(session_read_extensions())
     .with_state(managed_state.clone());
     let managed = router(managed_state.clone())
         .merge(
