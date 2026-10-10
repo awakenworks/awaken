@@ -282,13 +282,13 @@ async function startHostLoginProfile() {
         timeoutMs: 60_000, pollMs: 200, requireAvailableLogin: true, apiKey,
       });
       verifyCredentials();
-    }, cleanup: async () => {
+    }, cleanup: async ({ preserveEvidence = false } = {}) => {
       await runCleanupSteps([
         () => external?.cleanup(),
         () => stop(child),
         () => upstream?.close(),
       ]);
-      fs.rmSync(temp, { recursive: true, force: true });
+      if (!preserveEvidence) fs.rmSync(temp, { recursive: true, force: true });
     } };
   } catch (error) {
     // Preserve startup failure and logs, while still releasing every owner.
@@ -330,6 +330,7 @@ const containerProbe = profile === 'container'
     }, 100)
   : undefined;
 
+const failures = [];
 try {
   let transcript;
   try {
@@ -398,6 +399,10 @@ try {
     deployment.verifyCredentials();
     if (!native) console.log(`WORKER LOCAL CREDENTIAL CUSTODY PASS: ${runtime}, startup/restarts/resources`);
   }
+} catch (error) {
+  failures.push(error);
 } finally {
-  await deployment.cleanup();
+  await runCleanupSteps([
+    () => deployment.cleanup({ preserveEvidence: failures.length > 0 }),
+  ], failures);
 }
