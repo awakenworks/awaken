@@ -10,104 +10,6 @@
 use super::*;
 
 impl SharedHost {
-    /// Read back the one exact terminal Preparation owner without relabeling it
-    /// to the later provider-disposal operation. The aggregate's Disposal
-    /// authorization supplies that destructive fence separately.
-    fn retained_terminal_preparation_owner(
-        &self,
-        thread: &str,
-        environment: &Arc<crate::session_environment::SessionEnvironment>,
-    ) -> bool {
-        self.session_slots
-            .read_realization(thread, |r| match &r.environment_owner {
-                SessionEnvironmentOwner::Retiring(retirement)
-                    if matches!(
-                        retirement.cause,
-                        SessionEnvironmentRetirementCause::Terminal { .. }
-                    ) =>
-                {
-                    let current = retirement.owned.environment();
-                    Arc::ptr_eq(&current, environment)
-                        && current.lifecycle().handle() == environment.lifecycle().handle()
-                }
-                _ => false,
-            })
-            .unwrap_or(false)
-    }
-
-    /// Revalidate the one aggregate-owned terminal assignment cached in the
-    /// root Session slot. Preparation and disposal both consume this decision;
-    /// each then lowers its own closed effect type exactly once.
-    pub(crate) fn authorize_terminal_cleanup_lease(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
-    ) -> Result<awaken_session_resource_contract::SessionRealizationLease, HostError> {
-        self
-            .session_slots
-            .read_realization(session_id.as_str(), |r| {
-                let current = r.authority.lease().ok_or_else(|| {
-                    HostError::unavailable_classified(
-                        "session_terminal_cleanup_projection_missing",
-                        "terminal cleanup has no installed realization generation",
-                    )
-                })?;
-                if !awaken_session_realization_contract::realization_lease_generation_authorizes(current, lease) {
-                    return Err(HostError::unavailable_classified(
-                        "session_terminal_cleanup_generation_stale",
-                        "terminal cleanup realization generation was replaced",
-                    ));
-                }
-                if r.authority.remaining_for(lease).is_none() {
-                    return Err(HostError::unavailable_classified(
-                        "session_terminal_cleanup_effect_expired",
-                        "terminal cleanup generation has no current live renewal at its physical boundary",
-                    ));
-                }
-                Ok(current.clone())
-            })
-            .unwrap_or_else(|| Err(
-                HostError::unavailable_classified(
-                    "session_terminal_cleanup_projection_missing",
-                    "terminal cleanup has no installed realization generation",
-                )
-            ))
-    }
-
-    /// Project the one preparation fence after the shared terminal assignment
-    /// check above. Physical adapters repeat expiry and incarnation checks at
-    /// their own effect boundaries.
-    pub(in crate::host) fn terminal_cleanup_effect_fence(
-        &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
-    ) -> Result<awaken_provisioning_contract::SandboxEffectFence, HostError> {
-        self.authorize_terminal_cleanup_lease(&effect.command.session_id, &effect.lease)?
-            .sandbox_effect_fence(effect.operation_id())
-            .map_err(|error| HostError::internal(error.to_string()))
-    }
-
-    /// Lower the aggregate's durable preparation predecessor and current
-    /// successor lease into the sole provider-neutral destructive authority.
-    pub(in crate::host) fn terminal_cleanup_disposal_authorization(
-        &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
-    ) -> Result<awaken_provisioning_contract::SandboxDisposalAuthorization, HostError> {
-        let current =
-            self.authorize_terminal_cleanup_lease(&effect.command.session_id, &effect.lease)?;
-        // The same slot proof already authorized preparation and disposal.
-        // Lowering preserves its Control-clock fence bytes; comparing them to
-        // Worker UTC would invent a second, incompatible expiry decision.
-        // This projection is not a grant for a later asynchronous effect.
-        effect
-            .sandbox_disposal_authorization_for_current_generation(&current)
-            .map_err(|error| {
-                HostError::unavailable_classified(
-                    "session_terminal_cleanup_disposal_unauthorized",
-                    error.to_string(),
-                )
-            })
-    }
-
     /// Re-open one exact terminal substrate into the process-local teardown
     /// slot. This helper deliberately writes no ordinary Environment receipt:
     /// the surrounding terminal command is the sole durable effect authority.
@@ -118,6 +20,8 @@ impl SharedHost {
         mode: BoundEnvironmentPreparationMode,
     ) -> Result<Option<(Arc<crate::session_environment::SessionEnvironment>, bool)>, HostError>
     {
+        let sessions = &self.installed_sessions;
+        let cleanup = &self.realizer.cleanup;
         let exec = &self.realizer;
         let TerminalEnvironmentInstallation {
             thread,
@@ -130,11 +34,10 @@ impl SharedHost {
             effect_fence,
         } = installation;
         let mut adopted = resident.is_none();
-        let authority = self.session_slots.provider_effect_authority(
-            thread,
-            effect_fence,
-            self.execution_authority.as_ref(),
-        )?;
+        let authority = self
+            .realizer
+            .execution
+            .provider_effect_authority(thread, effect_fence)?;
         let mut environment = match resident {
             Some(environment) => environment,
             None => match mode {
@@ -194,8 +97,7 @@ impl SharedHost {
         // the existing Store identity: never publish a Resident or an Adopt
         // receipt merely to finish this terminal command.
         if mode == BoundEnvironmentPreparationMode::TerminalRepositoryPublication
-            && let Some(retiring) = self
-                .session_slots
+            && let Some(retiring) = sessions
                 .read_realization(thread, |r| match &r.environment_owner {
                     SessionEnvironmentOwner::Retiring(retiring)
                         if retiring.cause
@@ -248,7 +150,7 @@ impl SharedHost {
                     })?,
             );
             admit()?;
-            self.session_slots.update_realization(thread, |r| {
+            sessions.update_realization(thread, |r| {
                 r.environment_owner
                     .prepare_retiring_realization_adoption(&retiring, fresh.clone())?;
                 let SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(
@@ -274,8 +176,7 @@ impl SharedHost {
         }
         if adopted
             && !mode.requires_live_source()
-            && let Some(retiring) = self
-                .session_slots
+            && let Some(retiring) = sessions
                 .read_realization(thread, |r| match &r.environment_owner {
                     SessionEnvironmentOwner::Retiring(retiring) => Some(retiring.clone()),
                     _ => None,
@@ -306,7 +207,7 @@ impl SharedHost {
             | BoundEnvironmentPreparationMode::TerminalRepositoryPublication => {
                 if adopted {
                     let candidate =
-                        self.begin_session_environment_adoption(thread, environment.clone())?;
+                        exec.begin_session_environment_adoption(thread, environment.clone())?;
                     let crate::environment_owner::UnboundSessionEnvironmentOrigin::AdoptionFrom(
                         identity,
                     ) = &candidate.origin
@@ -315,14 +216,13 @@ impl SharedHost {
                             "live source adoption has no durable Environment identity",
                         ));
                     };
-                    self.publish_prepared_session_environment(
+                    exec.publish_prepared_session_environment(
                         thread,
                         &candidate,
                         identity.clone(),
                     )?;
                 } else {
-                    let still_resident = self
-                        .session_slots
+                    let still_resident = sessions
                         .read_realization(thread, |r| {
                             r.environment_owner.resident().is_some_and(|current| {
                                 Arc::ptr_eq(&current, &environment)
@@ -337,7 +237,7 @@ impl SharedHost {
                     // live adoption cannot reopen it for tools/checkpoint work.
                     let retained_terminal = mode
                         == BoundEnvironmentPreparationMode::TerminalRepositoryPublication
-                        && self.retained_terminal_preparation_owner(thread, &environment);
+                        && cleanup.retained_preparation_owner(thread, &environment);
                     if !still_resident && !retained_terminal {
                         return Err(HostError::unavailable_classified(
                             "session_live_environment_owner_not_resident",
@@ -360,7 +260,7 @@ impl SharedHost {
                             "terminal committed Candidate changed its exact Environment",
                         ));
                     }
-                    self.session_slots.update_realization(thread, |r| {
+                    sessions.update_realization(thread, |r| {
                         r.environment_owner
                             .begin_retirement_with_committed_candidate(candidate, cause)
                     })?;
@@ -377,7 +277,7 @@ impl SharedHost {
                                 "terminal bound Environment changed its durable binding",
                             ));
                         }
-                        self.session_slots.update_realization(thread, |r| {
+                        sessions.update_realization(thread, |r| {
                             r.environment_owner.begin_retirement_with_adopted(
                                 &identity,
                                 binding,
@@ -391,7 +291,7 @@ impl SharedHost {
                         // scope. Keep that exact current handle as the existing
                         // Unbound retirement owner; it gains no durable binding
                         // and can only be disposed by this terminal fence.
-                        self.begin_session_environment_preparation(thread, environment.clone())?;
+                        exec.begin_session_environment_preparation(thread, environment.clone())?;
                         exec.retire_exact_environment(
                             thread,
                             cause,
@@ -403,7 +303,7 @@ impl SharedHost {
                 } else {
                     let retained_terminal_preparation = mode
                         == BoundEnvironmentPreparationMode::TerminalDisposal
-                        && self.retained_terminal_preparation_owner(thread, &environment);
+                        && cleanup.retained_preparation_owner(thread, &environment);
                     if !retained_terminal_preparation {
                         exec.retire_exact_environment(
                             thread,
@@ -414,7 +314,7 @@ impl SharedHost {
                         )?;
                     }
                 }
-                self.session_slots.update_realization(thread, |r| {
+                sessions.update_realization(thread, |r| {
                     r.environment_resource_reconciliation =
                         crate::staged_resources::EnvironmentResourceReconciliation::None;
                 });
@@ -438,7 +338,7 @@ impl SharedHost {
         let exec = &self.realizer;
         if mode.requires_live_source()
             && self
-                .session_slots
+                .installed_sessions
                 .read_realization(thread, |r| {
                     matches!(
                         &r.environment_owner,
@@ -564,14 +464,14 @@ impl SharedHost {
                         effect_id: effect_fence.operation_id().to_owned(),
                     };
                     if let Some(candidate) = committed_candidate.as_ref() {
-                        self.session_slots.update_realization(thread, |r| {
+                        self.installed_sessions.update_realization(thread, |r| {
                             r.environment_owner
                                 .begin_retirement_with_committed_candidate(candidate, cause)
                         })?;
                     } else {
                         let retained_terminal_preparation = mode
                             == BoundEnvironmentPreparationMode::TerminalDisposal
-                            && self.retained_terminal_preparation_owner(thread, &environment);
+                            && self.realizer.cleanup.retained_preparation_owner(thread, &environment);
                         if !retained_terminal_preparation {
                             exec.retire_exact_environment(thread, cause, &environment, "session_environment_effect_fence_lost", "lost the exact unavailable Environment owner")?;
                         }
@@ -672,15 +572,15 @@ impl SharedHost {
             realization_lease,
             environment_fingerprint,
         ) = self
-            .session_slots
+            .installed_sessions
             .read(thread, |slot| {
-                let baseline = slot.frozen.baseline.as_ref();
+                let baseline = slot.inputs.baseline.as_ref();
                 let r = &slot.realization;
                 (
                     r.terminal_environment_state.clone(),
                     r.environment_owner.clone(),
                     r.previous_resources(),
-                    slot.frozen.workspace.clone(),
+                    slot.inputs.workspace.clone(),
                     baseline.map(|baseline| baseline.environment.idle_retention.clone()),
                     r.authority.lease().cloned(),
                     baseline.map(|baseline| baseline.environment.config_fingerprint.0.clone()),
@@ -915,53 +815,6 @@ impl SharedHost {
         })
     }
 
-    /// Join frozen inputs with the durable handle's optional evidence before
-    /// any externally visible terminal effect. `None` remains legacy/unknown;
-    /// the contract owner rejects it for writable Memory instead of allowing a
-    /// caller to reinterpret it as an explicit empty current set.
-    pub(super) fn terminal_memory_plan(
-        &self,
-        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
-        prepared: &PreparedBoundEnvironment,
-    ) -> Result<TerminalMemoryPlan, HostError> {
-        let transition = self
-            .session_slots
-            .read_realization(&effect.command.thread_id, |r| r.resource_transition.clone())
-            .flatten()
-            .ok_or_else(|| {
-                HostError::internal("terminal Memory validation has no frozen Resource transition")
-            })?;
-        let materializations = prepared
-            .memory_materializations()
-            .map_err(|error| HostError::internal(error.to_string()))?;
-        let (intents, acknowledged_materializations) =
-            awaken_session_state_contract::terminal_memory_reconciliation_intents_from_materializations(
-                transition.previous().resources.inputs(),
-                materializations,
-                effect,
-            )
-            .map_err(|error| {
-                HostError::unavailable_classified(
-                    "session_terminal_memory_evidence_unreconciled",
-                    error.to_string(),
-                )
-            })?;
-        if !intents.is_empty()
-            && !prepared.source_effects_are_already_prepared()
-            && (prepared.environment.is_none() || !prepared.permits_live_io())
-        {
-            return Err(HostError::unavailable_classified(
-                "session_terminal_memory_source_absent",
-                "writable terminal Memory has no readable source or durable provider preparation",
-            ));
-        }
-        Ok(TerminalMemoryPlan {
-            intents,
-            acknowledged_materializations: acknowledged_materializations.map(<[_]>::to_vec),
-            workspace_id: Some(transition.previous().workspace_id.clone()),
-        })
-    }
-
     /// Reconcile every copy-backed Memory participant through the one
     /// terminal-v2 authority, then retire the provider's exact Copy guards.
     /// Only `RecoverOnlyAlreadyPrepared` means a durable provider cleanup gate
@@ -984,13 +837,13 @@ impl SharedHost {
                 .memory_mounter()
                 .ok_or_else(|| HostError::internal("terminal Memory copy has no MemoryMounter"))?;
             for intent in &plan.intents {
-                self.terminal_cleanup_effect_fence(effect)?;
+                self.realizer.cleanup.effect_fence(effect)?;
                 let files = environment
                     .harvest()
                     .list_frozen_mount_files(intent.mount_path())
                     .await
                     .map_err(|error| HostError::unavailable(error.to_string()))?;
-                self.terminal_cleanup_effect_fence(effect)?;
+                self.realizer.cleanup.effect_fence(effect)?;
                 let operation_reference = if self.authority.fetches_resources_upstream() {
                     awaken_resource_contract::MemoryMaterializationReferenceEncoder::<
                         awaken_session_state_contract::SessionTerminalMemoryIntent,
@@ -1008,7 +861,7 @@ impl SharedHost {
                 } else {
                     intent.memory_store_id().to_owned()
                 };
-                self.terminal_cleanup_effect_fence(effect)?;
+                self.realizer.cleanup.effect_fence(effect)?;
                 mounter
                     .reconcile_recovered_copy(
                         &operation_reference,
@@ -1018,18 +871,17 @@ impl SharedHost {
                     )
                     .await
                     .map_err(|error| HostError::unavailable(error.to_string()))?;
-                self.terminal_cleanup_effect_fence(effect)?;
+                self.realizer.cleanup.effect_fence(effect)?;
             }
         }
         let Some(materializations) = plan.acknowledged_materializations.as_deref() else {
             return Ok(());
         };
-        let effect_fence = self.terminal_cleanup_effect_fence(effect)?;
-        let authority = self.session_slots.provider_effect_authority(
-            effect.command.session_id.as_str(),
-            &effect_fence,
-            self.execution_authority.as_ref(),
-        )?;
+        let effect_fence = self.realizer.cleanup.effect_fence(effect)?;
+        let authority = self
+            .realizer
+            .execution
+            .provider_effect_authority(effect.command.session_id.as_str(), &effect_fence)?;
         environment
             .lifecycle()
             .acknowledge_memory_reconciliation(&effect_fence, materializations, &authority)
@@ -1070,11 +922,10 @@ impl SharedHost {
                     "No Session environment checkpoint store is installed",
                 )
             })?;
-        let terminal_effect_fence = self.terminal_cleanup_effect_fence(effect)?;
-        let authority = self.session_slots.provider_effect_authority(
+        let terminal_effect_fence = self.realizer.cleanup.effect_fence(effect)?;
+        let authority = self.realizer.execution.provider_effect_authority(
             effect.command.session_id.as_str(),
             &terminal_effect_fence,
-            self.execution_authority.as_ref(),
         )?;
         awaken_provisioning_contract::with_current_sandbox_effect(
             &terminal_effect_fence,
@@ -1130,5 +981,151 @@ impl SharedHost {
             |_| Ok(()),
         )
         .map_err(|error| HostError::unavailable(error.to_string()))
+    }
+}
+
+impl crate::terminal_cleanup::TerminalCleanup {
+    /// Revalidate the one aggregate-owned terminal assignment cached in the
+    /// root Session slot. Preparation and disposal both consume this decision;
+    /// each then lowers its own closed effect type exactly once.
+    pub(crate) fn authorize_lease(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        lease: &awaken_session_resource_contract::SessionRealizationLease,
+    ) -> Result<awaken_session_resource_contract::SessionRealizationLease, HostError> {
+        self
+            .sessions
+            .read_realization(session_id.as_str(), |r| {
+                let current = r.authority.lease().ok_or_else(|| {
+                    HostError::unavailable_classified(
+                        "session_terminal_cleanup_projection_missing",
+                        "terminal cleanup has no installed realization generation",
+                    )
+                })?;
+                if !awaken_session_realization_contract::realization_lease_generation_authorizes(current, lease) {
+                    return Err(HostError::unavailable_classified(
+                        "session_terminal_cleanup_generation_stale",
+                        "terminal cleanup realization generation was replaced",
+                    ));
+                }
+                if r.authority.remaining_for(lease).is_none() {
+                    return Err(HostError::unavailable_classified(
+                        "session_terminal_cleanup_effect_expired",
+                        "terminal cleanup generation has no current live renewal at its physical boundary",
+                    ));
+                }
+                Ok(current.clone())
+            })
+            .unwrap_or_else(|| Err(
+                HostError::unavailable_classified(
+                    "session_terminal_cleanup_projection_missing",
+                    "terminal cleanup has no installed realization generation",
+                )
+            ))
+    }
+
+    /// Read back the one exact terminal Preparation owner without relabeling it
+    /// to the later provider-disposal operation. The aggregate's Disposal
+    /// authorization supplies that destructive fence separately.
+    fn retained_preparation_owner(
+        &self,
+        thread: &str,
+        environment: &Arc<crate::session_environment::SessionEnvironment>,
+    ) -> bool {
+        self.sessions
+            .read_realization(thread, |r| match &r.environment_owner {
+                SessionEnvironmentOwner::Retiring(retirement)
+                    if matches!(
+                        retirement.cause,
+                        SessionEnvironmentRetirementCause::Terminal { .. }
+                    ) =>
+                {
+                    let current = retirement.owned.environment();
+                    Arc::ptr_eq(&current, environment)
+                        && current.lifecycle().handle() == environment.lifecycle().handle()
+                }
+                _ => false,
+            })
+            .unwrap_or(false)
+    }
+
+    /// Lower the aggregate's durable preparation predecessor and current
+    /// successor lease into the sole provider-neutral destructive authority.
+    pub(in crate::host) fn disposal_authorization(
+        &self,
+        effect: &awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
+    ) -> Result<awaken_provisioning_contract::SandboxDisposalAuthorization, HostError> {
+        let current = self.authorize_lease(&effect.command.session_id, &effect.lease)?;
+        // The same slot proof already authorized preparation and disposal.
+        // Lowering preserves its Control-clock fence bytes; comparing them to
+        // Worker UTC would invent a second, incompatible expiry decision.
+        // This projection is not a grant for a later asynchronous effect.
+        effect
+            .sandbox_disposal_authorization_for_current_generation(&current)
+            .map_err(|error| {
+                HostError::unavailable_classified(
+                    "session_terminal_cleanup_disposal_unauthorized",
+                    error.to_string(),
+                )
+            })
+    }
+
+    /// Project the one preparation fence after the shared terminal assignment
+    /// check above. Physical adapters repeat expiry and incarnation checks at
+    /// their own effect boundaries.
+    pub(in crate::host) fn effect_fence(
+        &self,
+        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+    ) -> Result<awaken_provisioning_contract::SandboxEffectFence, HostError> {
+        self.authorize_lease(&effect.command.session_id, &effect.lease)?
+            .sandbox_effect_fence(effect.operation_id())
+            .map_err(|error| HostError::internal(error.to_string()))
+    }
+
+    /// Join frozen inputs with the durable handle's optional evidence before
+    /// any externally visible terminal effect. `None` remains legacy/unknown;
+    /// the contract owner rejects it for writable Memory instead of allowing a
+    /// caller to reinterpret it as an explicit empty current set.
+    pub(super) fn memory_plan(
+        &self,
+        effect: &awaken_session_state_contract::SessionTerminalCleanupEffect,
+        prepared: &PreparedBoundEnvironment,
+    ) -> Result<TerminalMemoryPlan, HostError> {
+        let transition = self
+            .sessions
+            .read_realization(&effect.command.thread_id, |r| r.resource_transition.clone())
+            .flatten()
+            .ok_or_else(|| {
+                HostError::internal("terminal Memory validation has no frozen Resource transition")
+            })?;
+        let materializations = prepared
+            .memory_materializations()
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        let (intents, acknowledged_materializations) =
+            awaken_session_state_contract::terminal_memory_reconciliation_intents_from_materializations(
+                transition.previous().resources.inputs(),
+                materializations,
+                effect,
+            )
+            .map_err(|error| {
+                HostError::unavailable_classified(
+                    "session_terminal_memory_evidence_unreconciled",
+                    error.to_string(),
+                )
+            })?;
+        if !intents.is_empty()
+            && !prepared.source_effects_are_already_prepared()
+            && (prepared.environment.is_none() || !prepared.permits_live_io())
+        {
+            return Err(HostError::unavailable_classified(
+                "session_terminal_memory_source_absent",
+                "writable terminal Memory has no readable source or durable provider preparation",
+            ));
+        }
+        Ok(TerminalMemoryPlan {
+            intents,
+            acknowledged_materializations: acknowledged_materializations.map(<[_]>::to_vec),
+            workspace_id: Some(transition.previous().workspace_id.clone()),
+        })
     }
 }

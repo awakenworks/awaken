@@ -2,14 +2,14 @@
 
 ADR-0089 D6 and ADR-0090 D7 (plan 9.13, W27). The Session aggregate decides
 every transition of the Session and of its realization, and one executor --
-`awaken-session-realizer` -- carries out realization effects. Two measures of
+`awaken-session-realization` -- carries out realization effects. Two measures of
 how far the code still is from that, both counted from production code
 (comments, string literals and `cfg(test)` code are not scanned) and held at or
 below `single_owner_baseline.json`:
 
 * `state-construction`: a site outside the state contract that constructs a
   `SessionExecutionState` or `SessionEnvironmentState` variant, per
-  `crate::Enum`. The realizer's observation mapping may also construct the
+  `crate::Enum`. The realization's observation mapping may also construct the
   environment sub-state. Reading a state is not constructing one: a pattern (a
   `match` arm, `if let`/`let ... else`, the pattern of `matches!`) and an
   `==`/`!=` comparison are not counted. Importing the variants
@@ -18,9 +18,9 @@ below `single_owner_baseline.json`:
 * `realization-code`: production lines (non-blank, comments excluded) in modules
   named for realization -- a module path segment in `REALIZATION_MODULES`, or one
   whose words include one of `REALIZATION_WORDS` -- per crate, outside the
-  realizer, its contract, the provisioning contract and the sandbox providers
+  realization, its contract, the provisioning contract and the sandbox providers
   (crates of bounded context `sandbox`). Modules of `awaken-session-executor` that
-  the module-layer guard classifies as `realizer` are the realizer still being
+  the module-layer guard classifies as `realization` are the realization still being
   extracted (plan slice R); the module-layer guard governs them, so moving code
   into them is consolidation, not growth. Lines may float below the baseline and
   must be re-recorded once they fall `LINE_SLACK` or more below it.
@@ -46,13 +46,13 @@ BASELINE = Path(__file__).with_name("single_owner_baseline.json")
 LINE_SLACK = 200
 
 STATE_CONTRACT = "awaken-session-state-contract"
-REALIZER = "awaken-session-realizer"
+REALIZATION_CRATE = "awaken-session-realization"
 # Enum -> crates allowed to construct its variants besides the state contract.
 STATE_ENUMS = {
     "SessionExecutionState": frozenset(),
-    "SessionEnvironmentState": frozenset({REALIZER}),
+    "SessionEnvironmentState": frozenset({REALIZATION_CRATE}),
 }
-REALIZATION_OWNERS = frozenset({REALIZER, "awaken-session-realization-contract", "awaken-provisioning-contract"})
+REALIZATION_OWNERS = frozenset({REALIZATION_CRATE, "awaken-session-realization-contract", "awaken-provisioning-contract"})
 PROVIDER_CONTEXT = "sandbox"
 REALIZATION_MODULES = frozenset({
     "provisioning", "environment_lifecycle", "environment_continuation", "terminal_reconciliation",
@@ -61,8 +61,8 @@ REALIZATION_WORDS = frozenset({"realization", "realizer", "realized", "realize"}
 
 RULES = (
     Rule("state-construction", "construct the state through the Session aggregate's transition in the state contract "
-         "(ADR-0090 D7), or map the observation in the realizer (ADR-0089 D6)"),
-    Rule("realization-code", "put realization behaviour in awaken-session-realizer, its contract or a sandbox "
+         "(ADR-0090 D7), or map the observation in the realization (ADR-0089 D6)"),
+    Rule("realization-code", "put realization behaviour in awaken-session-realization, its contract or a sandbox "
          "provider (ADR-0089 D6), not in a module named for realization elsewhere", slack=LINE_SLACK),
 )
 
@@ -154,12 +154,12 @@ def module_of(relative: Path) -> tuple[str, ...]:
     return tuple(parts)
 
 
-def in_extracting_realizer(crate_name: str, relative: Path, table=None) -> bool:
-    """A runtime-host module the module-layer guard classifies as `realizer`."""
+def in_extracting_realization(crate_name: str, relative: Path, table=None) -> bool:
+    """A runtime-host module the module-layer guard classifies as `realization`."""
     if crate_name != _module_layer_fitness.CRATE:
         return False
     table = _module_layer_fitness.layer_table() if table is None else table
-    return _module_layer_fitness.target_of(module_of(relative), table) == _module_layer_fitness.REALIZER
+    return _module_layer_fitness.target_of(module_of(relative), table) == _module_layer_fitness.REALIZATION
 
 
 def realization_owner(name: str, metadata: dict) -> bool:
@@ -183,7 +183,7 @@ def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) 
             source_root = crate.directory / "src"
             if (not owner and source_root in path.parents
                     and is_realization_module(path.relative_to(source_root))
-                    and not in_extracting_realizer(crate.name, path.relative_to(source_root), layers)):
+                    and not in_extracting_realization(crate.name, path.relative_to(source_root), layers)):
                 lines = sum(1 for line in syntax.splitlines() if line.strip())
                 counts["realization-code"][crate.name] += lines
                 places["realization-code"][crate.name].append(str(relative))
@@ -210,7 +210,7 @@ def selftest() -> None:
     | S2   | variant in a match arm, `|` alternative, guard, `if let`, `let..else`, `matches!` pattern | not counted |
     | S3   | `==` / `!=` operand on either side, qualified path                     | not counted |
     | S4   | `use Enum as Alias` then `Alias::Variant`; `use Enum::*` / `use Enum::{..}` | counted |
-    | S5   | the state contract; the realizer for the environment enum              | not counted |
+    | S5   | the state contract; the realization for the environment enum              | not counted |
     | S6   | module path segment `provisioning`, or a word `realization` in a segment | realization-named |
     | S7   | `unrealized_x` style segment without the word, `lib.rs`                 | not realization-named |
     | S8   | realization module in the realization contract / a sandbox provider    | not counted |
@@ -248,11 +248,11 @@ def selftest() -> None:
     assert realization_owner("awaken-sandbox-local", {"bounded_context": "sandbox"}), "S8 provider"
     assert not realization_owner("awaken-session-executor", {"bounded_context": "session"}), "S8 other"
     assert module_of(Path("host/session/environment_lifecycle/mod.rs")) == ("host", "session", "environment_lifecycle")
-    assert in_extracting_realizer("awaken-session-executor", Path("host/session/environment_lifecycle/renewal.rs")), \
-        "S9 realizer-layer module of runtime-host is the extracting realizer"
-    assert not in_extracting_realizer("awaken-session-executor", Path("host/session/realization_view.rs")), \
+    assert in_extracting_realization("awaken-session-executor", Path("host/session/environment_lifecycle/renewal.rs")), \
+        "S9 realizer-layer module of runtime-host is the extracting realization"
+    assert not in_extracting_realization("awaken-session-executor", Path("host/session/realization_view.rs")), \
         "S9 host-layer module stays counted"
-    assert not in_extracting_realizer("awaken-session-application", Path("realization/control.rs")), \
+    assert not in_extracting_realization("awaken-session-application", Path("realization/control.rs")), \
         "S9 other crates stay counted"
 
     source = _architecture_ratchet.CrateSource(

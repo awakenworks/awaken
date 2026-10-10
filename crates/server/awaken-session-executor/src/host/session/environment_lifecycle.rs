@@ -340,7 +340,7 @@ impl SharedHost {
         workspace_id: &str,
         state: &awaken_session_state_contract::SessionEnvironmentState,
     ) -> Result<(), HostError> {
-        self.session_slots.update(thread, |slot| {
+        self.installed_sessions.update(thread, |slot| {
             let owner = slot.realization.environment_owner.after_projection(
                 thread,
                 workspace_id,
@@ -367,7 +367,7 @@ impl SharedHost {
             binding.clone(),
             None,
         );
-        self.session_slots.update_realization(thread, |r| {
+        self.installed_sessions.update_realization(thread, |r| {
             r.environment_owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
                 identity: BoundSessionEnvironmentIdentity::LegacyDirect(
                     LegacyDirectEnvironmentProvenance::Direct(receipt),
@@ -395,7 +395,7 @@ impl SharedHost {
         let Some(encoded) = encoded else {
             return Ok(SessionEnvironmentAdoptionDisposition::NoBinding);
         };
-        let _lifecycle = self.session_slots.lock_lifecycle(thread).await;
+        let _lifecycle = self.installed_sessions.lock_lifecycle(thread).await;
         self.adopt_bound_session_environment_under_lifecycle(
             thread,
             encoded,
@@ -495,11 +495,9 @@ impl SharedHost {
             .provider_fence
             .as_ref()
             .map(|fence| {
-                self.session_slots.provider_effect_authority(
-                    thread,
-                    fence,
-                    self.execution_authority.as_ref(),
-                )
+                self.realizer
+                    .execution
+                    .provider_effect_authority(thread, fence)
             })
             .transpose()?;
         let admit_original = || match (effect.provider_fence.as_ref(), authority.as_ref()) {
@@ -598,7 +596,7 @@ impl SharedHost {
                         if let Some(retiring) = revoked_owner.as_ref() {
                             // Atomically retain the fresh Candidate before its
                             // canonical binding/publication edge can suspend.
-                            self.session_slots.update_realization(thread, |r| {
+                            self.installed_sessions.update_realization(thread, |r| {
                                 r.environment_owner
                                     .prepare_retiring_realization_adoption(retiring, environment.clone())
                             })?;
@@ -619,7 +617,7 @@ impl SharedHost {
                 };
                 self.ensure_published_environment_reconciled_under_lifecycle(thread, environment)
                     .await?;
-                self.session_slots.update_realization(thread, |r| {
+                self.installed_sessions.update_realization(thread, |r| {
                     r.environment_rebuild_source = None;
                 });
                 Ok(SessionEnvironmentAdoptionDisposition::Ready)
@@ -684,7 +682,7 @@ impl SharedHost {
             if incoming.remaining_at(now).is_none() {
                 return Err(HostError::internal("replacement Session authority time proof is exhausted"));
             }
-            let selected = self.session_slots.read_realization(thread, |r| {
+            let selected = self.installed_sessions.read_realization(thread, |r| {
                 let environment = match &r.environment_owner {
                     SessionEnvironmentOwner::Resident(owned) => &owned.environment,
                     SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(candidate))
@@ -729,7 +727,7 @@ impl SharedHost {
         retirement: &RetiringSessionEnvironment,
         status: Result<awaken_provisioning_contract::SandboxStatus, E>,
     ) -> Result<bool, E> {
-        match self.session_slots.modify_realization(thread, |r| {
+        match self.installed_sessions.modify_realization(thread, |r| {
             r.environment_owner
                 .observe_retirement_status(retirement, status)
         }) {
@@ -759,80 +757,6 @@ impl SharedHost {
         .map_err(|error| HostError::internal(error.to_string()))
     }
 
-    /// Consume only the exact Retiring owner and durable provider preparation.
-    /// Artifact, Memory, Hand, MCP, observation, and provider preparation are
-    /// forbidden here; this is the physical-only Disposal phase.
-    pub(crate) async fn dispose_prepared_checkpoint_source_environment(
-        &self,
-        thread: &str,
-        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
-        generation: &awaken_session_state_contract::SandboxGeneration,
-        source_binding: &str,
-        authorization: &awaken_provisioning_contract::SandboxDisposalAuthorization,
-    ) -> Result<(), HostError> {
-        self.realizer
-            .validate_suspend_operation(thread, operation, generation)?;
-        let expected_cause = SessionEnvironmentRetirementCause::CheckpointSource {
-            operation: operation.clone(),
-            generation: generation.clone(),
-        };
-        let retirement = self
-            .session_slots
-            .read_realization(thread, |r| match &r.environment_owner {
-                SessionEnvironmentOwner::Retiring(retirement) => Some(retirement.clone()),
-                _ => None,
-            })
-            .flatten()
-            .ok_or_else(|| {
-                HostError::unavailable_classified(
-                    "session_checkpoint_source_not_prepared",
-                    "checkpoint source Disposal has no retained Preparation owner",
-                )
-            })?;
-        let RetiringEnvironmentOwner::Bound(owned) = &retirement.owned else {
-            return Err(HostError::internal(
-                "checkpoint source Disposal cannot consume an unpublished owner",
-            ));
-        };
-        if retirement.cause != expected_cause
-            || !matches!(
-                &owned.identity,
-                BoundSessionEnvironmentIdentity::Durable {
-                    generation: owned_generation,
-                    ..
-                } if owned_generation == generation
-            )
-            || owned.binding != source_binding
-        {
-            return Err(HostError::unavailable_classified(
-                "session_checkpoint_source_owner_changed",
-                "checkpoint source Disposal does not match its retained Preparation owner",
-            ));
-        }
-        let authority = self.session_slots.provider_effect_authority(
-            thread,
-            authorization.effect_fence(),
-            self.execution_authority.as_ref(),
-        )?;
-        owned
-            .environment
-            .lifecycle()
-            .dispose_for_effect(authorization, &authority)
-            .await
-            .map_err(|error| HostError::unavailable(error.to_string()))?;
-        if !self
-            .realizer
-            .confirm_terminated_retirement(thread, &retirement)
-        {
-            return Err(HostError::unavailable_classified(
-                "session_checkpoint_source_owner_changed",
-                "checkpoint source owner changed after exact physical Disposal",
-            ));
-        }
-        self.session_slots.drop_run_context(thread);
-        Ok(())
-    }
-
     /// Forget a dead environment only after its exact Arc/binding/identity and
     /// Retiring phase are still current and the provider reports Terminated.
     #[cfg(test)]
@@ -841,7 +765,7 @@ impl SharedHost {
         thread: &str,
         expected: &Arc<crate::session_environment::SessionEnvironment>,
     ) -> bool {
-        let _lifecycle = self.session_slots.lock_lifecycle(thread).await;
+        let _lifecycle = self.installed_sessions.lock_lifecycle(thread).await;
         let Ok(Some(retirement)) = self.realizer.retire_current_environment(
             thread,
             SessionEnvironmentRetirementCause::RecoveryDiscard,
@@ -863,7 +787,7 @@ impl SharedHost {
         thread: &str,
     ) -> Result<bool, HostError> {
         let retained_realization_owner = self
-            .session_slots
+            .installed_sessions
             .modify_realization(thread, |r| {
                 // Physical retirement of an Unowned LegacyDirect environment is
                 // not loss of a never-installed Control lease. Preserve that
@@ -930,16 +854,16 @@ impl SharedHost {
             None => Ok(()),
         };
         if self.realizer.session_environment_owner_is_vacant(thread) {
-            self.session_slots.remove(thread);
+            self.installed_sessions.remove(thread);
         } else {
-            self.session_slots.modify(thread, |slot| {
+            self.installed_sessions.modify(thread, |slot| {
                 // A live/unknown Retiring owner is retryable physical state.
                 // Preserve its exact provider selection, SandboxSpec inputs and
                 // harvest Workspace; terminal takeover must not reconstruct
                 // them after a failed or cancelled revocation attempt.
-                slot.frozen = std::sync::Arc::new(slot.frozen.retained_on_revocation());
+                slot.inputs = std::sync::Arc::new(slot.inputs.retained_on_revocation());
                 slot.realization = slot.realization.take_retained_on_revocation();
-                slot.run = crate::session_slot::SessionRunState::default();
+                slot.run = crate::installed_session::SessionRunBinding::default();
             });
         }
         retirement_result?;
@@ -1062,7 +986,7 @@ mod terminal_output_tests {
 #[cfg(test)]
 mod tests;
 
-impl crate::session_realizer::SessionRealizer {
+impl crate::environment_holding::EnvironmentHolding {
     /// Retire the exact current Environment owner; a changed owner fence fails
     /// with the caller's classified reason.
     pub(crate) fn retire_exact_environment(
@@ -1666,21 +1590,22 @@ impl crate::session_realizer::SessionRealizer {
         resolved_resources: Option<&awaken_session_resource_contract::ResolvedSessionResources>,
     ) -> awaken_provisioning_contract::SandboxSpec {
         match resolved_resources {
-            Some(resources) => {
-                self.sandbox_spec_for_resolved_resources_and_provider(thread, resources, provider)
-            }
+            Some(resources) => self
+                .staging
+                .sandbox_spec_for_resolved_resources_and_provider(thread, resources, provider),
             None => self
                 .sessions
                 .read_realization(thread, |r| r.resource_transition.clone())
                 .flatten()
                 .map_or_else(
-                    || self.sandbox_spec_for_provider(thread, provider),
+                    || self.staging.sandbox_spec_for_provider(thread, provider),
                     |transition| {
-                        self.sandbox_spec_for_resolved_resources_and_provider(
-                            thread,
-                            &transition.desired().resources,
-                            provider,
-                        )
+                        self.staging
+                            .sandbox_spec_for_resolved_resources_and_provider(
+                                thread,
+                                &transition.desired().resources,
+                                provider,
+                            )
                     },
                 ),
         }
@@ -1800,5 +1725,75 @@ impl crate::session_realizer::SessionRealizer {
             }
         }
         Ok((handle, spec, resident, candidate))
+    }
+}
+
+impl crate::environment_holding::EnvironmentHolding {
+    /// Consume only the exact Retiring owner and durable provider preparation.
+    /// Artifact, Memory, Hand, MCP, observation, and provider preparation are
+    /// forbidden here; this is the physical-only Disposal phase.
+    pub(crate) async fn dispose_prepared_checkpoint_source_environment(
+        &self,
+        thread: &str,
+        operation: &awaken_session_state_contract::SessionEnvironmentOperation,
+        generation: &awaken_session_state_contract::SandboxGeneration,
+        source_binding: &str,
+        authorization: &awaken_provisioning_contract::SandboxDisposalAuthorization,
+    ) -> Result<(), HostError> {
+        self.validate_suspend_operation(thread, operation, generation)?;
+        let expected_cause = SessionEnvironmentRetirementCause::CheckpointSource {
+            operation: operation.clone(),
+            generation: generation.clone(),
+        };
+        let retirement = self
+            .sessions
+            .read_realization(thread, |r| match &r.environment_owner {
+                SessionEnvironmentOwner::Retiring(retirement) => Some(retirement.clone()),
+                _ => None,
+            })
+            .flatten()
+            .ok_or_else(|| {
+                HostError::unavailable_classified(
+                    "session_checkpoint_source_not_prepared",
+                    "checkpoint source Disposal has no retained Preparation owner",
+                )
+            })?;
+        let RetiringEnvironmentOwner::Bound(owned) = &retirement.owned else {
+            return Err(HostError::internal(
+                "checkpoint source Disposal cannot consume an unpublished owner",
+            ));
+        };
+        if retirement.cause != expected_cause
+            || !matches!(
+                &owned.identity,
+                BoundSessionEnvironmentIdentity::Durable {
+                    generation: owned_generation,
+                    ..
+                } if owned_generation == generation
+            )
+            || owned.binding != source_binding
+        {
+            return Err(HostError::unavailable_classified(
+                "session_checkpoint_source_owner_changed",
+                "checkpoint source Disposal does not match its retained Preparation owner",
+            ));
+        }
+        let authority = self
+            .execution
+            .provider_effect_authority(thread, authorization.effect_fence())?;
+        owned
+            .environment
+            .lifecycle()
+            .dispose_for_effect(authorization, &authority)
+            .await
+            .map_err(|error| HostError::unavailable(error.to_string()))?;
+        if !self.confirm_terminated_retirement(thread, &retirement) {
+            return Err(HostError::unavailable_classified(
+                "session_checkpoint_source_owner_changed",
+                "checkpoint source owner changed after exact physical Disposal",
+            ));
+        }
+        self.sessions.drop_run_context(thread);
+        Ok(())
     }
 }

@@ -500,7 +500,7 @@ impl crate::host::SharedHost {
     }
 
     pub(crate) fn register_thread_memory(&self, thread: &str, memory: Option<Arc<MemoryBinding>>) {
-        self.session_slots.update_realization(thread, |r| {
+        self.installed_sessions.update_realization(thread, |r| {
             r.memory_bindings.clear();
             r.memory = memory;
         });
@@ -514,7 +514,7 @@ impl crate::host::SharedHost {
         thread: &str,
         bindings: std::collections::HashMap<String, Arc<MemoryBinding>>,
     ) {
-        self.session_slots.update_realization(thread, |r| {
+        self.installed_sessions.update_realization(thread, |r| {
             r.memory_bindings = bindings;
             r.memory = None;
         });
@@ -528,7 +528,7 @@ impl crate::host::SharedHost {
         thread: &str,
         binding_id: Option<&str>,
     ) -> Result<Option<BoundMemory>, String> {
-        let selected = self.session_slots.update(thread, |slot| {
+        let selected = self.installed_sessions.update(thread, |slot| {
             let selected =
                 binding_id.and_then(|id| slot.realization.memory_bindings.get(id).cloned());
             slot.realization.memory = selected.clone();
@@ -544,7 +544,7 @@ impl crate::host::SharedHost {
     }
 
     pub(crate) fn memory_for_thread(&self, thread: &str) -> Option<BoundMemory> {
-        self.session_slots
+        self.installed_sessions
             .read_realization(thread, |r| r.memory.clone())
             .flatten()
             .map(|binding| self.resources.memory.bound(binding))
@@ -569,7 +569,7 @@ impl crate::host::SharedHost {
             return Ok(0);
         }
         let bindings = self
-            .session_slots
+            .installed_sessions
             .read_realization(session_thread, |r| {
                 let mut bindings: Vec<Arc<MemoryBinding>> = Vec::new();
                 for memory in r

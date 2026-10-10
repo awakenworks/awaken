@@ -1,0 +1,44 @@
+//! Environment holding of the realization executor: the Environment each
+//! installed Session holds, through the sandbox providers it realizes with.
+//! It selects the provider, creates, adopts, restores and retires the exact
+//! Environment owner under the Session's lifecycle lock, and keeps the warm
+//! capacity those providers prepare.
+
+/// Holds each installed Session's Environment. It owns the sandbox providers;
+/// staging and the execution authority are the ports its effects go through.
+pub struct EnvironmentHolding {
+    /// The Session-owned, BackendOwned and housekeeping sandbox providers.
+    pub(crate) env: crate::environment_providers::EnvironmentProviders,
+    /// Warm capacity is kept only where a local dispatch pool realizes claims.
+    pub(crate) runs_local_dispatch_pool: bool,
+    /// The installed Sessions, as far as realization may reach them.
+    pub(crate) sessions: crate::session_realizations::SessionRealizations,
+    /// Resource staging: spec projection, registration and layout validation.
+    pub(crate) staging: crate::resource_staging::ResourceStaging,
+    /// The authority physical Environment effects run under.
+    pub(crate) execution: crate::session_realizations::ExecutionAuthority,
+}
+
+impl EnvironmentHolding {
+    /// Hold Environments over the installed Sessions with the sandbox providers
+    /// they realize through and the Worker's execution proof, when registered.
+    pub(crate) fn new(
+        env: crate::environment_providers::EnvironmentProviders,
+        runs_local_dispatch_pool: bool,
+        sessions: crate::session_realizations::SessionRealizations,
+        worker: Option<std::sync::Arc<dyn awaken_provisioning_contract::CurrentExecutionAuthority>>,
+    ) -> Self {
+        Self {
+            env,
+            runs_local_dispatch_pool,
+            staging: crate::resource_staging::ResourceStaging {
+                sessions: sessions.clone(),
+            },
+            execution: crate::session_realizations::ExecutionAuthority {
+                sessions: sessions.clone(),
+                worker,
+            },
+            sessions,
+        }
+    }
+}

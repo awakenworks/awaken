@@ -10,7 +10,7 @@ impl crate::SharedHost {
         &self,
         effect: impl FnOnce() -> Result<T, crate::HostError>,
     ) -> Result<T, crate::HostError> {
-        let Some(authority) = &self.execution_authority else {
+        let Some(authority) = &self.realizer.execution.worker else {
             return effect();
         };
         let mut effect = Some(effect);

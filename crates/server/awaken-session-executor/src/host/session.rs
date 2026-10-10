@@ -42,7 +42,7 @@ impl SharedHost {
     /// projection); otherwise reconstruct the configured durable adapter without
     /// selecting, creating, or adopting a Session environment.
     pub(crate) async fn commit_for_read(&self, thread: &str) -> Result<Arc<HostCommit>, HostError> {
-        let _lifecycle = self.session_slots.lock_lifecycle(thread).await;
+        let _lifecycle = self.installed_sessions.lock_lifecycle(thread).await;
         self.commit_for_read_under_lifecycle(thread).await
     }
 
@@ -54,9 +54,9 @@ impl SharedHost {
         thread: &str,
     ) -> Result<Arc<HostCommit>, HostError> {
         if let Some(commit) = self
-            .session_slots
+            .installed_sessions
             .read_run(thread, |run| {
-                run.runtime.as_ref().map(|context| context.commit.clone())
+                run.context.as_ref().map(|context| context.commit.clone())
             })
             .flatten()
         {
@@ -208,14 +208,15 @@ impl SharedHost {
             } else {
                 RuntimeContextPurpose::Execution
             };
-            let _lifecycle = self.session_slots.lock_lifecycle(thread).await;
-            self.retry_unpublished_session_environment_cleanup(thread)
+            let _lifecycle = self.installed_sessions.lock_lifecycle(thread).await;
+            self.realizer
+                .retry_unpublished_session_environment_cleanup(thread)
                 .await?;
             self.retry_session_environment_candidate_under_lifecycle(thread)
                 .await?;
             if let Some(ctx) = self
-                .session_slots
-                .read_run(thread, |run| run.runtime.clone())
+                .installed_sessions
+                .read_run(thread, |run| run.context.clone())
                 .flatten()
             {
                 let cache_matches_attempt = claimed_attempt.as_ref().is_none_or(|attempt| {
@@ -232,8 +233,8 @@ impl SharedHost {
                     // must rebuild around its exact publication source. A
                     // coordination-only envelope is never an executable cache hit,
                     // even when its publication fingerprint is identical.
-                    self.session_slots
-                        .update_run(thread, |run| run.runtime = None);
+                    self.installed_sessions
+                        .update_run(thread, |run| run.context = None);
                 } else {
                     // A resident Session is also a recovery wake. Rebind every
                     // frozen writable Memory resource through the one controller so

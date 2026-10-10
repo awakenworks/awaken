@@ -141,7 +141,7 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
     .await)
         .build()
         .expect("validated Host dependencies");
-    host.session_slots.update_realization(thread, |r| {
+    host.installed_sessions.update_realization(thread, |r| {
         r.environment_owner = SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
             cause: SessionEnvironmentRetirementCause::RealizationRevocation,
             owned: RetiringEnvironmentOwner::Bound(initial.clone()),
@@ -174,7 +174,7 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
         "R2 foreign generation"
     );
     assert!(
-        matches!(host.session_slots.read_realization(thread, |r| r.environment_owner.clone()),
+        matches!(host.installed_sessions.read_realization(thread, |r| r.environment_owner.clone()),
         Some(SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
             cause: SessionEnvironmentRetirementCause::RealizationRevocation,
             owned: RetiringEnvironmentOwner::Bound(owned),
@@ -634,7 +634,7 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
         None,
         None,
     );
-    host.session_slots
+    host.installed_sessions
         .close_mcp_realization_admission(
             thread,
             awaken_session_mcp::McpQuiescenceAdmissionFence::new(
@@ -657,7 +657,7 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
     )
     .unwrap();
     assert!(
-        !host.session_slots.mcp_realization_admitted(thread),
+        !host.installed_sessions.mcp_realization_admitted(thread),
         "E1 expiry before disposal cannot reopen"
     );
 
@@ -673,7 +673,7 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
     )
     .unwrap();
     assert!(
-        host.session_slots.mcp_realization_admitted(thread),
+        host.installed_sessions.mcp_realization_admitted(thread),
         "E2 exact source-free+Vacant projection admits a new realization"
     );
 }
@@ -709,7 +709,7 @@ async fn discard_keeps_live_owner_and_exact_retry_clears_after_termination() {
     );
     assert!(
         matches!(
-            host.session_slots
+            host.installed_sessions
                 .read_realization(thread, |r| r.environment_owner.clone()),
             Some(SessionEnvironmentOwner::Retiring(_))
         ),
@@ -914,7 +914,10 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     let provider = host
         .projected_session_environment_provider(thread, None)
         .expect("C1 frozen Environment provider");
-    let spec = host.realizer.sandbox_spec_for_provider(thread, provider);
+    let spec = host
+        .realizer
+        .staging
+        .sandbox_spec_for_provider(thread, provider);
     // LegacyDirect is the aggregate-Unowned creation row. Reuse the single
     // unfenced test entry into production creation so the handle is the exact
     // marker-free V1 that this compatibility path owns; a fenced V2 fixture
@@ -934,7 +937,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     host.install_test_resident_session_environment(thread, environment.clone());
 
     let lifecycle = host
-        .session_slots
+        .installed_sessions
         .read_realization(thread, |r| r.lifecycle.clone())
         .unwrap();
     {
@@ -947,7 +950,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
         );
     }
     let retired = host
-        .session_slots
+        .installed_sessions
         .read_realization(thread, |r| r.environment_owner.clone())
         .unwrap();
     assert!(
@@ -985,7 +988,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     );
     assert!(
         matches!(
-            host.session_slots
+            host.installed_sessions
                 .read_realization(thread, |r| r.environment_owner.clone()),
             Some(SessionEnvironmentOwner::Retiring(current)) if current.exact_matches(
                 match &retired {
@@ -1027,7 +1030,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     );
     assert!(
         matches!(
-            host.session_slots
+            host.installed_sessions
                 .read_realization(thread, |r| r.environment_owner.clone()),
             Some(SessionEnvironmentOwner::Vacant)
         ),

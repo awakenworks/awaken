@@ -10,7 +10,7 @@
 
 use std::sync::{Arc, Weak};
 
-use crate::session_slot::SessionRuntimeSlots;
+use crate::installed_session::InstalledSessions;
 use crate::{HostError, HostErrorKind, SharedHost};
 use awaken_session_mcp::{
     McpError, McpErrorKind, McpGenerationAuthority, McpInputHost, McpInputRecipients,
@@ -32,7 +32,7 @@ impl From<McpError> for HostError {
     }
 }
 
-impl McpSessionSlots for SessionRuntimeSlots {
+impl McpSessionSlots for InstalledSessions {
     type Runtime = Arc<crate::host::SessionCtx>;
 
     fn read_mcp<R>(&self, session: &str, read: impl FnOnce(&SessionMcpState) -> R) -> Option<R> {
@@ -57,7 +57,7 @@ impl McpSessionSlots for SessionRuntimeSlots {
         modify: impl FnOnce(&mut SessionMcpState, &mut Option<Self::Runtime>) -> R,
     ) -> Option<R> {
         self.modify(session, |slot| {
-            modify(&mut slot.realization.mcp, &mut slot.run.runtime)
+            modify(&mut slot.realization.mcp, &mut slot.run.context)
         })
     }
 
@@ -103,7 +103,8 @@ impl McpInputHost for SharedHost {
 
 impl SharedHost {
     pub(crate) fn active_mcp_projections(&self, thread: &str) -> Vec<McpGenerationProjection> {
-        self.mcp.active_projections(&self.session_slots, thread)
+        self.mcp
+            .active_projections(&self.installed_sessions, thread)
     }
 
     #[cfg(test)]
@@ -111,7 +112,7 @@ impl SharedHost {
         &self,
         generation: &awaken_session_mcp_contract::McpGenerationRef,
     ) -> Option<McpGenerationProjection> {
-        self.mcp.projection(&self.session_slots, generation)
+        self.mcp.projection(&self.installed_sessions, generation)
     }
 
     #[cfg(test)]
@@ -121,7 +122,7 @@ impl SharedHost {
     ) -> Result<(), HostError> {
         Ok(self
             .mcp
-            .insert_projection(&self.session_slots, projection)?)
+            .insert_projection(&self.installed_sessions, projection)?)
     }
 
     /// Transfer a freshly spawned stdio process into the already-installed
@@ -134,7 +135,7 @@ impl SharedHost {
     ) -> Result<bool, HostError> {
         Ok(self
             .mcp
-            .attach_staging_process(&self.session_slots, generation, process)?)
+            .attach_staging_process(&self.installed_sessions, generation, process)?)
     }
 
     /// Publish only wiring into the private staged projection. Durable publish
@@ -147,7 +148,7 @@ impl SharedHost {
     ) -> Result<(), HostError> {
         Ok(self
             .mcp
-            .complete_staging(&self.session_slots, generation, wiring)?)
+            .complete_staging(&self.installed_sessions, generation, wiring)?)
     }
 
     #[cfg(test)]
@@ -155,7 +156,9 @@ impl SharedHost {
         &self,
         request: &awaken_session_mcp_contract::StageMcpAttachment,
     ) -> Result<Option<awaken_session_mcp_contract::McpRealizationReceipt>, HostError> {
-        Ok(self.mcp.renew_projection(&self.session_slots, request)?)
+        Ok(self
+            .mcp
+            .renew_projection(&self.installed_sessions, request)?)
     }
 
     #[cfg(test)]
@@ -164,7 +167,7 @@ impl SharedHost {
         request: &awaken_session_mcp_contract::StageMcpAttachment,
     ) -> bool {
         self.mcp
-            .forget_replayable_removed_projection(&self.session_slots, request)
+            .forget_replayable_removed_projection(&self.installed_sessions, request)
     }
 
     #[cfg(test)]
@@ -174,7 +177,7 @@ impl SharedHost {
     ) -> Result<(), HostError> {
         Ok(self
             .mcp
-            .publish_projection(&self.session_slots, generation)
+            .publish_projection(&self.installed_sessions, generation)
             .await?)
     }
 
@@ -185,7 +188,7 @@ impl SharedHost {
     ) -> Result<(), HostError> {
         Ok(self
             .mcp
-            .drain_projection(&self.session_slots, generation)
+            .drain_projection(&self.installed_sessions, generation)
             .await?)
     }
 
@@ -196,7 +199,7 @@ impl SharedHost {
     ) -> Result<McpQuiescenceProof, HostError> {
         Ok(self
             .mcp
-            .drain_projections(&self.session_slots, thread, expected)
+            .drain_projections(&self.installed_sessions, thread, expected)
             .await?)
     }
 

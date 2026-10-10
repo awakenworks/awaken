@@ -1,12 +1,12 @@
 """Future crate boundaries inside `awaken-session-executor` hold before the crate is split.
 
 Plan 10.2 / 10.4: the realization cluster leaves `awaken-session-executor` for its
-own crate (`awaken-session-realizer`) and the host keeps the rest. That split
+own crate (`awaken-session-realization`) and the host keeps the rest. That split
 is a pure move only if the realization modules never reach up into host
 modules. This guard makes the boundary checkable now, so the slices that
 reshape the host in between cannot regress it.
 
-Every module of the crate is classified as `realizer` or `host` in `LAYERS`,
+Every module of the crate is classified as `realization` or `host` in `LAYERS`,
 next to the reason it is placed there. A module inherits the target of its
 nearest classified ancestor, except below a *mixed* module (one with
 descendants of both targets): each child of a mixed module, and each
@@ -15,13 +15,13 @@ module states which side it lands on (fail closed).
 
 Counted from production code (comments and `cfg(test)` code are not scanned):
 
-* `upward-edge`: a `crate::`, `super::` or `use` path in a `realizer` module
+* `upward-edge`: a `crate::`, `super::` or `use` path in a `realization` module
   that names an item of a `host` module. Recorded per (from-module,
   to-module) pair as the set of host items named; a new pair or a new item is
   an error, a recorded item that is no longer named is an error until it is
   removed from `module_layer_baseline.json` in the same commit.
 * `shared-host-impl`: methods in `impl ... SharedHost` blocks inside a
-  `realizer` module. `SharedHost` lives in the host, so such a block is an
+  `realization` module. `SharedHost` lives in the host, so such a block is an
   upward edge by construction; it is expected to shrink when the realization
   state gets its own owner, and is held per module at or below the baseline
   instead of being reported item by item. Paths inside those blocks are not
@@ -44,17 +44,17 @@ from _context_map_fitness import _flatten_path_tree
 
 BASELINE = Path(__file__).with_name("module_layer_baseline.json")
 CRATE = "awaken-session-executor"
-REALIZER = "realizer"
+REALIZATION = "realization"
 HOST = "host"
 
-_REALIZER_REASON = "realization cluster: leaves the host for awaken-session-realizer (plan 10.2)"
-_LEAF_REASON = "leaf value types moved out of session_slot; go with the realizer (plan 10.1 item 1)"
+_REALIZATION_REASON = "realization cluster: leaves the host for awaken-session-realization (plan 10.2)"
+_LEAF_REASON = "leaf value types moved out of installed_session; go with the realization (plan 10.1 item 1)"
 _MIXED_REASON = "mixed: its own items stay in the host, each child is classified below"
 
 # (target, reason, modules). Module paths are `::`-joined from the crate root
 # and follow `#[path]` attributes.
 LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
-    (REALIZER, _REALIZER_REASON, (
+    (REALIZATION, _REALIZATION_REASON, (
         "host::session::environment_lifecycle",
         "host::session::environment_realization",
         "host::worker_resolver::session_realization",
@@ -63,28 +63,31 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "managed_resource_projection",
         "cache_volume",
         "environment_continuation",
+        "terminal_cleanup",
         "terminal_repository_publication",
         "session_environment",
         "environment_owner",
-        "session_realizer",
+        "realization_executor",
+        "resource_staging",
         "environment_capacity",
+        "environment_holding",
         "environment_providers",
     )),
-    (REALIZER, _LEAF_REASON, (
+    (REALIZATION, _LEAF_REASON, (
         "staged_resources",
         "managed_input_layout",
         "frozen_inputs",
     )),
-    (REALIZER, "Skill resource projection: the delivered-bundle installer and its prompt (plan 10.3 item 3)", (
+    (REALIZATION, "Skill resource projection: the delivered-bundle installer and its prompt (plan 10.3 item 3)", (
         "skill_delivery",
     )),
-    (REALIZER, "the error vocabulary realization and the run path both return; the host re-exports it", (
+    (REALIZATION, "the error vocabulary realization and the run path both return; the host re-exports it", (
         "host_error",
     )),
-    (REALIZER, "the Session MemoryStore binding realization projects; host extraction wraps it (plan 10.4 R)", (
+    (REALIZATION, "the Session MemoryStore binding realization projects; host extraction wraps it (plan 10.4 R)", (
         "memory_binding",
     )),
-    (REALIZER, "the realizer's view of installed Sessions and the realization layer it owns (plan 9.15)", (
+    (REALIZATION, "the realization's view of installed Sessions and the realization layer it owns (plan 9.15)", (
         "session_realizations",
     )),
     (HOST, _MIXED_REASON, (
@@ -138,7 +141,7 @@ LAYERS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "commit_ingest",
         "coordination",
         "durable_operations",
-        "session_slot",
+        "installed_session",
         "store",
     )),
     (HOST, "protocol-neutral host adapters and their composition", (
@@ -260,7 +263,7 @@ def classification_errors(modules: set[Module], table: dict[Module, str]) -> lis
     }
     errors = [
         f"module-layer: {'::'.join(module)} is not classified; add it to LAYERS in {Path(__file__).name} as "
-        f"'{REALIZER}' or '{HOST}' with the reason"
+        f"'{REALIZATION}' or '{HOST}' with the reason"
         for module in sorted(modules)
         if module and module not in table and (len(module) == 1 or module[:-1] in mixed)
     ]
@@ -299,7 +302,7 @@ def measure(sources: dict[Module, str], table: dict[Module, str]) -> tuple[dict[
     edges: dict[str, set[str]] = defaultdict(set)
     shared_host: dict[str, int] = defaultdict(int)
     for module, source in sources.items():
-        if target_of(module, table) != REALIZER:
+        if target_of(module, table) != REALIZATION:
             continue
         origin = "::".join(_owner(module, table))
         syntax = _VISIBILITY_PATH.sub(lambda m: " " * len(m.group(0)), _crate_boundary_workspace.rust_syntax(source))
@@ -328,8 +331,8 @@ def layer_errors(edges: dict[str, set[str]], shared_host: dict[str, int], baseli
         now, was = edges.get(pair, set()), set(held_edges.get(pair, []))
         for item in sorted(now - was):
             errors.append(
-                f"upward-edge: {pair} names host item {item}; a realizer module may not reach up into the host. "
-                "Move the shared part down into a realizer or leaf module, or take it through a port"
+                f"upward-edge: {pair} names host item {item}; a realization module may not reach up into the host. "
+                "Move the shared part down into a realization or leaf module, or take it through a port"
             )
         for item in sorted(was - now):
             errors.append(f"upward-edge: {pair} no longer names {item}; lower {BASELINE.name} in this commit "
@@ -397,20 +400,20 @@ def selftest() -> None:
     | L1   | top-level module, or child of a mixed module, not in LAYERS          | error (fail closed) |
     | L2   | child of a module that is not mixed, not in LAYERS                   | inherits its parent |
     | L3   | LAYERS names a module that does not exist                            | error |
-    | L4   | realizer path names a host item: recorded / new / recorded but gone  | accept / error / error (lower) |
-    | L5   | realizer -> realizer, host -> realizer, `pub(in crate::host)`        | not an edge |
-    | L6   | `use super::*` in a realizer child of a host module                  | edge to `*` of the parent |
-    | L7   | path inside `impl SharedHost` / `impl T for SharedHost` in realizer  | counted as methods, not edges |
+    | L4   | realization path names a host item: recorded / new / recorded but gone  | accept / error / error (lower) |
+    | L5   | realization -> realization, host -> realization, `pub(in crate::host)`        | not an edge |
+    | L6   | `use super::*` in a realization child of a host module                  | edge to `*` of the parent |
+    | L7   | path inside `impl SharedHost` / `impl T for SharedHost` in realization  | counted as methods, not edges |
     | L8   | SharedHost methods above / below / at the baseline                   | error / error (lower) / accept |
     | L9   | `--tighten`: gone item / gone pair / lower count / new item or more  | drop / drop / lower / never added |
     """
     table = layer_table((
-        (REALIZER, "r", ("real", "mix::env")),
+        (REALIZATION, "r", ("real", "mix::env")),
         (HOST, "h", ("mix", "mix::run", "top")),
     ))
     modules = {(), ("real",), ("real", "inner"), ("mix",), ("mix", "env"), ("mix", "run"), ("top",)}
     assert classification_errors(modules, table) == [], "L2"
-    assert target_of(("real", "inner"), table) == REALIZER, "L2 inherit"
+    assert target_of(("real", "inner"), table) == REALIZATION, "L2 inherit"
     assert "not classified" in classification_errors(modules | {("new",)}, table)[0], "L1 top-level"
     assert "not classified" in classification_errors(modules | {("mix", "new")}, table)[0], "L1 mixed child"
     assert classification_errors(modules | {("top", "new")}, table) == [], "L2 unmixed child"

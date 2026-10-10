@@ -69,8 +69,8 @@ impl SharedHost {
         if self.durable_ingress()
             || !self.authority.observes_terminal_memory_locally()
             || self
-                .session_slots
-                .read_run(thread, |run| run.runtime.is_some())
+                .installed_sessions
+                .read_run(thread, |run| run.context.is_some())
                 .unwrap_or(false)
         {
             return Ok(false);

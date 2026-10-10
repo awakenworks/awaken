@@ -9,14 +9,14 @@
 //! lifecycle boundary instead of coordinating parallel maps.
 
 use crate::frozen_inputs::FrozenSessionInputs;
+use crate::session_realizations::InstalledSessionsPoisoned;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 pub(crate) use crate::environment_owner::*;
-mod execution_authority;
 pub(crate) use crate::session_realizations::{
-    FrozenProjectionReceipt, SessionRealizationAuthority, SessionRealizationState,
+    FrozenProjectionReceipt, SessionRealization, SessionRealizationAuthority,
 };
 /// The exclusion every realization phase driver must hold is contract-owned
 /// (`SessionRealizationPermit`); this crate only supplies the Session slot
@@ -67,7 +67,7 @@ pub(crate) fn test_expired_observed_lease(
     proof
 }
 
-impl SessionRuntimeSlot {
+impl InstalledSession {
     /// Install a projected Environment owner and, in the same slot lock, let
     /// the canonical projection reopen MCP admission when the run layer holds
     /// no local effect.
@@ -114,7 +114,7 @@ impl SessionRuntimeSlot {
             return false;
         };
         let local_effects_cleared =
-            self.run.runtime.is_none() && self.realization.mcp.local_effects_cleared();
+            self.run.context.is_none() && self.realization.mcp.local_effects_cleared();
         if !local_effects_cleared {
             return false;
         }
@@ -183,22 +183,22 @@ impl SessionRuntimeSlot {
 /// projection of it or a resource this process runs. Dependencies point one
 /// way: `run` reads `realization` and `frozen`, `realization` reads `frozen`.
 #[derive(Default)]
-pub(crate) struct SessionRuntimeSlot {
+pub(crate) struct InstalledSession {
     /// The Session's frozen inputs, held whole. Install and every later change
     /// replace this one value; nothing amends a field of it in place.
-    pub(crate) frozen: Arc<FrozenSessionInputs>,
+    pub(crate) inputs: Arc<FrozenSessionInputs>,
     /// What this process realized for the Session: its Environment owner,
     /// realization lease, staged Resources and the locks that serialize them.
-    pub(crate) realization: SessionRealizationState,
+    pub(crate) realization: SessionRealization,
     /// The Session's running context and the dispatch it currently serves.
-    pub(crate) run: SessionRunState,
+    pub(crate) run: SessionRunBinding,
 }
 
 /// The run layer: the Session context built for running and the durable
 /// dispatch it serves. Rebuilt from the other two layers when dropped.
 #[derive(Default)]
-pub(crate) struct SessionRunState {
-    pub runtime: Option<Arc<crate::host::SessionCtx>>,
+pub(crate) struct SessionRunBinding {
+    pub context: Option<Arc<crate::host::SessionCtx>>,
     pub deferred_executor: Option<Arc<dyn awaken_tool_contract::tool::ToolExecutor>>,
     /// Current durable dispatch claim used by claim-fenced Resource effects.
     /// This process-local projection is replaced at every claimed resolve; the
@@ -210,9 +210,9 @@ pub(crate) struct SessionRunState {
     pub session_dispatch: bool,
 }
 
-impl crate::session_realizations::SessionRunQuery for SessionRunState {
+impl crate::session_realizations::SessionRunQuery for SessionRunBinding {
     fn holds_context(&self) -> bool {
-        self.runtime.is_some()
+        self.context.is_some()
     }
 
     fn session_dispatch(&self) -> bool {
@@ -224,7 +224,7 @@ impl crate::session_realizations::SessionRunQuery for SessionRunState {
     }
 
     fn drop_context(&mut self) {
-        self.runtime = None;
+        self.context = None;
     }
 
     fn enter_session_dispatch(&mut self) {
@@ -233,15 +233,15 @@ impl crate::session_realizations::SessionRunQuery for SessionRunState {
 }
 
 impl crate::session_realizations::SessionRealizationSource
-    for Mutex<HashMap<String, SessionRuntimeSlot>>
+    for Mutex<HashMap<String, InstalledSession>>
 {
     fn visit(
         &self,
         session: &str,
         create: bool,
         visit: &mut dyn FnMut(crate::session_realizations::SessionRealizationAccess<'_>),
-    ) {
-        let mut slots = self.lock().expect("session runtime slots mutex poisoned");
+    ) -> Result<(), InstalledSessionsPoisoned> {
+        let mut slots = self.lock().map_err(|_| InstalledSessionsPoisoned)?;
         let slot = if create {
             Some(slots.entry(session.to_string()).or_default())
         } else {
@@ -249,54 +249,55 @@ impl crate::session_realizations::SessionRealizationSource
         };
         if let Some(slot) = slot {
             visit(crate::session_realizations::SessionRealizationAccess {
-                frozen: &slot.frozen,
+                inputs: &slot.inputs,
                 realization: &mut slot.realization,
                 run: &mut slot.run,
             });
         }
+        Ok(())
     }
 }
 
-impl SessionRunState {
+impl SessionRunBinding {
     /// Drop a metadata-only coordination envelope so the next read rebuilds
     /// it; an executable context is kept.
     pub(crate) fn drop_coordination_envelope(&mut self) {
         if self
-            .runtime
+            .context
             .as_ref()
             .is_some_and(|context| context.is_coordination_envelope())
         {
-            self.runtime = None;
+            self.context = None;
         }
     }
 }
 
-impl SessionRuntimeSlot {
+impl InstalledSession {
     /// The only write of the frozen inputs: build the next value from a copy
     /// and publish it whole; readers holding the previous `Arc` keep it. The
     /// runtime context is assembled once with its request prefix, so a changed
     /// prefix drops only that cached context.
     pub(crate) fn replace_frozen_with(&mut self, build: impl FnOnce(&mut FrozenSessionInputs)) {
-        let mut next = self.frozen.as_ref().clone();
+        let mut next = self.inputs.as_ref().clone();
         build(&mut next);
-        if self.frozen.request_context != next.request_context {
-            self.run.runtime = None;
+        if self.inputs.request_context != next.request_context {
+            self.run.context = None;
         }
-        self.frozen = Arc::new(next);
+        self.inputs = Arc::new(next);
     }
 }
 
 #[derive(Clone)]
-pub(crate) struct SessionRuntimeSlots {
-    slots: Arc<Mutex<HashMap<String, SessionRuntimeSlot>>>,
+pub(crate) struct InstalledSessions {
+    slots: Arc<Mutex<HashMap<String, InstalledSession>>>,
     /// The realizer's view of these same Sessions; the realization-layer
     /// operations live there and are reached through `Deref`.
     realizations: crate::session_realizations::SessionRealizations,
 }
 
-impl Default for SessionRuntimeSlots {
+impl Default for InstalledSessions {
     fn default() -> Self {
-        let slots: Arc<Mutex<HashMap<String, SessionRuntimeSlot>>> = Arc::default();
+        let slots: Arc<Mutex<HashMap<String, InstalledSession>>> = Arc::default();
         Self {
             realizations: crate::session_realizations::SessionRealizations::new(slots.clone()),
             slots,
@@ -304,7 +305,7 @@ impl Default for SessionRuntimeSlots {
     }
 }
 
-impl std::ops::Deref for SessionRuntimeSlots {
+impl std::ops::Deref for InstalledSessions {
     type Target = crate::session_realizations::SessionRealizations;
 
     fn deref(&self) -> &Self::Target {
@@ -323,7 +324,7 @@ pub(crate) struct SessionRealizationRevocationSelection {
 
 impl SessionRealizationRevocationSelection {
     fn close(
-        slot: &mut SessionRuntimeSlot,
+        slot: &mut InstalledSession,
         expected: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> Option<Self> {
         slot.realization.close_authority(expected).then(|| Self {
@@ -333,14 +334,35 @@ impl SessionRealizationRevocationSelection {
         })
     }
 
-    pub(crate) fn matches(&self, slot: &SessionRuntimeSlot) -> bool {
+    pub(crate) fn matches(&self, slot: &InstalledSession) -> bool {
         Arc::ptr_eq(&self.realization, &slot.realization.realization)
             && Arc::ptr_eq(&self.lifecycle, &slot.realization.lifecycle)
             && self.authority == slot.realization.authority
     }
 }
 
-impl SessionRuntimeSlots {
+impl InstalledSessions {
+    /// Every enrolled scoped execution Environment, for realization renewal.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn execution_environments(
+        &self,
+    ) -> Vec<Arc<crate::session_environment::SessionEnvironment>> {
+        self.slots
+            .lock()
+            .expect("session runtime slots mutex poisoned")
+            .values()
+            .filter_map(|slot| slot.realization.environment_owner.execution_environment())
+            .filter(|environment| environment.scoped_execution().is_some())
+            .cloned()
+            .collect()
+    }
+
+    /// The registry itself, for tests that hold or poison its lock.
+    #[cfg(test)]
+    pub(crate) fn test_map(&self) -> &Arc<Mutex<HashMap<String, InstalledSession>>> {
+        &self.slots
+    }
+
     /// The realizer's view of these Sessions.
     pub(crate) fn realizations(&self) -> crate::session_realizations::SessionRealizations {
         self.realizations.clone()
@@ -393,7 +415,7 @@ impl SessionRuntimeSlots {
         self.update(session, |slot| slot.replace_frozen_with(build));
     }
 
-    pub fn read<R>(&self, session: &str, f: impl FnOnce(&SessionRuntimeSlot) -> R) -> Option<R> {
+    pub fn read<R>(&self, session: &str, f: impl FnOnce(&InstalledSession) -> R) -> Option<R> {
         self.slots
             .lock()
             .expect("session runtime slots mutex poisoned")
@@ -401,7 +423,7 @@ impl SessionRuntimeSlots {
             .map(f)
     }
 
-    pub fn update<R>(&self, session: &str, f: impl FnOnce(&mut SessionRuntimeSlot) -> R) -> R {
+    pub fn update<R>(&self, session: &str, f: impl FnOnce(&mut InstalledSession) -> R) -> R {
         let mut slots = self
             .slots
             .lock()
@@ -412,7 +434,7 @@ impl SessionRuntimeSlots {
     pub fn modify<R>(
         &self,
         session: &str,
-        f: impl FnOnce(&mut SessionRuntimeSlot) -> R,
+        f: impl FnOnce(&mut InstalledSession) -> R,
     ) -> Option<R> {
         self.slots
             .lock()
@@ -425,7 +447,7 @@ impl SessionRuntimeSlots {
     pub(crate) fn read_run<R>(
         &self,
         session: &str,
-        f: impl FnOnce(&SessionRunState) -> R,
+        f: impl FnOnce(&SessionRunBinding) -> R,
     ) -> Option<R> {
         self.read(session, |slot| f(&slot.run))
     }
@@ -434,7 +456,7 @@ impl SessionRuntimeSlots {
     pub(crate) fn update_run<R>(
         &self,
         session: &str,
-        f: impl FnOnce(&mut SessionRunState) -> R,
+        f: impl FnOnce(&mut SessionRunBinding) -> R,
     ) -> R {
         self.update(session, |slot| f(&mut slot.run))
     }
@@ -443,12 +465,12 @@ impl SessionRuntimeSlots {
     pub(crate) fn modify_run<R>(
         &self,
         session: &str,
-        f: impl FnOnce(&mut SessionRunState) -> R,
+        f: impl FnOnce(&mut SessionRunBinding) -> R,
     ) -> Option<R> {
         self.modify(session, |slot| f(&mut slot.run))
     }
 
-    pub fn remove(&self, session: &str) -> Option<SessionRuntimeSlot> {
+    pub fn remove(&self, session: &str) -> Option<InstalledSession> {
         let removed = self
             .slots
             .lock()

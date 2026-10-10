@@ -40,7 +40,10 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
     let provider = host
         .projected_session_environment_provider(thread, None)
         .expect("RR1 canonical projected provider");
-    let spec = host.realizer.sandbox_spec_for_provider(thread, provider);
+    let spec = host
+        .realizer
+        .staging
+        .sandbox_spec_for_provider(thread, provider);
     let environment = Arc::new(
         host.create_session_environment(provider, &spec)
             .await
@@ -63,7 +66,7 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
     assert!(Arc::ptr_eq(cached.env.as_ref().unwrap(), &environment));
 
     let lifecycle = host
-        .session_slots
+        .installed_sessions
         .read_realization(thread, |r| r.lifecycle.clone())
         .unwrap();
     {
@@ -76,8 +79,8 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
         );
     }
     assert!(
-        host.session_slots
-            .read_run(thread, |run| run.runtime.is_none())
+        host.installed_sessions
+            .read_run(thread, |run| run.context.is_none())
             .unwrap_or(false),
         "RR1/E1 revocation clears the cached Runtime"
     );
@@ -133,14 +136,14 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
     let ready = ready_runtime.env.clone().expect("R21/C2 Ready Environment");
     let ready_binding = serde_json::to_string(&ready.lifecycle().handle()).unwrap();
     let ready_owner = ready_host
-        .session_slots
+        .installed_sessions
         .read_realization(ready_thread, |r| r.environment_owner.clone())
         .expect("R21/C1 exact Resident owner");
     assert!(
         ready_host
-            .session_slots
+            .installed_sessions
             .read(ready_thread, |slot| slot
-                .frozen
+                .inputs
                 .published_snapshot
                 .is_none())
             .unwrap_or(false),
@@ -172,7 +175,7 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
             (
                 &ready_owner,
                 ready_host
-                    .session_slots
+                    .installed_sessions
                     .read_realization(ready_thread, |r| r.environment_owner.clone())
                     .as_ref(),
             ),
@@ -184,8 +187,8 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
         "R21/E1 exact identity is not republished"
     );
     let restored_runtime = ready_host
-        .session_slots
-        .read_run(ready_thread, |run| run.runtime.clone())
+        .installed_sessions
+        .read_run(ready_thread, |run| run.context.clone())
         .flatten()
         .expect("R21/E1 Runtime restored");
     assert!(
@@ -239,8 +242,8 @@ async fn recovery_status_returns_the_canonical_adoption_disposition() {
     );
     assert!(
         missing_host
-            .session_slots
-            .read_run(missing_thread, |run| run.runtime.is_none())
+            .installed_sessions
+            .read_run(missing_thread, |run| run.context.is_none())
             .unwrap_or(false),
         "R21/E2 Terminal owner never restores its Runtime"
     );
@@ -268,7 +271,7 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
     .await)
         .build()
         .expect("validated Host dependencies");
-    host.session_slots.update_realization(thread, |r| {
+    host.installed_sessions.update_realization(thread, |r| {
         r.environment_owner = resident(thread, environment.clone());
     });
     host.realizer
@@ -295,7 +298,7 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
     );
     assert!(
         matches!(
-            host.session_slots
+            host.installed_sessions
                 .read_realization(thread, |r| r.environment_owner.clone()),
             Some(SessionEnvironmentOwner::Retiring(_))
         ),
@@ -320,7 +323,7 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
         "R1 closed owner consumed"
     );
     assert_eq!(
-        host.session_slots
+        host.installed_sessions
             .read_realization(thread, |r| r.environment_rebuild_source.clone())
             .flatten(),
         Some((binding, Some(source_generation))),
@@ -391,7 +394,7 @@ async fn closed_recovery_cannot_override_protected_retirements() {
         .await)
             .build()
             .expect("validated Host dependencies");
-        host.session_slots.update_realization(thread, |r| {
+        host.installed_sessions.update_realization(thread, |r| {
             r.environment_owner = resident(thread, environment.clone());
         });
         let cause = if terminal {
@@ -426,12 +429,12 @@ async fn closed_recovery_cannot_override_protected_retirements() {
             "R2 protected intent"
         );
         assert!(
-            matches!(host.session_slots.read_realization(thread, |r| r.environment_owner.clone()),
+            matches!(host.installed_sessions.read_realization(thread, |r| r.environment_owner.clone()),
             Some(SessionEnvironmentOwner::Retiring(current)) if current.exact_matches(&protected.owner)),
             "R2 identical fence"
         );
         assert!(
-            host.session_slots
+            host.installed_sessions
                 .read_realization(thread, |r| r.environment_rebuild_source.is_none())
                 .unwrap(),
             "R2 no rebuild"
@@ -530,7 +533,7 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
     .await)
         .build()
         .expect("validated Host dependencies");
-    host.session_slots.update_realization(thread, |r| {
+    host.installed_sessions.update_realization(thread, |r| {
         // Test fixture write remains inside the sole lifecycle-owner module.
         r.environment_owner = resident(thread, environment.clone());
     });
@@ -572,6 +575,7 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
     let authorization = source_disposal_authorization(&prepared_operation.effect_id);
 
     let error = host
+        .realizer
         .dispose_prepared_checkpoint_source_environment(
             thread,
             &operation,
@@ -583,7 +587,7 @@ async fn checkpoint_disposal_cannot_consume_a_different_prepared_durable_owner()
         .expect_err("R19/E1 mismatched identity is denied");
     assert!(error.to_string().contains("retained Preparation owner"));
     let retained = host
-        .session_slots
+        .installed_sessions
         .read_realization(thread, |r| match &r.environment_owner {
             SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
                 cause:
@@ -644,7 +648,7 @@ async fn legacy_suspending_projection_keeps_exact_binding_provenance_without_fab
     )
     .expect("E1 legacy projection");
     assert!(matches!(
-        host.session_slots
+        host.installed_sessions
             .read_realization(thread, |r| r.environment_owner.clone()),
         Some(SessionEnvironmentOwner::Preparing(
             SessionEnvironmentPreparation::AwaitingAdoption {

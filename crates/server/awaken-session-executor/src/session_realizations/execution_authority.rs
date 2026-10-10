@@ -1,17 +1,33 @@
 // @formal entrypoint session_realization.concurrent_phase_drivers_are_serialized_per_session
 //! Physical effect authorization is a view of the existing Worker and Session
-//! owners, never another lease or lifecycle. Lock order: Worker -> slots -> GO.
+//! owners, never another lease or lifecycle. Lock order: Worker -> installed
+//! Sessions -> GO. A poisoned lock denies the effect.
 
-use super::*;
-#[cfg(target_os = "linux")]
-use crate::session_environment::SessionEnvironment;
+use std::sync::{Arc, Weak};
+use std::{io, time::Duration};
+
 use awaken_provisioning_contract::{CurrentExecutionAuthority, SandboxEffectFence};
 use awaken_session_resource_contract::SessionRealizationLease;
-use std::{io, sync::Weak, time::Duration};
+
+use super::{SessionRealization, SessionRealizationSource, SessionRealizations};
+use crate::host_error::HostError;
+#[cfg(target_os = "linux")]
+use crate::session_environment::SessionEnvironment;
+
+/// The authority every physical Environment effect of the realization executor
+/// runs under: the Worker's registry proof (absent on a direct Host) intersected
+/// with the Session's live realization lease.
+#[derive(Clone)]
+pub(crate) struct ExecutionAuthority {
+    pub(crate) sessions: SessionRealizations,
+    /// Worker-owned registry proof. Direct Hosts have no Worker registration;
+    /// every registered Worker installs this before enabling dispatch.
+    pub(crate) worker: Option<Arc<dyn CurrentExecutionAuthority>>,
+}
 
 struct SessionExecutionAuthority {
     worker: Option<Arc<dyn CurrentExecutionAuthority>>,
-    slots: Weak<Mutex<HashMap<String, SessionRuntimeSlot>>>,
+    sessions: Weak<dyn SessionRealizationSource>,
     session: String,
     realization: Arc<tokio::sync::Mutex<()>>,
     lifecycle: Arc<tokio::sync::Mutex<()>>,
@@ -80,25 +96,6 @@ impl CurrentExecutionAuthority for SessionExecutionAuthority {
 }
 
 impl SessionExecutionAuthority {
-    fn capture(
-        slots: &SessionRuntimeSlots,
-        session: &str,
-        slot: &SessionRuntimeSlot,
-        asserted: &SessionRealizationLease,
-        worker: Option<&Arc<dyn CurrentExecutionAuthority>>,
-        target: SessionEffectTarget,
-    ) -> Self {
-        Self {
-            worker: worker.cloned(),
-            slots: Arc::downgrade(&slots.slots),
-            session: session.into(),
-            realization: slot.realization.realization.clone(),
-            lifecycle: slot.realization.lifecycle.clone(),
-            asserted: asserted.clone(),
-            target,
-        }
-    }
-
     fn with_current_session(
         &self,
         effect: &mut dyn FnMut(&SessionRealizationLease, Duration) -> io::Result<()>,
@@ -117,11 +114,24 @@ impl SessionExecutionAuthority {
         if worker_remaining.is_some_and(|remaining| remaining.is_zero()) {
             return Err(denied());
         }
-        let slots = self.slots.upgrade().ok_or_else(denied)?;
-        let slots = slots.lock().map_err(|_| denied())?;
-        let slot = slots.get(&self.session).ok_or_else(denied)?;
-        if !Arc::ptr_eq(&self.realization, &slot.realization.realization)
-            || !Arc::ptr_eq(&self.lifecycle, &slot.realization.lifecycle)
+        let sessions = self.sessions.upgrade().ok_or_else(denied)?;
+        let mut outcome = Err(denied());
+        sessions
+            .visit(&self.session, false, &mut |access| {
+                outcome = self.effect_under_lock(access.realization, effect, worker_remaining);
+            })
+            .map_err(|_| denied())?;
+        outcome
+    }
+
+    fn effect_under_lock(
+        &self,
+        realization: &SessionRealization,
+        effect: &mut dyn FnMut(&SessionRealizationLease, Duration) -> io::Result<()>,
+        worker_remaining: Option<Duration>,
+    ) -> io::Result<()> {
+        if !Arc::ptr_eq(&self.realization, &realization.realization)
+            || !Arc::ptr_eq(&self.lifecycle, &realization.lifecycle)
         {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -132,8 +142,7 @@ impl SessionExecutionAuthority {
             #[cfg(target_os = "linux")]
             SessionEffectTarget::Execution(expected) => {
                 let environment = expected.upgrade().ok_or_else(denied)?;
-                let owned = slot
-                    .realization
+                let owned = realization
                     .environment_owner
                     .execution_environment()
                     .ok_or_else(denied)?;
@@ -143,8 +152,7 @@ impl SessionExecutionAuthority {
             }
             SessionEffectTarget::Provider(_) => {}
         }
-        let Some(session_remaining) = slot.realization.authority.remaining_for(&self.asserted)
-        else {
+        let Some(session_remaining) = realization.authority.remaining_for(&self.asserted) else {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "Session realization proof is no longer live",
@@ -155,91 +163,89 @@ impl SessionExecutionAuthority {
         // Both original guards remain held through the synchronous effect.
         // Provider conversion anchors BOOTTIME before this callback, so a
         // wait for either mutex cannot mint additional physical lifetime.
-        effect(
-            slot.realization.authority.lease().ok_or_else(denied)?,
-            remaining,
-        )
+        effect(realization.authority.lease().ok_or_else(denied)?, remaining)
     }
 }
 
-impl SessionRuntimeSlots {
+impl ExecutionAuthority {
+    fn capture(
+        &self,
+        session: &str,
+        realization: &SessionRealization,
+        asserted: &SessionRealizationLease,
+        target: SessionEffectTarget,
+    ) -> SessionExecutionAuthority {
+        SessionExecutionAuthority {
+            worker: self.worker.clone(),
+            sessions: Arc::downgrade(&self.sessions.0),
+            session: session.into(),
+            realization: realization.realization.clone(),
+            lifecycle: realization.lifecycle.clone(),
+            asserted: asserted.clone(),
+            target,
+        }
+    }
+
     /// Capture one pre-Environment target through the existing authority
     /// implementation. The returned source and synchronous effect port share
-    /// the same weak slot, lease, Worker proof and held-lock decision.
+    /// the same weak Session view, lease, Worker proof and held-lock decision.
     pub(crate) fn provider_effect_authority(
         &self,
         session: &str,
         initial: &SandboxEffectFence,
-        worker: Option<&Arc<dyn CurrentExecutionAuthority>>,
-    ) -> Result<impl CurrentExecutionAuthority + use<>, crate::HostError> {
-        self.read(session, |slot| {
-            let lease = slot.realization.authority.lease().ok_or_else(|| {
-                crate::HostError::internal("Session realization proof is no longer live")
-            })?;
-            let current = lease
-                .sandbox_effect_fence(initial.operation_id())
-                .map_err(|error| crate::HostError::internal(error.to_string()))?;
-            if !initial.same_effect_identity(&current)
-                || current.expires_at_unix_ms() < initial.expires_at_unix_ms()
-            {
-                return Err(crate::HostError::internal(
-                    "Session realization generation changed",
-                ));
-            }
-            Ok(SessionExecutionAuthority::capture(
-                self,
-                session,
-                slot,
-                lease,
-                worker,
-                SessionEffectTarget::Provider(initial.clone()),
-            ))
-        })
-        .ok_or_else(|| crate::HostError::internal("Session realization slot is absent"))?
+    ) -> Result<impl CurrentExecutionAuthority + use<>, HostError> {
+        self.sessions
+            .read_realization(session, |realization| {
+                let lease = realization.authority.lease().ok_or_else(|| {
+                    HostError::internal("Session realization proof is no longer live")
+                })?;
+                let current = lease
+                    .sandbox_effect_fence(initial.operation_id())
+                    .map_err(|error| HostError::internal(error.to_string()))?;
+                if !initial.same_effect_identity(&current)
+                    || current.expires_at_unix_ms() < initial.expires_at_unix_ms()
+                {
+                    return Err(HostError::internal(
+                        "Session realization generation changed",
+                    ));
+                }
+                Ok(self.capture(
+                    session,
+                    realization,
+                    lease,
+                    SessionEffectTarget::Provider(initial.clone()),
+                ))
+            })
+            .ok_or_else(|| HostError::internal("Session realization slot is absent"))?
     }
 
-    #[cfg(target_os = "linux")]
-    pub(crate) fn execution_environments(&self) -> Vec<Arc<SessionEnvironment>> {
-        self.slots
-            .lock()
-            .expect("session runtime slots mutex poisoned")
-            .values()
-            .filter_map(|slot| slot.realization.environment_owner.execution_environment())
-            .filter(|environment| environment.scoped_execution().is_some())
-            .cloned()
-            .collect()
-    }
-
-    /// Called while the caller owns this map's existing mutex and has enrolled
-    /// the exact candidate. Terminal-only owners with no live proof stay
+    /// Called while the caller holds the installed Sessions' lock and has
+    /// enrolled the exact candidate. Terminal-only owners with no live proof stay
     /// selected-but-unbound; they may clean up, but can never start work.
     #[cfg(target_os = "linux")]
-    pub(crate) fn bind_execution_authority(
+    pub(crate) fn bind(
         &self,
         session: &str,
-        slot: &SessionRuntimeSlot,
+        realization: &SessionRealization,
         environment: &Arc<SessionEnvironment>,
-        worker: Option<&Arc<dyn CurrentExecutionAuthority>>,
-    ) -> Result<(), crate::HostError> {
+    ) -> Result<(), HostError> {
         let Some(scoped) = environment.scoped_execution() else {
             return Ok(());
         };
         if !scoped.needs_execution_authority() {
             return Ok(());
         }
-        let Some(asserted) = slot.realization.authority.lease() else {
+        let Some(asserted) = realization.authority.lease() else {
             return Ok(());
         };
         scoped
-            .bind_execution_authority(Arc::new(SessionExecutionAuthority::capture(
-                self,
+            .bind_execution_authority(Arc::new(self.capture(
                 session,
-                slot,
+                realization,
                 asserted,
-                worker,
                 SessionEffectTarget::Execution(Arc::downgrade(environment)),
             )))
-            .map_err(|error| crate::HostError::internal(error.to_string()))?;
+            .map_err(|error| HostError::internal(error.to_string()))?;
         Ok(())
     }
 }
@@ -247,7 +253,11 @@ impl SessionRuntimeSlots {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use crate::environment_owner::*;
+    use crate::installed_session::InstalledSessions;
     use crate::session_environment::{SandboxEnvironment, SandboxEnvironmentAccess as _};
+    use crate::session_realizations::SessionRealizationAuthority;
+    use std::sync::Mutex;
 
     struct Worker(Mutex<Option<Duration>>);
     impl CurrentExecutionAuthority for Worker {
@@ -261,7 +271,7 @@ mod tests {
     }
 
     struct Fixture {
-        slots: SessionRuntimeSlots,
+        slots: InstalledSessions,
         environment: Arc<SessionEnvironment>,
         worker: Arc<Worker>,
         authority: Arc<SessionExecutionAuthority>,
@@ -277,7 +287,7 @@ mod tests {
                 .unwrap();
             let environment =
                 Arc::new(SandboxEnvironment::workdir(sandbox).into_session_environment());
-            let slots = SessionRuntimeSlots::default();
+            let slots = InstalledSessions::default();
             let worker = Arc::new(Worker(Mutex::new(Some(Duration::from_secs(30)))));
             let asserted = SessionRealizationLease {
                 owner: "worker".into(),
@@ -288,12 +298,12 @@ mod tests {
             };
             let authority = slots.update_realization("session", |r| {
                 r.authority = SessionRealizationAuthority::Live(
-                    crate::session_slot::test_observed_lease(asserted.clone()),
+                    crate::installed_session::test_observed_lease(asserted.clone()),
                 );
                 r.environment_owner = Self::candidate(environment.clone());
                 Arc::new(SessionExecutionAuthority {
                     worker: Some(worker.clone()),
-                    slots: Arc::downgrade(&slots.slots),
+                    sessions: Arc::downgrade(&slots.realizations().0),
                     session: "session".into(),
                     realization: r.realization.clone(),
                     lifecycle: r.lifecycle.clone(),
@@ -463,9 +473,9 @@ mod tests {
                         _ => unreachable!(),
                     }
                     r.authority = SessionRealizationAuthority::Live(if rule == "expired" {
-                        crate::session_slot::test_expired_observed_lease(lease)
+                        crate::installed_session::test_expired_observed_lease(lease)
                     } else {
-                        crate::session_slot::test_observed_lease(lease)
+                        crate::installed_session::test_observed_lease(lease)
                     });
                 }),
             }
@@ -505,7 +515,7 @@ mod tests {
                 calls += 1;
                 assert!(remaining > Duration::ZERO && remaining <= Duration::from_secs(40));
                 assert!(matches!(
-                    f.slots.slots.try_lock(),
+                    f.slots.test_map().try_lock(),
                     Err(std::sync::TryLockError::WouldBlock)
                 ));
                 Ok(())
@@ -538,7 +548,7 @@ mod tests {
                 Err(std::sync::TryLockError::WouldBlock)
             ));
             assert!(matches!(
-                f.slots.slots.try_lock(),
+                f.slots.test_map().try_lock(),
                 Err(std::sync::TryLockError::WouldBlock)
             ));
             Err(io::Error::other("effect failed"))
@@ -563,10 +573,13 @@ mod tests {
         let f = Fixture::new().await;
         let initial = f.authority.asserted.sandbox_effect_fence("create").unwrap();
         let worker: Arc<dyn CurrentExecutionAuthority> = f.worker.clone();
-        let provider = f
-            .slots
-            .provider_effect_authority("session", &initial, Some(&worker))
-            .unwrap();
+        let sessions = f.slots.realizations();
+        let provider = ExecutionAuthority {
+            sessions,
+            worker: Some(worker),
+        }
+        .provider_effect_authority("session", &initial)
+        .unwrap();
         assert!(f.authority.current_effect_fence(&initial).is_err());
         let mut calls = 0;
         let failure = provider.with_current_effect(&initial, &mut |current, remaining| {
@@ -578,7 +591,7 @@ mod tests {
                 Err(std::sync::TryLockError::WouldBlock)
             ));
             assert!(matches!(
-                f.slots.slots.try_lock(),
+                f.slots.test_map().try_lock(),
                 Err(std::sync::TryLockError::WouldBlock)
             ));
             Err(io::Error::other("provider effect failed"))
@@ -617,7 +630,7 @@ mod tests {
                 if callback {
                     let _ = f.authority.with_current(&mut |_| panic!("callback failed"));
                 } else {
-                    let _slot = f.slots.slots.lock().unwrap();
+                    let _slot = f.slots.test_map().lock().unwrap();
                     panic!("slot writer failed");
                 }
             }));
@@ -632,7 +645,7 @@ mod tests {
         // the ownership graph alive or authorize work (Weak edges, no cycle).
         let f = Fixture::new().await;
         let environment = Arc::downgrade(&f.environment);
-        let slots = Arc::downgrade(&f.slots.slots);
+        let slots = Arc::downgrade(f.slots.test_map());
         let authority = f.authority.clone();
         drop(f);
         assert!(slots.upgrade().is_none());

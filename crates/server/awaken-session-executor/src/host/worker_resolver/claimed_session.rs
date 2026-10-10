@@ -32,7 +32,7 @@ const fn local_claimed_projection_is_ready(
 }
 
 fn claimed_realization_continuation(
-    slot: &crate::session_slot::SessionRuntimeSlot,
+    slot: &crate::installed_session::InstalledSession,
     claim: &awaken_dispatch_contract::RunClaim,
 ) -> Option<awaken_session_resource_contract::SessionRealizationLease> {
     slot.run
@@ -91,7 +91,7 @@ pub(super) async fn install_claimed_session_projection(
 ) -> Result<(), awaken_dispatch_execution::Error> {
     let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
     let (_realization, continuation) = host
-        .session_slots
+        .installed_sessions
         .acquire_realization_with(&thread_id.0, |slot| {
             // Only an unfinished retry of this same Run in the same process
             // can retain its still-live creation authority. A new Run, closed
@@ -117,10 +117,10 @@ pub(super) async fn install_claimed_session_projection(
     }
     let Some(control) = host.worker.session_control.as_ref() else {
         let projection_ready = host
-            .session_slots
+            .installed_sessions
             .read(&thread_id.0, |slot| {
                 local_claimed_projection_is_ready(
-                    slot.frozen.baseline.is_some(),
+                    slot.inputs.baseline.is_some(),
                     slot.run.session_dispatch,
                 )
             })
@@ -235,7 +235,7 @@ mod tests {
         // dispatch retry epoch. R2 every missing/changed/closed/expired input =>
         // no continuation, so ordinary fenced assignment remains authoritative.
         // In particular Work retirement must never reopen its Closed lease.
-        use crate::session_slot::{SessionRealizationAuthority as A, SessionRuntimeSlot};
+        use crate::installed_session::{InstalledSession, SessionRealizationAuthority as A};
         let claim = awaken_dispatch_contract::RunClaim {
             run_id: awaken_agent_contract::agent::run::Id("run".into()),
             owner: "worker:incarnation".into(),
@@ -266,30 +266,30 @@ mod tests {
             for (authority, live_exact_proof) in [
                 (A::Uninstalled, false),
                 (
-                    A::Live(crate::session_slot::test_observed_lease(lease.clone())),
+                    A::Live(crate::installed_session::test_observed_lease(lease.clone())),
                     true,
                 ),
                 (A::Closed(Some(lease.clone())), false),
                 (
-                    A::Live(crate::session_slot::test_expired_observed_lease(
+                    A::Live(crate::installed_session::test_expired_observed_lease(
                         lease.clone(),
                     )),
                     false,
                 ),
                 (
-                    A::Live(crate::session_slot::test_observed_lease(
+                    A::Live(crate::installed_session::test_observed_lease(
                         foreign_lease.clone(),
                     )),
                     false,
                 ),
             ] {
                 let expected = exact_claim && live_exact_proof;
-                let slot = SessionRuntimeSlot {
-                    realization: crate::session_slot::SessionRealizationState {
+                let slot = InstalledSession {
+                    realization: crate::installed_session::SessionRealization {
                         authority,
                         ..Default::default()
                     },
-                    run: crate::session_slot::SessionRunState {
+                    run: crate::installed_session::SessionRunBinding {
                         dispatch_claim: previous.clone(),
                         ..Default::default()
                     },
@@ -519,7 +519,7 @@ mod tests {
                 ..old.clone()
             };
             let (first, ()) = host
-                .session_slots
+                .installed_sessions
                 .acquire_realization_with("shared-session", |slot| {
                     slot.run.dispatch_claim = Some(old.clone());
                 })
@@ -531,7 +531,7 @@ mod tests {
                 let claim = new.clone();
                 tokio::spawn(async move {
                     let (guard, ()) = host
-                        .session_slots
+                        .installed_sessions
                         .acquire_realization_with("shared-session", |slot| {
                             slot.run.dispatch_claim = Some(claim.clone());
                         })
@@ -543,30 +543,30 @@ mod tests {
             tokio::task::yield_now().await;
             assert!(!second_entered.load(Ordering::SeqCst), "R1");
             assert_eq!(
-                host.session_slots
+                host.installed_sessions
                     .read_run("shared-session", |run| run.dispatch_claim.clone())
                     .flatten(),
                 Some(old),
                 "R1"
             );
             if remove_slot {
-                host.session_slots.remove("shared-session");
+                host.installed_sessions.remove("shared-session");
             } else {
-                host.session_slots
+                host.installed_sessions
                     .update_run("shared-session", |run| run.dispatch_claim = None);
             }
             drop(first);
             let second = waiting.await.expect("next admission joins");
             assert!(second_entered.load(Ordering::SeqCst), "R2/R3");
             assert_eq!(
-                host.session_slots
+                host.installed_sessions
                     .read_run("shared-session", |run| run.dispatch_claim.clone())
                     .flatten(),
                 Some(new),
                 "R2/R3"
             );
             assert!(
-                host.session_slots
+                host.installed_sessions
                     .realization_lock("shared-session")
                     .try_lock()
                     .is_err(),

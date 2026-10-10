@@ -9,10 +9,10 @@ use awaken_session_execution_contract::SessionRuntime;
 use awaken_session_state_contract::SessionEnvironmentState;
 
 fn observation(host: &SharedHost) -> serde_json::Value {
-    host.session_slots.read_realization("projection-convergence", |realization| {
+    host.installed_sessions.read_realization("projection-convergence", |realization| {
         let receipt = realization.frozen_projection_receipt.as_ref();
         let binding = match &realization.environment_owner {
-            crate::session_slot::SessionEnvironmentOwner::Preparing(crate::session_slot::SessionEnvironmentPreparation::AwaitingAdoption { binding, .. }) => binding.as_str(),
+            crate::installed_session::SessionEnvironmentOwner::Preparing(crate::installed_session::SessionEnvironmentPreparation::AwaitingAdoption { binding, .. }) => binding.as_str(),
             _ => "none",
         };
         serde_json::json!({"exists": receipt.is_some(), "revision": receipt.map_or(0, |r| r.revision.0), "fingerprint": receipt.map_or("none", |r| r.fingerprint.as_str()), "binding": binding})
@@ -28,7 +28,7 @@ async fn deliver(
 ) -> Result<(), awaken_session_types::RunError> {
     let before = observation(host);
     let receipt =
-        crate::session_slot::FrozenProjectionReceipt::from_projection(&projection).unwrap();
+        crate::installed_session::FrozenProjectionReceipt::from_projection(&projection).unwrap();
     let incoming = serde_json::json!({"revision": receipt.revision.0, "fingerprint": receipt.fingerprint, "binding": projection.environment.binding().unwrap_or("none")});
     let result = managed
         .realization()
@@ -170,9 +170,9 @@ async fn independent_coordinators_converge_after_binding_replacement_and_reject_
             );
             assert_eq!(before["binding"], "B", "E1 B retained");
             hosts[i]
-                .session_slots
+                .installed_sessions
                 .read_run("projection-convergence", |run| {
-                    assert!(run.runtime.is_none(), "no physical realization");
+                    assert!(run.context.is_none(), "no physical realization");
                     assert!(run.session_dispatch);
                 })
                 .unwrap();

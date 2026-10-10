@@ -447,17 +447,17 @@ impl SharedHost {
             max_unarchived_threads,
         } = command;
         let (baseline, tools, resources, coordinator_publication) = self
-            .session_slots
+            .installed_sessions
             .read(session_id.as_str(), |slot| {
                 (
-                    slot.frozen.baseline.clone(),
-                    slot.frozen.tools.clone(),
+                    slot.inputs.baseline.clone(),
+                    slot.inputs.tools.clone(),
                     // Coordinated children share the exact generation selected
                     // for root and extension dispatch. Selection stays inside
                     // this one slot snapshot; child admission neither publishes
                     // nor reconstructs physical active truth.
                     slot.dispatch_resource_manifest(),
-                    slot.frozen.published_snapshot.clone(),
+                    slot.inputs.published_snapshot.clone(),
                 )
             })
             .ok_or_else(|| HostError::bad_request("Session runtime projection is unavailable"))?;
@@ -1026,7 +1026,7 @@ mod tests {
             .with_ephemeral_dispatch(dispatch.clone()))
             .build()
             .expect("validated Host dependencies");
-            host.session_slots.update(&session_id, |slot| {
+            host.installed_sessions.update(&session_id, |slot| {
                 slot.run.session_dispatch = true;
                 slot.replace_frozen_with(|next| {
                     next.baseline = Some(baseline);
@@ -1109,7 +1109,7 @@ mod tests {
                 "{rule}/E4 eligible Worker capability",
             );
             assert_eq!(
-                host.realizer.thread_resource_manifest(&session_id),
+                host.realizer.staging.thread_resource_manifest(&session_id),
                 active,
                 "{rule}/E5 admission must not publish active",
             );
@@ -1134,7 +1134,7 @@ mod tests {
                 }],
                 client_tools: Vec::new(),
             };
-            host.session_slots
+            host.installed_sessions
                 .replace_frozen_with(&session_id, |next| next.tools = Some(updated_tools.clone()));
             let mut target = awaken_runtime_contract::ExecutableAgentSnapshot::builder("roster-b")
                 .model(awaken_runtime_contract::resolved::ModelBinding::new(

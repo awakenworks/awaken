@@ -95,7 +95,7 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         session_application,
         session_execution,
     } = dependencies;
-    let session_slots = crate::session_slot::SessionRuntimeSlots::default();
+    let installed_sessions = crate::installed_session::InstalledSessions::default();
     let memory = Arc::new(crate::memory::MemoryRuntime::new(
         agent.llm.clone(),
         env.auxiliary_sandboxes.provider("mem"),
@@ -115,13 +115,19 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
             clock.clone(),
         ));
     SharedHost {
-        agent: capability::AgentExecution::new(agent, session_slots.clone()),
+        agent: capability::AgentExecution::new(agent, installed_sessions.clone()),
         exec,
         worker,
-        realizer: crate::SessionRealizer {
-            env,
-            runs_local_dispatch_pool: execution.local.runs_local_pool(),
-            sessions: session_slots.realizations(),
+        realizer: crate::RealizationExecutor {
+            environments: crate::environment_holding::EnvironmentHolding::new(
+                env,
+                execution.local.runs_local_pool(),
+                installed_sessions.realizations(),
+                execution_authority,
+            ),
+            cleanup: crate::terminal_cleanup::TerminalCleanup {
+                sessions: installed_sessions.realizations(),
+            },
         },
         tools,
         resources: capability::ResourcePorts::new(resources, memory),
@@ -129,8 +135,7 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         dispatch: capability::DispatchCapability::new(execution, host),
         capture,
         local_workspace,
-        session_slots,
-        execution_authority,
+        installed_sessions,
         hub: hub.clone(),
         store_dir,
         authority,
@@ -147,9 +152,9 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
 }
 
 impl SharedHost {
-    /// The Session realizer this Host was built with (warm Environment capacity).
+    /// The realization executor this Host was built with (warm Environment capacity).
     #[must_use]
-    pub fn realizer(&self) -> &crate::SessionRealizer {
+    pub fn realization_executor(&self) -> &crate::RealizationExecutor {
         &self.realizer
     }
 
@@ -190,25 +195,25 @@ impl SharedHost {
     }
 
     pub(crate) fn register_thread_workspace(&self, thread: &str, workspace: &str) {
-        self.session_slots
+        self.installed_sessions
             .replace_frozen_with(thread, |next| next.workspace = Some(workspace.to_string()));
     }
 
     pub(crate) fn register_thread_agent_projection(&self, thread: &str, agent_id: &str) {
-        self.session_slots
+        self.installed_sessions
             .replace_frozen_with(thread, |next| next.agent_id = Some(agent_id.to_string()));
     }
 
     /// Rebuildable Agent projection used only as input to Session admission.
     /// Runtime never treats this cache as an executable publication authority.
     pub fn thread_agent_projection(&self, thread: &str) -> Option<String> {
-        self.session_slots.frozen(thread).agent_id.clone()
+        self.installed_sessions.frozen(thread).agent_id.clone()
     }
 
     /// Workspace context supplied to the Session application admission boundary.
     /// Unknown flat-protocol threads use the process's persisted local workspace.
     pub fn thread_workspace(&self, thread: &str) -> String {
-        self.session_slots
+        self.installed_sessions
             .frozen(thread)
             .workspace
             .clone()
@@ -218,7 +223,7 @@ impl SharedHost {
     /// Workspace for a prepared thread; unlike `thread_workspace`, unknown ids
     /// do not inherit local ownership and therefore cannot enumerate artifacts.
     pub fn registered_thread_workspace(&self, thread: &str) -> Option<String> {
-        self.session_slots.frozen(thread).workspace.clone()
+        self.installed_sessions.frozen(thread).workspace.clone()
     }
 
     /// Clone the completion projection consumed by the authenticated Worker
@@ -243,13 +248,13 @@ impl SharedHost {
 
     /// Bind the exact published delegation targets to a prepared Session.
     pub fn register_thread_delegates(&self, thread: &str, delegates: Vec<String>) {
-        self.session_slots
+        self.installed_sessions
             .replace_frozen_with(thread, |next| next.delegates = delegates);
     }
 
     pub(crate) fn thread_delegate_ids(&self, thread: &str) -> Option<Vec<String>> {
-        self.session_slots
-            .read(thread, |slot| slot.frozen.delegates.clone())
+        self.installed_sessions
+            .read(thread, |slot| slot.inputs.delegates.clone())
     }
 
     /// The shared per-thread live observation hub.
@@ -293,7 +298,7 @@ impl SharedHost {
                 owner: self.dispatch_owner().to_owned(),
                 claimed_commit,
                 recovery_projection,
-                session_resources: self.realizer.thread_resource_manifest(thread),
+                session_resources: self.realizer.staging.thread_resource_manifest(thread),
                 publication_source: Some(publication_source.clone()),
                 claimed_model_request_gate: self.coordination_endpoint().map(|endpoint| {
                     crate::coordination::claimed_model_request_gate_factory(endpoint, thread)

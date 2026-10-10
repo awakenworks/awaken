@@ -191,7 +191,7 @@ async fn pinned_reads_during_concurrent_first_hand_calls_do_not_join_sandbox_sta
             .is_none()
     );
     assert!(
-        host.session_slots
+        host.installed_sessions
             .read_realization("skill-race", |r| r.manifest.is_none())
             .unwrap()
     );
@@ -319,7 +319,7 @@ async fn cold_resource_replacement_and_revocation_never_return_old_skill_bytes()
             .is_none()
     );
     assert!(
-        host.session_slots
+        host.installed_sessions
             .read_realization("skill-change", |r| r.manifest.is_none())
             .unwrap()
     );
@@ -521,7 +521,7 @@ async fn failed_skill_file_write_blocks_tools_and_repaired_pin_reuses_environmen
             "B9 no script effect"
         );
         assert!(
-            host.session_slots
+            host.installed_sessions
                 .read_realization("skill-write-fault", |r| r.manifest.is_none())
                 .unwrap()
         );
@@ -806,7 +806,7 @@ async fn pinned_read_path_and_text_decision_table() {
         );
     }
     assert!(
-        host.session_slots
+        host.installed_sessions
             .read_realization("text-table", |r| r.manifest.is_none())
             .unwrap(),
         "no physical completion invented"
@@ -886,7 +886,7 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
         "P7"
     );
     for mismatch in ["version", "hash", "workspace"] {
-        host.session_slots.update("cold", |slot| {
+        host.installed_sessions.update("cold", |slot| {
             slot.realization.skills = Some(vec![v1.clone()]);
             slot.replace_frozen_with(|next| next.workspace = Some(host.local_workspace().into()));
             match mismatch {
@@ -908,7 +908,7 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
         );
         assert!(host.realizer.session_environment("cold").await.is_none());
     }
-    host.session_slots.update("cold", |slot| {
+    host.installed_sessions.update("cold", |slot| {
         slot.realization.skills = Some(vec![v1.clone()]);
         slot.replace_frozen_with(|next| next.workspace = Some(host.local_workspace().into()));
         let binding = awaken_session_resource_contract::ResolvedSkillBinding {
@@ -984,9 +984,10 @@ async fn lazy_skill_installation_reloads_exact_bytes_and_reuses_environment() {
     host.ctx_for("install-retry", Some("assistant"))
         .await
         .unwrap();
-    host.session_slots.update_realization("install-retry", |r| {
-        r.skills.as_mut().unwrap()[0].files[0].content.push(b'!')
-    });
+    host.installed_sessions
+        .update_realization("install-retry", |r| {
+            r.skills.as_mut().unwrap()[0].files[0].content.push(b'!')
+        });
     let executor =
         crate::lazy_sandbox::DeferredSandboxExecutor::new(Arc::downgrade(&host), "install-retry");
     let call = ToolCall {
@@ -1030,7 +1031,7 @@ async fn lazy_skill_installation_reloads_exact_bytes_and_reuses_environment() {
         "P11 one Environment"
     );
     assert!(
-        host.session_slots
+        host.installed_sessions
             .read_realization("install-retry", |r| r.manifest.is_some())
             .unwrap(),
         "P11 physical completion"

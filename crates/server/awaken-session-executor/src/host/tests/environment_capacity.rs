@@ -1,4 +1,4 @@
-//! Warm Environment capacity on the `SessionRealizer`: which requests reach the
+//! Warm Environment capacity on the `RealizationExecutor`: which requests reach the
 //! installed provider's capacity owner and which are refused before it.
 
 use std::sync::{Arc, Mutex};
@@ -201,11 +201,11 @@ impl EnvironmentProviderInstallation for RecordingCapacity {
     }
 }
 
-fn realizer(
+fn executor(
     runs_local_dispatch_pool: bool,
     warm_pool: crate::WarmPool,
     fail: bool,
-) -> (crate::SessionRealizer, Arc<RecordingCapacity>) {
+) -> (crate::RealizationExecutor, Arc<RecordingCapacity>) {
     let root = std::env::temp_dir().join(format!("capacity-{}", uuid::Uuid::new_v4().simple()));
     let recording = Arc::new(RecordingCapacity {
         inner: crate::uninstalled_environment::default_session_provider(root.clone()),
@@ -213,6 +213,7 @@ fn realizer(
         images: Mutex::default(),
         fail,
     });
+    let sessions = crate::installed_session::InstalledSessions::default().realizations();
     let env = crate::environment_providers::EnvironmentProviders::new(
         root,
         SessionEnvironmentProvider::new(recording.clone()),
@@ -221,10 +222,14 @@ fn realizer(
         warm_pool,
     );
     (
-        crate::SessionRealizer {
-            env,
-            runs_local_dispatch_pool,
-            sessions: crate::session_slot::SessionRuntimeSlots::default().realizations(),
+        crate::RealizationExecutor {
+            environments: crate::environment_holding::EnvironmentHolding::new(
+                env,
+                runs_local_dispatch_pool,
+                sessions.clone(),
+                None,
+            ),
+            cleanup: crate::terminal_cleanup::TerminalCleanup { sessions },
         },
         recording,
     )
@@ -248,10 +253,10 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
     self_hosted.self_hosted = true;
 
     for (row, local, pool) in [("W1", false, on), ("W2", true, crate::WarmPool::Disabled)] {
-        let (realizer, recording) = realizer(local, pool, false);
-        assert_eq!(realizer.environment_warmup_limits(), (0, 0), "{row}");
+        let (executor, recording) = executor(local, pool, false);
+        assert_eq!(executor.environment_warmup_limits(), (0, 0), "{row}");
         assert_eq!(
-            realizer
+            executor
                 .prewarm_default_environment_capacity(2)
                 .await
                 .unwrap(),
@@ -259,7 +264,7 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
             "{row}"
         );
         assert_eq!(
-            realizer
+            executor
                 .prewarm_environment_snapshot(&environment, 2)
                 .await
                 .unwrap(),
@@ -269,10 +274,10 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
         assert!(recording.prewarmed.lock().unwrap().is_empty(), "{row}");
     }
 
-    let (realizer, recording) = realizer(true, on, false);
-    assert_eq!(realizer.environment_warmup_limits(), (2, 4), "W3");
+    let (executor, recording) = executor(true, on, false);
+    assert_eq!(executor.environment_warmup_limits(), (2, 4), "W3");
     assert_eq!(
-        realizer
+        executor
             .prewarm_default_environment_capacity(0)
             .await
             .unwrap(),
@@ -280,7 +285,7 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
         "W3"
     );
     assert_eq!(
-        realizer
+        executor
             .prewarm_environment_snapshot(&environment, 0)
             .await
             .unwrap(),
@@ -288,7 +293,7 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
         "W3"
     );
     assert_eq!(
-        realizer
+        executor
             .prewarm_environment_snapshot(&self_hosted, 2)
             .await
             .unwrap(),
@@ -298,7 +303,7 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
     assert!(recording.prewarmed.lock().unwrap().is_empty(), "W3/W4");
 
     assert_eq!(
-        realizer
+        executor
             .prewarm_default_environment_capacity(2)
             .await
             .unwrap(),
@@ -306,7 +311,7 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
         "W5"
     );
     assert_eq!(
-        realizer
+        executor
             .prewarm_environment_snapshot(&environment, 3)
             .await
             .unwrap(),
@@ -316,26 +321,26 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
     assert_eq!(
         *recording.prewarmed.lock().unwrap(),
         vec![
-            (Some(realizer.default_environment_capacity_shape()), 2),
+            (Some(executor.default_environment_capacity_shape()), 2),
             (
-                Some(realizer.environment_snapshot_capacity_shape(&environment)),
+                Some(executor.environment_snapshot_capacity_shape(&environment)),
                 3
             ),
         ],
         "W5 exact published shapes"
     );
     assert_ne!(
-        realizer.default_environment_capacity_shape(),
-        realizer.environment_snapshot_capacity_shape(&environment),
+        executor.default_environment_capacity_shape(),
+        executor.environment_snapshot_capacity_shape(&environment),
         "W5 distinct shapes"
     );
     assert_eq!(
-        realizer.ready_environment_snapshot_capacity(&environment),
+        executor.ready_environment_snapshot_capacity(&environment),
         7,
         "ready is observed"
     );
 
-    let (failing, _) = realizer_for_failure();
+    let (failing, _) = executor_for_failure();
     assert!(
         failing
             .prewarm_default_environment_capacity(2)
@@ -352,19 +357,19 @@ async fn warm_capacity_reaches_the_provider_only_on_a_local_pool_with_a_target()
     );
 }
 
-fn realizer_for_failure() -> (crate::SessionRealizer, Arc<RecordingCapacity>) {
-    realizer(true, crate::WarmPool::new(2, 4), true)
+fn executor_for_failure() -> (crate::RealizationExecutor, Arc<RecordingCapacity>) {
+    executor(true, crate::WarmPool::new(2, 4), true)
 }
 
 #[tokio::test]
 async fn image_preparation_covers_the_default_shape_and_every_non_self_hosted_environment() {
     // I1 the default Session shape is always prepared; I2 a self-hosted
     // Environment is never pulled here; I3 every other Environment is.
-    let (realizer, recording) = realizer(false, crate::WarmPool::Disabled, false);
+    let (executor, recording) = executor(false, crate::WarmPool::Disabled, false);
     let environment = crate::host::eager_environment();
     let mut self_hosted = environment.clone();
     self_hosted.self_hosted = true;
-    realizer
+    executor
         .prewarm_environment_images(&[environment, self_hosted])
         .await
         .unwrap();

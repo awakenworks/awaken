@@ -122,7 +122,7 @@ SIGNAL_GROUPS: dict[str, tuple[tuple[re.Pattern[str], ...], ...]] = {
             re.compile(r"\bfn\s+(?:result_matches|status_match)\b"),
         ),
         (
-            re.compile(r"\bsession_slots\s*\.\s*update\s*\("),
+            re.compile(r"\binstalled_sessions\s*\.\s*update\s*\("),
             re.compile(
                 r"\benvironment_owner\s*\.\s*(?:begin_[A-Za-z0-9_]*|publish_prepared)\s*\("
             ),

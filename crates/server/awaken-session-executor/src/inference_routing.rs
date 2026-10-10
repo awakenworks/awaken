@@ -25,12 +25,12 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 /// a ref becomes an executor.
 pub(crate) struct InferenceRouting {
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
-    slots: crate::session_slot::SessionRuntimeSlots,
+    slots: crate::installed_session::InstalledSessions,
 }
 
 impl InferenceRouting {
     pub(crate) fn new(
-        slots: crate::session_slot::SessionRuntimeSlots,
+        slots: crate::installed_session::InstalledSessions,
         materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     ) -> Self {
         Self {

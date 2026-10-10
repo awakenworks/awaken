@@ -29,6 +29,7 @@ impl ManagedHost {
         command: SessionRepositoryPublicationCommand,
         lease: &SessionRealizationLease,
     ) -> Result<SessionRepositoryPublicationEffect, RunError> {
+        let cleanup = &self.host.realizer.cleanup;
         let workspace = self.host.thread_workspace(command.session_id.as_str());
 
         // The canonical driver may install only the frozen aggregate after a
@@ -40,17 +41,16 @@ impl ManagedHost {
         // same-generation lease rather than extending the asserted value.
         let _realization = self
             .host
-            .session_slots
+            .installed_sessions
             .acquire_realization(command.session_id.as_str())
             .await;
         let _lifecycle = self
             .host
-            .session_slots
+            .installed_sessions
             .lock_lifecycle(command.session_id.as_str())
             .await;
-        let mut current_lease = self
-            .host
-            .authorize_terminal_cleanup_lease(&command.session_id, lease)
+        let mut current_lease = cleanup
+            .authorize_lease(&command.session_id, lease)
             .map_err(to_run_error)?;
         let staged = self
             .stage_terminal_repository_publication_input(&workspace, &command, &current_lease)
@@ -66,13 +66,12 @@ impl ManagedHost {
                 "terminal Repository publication did not compile one exact activation",
             ));
         }
-        current_lease = self
-            .host
-            .authorize_terminal_cleanup_lease(&command.session_id, lease)
+        current_lease = cleanup
+            .authorize_lease(&command.session_id, lease)
             .map_err(to_run_error)?;
         let (state, resolved_resources) = self
             .host
-            .session_slots
+            .installed_sessions
             .read_realization(command.session_id.as_str(), |r| {
                 (
                     r.terminal_environment_state.clone(),
@@ -116,8 +115,8 @@ impl ManagedHost {
             .await
             .map_err(to_run_error)?;
         if let Some(observation) = prepared.publication_source_closure() {
-            self.host
-                .authorize_terminal_cleanup_lease(&command.session_id, lease)
+            cleanup
+                .authorize_lease(&command.session_id, lease)
                 .map_err(to_run_error)?;
             let rejection = SessionRepositoryPublicationRejection::source_closed(
                 &command,
@@ -133,9 +132,8 @@ impl ManagedHost {
                 "terminal Repository publication source is not available for live I/O",
             ));
         }
-        current_lease = self
-            .host
-            .authorize_terminal_cleanup_lease(&command.session_id, lease)
+        current_lease = cleanup
+            .authorize_lease(&command.session_id, lease)
             .map_err(to_run_error)?;
         let environment = prepared
             .environment
@@ -158,8 +156,8 @@ impl ManagedHost {
                 Some(&fence),
             )
             .await;
-        self.host
-            .authorize_terminal_cleanup_lease(&command.session_id, lease)
+        cleanup
+            .authorize_lease(&command.session_id, lease)
             .map_err(to_run_error)?;
         match effect {
             Ok(effect_receipt) => Ok(SessionRepositoryPublicationEffect::Published(

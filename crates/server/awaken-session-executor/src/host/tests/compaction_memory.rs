@@ -482,8 +482,8 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
                 .expect("R2 warm parent context");
         } else {
             assert!(
-                host.session_slots
-                    .read_run(&parent, |run| run.runtime.is_none())
+                host.installed_sessions
+                    .read_run(&parent, |run| run.context.is_none())
                     .unwrap_or(true),
                 "R1 parent Runtime starts cold"
             );
@@ -632,9 +632,9 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
         .expect("terminal run");
     assert!(
         first
-            .session_slots
+            .installed_sessions
             .read_run(thread, |run| {
-                run.runtime
+                run.context
                     .as_ref()
                     .is_some_and(|context| context.delivery.direct().is_some())
             })
@@ -939,7 +939,10 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
             serde_json::json!({}),
         ),
     };
-    let lifecycle_guard = host.session_slots.lock_lifecycle("memory-replay").await;
+    let lifecycle_guard = host
+        .installed_sessions
+        .lock_lifecycle("memory-replay")
+        .await;
     let preparing = tokio::spawn({
         let managed = managed.clone();
         async move {
@@ -1007,12 +1010,13 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     // Reproduce the active-active recovery state observed in the black-box
     // pressure test: the durable sandbox binding is resident, while this process
     // has not yet projected the authoritative Resource generation.
-    host.session_slots.update_realization("memory-replay", |r| {
-        r.manifest = None;
-        r.resources = Default::default();
-        r.memory_bindings.clear();
-        r.memory = None;
-    });
+    host.installed_sessions
+        .update_realization("memory-replay", |r| {
+            r.manifest = None;
+            r.resources = Default::default();
+            r.memory_bindings.clear();
+            r.memory = None;
+        });
     let replay = resource_transition(
         host.local_workspace(),
         0,
@@ -1047,7 +1051,10 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
             .unwrap()
     ));
 
-    let installed = host.realizer.thread_resource_manifest("memory-replay");
+    let installed = host
+        .realizer
+        .staging
+        .thread_resource_manifest("memory-replay");
     for field in [
         "store",
         "config",
@@ -1126,7 +1133,9 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
             );
         }
         assert_eq!(
-            host.realizer.thread_resource_manifest("memory-replay"),
+            host.realizer
+                .staging
+                .thread_resource_manifest("memory-replay"),
             installed,
             "{field}"
         );

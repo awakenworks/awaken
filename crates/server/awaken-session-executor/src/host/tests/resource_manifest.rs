@@ -244,7 +244,7 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
             case.rule
         );
         let (binding_count, automatic_absent) = host
-            .session_slots
+            .installed_sessions
             .read_realization(&thread, |r| (r.memory_bindings.len(), r.memory.is_none()))
             .unwrap();
         assert_eq!(binding_count, count, "{} E1 bindings", case.rule);
@@ -712,6 +712,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
     );
     let before_manifest = host
         .realizer
+        .staging
         .thread_resource_manifest("skill-revoke")
         .expect("installed manifest");
 

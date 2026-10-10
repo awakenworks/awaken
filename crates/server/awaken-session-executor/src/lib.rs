@@ -48,6 +48,7 @@ mod dispatch_session_runtime;
 mod durable_operations;
 mod environment_capacity;
 mod environment_continuation;
+mod environment_holding;
 mod environment_owner;
 mod environment_providers;
 mod frozen_inputs;
@@ -55,6 +56,7 @@ mod host;
 mod host_error;
 mod hub;
 mod inference_routing;
+mod installed_session;
 mod judge;
 mod lazy_sandbox;
 mod live_inbox;
@@ -73,14 +75,14 @@ mod model_content_materializer;
 mod no_model;
 mod outcome_controller;
 mod provisioning;
+mod realization_executor;
 mod redact;
+mod resource_staging;
 mod run_application_host;
 mod run_exec;
 mod session_environment;
 mod session_memory_tools;
 mod session_realizations;
-mod session_realizer;
-mod session_slot;
 mod session_tools;
 mod skill_catalog;
 mod skill_delivery;
@@ -88,6 +90,7 @@ mod skills;
 mod staged_resources;
 mod step_projection;
 mod store;
+mod terminal_cleanup;
 mod terminal_repository_publication;
 #[cfg(test)]
 use awaken_session_mcp::test_mcp;
@@ -151,8 +154,8 @@ pub use crate::host::{
 };
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
+pub use crate::realization_executor::RealizationExecutor;
 pub use crate::run_application_host::RunApplicationHost;
-pub use crate::session_realizer::SessionRealizer;
 use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialMaterializer};
 use awaken_resource_contract::FileContentSource;
 #[cfg(test)]
@@ -324,7 +327,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
     ) -> Result<(), RunError> {
         // Every Environment-owner projection, including lease-only recovery,
         // crosses the same lifecycle guard as physical publication/retirement.
-        let _lifecycle = self.host.session_slots.lock_lifecycle(thread).await;
+        let _lifecycle = self.host.installed_sessions.lock_lifecycle(thread).await;
         if mode.prepares_session() {
             // Cause/effect rule P2: an unprotected active Runtime rejects before
             // any frozen coordinate is published. The same lifecycle mutex also
@@ -370,7 +373,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
         self.host
             .authorize_worker_effect(|| {
                 Ok(self.host
-            .session_slots
+            .installed_sessions
             .modify_realization(thread, |r| {
                 let current = r.authority.lease().cloned().ok_or_else(missing)?;
                 if !r.renew_lease(&current, lease) {
@@ -840,7 +843,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ManagedHost {
         tools: awaken_session_configuration_contract::SessionToolConfiguration,
     ) -> Result<(), RunError> {
         self.host
-            .session_slots
+            .installed_sessions
             .replace_frozen_with(thread, |next| next.tools = Some(tools));
         self.host.realizer.evict_session_for_rebuild(thread).await;
         Ok(())

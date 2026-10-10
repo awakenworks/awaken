@@ -118,7 +118,7 @@ async fn conflicting_revocation_preserves_active_worker_relay_until_compatible_d
     assert!(error.to_string().contains("lower-priority"), "R1/E1");
     assert!(
         matches!(
-            host.session_slots
+            host.installed_sessions
                 .read_realization(thread, |r| r.environment_owner.clone()),
             Some(SessionEnvironmentOwner::Retiring(current))
                 if current.exact_matches(&terminal.owner)
@@ -185,10 +185,10 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
             "provider", "model", "backend",
         ))
         .build();
-    host.session_slots.replace_frozen_with(thread, |next| {
+    host.installed_sessions.replace_frozen_with(thread, |next| {
         next.published_snapshot = Some(snapshot.clone())
     });
-    host.realizer.register_thread_resources(
+    host.realizer.staging.register_thread_resources(
         thread,
         crate::staged_resources::StagedResources {
             mounts: vec![retry_input_mount()],
@@ -228,7 +228,7 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
     let route_before = relay.route_url(&mcp_generation).unwrap();
     let spec_before = host.realizer.sandbox_spec(thread);
     let lifecycle = host
-        .session_slots
+        .installed_sessions
         .read_realization(thread, |r| r.lifecycle.clone())
         .unwrap();
     let _lifecycle = lifecycle.lock().await;
@@ -249,7 +249,7 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
         "R20/E3 mounts/projection"
     );
     assert_eq!(
-        host.session_slots
+        host.installed_sessions
             .published_snapshot(thread)
             .map(|snapshot| snapshot.id),
         Some(snapshot.id),
@@ -313,10 +313,10 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     };
     host.install_session_realization_lease(thread, lease.clone())
         .unwrap();
-    host.session_slots.replace_frozen_with(thread, |next| {
+    host.installed_sessions.replace_frozen_with(thread, |next| {
         next.published_snapshot = Some(snapshot.clone())
     });
-    host.realizer.register_thread_resources(
+    host.realizer.staging.register_thread_resources(
         thread,
         crate::staged_resources::StagedResources {
             mounts: vec![retry_input_mount()],
@@ -346,12 +346,12 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         &serde_json::to_string(&environment.lifecycle().handle()).unwrap(),
         &generation,
     );
-    host.session_slots
+    host.installed_sessions
         .close_mcp_realization_admission(thread, fence.clone())
         .unwrap();
     let spec_before = host.realizer.sandbox_spec(thread);
     let lifecycle = host
-        .session_slots
+        .installed_sessions
         .read_realization(thread, |r| r.lifecycle.clone())
         .unwrap();
     let _lifecycle = lifecycle.lock().await;
@@ -359,11 +359,9 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         .await
         .expect("C2 live revocation");
     assert_eq!(
-        host.session_slots
+        host.installed_sessions
             .read_realization(thread, |r| r.authority.clone()),
-        Some(crate::session_slot::SessionRealizationAuthority::Closed(
-            Some(lease.clone())
-        )),
+        Some(crate::installed_session::SessionRealizationAuthority::Closed(Some(lease.clone()))),
         "E4"
     );
     assert!(
@@ -371,12 +369,12 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
             .is_err()
     );
     assert!(
-        host.session_slots.realization_leases().is_empty(),
+        host.installed_sessions.realization_leases().is_empty(),
         "E4 replay stays closed"
     );
     assert!(
         matches!(
-            host.session_slots
+            host.installed_sessions
                 .read_realization(thread, |r| r.environment_owner.clone()),
             Some(SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
                 cause: SessionEnvironmentRetirementCause::RealizationRevocation,
@@ -391,14 +389,14 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         "E2 SandboxSpec"
     );
     assert_eq!(
-        host.session_slots
+        host.installed_sessions
             .published_snapshot(thread)
             .map(|current| current.id),
         Some(snapshot.id),
         "E2 provider publication"
     );
     assert_eq!(
-        host.session_slots
+        host.installed_sessions
             .read_realization(thread, |r| r.mcp.quiescence_fence().cloned()),
         Some(Some(fence)),
         "E3 revocation is not a quiescence-fence reopen authority"
@@ -453,7 +451,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
             thread,
             projection.clone(),
             awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
-                lease: crate::session_slot::test_observed_lease(lease.clone()),
+                lease: crate::installed_session::test_observed_lease(lease.clone()),
                 prepare_session: true,
             },
         ),
@@ -478,7 +476,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
     // The source projection must carry the first sink's actual generation;
     // inventing another generation hid invalid adoption in the old publisher.
     let source_identity = first
-        .session_slots
+        .installed_sessions
         .read_realization(thread, |r| match &r.environment_owner {
             SessionEnvironmentOwner::Resident(owned) => owned.identity.clone(),
             _ => panic!("first committed resident"),
@@ -511,7 +509,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
             thread,
             projection,
             awaken_session_realization_contract::SessionProjectionInstallMode::Realization {
-                lease: crate::session_slot::test_observed_lease(lease),
+                lease: crate::installed_session::test_observed_lease(lease),
                 prepare_session: true,
             },
         ),

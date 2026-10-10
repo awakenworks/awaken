@@ -25,7 +25,7 @@ REALIZATION_PERMIT_DEFINITION = (
 # The only two exclusion identity sources: the Worker-side Session runtime slot
 # allocation, and the co-located driver's per-Session registry.
 REALIZATION_PERMIT_MINTERS = {
-    "crates/server/awaken-session-executor/src/session_slot/realization_permit.rs": (
+    "crates/server/awaken-session-executor/src/installed_session/realization_permit.rs": (
         "slot.realization"
     ),
     "crates/server/awaken-session-application/src/realization/local_lock.rs": (
@@ -36,7 +36,7 @@ REALIZATION_PERMIT_MINTERS = {
 # and the canonical accessor each must obtain its permit from.
 REALIZATION_DRIVER_ENTRIES = {
     "crates/server/awaken-session-executor/src/host/worker_resolver/session_realization/driver.rs": (
-        "session_slots.acquire_realization"
+        "installed_sessions.acquire_realization"
     ),
     "crates/server/awaken-session-application/src/realization.rs": (
         "self.local_realization_locks().acquire(session_id.as_str())"
@@ -186,7 +186,7 @@ pub async fn drive_session_realization(
 }
 """,
         REALIZATION_PERMIT_DEFINITION: "pub struct SessionRealizationPermit {}\n",
-        "crates/server/awaken-session-executor/src/session_slot/realization_permit.rs": """
+        "crates/server/awaken-session-executor/src/installed_session/realization_permit.rs": """
 SessionRealizationPermit::acquire(session, || slot.realization.clone(), admit)
 """,
         "crates/server/awaken-session-application/src/realization/local_lock.rs": """
@@ -194,7 +194,7 @@ pub(crate) struct LocalRealizationLocks();
 SessionRealizationPermit::acquire(session_id, || registry.entry(session_id.to_string()), admit)
 """,
         "crates/server/awaken-session-executor/src/host/worker_resolver/session_realization/driver.rs": """
-let realization = host.session_slots.acquire_realization(session_id).await;
+let realization = host.installed_sessions.acquire_realization(session_id).await;
 awaken_session_realization_driver::drive_session_realization(realization, None)
 """,
         "crates/server/awaken-session-application/src/realization.rs": """
@@ -249,7 +249,7 @@ local_realization_locks: Arc<crate::realization::LocalRealizationLocks>,
 
     lost_identity = dict(canonical)
     lost_identity[
-        "crates/server/awaken-session-executor/src/session_slot/realization_permit.rs"
+        "crates/server/awaken-session-executor/src/installed_session/realization_permit.rs"
     ] = "SessionRealizationPermit::acquire(session, || Arc::new(Mutex::new(())), admit)\n"
     assert any(
         "is gone; a permit" in error

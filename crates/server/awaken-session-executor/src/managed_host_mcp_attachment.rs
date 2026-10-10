@@ -44,7 +44,7 @@ impl awaken_session_mcp::McpStagingSession for ManagedHost {
         session: &str,
     ) -> Option<awaken_runtime_contract::resolved::Backend> {
         self.host
-            .session_slots
+            .installed_sessions
             .frozen(session)
             .backend_ref
             .clone()
@@ -64,7 +64,7 @@ impl awaken_session_mcp::McpStagingSession for ManagedHost {
 
     fn frozen_network(&self, session: &str) -> Option<awaken_provisioning_contract::NetworkPolicy> {
         self.host
-            .session_slots
+            .installed_sessions
             .frozen(session)
             .environment_projection
             .as_ref()
@@ -95,10 +95,10 @@ impl awaken_session_mcp::McpStagingSession for ManagedHost {
 
     fn frozen_agent(&self, session: &str) -> Option<String> {
         self.host
-            .session_slots
+            .installed_sessions
             .read(session, |slot| {
-                slot.frozen.agent_id.clone().or_else(|| {
-                    slot.frozen
+                slot.inputs.agent_id.clone().or_else(|| {
+                    slot.inputs
                         .baseline
                         .as_ref()
                         .map(|baseline| baseline.agent_id.clone())
@@ -126,7 +126,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
         self.host
             .mcp
             .stage_attachment(
-                &self.host.session_slots,
+                &self.host.installed_sessions,
                 self,
                 self.mcp_credential_materialization(),
                 request,
@@ -140,7 +140,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
     ) -> Result<(), RunError> {
         self.host
             .mcp
-            .publish_attachment(&self.host.session_slots, self, generation)
+            .publish_attachment(&self.host.installed_sessions, self, generation)
             .await
     }
 
@@ -150,7 +150,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
     ) -> Result<(), RunError> {
         self.host
             .mcp
-            .drain_attachment(&self.host.session_slots, generation)
+            .drain_attachment(&self.host.installed_sessions, generation)
             .await
     }
 }

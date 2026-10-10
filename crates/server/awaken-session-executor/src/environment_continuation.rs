@@ -46,7 +46,7 @@ impl ManagedHost {
     ) -> Result<awaken_session_resource_contract::SessionRealizationLease, RunError> {
         let (current, live) = self
             .host
-            .session_slots
+            .installed_sessions
             .read_realization(thread, |r| {
                 r.authority.lease().map(|current| {
                     (
@@ -152,9 +152,10 @@ impl ManagedHost {
         generation: &awaken_session_state_contract::SandboxGeneration,
         expected_mcp_generations: &[awaken_session_mcp_contract::McpGenerationRef],
     ) -> Result<awaken_session_state_contract::QuiescenceReceipt, RunError> {
+        let sessions = &self.host.installed_sessions;
         self.continuation_effect_fence(thread, operation)?;
-        let _realization = self.host.session_slots.acquire_realization(thread).await;
-        let _lifecycle = self.host.session_slots.lock_lifecycle(thread).await;
+        let _realization = sessions.acquire_realization(thread).await;
+        let _lifecycle = sessions.lock_lifecycle(thread).await;
         let environment = self
             .host
             .realizer
@@ -166,8 +167,7 @@ impl ManagedHost {
                 generation,
             )
             .map_err(to_run_error)?;
-        self.host
-            .session_slots
+        sessions
             .close_mcp_realization_admission(
                 thread,
                 awaken_session_mcp::McpQuiescenceAdmissionFence::new(
@@ -178,11 +178,9 @@ impl ManagedHost {
                 ),
             )
             .map_err(to_run_error)?;
-        let primary_active = self
-            .host
-            .session_slots
+        let primary_active = sessions
             .read_run(thread, |run| {
-                run.runtime.as_ref().is_some_and(|runtime| {
+                run.context.as_ref().is_some_and(|runtime| {
                     runtime
                         .active_run
                         .lock()
@@ -198,11 +196,9 @@ impl ManagedHost {
             .map_err(to_run_error)?;
         let delegated_active = delegated.iter().any(|run| {
             run.status.occupies_parallel_slot()
-                && self
-                    .host
-                    .session_slots
+                && sessions
                     .read_run(&run.run_id.0, |run| {
-                        run.runtime.as_ref().is_some_and(|runtime| {
+                        run.context.as_ref().is_some_and(|runtime| {
                             runtime
                                 .active_run
                                 .lock()
@@ -246,9 +242,7 @@ impl ManagedHost {
             )
         })?;
         self.continuation_effect_fence(thread, operation)?;
-        self.host
-            .session_slots
-            .modify_run(thread, |run| run.runtime = None);
+        sessions.modify_run(thread, |run| run.context = None);
         Ok(awaken_session_state_contract::QuiescenceReceipt {
             effect_id: operation.effect_id.clone(),
             generation_id: generation.id().to_owned(),
@@ -273,14 +267,11 @@ impl ManagedHost {
         // ownership; a same-byte replacement must not rebind this operation.
         let authority = self
             .host
-            .session_slots
-            .provider_effect_authority(
-                thread,
-                &effect_fence,
-                self.host.execution_authority.as_ref(),
-            )
+            .realizer
+            .execution
+            .provider_effect_authority(thread, &effect_fence)
             .map_err(to_run_error)?;
-        let _lifecycle = self.host.session_slots.lock_lifecycle(thread).await;
+        let _lifecycle = self.host.installed_sessions.lock_lifecycle(thread).await;
         let environment = self
             .host
             .realizer
@@ -335,7 +326,7 @@ impl ManagedHost {
     ) -> Result<awaken_session_state_contract::SourceReleasePreparedReceipt, RunError> {
         let exec = &self.host.realizer;
         self.continuation_preparation_effect_fence(thread, preparation)?;
-        let Some(resources) = exec.thread_resource_manifest(thread) else {
+        let Some(resources) = exec.staging.thread_resource_manifest(thread) else {
             return Err(RunError::unavailable_classified(
                 "session_environment_continuation_resources_missing",
                 "Checkpoint source preparation has no frozen active Resource manifest",
@@ -382,7 +373,7 @@ impl ManagedHost {
                     error.to_string(),
                 )
             })?;
-        let _lifecycle = self.host.session_slots.lock_lifecycle(thread).await;
+        let _lifecycle = self.host.installed_sessions.lock_lifecycle(thread).await;
         self.continuation_preparation_effect_fence(thread, preparation)?;
         let effect_fence = self.continuation_preparation_effect_fence(thread, preparation)?;
         let prepared = self
@@ -425,12 +416,9 @@ impl ManagedHost {
             let effect_fence = self.continuation_preparation_effect_fence(thread, preparation)?;
             let authority = self
                 .host
-                .session_slots
-                .provider_effect_authority(
-                    thread,
-                    &effect_fence,
-                    self.host.execution_authority.as_ref(),
-                )
+                .realizer
+                .execution
+                .provider_effect_authority(thread, &effect_fence)
                 .map_err(to_run_error)?;
             environment
                 .lifecycle()
@@ -446,12 +434,9 @@ impl ManagedHost {
         let effect_fence = self.continuation_preparation_effect_fence(thread, preparation)?;
         let authority = self
             .host
-            .session_slots
-            .provider_effect_authority(
-                thread,
-                &effect_fence,
-                self.host.execution_authority.as_ref(),
-            )
+            .realizer
+            .execution
+            .provider_effect_authority(thread, &effect_fence)
             .map_err(to_run_error)?;
         let provider_prepared_effect_fence = environment
             .lifecycle()
@@ -492,23 +477,23 @@ impl ManagedHost {
         thread: &str,
         disposal: &awaken_session_state_contract::SourceReleaseDisposal,
     ) -> Result<awaken_session_state_contract::SourceDisposedReceipt, RunError> {
+        let exec = &self.host.realizer;
         let operation = disposal.operation();
         let generation = disposal.generation();
         let source_binding = disposal.source_binding();
         self.continuation_source_disposal_authorization(thread, disposal)?;
-        let _lifecycle = self.host.session_slots.lock_lifecycle(thread).await;
+        let _lifecycle = self.host.installed_sessions.lock_lifecycle(thread).await;
         let provider_authorization =
             self.continuation_source_disposal_authorization(thread, disposal)?;
-        self.host
-            .dispose_prepared_checkpoint_source_environment(
-                thread,
-                operation,
-                generation,
-                source_binding,
-                &provider_authorization,
-            )
-            .await
-            .map_err(to_run_error)?;
+        exec.dispose_prepared_checkpoint_source_environment(
+            thread,
+            operation,
+            generation,
+            source_binding,
+            &provider_authorization,
+        )
+        .await
+        .map_err(to_run_error)?;
         self.continuation_source_disposal_authorization(thread, disposal)?;
         Ok(awaken_session_state_contract::SourceDisposedReceipt {
             effect_id: operation.effect_id.clone(),
@@ -522,22 +507,19 @@ impl ManagedHost {
         &self,
         request: awaken_session_state_contract::SandboxRestoreRequest,
     ) -> Result<awaken_session_state_contract::RestoreReceipt, RunError> {
+        let exec = &self.host.realizer;
+        let staging = &exec.staging;
         request
             .validate()
             .map_err(|error| RunError::unavailable(error.to_string()))?;
         let thread = request.session_id.clone();
-        let _lifecycle = self.host.session_slots.lock_lifecycle(&thread).await;
-        self.host
-            .retry_unpublished_session_environment_cleanup(&thread)
+        let _lifecycle = self.host.installed_sessions.lock_lifecycle(&thread).await;
+        exec.retry_unpublished_session_environment_cleanup(&thread)
             .await
             .map_err(to_run_error)?;
-        self.host
-            .realizer
-            .begin_session_environment_restore(&thread, &request)
+        exec.begin_session_environment_restore(&thread, &request)
             .map_err(to_run_error)?;
-        let store = self
-            .host
-            .realizer
+        let store = exec
             .env
             .environment_checkpoint_store
             .as_ref()
@@ -560,15 +542,10 @@ impl ManagedHost {
             .as_ref()
             .map(|snapshot| snapshot.resolved_spec.model_binding.provisioning())
             .unwrap_or(&awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor);
-        let provider = self
-            .host
-            .realizer
+        let provider = exec
             .session_environment_provider_for_thread(&thread, provisioning)
             .map_err(to_run_error)?;
-        let spec = self
-            .host
-            .realizer
-            .sandbox_spec_for_provider(&thread, provider);
+        let spec = staging.sandbox_spec_for_provider(&thread, provider);
         let handle = provider
             .terminal()
             .restore(&spec, &request, store.as_ref())
@@ -614,7 +591,7 @@ mod tests {
 
     #[tokio::test]
     async fn continuation_fence_keeps_control_coordinates_but_requires_current_local_proof() {
-        use crate::session_slot::SessionRealizationAuthority as Authority;
+        use crate::installed_session::SessionRealizationAuthority as Authority;
         use awaken_session_realization_contract::SessionRealizationLeaseReceipt;
         use awaken_session_resource_contract::SessionRealizationLease;
         // F1 exact live receipt with Control expiry older than local wall time
@@ -649,7 +626,9 @@ mod tests {
             }
             let authority = match rule {
                 "F2" => Authority::Uninstalled,
-                "F3" => Authority::Live(crate::session_slot::test_expired_observed_lease(current)),
+                "F3" => Authority::Live(crate::installed_session::test_expired_observed_lease(
+                    current,
+                )),
                 "F4" => Authority::Closed(Some(current)),
                 _ => Authority::Live(
                     SessionRealizationLeaseReceipt::issued_at(current, 0)
@@ -657,7 +636,7 @@ mod tests {
                         .observed(awaken_authority_clock::authority_proof_started().unwrap()),
                 ),
             };
-            host.session_slots
+            host.installed_sessions
                 .update_realization(rule, |r| r.authority = authority);
             let managed = ManagedHost::new(host);
             let generation = awaken_session_state_contract::SandboxGeneration::new(
