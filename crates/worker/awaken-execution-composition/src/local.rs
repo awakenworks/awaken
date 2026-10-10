@@ -53,13 +53,30 @@ fn namespace_degrades_to_local(fallback_optin: bool) -> bool {
     fallback_optin
 }
 
-async fn validate_namespace_hand_bin(path: &Path) -> Result<(), String> {
-    let metadata = std::fs::metadata(path).map_err(|error| {
-        format!(
-            "namespace Session environments require the release companion at {}: {error}",
+/// Why the Hand companion at `path` cannot be read. An absent file is the usual
+/// case in a Cargo checkout -- the companion is a separate binary no crate
+/// depends on, so `cargo test -p` never builds it -- so it names the binary and
+/// the command that builds it rather than the bare OS error.
+fn companion_metadata_error(path: &Path, error: &std::io::Error) -> String {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        return format!(
+            "namespace Session environments require the release companion awaken-sandbox, \
+             which is missing at {}: a release install ships it beside the awaken binary; in a \
+             Cargo checkout build it into the same target directory with `cargo build -p \
+             awaken-sandbox --bin awaken-sandbox --features hand` (scripts/ci/test.sh -p <crate> \
+             builds it before the tests)",
             path.display()
-        )
-    })?;
+        );
+    }
+    format!(
+        "namespace Session environments require the release companion at {}: {error}",
+        path.display()
+    )
+}
+
+async fn validate_namespace_hand_bin(path: &Path) -> Result<(), String> {
+    let metadata =
+        std::fs::metadata(path).map_err(|error| companion_metadata_error(path, &error))?;
     if !metadata.is_file() {
         return Err(format!(
             "namespace Session environment companion is not a file: {}",
@@ -301,6 +318,27 @@ pub fn with_workdir_fallback(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn companion_metadata_error_names_the_missing_binary_and_its_build() {
+        // M1 the companion is absent => name the binary and the command that
+        // builds it. M2 any other read failure => keep the OS error verbatim.
+        let path = Path::new("/target/debug/awaken-sandbox");
+        let missing = companion_metadata_error(path, &std::io::ErrorKind::NotFound.into());
+        assert!(
+            missing.contains("awaken-sandbox, which is missing at /target/debug/awaken-sandbox")
+        );
+        assert!(
+            missing.contains("cargo build -p awaken-sandbox --bin awaken-sandbox --features hand")
+        );
+        let denied = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied by test");
+        let other = companion_metadata_error(path, &denied);
+        assert!(
+            other.ends_with("/target/debug/awaken-sandbox: denied by test"),
+            "{other}"
+        );
+        assert!(!other.contains("cargo build"));
+    }
 
     #[tokio::test]
     async fn resolve_sandbox_tier_passes_non_namespace_tiers_through_unprobed() {
@@ -624,7 +662,10 @@ mod startup_tests {
         assert!(message.contains("requires the installed Hand factory"));
         let root = tempfile::tempdir().unwrap();
         for (artifact, reason) in [
-            (root.path().join("missing"), "require the release companion"),
+            (
+                root.path().join("missing"),
+                "cargo build -p awaken-sandbox --bin awaken-sandbox --features hand",
+            ),
             (root.path().to_path_buf(), "companion is not a file"),
             (std::env::current_exe().unwrap(), "companion check failed"),
         ] {
