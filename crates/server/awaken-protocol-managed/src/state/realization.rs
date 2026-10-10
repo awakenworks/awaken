@@ -1145,6 +1145,7 @@ mod tests {
             lease: staged.authority.lease,
             prepared_resource_revision: Some(staged.projection.resource_revision),
             retryable: false,
+            capacity_unavailable: false,
             source_run_id: None,
             reason: "stage failed".into(),
         };

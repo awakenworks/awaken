@@ -10,3 +10,6 @@ production_entrypoints = []
 
 [[bounds]]
 text = '''Kani exhausts the production retry_deadline_is_due predicate over an optional persisted deadline and current time; cancellation does not bypass a retained deadline. The transition reducer and Memory, SQLite, PostgreSQL, single-width pool, and authenticated Worker transport tests cover first-cancel clearing, repeated cancellation, persistence, and independent progress. Timer delivery, database engine correctness, arbitrary async schedules, and unbounded liveness remain executable or TCB evidence.'''
+
+[[bounds]]
+text = '''Callers (ADR-0092): a Kubernetes CapacityUnavailable realization failure (quota-exceeded Create or the bounded unschedulable wait) reaches this same exact-claim request-local deferral -- locally through the pool's defer_failed_claim and remotely through the relinquish endpoint's retry_after_ms -- as Session realization NotReady, never TerminalResolution. The claim keeps its attempt count; the Memory and SQLite capacity-deferral conformance rows (capacity_deferrals_hand_off_without_spending_budget_*) check that N deferrals leave attempt_count unchanged and that another Worker claims the exact Run at the persisted deadline.'''

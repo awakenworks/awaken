@@ -17,7 +17,8 @@ pub enum Error {
     #[error(transparent)]
     TerminalResolution(awaken_runtime_contract::execution::Error),
     /// The claimed Run is valid, but its Session's Environment Work slot is
-    /// still occupied. This is scheduling pressure, not a Worker crash or an
+    /// still occupied, or the environment backend had no capacity for it
+    /// (ADR-0092). This is scheduling pressure, not a Worker crash or an
     /// absorbing Session failure.
     #[error("Session resolution is not ready: {0}")]
     ResolutionNotReady(String),

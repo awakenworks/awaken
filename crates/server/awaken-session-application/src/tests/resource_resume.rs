@@ -398,6 +398,7 @@ async fn failed_retained_stage_does_not_attribute_its_error_to_pending_resources
                     lease,
                     prepared_resource_revision: Some(revision),
                     retryable: true,
+                    capacity_unavailable: false,
                     source_run_id: None,
                     reason: "read unavailable".into(),
                 },

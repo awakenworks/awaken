@@ -14,3 +14,6 @@ text = '''Kani exhausts the production DispatchTransition state, full u64 curren
 
 [[bounds]]
 text = '''Memory, SQLite, and PostgreSQL read attempt_count with the claim evidence under their existing aggregate lock or row transaction, consume the same reducer, and write back only its returned value. Mutex/row-lock exclusion, SQL compare-and-set execution, database durability, clocks, and adapter decoding remain native-conformance or TCB evidence rather than Kani claims.'''
+
+[[bounds]]
+text = '''Callers (ADR-0092): a Kubernetes CapacityUnavailable realization failure (quota-exceeded Create or the bounded unschedulable wait) reaches this same exact-claim request-local deferral -- locally through the pool's defer_failed_claim and remotely through the relinquish endpoint's retry_after_ms -- as Session realization NotReady, never TerminalResolution. The claim keeps its attempt count; the Memory and SQLite capacity-deferral conformance rows (capacity_deferrals_hand_off_without_spending_budget_*) check that N deferrals leave attempt_count unchanged and that another Worker claims the exact Run at the persisted deadline.'''

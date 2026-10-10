@@ -17,6 +17,7 @@
 
 pub mod attempt_binding;
 pub mod attempt_retirement;
+pub mod capacity_deferral;
 
 use awaken_run_ingress_contract::DispatchQueue;
 use std::sync::Arc;

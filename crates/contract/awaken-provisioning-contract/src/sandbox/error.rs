@@ -15,7 +15,9 @@ use awaken_agent_contract::resilience::{Classify, Disposition};
 /// caller's exact expectation ([`Conflict`](Self::Conflict)); a lost or silent
 /// channel ([`Transport`](Self::Transport), [`Timeout`](Self::Timeout)); an
 /// authority refusal ([`Unauthorized`](Self::Unauthorized)) versus a stale or
-/// missing effect fence ([`FenceRejected`](Self::FenceRejected)); a malformed
+/// missing effect fence ([`FenceRejected`](Self::FenceRejected)); a backend
+/// with no room for the request right now
+/// ([`CapacityUnavailable`](Self::CapacityUnavailable)); a malformed
 /// request ([`Invalid`](Self::Invalid)); a capability this provider or tier
 /// does not have ([`Unsupported`](Self::Unsupported)); and a genuine failure of
 /// the backend mechanism itself ([`Backend`](Self::Backend)).
@@ -42,6 +44,12 @@ pub enum SandboxError {
     /// The current authority refused the effect.
     #[error("sandbox error: {0}")]
     Unauthorized(String),
+    /// The backend has no room for the request now (a namespace quota refused
+    /// the object, or the scheduler could not place it within the configured
+    /// bound). Nothing was realized; the request may succeed on another Worker
+    /// or once capacity is freed or raised (ADR-0092).
+    #[error("sandbox error: {0}")]
+    CapacityUnavailable(String),
     /// The effect fence or realization lease is stale, expired, missing, or not
     /// a successor of the admitted effect; only fresh authority can proceed.
     #[error("sandbox error: {0}")]
@@ -88,6 +96,10 @@ impl SandboxError {
         Self::Unauthorized(detail.into())
     }
 
+    pub fn capacity_unavailable(detail: impl Into<String>) -> Self {
+        Self::CapacityUnavailable(detail.into())
+    }
+
     pub fn fence_rejected(detail: impl Into<String>) -> Self {
         Self::FenceRejected(detail.into())
     }
@@ -122,6 +134,7 @@ impl SandboxError {
             | Self::Transport(detail)
             | Self::Timeout(detail)
             | Self::Unauthorized(detail)
+            | Self::CapacityUnavailable(detail)
             | Self::FenceRejected(detail)
             | Self::Invalid(detail)
             | Self::Unsupported(detail)
@@ -142,6 +155,7 @@ impl SandboxError {
             Self::Transport(detail) => Self::Transport(extend(detail)),
             Self::Timeout(detail) => Self::Timeout(extend(detail)),
             Self::Unauthorized(detail) => Self::Unauthorized(extend(detail)),
+            Self::CapacityUnavailable(detail) => Self::CapacityUnavailable(extend(detail)),
             Self::FenceRejected(detail) => Self::FenceRejected(extend(detail)),
             Self::Invalid(detail) => Self::Invalid(extend(detail)),
             Self::Unsupported(detail) => Self::Unsupported(extend(detail)),
@@ -155,14 +169,18 @@ impl SandboxError {
 }
 
 impl Classify for SandboxError {
-    /// Only a failure of the mechanism or a transitional state can clear on
-    /// an identical retry. Every other class needs different input, fresh
-    /// authority, or another provider. No Sandbox failure is a quota signal.
+    /// Only a failure of the mechanism, a transitional state, or missing
+    /// backend capacity can clear on an identical retry. Every other class
+    /// needs different input, fresh authority, or another provider. Missing
+    /// capacity is not a model-provider quota signal: it returns the claim
+    /// rather than cooling down a credential.
     fn disposition(&self) -> Disposition {
         match self {
-            Self::NotReady(_) | Self::Transport(_) | Self::Timeout(_) | Self::Backend { .. } => {
-                Disposition::Transient
-            }
+            Self::NotReady(_)
+            | Self::Transport(_)
+            | Self::Timeout(_)
+            | Self::CapacityUnavailable(_)
+            | Self::Backend { .. } => Disposition::Transient,
             Self::NotFound(_)
             | Self::Gone(_)
             | Self::Unauthorized(_)
@@ -227,6 +245,7 @@ mod tests {
             SandboxError::Transport(_) => "Transport",
             SandboxError::Timeout(_) => "Timeout",
             SandboxError::Unauthorized(_) => "Unauthorized",
+            SandboxError::CapacityUnavailable(_) => "CapacityUnavailable",
             SandboxError::FenceRejected(_) => "FenceRejected",
             SandboxError::Invalid(_) => "Invalid",
             SandboxError::Unsupported(_) => "Unsupported",
@@ -327,6 +346,12 @@ mod tests {
                 SandboxError::unauthorized("read-only repository cannot be published"),
                 "Unauthorized",
                 Disposition::Permanent,
+            ),
+            (
+                "S14 namespace quota refused the Pod Create",
+                SandboxError::capacity_unavailable("exceeded quota: compute"),
+                "CapacityUnavailable",
+                Disposition::Transient,
             ),
         ];
         for (site, error, expected, disposition) in rows {

@@ -1044,7 +1044,11 @@ impl SharedHost {
             .realizer()
             .create_effective_for_effect(&spec, effect, source_handle, intent)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))
+            .map_err(|error| {
+                crate::host_error::from_run_error(
+                    awaken_session_realization_contract::environment_effect_error(&error),
+                )
+            })
     }
 
     /// A projection through the existing Worker -> Session admission guards,

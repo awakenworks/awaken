@@ -129,6 +129,7 @@ mod tests {
             credential_observation_resolver: None,
             acp_capability_observation_source: None,
             session_environment_provider: None,
+            local_readiness: None,
             observations: Arc::new(crate::WorkerObservationCache::default()),
             observation_ttl: std::time::Duration::from_secs(30),
             probe_interval: std::time::Duration::from_secs(10),
