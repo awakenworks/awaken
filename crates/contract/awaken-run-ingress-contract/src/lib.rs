@@ -85,8 +85,8 @@ pub use worker_transport::{
     AttemptExecutionRequest, BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest,
     ClaimRunRequest, ClaimWorkerRequest, ClaimedCommitRequest, CredentialDeliveryRefreshRequest,
     CredentialRealizationRequest, DeliverAndClaimRequest, EnqueueRequest, HeartbeatWorkerRequest,
-    RecoveryRequest, RegisterWorkerRequest, RelinquishRequest, RenewRequest,
-    SessionRunReservationResolutionRequest, SettleRequest, StreamEventRequest,
+    MAX_CLAIMED_COMMIT_BODY_BYTES, RecoveryRequest, RegisterWorkerRequest, RelinquishRequest,
+    RenewRequest, SessionRunReservationResolutionRequest, SettleRequest, StreamEventRequest,
     StreamObservationRequest, WorkerHeartbeatReceipt, WorkerIdentityRequest,
     WorkerRegistrationReceipt,
 };

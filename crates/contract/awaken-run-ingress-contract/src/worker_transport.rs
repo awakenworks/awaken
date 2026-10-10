@@ -21,6 +21,11 @@ use crate::{
     WorkerIdentity, WorkerRegistration,
 };
 
+/// Finite wire budget for a claim-fenced commit, including inline browser
+/// images and the existing durable tool-batch checkpoint. The authenticated
+/// commit transport must not inherit Axum's unrelated 2 MiB JSON default.
+pub const MAX_CLAIMED_COMMIT_BODY_BYTES: usize = 64 * 1024 * 1024;
+
 /// Complete Worker-to-Coordinator envelope for one claim-fenced committed-truth
 /// operation. Authentication remains transport metadata; `identity` proves the
 /// registered incarnation named by the claim owner at the Coordinator edge.
