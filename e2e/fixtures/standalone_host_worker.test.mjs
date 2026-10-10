@@ -1,7 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
-import {CURRENT_WORKER_ROWS_QUERY, standaloneWorkerSandboxConfig} from './standalone_host_worker.mjs';
+import {CURRENT_WORKER_ROWS_QUERY, standaloneWorkerCargoFeatures, standaloneWorkerSandboxConfig} from './standalone_host_worker.mjs';
+import {cargoArguments} from '../cargo_binary.mjs';
+import {resolveAcpLiveProfile} from '../acp_live_profile.mjs';
+
+test('standalone Worker grants local Git only to the process that owns Repository I/O', () => {
+  // R1 Linux scoped execution => the separately-built companion owns the aperture.
+  // R2 native Local execution => the Worker needs the Local transport aperture.
+  // Neither rule selects Host storage fixtures or changes a production build.
+  for (const platform of ['linux','darwin','win32']) for (const runtime of ['codex','claude']) {
+    const {scopedHost}=resolveAcpLiveProfile({profile:'worker-host-fixture',runtime,platform});
+    const args=cargoArguments({packageName:'awaken-worker',targetName:'awaken-worker',
+      features:standaloneWorkerCargoFeatures(scopedHost)});
+    const flag=args.indexOf('--features');
+    if (platform === 'linux') assert.equal(flag,-1);
+    else {
+      assert.notEqual(flag,-1);
+      assert.equal(args[flag+1],'awaken-execution-composition/test-support');
+    }
+    assert.ok(!args.join(',').includes('awaken-session-executor/test-support'));
+  }
+  assert.equal(cargoArguments({packageName:'awaken-worker',targetName:'awaken-worker'})
+    .includes('--features'),false);
+});
 
 test('standalone Worker reuses one sandbox field projection', () => {
   // Causes: S1 caller supplies the canonical sandbox field object; S2 a value

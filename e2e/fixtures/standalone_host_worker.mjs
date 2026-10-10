@@ -21,6 +21,12 @@ export const CURRENT_WORKER_ROWS_QUERY = `SELECT worker_id, incarnation_id, gene
   WHERE generation = (SELECT MAX(generation) FROM worker_registry_worker AS history
     WHERE history.worker_id = current.worker_id) ORDER BY worker_id`;
 
+export function standaloneWorkerCargoFeatures(scopedHost) {
+  // Scoped Repository I/O belongs to the companion's fixture build. Native
+  // Local I/O belongs to the Worker's execution composition, not Host storage.
+  return scopedHost ? [] : ['awaken-execution-composition/test-support'];
+}
+
 export function standaloneWorkerSandboxConfig(providerCredentials, runtime) {
   if (providerCredentials?.sandboxFields) {
     return Object.entries(providerCredentials.sandboxFields)
@@ -107,9 +113,7 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
   // override Cargo target/build directories or silently rebuild another revision.
   const binary = providerCredentials ? requirePrebuiltExecutable(WORKER_BIN_ENV) : cargoExecutable({
     cwd: root, packageName: 'awaken-worker', targetName: 'awaken-worker',
-    // Linux Repository I/O is in the already-qualified companion. Unscoped
-    // platforms need the same existing local-Git aperture in the runtime host.
-    ...(scopedHost ? {} : { features: ['awaken-session-executor/test-support'] }),
+    features: standaloneWorkerCargoFeatures(scopedHost),
     snapshotDestination: path.join(productDirectory,
       process.platform === 'win32' ? 'awaken-worker.exe' : 'awaken-worker'),
   });
