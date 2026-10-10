@@ -705,11 +705,7 @@ impl EnvRegistry for SqliteEnvRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_environment_contract::{
-        EnvironmentConfigMutation, EnvironmentFieldUpdate, EnvironmentNetworking,
-        EnvironmentNetworkingMutation, EnvironmentPackages, EnvironmentStoreError,
-        InvalidEnvironmentConfig,
-    };
+    use awaken_environment_contract::{EnvironmentStoreError, InvalidEnvironmentConfig};
 
     #[test]
     fn environment_schema_is_versioned_and_unconditional() {
