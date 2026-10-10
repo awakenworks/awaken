@@ -192,9 +192,27 @@ pub async fn build_all_in_one_router() -> Router {
 /// volatile stores. It never consults the standard deployment config path.
 #[cfg(any(test, feature = "test-support"))]
 pub async fn build_ephemeral_all_in_one_router() -> Router {
+    prepare_ephemeral_all_in_one_process().await.0.public_router
+}
+
+/// One volatile composition, retaining its lifecycle and a borrowed Session
+/// read authority for the in-crate management test. The public Router helper
+/// selects this same assembly and discards the borrowed view. No second store
+/// or test-only public startup API is introduced.
+#[cfg(any(test, feature = "test-support"))]
+async fn prepare_ephemeral_all_in_one_process() -> (
+    ProcessRouters,
+    Arc<dyn awaken_session_repository_contract::SessionRepository>,
+) {
     let stores = in_memory_process_stores().await;
+    let sessions = stores
+        .coordinator
+        .as_ref()
+        .expect("AllInOne borrows its selected Session authority")
+        .sessions
+        .clone();
     let options = exact_host_model::local_test_process_options(&stores);
-    prepare_runtime_routers(
+    let process = prepare_runtime_routers(
         stores,
         None,
         None,
@@ -204,8 +222,8 @@ pub async fn build_ephemeral_all_in_one_router() -> Router {
         None,
     )
     .await
-    .expect("prepare ephemeral all-in-one process")
-    .public_router
+    .expect("prepare ephemeral all-in-one process");
+    (process, sessions)
 }
 
 /// Canonical product process from the command's one resolved configuration.
@@ -1748,3 +1766,6 @@ mod process_role_surface_tests {
         assert!(called.load(Ordering::SeqCst));
     }
 }
+
+#[cfg(test)]
+mod management_surface_tests;
