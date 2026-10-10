@@ -698,15 +698,6 @@ impl From<&DataSubject> for ConsentRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CaptureDecisionRecord {
-    pub requested: ContentCapture,
-    pub ceiling: ContentCapture,
-    pub consent: ContentCapture,
-    pub effective: ContentCapture,
-    pub reason: &'static str,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnrollmentTicket {
     pub url: String,
     pub expires_at: i64,
@@ -943,33 +934,39 @@ impl DataSubjectApplication {
         Ok(ConsentRecord::from(&subject))
     }
 
+    /// The capture decision a Run attributed to this profile makes in
+    /// `workspace`: the Run boundary's kernel
+    /// ([`awaken_data_governance_contract::decide_capture`]) over the Host's
+    /// ceiling and Workspace narrowing source, with the consent this aggregate
+    /// grants (the value the consent source serves the Run). A profile unknown
+    /// in `org` has no grant, so its consent is `Structured`; any other read
+    /// failure is an error rather than a decision.
     pub async fn capture_decision(
         &self,
         org: &str,
         id: &str,
         requested: ContentCapture,
-        ceiling: ContentCapture,
-    ) -> Result<CaptureDecisionRecord, DataSubjectApplicationError> {
+        policy: &awaken_data_governance_contract::CapturePolicy,
+        workspace: &str,
+    ) -> Result<awaken_data_governance_contract::CapturePolicyDecision, DataSubjectApplicationError>
+    {
         let consent = match self.load_scoped(org, id).await {
             Ok(subject) => subject.consent_ceiling(Purpose::TelemetryContent),
             Err(DataSubjectApplicationError::NotFound) => ContentCapture::Structured,
             Err(error) => return Err(error),
         };
-        let effective = ceiling.meet(requested).meet(consent);
-        let reason = if effective == requested {
-            "ok"
-        } else if effective == consent && consent < ceiling {
-            "no_consent"
-        } else {
-            "clamped_by_ceiling"
-        };
-        Ok(CaptureDecisionRecord {
-            requested,
-            ceiling,
-            consent,
-            effective,
-            reason,
-        })
+        Ok(awaken_data_governance_contract::decide_capture(
+            awaken_data_governance_contract::CapturePolicyInputs {
+                requested,
+                top: policy.top,
+                workspace: policy
+                    .sources
+                    .for_workspace(workspace.to_owned())
+                    .narrowing()
+                    .await,
+                consent: Some(consent),
+            },
+        ))
     }
 
     pub async fn erase_user_profile(
