@@ -22,6 +22,8 @@ awaken-credential-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-session-application-contract.workspace = true
 awaken-session-types.workspace = true
+# The Org admission vocabulary this adapter classifies and encodes.
+awaken-tenancy.workspace = true
 awaken-outbound-http.workspace = true
 serde.workspace = true
 serde_json.workspace = true

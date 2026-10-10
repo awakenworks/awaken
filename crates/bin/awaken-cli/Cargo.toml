@@ -126,6 +126,8 @@ awaken-captured-content-store = { workspace = true, features = ["postgres"] }
 awaken-admin-assistant = { workspace = true }
 # The opaque scope id the warm-load + reserved-scope seeding are keyed by.
 awaken-tenancy = { workspace = true }
+# The open Org request limiter (`OrgRateLimiter`) every protocol entry admits through.
+awaken-authz-enforce.workspace = true
 # Shared Awaken Cloud login cache; credential acquisition stays in the
 # process startup, outside the authorization/resource services.
 awaken-iam-client = { workspace = true, features = ["desktop-oauth"] }

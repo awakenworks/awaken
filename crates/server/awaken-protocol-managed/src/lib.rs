@@ -68,9 +68,8 @@ pub use inference_policy::{
 };
 pub use lifecycle_delivery::ManagedLifecycleFactDelivery;
 pub use rate_limit::{
-    ManagedOperation, ManagedRateLimitDecision, ManagedRateLimitRequest,
-    ManagedRateLimitUnavailable, ManagedRateLimiter, ManagedRateLimits, ManagedRequestLimiter,
-    ManagedRequestSource, enforce_managed_rate_limit,
+    annotate_managed_rate_limit, managed_admission_rejected, managed_admission_scope_missing,
+    managed_admission_unavailable, managed_org_admission_class,
 };
 pub use routes::agents_registry::{
     AgentRegistryState, ManagedAgentError, ManagedAgentRepository, agents_router,

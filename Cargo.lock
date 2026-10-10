@@ -435,6 +435,7 @@ dependencies = [
  "awaken-agent-config",
  "awaken-agent-contract",
  "awaken-api-contract",
+ "awaken-authz-enforce",
  "awaken-captured-content-store",
  "awaken-config-resolver",
  "awaken-config-service",
@@ -1964,6 +1965,7 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-session-application-contract",
  "awaken-session-types",
+ "awaken-tenancy",
  "awaken-time",
  "axum",
  "http-body-util",
@@ -2728,6 +2730,7 @@ dependencies = [
  "awaken-admin-config-api",
  "awaken-agent-config",
  "awaken-agent-contract",
+ "awaken-authz-enforce",
  "awaken-cli",
  "awaken-config-resolver",
  "awaken-config-service",
@@ -3442,6 +3445,7 @@ dependencies = [
 name = "awaken-tenancy"
 version = "1.0.0"
 dependencies = [
+ "async-trait",
  "awaken-agent-contract",
  "serde",
  "serde_json",

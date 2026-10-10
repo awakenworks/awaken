@@ -39,6 +39,7 @@ mod inference_publication_tests;
 mod managed_application;
 mod managed_lifecycle;
 pub mod mcp_export;
+mod org_admission;
 pub use managed_application::install_managed_agent_coordination;
 pub use managed_lifecycle::{
     ManagedLifecycleCompositionError, PreparedManagedLifecycleDelivery,
@@ -830,6 +831,7 @@ pub async fn mount_with_managed_and_application_access_and_models(
             worker_directory: test_worker_directory(),
             ai_sdk_browser_cors: AiSdkBrowserCors::default(),
             worker_clock,
+            org_admission: None,
         },
     )
     .await
@@ -867,6 +869,9 @@ pub struct ManagedRoutingExtensions {
     /// The process wall clock the Worker transport judges leases, registry
     /// freshness and signed assertions with.
     pub worker_clock: Arc<dyn awaken_time::WallClock>,
+    /// The Org request limiter the AI SDK, AG-UI and A2A entries admit through
+    /// (the same one the Managed entries use); `None` mounts no limiter.
+    pub org_admission: Option<Arc<dyn awaken_tenancy::org_admission::OrgRequestAdmission>>,
 }
 
 /// Application-layer authorities mounted together by the one managed data-plane
@@ -1257,6 +1262,7 @@ async fn mount_with_managed_over(
                 worker_directory: test_worker_directory(),
                 ai_sdk_browser_cors: AiSdkBrowserCors::default(),
                 worker_clock,
+                org_admission: None,
             },
         )
         .await
@@ -1347,6 +1353,7 @@ async fn mount_with_managed_over_and_models(
         worker_directory,
         ai_sdk_browser_cors,
         worker_clock,
+        org_admission,
     } = routing;
     // Bind the exact Coordinator Worker registry into the Session root-CAS
     // authority before any claim transport is exposed. HTTP still authenticates
@@ -1525,36 +1532,22 @@ async fn mount_with_managed_over_and_models(
         .require_background_run_submission()
         .expect("Session Run submission is connected before its routers are mounted");
     let admitted_runs: Arc<dyn RunApplication> = session_runs.clone();
-    let ai_sdk = awaken_protocol_ai_sdk::router_with_owner_scope(session_runs.clone());
-    let ag_ui = awaken_protocol_ag_ui::router_with_owner_scope(session_runs.clone());
-    let (ai_sdk, ag_ui) = match application_access {
-        ApplicationAccessMount::Guarded(application_access) => {
-            let application_authenticator: Arc<
-                dyn awaken_authz_enforce::ApplicationAccessAuthenticator,
-            > = application_access;
-            (
-                ai_sdk.layer(axum::middleware::from_fn_with_state(
-                    application_authenticator.clone(),
-                    awaken_authz_enforce::application_guard,
-                )),
-                ag_ui.layer(axum::middleware::from_fn_with_state(
-                    application_authenticator,
-                    awaken_authz_enforce::application_guard,
-                )),
-            )
-        }
-        #[cfg(feature = "test-support")]
-        ApplicationAccessMount::ExplicitlyUnguardedTest => (ai_sdk, ag_ui),
-    };
-    // CORS wraps the already guarded AI SDK router so a matching browser
-    // preflight is answered before bearer classification. It is deliberately
-    // applied before merging AG-UI, keeping every sibling protocol closed.
-    let ai_sdk = ai_sdk_browser_cors.apply(ai_sdk);
+    let (ai_sdk, ag_ui) = application_protocol_routers(
+        &session_runs,
+        application_access,
+        &ai_sdk_browser_cors,
+        org_admission.as_ref(),
+    );
     let application = ai_sdk.merge(ag_ui);
-    let a2a = awaken_protocol_a2a::router_with_storage_root(
-        admitted_runs,
-        host.storage_dir(),
-        host.clock(),
+    // Inside the local Workspace scope this composition stamps below.
+    let a2a = org_admission::admitted(
+        awaken_protocol_a2a::router_with_storage_root(
+            admitted_runs,
+            host.storage_dir(),
+            host.clock(),
+        ),
+        org_admission.as_ref(),
+        org_admission::A2A,
     );
     // A coordinator-only Host owns both dispatch and committed Thread truth but
     // deliberately has no execution pool. Start its one environment-free repair
@@ -1756,6 +1749,51 @@ mod dream_model_runtime_tests {
         );
         assert!(super::dream_model_can_consume_local_inputs("executor=a2a:").is_err());
     }
+}
+
+/// The browser application protocols (AI SDK and AG-UI) over one Session Run
+/// application, kept apart so the caller merges them: Org admission inside the
+/// application guard, which stamps the authenticated Workspace scope it meters,
+/// and CORS outside the AI SDK guard only.
+fn application_protocol_routers(
+    session_runs: &Arc<awaken_session_application::SessionRunApplication>,
+    application_access: ApplicationAccessMount,
+    ai_sdk_browser_cors: &AiSdkBrowserCors,
+    org_admission: Option<&Arc<dyn awaken_tenancy::org_admission::OrgRequestAdmission>>,
+) -> (Router, Router) {
+    let ai_sdk = org_admission::admitted(
+        awaken_protocol_ai_sdk::router_with_owner_scope(session_runs.clone()),
+        org_admission,
+        org_admission::AI_SDK,
+    );
+    let ag_ui = org_admission::admitted(
+        awaken_protocol_ag_ui::router_with_owner_scope(session_runs.clone()),
+        org_admission,
+        org_admission::AG_UI,
+    );
+    let (ai_sdk, ag_ui) = match application_access {
+        ApplicationAccessMount::Guarded(application_access) => {
+            let application_authenticator: Arc<
+                dyn awaken_authz_enforce::ApplicationAccessAuthenticator,
+            > = application_access;
+            (
+                ai_sdk.layer(axum::middleware::from_fn_with_state(
+                    application_authenticator.clone(),
+                    awaken_authz_enforce::application_guard,
+                )),
+                ag_ui.layer(axum::middleware::from_fn_with_state(
+                    application_authenticator,
+                    awaken_authz_enforce::application_guard,
+                )),
+            )
+        }
+        #[cfg(feature = "test-support")]
+        ApplicationAccessMount::ExplicitlyUnguardedTest => (ai_sdk, ag_ui),
+    };
+    // CORS wraps the already guarded AI SDK router so a matching browser
+    // preflight is answered before bearer classification. It is deliberately
+    // applied before merging AG-UI, keeping every sibling protocol closed.
+    (ai_sdk_browser_cors.apply(ai_sdk), ag_ui)
 }
 
 fn with_local_workspace_scope(router: Router, local_workspace: String) -> Router {
