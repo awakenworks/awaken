@@ -42,9 +42,8 @@ use awaken_runtime_contract::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
     CredentialUsage, InferenceEndpoint, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
 };
-use awaken_session_execution_contract::{
-    AdmitSessionRun, SessionRunCommandFingerprint, SessionRunExecutionRequirements,
-};
+use awaken_session_execution_contract::{AdmitSessionRun, SessionRunExecutionRequirements};
+use awaken_session_types::SessionRunCommandFingerprint;
 
 /// Minimum live lease used by cross-backend conformance journeys. A live
 /// database clock keeps moving while an in-process logical clock does not, so

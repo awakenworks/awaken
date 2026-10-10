@@ -4,6 +4,7 @@
 //! Pure projection from frozen Managed resource inputs to Agent-visible paths and
 //! prompt fragments. Keeping this boundary separate prevents protocol path rules
 //! from being reimplemented by individual Sandbox adapters.
+use awaken_session_realization_contract::ResourceOperationFence;
 use std::sync::Arc;
 
 use awaken_session_types::RunError;
@@ -1246,21 +1247,17 @@ impl crate::ManagedHost {
             realization,
             self.host.authority.fetches_resources_upstream(),
         ) {
-            Some(
-                awaken_dispatch_contract::ResourceOperationFence::SessionMaterialization(
-                    awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new(
-                        session_id,
-                        resource_revision,
-                        input.clone(),
-                        lease.clone(),
-                    )
-                    .map_err(awaken_session_types::RunError::bad_request)?,
-                ),
-            )
+            Some(ResourceOperationFence::SessionMaterialization(
+                awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new(
+                    session_id,
+                    resource_revision,
+                    input.clone(),
+                    lease.clone(),
+                )
+                .map_err(awaken_session_types::RunError::bad_request)?,
+            ))
         } else {
-            claim.map(|claim| {
-                awaken_dispatch_contract::ResourceOperationFence::Run(claim.clone())
-            })
+            claim.map(|claim| ResourceOperationFence::Run(claim.clone()))
         };
         self.stage_resolved_input_with_resource_authority(
             workspace,
@@ -1296,7 +1293,7 @@ impl crate::ManagedHost {
                 "terminal Repository publication input is not a Repository",
             ));
         }
-        let fence = awaken_dispatch_contract::ResourceOperationFence::RepositoryPublication {
+        let fence = ResourceOperationFence::RepositoryPublication {
             command: Box::new(command.clone()),
             lease: lease.clone(),
         };
@@ -1314,7 +1311,7 @@ impl crate::ManagedHost {
         &self,
         workspace: &str,
         input: &awaken_session_resource_contract::ResolvedInput,
-        resource_authority: Option<&awaken_dispatch_contract::ResourceOperationFence>,
+        resource_authority: Option<&ResourceOperationFence>,
         realization: Option<(
             &str,
             u64,
@@ -1327,7 +1324,7 @@ impl crate::ManagedHost {
 
         let execution = &self.host.session_execution;
         let claim = resource_authority.and_then(|authority| match authority {
-            awaken_dispatch_contract::ResourceOperationFence::Run(claim) => Some(claim),
+            ResourceOperationFence::Run(claim) => Some(claim),
             _ => None,
         });
         let mut staged = crate::staged_resources::StagedResources::default();
@@ -1387,11 +1384,8 @@ impl crate::ManagedHost {
                     realization,
                 ) {
                     (true, _, Some(_)) => {
-                        let Some(
-                            awaken_dispatch_contract::ResourceOperationFence::SessionMaterialization(
-                                intent,
-                            ),
-                        ) = resource_authority
+                        let Some(ResourceOperationFence::SessionMaterialization(intent)) =
+                            resource_authority
                         else {
                             return Err(RunError::internal(
                                 "remote Memory realization lost its admitted Resource fence",
@@ -1491,18 +1485,16 @@ impl crate::ManagedHost {
                             "repository `{repository_id}` cannot be realized: {error}"
                         ))
                     })?;
-                let transport = match (
-                    resource_authority,
-                    self.host.authority.fetches_resources_upstream(),
-                ) {
-                    (
-                        Some(awaken_dispatch_contract::ResourceOperationFence::RepositoryPublication {
-                            ..
-                        }),
-                        false,
-                    ) => Ok(awaken_resource_contract::RepositoryTransport::Direct),
-                    (authority, _) => {
-                        execution.repository_binding_verifier
+                let transport =
+                    match (
+                        resource_authority,
+                        self.host.authority.fetches_resources_upstream(),
+                    ) {
+                        (Some(ResourceOperationFence::RepositoryPublication { .. }), false) => {
+                            Ok(awaken_resource_contract::RepositoryTransport::Direct)
+                        }
+                        (authority, _) => execution
+                            .repository_binding_verifier
                             .as_ref()
                             .ok_or_else(|| {
                                 RunError::bad_request(
@@ -1510,10 +1502,9 @@ impl crate::ManagedHost {
                                 )
                             })?
                             .verify(workspace, repository_id.as_str(), config.version, authority)
-                            .await
+                            .await,
                     }
-                }
-                .map_err(repository_binding_run_error)?;
+                    .map_err(repository_binding_run_error)?;
                 staged.binding_checks.push(
                     crate::staged_resources::ResourceBindingCheck::Repository {
                         repository_id: repository_id.to_string(),

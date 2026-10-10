@@ -302,7 +302,7 @@ REQUIRED = {
     RUNTIME_HOST_TERMINAL_CLEANUP: (
         "authorization.verify_for(&effect)",
         ".harvest_with_fence_mode(",
-        "ArtifactPublicationFence::Terminal",
+        "ResourceOperationFence::Terminal",
         "SessionCleanupPreparation::try_new",
         ".dispose_for_effect(&authorization, &authority)",
         "SessionCleanupDisposalReceipt::new",
@@ -1224,7 +1224,7 @@ fn prepare_terminal_cleanup_effect() {
     TerminalEnvironmentPreparation::artifact_capture_mode;
     self.artifact_harvester().harvest_with_fence_mode(
         thread,
-        Some(ArtifactPublicationFence::Terminal(effect)),
+        Some(ResourceOperationFence::Terminal(effect)),
         capture_mode,
     );
     SessionCleanupPreparation::try_new(&effect, provider_prepared_effect_fence, artifact_receipts);

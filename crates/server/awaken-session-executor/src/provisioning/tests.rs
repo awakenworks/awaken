@@ -1826,7 +1826,7 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         .artifact_harvester()
         .harvest_with_fence(
             "artifact-response-loss",
-            Some(awaken_dispatch_contract::ArtifactPublicationFence::Terminal(effect.clone())),
+            Some(crate::ResourceOperationFence::Terminal(effect.clone())),
         )
         .await
         .expect("H1 terminal");
@@ -1843,7 +1843,7 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         .artifact_harvester()
         .harvest_with_fence(
             "artifact-response-loss",
-            Some(awaken_dispatch_contract::ArtifactPublicationFence::Terminal(effect.clone())),
+            Some(crate::ResourceOperationFence::Terminal(effect.clone())),
         )
         .await
         .expect("H2 readback");
@@ -1862,7 +1862,7 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         .artifact_harvester()
         .harvest_with_fence(
             "artifact-response-loss",
-            Some(awaken_dispatch_contract::ArtifactPublicationFence::Terminal(effect)),
+            Some(crate::ResourceOperationFence::Terminal(effect)),
         )
         .await
         .expect("H3 tombstone readback");
@@ -1885,16 +1885,12 @@ struct RecordingArtifactRecovery {
 }
 
 #[async_trait::async_trait]
-impl
-    awaken_resource_contract::ArtifactPublisher<
-        awaken_dispatch_contract::ArtifactPublicationFence,
-    > for RecordingArtifactRecovery
+impl awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>
+    for RecordingArtifactRecovery
 {
     async fn publish(
         &self,
-        _publication: awaken_resource_contract::ArtifactPublication<
-            awaken_dispatch_contract::ArtifactPublicationFence,
-        >,
+        _publication: awaken_resource_contract::ArtifactPublication<crate::ResourceOperationFence>,
     ) -> Result<
         awaken_resource_contract::ArtifactPublicationReceipt,
         awaken_resource_contract::ArtifactPublicationError,
@@ -1908,9 +1904,7 @@ impl
 
     async fn recover(
         &self,
-        _recovery: awaken_resource_contract::ArtifactRecovery<
-            awaken_dispatch_contract::ArtifactPublicationFence,
-        >,
+        _recovery: awaken_resource_contract::ArtifactRecovery<crate::ResourceOperationFence>,
     ) -> Result<
         Vec<awaken_resource_contract::ArtifactPublicationReceipt>,
         awaken_resource_contract::ArtifactPublicationError,
@@ -1924,7 +1918,7 @@ impl
         &self,
         _workspace_id: &str,
         _session_id: &str,
-        _fence: Option<&awaken_dispatch_contract::ArtifactPublicationFence>,
+        _fence: Option<&crate::ResourceOperationFence>,
     ) -> Result<
         Option<awaken_resource_contract::ArtifactCapture>,
         awaken_resource_contract::ArtifactPublicationError,
@@ -1937,7 +1931,7 @@ impl
     async fn replace_capture(
         &self,
         _request: awaken_resource_contract::ReplaceArtifactCapture,
-        _fence: Option<&awaken_dispatch_contract::ArtifactPublicationFence>,
+        _fence: Option<&crate::ResourceOperationFence>,
     ) -> Result<
         awaken_resource_contract::ReplaceArtifactCaptureOutcome,
         awaken_resource_contract::ArtifactPublicationError,
@@ -1997,7 +1991,7 @@ async fn receipt_only_terminal_harvest_skips_a_present_container() {
         .artifact_harvester()
         .harvest_with_fence_mode(
             thread,
-            Some(awaken_dispatch_contract::ArtifactPublicationFence::Terminal(effect)),
+            Some(crate::ResourceOperationFence::Terminal(effect)),
             ArtifactCaptureMode::ReceiptOnly,
         )
         .await
@@ -2095,7 +2089,7 @@ async fn terminal_artifact_recovery_requires_the_root_workspace_before_catalog_i
     let error = harvester
         .harvest_with_fence(
             "missing-child",
-            Some(awaken_dispatch_contract::ArtifactPublicationFence::Terminal(effect)),
+            Some(crate::ResourceOperationFence::Terminal(effect)),
         )
         .await
         .expect_err("H5/E5");
@@ -2523,27 +2517,21 @@ async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
 }
 
 struct CaptureFaultPublisher {
-    inner: Arc<
-        dyn awaken_resource_contract::ArtifactPublisher<
-                awaken_dispatch_contract::ArtifactPublicationFence,
-            >,
-    >,
+    inner: Arc<dyn awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>>,
     mode: &'static str,
     scans: Arc<std::sync::atomic::AtomicUsize>,
     calls: std::sync::Mutex<[usize; 3]>,
 }
 
 #[async_trait::async_trait]
-impl
-    awaken_resource_contract::ArtifactPublisher<
-        awaken_dispatch_contract::ArtifactPublicationFence,
-    > for CaptureFaultPublisher
+impl awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>
+    for CaptureFaultPublisher
 {
     async fn capture(
         &self,
         workspace: &str,
         session: &str,
-        fence: Option<&awaken_dispatch_contract::ArtifactPublicationFence>,
+        fence: Option<&crate::ResourceOperationFence>,
     ) -> Result<
         Option<awaken_resource_contract::ArtifactCapture>,
         awaken_resource_contract::ArtifactPublicationError,
@@ -2581,9 +2569,7 @@ impl
 
     async fn publish(
         &self,
-        request: awaken_resource_contract::ArtifactPublication<
-            awaken_dispatch_contract::ArtifactPublicationFence,
-        >,
+        request: awaken_resource_contract::ArtifactPublication<crate::ResourceOperationFence>,
     ) -> Result<
         awaken_resource_contract::ArtifactPublicationReceipt,
         awaken_resource_contract::ArtifactPublicationError,
@@ -2610,7 +2596,7 @@ impl
     async fn replace_capture(
         &self,
         request: awaken_resource_contract::ReplaceArtifactCapture,
-        fence: Option<&awaken_dispatch_contract::ArtifactPublicationFence>,
+        fence: Option<&crate::ResourceOperationFence>,
     ) -> Result<
         awaken_resource_contract::ReplaceArtifactCaptureOutcome,
         awaken_resource_contract::ArtifactPublicationError,
@@ -2646,9 +2632,7 @@ impl
 
     async fn recover(
         &self,
-        _recovery: awaken_resource_contract::ArtifactRecovery<
-            awaken_dispatch_contract::ArtifactPublicationFence,
-        >,
+        _recovery: awaken_resource_contract::ArtifactRecovery<crate::ResourceOperationFence>,
     ) -> Result<
         Vec<awaken_resource_contract::ArtifactPublicationReceipt>,
         awaken_resource_contract::ArtifactPublicationError,

@@ -71,6 +71,7 @@ awaken-environment-image-build.workspace = true
 awaken-environment-package-image-builder.workspace = true
 awaken-ext-builtin-tools.workspace = true
 awaken-dispatch = { workspace = true, features = ["durable"] }
+awaken-session-realization-contract.workspace = true
 awaken-work-store.workspace = true
 awaken-worker-transport-security.workspace = true
 awaken-worker-contract.workspace = true

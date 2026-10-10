@@ -19,7 +19,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch_contract::{
-    ResourceOperationFence, RunClaim, RunDispatch, SessionResourceEnvelope, SessionRuntimeEnvelope,
+    RunClaim, RunDispatch, SessionResourceEnvelope, SessionRuntimeEnvelope,
 };
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
@@ -30,11 +30,11 @@ use awaken_runtime_contract::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
     CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
 };
+use awaken_session_configuration_contract::SessionRuntimeProjection;
+use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_session_resource_contract::{SessionRealizationLease, SessionResourceManifest};
-use awaken_session_execution_contract::{
-    AdmitSessionRun, SessionRunCommandFingerprint, SessionRunExecutionRequirements,
-    SessionRunReplacement,
-};
+use awaken_session_execution_contract::{AdmitSessionRun, SessionRunExecutionRequirements};
+use awaken_session_types::{SessionRunCommandFingerprint, SessionRunReplacement};
 
 fn command() -> AdmitSessionRun {
     AdmitSessionRun {
@@ -165,8 +165,15 @@ fn mcp_stage() -> awaken_session_mcp_contract::StageMcpAttachment {
 }
 
 fn runtime_envelope() -> SessionRuntimeEnvelope {
-    SessionRuntimeEnvelope::from_projection(environment(), None, vec![mcp_stage()])
-        .expect("projection encodes")
+    SessionRuntimeEnvelope::new(
+        SessionRuntimeProjection {
+            environment: environment(),
+            tools: None,
+            mcp_stages: Some(vec![mcp_stage()]),
+        }
+        .encode()
+        .expect("projection encodes"),
+    )
 }
 
 fn repository_input() -> serde_json::Value {
@@ -197,7 +204,12 @@ fn resource_manifest() -> SessionResourceManifest {
 }
 
 fn resource_envelope() -> SessionResourceEnvelope {
-    SessionResourceEnvelope::from_manifest(&resource_manifest()).expect("manifest encodes")
+    let manifest = resource_manifest();
+    SessionResourceEnvelope::at_revision(
+        manifest.workspace_id.clone(),
+        manifest.revision,
+        manifest.encode_resources().expect("manifest encodes"),
+    )
 }
 
 fn dispatch() -> RunDispatch {
@@ -353,9 +365,7 @@ fn session_runtime_projection_bytes_are_pinned() {
     // G3: the projection inside the runtime envelope, with an MCP credential.
     let projection = golden("session_runtime_projection.json");
     assert_eq!(runtime_envelope().projection_json, projection, "G3 encode");
-    let decoded = SessionRuntimeEnvelope::new(projection)
-        .decode_projection()
-        .expect("G3 decode");
+    let decoded = SessionRuntimeProjection::decode(&projection).expect("G3 decode");
     assert_eq!(decoded.environment, environment(), "G3 environment");
     assert_eq!(decoded.tools, None, "G3 tools");
     assert_eq!(decoded.mcp_stages, Some(vec![mcp_stage()]), "G3 MCP stages");
@@ -370,7 +380,7 @@ fn session_resource_manifest_bytes_are_pinned() {
     assert_eq!(envelope.workspace_id, "workspace-golden", "G4 Workspace");
     assert_eq!(envelope.resource_revision, 5, "G4 revision");
     let decoded = SessionResourceEnvelope::at_revision("workspace-golden", 5, resources)
-        .decode_manifest()
+        .decode_with(SessionResourceManifest::decode_resources)
         .expect("G4 decode");
     assert_eq!(decoded, resource_manifest(), "G4 decode");
 }

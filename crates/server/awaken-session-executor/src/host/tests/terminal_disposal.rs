@@ -913,7 +913,7 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
             tool_capability_narrowing: activation.tool_capability_narrowing(),
             required_worker_capabilities: Default::default(),
         },
-        replacement: awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
+        replacement: awaken_session_types::SessionRunReplacement::PreservePrior,
     };
     let request = awaken_dispatch_contract::RunDispatch::new(activation)
         .for_session(session.clone())

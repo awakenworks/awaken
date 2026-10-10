@@ -317,8 +317,7 @@ mod tests {
                     data_subject_id: None,
                     traceparent: None,
                     execution_requirements: Default::default(),
-                    replacement:
-                        awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
+                    replacement: awaken_session_types::SessionRunReplacement::PreservePrior,
                 },
                 Some(Arc::new(NoopSink)),
             )

@@ -57,6 +57,13 @@ pub struct PlacementRequirements {
     /// Exact, expiring ACP profiles frozen by BackendOwned publications.
     #[serde(default)]
     pub required_acp_capabilities: BTreeSet<WorkerAcpCapabilityRequirement>,
+    /// Session MCP credentials the claiming Worker must realize, validated and
+    /// published by the Session at admission in stage order. `None` marks a
+    /// row written before the Session published them: claim admission then
+    /// decodes that row's Session runtime projection as it always did. New
+    /// admissions that carry a runtime projection always write `Some`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_mcp_credentials: Option<Vec<awaken_credential_contract::McpCredentialRequirement>>,
     pub required_zone: Option<String>,
     pub architecture: Option<String>,
     #[serde(default)]
@@ -87,6 +94,7 @@ impl Default for PlacementRequirements {
             required_capabilities: BTreeSet::new(),
             required_credentials: BTreeSet::new(),
             required_acp_capabilities: BTreeSet::new(),
+            session_mcp_credentials: None,
             required_zone: None,
             architecture: None,
             sandbox: SandboxRequirements::default(),

@@ -4,6 +4,7 @@
 
 use super::session_realization::WorkerMcpEffects;
 use super::*;
+use awaken_session_configuration_contract::SessionRuntimeProjection;
 
 /// Project the already-installed frozen Session facts into claimed-dispatch
 /// ownership. The presence of a remote Control client is a transport detail:
@@ -42,6 +43,22 @@ pub(super) async fn adopt_bound_sandbox(
         error.message = format!("run {}: {}", run_id.0, error.message);
         HostWorkerResolver::map_host_resolution_error(error)
     })
+}
+
+/// The frozen projection a claimed dispatch carries. Bytes that do not decode
+/// cannot decode on a retry either, so this is an absorbing resolution failure.
+fn decode_dispatched_projection(
+    envelope: &awaken_dispatch_contract::SessionRuntimeEnvelope,
+    run_id: &awaken_agent_contract::agent::run::Id,
+) -> Result<SessionRuntimeProjection, awaken_dispatch_execution::Error> {
+    envelope
+        .decode_with(SessionRuntimeProjection::decode)
+        .map_err(|error| {
+            HostWorkerResolver::terminal_resolution_error(format!(
+                "run {} has an invalid Session runtime projection: {error}",
+                run_id.0
+            ))
+        })
 }
 
 impl HostWorkerResolver {
@@ -302,12 +319,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             crate::dispatch_session_runtime::decode_dispatched_resource_manifest(&claimed.request)
                 .map_err(Self::execution_error)?;
         let dispatched_mcp_stages = if let Some(envelope) = &claimed.request.session_runtime {
-            let projection = envelope.decode_projection().map_err(|error| {
-                Self::execution_error(format!(
-                    "run {} has an invalid Session runtime projection: {error}",
-                    claimed.lease.run_id.0
-                ))
-            })?;
+            let projection = decode_dispatched_projection(envelope, &claimed.lease.run_id)?;
             host.install_environment_projection(&thread_id.0, &projection.environment)
                 .map_err(Self::map_host_resolution_error)?;
             host.session_slots

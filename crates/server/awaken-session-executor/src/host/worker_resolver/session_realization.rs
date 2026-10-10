@@ -161,12 +161,15 @@ mod tests {
             &eager_activation.snapshot,
         )
         .await;
-        let eager_runtime = awaken_dispatch_contract::SessionRuntimeEnvelope::from_projection(
-            eager_environment,
-            Some(Default::default()),
-            Vec::new(),
-        )
-        .expect("encode eager Runtime projection");
+        let eager_runtime = awaken_dispatch_contract::SessionRuntimeEnvelope::new(
+            awaken_session_configuration_contract::SessionRuntimeProjection {
+                environment: eager_environment,
+                tools: Some(Default::default()),
+                mcp_stages: Some(Vec::new()),
+            }
+            .encode()
+            .expect("encode eager Runtime projection"),
+        );
         store
             .enqueue(with_empty_session_resources(
                 awaken_dispatch_contract::RunDispatch::new(eager_activation)
@@ -200,12 +203,15 @@ mod tests {
             &deferred_activation.snapshot,
         )
         .await;
-        let runtime = awaken_dispatch_contract::SessionRuntimeEnvelope::from_projection(
-            deferred_environment,
-            Some(Default::default()),
-            Vec::new(),
-        )
-        .expect("encode runtime projection");
+        let runtime = awaken_dispatch_contract::SessionRuntimeEnvelope::new(
+            awaken_session_configuration_contract::SessionRuntimeProjection {
+                environment: deferred_environment,
+                tools: Some(Default::default()),
+                mcp_stages: Some(Vec::new()),
+            }
+            .encode()
+            .expect("encode runtime projection"),
+        );
         store
             .enqueue(with_empty_session_resources(
                 awaken_dispatch_contract::RunDispatch::new(deferred_activation)
@@ -558,7 +564,9 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_dispatch_contract::ClaimedSessionRealizationControl for RenewalDuringStageControl {
+    impl awaken_session_realization_contract::ClaimedSessionRealizationControl
+        for RenewalDuringStageControl
+    {
         async fn resume_frozen(
             &self,
             _claim: &awaken_dispatch_contract::RunClaim,
@@ -567,10 +575,10 @@ mod tests {
             _continuation: Option<&awaken_session_resource_contract::SessionRealizationLease>,
         ) -> Result<
             Option<awaken_session_realization_contract::SessionRealizationDirective>,
-            awaken_dispatch_contract::ClaimedSessionControlError,
+            awaken_session_realization_contract::ClaimedSessionControlError,
         > {
             Err(
-                awaken_dispatch_contract::ClaimedSessionControlError::new(
+                awaken_session_realization_contract::ClaimedSessionControlError::new(
                     "not used by the renewal concurrency fixture",
                 ),
             )

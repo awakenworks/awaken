@@ -6,6 +6,7 @@
 //! produces them and the Session slot holds them.
 
 use awaken_provisioning_contract as pc;
+use awaken_session_realization_contract::ResourceOperationFence;
 
 /// A thread's staged neutral mount requirements plus the prompt fragments derived
 /// from the same effective Session inputs.
@@ -39,7 +40,7 @@ pub(crate) enum ResourceBindingCheck {
         config_version: awaken_resource_contract::ConfigVersion,
         remote_url: String,
         credential_binding: Option<String>,
-        authority: Option<Box<awaken_dispatch_contract::ResourceOperationFence>>,
+        authority: Option<Box<ResourceOperationFence>>,
     },
 }
 

@@ -5,10 +5,10 @@
 //! dispatch and commits. It carries no store and trusts no client-side clock.
 
 use awaken_dispatch_contract::{
-    ClaimedSessionControlError, RegistryMutation, RunClaim, WorkerHeartbeat,
-    WorkerHeartbeatReceipt, WorkerIdentity, WorkerManifest, WorkerRegistration,
-    WorkerRegistrationReceipt,
+    RegistryMutation, RunClaim, WorkerHeartbeat, WorkerHeartbeatReceipt, WorkerIdentity,
+    WorkerManifest, WorkerRegistration, WorkerRegistrationReceipt,
 };
+use awaken_session_realization_contract::ClaimedSessionControlError;
 use serde_json::{Value, json};
 
 use awaken_worker_transport_security::WorkerUpstream;

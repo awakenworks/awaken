@@ -8,6 +8,8 @@
 
 use std::sync::{Arc, Weak};
 
+use awaken_dispatch_contract::SessionResourceEnvelope;
+use awaken_session_resource_contract::SessionResourceManifest;
 use awaken_session_types::RunError;
 
 use crate::{ManagedHost, SharedHost};
@@ -42,12 +44,15 @@ pub(crate) fn decode_dispatched_resource_manifest(
             dispatch.run_id().0
         ));
     }
-    envelope.decode_manifest().map(Some).map_err(|error| {
-        format!(
-            "run {} has an invalid Session resource manifest: {error}",
-            dispatch.run_id().0
-        )
-    })
+    envelope
+        .decode_with(SessionResourceManifest::decode_resources)
+        .map(Some)
+        .map_err(|error| {
+            format!(
+                "run {} has an invalid Session resource manifest: {error}",
+                dispatch.run_id().0
+            )
+        })
 }
 
 /// Weak, cloneable Worker-side adapter over the same configured Managed
@@ -434,6 +439,18 @@ impl SharedHost {
     ) -> Result<(), RunError> {
         self.dispatch_session_runtime().drain_mcp(generation).await
     }
+}
+
+/// Encode a Session resource manifest into its dispatch envelope.
+pub(crate) fn resource_envelope(
+    manifest: &SessionResourceManifest,
+) -> Result<SessionResourceEnvelope, serde_json::Error> {
+    let resources = manifest.encode_resources()?;
+    Ok(SessionResourceEnvelope::at_revision(
+        &manifest.workspace_id,
+        manifest.revision,
+        resources,
+    ))
 }
 
 #[cfg(test)]

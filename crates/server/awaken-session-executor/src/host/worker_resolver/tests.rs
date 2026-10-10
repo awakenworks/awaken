@@ -381,12 +381,15 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
             .expect("coherent delegated root fixture");
         activation
     };
-    let runtime = ingress::SessionRuntimeEnvelope::from_projection(
-        deferred_environment(),
-        Some(Default::default()),
-        Vec::new(),
-    )
-    .expect("encode complete ordinary Runtime projection");
+    let runtime = ingress::SessionRuntimeEnvelope::new(
+        awaken_session_configuration_contract::SessionRuntimeProjection {
+            environment: deferred_environment(),
+            tools: Some(Default::default()),
+            mcp_stages: Some(Vec::new()),
+        }
+        .encode()
+        .expect("encode complete ordinary Runtime projection"),
+    );
     let complete_activation = delegated("cold-delegation", "run-cold-delegation");
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &managed,
@@ -936,12 +939,15 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
         credential: None,
         selected_plaintext_holder: None,
     };
-    let runtime = ingress::SessionRuntimeEnvelope::from_projection(
-        deferred_environment(),
-        Some(Default::default()),
-        vec![stage],
-    )
-    .expect("runtime envelope");
+    let runtime = ingress::SessionRuntimeEnvelope::new(
+        awaken_session_configuration_contract::SessionRuntimeProjection {
+            environment: deferred_environment(),
+            tools: Some(Default::default()),
+            mcp_stages: Some(vec![stage]),
+        }
+        .encode()
+        .expect("runtime envelope"),
+    );
     store
         .enqueue(with_empty_session_resources(
             ingress::RunDispatch::new(activation).with_session_runtime(runtime),
@@ -975,7 +981,9 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
 }
 
 #[async_trait::async_trait]
-impl ingress::ClaimedSessionRealizationControl for RecordingSessionControl {
+impl awaken_session_realization_contract::ClaimedSessionRealizationControl
+    for RecordingSessionControl
+{
     async fn resume_frozen(
         &self,
         claim: &ingress::RunClaim,
@@ -984,7 +992,7 @@ impl ingress::ClaimedSessionRealizationControl for RecordingSessionControl {
         continuation: Option<&awaken_session_resource_contract::SessionRealizationLease>,
     ) -> Result<
         Option<awaken_session_realization_contract::SessionRealizationDirective>,
-        ingress::ClaimedSessionControlError,
+        awaken_session_realization_contract::ClaimedSessionControlError,
     > {
         self.resume_calls.fetch_add(1, Ordering::SeqCst);
         self.continuations
@@ -2237,18 +2245,18 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
     struct ClaimFileSource;
 
     #[async_trait::async_trait]
-    impl crate::FileContentSource<ingress::ResourceOperationFence> for ClaimFileSource {
+    impl crate::FileContentSource<crate::ResourceOperationFence> for ClaimFileSource {
         async fn read(
             &self,
             workspace_id: &str,
             file_id: &str,
             _purpose: &awaken_resource_contract::FileReadPurpose,
-            fence: Option<&ingress::ResourceOperationFence>,
+            fence: Option<&crate::ResourceOperationFence>,
         ) -> Result<
             Option<awaken_resource_contract::ResolvedFileContent>,
             awaken_resource_contract::FileContentSourceError,
         > {
-            let Some(ingress::ResourceOperationFence::Run(claim)) = fence else {
+            let Some(crate::ResourceOperationFence::Run(claim)) = fence else {
                 return Ok(None);
             };
             if workspace_id != "workspace-remote"

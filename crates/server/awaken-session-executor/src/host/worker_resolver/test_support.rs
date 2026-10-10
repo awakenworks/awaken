@@ -362,7 +362,7 @@ pub(crate) fn with_empty_session_resources(
             awaken_tenancy::ScopeId::from(workspace_id),
         ))
         .with_session_resources(
-            awaken_dispatch_contract::SessionResourceEnvelope::from_manifest(&manifest)
+            crate::dispatch_session_runtime::resource_envelope(&manifest)
                 .expect("serialize exact empty Resource manifest"),
         )
 }

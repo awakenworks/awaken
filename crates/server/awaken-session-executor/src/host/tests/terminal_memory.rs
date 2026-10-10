@@ -642,16 +642,12 @@ struct RecordingTerminalArtifactRecovery {
 }
 
 #[async_trait::async_trait]
-impl
-    awaken_resource_contract::ArtifactPublisher<
-        awaken_dispatch_contract::ArtifactPublicationFence,
-    > for RecordingTerminalArtifactRecovery
+impl awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>
+    for RecordingTerminalArtifactRecovery
 {
     async fn publish(
         &self,
-        _publication: awaken_resource_contract::ArtifactPublication<
-            awaken_dispatch_contract::ArtifactPublicationFence,
-        >,
+        _publication: awaken_resource_contract::ArtifactPublication<crate::ResourceOperationFence>,
     ) -> Result<
         awaken_resource_contract::ArtifactPublicationReceipt,
         awaken_resource_contract::ArtifactPublicationError,
@@ -663,9 +659,7 @@ impl
 
     async fn recover(
         &self,
-        _recovery: awaken_resource_contract::ArtifactRecovery<
-            awaken_dispatch_contract::ArtifactPublicationFence,
-        >,
+        _recovery: awaken_resource_contract::ArtifactRecovery<crate::ResourceOperationFence>,
     ) -> Result<
         Vec<awaken_resource_contract::ArtifactPublicationReceipt>,
         awaken_resource_contract::ArtifactPublicationError,
@@ -678,7 +672,7 @@ impl
         &self,
         _workspace_id: &str,
         _session_id: &str,
-        _fence: Option<&awaken_dispatch_contract::ArtifactPublicationFence>,
+        _fence: Option<&crate::ResourceOperationFence>,
     ) -> Result<
         Option<awaken_resource_contract::ArtifactCapture>,
         awaken_resource_contract::ArtifactPublicationError,
@@ -691,7 +685,7 @@ impl
     async fn replace_capture(
         &self,
         _request: awaken_resource_contract::ReplaceArtifactCapture,
-        _fence: Option<&awaken_dispatch_contract::ArtifactPublicationFence>,
+        _fence: Option<&crate::ResourceOperationFence>,
     ) -> Result<
         awaken_resource_contract::ReplaceArtifactCaptureOutcome,
         awaken_resource_contract::ArtifactPublicationError,
@@ -708,16 +702,12 @@ struct RecordingScopedArtifactAuthority {
 }
 
 #[async_trait::async_trait]
-impl
-    awaken_resource_contract::ArtifactPublisher<
-        awaken_dispatch_contract::ArtifactPublicationFence,
-    > for RecordingScopedArtifactAuthority
+impl awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>
+    for RecordingScopedArtifactAuthority
 {
     async fn publish(
         &self,
-        _publication: awaken_resource_contract::ArtifactPublication<
-            awaken_dispatch_contract::ArtifactPublicationFence,
-        >,
+        _publication: awaken_resource_contract::ArtifactPublication<crate::ResourceOperationFence>,
     ) -> Result<
         awaken_resource_contract::ArtifactPublicationReceipt,
         awaken_resource_contract::ArtifactPublicationError,
@@ -729,9 +719,7 @@ impl
 
     async fn recover(
         &self,
-        recovery: awaken_resource_contract::ArtifactRecovery<
-            awaken_dispatch_contract::ArtifactPublicationFence,
-        >,
+        recovery: awaken_resource_contract::ArtifactRecovery<crate::ResourceOperationFence>,
     ) -> Result<
         Vec<awaken_resource_contract::ArtifactPublicationReceipt>,
         awaken_resource_contract::ArtifactPublicationError,
@@ -744,7 +732,7 @@ impl
         &self,
         _workspace_id: &str,
         _session_id: &str,
-        _fence: Option<&awaken_dispatch_contract::ArtifactPublicationFence>,
+        _fence: Option<&crate::ResourceOperationFence>,
     ) -> Result<
         Option<awaken_resource_contract::ArtifactCapture>,
         awaken_resource_contract::ArtifactPublicationError,
@@ -757,7 +745,7 @@ impl
     async fn replace_capture(
         &self,
         _request: awaken_resource_contract::ReplaceArtifactCapture,
-        _fence: Option<&awaken_dispatch_contract::ArtifactPublicationFence>,
+        _fence: Option<&crate::ResourceOperationFence>,
     ) -> Result<
         awaken_resource_contract::ReplaceArtifactCaptureOutcome,
         awaken_resource_contract::ArtifactPublicationError,

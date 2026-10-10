@@ -2,6 +2,7 @@
 
 mod agent_config;
 mod baseline;
+mod dispatched_runtime;
 mod execution_context;
 mod mcp_probe;
 mod model_resolution;
@@ -36,6 +37,7 @@ pub use baseline::{
     SessionCreationIntent, SessionMcpAuthoringContext, SessionRuntimePlacement,
     SessionSystemPromptSelection, resolved_environment_snapshot_is_exact,
 };
+pub use dispatched_runtime::{SessionRuntimeDispatchError, SessionRuntimeProjection};
 pub use execution_context::{SessionContextError, SessionContextSeed, SessionTrigger};
 pub use mcp_probe::{
     CredentialRefreshExchange, McpInspection, McpProbe, McpProbeFailure, McpProbeStatus,

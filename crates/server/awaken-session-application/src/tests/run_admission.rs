@@ -963,7 +963,7 @@ async fn background_attention_uses_canonical_session_admission_without_observing
         );
         assert_eq!(
             reservations[0].replacement,
-            awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
+            awaken_session_types::SessionRunReplacement::PreservePrior,
             "B1/E1 append semantics",
         );
     }

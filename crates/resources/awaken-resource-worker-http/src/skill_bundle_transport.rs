@@ -13,10 +13,11 @@ use std::sync::Arc;
 
 use awaken_agent_contract::AgentSkillKind;
 use awaken_resource_contract::SkillVersion;
-use awaken_dispatch_contract::{DispatchQueue, ResourceOperationFence, RunClaim};
+use awaken_dispatch_contract::{DispatchQueue, RunClaim};
 use awaken_session_configuration_contract::{
     SkillBundleSource, SkillBundleSourceError, validate_skill_bundle,
 };
+use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_session_resource_contract::ResolvedSkillBinding;
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use axum::extract::{Extension, State};
@@ -149,12 +150,11 @@ async fn read_skill_bundle(
                 .execution_scope
                 .as_ref()
                 .is_some_and(|scope| scope.0.0 == request.workspace_id);
-            let skill_is_frozen = dispatch
-                .session_resources
-                .as_ref()
-                .filter(|envelope| envelope.workspace_id == request.workspace_id)
-                .and_then(|envelope| envelope.decode_manifest().ok())
-                .is_some_and(|manifest| manifest.resources.skills().contains(&request.binding));
+            let skill_is_frozen = crate::worker_authority::frozen_resource_manifest(
+                dispatch.session_resources.as_ref(),
+                &request.workspace_id,
+            )
+            .is_some_and(|manifest| manifest.resources.skills().contains(&request.binding));
             if !scope_matches || !skill_is_frozen {
                 return StatusCode::FORBIDDEN.into_response();
             }

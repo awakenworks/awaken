@@ -71,12 +71,11 @@ pub(crate) fn child_dispatch_request(
     }
     if let Some(resources) = session_resources {
         let envelope =
-            awaken_dispatch_contract::SessionResourceEnvelope::from_manifest(&resources)
-                .map_err(|error| {
-                    AgentRunError::Configuration(format!(
-                        "serialize child Session resource manifest: {error}"
-                    ))
-                })?;
+            crate::dispatch_session_runtime::resource_envelope(&resources).map_err(|error| {
+                AgentRunError::Configuration(format!(
+                    "serialize child Session resource manifest: {error}"
+                ))
+            })?;
         request = request
             .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
                 awaken_tenancy::ScopeId::from(resources.workspace_id.clone()),
@@ -190,7 +189,9 @@ mod tests {
             .session_resources
             .as_ref()
             .expect("resource envelope")
-            .decode_manifest()
+            .decode_with(
+                awaken_session_resource_contract::SessionResourceManifest::decode_resources,
+            )
             .expect("decode resource envelope");
         assert_eq!(carried, manifest);
         assert!(

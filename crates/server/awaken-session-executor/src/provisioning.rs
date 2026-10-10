@@ -7,6 +7,7 @@
 //! are the same `SharedHost` (fields are `pub(crate)`).
 
 use crate::staged_resources::{RepositoryActivation, ResourceBindingCheck, StagedResources};
+use awaken_session_realization_contract::ResourceOperationFence;
 use std::sync::Arc;
 
 use crate::host::SharedHost;
@@ -813,7 +814,7 @@ impl SharedHost {
             ));
         }
         let publication_authority = publication_fence.map(|(command, lease)| {
-            awaken_dispatch_contract::ResourceOperationFence::RepositoryPublication {
+            ResourceOperationFence::RepositoryPublication {
                 command: Box::new(command.clone()),
                 lease: lease.clone(),
             }
@@ -1046,11 +1047,8 @@ impl SharedHost {
 pub(crate) struct ArtifactHarvester {
     session_slots: crate::session_slot::SessionRuntimeSlots,
     local_workspace: String,
-    publisher: std::sync::Arc<
-        dyn awaken_resource_contract::ArtifactPublisher<
-                awaken_dispatch_contract::ArtifactPublicationFence,
-            >,
-    >,
+    publisher:
+        std::sync::Arc<dyn awaken_resource_contract::ArtifactPublisher<ResourceOperationFence>>,
 }
 
 /// Closed, process-local choice of Artifact source for one harvest attempt.
@@ -1081,9 +1079,7 @@ impl ArtifactHarvester {
         &self,
         thread: &str,
     ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
-        let fence = self
-            .current_claim(thread)
-            .map(awaken_dispatch_contract::ArtifactPublicationFence::Run);
+        let fence = self.current_claim(thread).map(ResourceOperationFence::Run);
         self.harvest_with_fence(thread, fence).await
     }
 
@@ -1092,17 +1088,14 @@ impl ArtifactHarvester {
         thread: &str,
         claim: Option<awaken_dispatch_contract::RunClaim>,
     ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
-        self.harvest_with_fence(
-            thread,
-            claim.map(awaken_dispatch_contract::ArtifactPublicationFence::Run),
-        )
-        .await
+        self.harvest_with_fence(thread, claim.map(ResourceOperationFence::Run))
+            .await
     }
 
     pub(crate) async fn harvest_with_fence(
         &self,
         thread: &str,
-        fence: Option<awaken_dispatch_contract::ArtifactPublicationFence>,
+        fence: Option<ResourceOperationFence>,
     ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
         self.harvest_with_fence_mode(thread, fence, ArtifactCaptureMode::Live)
             .await
@@ -1114,7 +1107,7 @@ impl ArtifactHarvester {
     pub(crate) async fn harvest_with_fence_mode(
         &self,
         thread: &str,
-        fence: Option<awaken_dispatch_contract::ArtifactPublicationFence>,
+        fence: Option<ResourceOperationFence>,
         capture_mode: ArtifactCaptureMode,
     ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
         self.harvest_with_fence_mode_from_environment(thread, fence, capture_mode, None)
@@ -1126,7 +1119,7 @@ impl ArtifactHarvester {
     pub(crate) async fn harvest_with_environment_and_fence(
         &self,
         thread: &str,
-        fence: Option<awaken_dispatch_contract::ArtifactPublicationFence>,
+        fence: Option<ResourceOperationFence>,
         environment: &Arc<crate::session_environment::SessionEnvironment>,
     ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
         self.harvest_with_fence_mode_from_environment(
@@ -1141,18 +1134,16 @@ impl ArtifactHarvester {
     async fn harvest_with_fence_mode_from_environment(
         &self,
         thread: &str,
-        fence: Option<awaken_dispatch_contract::ArtifactPublicationFence>,
+        fence: Option<ResourceOperationFence>,
         capture_mode: ArtifactCaptureMode,
         exact_environment: Option<&Arc<crate::session_environment::SessionEnvironment>>,
     ) -> Result<HarvestedArtifacts, ArtifactPublicationError> {
         let terminal_effect = fence.as_ref().and_then(|fence| match fence {
-            awaken_dispatch_contract::ArtifactPublicationFence::Terminal(effect) => Some(effect),
-            awaken_dispatch_contract::ArtifactPublicationFence::Run(_)
-            | awaken_dispatch_contract::ArtifactPublicationFence::SessionMaterialization(_)
-            | awaken_dispatch_contract::ArtifactPublicationFence::RepositoryPublication {
-                ..
-            }
-            | awaken_dispatch_contract::ArtifactPublicationFence::CheckpointRelease(_) => None,
+            ResourceOperationFence::Terminal(effect) => Some(effect),
+            ResourceOperationFence::Run(_)
+            | ResourceOperationFence::SessionMaterialization(_)
+            | ResourceOperationFence::RepositoryPublication { .. }
+            | ResourceOperationFence::CheckpointRelease(_) => None,
         });
         if capture_mode == ArtifactCaptureMode::ReceiptOnly && terminal_effect.is_none() {
             return Err(ArtifactPublicationError::InvalidRequest {
@@ -1285,7 +1276,7 @@ impl ArtifactHarvester {
             workspace_id: workspace,
             session_id: thread.to_string(),
             idempotency_scope: effect.operation_id().to_string(),
-            fence: awaken_dispatch_contract::ArtifactPublicationFence::Terminal(effect.clone()),
+            fence: ResourceOperationFence::Terminal(effect.clone()),
         };
         let receipts = self.publisher.recover(recovery).await?;
         Ok(HarvestedArtifacts { receipts })

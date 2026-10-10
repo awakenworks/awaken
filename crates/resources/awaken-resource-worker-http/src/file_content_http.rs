@@ -9,7 +9,8 @@ use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_resource_contract::{
     FileContentSource, FileContentSourceError, FileReadPurpose, ResolvedFileContent, content_id,
 };
-use awaken_dispatch_contract::{DispatchQueue, ResourceOperationFence};
+use awaken_dispatch_contract::DispatchQueue;
+use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, WorkerUpstream, authenticate_worker_request,
@@ -268,11 +269,10 @@ async fn read_file_content(
                 .execution_scope
                 .as_ref()
                 .is_some_and(|scope| scope.0.0 == request.workspace_id);
-            let manifest = dispatch
-                .session_resources
-                .as_ref()
-                .filter(|envelope| envelope.workspace_id == request.workspace_id)
-                .and_then(|envelope| envelope.decode_manifest().ok());
+            let manifest = crate::worker_authority::frozen_resource_manifest(
+                dispatch.session_resources.as_ref(),
+                &request.workspace_id,
+            );
             let file_is_frozen = manifest.as_ref().is_some_and(|manifest| {
                 manifest.resources.inputs().iter().any(|input| {
                     matches!(

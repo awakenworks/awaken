@@ -7,7 +7,8 @@ use awaken_resource_contract::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
     ArtifactRecovery, FileApplicationService, MAX_MANAGED_FILE_SIZE_BYTES, ResourcePurgeError,
 };
-use awaken_dispatch_contract::{ArtifactPublicationFence, DispatchQueue, RunClaim};
+use awaken_dispatch_contract::{DispatchQueue, RunClaim};
+use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_session_state_contract::{SessionEnvironmentOperation, SessionTerminalCleanupEffect};
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{
@@ -37,7 +38,7 @@ pub const ARTIFACT_METADATA_HEADER: &str = "x-awaken-artifact-publication";
 #[derive(Debug, Clone, Serialize)]
 pub struct ArtifactPublicationRequest {
     /// The sole authoring vocabulary for every current writer.
-    pub operation_fence: ArtifactPublicationFence,
+    pub operation_fence: ResourceOperationFence,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<WorkerIdentity>,
     pub workspace_id: String,
@@ -57,7 +58,7 @@ pub struct ArtifactPublicationRequest {
 #[serde(deny_unknown_fields)]
 struct ArtifactPublicationRequestWire {
     #[serde(default)]
-    operation_fence: Option<ArtifactPublicationFence>,
+    operation_fence: Option<ResourceOperationFence>,
     #[serde(default)]
     claim: Option<RunClaim>,
     #[serde(default)]
@@ -80,7 +81,7 @@ impl<'de> Deserialize<'de> for ArtifactPublicationRequest {
         let wire = ArtifactPublicationRequestWire::deserialize(deserializer)?;
         let operation_fence = match (wire.operation_fence, wire.claim) {
             (Some(fence), None) => fence,
-            (None, Some(claim)) => ArtifactPublicationFence::Run(claim),
+            (None, Some(claim)) => ResourceOperationFence::Run(claim),
             (Some(_), Some(_)) => {
                 return Err(serde::de::Error::custom(
                     "Artifact publication contains ambiguous operation fences",
@@ -124,7 +125,7 @@ pub struct ArtifactRecoveryRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactCaptureRequest {
-    pub operation_fence: ArtifactPublicationFence,
+    pub operation_fence: ResourceOperationFence,
     pub identity: Option<WorkerIdentity>,
     pub operation: ArtifactCaptureOperation,
 }
@@ -168,7 +169,7 @@ impl HttpArtifactPublisher {
     async fn exchange_capture(
         &self,
         operation: ArtifactCaptureOperation,
-        fence: Option<&ArtifactPublicationFence>,
+        fence: Option<&ResourceOperationFence>,
     ) -> Result<ArtifactCaptureResponse, ArtifactPublicationError> {
         let fence = fence.ok_or_else(|| ArtifactPublicationError::InvalidRequest {
             detail: "remote artifact capture requires an execution fence".into(),
@@ -208,12 +209,12 @@ impl HttpArtifactPublisher {
 }
 
 #[async_trait::async_trait]
-impl ArtifactPublisher<ArtifactPublicationFence> for HttpArtifactPublisher {
+impl ArtifactPublisher<ResourceOperationFence> for HttpArtifactPublisher {
     async fn capture(
         &self,
         workspace_id: &str,
         session_id: &str,
-        fence: Option<&ArtifactPublicationFence>,
+        fence: Option<&ResourceOperationFence>,
     ) -> Result<Option<awaken_resource_contract::ArtifactCapture>, ArtifactPublicationError> {
         let response = self
             .exchange_capture(
@@ -240,7 +241,7 @@ impl ArtifactPublisher<ArtifactPublicationFence> for HttpArtifactPublisher {
     async fn replace_capture(
         &self,
         request: awaken_resource_contract::ReplaceArtifactCapture,
-        fence: Option<&ArtifactPublicationFence>,
+        fence: Option<&ResourceOperationFence>,
     ) -> Result<awaken_resource_contract::ReplaceArtifactCaptureOutcome, ArtifactPublicationError>
     {
         request
@@ -267,24 +268,24 @@ impl ArtifactPublisher<ArtifactPublicationFence> for HttpArtifactPublisher {
 
     async fn publish(
         &self,
-        publication: ArtifactPublication<ArtifactPublicationFence>,
+        publication: ArtifactPublication<ResourceOperationFence>,
     ) -> Result<ArtifactPublicationReceipt, ArtifactPublicationError> {
         publication.verify()?;
         let operation_fence = match publication.fence.clone() {
-            Some(fence @ ArtifactPublicationFence::Run(_))
+            Some(fence @ ResourceOperationFence::Run(_))
                 if publication.idempotency_scope.is_none() =>
             {
                 fence
             }
-            Some(fence @ ArtifactPublicationFence::CheckpointRelease(_))
+            Some(fence @ ResourceOperationFence::CheckpointRelease(_))
                 if publication.idempotency_scope.is_none() =>
             {
                 fence
             }
-            Some(ArtifactPublicationFence::Terminal(effect))
+            Some(ResourceOperationFence::Terminal(effect))
                 if publication.idempotency_scope.as_deref() == Some(effect.operation_id()) =>
             {
-                ArtifactPublicationFence::Terminal(effect)
+                ResourceOperationFence::Terminal(effect)
             }
             Some(_) => {
                 return Err(ArtifactPublicationError::InvalidRequest {
@@ -347,10 +348,10 @@ impl ArtifactPublisher<ArtifactPublicationFence> for HttpArtifactPublisher {
 
     async fn recover(
         &self,
-        recovery: ArtifactRecovery<ArtifactPublicationFence>,
+        recovery: ArtifactRecovery<ResourceOperationFence>,
     ) -> Result<Vec<ArtifactPublicationReceipt>, ArtifactPublicationError> {
         recovery.verify()?;
-        let ArtifactPublicationFence::Terminal(effect) = &recovery.fence else {
+        let ResourceOperationFence::Terminal(effect) = &recovery.fence else {
             return Err(ArtifactPublicationError::InvalidRequest {
                 detail: "remote artifact recovery requires a terminal effect".into(),
             });
@@ -606,18 +607,18 @@ async fn authorize_artifact_effect(
     service: &WorkerArtifactPublicationService,
     worker: &VerifiedWorkerContext,
     identity: Option<&WorkerIdentity>,
-    fence: &ArtifactPublicationFence,
+    fence: &ResourceOperationFence,
     workspace_id: &str,
     session_id: &str,
     idempotency_scope: Option<&str>,
 ) -> Result<Option<awaken_dispatch_contract::CommitEpochGuard>, StatusCode> {
     let mut run_guard = None;
     match fence {
-        ArtifactPublicationFence::SessionMaterialization(_)
-        | ArtifactPublicationFence::RepositoryPublication { .. } => {
+        ResourceOperationFence::SessionMaterialization(_)
+        | ResourceOperationFence::RepositoryPublication { .. } => {
             return Err(StatusCode::FORBIDDEN);
         }
-        ArtifactPublicationFence::Run(claim) => {
+        ResourceOperationFence::Run(claim) => {
             if idempotency_scope.is_some() {
                 return Err(StatusCode::BAD_REQUEST);
             }
@@ -643,7 +644,7 @@ async fn authorize_artifact_effect(
             }
             run_guard = Some(guard);
         }
-        ArtifactPublicationFence::CheckpointRelease(operation) => {
+        ResourceOperationFence::CheckpointRelease(operation) => {
             if idempotency_scope.is_some() {
                 return Err(StatusCode::BAD_REQUEST);
             }
@@ -657,7 +658,7 @@ async fn authorize_artifact_effect(
             )
             .await?;
         }
-        ArtifactPublicationFence::Terminal(effect) => {
+        ResourceOperationFence::Terminal(effect) => {
             let Some(idempotency_scope) = idempotency_scope else {
                 return Err(StatusCode::BAD_REQUEST);
             };
@@ -756,7 +757,7 @@ async fn capture_artifacts(
         }
     };
     let scope = match &request.operation_fence {
-        ArtifactPublicationFence::Terminal(effect) => Some(effect.operation_id()),
+        ResourceOperationFence::Terminal(effect) => Some(effect.operation_id()),
         _ => None,
     };
     // The exact same guard as per-File publication stays alive through CAS.
@@ -1117,7 +1118,7 @@ mod tests {
             epoch: 1,
         };
         ArtifactPublicationRequest {
-            operation_fence: ArtifactPublicationFence::Run(claim),
+            operation_fence: ResourceOperationFence::Run(claim),
             identity: Some(WorkerIdentity::new("worker", "incarnation", 1)),
             workspace_id: "workspace".into(),
             session_id: "session".into(),
@@ -1194,7 +1195,7 @@ mod tests {
         let mut legacy = encoded.clone();
         let legacy_object = legacy.as_object_mut().expect("request object");
         legacy_object.remove("operation_fence");
-        let ArtifactPublicationFence::Run(claim) = canonical.clone() else {
+        let ResourceOperationFence::Run(claim) = canonical.clone() else {
             unreachable!()
         };
         legacy_object.insert("claim".into(), serde_json::to_value(claim).unwrap());
@@ -1210,7 +1211,7 @@ mod tests {
         ambiguous.as_object_mut().expect("request object").insert(
             "claim".into(),
             serde_json::to_value(match canonical.clone() {
-                ArtifactPublicationFence::Run(claim) => claim,
+                ResourceOperationFence::Run(claim) => claim,
                 _ => unreachable!(),
             })
             .unwrap(),

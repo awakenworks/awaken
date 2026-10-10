@@ -15,10 +15,11 @@ use awaken_resource_worker_http::{
     HttpArtifactPublisher, WorkerArtifactPublicationService, worker_artifact_publication_router,
 };
 use awaken_dispatch::{
-    ArtifactPublicationFence, DispatchQueue as _, LeaseRenewalOutcome, MemoryDispatchStore,
-    RunClaim, RunDispatch, WorkerIdentity,
+    DispatchQueue as _, LeaseRenewalOutcome, MemoryDispatchStore, RunClaim, RunDispatch,
+    WorkerIdentity,
 };
 use awaken_dispatch_testkit::worker_http as support;
+use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 use base64::Engine as _;
 
@@ -45,7 +46,7 @@ fn publication(
     session: &str,
     path: &str,
     bytes: &[u8],
-) -> ArtifactPublication<ArtifactPublicationFence> {
+) -> ArtifactPublication<ResourceOperationFence> {
     let content_id = awaken_resource_contract::content_id(bytes);
     ArtifactPublication {
         effect_id: awaken_resource_contract::harvest_idempotency_key(session, path, &content_id),
@@ -56,7 +57,7 @@ fn publication(
         content_id,
         bytes: bytes.to_vec(),
         idempotency_scope: None,
-        fence: claim.map(ArtifactPublicationFence::Run),
+        fence: claim.map(ResourceOperationFence::Run),
     }
 }
 
@@ -66,7 +67,7 @@ fn terminal_publication(
     path: &str,
     bytes: &[u8],
     effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
-) -> ArtifactPublication<ArtifactPublicationFence> {
+) -> ArtifactPublication<ResourceOperationFence> {
     let content_id = content_id(bytes);
     ArtifactPublication {
         effect_id: awaken_resource_contract::harvest_idempotency_key(session, path, &content_id),
@@ -77,7 +78,7 @@ fn terminal_publication(
         content_id,
         bytes: bytes.to_vec(),
         idempotency_scope: Some(effect.operation_id().to_string()),
-        fence: Some(ArtifactPublicationFence::Terminal(effect)),
+        fence: Some(ResourceOperationFence::Terminal(effect)),
     }
 }
 
@@ -87,7 +88,7 @@ fn checkpoint_release_publication(
     path: &str,
     bytes: &[u8],
     operation: awaken_session_state_contract::SessionEnvironmentOperation,
-) -> ArtifactPublication<ArtifactPublicationFence> {
+) -> ArtifactPublication<ResourceOperationFence> {
     let content_id = content_id(bytes);
     ArtifactPublication {
         effect_id: awaken_resource_contract::harvest_idempotency_key(session, path, &content_id),
@@ -98,7 +99,7 @@ fn checkpoint_release_publication(
         content_id,
         bytes: bytes.to_vec(),
         idempotency_scope: None,
-        fence: Some(ArtifactPublicationFence::CheckpointRelease(operation)),
+        fence: Some(ResourceOperationFence::CheckpointRelease(operation)),
     }
 }
 
@@ -977,7 +978,7 @@ async fn terminal_artifact_uses_current_root_for_an_expired_asserted_generation(
     // T5 capture read/replacement use the same current-root decision as
     // publication: renewed exact assertion passes; expired current root,
     // foreign generation and foreign Worker reject without changing the head.
-    let capture_fence = ArtifactPublicationFence::Terminal(asserted.clone());
+    let capture_fence = ResourceOperationFence::Terminal(asserted.clone());
     let capture = awaken_resource_contract::ReplaceArtifactCapture {
         workspace_id: "workspace-artifacts".into(),
         session_id: "session-terminal-artifact".into(),
@@ -1005,7 +1006,7 @@ async fn terminal_artifact_uses_current_root_for_an_expired_asserted_generation(
         ),
         "T5"
     );
-    let successor_fence = ArtifactPublicationFence::Terminal(successor);
+    let successor_fence = ResourceOperationFence::Terminal(successor);
     for (peer, fence) in [
         (&unrenewed, &capture_fence),
         (&exact, &successor_fence),
@@ -1187,7 +1188,7 @@ async fn checkpoint_release_is_unscoped_idempotent_and_terminal_rebindable() {
         "C5"
     );
 
-    let stale_fence = ArtifactPublicationFence::CheckpointRelease(stale_operation);
+    let stale_fence = ResourceOperationFence::CheckpointRelease(stale_operation);
     assert!(
         publisher
             .capture(
@@ -1365,7 +1366,7 @@ async fn terminal_artifact_response_loss_recovers_only_exact_durable_file_eviden
         workspace_id: "workspace-artifacts".into(),
         session_id: "session-terminal-recovery".into(),
         idempotency_scope: effect.operation_id().into(),
-        fence: ArtifactPublicationFence::Terminal(effect.clone()),
+        fence: ResourceOperationFence::Terminal(effect.clone()),
     };
     assert_eq!(
         exact.recover(recovery.clone()).await.expect("R1 recovery"),
@@ -1431,7 +1432,7 @@ async fn terminal_artifact_response_loss_recovers_only_exact_durable_file_eviden
             workspace_id: "workspace-artifacts".into(),
             session_id: "session-terminal-recovery".into(),
             idempotency_scope: successor.operation_id().into(),
-            fence: ArtifactPublicationFence::Terminal(successor),
+            fence: ResourceOperationFence::Terminal(successor),
         })
         .await
         .expect_err("R5 successor epoch");
@@ -1451,7 +1452,7 @@ async fn terminal_artifact_response_loss_recovers_only_exact_durable_file_eviden
             workspace_id: "workspace-artifacts".into(),
             session_id: "session-terminal-recovery".into(),
             idempotency_scope: effect.operation_id().into(),
-            fence: ArtifactPublicationFence::Terminal(effect),
+            fence: ResourceOperationFence::Terminal(effect),
         })
         .await
         .expect_err("R6 foreign");
@@ -1533,7 +1534,7 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
     let upstream =
         WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity.clone());
     let publisher = HttpArtifactPublisher::new(upstream.clone());
-    let fence = ArtifactPublicationFence::Run(claim.clone());
+    let fence = ResourceOperationFence::Run(claim.clone());
     let workspace = "workspace-artifacts";
     let session = "thread-capture-journey";
     assert_eq!(
@@ -1628,7 +1629,7 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
     let replacements = counting.capture_replaces.load(Ordering::SeqCst);
     let mut stale_claim = claim.clone();
     stale_claim.epoch += 1;
-    let stale_fence = ArtifactPublicationFence::Run(stale_claim);
+    let stale_fence = ResourceOperationFence::Run(stale_claim);
     for (case, ws, sid, operation_fence) in [
         ("workspace", "foreign", session, Some(&fence)),
         ("session", workspace, "foreign", Some(&fence)),
@@ -1793,7 +1794,7 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
         "R11 child claimed"
     );
     let child_claim = RunClaim::from(&child_lease.lease);
-    let child_fence = ArtifactPublicationFence::Run(child_claim.clone());
+    let child_fence = ResourceOperationFence::Run(child_claim.clone());
     assert_eq!(
         publisher
             .capture(workspace, &child_session, Some(&child_fence))
@@ -1975,7 +1976,7 @@ async fn capture_client_rejects_wrong_operation_scope_revision_and_file_set() {
         owner: "owner".into(),
         epoch: 1,
     };
-    let fence = ArtifactPublicationFence::Run(claim);
+    let fence = ResourceOperationFence::Run(claim);
     let canonical = serde_json::json!({"workspace_id":"workspace", "session_id":"session", "revision":1, "file_ids":["a"]});
     for operation in ["read", "replace"] {
         for field in [

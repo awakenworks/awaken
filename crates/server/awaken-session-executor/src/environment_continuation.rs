@@ -6,6 +6,7 @@
 //! preparation, physical disposal, restore, or checkpoint-delete effect
 //! through the existing Host and provider owners.
 
+use awaken_session_realization_contract::ResourceOperationFence;
 use std::time::Duration;
 
 use awaken_session_types::RunError;
@@ -404,11 +405,9 @@ impl ManagedHost {
                 .artifact_harvester()
                 .harvest_with_environment_and_fence(
                     thread,
-                    Some(
-                        awaken_dispatch_contract::ArtifactPublicationFence::CheckpointRelease(
-                            preparation.operation().clone(),
-                        ),
-                    ),
+                    Some(ResourceOperationFence::CheckpointRelease(
+                        preparation.operation().clone(),
+                    )),
                     environment,
                 )
                 .await

@@ -203,9 +203,7 @@ impl SharedHost {
             .unwrap_or(Some(crate::provisioning::ArtifactCaptureMode::Live));
         let artifact_receipts = if let Some(capture_mode) = artifact_capture_mode {
             let harvester = self.artifact_harvester();
-            let fence = Some(
-                awaken_dispatch_contract::ArtifactPublicationFence::Terminal(effect.clone()),
-            );
+            let fence = Some(crate::ResourceOperationFence::Terminal(effect.clone()));
             // Live root preparation has already moved the exact owner behind
             // the Retiring fence, so the generic Resident lookup cannot recover
             // it. Pass that same prepared Arc through the canonical harvester;

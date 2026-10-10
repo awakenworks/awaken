@@ -69,17 +69,13 @@ impl SharedHost {
 
     pub fn worker_file_content_source(
         &self,
-    ) -> Arc<dyn FileContentSource<awaken_dispatch_contract::ResourceOperationFence>> {
+    ) -> Arc<dyn FileContentSource<crate::ResourceOperationFence>> {
         self.resources.file_content_source.clone()
     }
 
     pub fn worker_artifact_publisher(
         &self,
-    ) -> Arc<
-        dyn awaken_resource_contract::ArtifactPublisher<
-                awaken_dispatch_contract::ArtifactPublicationFence,
-            >,
-    > {
+    ) -> Arc<dyn awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>> {
         self.resources.artifact_publisher.clone()
     }
 }
@@ -149,15 +145,13 @@ mod tests {
     struct RemotePublisher;
 
     #[async_trait::async_trait]
-    impl
-        awaken_resource_contract::ArtifactPublisher<
-            awaken_dispatch_contract::ArtifactPublicationFence,
-        > for RemotePublisher
+    impl awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>
+        for RemotePublisher
     {
         async fn publish(
             &self,
             _publication: awaken_resource_contract::ArtifactPublication<
-                awaken_dispatch_contract::ArtifactPublicationFence,
+                crate::ResourceOperationFence,
             >,
         ) -> Result<
             awaken_resource_contract::ArtifactPublicationReceipt,
@@ -172,7 +166,7 @@ mod tests {
             &self,
             _workspace_id: &str,
             _session_id: &str,
-            _fence: Option<&awaken_dispatch_contract::ArtifactPublicationFence>,
+            _fence: Option<&crate::ResourceOperationFence>,
         ) -> Result<
             Option<awaken_resource_contract::ArtifactCapture>,
             awaken_resource_contract::ArtifactPublicationError,
@@ -185,7 +179,7 @@ mod tests {
         async fn replace_capture(
             &self,
             _request: awaken_resource_contract::ReplaceArtifactCapture,
-            _fence: Option<&awaken_dispatch_contract::ArtifactPublicationFence>,
+            _fence: Option<&crate::ResourceOperationFence>,
         ) -> Result<
             awaken_resource_contract::ReplaceArtifactCaptureOutcome,
             awaken_resource_contract::ArtifactPublicationError,
@@ -197,9 +191,7 @@ mod tests {
 
         async fn recover(
             &self,
-            _recovery: awaken_resource_contract::ArtifactRecovery<
-                awaken_dispatch_contract::ArtifactPublicationFence,
-            >,
+            _recovery: awaken_resource_contract::ArtifactRecovery<crate::ResourceOperationFence>,
         ) -> Result<
             Vec<awaken_resource_contract::ArtifactPublicationReceipt>,
             awaken_resource_contract::ArtifactPublicationError,

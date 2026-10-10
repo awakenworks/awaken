@@ -1106,7 +1106,7 @@ impl SessionRunApplication {
         requested_agent: Option<&str>,
         messages: Vec<Message>,
         traceparent: Option<String>,
-        replacement: awaken_session_execution_contract::SessionRunReplacement,
+        replacement: awaken_session_types::SessionRunReplacement,
     ) -> Result<AdmitSessionRun, RunApplicationError> {
         if operation_id.trim().is_empty() {
             return Err(RunError::bad_request(
@@ -1163,7 +1163,7 @@ impl RunApplication for SessionRunApplication {
             agent.as_deref(),
             messages,
             None,
-            awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
+            awaken_session_types::SessionRunReplacement::PreservePrior,
         )?;
         self.run_admitted(&(self.workspace)(thread), command, None)
             .await
@@ -1262,7 +1262,7 @@ impl OwnerScopedRunApplication for SessionRunApplication {
             agent.as_deref(),
             messages,
             None,
-            awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
+            awaken_session_types::SessionRunReplacement::PreservePrior,
         )?;
         self.run_admitted(owner_scope, command, Some(sink)).await
     }
@@ -1324,7 +1324,7 @@ impl awaken_session_application_contract::SessionRunReplacementApplication
             agent.as_deref(),
             messages,
             None,
-            awaken_session_execution_contract::SessionRunReplacement::SupersedePrior,
+            awaken_session_types::SessionRunReplacement::SupersedePrior,
         )?;
         self.run_admitted(&(self.workspace)(thread), command, None)
             .await
@@ -1349,7 +1349,7 @@ impl awaken_session_application_contract::SessionRunBackgroundApplication
             agent.as_deref(),
             messages,
             traceparent,
-            awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
+            awaken_session_types::SessionRunReplacement::PreservePrior,
         )?;
         let run_id = command.run_id.clone();
         let owner_scope = (self.workspace)(thread);

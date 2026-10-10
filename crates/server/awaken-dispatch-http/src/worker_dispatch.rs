@@ -13,12 +13,12 @@
 //! `DispatchQueue` is called.
 
 use awaken_dispatch_contract::ControlDispatchQueue;
+use awaken_session_resource_contract::SessionResourceManifest;
 use std::sync::Arc;
 
 use axum::extract::{Extension, State};
 use axum::http::StatusCode;
-use axum::routing::post;
-use axum::{Json, Router};
+use axum::{Json, Router, routing::post};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::Instrument;

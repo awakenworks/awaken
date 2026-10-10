@@ -15,6 +15,7 @@
 //! travel inside its [`crate::UpstreamAuthority`].
 
 use crate::host::*;
+use awaken_dispatch_contract::RunClaim;
 
 mod environment;
 mod tools;
@@ -34,11 +35,7 @@ pub struct SessionExecutionDependencies {
     pub(crate) resource_validator:
         Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
     pub(crate) repository_binding_verifier: Option<
-        Arc<
-            dyn awaken_resource_contract::RepositoryBindingVerifier<
-                    awaken_dispatch_contract::ResourceOperationFence,
-                >,
-        >,
+        Arc<dyn awaken_resource_contract::RepositoryBindingVerifier<crate::ResourceOperationFence>>,
     >,
     pub(crate) mcp_realizer:
         Option<Arc<dyn awaken_session_execution_contract::McpAttachmentRealizer>>,
@@ -149,9 +146,7 @@ impl HostDependencies {
     pub fn for_worker(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
-        file_content_source: Arc<
-            dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>,
-        >,
+        file_content_source: Arc<dyn crate::FileContentSource<crate::ResourceOperationFence>>,
         memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
         process: HostProcess,
         authority: crate::UpstreamAuthority,
@@ -194,9 +189,7 @@ impl HostDependencies {
     pub fn for_coordinator(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
-        file_content_source: Arc<
-            dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>,
-        >,
+        file_content_source: Arc<dyn crate::FileContentSource<crate::ResourceOperationFence>>,
         memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
         extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
         process: HostProcess,
@@ -626,7 +619,7 @@ impl HostDependencies {
     #[must_use]
     pub fn with_session_realization_control(
         mut self,
-        control: Arc<dyn awaken_dispatch_contract::ClaimedSessionRealizationControl>,
+        control: Arc<dyn awaken_session_realization_contract::ClaimedSessionRealizationControl>,
     ) -> Self {
         self.worker.session_control = Some(control);
         self
@@ -637,8 +630,8 @@ impl HostDependencies {
     #[must_use]
     pub fn with_session_control<T>(mut self, control: Arc<T>) -> Self
     where
-        T: awaken_dispatch_contract::ClaimedSessionRealizationControl
-            + awaken_dispatch_contract::ClaimedSessionCoordinationControl
+        T: awaken_session_realization_contract::ClaimedSessionRealizationControl
+            + awaken_session_execution_contract::ClaimedSessionCoordinationControl<RunClaim>
             + 'static,
     {
         self.worker.session_control = Some(control.clone());
@@ -683,13 +676,9 @@ impl HostDependencies {
     pub fn with_file_application(
         mut self,
         application: Arc<dyn awaken_resource_contract::FileApplicationService>,
-        content_source: Arc<
-            dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>,
-        >,
+        content_source: Arc<dyn crate::FileContentSource<crate::ResourceOperationFence>>,
         artifact_publisher: Arc<
-            dyn awaken_resource_contract::ArtifactPublisher<
-                    awaken_dispatch_contract::ArtifactPublicationFence,
-                >,
+            dyn awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>,
         >,
     ) -> Self {
         self.resources.file_content_source = content_source;
@@ -704,9 +693,7 @@ impl HostDependencies {
     pub fn with_artifact_publisher(
         mut self,
         publisher: Arc<
-            dyn awaken_resource_contract::ArtifactPublisher<
-                    awaken_dispatch_contract::ArtifactPublicationFence,
-                >,
+            dyn awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>,
         >,
     ) -> Self {
         // This is the database-less Worker startup edge. Retaining the
@@ -725,9 +712,7 @@ impl HostDependencies {
     #[must_use]
     pub fn with_file_content_source(
         mut self,
-        source: Arc<
-            dyn crate::FileContentSource<awaken_dispatch_contract::ResourceOperationFence>,
-        >,
+        source: Arc<dyn crate::FileContentSource<crate::ResourceOperationFence>>,
     ) -> Self {
         self.resources.file_content_source = source;
         self
@@ -773,9 +758,7 @@ impl SessionExecutionDependencies {
     pub fn with_repository_binding_verifier(
         mut self,
         verifier: Arc<
-            dyn awaken_resource_contract::RepositoryBindingVerifier<
-                    awaken_dispatch_contract::ResourceOperationFence,
-                >,
+            dyn awaken_resource_contract::RepositoryBindingVerifier<crate::ResourceOperationFence>,
         >,
     ) -> Self {
         self.repository_binding_verifier = Some(verifier);

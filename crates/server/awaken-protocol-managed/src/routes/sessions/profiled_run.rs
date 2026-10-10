@@ -131,7 +131,7 @@ pub async fn submit_profiled_session_run(
             data_subject_id: None,
             traceparent: None,
             execution_requirements: body.execution_requirements,
-            replacement: awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
+            replacement: awaken_session_types::SessionRunReplacement::PreservePrior,
         },
     ))
     .await

@@ -234,7 +234,7 @@ async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
                 "renewed-file",
                 &FileReadPurpose::SessionResource,
                 Some(
-                    &awaken_dispatch::ResourceOperationFence::SessionMaterialization(
+                    &awaken_session_realization_contract::ResourceOperationFence::SessionMaterialization(
                         file_intent.clone(),
                     ),
                 ),
@@ -245,7 +245,7 @@ async fn immutable_file_and_skill_reads_follow_live_root_renewal_over_http() {
                 "workspace-memory",
                 &binding,
                 Some(
-                    &awaken_dispatch::ResourceOperationFence::SessionMaterialization(
+                    &awaken_session_realization_contract::ResourceOperationFence::SessionMaterialization(
                         skill_intent.clone(),
                     ),
                 ),

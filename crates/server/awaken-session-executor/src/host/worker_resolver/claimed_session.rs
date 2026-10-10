@@ -47,7 +47,7 @@ fn claimed_realization_continuation(
 
 fn map_claimed_session_control_error(
     run_id: &str,
-    error: awaken_dispatch_contract::ClaimedSessionControlError,
+    error: awaken_session_realization_contract::ClaimedSessionControlError,
 ) -> awaken_dispatch_execution::Error {
     match session_realization_worker_effect(error.disposition()) {
         SessionRealizationWorkerEffect::Defer => {

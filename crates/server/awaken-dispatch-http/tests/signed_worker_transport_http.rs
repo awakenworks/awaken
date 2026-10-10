@@ -1095,9 +1095,11 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         Default::default(),
     );
     let mut request = standard_worker_dispatch(activation());
-    request.session_resources = Some(
-        awaken_dispatch::SessionResourceEnvelope::from_manifest(&carried_resources).unwrap(),
-    );
+    request.session_resources = Some(awaken_dispatch::SessionResourceEnvelope::at_revision(
+        carried_resources.workspace_id.clone(),
+        carried_resources.revision,
+        carried_resources.encode_resources().unwrap(),
+    ));
     queue
         .enqueue(request)
         .await

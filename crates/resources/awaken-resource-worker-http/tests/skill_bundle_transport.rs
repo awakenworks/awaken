@@ -13,10 +13,10 @@ use awaken_resource_worker_http::{
     HttpSkillBundleSource, WorkerSkillBundleService, worker_skill_bundle_router,
 };
 use awaken_dispatch::{
-    DispatchQueue as _, MemoryDispatchStore, ResourceOperationFence, RunClaim, RunDispatch,
-    WorkerIdentity,
+    DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
 };
 use awaken_session_configuration_contract::SkillBundleSource as _;
+use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_session_resource_contract::{ResolvedSessionResources, ResolvedSkillBinding};
 use awaken_skill_store::{
     InMemorySkillStore, SkillBundleFile, SkillDefinition, SkillStore as _, SkillVersion,
