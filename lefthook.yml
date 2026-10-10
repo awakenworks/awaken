@@ -121,10 +121,11 @@ pre-commit:
 
     # 3b. Dependency direction and ownership rules. It also runs inside the
     #     rust gate; as its own hook it still runs on commits that skip that gate.
+    #     It reads no documentation, so a docs-only commit skips it; every run
+    #     fails if it reads a path its declared inputs do not cover.
     crate-boundaries:
       # >>> generated glob from check_crate_boundaries.py INPUT_GLOBS — do not edit
-      # no glob: check_crate_boundaries.py reads every staged file, so this command
-      # must keep the whole staged set as its trigger.
+      glob: "{.cargo/**,Cargo.lock,Cargo.toml,contracts/anthropic-managed/upstream-oracle.generated.json,crates/**,deploy/**,e2e/**,rust-toolchain.toml,scripts/**,web/src/**}"
       # <<< generated glob
       run: python3 scripts/ci/check_crate_boundaries.py
 
