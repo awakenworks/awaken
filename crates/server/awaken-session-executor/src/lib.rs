@@ -416,8 +416,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
         // Freeze the Session application's complete immutable command before
         // Skill expansion or any current Agent/model/Resource/placement
         // projection can change the delivery payload reconstructed by a retry.
-        let command_fingerprint =
-            awaken_session_execution_contract::SessionRunCommandFingerprint::current(&command);
+        let command_fingerprint = command.command_fingerprint();
         let input = command.messages.clone();
         self.validate_thread_resource_bindings(command.session_id.as_str())
             .await?;

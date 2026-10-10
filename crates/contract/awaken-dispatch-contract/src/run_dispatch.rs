@@ -15,7 +15,7 @@ use awaken_runtime_contract::{PlaintextHolder, activation::RunActivation};
 use awaken_session_configuration_contract::{EnvironmentSnapshot, SessionToolConfiguration};
 use awaken_session_mcp_contract::StageMcpAttachment;
 use awaken_session_resource_contract::SessionResourceManifest;
-use awaken_session_execution_contract::{SessionRunCommandFingerprint, SessionRunReplacement};
+use awaken_session_types::{SessionRunCommandFingerprint, SessionRunReplacement};
 pub use awaken_tenancy::ExecutionScopeRef;
 pub use awaken_worker_contract::PlacementRequirements;
 use serde::{Deserialize, Serialize};

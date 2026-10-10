@@ -1161,8 +1161,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         },
         replacement: awaken_session_execution_contract::SessionRunReplacement::PreservePrior,
     };
-    let expected_fingerprint =
-        awaken_session_execution_contract::SessionRunCommandFingerprint::current(&command);
+    let expected_fingerprint = command.command_fingerprint();
 
     assert_eq!(
         managed

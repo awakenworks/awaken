@@ -917,9 +917,7 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
     };
     let request = awaken_dispatch_contract::RunDispatch::new(activation)
         .for_session(session.clone())
-        .with_session_command_fingerprint(
-            awaken_session_execution_contract::SessionRunCommandFingerprint::current(&command),
-        );
+        .with_session_command_fingerprint(command.command_fingerprint());
     assert_eq!(
         dispatch
             .reserve_session_run(request, 30_000)
