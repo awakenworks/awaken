@@ -1103,6 +1103,7 @@ dependencies = [
  "awaken-session-realization-contract",
  "awaken-session-resource-contract",
  "awaken-session-state-contract",
+ "awaken-session-types",
  "awaken-tenancy",
  "awaken-time",
  "awaken-worker-contract",
