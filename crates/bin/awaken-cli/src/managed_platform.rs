@@ -36,7 +36,7 @@ pub struct ManagedServiceAdapters {
     /// The provider is consumed exactly once while constructing the authority;
     /// protocol adapters never inspect license claims or plan vocabulary.
     pub entitlement_provider: Option<Box<dyn awaken_iam_core::EntitlementProvider>>,
-    pub request_limiter: Option<Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>>,
+    pub request_limiter: Option<Arc<dyn awaken_tenancy::org_admission::OrgRequestAdmission>>,
     pub list_price_provider:
         Option<Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>>,
     pub tunnel_application: Option<Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>>,
@@ -98,7 +98,7 @@ impl ManagedServiceAdapters {
     #[must_use]
     pub fn with_request_limiter(
         mut self,
-        limiter: Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>,
+        limiter: Arc<dyn awaken_tenancy::org_admission::OrgRequestAdmission>,
     ) -> Self {
         self.request_limiter = Some(limiter);
         self

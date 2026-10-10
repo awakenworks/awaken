@@ -4,12 +4,14 @@
 //! Request enforcement for the agent runtime's HTTP surface — the open
 //! "judgment" half of access control.
 //!
-//! It does four things and nothing else: (1) authenticate a presented bearer
+//! It does five things and nothing else: (1) authenticate a presented bearer
 //! credential through an injected authority, (2) derive the
 //! request's authorization scope — every request anchors at its
 //! [`ScopeRef::Workspace`] (tenancy is strictly Org → Workspace), (3) map the
-//! route to an [`ActionKey`], and (4) authorize via the same default-deny
-//! [`PolicySet`] engine every Awaken product shares. The generic service-token
+//! route to an [`ActionKey`], (4) authorize via the same default-deny
+//! [`PolicySet`] engine every Awaken product shares, and (5) admit each metered
+//! request by its Org's Create/Read bucket ([`admit_by_org_bucket`]) on every
+//! HTTP protocol entry, each protocol encoding the outcome on its own wire. The generic service-token
 //! [`EnforceEngine`] remains in-memory and seeded for single-machine use. The
 //! application PEP instead consumes [`ApplicationAccessAuthenticator`]; mint,
 //! durable persistence, and revocation live in Coordinator and never fall back
@@ -19,6 +21,12 @@
 //! `Workspace{ws_local}` cannot reach `Workspace{ws_other}`, because the scope
 //! graph resolves that up through `Global`, never to `ws_local`. So an
 //! out-of-tenant request is denied even for an `admin` token.
+
+mod org_admission;
+pub use org_admission::{
+    OrgAdmission, OrgAdmissionEdge, OrgAdmissionEncoding, OrgRateLimiter, admit_by_org_bucket,
+    decide_org_admission,
+};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};

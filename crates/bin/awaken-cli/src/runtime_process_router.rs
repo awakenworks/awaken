@@ -118,7 +118,7 @@ struct ProcessBase {
     org_id: String,
     iam: Option<Arc<ManagementAuthz>>,
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
-    managed_rate_limiter: Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>,
+    managed_rate_limiter: Arc<dyn awaken_tenancy::org_admission::OrgRequestAdmission>,
     runtime_authority: Option<Arc<dyn awaken_runtime_host::RuntimeAuthority>>,
     placement: awaken_session_application::SessionExecutionPlacement,
     worker_directory: awaken_coordinator::WorkerDirectoryHandle,
@@ -161,12 +161,10 @@ async fn open_process_base(
         .request_limiter
         .clone()
         .unwrap_or_else(|| {
-            Arc::new(
-                awaken_protocol_managed::ManagedRateLimiter::for_organization(
-                    org_id.clone(),
-                    stores.clock.clone(),
-                ),
-            )
+            Arc::new(awaken_authz_enforce::OrgRateLimiter::for_organization(
+                org_id.clone(),
+                stores.clock.clone(),
+            ))
         });
     Ok(ProcessBase {
         stores,

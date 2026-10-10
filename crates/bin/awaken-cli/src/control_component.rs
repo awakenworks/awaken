@@ -42,7 +42,7 @@ pub(super) async fn control_component_for_process(
     environment_router: Router,
     managed_tunnel_application: Option<Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>>,
     inference_geo_policy: Option<Arc<dyn awaken_protocol_managed::ManagedInferenceGeoPolicy>>,
-    managed_request_limiter: Option<Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>>,
+    managed_request_limiter: Option<Arc<dyn awaken_tenancy::org_admission::OrgRequestAdmission>>,
     credential_material_delivery: Option<awaken_credential_contract::CredentialMaterialDelivery>,
     coordinator_content_eraser: Arc<dyn awaken_data_governance_contract::ContentEraser>,
     content_capture_ceiling: awaken_runtime_contract::ContentCapture,
@@ -277,12 +277,10 @@ pub(super) async fn prepare_control_routers(
         .request_limiter
         .clone()
         .unwrap_or_else(|| {
-            Arc::new(
-                awaken_protocol_managed::ManagedRateLimiter::for_organization(
-                    data_subject_org.clone(),
-                    stores.clock.clone(),
-                ),
-            )
+            Arc::new(awaken_authz_enforce::OrgRateLimiter::for_organization(
+                data_subject_org.clone(),
+                stores.clock.clone(),
+            ))
         });
     let component = control_component_for_process(
         &stores,

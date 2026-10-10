@@ -18,6 +18,8 @@
 //! - [`resolve_scope`] — the pure reconciliation: *the token is authority, the
 //!   URL/domain is selection*. A vehicle never widens authority; it only selects
 //!   among the scopes the principal already holds.
+//! - [`org_admission`] — the Org request-admission values and port every HTTP
+//!   protocol entry admits a metered request through before its handler runs.
 //!
 //! The authorization coordinate (`awaken_iam_contract::ScopeRef`) and the scope
 //! graph live in `awaken-iam`; a [`ScopeId`] is translated to a `ScopeRef` only at
@@ -29,6 +31,8 @@
 // identity and the serialized shape are unchanged; every check that gives the
 // coordinate meaning stays in this crate.
 pub use awaken_agent_contract::{ExecutionScopeRef, ScopeId};
+
+pub mod org_admission;
 
 /// Seeded Workspace used by the anonymous single-machine composition.
 ///

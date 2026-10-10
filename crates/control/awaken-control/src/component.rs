@@ -124,7 +124,8 @@ pub struct ControlDependencies {
     pub managed_tunnel_application:
         Option<Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>>,
     pub inference_geo_policy: Option<Arc<dyn awaken_protocol_managed::ManagedInferenceGeoPolicy>>,
-    pub managed_request_limiter: Option<Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>>,
+    pub managed_request_limiter:
+        Option<Arc<dyn awaken_tenancy::org_admission::OrgRequestAdmission>>,
     pub credential_material_delivery:
         Option<awaken_credential_contract::CredentialMaterialDelivery>,
     pub data_subjects: Arc<dyn DataSubjectRepo>,
