@@ -26,10 +26,12 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _doc_anchors import FENCE, resolve_link  # noqa: E402
 
-# Input set: the Markdown corpus under docs/, plus the shared anchor resolver
-# that decides whether a `#fragment` exists. Link *targets* may live anywhere,
-# but a target is only read after a docs Markdown file cites it.
-INPUT_GLOBS: tuple[str, ...] = ("docs/**/*.md", "scripts/ci/_doc_anchors.py")
+# Input set: the Markdown corpus under docs/ and the root contributor guide,
+# plus the shared anchor resolver that decides whether a `#fragment` exists.
+# Link *targets* may live anywhere, but a target is only read after a Markdown
+# file of the corpus cites it.
+INPUT_GLOBS: tuple[str, ...] = ("docs/**/*.md", "CONTRIBUTING.md", "scripts/ci/_doc_anchors.py")
+CONTRIBUTOR_GUIDE = Path("CONTRIBUTING.md")
 
 LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 
@@ -43,7 +45,7 @@ def main(argv: list[str]) -> int:
     # argument list may legitimately carry no Markdown. Re-scan the docs corpus
     # then: a trigger that fires and checks nothing is the bug, not a feature.
     paths = [Path(arg) for arg in argv if Path(arg).suffix == ".md"]
-    paths = paths or sorted(Path("docs").rglob("*.md"))
+    paths = paths or [*sorted(Path("docs").rglob("*.md")), CONTRIBUTOR_GUIDE]
     errors: list[str] = []
     for path in paths:
         if not path.is_file():

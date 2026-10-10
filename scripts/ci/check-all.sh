@@ -260,6 +260,7 @@ run static "test waits name a durable fact" python3 scripts/ci/check_test_waits.
 run static "scan-scope self-test" python3 scripts/ci/check_scan_scope.py --self-test
 run static "a guard's scope is derived, not hand-written" python3 scripts/ci/check_scan_scope.py
 run static "commit-message self-test" python3 scripts/ci/check_commit_message.py --self-test
+run static "commit wrapper self-test" scripts/ci/commit.sh --self-test
 run static "release-package self-test" python3 scripts/release/package.py --self-test
 run static "product release checker self-test" python3 scripts/ci/check_product_release.py --self-test
 run static "product release contract" python3 scripts/ci/check_product_release.py
@@ -296,6 +297,9 @@ run static "sandbox image provenance self-test" python3 scripts/release/awaken_s
 run static "sandbox image release checker self-test" python3 scripts/ci/check_sandbox_image_release.py --self-test
 run static "sandbox image release contract" python3 scripts/ci/check_sandbox_image_release.py
 run docs "documentation" scripts/ci/check-docs.sh
+# The single-crate runner derives features and companion builds from the same
+# profile and Cargo resolve the full gate uses; its dry-run rows need cargo.
+run rust "crate test runner self-test" scripts/ci/test.sh --self-test
 run rust "rust" scripts/ci/check-rust.sh --full
 run rust "dependency-policy" cargo deny --log-level error check advisories bans
 run api "public-api" scripts/ci/check_public_api.sh --require-tools
