@@ -216,11 +216,13 @@ pub(super) async fn converge(
             if let Some(effect_fence) = context.effect_fence {
                 runtime.validate_effect_fence(effect_fence)?;
             }
+            let admit = || context.admit_current_effect().map_err(backend);
             dispose_unscheduled_pod(
                 runtime,
                 pod_name,
                 expected_pod_uid,
                 context.attempt.as_str(),
+                &admit,
             )
             .await?;
             return Err(error);
@@ -256,13 +258,19 @@ pub(super) async fn converge(
 /// resourceVersion-fenced Pod disposal, releasing the broker's original-Create
 /// guard this attempt's Create installed. Another incarnation under the stable
 /// name, or an absent Pod, is not ours to delete.
-async fn dispose_unscheduled_pod(
+pub(super) async fn dispose_unscheduled_pod(
     runtime: &K8sRuntime,
     name: &str,
     uid: &str,
     attempt: &str,
+    admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
 ) -> Result<(), RuntimeError> {
-    let pod = match runtime.pods().get(name).await {
+    admit()?;
+    let observed = runtime.pods().get(name).await;
+    // Even absence or a replacement UID is a response, not a grant to return
+    // the capacity claim after the original authority was lost.
+    admit()?;
+    let pod = match observed {
         Err(error) if api_not_found(&error) => return Ok(()),
         observed => observed.map_err(backend)?,
     };
@@ -275,12 +283,12 @@ async fn dispose_unscheduled_pod(
         return Ok(());
     };
     runtime
-        .begin_exact_pod_delete(&pod, uid, &version, Some(attempt), &|| Ok(()))
+        .begin_exact_pod_delete(&pod, uid, &version, Some(attempt), admit)
         .await?;
     if create_ledger::original_guard_release_required(Some(&pod), true)? {
-        create_ledger::release_original_guard(&runtime.pods(), name, uid, &|| Ok(())).await?;
+        create_ledger::release_original_guard(&runtime.pods(), name, uid, admit).await?;
     }
-    runtime.await_exact_pod_deleted(name, uid, &|| Ok(())).await
+    runtime.await_exact_pod_deleted(name, uid, admit).await
 }
 
 /// Realize or adopt the one exact checkpoint-restore target. Ordinary

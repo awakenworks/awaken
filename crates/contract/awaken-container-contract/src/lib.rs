@@ -17,6 +17,7 @@
 //! decodes its own handles, so no backend payload vocabulary crosses this seam.
 
 mod checkpoint;
+mod effect;
 mod environment;
 mod host;
 mod k8s_capacity;
@@ -24,6 +25,7 @@ mod policy;
 mod provider;
 
 pub use checkpoint::{ContainerCheckpointAccess, ContainerCheckpointMutation};
+pub use effect::ContainerEffect;
 pub use environment::{
     ContainerCreateAttempt, ContainerEnvironment, EnvironmentFile, RuntimeAgentProcess,
 };
