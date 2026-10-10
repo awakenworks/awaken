@@ -7,7 +7,7 @@
 - Affects: crate `bounded_context` metadata, the crate-boundary guards, and
   awaken-cloud only through later renames (none in this ADR).
 - Amended by: ADR-0089 (Proposed: decision 2, the realization driver merges into
-  Execution's `awaken-session-realizer`)
+  Execution's `awaken-session-realization`)
 - Amended by: ADR-0091 (Proposed: the 2026-10-07 amendment sentence on not merging
   the small Session contracts)
 - Amended: 2026-10-09 (reconciled with ADR-0081: public-API snapshots are an
@@ -56,7 +56,7 @@ domain problem it solves:
 
 2. **Contexts follow domain problems.** Membership changes through metadata only:
    - **Execution** (new): `awaken-session-executor`, `awaken-session-mcp`, the future
-     `awaken-session-realizer`, `awaken-run-executor-acp`, `awaken-run-executor-a2a`,
+     `awaken-session-realization`, `awaken-run-executor-acp`, `awaken-run-executor-a2a`,
      `awaken-execution-composition`, `awaken-agent-channel`, `awaken-acp-contract`,
      `awaken-dispatch-execution`.
    - **The `worker` context is retired.** `awaken-coordinator-client`,

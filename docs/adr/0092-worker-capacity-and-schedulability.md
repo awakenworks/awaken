@@ -9,7 +9,7 @@
   registration manifest owns execution capacity; `RegisteredCapacity` sizes the pool);
   [ADR-0073](0073-session-environment-owned-hand-and-worker-capability-placement.md)
   (capability and capacity are separate placement questions);
-  [ADR-0089](0089-session-realization-single-owner.md) (the realizer reports
+  [ADR-0089](0089-session-realization-single-owner.md) (the realization executor reports
   observations, the Session aggregate decides);
   [ADR-0091](0091-architecture-rules.md) D1 and D5 (one decision point per state
   machine; across processes, capabilities are a manifest, attestation and observation).
@@ -123,16 +123,16 @@ so any eligible Worker may take it. Whoever meets the hard refusal yields.
    `k8s_unschedulable_wait_secs` (beside `k8s_namespace`), default 300 s so a cluster
    autoscaler can add a node; the bound is measured from Pod creation. When it expires
    the realization fails with `CapacityUnavailable`, carrying the scheduler's message,
-   and the realizer deletes the Pending Pod through the existing UID-fenced disposal.
+   and the realization executor deletes the Pending Pod through the existing UID-fenced disposal.
    Once the Pod is scheduled, the existing `POD_READY_TIMEOUT` bounds image pull,
    container start and Hand readiness; it never measures waiting for capacity.
    Container-level fast failures are unchanged. The Worker slot stays occupied for
    the whole wait, so `in_flight` keeps telling the truth.
 
 3. **`CapacityUnavailable` returns the claim without consuming the retry budget, and
-   placement may pick another Worker.** The realizer reports the failure as an
+   placement may pick another Worker.** The realization executor reports the failure as an
    observation; the Session aggregate records it as a realization that produced no
-   environment, adding no Session state (ADR-0089 decides, the realizer does not). The
+   environment, adding no Session state (ADR-0089 decides, the realization executor does not). The
    Worker's projection of realization failures maps `CapacityUnavailable` to the
    existing request-local deferral, never to `TerminalResolution`: `defer_claim` with
    the pool's bounded claim-failure backoff returns the exact claim to pending, keeps
