@@ -147,7 +147,11 @@ def main() -> None:
     # container exit is available. Effects: one fresh non-restarting Pod UID is
     # created by the native Job controller; neither PR1 nor PR3 spends the Job's
     # failure budget. Original process evidence, drain and lease gates remain.
-    # PR4 missing/Count/In policy => reject this deployment before apply. This
+    # PR4 missing/Count/In policy => reject this deployment before apply.
+    # C5 the installed API schema requires an explicit condition status;
+    # E5 the canonical disruption rule declares True for both old and new
+    # servers. PR5 omitted/False/Unknown status => reject before apply, rather
+    # than disabling kubectl validation or narrowing the retry contract. This
     # shape gate complements the live controller replacement witness; it does
     # not claim that a new Pod or a timer proves old execution has settled.
     def worker_replacement_contract(resources_text: str) -> bool:
@@ -156,13 +160,15 @@ def main() -> None:
             "restartPolicy: Never" in worker
             and "podFailurePolicy:" in worker
             and re.search(r"action: Ignore\s+onExitCodes:\s+containerName: worker\s+operator: NotIn\s+values: \[0\]", worker) is not None
-            and re.search(r"action: Ignore\s+onPodConditions:\s+- type: DisruptionTarget", worker) is not None
+            and re.search(r'action: Ignore\s+onPodConditions:\s+- type: DisruptionTarget\s+status: "True"', worker) is not None
             and "activeDeadlineSeconds:" not in worker
         )
 
     assert worker_replacement_contract(product_resources), "persistent Worker failures must not exhaust Job retries"
     assert not worker_replacement_contract(product_resources.replace("action: Ignore", "action: Count"))
     assert not worker_replacement_contract(product_resources.replace("operator: NotIn", "operator: In"))
+    for status in ('', '            status: "False"', '            status: "Unknown"'):
+        assert not worker_replacement_contract(product_resources.replace('            status: "True"', status))
     distributed_marker = "kind: StatefulSet\nmetadata: { name: worker, labels: { app: worker } }"
     assert worker_retirement_contract(product_resources, product_marker)
     assert worker_retirement_contract(resources, distributed_marker)
