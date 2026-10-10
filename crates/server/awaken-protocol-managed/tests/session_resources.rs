@@ -5565,6 +5565,7 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
         "deleted",
         "metadata-race",
         "generation-race",
+        "attempt-race",
         "archive-race",
     ] {
         Box::pin(repository_rotation_slot_case(slot)).await;
@@ -5580,6 +5581,15 @@ async fn repository_rotation_slot_case(slot: &str) {
     // same material may recover the frozen pin; different material cannot adopt
     // N+1. Raw material and the internal binding identifier never enter the wire
     // projection.
+    //
+    // B12 cause/effect: C1 pending attempt=0 at Vault preflight; C2 the
+    // existing root CAS owner starts that same generation before repin.
+    // E1 reply 409, E2 preserve pending pin/manifest and attempted fence,
+    // E3 Vault holds exactly the completed revision 2, E4 no Runtime remount.
+    // Rule C1+C2=>E1+E2+E3+E4; active/pending cover admitted rotation,
+    // attempted covers refusal before the Vault, and B12 covers the async gap.
+    // The contender calls start_attempt on a real root, never fabricates an
+    // activation receipt or waits for a scheduler/timing signal.
     //
     // Decision table:
     // | Rule | Frozen pin | Vault | Incoming material | Session CAS | Result |
@@ -5636,7 +5646,7 @@ async fn repository_rotation_slot_case(slot: &str) {
     assert!(!serialized.contains("credential_binding"));
     assert!(!serialized.contains("never-project-this-secret"));
     let mut durable = sessions.get(&SessionId::from(session_id)).await.unwrap();
-    if matches!(slot, "pending" | "attempted" | "removed") {
+    if matches!(slot, "pending" | "attempted" | "removed" | "attempt-race") {
         let original = durable.resources.active.clone();
         if slot != "removed" {
             durable.resources = Default::default();
@@ -5774,12 +5784,17 @@ async fn repository_rotation_slot_case(slot: &str) {
     );
 
     let applied_before = applied.lock().unwrap().len();
-    if matches!(slot, "generation-race" | "archive-race") {
+    if matches!(slot, "generation-race" | "attempt-race" | "archive-race") {
         // B9 the existing fault owner commits a real newer attempted Resource
         // generation at the first rotation CAS. Vault 2 is a completed old
         // effect, but neither retained manifest may be silently repinned.
         if slot == "generation-race" {
             sessions.resource_change_on_next(1);
+        } else if slot == "attempt-race" {
+            // B12: unattempted pending passed preflight, but initial staging
+            // wins after Vault rotation and before Session repin. Root-only
+            // CAS retries must preserve the exact attempted manifest.
+            sessions.resource_attempt_on_next(1);
         } else {
             // B11 execution remains Idle, but retention denies authoring after
             // the Vault effect. The original generation alone cannot authorize
@@ -5812,7 +5827,7 @@ async fn repository_rotation_slot_case(slot: &str) {
             durable.resources.desired().inputs()[0].source,
             "B9 pending pin unchanged"
         );
-        if slot == "generation-race" {
+        if matches!(slot, "generation-race" | "attempt-race") {
             assert!(
                 winner.resources.activations.iter().any(|a| a.attempts == 1),
                 "B9 real attempt fence"
