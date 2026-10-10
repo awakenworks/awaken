@@ -94,6 +94,7 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         capture,
         session_application,
         session_execution,
+        skill_bundle_source,
     } = dependencies;
     let installed_sessions = crate::installed_session::InstalledSessions::default();
     let memory = Arc::new(crate::memory::MemoryRuntime::new(
@@ -122,7 +123,10 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
             environments: crate::environment_holding::EnvironmentHolding::new(
                 env,
                 execution.local.runs_local_pool(),
-                installed_sessions.realizations(),
+                crate::resource_staging::ResourceStaging {
+                    sessions: installed_sessions.realizations(),
+                    bundle_source: skill_bundle_source,
+                },
                 execution_authority,
             ),
             cleanup: crate::terminal_cleanup::TerminalCleanup {

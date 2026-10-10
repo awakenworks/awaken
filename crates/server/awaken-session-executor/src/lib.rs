@@ -100,7 +100,7 @@ mod uninstalled_environment;
 mod web_search;
 mod worker_services;
 
-use crate::skill_catalog::skill_store_run_error;
+use crate::skill_delivery::skill_store_run_error;
 use awaken_dispatch_contract::ControlDispatchQueue;
 pub(crate) use awaken_session_realization_contract::ResourceOperationFence;
 pub(crate) use dispatch_session_runtime::DispatchSessionRuntime;

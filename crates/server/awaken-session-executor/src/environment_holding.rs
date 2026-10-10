@@ -25,15 +25,14 @@ impl EnvironmentHolding {
     pub(crate) fn new(
         env: crate::environment_providers::EnvironmentProviders,
         runs_local_dispatch_pool: bool,
-        sessions: crate::session_realizations::SessionRealizations,
+        staging: crate::resource_staging::ResourceStaging,
         worker: Option<std::sync::Arc<dyn awaken_provisioning_contract::CurrentExecutionAuthority>>,
     ) -> Self {
+        let sessions = staging.sessions.clone();
         Self {
             env,
             runs_local_dispatch_pool,
-            staging: crate::resource_staging::ResourceStaging {
-                sessions: sessions.clone(),
-            },
+            staging,
             execution: crate::session_realizations::ExecutionAuthority {
                 sessions: sessions.clone(),
                 worker,

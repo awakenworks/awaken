@@ -1,7 +1,5 @@
 // @formal entrypoint session_resources.dispatch_activation_requires_capability_scope_live_state_and_exact_pin
 // @formal entrypoint session_resources.external_io_requires_durable_prepared_state
-// @formal entrypoint skill.invalid_workspace_or_hash_fails_closed
-// @formal entrypoint skill.loaded_version_equals_session_pin
 //! `SkillCatalog` — the host's skill offering plus its durable-catalog cache coherence.
 //!
 //! Groups the three skill fields that were flat on [`crate::SharedHost`] (the static
@@ -19,60 +17,9 @@ use awaken_ext_skills::SkillSpec;
 use awaken_resource_contract::SkillDefinition;
 use awaken_resource_contract::{SkillStoreError, SkillVersion};
 use awaken_session_resource_contract::ResolvedSkillBinding;
-use awaken_session_types::RunError;
 
-use awaken_session_configuration_contract::{SkillBundleSource, SkillCatalogApplication};
-
-/// Keep repository failure classification beside the one durable Skill owner so
-/// every create, restore, and live-apply path shares the same closed algebra.
-pub(crate) fn skill_store_run_error(error: SkillStoreError) -> RunError {
-    let message = error.to_string();
-    match error {
-        SkillStoreError::NotFound(_)
-        | SkillStoreError::InvalidDefinition { .. }
-        | SkillStoreError::InvalidVersion { .. }
-        | SkillStoreError::BundleMismatch { .. }
-        | SkillStoreError::InvalidSelection { .. } => RunError::bad_request(message),
-        SkillStoreError::Io { .. }
-        | SkillStoreError::Indeterminate { .. }
-        | SkillStoreError::AuthorityUnavailable { .. } => RunError::unavailable(message),
-        SkillStoreError::AlreadyExists(_)
-        | SkillStoreError::VersionConflict(_)
-        | SkillStoreError::LifecycleConflict { .. }
-        | SkillStoreError::CorruptData { .. }
-        | SkillStoreError::EncodingFailure { .. }
-        | SkillStoreError::Reference(_) => RunError::internal(message),
-    }
-}
-
-fn anthropic_skill(id: &str) -> Option<SkillVersion> {
-    let description = match id {
-        "pptx" => "Create, inspect, and modify PowerPoint presentations",
-        "xlsx" => "Create, inspect, and modify Excel workbooks",
-        "docx" => "Create, inspect, and modify Word documents",
-        "pdf" => "Create, inspect, and modify PDF documents",
-        _ => return None,
-    };
-    let body = format!(
-        "---\nname: {id}\ndescription: {description}\n---\nUse the available sandbox tools and libraries to {description}. Validate the generated artifact before returning it."
-    );
-    let files = vec![awaken_resource_contract::SkillBundleFile {
-        path: "SKILL.md".into(),
-        content: body.into_bytes(),
-        executable: false,
-    }];
-    Some(SkillVersion {
-        id: format!("anthropic-{id}-1").into(),
-        skill_id: id.into(),
-        version: 1,
-        name: id.into(),
-        description: description.into(),
-        directory: format!("/skills/{id}"),
-        bundle_sha256: awaken_resource_contract::skill_bundle_sha256(&files),
-        files,
-        created_unix_nanos: 0,
-    })
-}
+use crate::skill_delivery::anthropic_skill;
+use awaken_session_configuration_contract::SkillCatalogApplication;
 
 /// Direct compatibility Skills plus the durable versioned catalog and its
 /// synchronous read cache. See the module docs for the coherence invariant.
@@ -88,10 +35,6 @@ pub(crate) struct SkillCatalog {
     application: Option<Arc<dyn SkillCatalogApplication>>,
     #[cfg(any(test, feature = "test-support"))]
     test_store: Option<Arc<dyn awaken_resource_contract::SkillStore>>,
-    /// Exact immutable custom-Skill bytes used during Session realization. A
-    /// Coordinator installs the local store adapter; an execution Worker installs
-    /// the claim-fenced HTTP adapter and never opens the authoring store.
-    bundle_source: Option<Arc<dyn SkillBundleSource<crate::ResourceOperationFence>>>,
     /// In-memory snapshot of the latest delivered versions, read
     /// *synchronously* by the capability advertisement (`ids`) and the run-loop
     /// `SkillSource` scan — refreshed from the async `store` on a write and at each
@@ -109,7 +52,6 @@ impl SkillCatalog {
             application: None,
             #[cfg(any(test, feature = "test-support"))]
             test_store: None,
-            bundle_source: None,
             cache: Mutex::new(std::collections::BTreeMap::new()),
         }
     }
@@ -124,28 +66,14 @@ impl SkillCatalog {
     pub(crate) fn set_store(
         &mut self,
         store: Arc<dyn awaken_resource_contract::SkillStore>,
-        bundle_source: Arc<
-            dyn awaken_session_configuration_contract::SkillBundleSource<
-                    crate::ResourceOperationFence,
-                >,
-        >,
         application: Arc<dyn SkillCatalogApplication>,
     ) {
-        self.bundle_source = Some(bundle_source);
         self.application = Some(application);
         self.test_store = Some(store);
     }
 
     pub(crate) fn set_application(&mut self, application: Arc<dyn SkillCatalogApplication>) {
         self.application = Some(application);
-    }
-
-    /// Builder: wire only exact custom-Skill bundle reads for an execution Worker.
-    pub(crate) fn set_bundle_source(
-        &mut self,
-        source: Arc<dyn SkillBundleSource<crate::ResourceOperationFence>>,
-    ) {
-        self.bundle_source = Some(source);
     }
 
     /// The configured static Skills offered to direct/non-Managed threads.
@@ -271,72 +199,6 @@ impl SkillCatalog {
         Ok(bindings)
     }
 
-    pub(crate) async fn load_pinned(
-        &self,
-        workspace: &str,
-        bindings: &[ResolvedSkillBinding],
-        claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization: Option<(
-            &str,
-            u64,
-            &awaken_session_resource_contract::SessionRealizationLease,
-        )>,
-    ) -> Result<Vec<SkillVersion>, SkillStoreError> {
-        if bindings.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut versions = Vec::with_capacity(bindings.len());
-        for binding in bindings {
-            let version = match binding.kind {
-                AgentSkillKind::Anthropic => anthropic_skill(&binding.skill_id)
-                    .filter(|version| version.version == binding.version)
-                    .ok_or_else(|| SkillStoreError::NotFound(binding.skill_id.clone()))?,
-                AgentSkillKind::Custom => {
-                    let authority = match (claim, realization) {
-                        (_, Some((session_id, revision, lease))) => Some(
-                            crate::ResourceOperationFence::SessionMaterialization(
-                                awaken_session_realization_contract::SessionResourceMaterializationIntent::try_new_skill(
-                                    session_id,
-                                    revision,
-                                    binding.clone(),
-                                    lease.clone(),
-                                )
-                                .map_err(|error| SkillStoreError::InvalidSelection {
-                                    detail: error,
-                                })?,
-                            ),
-                        ),
-                        (Some(claim), None) => {
-                            Some(crate::ResourceOperationFence::Run(claim.clone()))
-                        }
-                        (None, None) => None,
-                    };
-                    self.bundle_source
-                        .as_ref()
-                        .ok_or_else(|| SkillStoreError::AuthorityUnavailable {
-                            detail: "no Skill bundle source".into(),
-                        })?
-                        .load(workspace, binding, authority.as_ref())
-                        .await
-                        .map_err(|error| SkillStoreError::Indeterminate {
-                            detail: error.to_string(),
-                        })?
-                        .ok_or_else(|| SkillStoreError::NotFound(binding.skill_id.clone()))?
-                }
-            };
-            if version.bundle_sha256 != binding.bundle_sha256 {
-                return Err(SkillStoreError::CorruptData {
-                    detail: format!(
-                        "Skill {} version {} hash changed",
-                        binding.skill_id, binding.version
-                    ),
-                });
-            }
-            versions.push(version);
-        }
-        Ok(versions)
-    }
-
     /// Refresh the in-memory delivered-catalog snapshot from the async store. Called
     /// on a write and at each session's setup so the sync read paths (advertisement,
     /// run-loop scan) see the current catalog.
@@ -434,293 +296,5 @@ impl SkillCatalog {
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use awaken_session_types::RunErrorKind;
-    use awaken_skill_store::{InMemorySkillStore, SkillBundleFile, bundle_sha256};
-
-    fn version(id: &str, ordinal: u64, body: &str) -> SkillVersion {
-        let files = vec![SkillBundleFile {
-            path: "SKILL.md".into(),
-            content: body.as_bytes().to_vec(),
-            executable: false,
-        }];
-        SkillVersion {
-            id: format!("skver-{id}-{ordinal}").into(),
-            skill_id: id.into(),
-            version: ordinal,
-            name: id.into(),
-            description: String::new(),
-            directory: format!("/skills/{id}"),
-            bundle_sha256: bundle_sha256(&files),
-            files,
-            created_unix_nanos: ordinal,
-        }
-    }
-
-    #[test]
-    fn session_skill_repository_failures_follow_the_closed_error_table() {
-        // Cause/effect decision table: caller-controlled missing/invalid
-        // selectors => 400; IO, missing authority and indeterminate backend
-        // outcomes => 503; corrupt data/encoding or impossible conflicts =>
-        // 500. SQL and filesystem failures now share the same cause policy.
-        // Reference-index refusals preserve their owned Resource error; they
-        // cannot be mistaken for a missing Skill or permission to publish. Every runtime Skill
-        // entry point uses this one adapter so create, restore, and live apply
-        // cannot classify the same repository cause differently.
-        let rules = [
-            (
-                SkillStoreError::NotFound("x".into()),
-                RunErrorKind::BadRequest,
-            ),
-            (
-                SkillStoreError::InvalidSelection { detail: "x".into() },
-                RunErrorKind::BadRequest,
-            ),
-            (
-                SkillStoreError::InvalidDefinition { detail: "x".into() },
-                RunErrorKind::BadRequest,
-            ),
-            (
-                SkillStoreError::InvalidVersion { detail: "x".into() },
-                RunErrorKind::BadRequest,
-            ),
-            (
-                SkillStoreError::BundleMismatch { detail: "x".into() },
-                RunErrorKind::BadRequest,
-            ),
-            (
-                SkillStoreError::from(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionReset,
-                    "x",
-                )),
-                RunErrorKind::Unavailable,
-            ),
-            (
-                SkillStoreError::AlreadyExists("x".into()),
-                RunErrorKind::Internal,
-            ),
-            (
-                SkillStoreError::VersionConflict("x".into()),
-                RunErrorKind::Internal,
-            ),
-            (
-                SkillStoreError::LifecycleConflict { detail: "x".into() },
-                RunErrorKind::Internal,
-            ),
-            (
-                SkillStoreError::Indeterminate { detail: "x".into() },
-                RunErrorKind::Unavailable,
-            ),
-            (
-                SkillStoreError::CorruptData { detail: "x".into() },
-                RunErrorKind::Internal,
-            ),
-            (
-                SkillStoreError::EncodingFailure { detail: "x".into() },
-                RunErrorKind::Internal,
-            ),
-            (
-                SkillStoreError::AuthorityUnavailable { detail: "x".into() },
-                RunErrorKind::Unavailable,
-            ),
-            (
-                SkillStoreError::Reference(
-                    awaken_resource_contract::ResourcePurgeError::StaleClaim,
-                ),
-                RunErrorKind::Internal,
-            ),
-        ];
-        for (cause, effect) in rules {
-            assert_eq!(skill_store_run_error(cause).kind, effect);
-        }
-    }
-
-    #[tokio::test]
-    async fn empty_pinned_skill_set_needs_no_repository_but_real_references_fail_closed() {
-        let catalog = SkillCatalog::new();
-        assert!(
-            catalog
-                .load_pinned("ws-a", &[], None, None)
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        assert!(
-            catalog
-                .resolve("ws-a", &[AgentSkillBinding::custom("missing")])
-                .await
-                .is_err()
-        );
-        assert!(
-            catalog
-                .load_pinned(
-                    "ws-a",
-                    &[ResolvedSkillBinding {
-                        kind: AgentSkillKind::Custom,
-                        skill_id: "missing".into(),
-                        version: 1,
-                        bundle_sha256: "sha256".into(),
-                    }],
-                    None,
-                    None,
-                )
-                .await
-                .is_err()
-        );
-    }
-
-    /// Install a Skill store through the Resources applications the Host
-    /// reads Skills with.
-    fn set_test_store(
-        catalog: &mut SkillCatalog,
-        store: Arc<dyn awaken_resource_contract::SkillStore>,
-    ) {
-        catalog.set_store(
-            store.clone(),
-            Arc::new(awaken_resource_application::StoreSkillBundleSource::new(
-                store.clone(),
-            )),
-            Arc::new(
-                awaken_resource_application::StoreSkillCatalogApplication::new(
-                    store,
-                    Arc::new(awaken_lease_testkit::ManualClock::new(0)),
-                ),
-            ),
-        );
-    }
-
-    #[tokio::test]
-    async fn frozen_binding_keeps_v1_after_v2_and_is_workspace_scoped() {
-        let mut catalog = SkillCatalog::new();
-        set_test_store(&mut catalog, Arc::new(InMemorySkillStore::new()));
-        catalog
-            .create(
-                SkillDefinition {
-                    id: "greet".into(),
-                    workspace_id: "ws-a".into(),
-                    display_title: None,
-                    latest_version: 1,
-                    last_version: 1,
-                    timestamps: Default::default(),
-                },
-                version("greet", 1, "---\ndescription: v1\n---\nONE"),
-            )
-            .await
-            .unwrap()
-            .unwrap();
-
-        let frozen = catalog
-            .resolve("ws-a", &[AgentSkillBinding::custom("greet")])
-            .await
-            .unwrap();
-        catalog
-            .append_version(
-                "ws-a",
-                "greet",
-                version("greet", 2, "---\ndescription: v2\n---\nTWO"),
-            )
-            .await
-            .unwrap()
-            .unwrap();
-
-        let loaded = catalog
-            .load_pinned("ws-a", &frozen, None, None)
-            .await
-            .unwrap();
-        assert_eq!(loaded[0].version, 1);
-        assert!(loaded[0].skill_md().unwrap().ends_with(b"ONE"));
-        assert!(
-            catalog
-                .load_pinned("ws-b", &frozen, None, None)
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn prebuilt_and_custom_selectors_follow_one_resolution_table() {
-        // Causes: prebuilt/custom source, latest/exact selector, repository
-        // presence, and Workspace. Constraints: prebuilt v1 is runtime-owned;
-        // custom bytes are Workspace-owned. Effects: both freeze exact hashes,
-        // prebuilt needs no store, and custom exact selection never drifts.
-        // Decision rules: S8 prebuilt latest/1 -> bundled v1; S9 prebuilt v2 ->
-        // reject; S10 custom latest/exact -> selected store version.
-        let mut catalog = SkillCatalog::new();
-        for selector in ["latest", "1"] {
-            let selection = AgentSkillBinding {
-                kind: AgentSkillKind::Anthropic,
-                skill_id: "xlsx".into(),
-                version: selector.into(),
-            };
-            let frozen = catalog.resolve("ws-a", &[selection]).await.unwrap();
-            assert_eq!(frozen[0].kind, AgentSkillKind::Anthropic, "S8");
-            assert_eq!(
-                catalog
-                    .load_pinned("ws-a", &frozen, None, None)
-                    .await
-                    .unwrap()[0]
-                    .version,
-                1
-            );
-        }
-        assert!(
-            catalog
-                .resolve(
-                    "ws-a",
-                    &[AgentSkillBinding {
-                        kind: AgentSkillKind::Anthropic,
-                        skill_id: "xlsx".into(),
-                        version: "2".into(),
-                    }],
-                )
-                .await
-                .is_err(),
-            "S9"
-        );
-
-        set_test_store(&mut catalog, Arc::new(InMemorySkillStore::new()));
-        catalog
-            .create(
-                SkillDefinition {
-                    id: "greet".into(),
-                    workspace_id: "ws-a".into(),
-                    display_title: None,
-                    latest_version: 1,
-                    last_version: 1,
-                    timestamps: Default::default(),
-                },
-                version("greet", 1, "---\ndescription: v1\n---\nONE"),
-            )
-            .await
-            .unwrap()
-            .unwrap();
-        catalog
-            .append_version(
-                "ws-a",
-                "greet",
-                version("greet", 2, "---\ndescription: v2\n---\nTWO"),
-            )
-            .await
-            .unwrap()
-            .unwrap();
-        for (selector, expected) in [("latest", 2), ("1", 1)] {
-            let frozen = catalog
-                .resolve(
-                    "ws-a",
-                    &[AgentSkillBinding {
-                        kind: AgentSkillKind::Custom,
-                        skill_id: "greet".into(),
-                        version: selector.into(),
-                    }],
-                )
-                .await
-                .unwrap();
-            assert_eq!(frozen[0].version, expected, "S10");
-        }
     }
 }
