@@ -995,7 +995,8 @@ impl ManagedState {
     }
 
     /// The existing profiled release joins verified cleanup for an already
-    /// terminal Session; it never turns a live Run outcome into termination.
+    /// terminal Session or a frozen, never-attempted preparation. It never uses
+    /// a live Run outcome as termination authority.
     /// Public archive keeps its strict idle-only admission.
     pub async fn release_profiled_session_without_publication(
         &self,
@@ -1015,16 +1016,21 @@ impl ManagedState {
             managed_archive_command(id, owner, self.roles.clock.now_ms());
         if verified_cleanup {
             // This read selects a safe command, not a second status authority.
-            // Both application commands reload and recheck the durable root.
-            let terminal = self
+            // Application commands reload and recheck the durable root.
+            let execution = self
                 .roles
                 .roots
                 .session(&awaken_session_types::SessionId::from(id))
                 .await
                 .map_err(StateError::from)?
-                .execution
-                .is_terminal();
-            if !terminal {
+                .execution;
+            if execution == awaken_session_state_contract::SessionExecutionState::Preparing {
+                self.roles
+                    .termination
+                    .release_unattempted_profiled_session(id, &archived_at, terminated_fact.clone())
+                    .await
+                    .map_err(Self::map_preparation_error)?;
+            } else if !execution.is_terminal() {
                 self.roles
                     .termination
                     .terminate_session(id, &archived_at, terminated_fact.clone())

@@ -4,7 +4,7 @@
 // @formal owner crates/server/awaken-session-application/src/resource_reconciliation.rs
 // @formal owner crates/server/awaken-session-application/src/credentials.rs
 // @formal reason: Declares the consumer roles of SessionApplication and implements each by
-// @formal reason: forwarding to the inherent command of the same name; the root CAS, cleanup,
+// @formal reason: forwarding to the owning command or shared archive kernel; the root CAS, cleanup,
 // @formal reason: Resource and credential decisions stay with the owners named above.
 //! The Session application's roles, each cut to the adapter code that calls it.
 //!
@@ -16,8 +16,8 @@
 //! beside them rather than in a contract crate.
 //!
 //! [`SessionApplication`] is the one implementation. Every method forwards to
-//! the inherent command of the same name, which remains the single owner of
-//! its behavior.
+//! its owning command. Termination-only role lowering selects the existing
+//! archive kernel without extending the broad inherent application surface.
 
 use std::sync::Arc;
 
@@ -301,6 +301,14 @@ pub trait SessionTermination: Send + Sync {
 
     /// See [`SessionApplication::release_terminal_session`].
     async fn release_terminal_session(
+        &self,
+        session_id: &str,
+        archived_at: &str,
+        fact: ManagedLifecycleFact,
+    ) -> Result<SessionDispositionMutation, SessionPreparationError>;
+
+    /// Release a never-attempted Frozen preparation through the shared archive kernel.
+    async fn release_unattempted_profiled_session(
         &self,
         session_id: &str,
         archived_at: &str,
@@ -779,6 +787,16 @@ impl SessionTermination for SessionApplication {
         fact: ManagedLifecycleFact,
     ) -> Result<SessionDispositionMutation, SessionPreparationError> {
         SessionApplication::release_terminal_session(self, session_id, archived_at, fact).await
+    }
+
+    async fn release_unattempted_profiled_session(
+        &self,
+        session_id: &str,
+        archived_at: &str,
+        fact: ManagedLifecycleFact,
+    ) -> Result<SessionDispositionMutation, SessionPreparationError> {
+        crate::terminal::release_unattempted_profiled_session(self, session_id, archived_at, fact)
+            .await
     }
 
     async fn delete_session(

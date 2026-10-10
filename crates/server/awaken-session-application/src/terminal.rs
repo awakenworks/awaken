@@ -131,6 +131,7 @@ pub enum SessionArchiveWithRepositoryPublicationError {
 enum ArchiveAdmission {
     IdleOnly,
     TerminalOnly,
+    UnattemptedProfiledPreparation,
     ForceTerminal,
 }
 
@@ -139,12 +140,43 @@ impl ArchiveAdmission {
         match self {
             Self::IdleOnly => "idle_only",
             Self::TerminalOnly => "terminal_only",
+            Self::UnattemptedProfiledPreparation => "unattempted_profiled_preparation",
             Self::ForceTerminal => "force_terminal",
         }
     }
 }
 
-/// One Session Application command-identity law for both archive entrances.
+fn unattempted_profiled_preparation(session: &PersistedSession) -> bool {
+    session.frozen_baseline().is_some_and(|baseline| {
+        baseline.mutation_policy == awaken_session_resource_contract::SessionMutationPolicy::Frozen
+    }) && session.created_at_unix_ms.is_some()
+        && session.execution == SessionExecutionState::Preparing
+        && !session.has_active_activities()
+        && session.running_interval.is_none()
+        && matches!(
+            session.environment,
+            awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
+        )
+        && session.realization.is_none()
+        && session.realization_progress.attempts == 0
+        && session.realization_progress.last_error.is_none()
+        && session.resources.active.inputs().is_empty()
+        && session.resources.active.skills().is_empty()
+        && session.resources.repository_retirements.is_empty()
+        && session.resources.activations.iter().all(|activation| {
+            activation.state == awaken_session_state_contract::ActivationState::Prepared
+                && activation.attempts == 0
+                && activation.lease_expires_at_unix_ms.is_none()
+        })
+        && session.mcp.attachments.iter().all(|attachment| {
+            attachment.state == awaken_session_mcp_contract::McpAttachmentState::Requested
+                && attachment.attempts == 0
+                && attachment.realization.is_none()
+                && !attachment.publication_acknowledged
+        })
+}
+
+/// One Session Application command-identity law for every archive entrance.
 /// Route observation time belongs only to the candidate that wins the root
 /// CAS. It cannot distinguish two requests for the same business intent.
 #[derive(serde::Serialize)]
@@ -277,6 +309,26 @@ impl SessionDeleteCommand {
             requested_at_unix_s: Some(requested_at_unix_s),
         }
     }
+}
+
+/// Release only a Frozen WorkUnit root whose initial realization has never
+/// admitted effects. The archive CAS rechecks every fact; a completed Run
+/// or an adapter's status read cannot authorize terminating live execution.
+pub(crate) async fn release_unattempted_profiled_session(
+    application: &SessionApplication,
+    session_id: &str,
+    archived_at: &str,
+    fact: ManagedLifecycleFact,
+) -> Result<SessionDispositionMutation, SessionPreparationError> {
+    application
+        .terminate_session_with_admission(
+            &awaken_session_types::SessionId::from(session_id),
+            archived_at,
+            fact,
+            ArchiveAdmission::UnattemptedProfiledPreparation,
+            ArchiveCleanupCompletion::Required,
+        )
+        .await
 }
 
 impl SessionApplication {
@@ -777,6 +829,13 @@ impl SessionApplication {
             if admission == ArchiveAdmission::TerminalOnly && !session.execution.is_terminal() {
                 return Err(SessionPreparationError::Rejected(RunError::bad_request(
                     "terminal Session release requires already-terminal execution",
+                )));
+            }
+            if admission == ArchiveAdmission::UnattemptedProfiledPreparation
+                && !unattempted_profiled_preparation(&session)
+            {
+                return Err(SessionPreparationError::Rejected(RunError::bad_request(
+                    "profiled preparation release requires an unattempted frozen Session",
                 )));
             }
             let archive_time = self.clock.now_ms();

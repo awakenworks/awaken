@@ -1,5 +1,14 @@
 # Wiki Update Log
 
+## 2026-10-10 — Release never-attempted frozen WorkUnit preparation
+
+- [ADR-0078](../adr/0078-terminal-recovery-retains-the-existing-session-authority.md)
+  adds bounded profiled release admission from durable, zero-attempt Session
+  facts. It reuses archive CAS and verified cleanup, preserving public IdleOnly
+  and existing TerminalOnly admission and every attempted physical uncertainty.
+- Causal tests cover independent refusal conditions, pending participants and
+  cleanup failure/replay; live Flow recovery remains separate evidence.
+
 ## 2026-10-01 — Include Session realization affinity in Worker-domain reads
 
 - [ADR-0065](../adr/0065-recoverable-embeddable-remote-worker.md)
