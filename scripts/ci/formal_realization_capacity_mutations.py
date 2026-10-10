@@ -21,6 +21,8 @@ def check_realization_capacity_observation_mutants(tlc_jar: Path, trace_dir: Pat
             ("ok", "admit-completion", "available", 1),
             ("ok", "queue-completion", "scheduler", "another-scheduler"),
             ("cancel-queued-request", "cancel-queued-request", "available", 1),
+            ("queued-deadline", "queued-deadline", "available", 1),
+            ("queued-deadline", "queued-deadline", "active", True),
             ("cancel-held-completion", "final", "available", 7),
         ],
         "realization-capacity-mutex": [
@@ -58,4 +60,4 @@ def check_realization_capacity_observation_mutants(tlc_jar: Path, trace_dir: Pat
                 mutants.append(((rendered / f"{module}.tla").read_text(), config, "constant:TraceRefines"))
             check_tlc_model_mutations(tlc_jar, module, baseline, config, mutants,
                 dependencies=("SessionRealizationMutex",))
-    print("Realization capacity: 12 actual-observation mutants qualified")
+    print("Realization capacity: 14 actual-observation mutants qualified")

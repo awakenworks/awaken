@@ -63,6 +63,7 @@ async fn environment(base: &Path, failing_hand: bool) -> SessionEnvironment {
         *hand.lifecycle.binding.lock().await = HandBindingState::Ready(HandBinding {
             process: Some(Box::new(UnreapableProcess)),
             executor: Arc::new(FakeHandExecutor),
+            recovery: None,
         });
     }
     environment

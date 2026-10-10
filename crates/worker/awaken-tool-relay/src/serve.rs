@@ -17,7 +17,7 @@ use awaken_tool_contract::tool::{RawTool, RawToolRegistry, ToolError, ToolExecut
 use futures_util::{SinkExt, StreamExt};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-use crate::wire::{HandError, HandErrorKind, HandReply, HandRequest, HandResult};
+use crate::wire::{HandAction, HandError, HandErrorKind, HandReply, HandRequest, HandResult};
 use crate::{HandOperationLedger, LedgerAdmission};
 
 /// The hand's tool catalog plus its idempotency ledger.
@@ -104,6 +104,26 @@ impl HandSession {
         } else {
             request.operation_id.as_str()
         };
+        let plan = crate::wire::hand_dispatch_plan(&request);
+        if matches!(
+            plan,
+            crate::wire::HandDispatchPlan::Observe | crate::wire::HandDispatchPlan::Cancel
+        ) {
+            let result = self
+                .ledger
+                .observe(operation_id, plan == crate::wire::HandDispatchPlan::Cancel)
+                .await
+                .unwrap_or_else(|error| {
+                    HandResult::err(HandError::new(
+                        HandErrorKind::Execution,
+                        format!("hand operation observation unavailable: {error}"),
+                    ))
+                });
+            return HandReply {
+                correlation_id: request.correlation_id,
+                result,
+            };
+        }
         let result = match self.ledger.begin(operation_id).await {
             Ok(LedgerAdmission::Cached(result)) => result,
             Ok(LedgerAdmission::InFlight) => {
@@ -131,7 +151,23 @@ impl HandSession {
                 format!("hand operation ledger unavailable: {error}"),
             )),
             Ok(LedgerAdmission::Execute) => {
-                let result = self.dispatch(&request).await;
+                let cancellation = match self.ledger.cancellation(operation_id).await {
+                    Ok(cancellation) => cancellation,
+                    Err(error) => {
+                        return HandReply {
+                            correlation_id: request.correlation_id,
+                            result: HandResult::err(HandError::new(
+                                HandErrorKind::Execution,
+                                error,
+                            )),
+                        };
+                    }
+                };
+                let result = tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => HandResult::Indeterminate,
+                    result = self.dispatch(&request) => result,
+                };
                 if let Err(error) = self.ledger.complete(operation_id, &result).await {
                     return HandReply {
                         correlation_id: request.correlation_id,
@@ -151,11 +187,10 @@ impl HandSession {
     }
 
     fn validate_envelope(&self, request: &HandRequest) -> Option<HandResult> {
-        if !crate::wire::hand_protocol_envelope_admitted(
-            request.protocol_version,
-            !request.operation_id.is_empty(),
-        ) {
-            let message = if request.protocol_version >= 2 && request.operation_id.is_empty() {
+        if crate::wire::hand_dispatch_plan(request) == crate::wire::HandDispatchPlan::Refuse {
+            let message = if request.action != HandAction::Invoke && request.protocol_version < 3 {
+                "Hand operation controls require protocol v3".to_string()
+            } else if request.protocol_version >= 2 && request.operation_id.is_empty() {
                 "hand protocol v2 requires a stable operation id".to_string()
             } else {
                 format!(

@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::HandResult;
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 
 const LOSSLESS_STEM_ID_LIMIT: usize = 96;
 pub const DEFAULT_FS_LEDGER_MAX_ENTRIES: usize = 4_096;
@@ -51,12 +52,37 @@ pub trait HandOperationLedger: Send + Sync {
     /// means the live owner disappeared without a result and replay is unsafe.
     async fn wait(&self, operation_id: &str) -> Result<Option<HandResult>, String>;
     async fn complete(&self, operation_id: &str, result: &HandResult) -> Result<(), String>;
+    /// Inspect or cancel only the current entry. Neither operation admits execution.
+    async fn observe(&self, operation_id: &str, cancel: bool) -> Result<HandResult, String>;
+    /// Join the cancellation signal of the exact live executor, never create one.
+    async fn cancellation(&self, operation_id: &str) -> Result<CancellationToken, String>;
 }
 
 #[derive(Debug, Clone)]
 enum Entry {
-    Executing(tokio::sync::watch::Sender<Option<HandResult>>),
+    Executing(
+        tokio::sync::watch::Sender<Option<HandResult>>,
+        CancellationToken,
+    ),
     Completed(HandResult),
+}
+
+/// Missing process-local evidence remains Unknown, even when a durable marker exists.
+fn observe_entry(entry: Option<&Entry>, cancel: bool) -> HandResult {
+    match entry {
+        Some(Entry::Executing(_, cancellation)) => {
+            if cancel {
+                cancellation.cancel();
+            }
+            HandResult::Running {
+                cancel_requested: cancellation.is_cancelled(),
+            }
+        }
+        Some(Entry::Completed(result)) => HandResult::Observed {
+            result: Box::new(result.clone()),
+        },
+        None => HandResult::Indeterminate,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,7 +102,7 @@ enum LedgerBeginDisposition {
 fn ledger_entry_phase(entry: Option<&Entry>) -> LedgerEntryPhase {
     match entry {
         None => LedgerEntryPhase::Absent,
-        Some(Entry::Executing(_)) => LedgerEntryPhase::Executing,
+        Some(Entry::Executing(_, _)) => LedgerEntryPhase::Executing,
         Some(Entry::Completed(_)) => LedgerEntryPhase::Completed,
     }
 }
@@ -115,13 +141,16 @@ impl HandOperationLedger for InMemoryOperationLedger {
                 (LedgerBeginDisposition::Replay, Some(Entry::Completed(result))) => {
                     LedgerAdmission::Cached(result.clone())
                 }
-                (LedgerBeginDisposition::Join, Some(Entry::Executing(_))) => {
+                (LedgerBeginDisposition::Join, Some(Entry::Executing(_, _))) => {
                     LedgerAdmission::InFlight
                 }
                 (LedgerBeginDisposition::Claim, None) => {
                     entries.insert(
                         operation_id.to_string(),
-                        Entry::Executing(tokio::sync::watch::channel(None).0),
+                        Entry::Executing(
+                            tokio::sync::watch::channel(None).0,
+                            CancellationToken::new(),
+                        ),
                     );
                     LedgerAdmission::Execute
                 }
@@ -135,7 +164,7 @@ impl HandOperationLedger for InMemoryOperationLedger {
             let entries = self.entries.lock().expect("hand ledger poisoned");
             match entries.get(operation_id) {
                 Some(Entry::Completed(result)) => return Ok(Some(result.clone())),
-                Some(Entry::Executing(result)) => result.subscribe(),
+                Some(Entry::Executing(result, _)) => result.subscribe(),
                 None => return Ok(None),
             }
         };
@@ -145,6 +174,25 @@ impl HandOperationLedger for InMemoryOperationLedger {
         Ok(result.borrow().clone())
     }
 
+    async fn observe(&self, operation_id: &str, cancel: bool) -> Result<HandResult, String> {
+        let entries = self
+            .entries
+            .lock()
+            .map_err(|_| "hand local ledger poisoned".to_string())?;
+        Ok(observe_entry(entries.get(operation_id), cancel))
+    }
+
+    async fn cancellation(&self, operation_id: &str) -> Result<CancellationToken, String> {
+        let entries = self
+            .entries
+            .lock()
+            .map_err(|_| "hand local ledger poisoned".to_string())?;
+        match entries.get(operation_id) {
+            Some(Entry::Executing(_, cancellation)) => Ok(cancellation.clone()),
+            _ => Err("hand operation has no live cancellation binding".into()),
+        }
+    }
+
     async fn complete(&self, operation_id: &str, result: &HandResult) -> Result<(), String> {
         let result_watch = {
             let mut entries = self.entries.lock().expect("hand ledger poisoned");
@@ -152,7 +200,7 @@ impl HandOperationLedger for InMemoryOperationLedger {
                 return Err("hand operation completion has no matching live claim".to_string());
             }
             let result_watch = match entries.get(operation_id) {
-                Some(Entry::Executing(result_watch)) => result_watch.clone(),
+                Some(Entry::Executing(result_watch, _)) => result_watch.clone(),
                 Some(Entry::Completed(_)) | None => {
                     unreachable!("completion admission requires the exact executing entry")
                 }
@@ -291,7 +339,7 @@ impl HandOperationLedger for FsOperationLedger {
                 (LedgerBeginDisposition::Replay, Some(Entry::Completed(result))) => {
                     return Ok(LedgerAdmission::Cached(result.clone()));
                 }
-                (LedgerBeginDisposition::Join, Some(Entry::Executing(_))) => {
+                (LedgerBeginDisposition::Join, Some(Entry::Executing(_, _))) => {
                     return Ok(LedgerAdmission::InFlight);
                 }
                 (LedgerBeginDisposition::Claim, None) => {}
@@ -326,7 +374,7 @@ impl HandOperationLedger for FsOperationLedger {
                 (LedgerBeginDisposition::Replay, Some(Entry::Completed(result))) => {
                     return Ok(LedgerAdmission::Cached(result.clone()));
                 }
-                (LedgerBeginDisposition::Join, Some(Entry::Executing(_))) => {
+                (LedgerBeginDisposition::Join, Some(Entry::Executing(_, _))) => {
                     return Ok(LedgerAdmission::InFlight);
                 }
                 (LedgerBeginDisposition::Claim, None) => {}
@@ -334,7 +382,10 @@ impl HandOperationLedger for FsOperationLedger {
             }
             entries.insert(
                 operation_id.to_string(),
-                Entry::Executing(tokio::sync::watch::channel(None).0),
+                Entry::Executing(
+                    tokio::sync::watch::channel(None).0,
+                    CancellationToken::new(),
+                ),
             );
         }
 
@@ -389,7 +440,7 @@ impl HandOperationLedger for FsOperationLedger {
                 .map_err(|_| "hand local ledger poisoned".to_string())?;
             match entries.get(operation_id) {
                 Some(Entry::Completed(result)) => return Ok(Some(result.clone())),
-                Some(Entry::Executing(result)) => result.subscribe(),
+                Some(Entry::Executing(result, _)) => result.subscribe(),
                 None => return Ok(None),
             }
         };
@@ -397,6 +448,25 @@ impl HandOperationLedger for FsOperationLedger {
             "live hand operation disappeared before publishing a result".to_string()
         })?;
         Ok(result_watch.borrow().clone())
+    }
+
+    async fn observe(&self, operation_id: &str, cancel: bool) -> Result<HandResult, String> {
+        let entries = self
+            .local_entries
+            .lock()
+            .map_err(|_| "hand local ledger poisoned".to_string())?;
+        Ok(observe_entry(entries.get(operation_id), cancel))
+    }
+
+    async fn cancellation(&self, operation_id: &str) -> Result<CancellationToken, String> {
+        let entries = self
+            .local_entries
+            .lock()
+            .map_err(|_| "hand local ledger poisoned".to_string())?;
+        match entries.get(operation_id) {
+            Some(Entry::Executing(_, cancellation)) => Ok(cancellation.clone()),
+            _ => Err("hand operation has no live cancellation binding".into()),
+        }
     }
 
     async fn complete(&self, operation_id: &str, result: &HandResult) -> Result<(), String> {
@@ -467,7 +537,7 @@ impl FsOperationLedger {
                 .lock()
                 .map_err(|_| "hand local ledger poisoned".to_string())?;
             let result_watch = match entries.get(operation_id) {
-                Some(Entry::Executing(result_watch)) => result_watch.clone(),
+                Some(Entry::Executing(result_watch, _)) => result_watch.clone(),
                 Some(Entry::Completed(_)) | None => {
                     return Err(
                         "hand operation completion lost its matching live claim".to_string()
@@ -486,7 +556,7 @@ impl FsOperationLedger {
             .local_entries
             .lock()
             .map_err(|_| "hand local ledger poisoned".to_string())?;
-        if matches!(entries.get(operation_id), Some(Entry::Executing(_))) {
+        if matches!(entries.get(operation_id), Some(Entry::Executing(_, _))) {
             entries.remove(operation_id);
         }
         Ok(())

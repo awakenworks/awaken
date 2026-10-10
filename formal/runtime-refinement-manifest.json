@@ -269,8 +269,8 @@
     "required_scenarios": {
       "realization-capacity-cancellation": {
         "family": "realization-capacity",
-        "source": "crates/server/awaken-session-executor/src/application/realization_control_deadline/composition_tests.rs",
-        "rules": ["ok", "error", "deadline", "cancel-request", "cancel-queued-request", "cancel-queued-completion", "cancel-held-completion"]
+        "source": "crates/server/awaken-session-realization-driver/src/control_deadline/composition_tests.rs",
+        "rules": ["ok", "error", "deadline", "cancel-request", "cancel-queued-request", "queued-deadline", "cancel-queued-completion", "cancel-held-completion"]
       },
       "realization-capacity-mutex": {
         "family": "realization-capacity",

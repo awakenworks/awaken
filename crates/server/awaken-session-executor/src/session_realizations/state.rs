@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use awaken_session_mcp::SessionMcpState;
+use awaken_session_realization_contract::SessionTerminalCleanupAssignment;
 
 use super::FrozenProjectionReceipt;
 use crate::environment_owner::SessionEnvironmentOwner;
@@ -117,15 +118,9 @@ pub(crate) struct SessionRealization {
     /// mount realization, Native tools, and ACP export all consume this value;
     /// none may independently choose another delivery path.
     pub content_delivery: Option<ManagedContentDelivery>,
-    /// Exact aggregate Environment phase installed only by a terminal cleanup
-    /// assignment. The cleanup command uses this frozen fact to distinguish a
-    /// genuinely unmaterialized/hibernated Session from Resident, Suspending,
-    /// or Restoring state; absence is never interpreted as permission to reap
-    /// or acknowledge a root cleanup.
-    pub terminal_environment_state: Option<awaken_session_state_contract::SessionEnvironmentState>,
-    /// Disposable projection of Control's archive-receipt witness, bound to
-    /// the installed terminal assignment and realization lease.
-    pub terminal_environment_creation_not_attempted: bool,
+    /// One complete Control-issued terminal assignment. Its Environment state
+    /// and no-Create witness are observed together; authority remains in `authority`.
+    pub terminal_cleanup_assignment: Option<SessionTerminalCleanupAssignment>,
     /// Process-local parent of a terminal cleanup target. This is routing
     /// metadata only: the aggregate's frozen command set remains the sole work
     /// and receipt authority. It lets an accepted root receipt (or a later

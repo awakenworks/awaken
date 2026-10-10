@@ -143,6 +143,18 @@ channel, hand death). `RemoteToolExecutor` surfaces this as
 No second retry mechanism or receipt database is added. Duplicate-operation
 suppression and physical-attempt admission remain different responsibilities.
 
+Recovery observation and cancellation use the same Hand operation identity and
+ledger. A versioned Observe or Cancel request never calls ledger admission or
+the tool registry. It may return Running, the live process's cached result, or
+Indeterminate; a cancellation acceptance is not a physical-stop receipt. Missing
+operations and claims recovered after Hand loss remain Indeterminate. Control
+requests require the new protocol version so an older peer cannot interpret
+one as an invocation. The Environment owner supplies the private channel and
+the existing authority fence; provider evidence and Dispatch's exact-slot CAS
+remain the only path to physical retirement. A resident terminal stop retains
+its exact binding and unresolved request on completion, Unknown, error and
+timeout; repeating stop must not manufacture NoBinding from a retained process.
+
 ### D5: This ADR introduces the seam and framing only
 
 Scope fence, to keep one decision per ADR:

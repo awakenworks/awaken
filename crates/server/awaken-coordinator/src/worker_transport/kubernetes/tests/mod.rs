@@ -2,6 +2,7 @@
 // @formal evidence sandbox.k8s_process_observation_requires_complete_exit
 use super::*;
 use awaken_dispatch::ControlDispatchQueue;
+mod hand_recovery;
 mod live;
 use axum::{
     Json, Router,
@@ -130,6 +131,11 @@ fn running() -> Value {
 }
 
 fn fixture() -> (WorkerTransport, Arc<Facts>) {
+    let (transport, facts, _) = fixture_with_client();
+    (transport, facts)
+}
+
+fn fixture_with_client() -> (WorkerTransport, Arc<Facts>, kube::Client) {
     let facts = Arc::new(Facts {
         pod: Mutex::new((StatusCode::OK, running())),
         reviews: AtomicUsize::new(0),
@@ -182,9 +188,14 @@ fn fixture() -> (WorkerTransport, Arc<Facts>) {
             "/api/v1/namespaces/workers/pods/worker-a",
             get(pod).put(update).delete(delete),
         )
+        .route(
+            "/api/v1/namespaces/workers/pods/sandbox-a",
+            get(pod).put(update).delete(delete),
+        )
         .with_state(facts.clone());
+    let client = kube::Client::new(router, "workers");
     let transport = WorkerTransport::kubernetes(
-        kube::Client::new(router, "workers"),
+        client.clone(),
         "workers",
         "executor",
         "awaken-worker",
@@ -192,7 +203,7 @@ fn fixture() -> (WorkerTransport, Arc<Facts>) {
         "create-control",
     )
     .unwrap();
-    (transport, facts)
+    (transport, facts, client)
 }
 
 #[tokio::test]

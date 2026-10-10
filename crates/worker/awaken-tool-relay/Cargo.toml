@@ -30,7 +30,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "rt", "sync", "time"] }
-tokio-util = { workspace = true, features = ["codec"] }
+tokio-util = { workspace = true, features = ["codec", "rt"] }
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 bytes = "1"
 

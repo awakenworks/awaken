@@ -64,7 +64,10 @@ mod realized;
 pub use acp::{AcpSessionExecution, AcpSessionExecutorFactory};
 pub use agent_view::{AgentFilesystemClient, AgentFilesystemView, AgentPathView};
 pub use files::{CapturedArtifact, DiscoveredSkillFile};
-pub use hand::{ContainerHandResidency, HandExecutorFactory};
+pub use hand::{
+    ContainerHandResidency, HandExecutorBinding, HandExecutorFactory, HandRecoveryObservation,
+    HandRequestRecovery,
+};
 pub use process::ProcessReaper;
 pub use proofs::{EnvironmentQuiescenceProof, EnvironmentStopProof, HandStopProof};
 pub use provider::{
