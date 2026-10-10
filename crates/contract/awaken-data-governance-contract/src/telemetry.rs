@@ -227,21 +227,6 @@ pub struct WorkspaceCapturePolicy {
 }
 
 impl WorkspaceCapturePolicy {
-    /// `top` tightened by this Workspace's narrowing. Fails closed: when the
-    /// narrowing cannot be read the ceiling is [`TelemetryNarrowing::unavailable`]
-    /// (`Off`), never the inherited `top`.
-    pub async fn ceiling(&self, top: ContentCapture) -> ContentCapture {
-        let narrowing = self
-            .sources
-            .narrowing
-            .workspace_narrowing(&self.workspace)
-            .await
-            .unwrap_or(TelemetryNarrowing::unavailable());
-        TelemetryCeiling::top(top)
-            .narrow(&narrowing)
-            .content_capture
-    }
-
     /// The Workspace narrowing as its source answers, error included; only
     /// [`crate::decide_capture`] turns an error into a closed ceiling.
     pub async fn narrowing(&self) -> Result<TelemetryNarrowing, TelemetryPolicyError> {
@@ -276,14 +261,6 @@ impl WorkspaceCapturePolicy {
             workspace,
             consent,
         })
-    }
-    /// The consent ceiling of `subject` for `purpose` (see [`crate::DataSubjectConsentSource`]).
-    pub async fn consent_ceiling(
-        &self,
-        subject: &awaken_runtime_contract::DataSubjectId,
-        purpose: awaken_runtime_contract::Purpose,
-    ) -> ContentCapture {
-        self.sources.consent.consent_ceiling(subject, purpose).await
     }
 }
 
@@ -595,21 +572,28 @@ mod tests {
             }
             .for_workspace("ws".into())
         };
+        // The ceiling a Run decides under: unattributed and requesting
+        // `Full`, so `effective` is the composed ceiling itself.
+        let ceiling = |policy: WorkspaceCapturePolicy, top| async move {
+            let decision = policy.decide(top, ContentCapture::Full, None).await;
+            assert_eq!(decision.effective, decision.ceiling);
+            decision.ceiling
+        };
         for top in LEVELS {
             let open = CapturePolicySources::default().for_workspace("ws".into());
-            assert_eq!(open.ceiling(top).await, top, "E3");
+            assert_eq!(ceiling(open, top).await, top, "E3");
             for narrowing in narrowings() {
                 let expected = TelemetryCeiling::top(top)
                     .narrow(&narrowing)
                     .content_capture;
-                assert_eq!(with(Ok(narrowing)).ceiling(top).await, expected, "E1");
+                assert_eq!(ceiling(with(Ok(narrowing)), top).await, expected, "E1");
             }
             for error in [
                 TelemetryPolicyError::StoreUnavailable,
                 TelemetryPolicyError::AuthorityUnreachable,
             ] {
                 assert_eq!(
-                    with(Err(error)).ceiling(top).await,
+                    ceiling(with(Err(error)), top).await,
                     ContentCapture::Off,
                     "E2"
                 );
@@ -618,9 +602,10 @@ mod tests {
         let subject = awaken_runtime_contract::DataSubjectId("dsub".into());
         assert_eq!(
             with(Ok(TelemetryNarrowing::default()))
-                .consent_ceiling(&subject, awaken_runtime_contract::Purpose::TelemetryContent)
-                .await,
-            ContentCapture::Full,
+                .decide(ContentCapture::Full, ContentCapture::Full, Some(&subject))
+                .await
+                .consent,
+            Some(ContentCapture::Full),
             "the open consent default never clamps"
         );
     }

@@ -1340,3 +1340,142 @@ async fn managed_primary_interrupt_cancels_every_exact_session_dispatch() {
         );
     }
 }
+
+#[tokio::test]
+async fn run_capture_level_is_the_shared_decision_for_every_cause() {
+    // Equivalence with the transparency reads: the Run boundary records
+    // exactly `decide_capture(requested = Full, top, Workspace answer,
+    // consent)` for every top level, every Workspace answer (unset, each
+    // level, unreadable) and every consent (unattributed, each level).
+    // Effects: E1 the attempt's capture level is that decision's
+    // `effective`; E2 an attributed request keeps its subject; E3 an
+    // unattributed request never reads consent.
+    use awaken_agent_contract::agent::run::{EndCause, RunState};
+    use awaken_data_governance_contract::{
+        CapturePolicyInputs, CapturePolicySources, DataSubjectConsentSource, TelemetryNarrowing,
+        TelemetryNarrowingSource, TelemetryPolicyError, decide_capture,
+    };
+    use awaken_runtime_contract::activation::RunActivation;
+    use awaken_runtime_contract::execution::{
+        Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
+    };
+    use awaken_runtime_contract::resume::ResumeCommand;
+    use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+    use awaken_runtime_contract::{ContentCapture, DataSubjectId, Purpose};
+    use std::sync::Mutex;
+
+    struct Narrowing(Result<TelemetryNarrowing, TelemetryPolicyError>);
+    #[async_trait::async_trait]
+    impl TelemetryNarrowingSource for Narrowing {
+        async fn workspace_narrowing(
+            &self,
+            workspace: &str,
+        ) -> Result<TelemetryNarrowing, TelemetryPolicyError> {
+            assert_eq!(workspace, "ws-capture");
+            self.0
+        }
+    }
+    struct Consent(Option<ContentCapture>);
+    #[async_trait::async_trait]
+    impl DataSubjectConsentSource for Consent {
+        async fn consent_ceiling(
+            &self,
+            _subject: &DataSubjectId,
+            purpose: Purpose,
+        ) -> ContentCapture {
+            assert_eq!(purpose, Purpose::TelemetryContent);
+            self.0.expect("E3 an unattributed Run never reads consent")
+        }
+    }
+    #[derive(Default)]
+    struct Observed(Mutex<Option<(ContentCapture, Option<DataSubjectId>)>>);
+    #[async_trait::async_trait]
+    impl RunExecutor for Observed {
+        async fn execute(
+            &self,
+            _activation: RunActivation,
+            context: RuntimeRunContext,
+        ) -> ExecutionResult<RunState> {
+            *self.0.lock().unwrap() =
+                Some((context.capture.decision.level, context.capture.subject));
+            Ok(RunState::Ended(EndCause::Stopped("observed".into())))
+        }
+    }
+    #[async_trait::async_trait]
+    impl RunAttemptExecutor for Observed {
+        async fn resume(
+            &self,
+            _activation: RunActivation,
+            _command: ResumeCommand,
+            _context: RuntimeRunContext,
+        ) -> ExecutionResult<RunState> {
+            unreachable!("only execute is observed")
+        }
+
+        async fn cancel(
+            &self,
+            _activation: RunActivation,
+            _context: RuntimeRunContext,
+        ) -> ExecutionResult<()> {
+            unreachable!("only execute is observed")
+        }
+    }
+
+    let levels = [
+        ContentCapture::Off,
+        ContentCapture::Structured,
+        ContentCapture::Full,
+    ];
+    let mut workspace_answers = vec![
+        Ok(TelemetryNarrowing::default()),
+        Err(TelemetryPolicyError::StoreUnavailable),
+        Err(TelemetryPolicyError::AuthorityUnreachable),
+    ];
+    workspace_answers.extend(levels.map(|level| {
+        Ok(TelemetryNarrowing {
+            content_capture: Some(level),
+        })
+    }));
+    let consents = [None, Some(levels[0]), Some(levels[1]), Some(levels[2])];
+    let mut rows = 0;
+    for top in levels {
+        for workspace in workspace_answers.iter().copied() {
+            for consent in consents {
+                let capability = crate::host::capability::ContentCaptureCapability {
+                    capture_sink: None,
+                    capture_decision: awaken_runtime_contract::CaptureDecision::new(top),
+                    policy_sources: CapturePolicySources {
+                        consent: Arc::new(Consent(consent)),
+                        narrowing: Arc::new(Narrowing(workspace)),
+                    },
+                };
+                let observed = Arc::new(Observed::default());
+                let executor = crate::run_exec::CaptureContextAttemptExecutor::new(
+                    observed.clone(),
+                    &capability,
+                    "ws-capture".into(),
+                );
+                let mut run = crate::run_exec::tests::activation("awaken");
+                run.data_subject_id = consent.map(|_| DataSubjectId("dsub".into()));
+                executor
+                    .execute(run, RuntimeRunContext::new())
+                    .await
+                    .unwrap();
+                let (level, subject) = observed.0.lock().unwrap().take().unwrap();
+                let expected = decide_capture(CapturePolicyInputs {
+                    requested: ContentCapture::Full,
+                    top,
+                    workspace,
+                    consent,
+                });
+                assert_eq!(
+                    level, expected.effective,
+                    "E1 {top:?} {workspace:?} {consent:?}"
+                );
+                assert_eq!(subject.is_some(), consent.is_some(), "E2");
+                rows += 1;
+            }
+        }
+    }
+    assert_eq!(rows, 3 * 6 * 4);
+}
