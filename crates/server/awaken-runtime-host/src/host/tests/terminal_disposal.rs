@@ -203,6 +203,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         // absence of a response is not an Unowned legacy-disposal permission.
         host.install_test_terminal_cleanup_projection(
             &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                environment_creation_not_attempted: false,
                 session_id: "t-end".into(),
                 projection: terminal_projection.clone(),
                 authority: crate::installed_session::test_lease_receipt(lease.clone()),
@@ -224,6 +225,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     }
     host.install_test_terminal_cleanup_projection(
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            environment_creation_not_attempted: false,
             session_id: "t-end".into(),
             projection: terminal_projection.clone(),
             authority: crate::installed_session::test_lease_receipt(lease.clone()),
@@ -702,6 +704,7 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
     };
     host.install_test_terminal_cleanup_projection(
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            environment_creation_not_attempted: false,
             session_id: session_id.into(),
             projection: remote_terminal_cleanup_projection(),
             authority: crate::installed_session::test_lease_receipt(lease.clone()),

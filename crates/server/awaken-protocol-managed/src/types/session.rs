@@ -1041,7 +1041,9 @@ impl OutboundKind {
             OutboundKind::SessionStatusIdle { .. } => "session.status_idle",
             OutboundKind::SessionUsage { .. } => "session.usage",
             OutboundKind::SessionStatusRescheduled {} => "session.status_rescheduled",
-            OutboundKind::SessionStatusTerminated {} => "session.status_terminated",
+            OutboundKind::SessionStatusTerminated {} => {
+                awaken_session_event_contract::SESSION_TERMINATED
+            }
             OutboundKind::SessionDeleted {} => "session.deleted",
             OutboundKind::SessionThreadCreated { .. } => "session.thread_created",
             OutboundKind::SessionThreadStatusRunning { .. } => "session.thread_status_running",

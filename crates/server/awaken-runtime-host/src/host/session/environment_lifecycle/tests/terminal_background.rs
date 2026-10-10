@@ -270,6 +270,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         // Control's terminal assignment install its new cleanup lease.
         host.install_test_terminal_cleanup_projection(
             &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                environment_creation_not_attempted: false,
                 session_id: thread.into(),
                 projection: projection.clone(),
                 authority: crate::installed_session::test_lease_receipt(lease.clone()),
@@ -517,6 +518,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     };
     host.install_test_terminal_cleanup_projection(
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            environment_creation_not_attempted: false,
             session_id: thread.into(),
             projection: projection.clone(),
             authority: crate::installed_session::test_lease_receipt(lease.clone()),

@@ -875,3 +875,11 @@
   and command fingerprint in `awaken-session-types`. Runtime and Dispatch
   consumers no longer expose parallel import paths; persisted wire and
   fingerprint decision tables retain their compatibility authority.
+
+## 2026-10-10 — Carry admitted no-Create evidence to terminal Workers
+
+- [ADR-0078](../adr/0078-terminal-recovery-retains-the-existing-session-authority.md)
+  derives cold terminal cleanup's no-Create evidence from the existing atomic
+  unattempted-profiled archive receipt. It travels through the existing Worker
+  assignment, while unknown history retains provider observation and disposal
+  requirements. All other cleanup participants and final receipts remain required.

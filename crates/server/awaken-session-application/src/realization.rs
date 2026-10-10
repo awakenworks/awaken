@@ -196,6 +196,45 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
 }
 
 impl SessionApplication {
+    /// Build the only terminal assignment projection from one already-read
+    /// Session root. Claim recovery and warm work polling share this adapter so
+    /// neither can select a lease or frozen projection independently.
+    pub(crate) async fn terminal_cleanup_assignment_from_snapshot(
+        &self,
+        owner_scope: &str,
+        session: &PersistedSession,
+    ) -> Result<SessionTerminalCleanupAssignment, SessionRealizationControlFailure> {
+        let lease = session
+            .realization
+            .clone()
+            .ok_or(SessionRealizationControlFailure::StaleOwnership)?;
+        // Terminal effects must retain both aggregate-authored generations.
+        // A Worker may have installed desired B before its receipt committed;
+        // projecting only active A regresses that slot to A -> A and strands
+        // cleanup. The terminal Host install stages A -> B without activating B.
+        let projection = self
+            .frozen_session_projection(owner_scope.to_string(), session, false)
+            .await
+            .map_err(unavailable)?;
+        Ok(SessionTerminalCleanupAssignment {
+            session_id: session.session_id.clone(),
+            projection,
+            environment_creation_not_attempted:
+                crate::archive_intent::unattempted_profiled_archive_witness(
+                    self.session_repository(),
+                    owner_scope,
+                    session,
+                )
+                .await
+                .map_err(repository_control)?,
+            authority:
+                awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+                    lease,
+                    self.clock.now_ms(),
+                )?,
+        })
+    }
+
     /// Reproject one already-committed local Resident Environment through the
     /// same complete-projection port used by the canonical realization driver.
     /// Resident durable truth is deliberately the retry fact: Runtime owns no

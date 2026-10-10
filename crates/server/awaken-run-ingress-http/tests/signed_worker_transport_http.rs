@@ -425,6 +425,7 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue for Record
         )?;
         Ok(Some(
             awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                environment_creation_not_attempted: false,
                 session_id: "signed-terminal-recovery".into(),
                 projection,
                 authority: self.receipt(
@@ -457,6 +458,7 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue for Record
         Ok(Some(
             awaken_session_realization_contract::SessionTerminalCleanupWork {
                 assignment: awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                    environment_creation_not_attempted: false,
                     session_id: session_id.clone(),
                     projection,
                     authority: self.receipt(lease.clone())?,

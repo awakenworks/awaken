@@ -299,6 +299,7 @@ async fn root_terminal_cleanup_effect(
         .unwrap();
     host.install_test_terminal_cleanup_projection(
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            environment_creation_not_attempted: false,
             session_id: session_id.into(),
             projection,
             authority: crate::installed_session::test_lease_receipt(lease.clone()),

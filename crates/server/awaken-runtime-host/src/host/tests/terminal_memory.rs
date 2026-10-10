@@ -1066,6 +1066,7 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
     };
     host.install_test_terminal_cleanup_projection(
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            environment_creation_not_attempted: false,
             session_id: thread.into(),
             projection: projection.clone(),
             authority: crate::installed_session::test_lease_receipt(lease.clone()),
@@ -1482,6 +1483,7 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
     projection.environment = disposing_environment;
     host.install_test_terminal_cleanup_projection(
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            environment_creation_not_attempted: false,
             session_id: thread.into(),
             projection: projection.clone(),
             authority: crate::installed_session::test_lease_receipt(lease.clone()),
@@ -1639,6 +1641,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
         }
         host.install_test_terminal_cleanup_projection(
             &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                environment_creation_not_attempted: false,
                 session_id: thread.into(),
                 projection: projection.clone(),
                 authority: crate::installed_session::test_lease_receipt(lease),
@@ -1744,6 +1747,7 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
     let (lease, effect) = terminal_recovery_effect(thread, "legacy-memory-worker");
     host.install_test_terminal_cleanup_projection(
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            environment_creation_not_attempted: false,
             session_id: thread.into(),
             projection: projection.clone(),
             authority: crate::installed_session::test_lease_receipt(lease),
@@ -1952,6 +1956,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
         }
         host.install_test_terminal_cleanup_projection(
             &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                environment_creation_not_attempted: false,
                 session_id: SessionId::from(&thread),
                 projection: projection.clone(),
                 authority: crate::installed_session::test_lease_receipt(lease.clone()),

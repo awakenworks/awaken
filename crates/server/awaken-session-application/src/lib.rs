@@ -235,6 +235,7 @@ pub use update::{
     SessionFieldUpdate, SessionMcpUpdate, SessionMetadataUpdate, SessionUpdateChanges,
     SessionUpdateCommand, SessionUpdateError, SessionUpdateOutcome,
 };
+mod archive_intent;
 mod terminal;
 pub use terminal::{
     SessionArchiveWithRepositoryPublicationCommand, SessionArchiveWithRepositoryPublicationError,

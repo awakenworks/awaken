@@ -949,37 +949,6 @@ impl SessionApplication {
         Ok(())
     }
 
-    /// Build the only terminal assignment projection from one already-read
-    /// Session root. Claim recovery and warm work polling share this adapter so
-    /// neither can select a lease or frozen projection independently.
-    pub(crate) async fn terminal_cleanup_assignment_from_snapshot(
-        &self,
-        owner_scope: &str,
-        session: &PersistedSession,
-    ) -> Result<SessionTerminalCleanupAssignment, SessionRealizationControlFailure> {
-        let lease = session
-            .realization
-            .clone()
-            .ok_or(SessionRealizationControlFailure::StaleOwnership)?;
-        // Terminal effects must retain both aggregate-authored generations.
-        // A Worker may have installed desired B before its receipt committed;
-        // projecting only active A regresses that slot to A -> A and strands
-        // cleanup. The terminal Host install stages A -> B without activating B.
-        let projection = self
-            .frozen_session_projection(owner_scope.to_string(), session, false)
-            .await
-            .map_err(unavailable)?;
-        Ok(SessionTerminalCleanupAssignment {
-            session_id: session.session_id.clone(),
-            projection,
-            authority:
-                awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
-                    lease,
-                    self.clock.now_ms(),
-                )?,
-        })
-    }
-
     /// Resolve the exact current registry incarnation that may participate in
     /// an external cleanup claim. HTTP authentication is an adapter boundary;
     /// the root-CAS owner repeats this read so direct callers and a stale

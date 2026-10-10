@@ -802,6 +802,7 @@ dependencies = [
  "awaken-session-budget-contract",
  "awaken-session-configuration-contract",
  "awaken-session-dream-contract",
+ "awaken-session-event-contract",
  "awaken-session-mcp",
  "awaken-session-mcp-contract",
  "awaken-session-realization-contract",

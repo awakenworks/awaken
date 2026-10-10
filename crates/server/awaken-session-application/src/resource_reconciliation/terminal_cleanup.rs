@@ -824,6 +824,7 @@ mod tests {
             },
         );
         SessionTerminalCleanupAssignment {
+            environment_creation_not_attempted: false,
             session_id: "session".into(),
             projection: awaken_session_realization_contract::FrozenSessionProjection {
                 workspace_id: "workspace".into(),

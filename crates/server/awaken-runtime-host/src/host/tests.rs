@@ -238,6 +238,7 @@ mod session_realizations;
 mod skill_delivery;
 mod terminal_disposal;
 mod terminal_memory;
+mod unattempted_terminal_cleanup;
 mod worker_projection;
 use crate::config::block_text;
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -2351,6 +2352,7 @@ async fn install_terminal_recovery_projection(
     projection.environment = environment;
     host.install_test_terminal_cleanup_projection(
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            environment_creation_not_attempted: false,
             session_id: thread.into(),
             projection: projection.clone(),
             authority: crate::installed_session::test_lease_receipt(lease),

@@ -43,8 +43,6 @@ pub(crate) use events::{
     CommittedEventDelivery, ProjectionObservationDecision, managed_assistant_event_id,
 };
 mod helpers;
-#[path = "state/lifecycle_event.rs"]
-pub mod lifecycle_event;
 mod managed_state;
 #[cfg(any(test, feature = "test-support"))]
 mod mcp_attachment;

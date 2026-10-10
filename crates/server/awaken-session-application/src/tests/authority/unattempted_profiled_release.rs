@@ -3,7 +3,7 @@ use awaken_session_configuration_contract::{ControlSessionCreationInputs, Sessio
 use awaken_session_resource_contract::SessionMutationPolicy;
 use awaken_session_state_contract::{ActivationState, SessionDisposition, SessionEnvironmentState};
 
-fn unattempted(id: &str) -> PersistedSession {
+pub(super) fn unattempted(id: &str) -> PersistedSession {
     let mut session = persisted(id, false, "preparing");
     let b = session.frozen_baseline().unwrap().clone();
     let compiled = creation_intent(b).finalize().unwrap();
@@ -62,10 +62,10 @@ fn creation_intent(
 
 fn fact(id: &str) -> ManagedLifecycleFact {
     ManagedLifecycleFact {
-        id: format!("{id}:terminated"),
+        id: awaken_session_event_contract::session_terminated_fact_id(id),
         object_id: id.into(),
         workspace_id: Some("workspace".into()),
-        event_type: "session.terminated".into(),
+        event_type: awaken_session_event_contract::SESSION_TERMINATED.into(),
         timestamp: 1,
         runtime_interval: None,
     }

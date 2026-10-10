@@ -108,6 +108,7 @@ where
                 // successor; neither Control nor this companion rebuilds a
                 // second projection or terminal-specific renewal read model.
                 let renewed_assignment = SessionTerminalCleanupAssignment {
+                    environment_creation_not_attempted: initial_assignment.environment_creation_not_attempted,
                     session_id: initial_assignment.session_id.clone(),
                     projection: initial_assignment.projection.clone(),
                     authority: receipt,

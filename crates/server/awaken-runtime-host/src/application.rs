@@ -1039,6 +1039,8 @@ impl crate::SharedHost {
         self.installed_sessions
             .update_realization(assignment.session_id.as_str(), |r| {
                 r.terminal_environment_state = Some(assignment.projection.environment.clone());
+                r.terminal_environment_creation_not_attempted =
+                    assignment.environment_creation_not_attempted;
             });
         Ok(())
     }

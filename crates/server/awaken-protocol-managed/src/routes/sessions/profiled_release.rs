@@ -3,7 +3,7 @@
 //! Route observations describe the winning candidate, never command identity.
 //! The Session Application compiles its idempotency record from stable intent.
 
-use crate::state::{lifecycle_event, lifecycle_fact};
+use crate::state::lifecycle_fact;
 
 pub(super) fn command(
     owner_scope: &str,
@@ -16,10 +16,10 @@ pub(super) fn command(
         session_id: awaken_session_types::SessionId::from(id),
         archived_at: awaken_session_application_contract::epoch_millis_to_rfc3339(observed_at),
         lifecycle_fact: lifecycle_fact(
-            format!("session:{id}:terminated"),
+            awaken_session_event_contract::session_terminated_fact_id(id),
             id,
             Some(owner_scope.to_owned()),
-            lifecycle_event::SESSION_TERMINATED,
+            awaken_session_event_contract::SESSION_TERMINATED,
             observed_at,
         ),
         repository: awaken_session_application::SessionRepositoryPublicationSelector {

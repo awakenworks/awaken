@@ -836,3 +836,34 @@ the value query cannot grant a command or certify cleanup. Repository-publicatio
 owner, read and CAS failures share one existing error conversion instead of
 four parallel matches. This consolidation preserves every refusal and retry
 outcome without increasing the large application or protocol package budgets.
+
+### Cross-process no-Create evidence for the same admission
+
+The Cloud Worker exposed the remaining transport partition: a frozen,
+never-attempted preparation can archive safely, but a cold terminal assignment
+previously carried only Unmaterialized state. Runtime then reconstructed a
+Create intent from the newer cleanup lease, and the container provider correctly
+refused that invented predecessor as Unknown. Unmaterialized state alone remains
+insufficient evidence, including for historical records and response loss.
+
+The existing archive idempotency receipt is the durable admission witness. The
+Session Application compares its exact canonical termination identity, owner,
+Root, admission fingerprint and committed revision to the archived snapshot.
+Only the receipt committed by the unattempted Frozen preparation CAS projects
+`environment_creation_not_attempted` in the existing cold terminal assignment.
+Absent/mismatched receipts project false; an unavailable receipt read fails the
+assignment. This adds no persisted status, queue, receipt table or cleanup owner.
+Archive mutation and realization projection share the same pure command-identity
+module; neither orchestration module depends on the other for this observation.
+
+The canonical termination fact id/type now live in the existing lifecycle-fact
+contract, reused by Managed lowering and this receipt reader. Runtime consumes
+that Control-authenticated, Root/lease-bound projection only with Unmaterialized
+state and a Vacant owner. Any local Candidate, bound/Retiring owner or restore
+stays protected. Preparation and Disposal reuse the existing definitive-absence
+branch while every MCP, Artifact, Memory, checkpoint and Resource participant
+retains the ordinary cleanup protocol. No provider 404, token count, Run end or
+caller-supplied success flag substitutes for this committed no-Create evidence.
+The realization contract owns this consistency check. Runtime reuses the
+Session Environment's existing binding projection instead of maintaining a
+second match over the same state variants.
