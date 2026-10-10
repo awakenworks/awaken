@@ -868,3 +868,10 @@
   `ClaimedCommitService` as the sole claim-guarded writer. Coordinator embeddings
   reuse its existing `SessionCommitOwner` binding; the Host remains a read-only
   owner selector with no dependency on the RunIngress implementation.
+
+## 2026-10-10 — Consume Session command values from their definition
+
+- [ADR-0090](../adr/0090-session-state-model.md) keeps the replacement intent
+  and command fingerprint in `awaken-session-types`. Runtime and Dispatch
+  consumers no longer expose parallel import paths; persisted wire and
+  fingerprint decision tables retain their compatibility authority.

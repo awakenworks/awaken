@@ -96,3 +96,12 @@ by construction.
 - Persisted data and public wire shapes are unchanged.
 - Order: this ADR lands before the use-case split of `SessionApplication`; the
   environment part lands with ADR-0089's move of realization out of runtime-host.
+
+The existing `SessionRunReplacement` and `SessionRunCommandFingerprint` values
+are defined only in `awaken-session-types`. Admission services, Dispatch,
+protocol adapters and golden-wire fixtures depend on that owner directly.
+Runtime and Run Ingress contracts consume those types without re-exporting
+them: moving a value cannot leave a second public contract path behind. This
+changes import ownership, not serialization, fingerprint framing, persistence
+or Run admission behavior; the existing persisted-wire and reservation decision
+tables remain the compatibility evidence.

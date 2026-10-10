@@ -28,7 +28,6 @@ pub use awaken_credential_contract::{
     credential_realization_persistence_decision, verify_credential_realization_receipt,
 };
 pub use awaken_runtime_contract::CandidateFingerprint;
-pub use awaken_session_types::SessionRunReplacement;
 pub use awaken_worker_contract::{
     AssignmentRejection, CURRENT_RUNTIME_PROTOCOL_VERSION, ExecutionLocation,
     HOST_EXECUTOR_CAPABILITY, LeastLoadedPolicy, PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE,
