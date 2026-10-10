@@ -42,6 +42,14 @@ string literals and `cfg(test)` code are not scanned):
   contract crates, keyed by name with the number of contract crates declaring it.
   One concept has one definition (plan 9.19 item 4); a name repeated inside one
   crate is not counted.
+* `contract-reexport`: a `pub use` (exactly `pub`) in a contract crate whose path
+  starts at another first-party crate (a workspace member other than itself),
+  keyed by the contract crate with the number of items re-exported (the leaves of
+  the use tree; a glob or `self` is one item). A user depends on the owner
+  directly (plan 9.19 item 5). Re-exports of the crate's own modules
+  (`crate::`, `self::`, `super::`, a local module or enum) and of third-party or
+  standard-library crates are not counted: the rule is about one first-party type
+  reachable through several contracts.
 
 Every ratchet is held at or below `contract_map_baseline.json`; see
 `_architecture_ratchet.py` for how a fall is recorded
@@ -120,6 +128,8 @@ RULES = (
          "(ADR-0091 D4, plan 9.19 item 3)"),
     Rule("duplicate-type", "keep one definition of the concept, or name each by its own meaning "
          "(ADR-0091 D2, plan 9.19 item 4)"),
+    Rule("contract-reexport", "depend on the owning crate directly instead of re-exporting its items; SDK "
+         "convenience paths live only in the SDK facade (ADR-0091 D2, plan 9.19 item 5)"),
 )
 
 _TRAIT = re.compile(r"\bpub\s+trait\s+([A-Z]\w*)[^{;]*\{")
@@ -129,6 +139,7 @@ _OPTIONAL_ROLE = re.compile(
 )
 _IMPL = re.compile(r"\bimpl\b")
 _BODY_TOKEN = re.compile(r"[{}]|\bfn\s+\w+")
+_PUB_USE = re.compile(r"\bpub\s+use\s+([^;]*);")
 _PUBLIC_TYPE = re.compile(r"\bpub\s+(?:unsafe\s+)?(?:struct|enum|trait|type)\s+([A-Za-z_]\w*)")
 
 
@@ -193,6 +204,34 @@ def contract_traits(syntax: str) -> list[tuple[str, int, int]]:
 def public_types(syntax: str) -> list[tuple[str, int]]:
     """(name, offset) of every `pub struct|enum|trait|type` declaration in one file."""
     return [(match.group(1), match.start()) for match in _PUBLIC_TYPE.finditer(syntax)]
+
+
+def use_leaves(tree: str) -> list[str]:
+    """The flattened paths of one use tree, each with its `as` alias: `a::{b::C, D as E}` -> `a::b::C`, `a::D as E`."""
+    tree = re.sub(r"\s*(::|[{},])\s*", r"\1", " ".join(tree.split())).strip()
+    opening = tree.find("{")
+    if opening < 0:
+        return [tree] if tree else []
+    inner = tree[opening + 1:(_crate_boundary_workspace._balanced_end(tree, opening, "{", "}") or len(tree)) - 1]
+    parts, depth, start = [], 0, 0
+    for cursor, character in enumerate(inner):
+        depth += {"{": 1, "}": -1}.get(character, 0)
+        if character == "," and depth == 0:
+            parts.append(inner[start:cursor])
+            start = cursor + 1
+    parts.append(inner[start:])
+    return [tree[:opening] + leaf for part in parts for leaf in use_leaves(part)]
+
+
+def foreign_reexports(syntax: str, foreign: set[str]) -> list[tuple[int, list[str]]]:
+    """(offset, leaves) of every `pub use` whose leaves start at a crate of `foreign` (underscored names)."""
+    found = []
+    for match in _PUB_USE.finditer(syntax):
+        leaves = [leaf for leaf in use_leaves(match.group(1))
+                  if re.split(r"\s+as\s+", leaf)[0].lstrip(":").split("::")[0] in foreign]
+        if leaves:
+            found.append((match.start(), leaves))
+    return found
 
 
 def fat_trait_errors(counts: Counts, baseline: dict) -> list[str]:
@@ -272,6 +311,7 @@ def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) 
     counts: Counts = {rule.name: Counter() for rule in RULES}
     places: Places = {rule.name: defaultdict(list) for rule in RULES}
     contracts = {crate.name for crate in sources if crate.metadata.get("layer") == "contract"}
+    first_party = {crate.name.replace("-", "_") for crate in sources}
     counts["contract-crates"]["contract crates"] = len(contracts)
     implemented: set[str] = set()
     implemented_by: dict[str, set[str]] = defaultdict(set)
@@ -297,6 +337,10 @@ def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) 
                 if not methods:
                     counts["bundle-trait"][name] += 1
                     places["bundle-trait"][name].append(where)
+            for offset, leaves in foreign_reexports(syntax, first_party - {crate.name.replace("-", "_")}):
+                where = f"{relative}:{_architecture_ratchet.line_of(syntax, offset)}"
+                counts["contract-reexport"][crate.name] += len(leaves)
+                places["contract-reexport"][crate.name].append(where)
             for name, offset in public_types(syntax):
                 typed[name][crate.name].append(f"{relative}:{_architecture_ratchet.line_of(syntax, offset)}")
             for key, offset in optional_roles(syntax):
@@ -368,6 +412,9 @@ def selftest() -> None:
     | F4   | fat trait the baseline does not record, or recorded through --reason   | hard error naming --reason |
     | D1   | `pub` struct / enum / trait / type alias of one name in two contract crates | counted, value = crates |
     | D2   | the name twice in one crate; `pub(crate)` or private in the other; declared in a non-contract crate | not counted |
+    | R1   | `pub use` of another first-party crate's items (nested groups, glob, `self`, the whole crate, `::` prefix) | counted per contract crate, value = leaves |
+    | R2   | own module paths (`crate::`, `self::`, `super::`, local module or enum), own crate name | not counted |
+    | R3   | third-party or std crate; `pub(crate) use` / `use`; non-contract crate; comment, literal or `cfg(test)` | not counted |
     """
     pending = {"t": ("b", ("old",))}
     assert target_map_errors({"t", "old"}, pending) == [], "T1"
@@ -416,6 +463,7 @@ def selftest() -> None:
     _selftest_persistence_ports()
     _selftest_fat_traits()
     _selftest_duplicate_types()
+    _selftest_reexports()
     print("_contract_map_fitness selftest: the decision tables hold")
 
 
@@ -453,6 +501,26 @@ def _selftest_duplicate_types() -> None:
     counts, places, _contracts = measure(sources, Path("/w"))
     assert counts["duplicate-type"] == {"Lease": 3, "Error": 2, "Port": 2}, f"D1/D2 {counts['duplicate-type']}"
     assert places["duplicate-type"]["Error"] == ["a/src/lib.rs:2", "b/src/lib.rs:2"], "D1 where"
+
+
+def _selftest_reexports() -> None:
+    assert use_leaves("a::{b::{C, D as E},\n  F, self, *}") == ["a::b::C", "a::b::D as E", "a::F", "a::self", "a::*"], \
+        f"R1 leaves {use_leaves('a::{b::{C, D as E}, F, self, *}')}"
+    code = (
+        "pub use other::{a::B, c::{D, E as F}, self};\npub use ::other::g::*;\npub use other as alias;\n"
+        "pub use crate::x::Y;\npub use self::m::Z;\npub use super::W;\npub use local::V;\npub use Kind::*;\n"
+        "pub use c::Own;\npub use serde::Serialize;\npub use std::sync::Arc;\npub(crate) use other::H;\n"
+        "use other::I;\n// pub use other::J;\nconst S: &str = \"pub use other::K;\";\n"
+        "#[cfg(test)]\nmod tests { pub use other::L; }\n"
+    )
+    sources = tuple(_architecture_ratchet.CrateSource(
+        crate.name, crate.metadata, crate.directory,
+        {path: _crate_boundary_workspace.production_rust(text) for path, text in crate.files.items()})
+        for crate in (_crate("c", "contract", "x", code), _crate("other", "contract", "y", ""),
+                      _crate("app", "application", "x", "pub use other::B;\n")))
+    counts, places, _contracts = measure(sources, Path("/w"))
+    assert counts["contract-reexport"] == {"c": 6}, f"R1-R3 {counts['contract-reexport']}"
+    assert places["contract-reexport"]["c"] == ["c/src/lib.rs:1", "c/src/lib.rs:2", "c/src/lib.rs:3"], "R1 where"
 
 
 def _selftest_persistence_ports() -> None:
