@@ -867,9 +867,8 @@ impl SessionApplication {
         session.realization_progress.failure_source_run_id =
             command.source_run_id.clone().map(Box::new);
         let initial_realization = session.execution != SessionExecutionState::Idle;
-        let retry_initial = command.retryable
-            && initial_realization
-            && session.realization_progress.attempts < self.realization_retry_budget();
+        let retry_initial =
+            command.retries_initial_realization(&mut session, self.realization_retry_budget())?;
         if retry_initial || !initial_realization {
             // The driver closes this exact local authority generation after an
             // effect failure. Any nonterminal recovery must obtain a new epoch;

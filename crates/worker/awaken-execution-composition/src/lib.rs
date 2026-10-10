@@ -33,8 +33,8 @@ pub use container::{
     ContainerTierPolicy, build_container_environment_for_realization, package_image_provisioner,
 };
 pub use local::{
-    resolve_sandbox_tier, select_local_session_environment, with_backend_owned_environment,
-    with_workdir_fallback,
+    local_tier_readiness, resolve_sandbox_tier, select_local_session_environment,
+    with_backend_owned_environment, with_workdir_fallback,
 };
 
 /// The one container-environment realization assembled from a deployment by

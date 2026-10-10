@@ -53,13 +53,16 @@ fn session_realization_control_disposition_projects_exact_worker_effect() {
 }
 
 impl HostWorkerResolver {
-    /// Preserve a deterministic Host admission refusal through the existing
-    /// Session realization classification and pre-execution settlement path.
-    /// Other Host failures keep their existing retryable queue behavior.
+    /// Preserve a deterministic Host admission refusal, and every classified
+    /// environment provider failure, through the Session realization
+    /// classification the realization driver uses, so both paths reach the
+    /// same claim outcome. Other Host failures keep their retryable behavior.
     pub(super) fn map_host_resolution_error(
         error: crate::HostError,
     ) -> awaken_dispatch_execution::Error {
-        if error.kind == crate::HostErrorKind::BadRequest {
+        if error.kind == crate::HostErrorKind::BadRequest
+            || awaken_session_realization_contract::is_environment_effect_code(&error.code)
+        {
             Self::map_session_realization_drive_error(
                 awaken_session_realization_contract::SessionRealizationDriveError::Effect(
                     crate::managed_adapter_error::to_run_error(error),
@@ -73,31 +76,25 @@ impl HostWorkerResolver {
     pub(super) fn map_session_realization_drive_error(
         error: awaken_session_realization_contract::SessionRealizationDriveError,
     ) -> awaken_dispatch_execution::Error {
-        match error {
-            awaken_session_realization_contract::SessionRealizationDriveError::Effect(error)
-                if error.kind == awaken_session_types::RunErrorKind::Unavailable =>
-            {
-                Self::execution_error(error.to_string())
+        use awaken_session_realization_contract::SessionRealizationDriveError as Drive;
+        // An effect and a Control failure share one Worker projection; a
+        // capacity refusal is NotReady, the request-local deferral (ADR-0092).
+        let (disposition, message) = match error {
+            Drive::Effect(error) => (
+                awaken_session_realization_contract::effect_failure_disposition(&error),
+                error.to_string(),
+            ),
+            Drive::Control(control) => (control.disposition(), control.to_string()),
+            retryable @ Drive::DidNotConverge => {
+                return Self::execution_error(retryable.to_string());
             }
-            awaken_session_realization_contract::SessionRealizationDriveError::Control(control) => {
-                match session_realization_worker_effect(control.disposition()) {
-                    SessionRealizationWorkerEffect::Defer => {
-                        awaken_dispatch_execution::Error::ResolutionNotReady(
-                            "Session realization is not ready".into(),
-                        )
-                    }
-                    SessionRealizationWorkerEffect::Relinquish => {
-                        Self::execution_error(control.to_string())
-                    }
-                    SessionRealizationWorkerEffect::Absorb => {
-                        Self::terminal_resolution_error(control.to_string())
-                    }
-                }
+        };
+        match session_realization_worker_effect(disposition) {
+            SessionRealizationWorkerEffect::Defer => {
+                awaken_dispatch_execution::Error::ResolutionNotReady(message)
             }
-            retryable @ awaken_session_realization_contract::SessionRealizationDriveError::DidNotConverge => {
-                Self::execution_error(retryable.to_string())
-            }
-            error => Self::terminal_resolution_error(error.to_string()),
+            SessionRealizationWorkerEffect::Relinquish => Self::execution_error(message),
+            SessionRealizationWorkerEffect::Absorb => Self::terminal_resolution_error(message),
         }
     }
 }
@@ -127,6 +124,151 @@ mod tests {
                 ));
             }
         }
+    }
+
+    fn claim_outcome(error: &awaken_dispatch_execution::Error) -> &'static str {
+        match error {
+            awaken_dispatch_execution::Error::ResolutionNotReady(_) => "defer",
+            awaken_dispatch_execution::Error::Execution(_) => "relinquish",
+            awaken_dispatch_execution::Error::TerminalResolution(_) => "absorb",
+            other => panic!("unexpected claim outcome {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sandbox_failure_class_reaches_the_same_claim_outcome_on_both_paths() {
+        // End-to-end decision table (ADR-0092 step 0): SandboxError class x
+        // path -> claim outcome and Session state. Causes: C1 the provider's
+        // SandboxError variant (its Classify disposition, or the capacity
+        // class); C2 the path that observes it: P1 the realization driver
+        // (synchronizer -> RunError -> FailSessionRealization + drive error)
+        // or P2 the claim resolver (HostError -> map_host_resolution_error).
+        // Effects: the claim outcome (the dispatch pool defers every
+        // non-terminal outcome request-locally with the claim's backoff and
+        // keeps its retry budget; `absorb` settles the Run), and the
+        // FailSessionRealization report, which decides the Session state
+        // (session-application `failure_budget` table):
+        // | Rule | class | claim (P1 = P2) | report (retryable, capacity) | Session state | Session budget consumed? | dispatch budget consumed? |
+        // | X1 | Transient: NotReady/Transport/Timeout/Backend | relinquish (request-local defer) | (true, false) | Preparing; ActivationFailed once the budget is spent | yes, one attempt | no |
+        // | X2 | CapacityUnavailable | defer (request-local) | (true, true) | Preparing, never ActivationFailed | no, attempt refunded | no |
+        // | X3 | Permanent: NotFound/Gone/Unauthorized/FenceRejected/Invalid/Unsupported/Conflict | absorb (TerminalResolution) | (false, false) | ActivationFailed | n/a (absorbing) | n/a (Run settled) |
+        // Session-state and budget columns are proven on the durable aggregate by
+        // session-application `capacity_budget` and the contract's
+        // `capacity_failures_retry_without_consuming_and_others_keep_the_budget`;
+        // the dispatch column by the pool's ClaimDeferred path (defer_claim keeps
+        // attempt_count, run_ingress obligations).
+        use awaken_provisioning_contract::SandboxError;
+        let rows = [
+            (
+                "X1",
+                SandboxError::not_ready("d"),
+                "relinquish",
+                (true, false),
+            ),
+            (
+                "X1",
+                SandboxError::transport("d"),
+                "relinquish",
+                (true, false),
+            ),
+            (
+                "X1",
+                SandboxError::timeout("d"),
+                "relinquish",
+                (true, false),
+            ),
+            (
+                "X1",
+                SandboxError::backend("op", "d"),
+                "relinquish",
+                (true, false),
+            ),
+            (
+                "X2",
+                SandboxError::capacity_unavailable("exceeded quota"),
+                "defer",
+                (true, true),
+            ),
+            ("X3", SandboxError::not_found("d"), "absorb", (false, false)),
+            ("X3", SandboxError::gone("d"), "absorb", (false, false)),
+            (
+                "X3",
+                SandboxError::unauthorized("d"),
+                "absorb",
+                (false, false),
+            ),
+            (
+                "X3",
+                SandboxError::fence_rejected("d"),
+                "absorb",
+                (false, false),
+            ),
+            ("X3", SandboxError::invalid("d"), "absorb", (false, false)),
+            (
+                "X3",
+                SandboxError::unsupported("d"),
+                "absorb",
+                (false, false),
+            ),
+            ("X3", SandboxError::conflict("d"), "absorb", (false, false)),
+        ];
+        for (rule, sandbox, claim, report) in rows {
+            // P2: the resolver sees the Host error directly.
+            let host_error = || {
+                crate::host_error::from_run_error(
+                    awaken_session_realization_contract::environment_effect_error(&sandbox),
+                )
+            };
+            let resolver = HostWorkerResolver::map_host_resolution_error(host_error());
+            // P1: the driver sees the same Host error after the synchronizer's
+            // Run projection, reports it to Control, then returns it.
+            let run_error = crate::host_error::to_run_error(host_error());
+            let command = awaken_session_realization_contract::FailSessionRealization::for_effect(
+                "s".into(),
+                awaken_session_resource_contract::SessionRealizationLease {
+                    owner: "w".into(),
+                    runtime_incarnation: "w/1".into(),
+                    epoch: 1,
+                    expires_at_unix_ms: 1,
+                },
+                None,
+                None,
+                &run_error,
+            );
+            let reported = (command.retryable, command.capacity_unavailable);
+            let driver = HostWorkerResolver::map_session_realization_drive_error(
+                awaken_session_realization_contract::SessionRealizationDriveError::Effect(
+                    run_error,
+                ),
+            );
+            assert_eq!(claim_outcome(&resolver), claim, "{rule} P2 {sandbox}");
+            assert_eq!(claim_outcome(&driver), claim, "{rule} P1 {sandbox}");
+            assert_eq!(reported, report, "{rule} report {sandbox}");
+            assert!(
+                resolver.to_string().contains(&sandbox.to_string()),
+                "{rule}: the provider detail survives the boundary"
+            );
+        }
+        // Fail closed: an unclassified Host failure keeps the resolver's
+        // existing retry, and a capacity code on a non-Unavailable fault is
+        // not a capacity refusal.
+        assert_eq!(
+            claim_outcome(&HostWorkerResolver::map_host_resolution_error(
+                crate::HostError::internal("unclassified")
+            )),
+            "relinquish"
+        );
+        assert_eq!(
+            claim_outcome(&HostWorkerResolver::map_session_realization_drive_error(
+                awaken_session_realization_contract::SessionRealizationDriveError::Effect(
+                    awaken_session_types::RunError::classified(
+                        awaken_session_realization_contract::ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE,
+                        "mislabelled",
+                    ),
+                ),
+            )),
+            "absorb"
+        );
     }
 
     #[test]

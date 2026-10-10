@@ -2788,6 +2788,16 @@ async fn defer_claim_is_request_local_store_spec() {
 }
 
 #[tokio::test]
+async fn capacity_deferrals_hand_off_without_spending_budget_on_memory() {
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = MemoryDispatchStore::new(clock.clock());
+    harness::capacity_deferral::assert_capacity_deferrals_hand_off_without_spending_budget(
+        &store, &clock,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn defer_claim_uses_the_store_clock_and_exact_deadline_on_memory() {
     let clock = Arc::new(ManualClock::new(100));
     let store = MemoryDispatchStore::new(clock.clone());

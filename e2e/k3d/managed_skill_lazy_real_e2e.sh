@@ -98,7 +98,7 @@ pod,image,sandbox=(os.environ[k] for k in ['LAZY_POD','LAZY_IMAGE','LAZY_SANDBOX
 config='\n'.join([
  'data_dir = "/var/lib/awaken"', 'bind = "127.0.0.1:'+os.environ['LAZY_PORT']+'"', 'internal_bind = "127.0.0.1:'+str(int(os.environ['LAZY_PORT'])+1)+'"',
  'identity_mode = "no-login"', 'run_local_pool = true', 'no_browser = true', 'acp_clis = []',
- 'sandbox_tier = "k8s"', 'k8s_namespace = "awaken-system"',
+ 'sandbox_tier = "k8s"', 'k8s_namespace = "awaken-system"', 'worker_max_concurrent = 4',
  'k8s_continuation_volume = { storage_class_name = "local-path", size = "1Gi" }',
  'container_hand_residency = "resident"', 'container_image = '+json.dumps(sandbox),
  'admin_listen = \"127.0.0.1:'+str(int(os.environ['LAZY_PORT'])+2)+'\"',

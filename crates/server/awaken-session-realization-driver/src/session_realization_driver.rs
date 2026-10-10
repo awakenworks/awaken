@@ -21,8 +21,8 @@ use awaken_session_realization_contract::{
 };
 use awaken_session_resource_contract::SessionRealizationLease;
 use awaken_session_execution_contract::McpAttachmentRealizer;
+use awaken_session_types::RunError;
 use awaken_session_types::SessionId;
-use awaken_session_types::{RunError, RunErrorKind};
 
 async fn publish_mcp_projection(
     mcp: &dyn McpAttachmentRealizer,
@@ -72,15 +72,15 @@ async fn fail_realization_effect(
     prepared_resource_revision: Option<u64>,
     error: &RunError,
 ) {
+    // One classification for Control and the Worker claim projection.
     let _ = control
-        .fail_session_realization(FailSessionRealization {
-            session_id: session_id.clone(),
-            lease: lease.clone(),
+        .fail_session_realization(FailSessionRealization::for_effect(
+            session_id.clone(),
+            lease.clone(),
             prepared_resource_revision,
-            retryable: error.kind == RunErrorKind::Unavailable,
-            source_run_id: source_run_id.cloned(),
-            reason: error.to_string(),
-        })
+            source_run_id.cloned(),
+            error,
+        ))
         .await;
     let _ = synchronizer
         .invalidate_session_realization_lease(session_id, lease)
