@@ -17,6 +17,19 @@ string literals and `cfg(test)` code are not scanned):
 * `unimplemented-trait`: a `pub trait` of a contract crate that no production
   code implements (`impl ... Trait ... for`), counting every crate except those
   of layer `tooling`. Every contract trait has a production implementation (D4).
+* `foreign-persistence-port`: a `pub trait` of a contract crate named `*Repository`
+  or `*Store` (a persistence port) that the production code of another bounded
+  context names, keyed `Trait <- crate`. Persistence is private to its context
+  (plan 9.19 item 1): a crate may name the port only when it shares the declaring
+  crate's `bounded_context`, is a composition root (layer `bootstrap`, or no
+  `bounded_context`), is of layer `tooling`, or is a storage backend -- a crate of
+  layer `infrastructure` whose name contains `store` and that implements the
+  trait (`impl ... Trait for`); a backend inside the same context is already
+  allowed by the first clause. Ports of the `SDK release` contracts of
+  `TARGET_MAP` (and the contracts merging into them) are published for platform
+  use and are not counted. A name declared in several contract crates is allowed
+  when any declaring crate allows it. "Names" is a whole-word match in production
+  code, so a `use`, a bound or a `dyn` all count, once per crate.
 
 Every ratchet is held at or below `contract_map_baseline.json`; see
 `_architecture_ratchet.py` for how a fall is recorded
@@ -71,11 +84,24 @@ TARGET_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
     "awaken-resource-contract": ("Access and resources", ()),
 }
 
+# Contracts published with the SDK (and those merging into them): their ports serve the platform too.
+SDK_RELEASE_CONTRACTS = frozenset(
+    crate for target, (boundary, pending) in TARGET_MAP.items() if boundary == "SDK release"
+    for crate in (target, *pending)
+)
+PERSISTENCE_PORT = re.compile(r"(?:Repository|Store)$")
+COMPOSITION_LAYER = "bootstrap"
+TOOLING_LAYER = "tooling"
+STORAGE_LAYER = "infrastructure"
+STORAGE_NAME = "store"
+
 RULES = (
     Rule("contract-crates", "merge contracts on the same boundary instead of adding one (ADR-0091 D2)"),
     Rule("optional-role", "give the component the role as a typed constructor parameter (ADR-0091 D5)"),
     Rule("bundle-trait", "compose the roles in the composition root, not in a contract (ADR-0091 D4)"),
     Rule("unimplemented-trait", "implement the trait in production or delete it (ADR-0091 D4)"),
+    Rule("foreign-persistence-port", "use the owning context's application port or a narrow observation; "
+         "persistence is private to its context (ADR-0091 D2, plan 9.19 item 1)"),
 )
 
 _TRAIT = re.compile(r"\bpub\s+trait\s+([A-Z]\w*)[^{;]*\{")
@@ -164,29 +190,62 @@ def implemented_traits(syntax: str) -> set[str]:
     return names
 
 
+def persistence_port_allowed(port_crate: _architecture_ratchet.CrateSource,
+                             user: _architecture_ratchet.CrateSource, implements: bool) -> bool:
+    """Whether `user` may name a persistence port declared in contract crate `port_crate`."""
+    layer, context = user.metadata.get("layer"), user.metadata.get("bounded_context")
+    return (port_crate.name in SDK_RELEASE_CONTRACTS or layer in (COMPOSITION_LAYER, TOOLING_LAYER)
+            or context is None or context == port_crate.metadata.get("bounded_context")
+            or (implements and layer == STORAGE_LAYER and STORAGE_NAME in user.name))
+
+
+def _foreign_persistence_ports(sources, ports: dict[str, list], implemented_by: dict[str, set[str]],
+                               root: Path, counts: Counts, places: Places) -> None:
+    if not ports:
+        return
+    named = re.compile(r"\b(" + "|".join(sorted(map(re.escape, ports))) + r")\b")
+    for crate in sources:
+        first: dict[str, str] = {}
+        for path, syntax in crate.syntax.items():
+            for match in named.finditer(syntax):
+                relative = path.relative_to(root) if root in path.parents else path
+                first.setdefault(match.group(1), f"{relative}:{_architecture_ratchet.line_of(syntax, match.start())}")
+        for name, where in sorted(first.items()):
+            implements = name in implemented_by.get(crate.name, set())
+            if not any(persistence_port_allowed(owner, crate, implements) for owner in ports[name]):
+                counts["foreign-persistence-port"][f"{name} <- {crate.name}"] = 1
+                places["foreign-persistence-port"][f"{name} <- {crate.name}"] = [where]
+
+
 def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) -> tuple[Counts, Places, set[str]]:
     counts: Counts = {rule.name: Counter() for rule in RULES}
     places: Places = {rule.name: defaultdict(list) for rule in RULES}
     contracts = {crate.name for crate in sources if crate.metadata.get("layer") == "contract"}
     counts["contract-crates"]["contract crates"] = len(contracts)
     implemented: set[str] = set()
+    implemented_by: dict[str, set[str]] = defaultdict(set)
     declared: dict[str, list[str]] = defaultdict(list)
+    ports: dict[str, list[_architecture_ratchet.CrateSource]] = defaultdict(list)
     for crate in sources:
         for path, syntax in crate.syntax.items():
             relative = path.relative_to(root) if root in path.parents else path
-            if crate.metadata.get("layer") != "tooling":
-                implemented |= implemented_traits(syntax)
+            implemented_by[crate.name] |= implemented_traits(syntax)
+            if crate.metadata.get("layer") != TOOLING_LAYER:
+                implemented |= implemented_by[crate.name]
             if crate.name not in contracts:
                 continue
             for name, offset, has_method in contract_traits(syntax):
                 where = f"{relative}:{_architecture_ratchet.line_of(syntax, offset)}"
                 declared[name].append(where)
+                if PERSISTENCE_PORT.search(name) and crate not in ports[name]:
+                    ports[name].append(crate)
                 if not has_method:
                     counts["bundle-trait"][name] += 1
                     places["bundle-trait"][name].append(where)
             for key, offset in optional_roles(syntax):
                 counts["optional-role"][key] += 1
                 places["optional-role"][key].append(f"{relative}:{_architecture_ratchet.line_of(syntax, offset)}")
+    _foreign_persistence_ports(sources, ports, implemented_by, root, counts, places)
     for name, where in declared.items():
         if name not in implemented:
             counts["unimplemented-trait"][name] += len(where)
@@ -222,6 +281,12 @@ def selftest() -> None:
     | B2   | `pub trait` with a method; a private trait                            | not counted |
     | U1   | contract trait implemented (plain, generic, blanket, path, generic args, `!`) | not counted |
     | U2   | contract trait only named in a bound or a `dyn`, or implemented only in a tooling crate | counted |
+    | P1   | another context names a `*Repository` / `*Store` contract trait (use, bound or `dyn`), once per crate | counted `Trait <- crate` |
+    | P2   | the user shares the declaring crate's bounded context                 | not counted |
+    | P3   | composition root (layer `bootstrap`, or no bounded context); tooling crate | not counted |
+    | P4   | infrastructure crate named `*store*` implementing the port (storage backend) | not counted |
+    | P5   | implements the port but is not a `*store*` infrastructure crate; names a `*store*` port without implementing it | counted |
+    | P6   | port declared in an `SDK release` contract; name not ending in Repository/Store; named only in a comment or literal | not counted |
     """
     pending = {"t": ("b", ("old",))}
     assert target_map_errors({"t", "old"}, pending) == [], "T1"
@@ -267,7 +332,43 @@ def selftest() -> None:
     assert contracts == {"c"} and counts["contract-crates"] == {"contract crates": 1}, "measure crates"
     assert counts["unimplemented-trait"] == {"Unused": 1, "OnlyTooling": 1}, f"U1/U2 measure {counts}"
     assert counts["bundle-trait"] == {"Bundle": 1} and places["bundle-trait"]["Bundle"] == ["c/src/lib.rs:4"], "B1"
+    _selftest_persistence_ports()
     print("_contract_map_fitness selftest: the decision tables hold")
+
+
+def _crate(name: str, layer: str, context: str | None, code: str) -> _architecture_ratchet.CrateSource:
+    metadata = {"layer": layer} | ({"bounded_context": context} if context else {})
+    return _architecture_ratchet.CrateSource(name, metadata, Path(f"/w/{name}"), {Path(f"/w/{name}/src/lib.rs"): code})
+
+
+def _selftest_persistence_ports() -> None:
+    sdk = next(iter(SDK_RELEASE_CONTRACTS))
+    sources = (
+        _crate("port", "contract", "memory", "pub trait MemoryStore { fn a(&self); }\n"
+               "pub trait MemoryRepository { fn b(&self); }\npub trait StoreConfig { fn c(&self); }\n"),
+        _crate(sdk, "contract", "agent-runtime", "pub trait CheckpointStore { fn d(&self); }\n"),
+        _crate("app", "application", "memory", "fn f(s: &dyn MemoryStore) {}\n"),
+        _crate("edge", "interface", "protocols",
+               "use port::{MemoryStore, StoreConfig};\nfn f<R: MemoryRepository>(s: &dyn MemoryStore) {}\n"
+               "fn g(c: &dyn CheckpointStore) {}\n"),
+        _crate("root", "bootstrap", "memory-root", "use port::MemoryStore;\n"),
+        _crate("bin", "interface", None, "use port::MemoryStore;\n"),
+        _crate("kit", "tooling", "testing", "use port::MemoryStore;\n"),
+        _crate("memory-pg-store", "infrastructure", "storage", "impl port::MemoryStore for Pg {}\n"
+               "fn f(r: &dyn MemoryRepository) {}\n"),
+        _crate("host", "infrastructure", "execution", "impl MemoryStore for Host {}\n"),
+        _crate("quiet", "interface", "protocols", "// MemoryStore\nconst NAME: &str = \"MemoryRepository\";\n"),
+    )
+    sources = tuple(_architecture_ratchet.CrateSource(
+        crate.name, crate.metadata, crate.directory,
+        {path: _crate_boundary_workspace.production_rust(text) for path, text in crate.files.items()})
+        for crate in sources)
+    counts, places, _contracts = measure(sources, Path("/w"))
+    assert counts["foreign-persistence-port"] == {
+        "MemoryRepository <- edge": 1, "MemoryStore <- edge": 1, "MemoryRepository <- memory-pg-store": 1,
+        "MemoryStore <- host": 1}, f"P1-P6 {counts['foreign-persistence-port']}"
+    assert places["foreign-persistence-port"]["MemoryStore <- edge"] == ["edge/src/lib.rs:1"], "P1 where"
+
 
 
 if __name__ == "__main__":
