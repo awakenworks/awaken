@@ -33,8 +33,14 @@ pub mod control_service_boundary;
 mod coordinator_component;
 mod coordinator_persistence;
 mod credential_rollout_delivery;
+mod session_credential_rollout;
+#[cfg(test)]
+mod session_credential_rollout_tests;
 pub use credential_rollout_delivery::{
     HttpManagedCredentialRolloutTarget, credential_rollout_router_with_authenticator,
+};
+pub use session_credential_rollout::{
+    SessionCredentialRolloutAdoption, SessionProjectionPublication,
 };
 pub mod data_subject_boundary;
 mod extraction_references;
