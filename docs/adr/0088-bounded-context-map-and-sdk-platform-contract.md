@@ -14,6 +14,8 @@
   `api_snapshot` opt-in)
 - Amended: 2026-10-09 (reconciled with ADR-0086: credential vocabulary lives in
   `awaken-agent-contract`)
+- Amended: 2026-10-10 (the dispatch contract stops depending on Session contracts;
+  public paths that moved and their awaken-cloud impact)
 
 ## Context
 
@@ -220,3 +222,48 @@ the `credential` module of `awaken-agent-contract` and removed `awaken-credentia
 The code follows ADR-0086: `crates/contract/awaken-agent-contract/src/lib.rs:7`
 (`pub mod credential;`); no `awaken-credential` crate exists. Read the row as
 "credential reference vocabulary in `awaken-agent-contract::credential`".
+
+## Amendment 2026-10-10: the dispatch contract stops depending on Session contracts
+
+Decision 3 says Dispatch carries the Session's ports and published values but does
+not own them. `awaken-dispatch-contract` still owned six of them, so its contract
+depth was 9. They now live with the Session, and the dispatch contract's depth is 6.
+Its one remaining Session dependency, `awaken-session-configuration-contract`, is
+legacy-only: claim admission decodes the runtime projection of rows written before
+the Session published typed MCP credential requirements. It is removed once those
+rows have drained. Persisted bytes did not change; golden tests in
+`crates/contract/awaken-dispatch-contract/tests/persisted_wire_golden.rs` pin
+them.
+
+Public paths that moved (ADR-0091 D9 requires recording them):
+
+| Before | After |
+|---|---|
+| `awaken_dispatch_contract::{ClaimedSessionControlError, ClaimedSessionRealizationControl}` | `awaken_session_realization_contract::…` |
+| `awaken_dispatch_contract::ClaimedSessionCoordinationControl` | `awaken_session_execution_contract::ClaimedSessionCoordinationControl<Claim>` (Host uses `<RunClaim>`) |
+| `awaken_dispatch[_contract]::SessionRunAdmissionObserver` | `awaken_dispatch_execution::SessionRunAdmissionObserver` |
+| `awaken_dispatch[_contract]::{ResourceOperationFence, ArtifactPublicationFence}` | `awaken_session_realization_contract::ResourceOperationFence`; the alias is deleted |
+| `awaken_dispatch_contract::run_dispatch::DispatchedSessionRuntimeProjection` | `awaken_session_configuration_contract::SessionRuntimeProjection` |
+| `awaken_session_execution_contract::{SessionRunReplacement, SessionRunCommandFingerprint}` | `awaken_session_types::…`; `SessionRunCommandFingerprint::current(&cmd)` is `cmd.command_fingerprint()` |
+| `SessionResourceEnvelope::from_manifest(&m)` | `SessionResourceEnvelope::at_revision(m.workspace_id.clone(), m.revision, m.encode_resources()?)` |
+| `envelope.decode_manifest()` (resource) | `envelope.decode_with(SessionResourceManifest::decode_resources)` |
+| `SessionRuntimeEnvelope::from_projection(env, tools, stages)` | `SessionRuntimeEnvelope::new(SessionRuntimeProjection { environment, tools, mcp_stages: Some(stages) }.encode()?)`; a current admission uses `.dispatch()`, which also returns the MCP credential requirements to place in `PlacementRequirements::session_mcp_credentials` |
+| `envelope.decode_projection()` (runtime) | `envelope.decode_with(SessionRuntimeProjection::decode)` |
+
+awaken-cloud production code uses none of these paths. These awaken-cloud test
+locations no longer compile, and each takes the replacement above:
+
+| Location | Removed call | Replacement |
+|---|---|---|
+| `crates/awaken-hosting-durable/tests/phase1_cross_process.rs:1079` | `SessionResourceEnvelope::from_manifest` | `at_revision(…, manifest.encode_resources()?)` |
+| `crates/awaken-hosting-durable/tests/phase1_cross_process.rs:1108` | `.decode_projection()` | `.decode_with(SessionRuntimeProjection::decode)` |
+| `crates/awaken-hosting-durable/tests/deployed_cluster_causal.rs:271` | `SessionResourceEnvelope::from_manifest` | `at_revision(…, resources.encode_resources()?)` |
+| `crates/awaken-hosting-durable/tests/deployed_cluster_causal.rs:336` | `.decode_projection()` | `.decode_with(SessionRuntimeProjection::decode)` |
+| `crates/awaken-hosting-durable/tests/deployed_cluster_causal.rs:404` | `.decode_manifest()` | `.decode_with(SessionResourceManifest::decode_resources)` |
+| `crates/awaken-hosting-durable/tests/support/retained_session.rs:49` | `SessionRuntimeEnvelope::from_projection` | `SessionRuntimeEnvelope::new(SessionRuntimeProjection { … }.encode()?)` |
+
+A row built as at `retained_session.rs:49` carries no typed requirements, so claim
+admission takes the legacy full-decode path for it; that stays correct until the
+fallback is removed, after which the helper must also set
+`placement.session_mcp_credentials` from `.dispatch()`.
+
