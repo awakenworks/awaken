@@ -1,4 +1,4 @@
-//! Volatile store fixtures for Managed protocol tests.
+//! Volatile store fixtures and protocol test doubles for Managed protocol tests.
 //!
 //! Consumers: the Managed adapter's own tests (as a dev-dependency), its
 //! integration tests, the Coordinator's tests and the scenario host. The
@@ -7,6 +7,27 @@
 //! four stores and a catalog into every crate that enables it.
 
 use std::sync::Arc;
+
+mod committed_audit;
+mod hosted_doubles;
+mod managed_event_observer;
+mod projection_completion;
+mod protocol_doubles;
+
+pub use committed_audit::{
+    AwaitTargets, StateLog, audited_lifecycle_records, fixture_state_log, fixture_thread_audit,
+    fixture_usage_command, lifecycle_audit_pausing_on, lifecycle_audit_records,
+    remember_ticket_await_target, tool_call_target,
+};
+pub use hosted_doubles::EmptyManagedTunnelApplication;
+pub use managed_event_observer::{
+    DurableFact, wait_for_delivered_lifecycle_facts, wait_for_session_events,
+};
+pub use projection_completion::{
+    complete_session_projection_init, complete_terminal_cleanup_disposal,
+    complete_terminal_cleanup_preparation, observe_realization_request,
+};
+pub use protocol_doubles::CoordinatedRuntimeFake;
 
 use awaken_environment_application::EnvironmentApplication;
 use awaken_environment_execution_application::{

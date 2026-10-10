@@ -24,10 +24,6 @@ mod timeline_scenarios;
 mod tool_occurrences;
 mod warm_cold_equivalence;
 
-use super::committed_projection::{
-    budget_reach_close_cursor, budget_reach_projection_close_cursor,
-    message_projection_ordinal_bound,
-};
 use super::*;
 use crate::state::test_support::{RehydrateFake, ephemeral_session_repo};
 use async_trait::async_trait;
@@ -35,7 +31,12 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent, encode_run_lifecycle_cursor};
+use awaken_managed_session_events::{
+    budget_reach_close_cursor, budget_reach_projection_close_cursor,
+    message_projection_ordinal_bound,
+};
 use awaken_session_application_contract::Pending;
+use awaken_session_execution_contract::OutcomeIteration;
 use awaken_session_execution_contract::{SessionRuntime, ToolPermissionDecision};
 use awaken_session_types::RunError;
 use awaken_tool_contract::tool_batch::ToolBatch;
@@ -413,7 +414,7 @@ async fn interrupt_freezes_a_committed_child_before_the_managed_projection_catch
     // that exact child once; E3 no projection refresh or second target ledger is
     // required. Decision table: IC1=C1+C2+C3=>E1+E2+E3. The real Advisor E2E
     // covers the same window while the provider request is in flight.
-    let runtime = crate::test_support::CoordinatedRuntimeFake::default();
+    let runtime = awaken_protocol_managed_testkit::CoordinatedRuntimeFake::default();
     runtime.defer_child_completion();
     let state = ManagedState::new(runtime.clone()).await;
     let session = state
@@ -453,7 +454,7 @@ async fn interrupt_freezes_a_committed_child_before_the_managed_projection_catch
         vec![
             SessionThreadTarget::Primary,
             SessionThreadTarget::Child(ThreadId(
-                crate::test_support::CoordinatedRuntimeFake::CHILD_THREAD_ID.into(),
+                awaken_protocol_managed_testkit::CoordinatedRuntimeFake::CHILD_THREAD_ID.into(),
             )),
         ],
         "IC1/E1-E3"
@@ -965,8 +966,8 @@ struct LifecycleRuntime {
     reads: crate::state::test_support::ReadControl,
     pending: Arc<Mutex<Option<Pending>>>,
     /// The audited target of every pause a live ticket opened (see
-    /// `crate::test_support::remember_ticket_await_target`).
-    await_targets: Arc<Mutex<crate::test_support::AwaitTargets>>,
+    /// `awaken_protocol_managed_testkit::remember_ticket_await_target`).
+    await_targets: Arc<Mutex<awaken_protocol_managed_testkit::AwaitTargets>>,
     /// Awaiting commits that model a legacy audit row without a target.
     unaudited_awaits: Arc<Mutex<std::collections::HashSet<RunLifecycleCursor>>>,
     /// Advance only the committed Thread coordinate for a finite/infinite burst
@@ -1096,7 +1097,7 @@ impl awaken_session_execution_contract::RealizationRuntime for LifecycleRuntime 
         awaken_lease_contract::authority::AuthorityProofStarted,
         awaken_session_types::RunError,
     > {
-        crate::test_support::observe_realization_request()
+        awaken_protocol_managed_testkit::observe_realization_request()
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -1138,7 +1139,11 @@ impl awaken_session_execution_contract::RealizationRuntime for LifecycleRuntime 
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
-        crate::test_support::complete_session_projection_init(thread, &projection, &mode)?;
+        awaken_protocol_managed_testkit::complete_session_projection_init(
+            thread,
+            &projection,
+            &mode,
+        )?;
         Ok(())
     }
 
@@ -1655,7 +1660,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for LifecycleRuntime {
         // One fixture commit owns transitions and enriched audit payloads.
         // An explicit row supplies details such as an historical await target
         // at that exact coordinate; it cannot exist only on a second feed.
-        let mut audit = crate::test_support::fixture_thread_audit(
+        let mut audit = awaken_protocol_managed_testkit::fixture_thread_audit(
             &lifecycle,
             thread_id,
             u64::MAX,
@@ -4869,7 +4874,9 @@ fn coordinated_projection_validation_retains_only_required_trailing_root_reads()
     for links in 0..=1 {
         for children in 0..=1 {
             assert_eq!(
-                committed_projection::projection_validation_needs_trailing_root(links, children),
+                committed_projection::source_fence::projection_validation_needs_trailing_root(
+                    links, children
+                ),
                 links != 0 || children != 0,
                 "C1={links} C2={children}"
             );

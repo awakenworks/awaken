@@ -7,7 +7,7 @@ impl ManagedState {
         &self,
         environment_id: &str,
     ) -> Result<
-        Option<crate::env_registry::EnvItem>,
+        Option<awaken_environment_contract::EnvItem>,
         awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError,
     > {
         self.roles

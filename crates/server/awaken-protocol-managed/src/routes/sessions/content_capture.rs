@@ -93,7 +93,8 @@ mod tests {
 
     async fn session_state(policy: CapturePolicy) -> (Arc<ManagedState>, String) {
         let mut state =
-            ManagedState::new(crate::test_support::CoordinatedRuntimeFake::default()).await;
+            ManagedState::new(awaken_protocol_managed_testkit::CoordinatedRuntimeFake::default())
+                .await;
         state.capture_policy = policy;
         let session = state
             .create_session(

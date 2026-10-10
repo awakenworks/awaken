@@ -481,6 +481,7 @@ dependencies = [
  "awaken-protocol-acp",
  "awaken-protocol-awaken",
  "awaken-protocol-managed",
+ "awaken-protocol-managed-testkit",
  "awaken-protocol-mcp",
  "awaken-provider-genai",
  "awaken-provisioning-contract",
@@ -2149,20 +2150,35 @@ dependencies = [
 name = "awaken-protocol-managed-testkit"
 version = "1.0.0"
 dependencies = [
+ "async-trait",
+ "awaken-agent-contract",
  "awaken-env-store",
  "awaken-environment-application",
  "awaken-environment-execution-application",
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",
+ "awaken-lease-contract",
+ "awaken-managed-session-events",
  "awaken-protocol-managed",
  "awaken-provisioning-contract",
+ "awaken-runtime-contract",
  "awaken-sandbox-policy-store",
+ "awaken-session-application-contract",
+ "awaken-session-budget-contract",
+ "awaken-session-configuration-contract",
  "awaken-session-execution-contract",
+ "awaken-session-realization-contract",
  "awaken-session-repository-contract",
+ "awaken-session-resource-contract",
+ "awaken-session-state-contract",
  "awaken-session-store",
+ "awaken-session-types",
  "awaken-time",
+ "awaken-tool-contract",
  "awaken-work-store",
  "awaken-worker-contract",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

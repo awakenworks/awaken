@@ -14,8 +14,9 @@ use awaken_agent_contract::event::{Fact, Transcoder};
 use awaken_managed_session_events::{ToolUseFamily, TranscriptFold};
 use awaken_session_application_contract::Pending;
 
-use crate::state::{AgentCapabilities, CustomTool, OutcomeIteration};
 use crate::types::{EvaluatedPermission, OutboundKind, StopReason};
+use awaken_session_configuration_contract::{AgentCapabilities, CustomTool};
+use awaken_session_execution_contract::OutcomeIteration;
 
 /// Versioned, length-delimited public identity for a Managed tool-use event.
 /// Runtime/provider call ids are only batch-local; qualifying them by logical
@@ -459,10 +460,7 @@ pub fn project_messages(
     )
 }
 
-pub(crate) use awaken_managed_session_events::{
-    AdvisorConsultationBlocks, RuntimeToolFollowupAdmission, RuntimeToolProjectionPhase,
-    advisor_consultation_blocks,
-};
+use awaken_managed_session_events::{AdvisorConsultationBlocks, advisor_consultation_blocks};
 
 /// Project a committed transcript delta while retaining MCP call identities
 /// learned from the already-projected prefix. Active-active cache refresh uses

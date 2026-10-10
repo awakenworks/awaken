@@ -6,8 +6,9 @@ use std::collections::HashSet;
 use serde::Serialize;
 
 use super::{SessionListOrder, WireErr, error_response};
-use crate::state::{RunError, StateError};
+use crate::state::StateError;
 use crate::types::Session;
+use awaken_session_types::RunError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SessionCursorDirection {

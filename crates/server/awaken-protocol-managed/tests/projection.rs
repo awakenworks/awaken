@@ -18,7 +18,7 @@ use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_protocol_managed::ManagedState;
-use awaken_protocol_managed::test_support::CoordinatedRuntimeFake;
+use awaken_protocol_managed_testkit::CoordinatedRuntimeFake;
 
 /// The Managed router as a real deployment mounts it — behind the trusted edge
 /// stamp that the composition root installs. Handlers are fail-closed on an
@@ -484,7 +484,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ScriptFake {
         awaken_lease_contract::authority::AuthorityProofStarted,
         awaken_session_types::RunError,
     > {
-        awaken_protocol_managed::test_support::observe_realization_request()
+        awaken_protocol_managed_testkit::observe_realization_request()
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -526,7 +526,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ScriptFake {
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
-        awaken_protocol_managed::test_support::complete_session_projection_init(
+        awaken_protocol_managed_testkit::complete_session_projection_init(
             thread,
             &projection,
             &mode,
@@ -1110,7 +1110,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ScriptFake {
         effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
         authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
     ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, RunError> {
-        awaken_protocol_managed::test_support::complete_terminal_cleanup_preparation(
+        awaken_protocol_managed_testkit::complete_terminal_cleanup_preparation(
             &effect,
             &authorization,
         )
@@ -1134,7 +1134,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ScriptFake {
         &self,
         effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
-        Ok(awaken_protocol_managed::test_support::complete_terminal_cleanup_disposal(&effect))
+        Ok(awaken_protocol_managed_testkit::complete_terminal_cleanup_disposal(&effect))
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never

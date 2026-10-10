@@ -1,4 +1,4 @@
-use awaken_protocol_managed::test_support::DurableFact;
+use awaken_protocol_managed_testkit::DurableFact;
 use axum::Router;
 use axum::body::Body;
 use axum::http::Request;
@@ -29,7 +29,7 @@ pub async fn wait_for_session_events(
     // Decision rules: W1=C1||C2 -> E1; W2=C3 -> E2; W3=C4 -> E3.
     let uri = format!("/v1/sessions/{session_id}/events?limit=500");
     let app = app.clone();
-    awaken_protocol_managed::test_support::wait_for_session_events(
+    awaken_protocol_managed_testkit::wait_for_session_events(
         fact,
         std::time::Duration::from_secs(10),
         expectation,

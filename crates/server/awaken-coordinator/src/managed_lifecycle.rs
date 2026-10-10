@@ -98,8 +98,8 @@ mod tests {
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_agent_contract::stream::event::Event as StreamEvent;
     use awaken_agent_contract::stream::sink::{Error as SinkError, Sink};
-    use awaken_protocol_managed::test_support::CoordinatedRuntimeFake;
     use awaken_protocol_managed::{ManagedState, StateError, router};
+    use awaken_protocol_managed_testkit::CoordinatedRuntimeFake;
     use awaken_session_application_contract::LifecycleFactDelivery;
     use awaken_session_execution_contract::{AdmitSessionRun, session_run_id};
     use awaken_session_state_contract::{ManagedLifecycleFact, SessionExecutionState};

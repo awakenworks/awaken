@@ -208,16 +208,16 @@ impl ManagedState {
             match tool_reply_phases
                 .get(&candidate.key)
                 .copied()
-                .unwrap_or(project::RuntimeToolProjectionPhase::Unclassified)
+                .unwrap_or(awaken_managed_session_events::RuntimeToolProjectionPhase::Unclassified)
                 .followup_admission()
             {
-                project::RuntimeToolFollowupAdmission::Reject => {
+                awaken_managed_session_events::RuntimeToolFollowupAdmission::Reject => {
                     unresolved.insert(candidate.key.clone());
                 }
-                project::RuntimeToolFollowupAdmission::Queue => {
+                awaken_managed_session_events::RuntimeToolFollowupAdmission::Queue => {
                     retained_reply_requires_queue = true;
                 }
-                project::RuntimeToolFollowupAdmission::Ready => {}
+                awaken_managed_session_events::RuntimeToolFollowupAdmission::Ready => {}
             }
         }
         let budget_cap_reached = !persisted_session.budget.can_admit_model_request();

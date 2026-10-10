@@ -25,7 +25,7 @@ mod refresh_entrypoint;
 pub(crate) use refresh_entrypoint::ProjectionObservationDecision;
 mod root_projection;
 mod run_observation_projection;
-mod source_fence;
+pub(in crate::state::events) mod source_fence;
 mod usage_projection;
 use crate::state::session_record::ProjectionDeliveryMemo;
 use crate::state::sessions::RehydrationPurpose;
@@ -313,13 +313,3 @@ impl ManagedState {
         result
     }
 }
-
-// Test-only re-exports stay after every production item: they name the
-// kernels the Session event tests pin, under the paths those tests use.
-#[cfg(test)]
-pub(super) use awaken_managed_session_events::{
-    budget_reach_close_cursor, budget_reach_projection_close_cursor,
-    message_projection_ordinal_bound,
-};
-#[cfg(test)]
-pub(super) use source_fence::projection_validation_needs_trailing_root;

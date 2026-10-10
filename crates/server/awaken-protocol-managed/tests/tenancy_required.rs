@@ -17,8 +17,8 @@ mod support;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_protocol_managed::test_support::EmptyManagedTunnelApplication;
 use awaken_protocol_managed::{router, tunnels_router};
+use awaken_protocol_managed_testkit::EmptyManagedTunnelApplication;
 use awaken_session_application_contract::StepOutcome;
 use awaken_session_execution_contract::{OutcomeDrive, SessionRuntime, ToolPermissionDecision};
 use awaken_session_types::RunError;
@@ -127,7 +127,7 @@ impl awaken_session_execution_contract::RealizationRuntime for AcceptingFake {
         awaken_lease_contract::authority::AuthorityProofStarted,
         awaken_session_types::RunError,
     > {
-        awaken_protocol_managed::test_support::observe_realization_request()
+        awaken_protocol_managed_testkit::observe_realization_request()
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -169,7 +169,7 @@ impl awaken_session_execution_contract::RealizationRuntime for AcceptingFake {
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
-        let _ = awaken_protocol_managed::test_support::complete_session_projection_init(
+        let _ = awaken_protocol_managed_testkit::complete_session_projection_init(
             thread,
             &projection,
             &mode,

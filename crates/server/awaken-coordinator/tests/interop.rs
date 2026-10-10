@@ -45,7 +45,7 @@ use awaken_authz_enforce::{
     ApplicationAccessAuthenticator, ApplicationAuthenticationError, ApplicationGrant,
     ApplicationIdentity, ApplicationThreadBinding, application_guard,
 };
-use awaken_protocol_managed::test_support::DurableFact;
+use awaken_protocol_managed_testkit::DurableFact;
 use awaken_scenario_host::{
     EchoModel, build_custom_router, build_custom_router_and_host, build_echo_router,
     build_router_and_host,

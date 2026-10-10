@@ -333,12 +333,15 @@ pub(crate) struct RehydrateFake {
     pub(super) pending: Arc<std::sync::Mutex<Option<awaken_session_application_contract::Pending>>>,
     /// `RunStateChanged.await_target` of an Awaiting commit that opened a
     /// ticket, by lifecycle cursor; absent models a commit left unaudited.
-    pub(super) await_targets: Arc<std::sync::Mutex<crate::test_support::AwaitTargets>>,
+    pub(super) await_targets: Arc<std::sync::Mutex<awaken_protocol_managed_testkit::AwaitTargets>>,
     /// Every state command each Thread has exposed, with the commit it first
     /// appeared at: committed state is append-only, so a later snapshot
     /// keeps an earlier value and its coordinate.
-    pub(super) state_log:
-        Arc<std::sync::Mutex<std::collections::HashMap<String, crate::test_support::StateLog>>>,
+    pub(super) state_log: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, awaken_protocol_managed_testkit::StateLog>,
+        >,
+    >,
     /// Awaiting commits that model a legacy audit row without a target.
     pub(super) unaudited_awaits:
         Arc<std::sync::Mutex<std::collections::HashSet<awaken_agent_contract::RunLifecycleCursor>>>,
@@ -567,7 +570,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RehydrateFake {
         awaken_lease_contract::authority::AuthorityProofStarted,
         awaken_session_types::RunError,
     > {
-        crate::test_support::observe_realization_request()
+        awaken_protocol_managed_testkit::observe_realization_request()
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -610,9 +613,11 @@ impl awaken_session_execution_contract::RealizationRuntime for RehydrateFake {
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
         let adopts_environment = mode.adopts_resident_environment();
-        if let Some(init) =
-            crate::test_support::complete_session_projection_init(thread, &projection, &mode)?
-        {
+        if let Some(init) = awaken_protocol_managed_testkit::complete_session_projection_init(
+            thread,
+            &projection,
+            &mode,
+        )? {
             self.order.lock().unwrap().push("runtime");
             self.restored_runtimes.lock().unwrap().push((
                 thread.to_string(),
@@ -1472,7 +1477,9 @@ impl awaken_session_execution_contract::ThreadReadRuntime for RehydrateFake {
         if let Some(usage) = self.usage_by_thread.lock().unwrap().get(thread_id).cloned() {
             // Production derives accounting from this exact committed state
             // prefix; keep the fake structurally faithful.
-            state.push(crate::test_support::fixture_usage_command(usage));
+            state.push(awaken_protocol_managed_testkit::fixture_usage_command(
+                usage,
+            ));
         }
         if self
             .disposition_by_thread
@@ -1590,7 +1597,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for RehydrateFake {
             .cloned();
         let (state, state_commit_cursors) = match explicit_state_cursors {
             Some(cursors) => (state, cursors),
-            None => crate::test_support::fixture_state_log(
+            None => awaken_protocol_managed_testkit::fixture_state_log(
                 state,
                 atomic_fixture_cursor,
                 self.state_log
@@ -1621,7 +1628,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for RehydrateFake {
             message_commit_cursors,
             state,
             state_commit_cursors,
-            events: crate::test_support::fixture_thread_audit(
+            events: awaken_protocol_managed_testkit::fixture_thread_audit(
                 &lifecycle,
                 thread_id,
                 store_cursor,
@@ -1753,7 +1760,10 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RehydrateFake
             .lock()
             .unwrap()
             .push(effect.command.thread_id.clone());
-        crate::test_support::complete_terminal_cleanup_preparation(&effect, &authorization)
+        awaken_protocol_managed_testkit::complete_terminal_cleanup_preparation(
+            &effect,
+            &authorization,
+        )
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -1774,9 +1784,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RehydrateFake
         &self,
         effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, RunError> {
-        Ok(crate::test_support::complete_terminal_cleanup_disposal(
-            &effect,
-        ))
+        Ok(awaken_protocol_managed_testkit::complete_terminal_cleanup_disposal(&effect))
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -1942,4 +1950,20 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RehydrateFake 
     ) -> Result<(), RunError> {
         Ok(())
     }
+}
+
+/// The Managed Environment surfaces over the testkit's volatile stores
+/// (integration tests use the testkit's function directly).
+pub(crate) fn environment_components() -> (
+    std::sync::Arc<crate::EnvironmentAuthoringState>,
+    std::sync::Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
+) {
+    let fixture = awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock());
+    (
+        std::sync::Arc::new(crate::EnvironmentAuthoringState::new(
+            fixture.application,
+            fixture.sandbox_policies,
+        )),
+        fixture.execution,
+    )
 }

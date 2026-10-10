@@ -17,7 +17,7 @@ use awaken_deployment_application::{
     DeploymentLaunchOutcome, DeploymentSchedule, DeploymentSeedEvent, DeploymentSessionLauncher,
 };
 use awaken_protocol_managed::ManagedState;
-use awaken_protocol_managed::test_support::CoordinatedRuntimeFake;
+use awaken_protocol_managed_testkit::CoordinatedRuntimeFake;
 use awaken_session_store::SqliteManagedSessionRepository;
 use awaken_tenancy::WorkspaceScope;
 use awaken_webhook::verify;
@@ -222,7 +222,7 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
     // outbox row completes only after its delivery succeeded, so an empty
     // outbox is the exact evidence that nothing more is in flight and `== 1`
     // is a check rather than a race.
-    awaken_protocol_managed::test_support::wait_for_delivered_lifecycle_facts(
+    awaken_protocol_managed_testkit::wait_for_delivered_lifecycle_facts(
         facts.as_ref(),
         std::time::Duration::from_secs(2),
         "the created Session's lifecycle fact to be delivered",
@@ -298,7 +298,7 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
         .expect("W4 claim and finish the due run");
     assert_eq!(runs.len(), 1, "W4 one due occurrence");
 
-    awaken_protocol_managed::test_support::wait_for_delivered_lifecycle_facts(
+    awaken_protocol_managed_testkit::wait_for_delivered_lifecycle_facts(
         facts.as_ref(),
         std::time::Duration::from_secs(3),
         "both Deployment lifecycle facts to be delivered",

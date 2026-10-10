@@ -6,7 +6,7 @@
 mod provider_push;
 
 use async_trait::async_trait;
-use awaken_protocol_managed::test_support::DurableFact;
+use awaken_protocol_managed_testkit::DurableFact;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, DeltaSink, LlmExecutor, ToolCall,
 };
@@ -428,7 +428,7 @@ async fn send_and_wait_until(
     assert!(status.is_success(), "message admission: {status} {receipt}");
     let app = app.clone();
     let path = format!("/v1/sessions/{session}/events?limit=500");
-    let list = awaken_protocol_managed::test_support::wait_for_session_events(
+    let list = awaken_protocol_managed_testkit::wait_for_session_events(
         DurableFact::command_processed(&receipt),
         Duration::from_secs(120),
         "Zhike turn completes",
@@ -521,7 +521,7 @@ async fn sales_scenario(inner: Arc<dyn LlmExecutor>, model_name: &str, verify_gu
     // Session attention. No test call to get_background_task or task driver.
     let app_read = app.clone();
     let path = format!("/v1/sessions/{session}/events?limit=500");
-    awaken_protocol_managed::test_support::wait_for_session_events(
+    awaken_protocol_managed_testkit::wait_for_session_events(
         DurableFact::committed_event("agent.message"),
         Duration::from_secs(120),
         "connected notification produces greeting",

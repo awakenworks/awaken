@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use awaken_protocol_managed::test_support::DurableFact;
+use awaken_protocol_managed_testkit::DurableFact;
 use awaken_provider_genai::GenaiExecutor;
 use awaken_scenario_host::{build_graded_router, build_router};
 use axum::Router;
@@ -94,7 +94,7 @@ async fn managed_events_after(
 ) -> Value {
     let uri = format!("/v1/sessions/{session}/events");
     let app = app.clone();
-    awaken_protocol_managed::test_support::wait_for_session_events(
+    awaken_protocol_managed_testkit::wait_for_session_events(
         DurableFact::command_processed(accepted_receipt),
         std::time::Duration::from_secs(90),
         expectation,

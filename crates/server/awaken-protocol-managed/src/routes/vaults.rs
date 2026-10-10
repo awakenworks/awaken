@@ -174,7 +174,7 @@ fn apply_metadata_patch(
     }
 }
 
-pub(crate) use awaken_session_configuration_contract::{McpProbe, McpProbeStatus};
+use awaken_session_configuration_contract::{McpProbe, McpProbeStatus};
 
 // ---- State ------------------------------------------------------------------
 

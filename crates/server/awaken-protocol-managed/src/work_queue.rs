@@ -8,7 +8,7 @@
 //! named.
 
 use awaken_worker_contract::WorkState as DomainWorkState;
-pub(crate) use awaken_worker_contract::*;
+use awaken_worker_contract::{ClaimedWork, WorkItem, WorkPayload};
 
 use crate::types::environment::{Work, WorkData, WorkObjectType, WorkState as WireWorkState};
 
@@ -78,6 +78,7 @@ fn project_payload(data: &WorkPayload) -> WorkData {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_worker_contract::WorkState;
     use base64::Engine as _;
     use std::collections::BTreeMap;
 
