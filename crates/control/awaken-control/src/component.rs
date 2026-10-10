@@ -504,7 +504,7 @@ async fn recover_and_supervise_credentials(
                 () = cancel.cancelled() => break,
                 _ = interval.tick() => {}
             }
-            if let Err(error) = rollout_state.reconcile_rollouts().await {
+            if let Err(error) = rollout_state.application().reconcile_rollouts().await {
                 eprintln!("Managed credential rollout reconciliation failed: {error}");
             }
         }
