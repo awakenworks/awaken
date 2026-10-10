@@ -21,8 +21,8 @@
       "reason": "slice H (plan 10.4): each Session role moves to the component that owns its state; ManagedHost only composes"
     },
     "awaken-session-executor::SharedHost": {
-      "files": 42,
-      "methods": 324,
+      "files": 41,
+      "methods": 280,
       "reason": "slice H: each of the eleven session-runtime roles gets one owning component (plan 10.3 item 11)"
     },
     "awaken-session-application::SessionApplication": {
@@ -305,7 +305,7 @@
     "awaken-dispatch::sqlite/claim.rs::claim_exact_transaction_with_mode": 248,
     "awaken-dispatch::sqlite/dispatch_queue.rs::settle": 164,
     "awaken-session-executor::agent_runner/child_execution.rs::run_configured_agent_until_boundary": 273,
-    "awaken-session-executor::application.rs::install_frozen_session_projection_with_resource_authority": 293,
+    "awaken-session-executor::application.rs::install_frozen_session_projection_with_resource_authority": 292,
     "awaken-session-executor::background_task.rs::launch": 182,
     "awaken-session-executor::background_task.rs::launch_remote": 342,
     "awaken-session-executor::environment_continuation.rs::prepare_environment_continuation_source_release": 159,
@@ -317,17 +317,17 @@
     "awaken-session-executor::host/session/context/extensions.rs::memory": 220,
     "awaken-session-executor::host/session/context/extensions.rs::skills": 165,
     "awaken-session-executor::host/session/context/plan.rs::prepare": 195,
-    "awaken-session-executor::host/session/context/resources.rs::acquire": 271,
-    "awaken-session-executor::host/session/environment_lifecycle.rs::adopt_bound_session_environment_under_lifecycle": 264,
+    "awaken-session-executor::host/session/context/resources.rs::acquire": 270,
+    "awaken-session-executor::host/session/environment_lifecycle.rs::adopt_bound_session_environment_under_lifecycle": 254,
     "awaken-session-executor::host/session/environment_lifecycle/state.rs::install_projection_with_resource_reservation": 208,
-    "awaken-session-executor::host/session/environment_lifecycle/terminal_cleanup.rs::dispose_terminal_cleanup_effect": 172,
+    "awaken-session-executor::host/session/environment_lifecycle/terminal_cleanup.rs::dispose_terminal_cleanup_effect": 169,
     "awaken-session-executor::host/session/environment_lifecycle/terminal_cleanup.rs::prepare_terminal_cleanup_effect": 291,
-    "awaken-session-executor::host/session/environment_lifecycle/terminal_preparation.rs::install_bound_environment_under_lifecycle": 317,
-    "awaken-session-executor::host/session/environment_lifecycle/terminal_preparation.rs::prepare_bound_environment_for_effect_under_lifecycle": 228,
+    "awaken-session-executor::host/session/environment_lifecycle/terminal_preparation.rs::install_bound_environment_under_lifecycle": 310,
+    "awaken-session-executor::host/session/environment_lifecycle/terminal_preparation.rs::prepare_bound_environment_for_effect_under_lifecycle": 219,
     "awaken-session-executor::host/session/environment_lifecycle/terminal_preparation.rs::prepare_terminal_environment_under_lifecycle": 256,
     "awaken-session-executor::host/worker_resolver/claimed_dispatch.rs::worker_for_claimed": 248,
-    "awaken-session-executor::host/worker_resolver/session_realization/projection_synchronizer.rs::synchronize_session_projection": 244,
-    "awaken-session-executor::managed_resource_projection.rs::apply_session_inputs_body": 477,
+    "awaken-session-executor::host/worker_resolver/session_realization/projection_synchronizer.rs::synchronize_session_projection": 243,
+    "awaken-session-executor::managed_resource_projection.rs::apply_session_inputs_body": 476,
     "awaken-session-executor::managed_resource_projection.rs::stage_resolved_input_with_resource_authority": 313,
     "awaken-session-executor::provisioning.rs::repository_operation_credential": 203,
     "awaken-session-executor::skills.rs::build_skill_registry": 154,
@@ -393,8 +393,9 @@
     },
     "awaken-session-executor": {
       "deps": 47,
-      "lines": 35913,
-      "reason": "runtime-host split (plan 10.4 slices F, S, T, R, H): new behavior lands in its future crate; target < 20000 lines, about 26-28 dependencies"
+      "lines": 36055,
+      "reason": "runtime-host split (plan 10.4 slices R, E, H): lines hold host plus the realizer being extracted in place (+142 approved 2026-10-10 for the SessionRealizations view; leaves with the realization crate); host_lines may only fall; target < 20000 lines, about 26-28 dependencies",
+      "host_lines": 25028
     },
     "awaken-sandbox-container": {
       "deps": 11,
