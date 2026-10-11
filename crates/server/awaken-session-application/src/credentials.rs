@@ -160,20 +160,29 @@ impl SessionApplication {
     pub async fn ensure_repository_credentials_pinned(
         &self,
         owner_scope: &str,
-        mut session: PersistedSession,
+        session: PersistedSession,
     ) -> Result<PersistedSession, SessionPreparationError> {
+        let mut session = crate::mutation::aggregate_from_snapshot(session)
+            .map_err(repository_failure)
+            .map_err(mutation_failure)?;
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let holder = self.resource_plaintext_holder(&session)?;
-            let mut changed = self
-                .pin_repository_credentials(owner_scope, &holder, &mut session.resources.active)
+            let mut active = session.resources.active.clone();
+            let mut pending = session.resources.pending.clone();
+            self.pin_repository_credentials(owner_scope, &holder, &mut active)
                 .await?;
-            if let Some(pending) = &mut session.resources.pending {
-                changed |= self
-                    .pin_repository_credentials(owner_scope, &holder, pending)
+            if let Some(pending) = &mut pending {
+                self.pin_repository_credentials(owner_scope, &holder, pending)
                     .await?;
             }
+            let changed = session
+                .resources()
+                .migrate_repository_credential_pins(active, pending)
+                .map_err(|error| {
+                    SessionPreparationError::Rejected(RunError::bad_request(error.to_string()))
+                })?;
             if !changed {
-                return Ok(session);
+                return Ok(session.into_snapshot());
             }
             let session_id = session.session_id.clone();
             match self
@@ -188,8 +197,7 @@ impl SessionApplication {
                 Ok(commit) => return Ok(commit.into_session()),
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
                     session = self
-                        .session_repository()
-                        .get(&session_id)
+                        .session_aggregate(&session_id)
                         .await
                         .map_err(repository_failure)
                         .map_err(mutation_failure)?;

@@ -168,8 +168,14 @@ async fn mutation_time_receipt_table(
     faulting.commit_then_conflict_once("lost-time-ack");
     assert!(
         matches!(
-            app.commit_session_snapshot_with_record(&owner, desired.clone(), key.clone(), vec![])
-                .await,
+            app.commit_session_snapshot_with_record(
+                &owner,
+                awaken_session_state_contract::SessionAggregate::try_from(desired.clone())
+                    .expect("valid test snapshot"),
+                key.clone(),
+                vec![]
+            )
+            .await,
             Err(SessionMutationError::Conflict)
         ),
         "T7 reply lost"
@@ -177,7 +183,13 @@ async fn mutation_time_receipt_table(
     let committed = repo.get(&original.session_id).await.unwrap();
     let restarted = timed_application(repo.clone(), 999);
     let commit = restarted
-        .commit_session_snapshot_with_record(&owner, desired.clone(), key.clone(), vec![])
+        .commit_session_snapshot_with_record(
+            &owner,
+            awaken_session_state_contract::SessionAggregate::try_from(desired.clone())
+                .expect("valid test snapshot"),
+            key.clone(),
+            vec![],
+        )
         .await
         .unwrap();
     assert!(!commit.transitioned());
@@ -189,7 +201,13 @@ async fn mutation_time_receipt_table(
     assert!(
         matches!(
             restarted
-                .commit_session_snapshot_with_record(&owner, desired.clone(), conflicting, vec![])
+                .commit_session_snapshot_with_record(
+                    &owner,
+                    awaken_session_state_contract::SessionAggregate::try_from(desired.clone())
+                        .expect("valid test snapshot"),
+                    conflicting,
+                    vec![]
+                )
                 .await,
             Err(SessionMutationError::IdempotencyMismatch)
         ),
@@ -199,7 +217,13 @@ async fn mutation_time_receipt_table(
     assert!(
         matches!(
             restarted
-                .commit_session_snapshot_with_record(&owner, desired, stale, vec![])
+                .commit_session_snapshot_with_record(
+                    &owner,
+                    awaken_session_state_contract::SessionAggregate::try_from(desired)
+                        .expect("valid test snapshot"),
+                    stale,
+                    vec![]
+                )
                 .await,
             Err(SessionMutationError::Conflict)
         ),
@@ -243,8 +267,14 @@ async fn concurrent_root_cas_time_belongs_only_to_the_winner() {
         let key = receipt(&format!("race-{at}"), &desired);
         async move {
             gate.wait().await;
-            app.commit_session_snapshot_with_record(&owner, desired, key, vec![])
-                .await
+            app.commit_session_snapshot_with_record(
+                &owner,
+                awaken_session_state_contract::SessionAggregate::try_from(desired)
+                    .expect("valid test snapshot"),
+                key,
+                vec![],
+            )
+            .await
         }
     };
     let (left, right) = tokio::join!(write(200), write(300));

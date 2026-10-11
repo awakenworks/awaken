@@ -268,6 +268,45 @@ fn validate_credential_lifecycle_replacement(
     Ok(())
 }
 
+fn configuration_failure(
+    error: awaken_session_state_contract::SessionAggregateCommandError,
+) -> SessionUpdateError {
+    match error {
+        awaken_session_state_contract::SessionAggregateCommandError::ConfigurationNotIdle => {
+            SessionUpdateError::NotIdle
+        }
+        error => SessionUpdateError::Rejected(RunError::bad_request(error.to_string())),
+    }
+}
+
+fn apply_configuration_update(
+    session: &mut crate::SessionAggregate,
+    command: &SessionUpdateCommand,
+) -> Result<(), SessionUpdateError> {
+    if command.title.is_none() && command.metadata.is_none() && command.tools.is_none() {
+        return Ok(());
+    }
+    let mut configuration = session.configuration().map_err(configuration_failure)?;
+    if let Some(title) = &command.title {
+        configuration.set_title(match title {
+            SessionFieldUpdate::Clear => None,
+            SessionFieldUpdate::Replace(title) => Some(title.clone()),
+        });
+    }
+    if let Some(patch) = &command.metadata {
+        match patch {
+            SessionMetadataUpdate::Clear => configuration.clear_metadata(),
+            SessionMetadataUpdate::Patch(patch) => configuration.patch_metadata(patch),
+        }
+    }
+    if let Some(tools) = &command.tools {
+        configuration
+            .set_tools(tools.clone())
+            .map_err(configuration_failure)?;
+    }
+    Ok(())
+}
+
 impl SessionApplication {
     #[must_use]
     pub fn update_operation_id(session_id: &str, idempotency_key: &str) -> String {
@@ -289,8 +328,7 @@ impl SessionApplication {
             .map_err(SessionUpdateError::mutation)?;
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let mut session = self
-                .session_repository()
-                .get(session_id)
+                .session_aggregate(session_id)
                 .await
                 .map_err(repository_failure)
                 .map_err(SessionUpdateError::mutation)?;
@@ -299,7 +337,7 @@ impl SessionApplication {
                 .iter()
                 .any(|attachment| attachment.state == McpAttachmentState::Failed)
             {
-                return Ok(session);
+                return Ok(session.into_snapshot());
             }
             let drafts = desired
                 .into_iter()
@@ -321,7 +359,7 @@ impl SessionApplication {
                 .mcp_holder
                 .clone();
             let plan = session
-                .mcp
+                .mcp()
                 .request_full_replacement(drafts, Some(selected_holder))
                 .map_err(|error| {
                     SessionUpdateError::Unavailable(format!(
@@ -397,11 +435,11 @@ impl SessionApplication {
                     .enter(|| self.retry_failed_mcp_update_realization(session_id))
                     .await?
             } else {
-                self.session_repository()
-                    .get(session_id)
+                self.session_aggregate(session_id)
                     .await
                     .map_err(repository_failure)
                     .map_err(SessionUpdateError::mutation)?
+                    .into_snapshot()
             };
             let outcome = SessionUpdateOutcome {
                 session,
@@ -643,8 +681,7 @@ impl SessionApplication {
             .await
             .map_err(SessionUpdateError::mutation)?;
         let mut session = self
-            .session_repository()
-            .get(session_id)
+            .session_aggregate(session_id)
             .await
             .map_err(repository_failure)
             .map_err(SessionUpdateError::mutation)?;
@@ -664,20 +701,23 @@ impl SessionApplication {
                 return Err(SessionUpdateError::IdempotencyMismatch);
             }
             if command.mcp_update.is_some() {
-                session = self.retry_failed_mcp_update_realization(session_id).await?;
+                session = crate::mutation::aggregate_from_snapshot(
+                    self.retry_failed_mcp_update_realization(session_id).await?,
+                )
+                .map_err(repository_failure)
+                .map_err(SessionUpdateError::mutation)?;
             } else {
                 // The snapshot above may have raced the exact command commit.
                 // Reload after observing its receipt so runtime reconciliation
                 // never decides from pre-command budget/tools/metadata truth.
                 session = self
-                    .session_repository()
-                    .get(session_id)
+                    .session_aggregate(session_id)
                     .await
                     .map_err(repository_failure)
                     .map_err(SessionUpdateError::mutation)?;
             }
             return Ok(SessionUpdateOutcome {
-                session,
+                session: session.into_snapshot(),
                 command_revision: receipt.committed_revision,
                 command_applied: false,
                 changes: SessionUpdateChanges::default(),
@@ -730,7 +770,7 @@ impl SessionApplication {
                 .map_err(SessionUpdateError::Rejected)?;
             }
             let plan = session
-                .mcp
+                .mcp()
                 .request_full_replacement(
                     drafts,
                     Some(baseline.environment.credential_realization.mcp_holder),
@@ -743,90 +783,15 @@ impl SessionApplication {
             }
         }
 
-        if let Some(title) = &command.title {
-            session.title = match title {
-                SessionFieldUpdate::Clear => None,
-                SessionFieldUpdate::Replace(title) => Some(title.clone()),
-            };
-        }
-        if let Some(patch) = &command.metadata {
-            match patch {
-                SessionMetadataUpdate::Clear => session.metadata.clear(),
-                SessionMetadataUpdate::Patch(patch) => {
-                    for (key, value) in patch {
-                        match value {
-                            Some(value) => {
-                                session.metadata.insert(key.clone(), value.clone());
-                            }
-                            None => {
-                                session.metadata.remove(key);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if let Some(tools) = &command.tools {
-            session.tools = tools.clone();
-        }
+        apply_configuration_update(&mut session, command)?;
         if let Some(requested) = &command.budget {
-            use awaken_session_budget_contract::SessionBudgetState;
-            session.budget = match (session.budget, requested) {
-                (
-                    SessionBudgetState::Active {
-                        consumed_numerator,
-                        usage_cursor,
-                        snapshot,
-                        reach_transitions,
-                        ..
-                    },
-                    SessionFieldUpdate::Replace(max_list_cost_minor),
-                ) => {
-                    let threshold = u128::from(*max_list_cost_minor)
-                        * SessionBudgetState::MICROS_PER_MINOR_USD
-                        * SessionBudgetState::COST_DENOMINATOR;
-                    if threshold <= consumed_numerator {
-                        return Err(SessionUpdateError::Rejected(RunError::bad_request(
-                            "updated max_list_cost must be greater than consumed list cost",
-                        )));
-                    }
-                    SessionBudgetState::Active {
-                        max_list_cost_minor: *max_list_cost_minor,
-                        consumed_numerator,
-                        usage_cursor,
-                        snapshot,
-                        reach_transitions,
-                    }
-                }
-                (
-                    SessionBudgetState::Active {
-                        consumed_numerator,
-                        usage_cursor,
-                        snapshot,
-                        reach_transitions,
-                        ..
-                    },
-                    SessionFieldUpdate::Clear,
-                ) => SessionBudgetState::Removed {
-                    consumed_numerator,
-                    usage_cursor,
-                    snapshot,
-                    reach_transitions,
-                },
-                (SessionBudgetState::Absent, _) => {
-                    return Err(SessionUpdateError::Rejected(RunError::bad_request(
-                        "a budget cannot be added to a Session created without one",
-                    )));
-                }
-                (removed @ SessionBudgetState::Removed { .. }, SessionFieldUpdate::Clear) => {
-                    removed
-                }
-                (SessionBudgetState::Removed { .. }, SessionFieldUpdate::Replace(_)) => {
-                    return Err(SessionUpdateError::Rejected(RunError::bad_request(
-                        "a removed Session budget cannot be re-added",
-                    )));
-                }
+            let limit = match requested {
+                SessionFieldUpdate::Clear => None,
+                SessionFieldUpdate::Replace(limit) => Some(*limit),
             };
+            session.budget().update_limit(limit).map_err(|error| {
+                SessionUpdateError::Rejected(RunError::bad_request(error.to_string()))
+            })?;
         }
 
         let changes = SessionUpdateChanges {
@@ -862,10 +827,12 @@ impl SessionApplication {
             };
             command_applied = commit.transitioned();
             command_revision = commit.committed_revision();
-            session = commit.into_session();
+            session = crate::mutation::aggregate_from_snapshot(commit.into_session())
+                .map_err(repository_failure)
+                .map_err(SessionUpdateError::mutation)?;
         }
         Ok(SessionUpdateOutcome {
-            session,
+            session: session.into_snapshot(),
             command_revision,
             command_applied,
             changes,

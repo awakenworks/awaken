@@ -3,9 +3,20 @@ use awaken_session_configuration_contract::{ControlSessionCreationInputs, Sessio
 use awaken_session_resource_contract::SessionMutationPolicy;
 use awaken_session_state_contract::{ActivationState, SessionDisposition, SessionEnvironmentState};
 
-fn unattempted(id: &str) -> PersistedSession {
+pub(super) fn unattempted(id: &str) -> PersistedSession {
+    unattempted_with_placement(
+        id,
+        awaken_session_configuration_contract::SessionRuntimePlacement::Local,
+    )
+}
+
+pub(in crate::tests) fn unattempted_with_placement(
+    id: &str,
+    placement: awaken_session_configuration_contract::SessionRuntimePlacement,
+) -> PersistedSession {
     let mut session = persisted(id, false, "preparing");
-    let b = session.frozen_baseline().unwrap().clone();
+    let mut b = session.frozen_baseline().unwrap().clone();
+    b.runtime_placement = placement;
     let compiled = creation_intent(b).finalize().unwrap();
     session.baseline =
         awaken_session_configuration_contract::SessionBaselineState::Frozen(compiled.baseline);
@@ -62,10 +73,10 @@ fn creation_intent(
 
 fn fact(id: &str) -> ManagedLifecycleFact {
     ManagedLifecycleFact {
-        id: format!("{id}:terminated"),
+        id: awaken_session_event_contract::session_terminated_fact_id(id),
         object_id: id.into(),
         workspace_id: Some("workspace".into()),
-        event_type: "session.terminated".into(),
+        event_type: awaken_session_event_contract::SESSION_TERMINATED.into(),
         timestamp: 1,
         runtime_interval: None,
     }

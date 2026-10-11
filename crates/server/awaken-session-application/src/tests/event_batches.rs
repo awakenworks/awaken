@@ -5345,7 +5345,8 @@ async fn user_run_activity_rejects_a_root_changed_after_projection_recovery() {
     let _fixture = app
         .commit_session_snapshot_with_outcome(
             "workspace",
-            replacement,
+            awaken_session_state_contract::SessionAggregate::try_from(replacement)
+                .expect("valid test snapshot"),
             "test-binding-change",
             Vec::new(),
         )

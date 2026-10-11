@@ -16,10 +16,10 @@ fn managed_archive_command(
     (
         awaken_session_application_contract::epoch_millis_to_rfc3339(observed_at),
         lifecycle_fact(
-            format!("session:{id}:terminated"),
+            awaken_session_event_contract::session_terminated_fact_id(id),
             id,
             owner,
-            lifecycle_event::SESSION_TERMINATED,
+            awaken_session_event_contract::SESSION_TERMINATED,
             observed_at,
         ),
     )
@@ -241,7 +241,13 @@ impl ManagedState {
     ) -> Result<PersistedSession, StateError> {
         let session = self
             .application
-            .commit_session_snapshot_with_outcome(owner_scope, session, operation, lifecycle_facts)
+            .commit_session_snapshot_with_outcome(
+                owner_scope,
+                awaken_session_state_contract::SessionAggregate::try_from(session)
+                    .expect("valid test snapshot"),
+                operation,
+                lifecycle_facts,
+            )
             .await
             .map_err(Self::map_application_mutation_error)?
             .into_session();

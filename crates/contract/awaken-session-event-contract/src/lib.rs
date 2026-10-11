@@ -21,8 +21,8 @@ use serde::{Deserialize, Serialize};
 mod lifecycle;
 mod retention;
 pub use lifecycle::{
-    ManagedLifecycleFact, SessionRuntimeInterval, SessionRuntimeIntervalObservation,
-    SessionRuntimeIntervalStart,
+    ManagedLifecycleFact, SESSION_TERMINATED, SessionRuntimeInterval,
+    SessionRuntimeIntervalObservation, SessionRuntimeIntervalStart, session_terminated_fact_id,
 };
 pub use retention::{DeletedSessionEventAdmissions, RetainedEventAdmission};
 

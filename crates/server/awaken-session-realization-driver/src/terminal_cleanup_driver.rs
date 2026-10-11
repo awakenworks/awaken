@@ -428,6 +428,7 @@ mod tests {
     ) -> SessionTerminalCleanupWork {
         SessionTerminalCleanupWork {
             assignment: SessionTerminalCleanupAssignment {
+                environment_creation_not_attempted: false,
                 session_id: "session".into(),
                 projection: projection(),
                 authority:

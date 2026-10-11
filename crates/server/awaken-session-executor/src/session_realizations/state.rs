@@ -123,6 +123,9 @@ pub(crate) struct SessionRealization {
     /// or Restoring state; absence is never interpreted as permission to reap
     /// or acknowledge a root cleanup.
     pub terminal_environment_state: Option<awaken_session_state_contract::SessionEnvironmentState>,
+    /// Disposable projection of Control's archive-receipt witness, bound to
+    /// the installed terminal assignment and realization lease.
+    pub terminal_environment_creation_not_attempted: bool,
     /// Process-local parent of a terminal cleanup target. This is routing
     /// metadata only: the aggregate's frozen command set remains the sole work
     /// and receipt authority. It lets an accepted root receipt (or a later

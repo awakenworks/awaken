@@ -1162,7 +1162,7 @@ impl SessionCleanupOperation {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::terminal_cleanup) mod tests {
     use super::*;
     use awaken_provisioning_contract::{
         RepositoryPublicationExpectation, RepositoryPublicationReceipt,
@@ -1193,7 +1193,9 @@ mod tests {
         decode_persisted_cleanup(serde_json::from_slice(encoded)?)
     }
 
-    fn preparation(command: &SessionCleanupCommand) -> SessionCleanupPreparation {
+    pub(in crate::terminal_cleanup) fn preparation(
+        command: &SessionCleanupCommand,
+    ) -> SessionCleanupPreparation {
         let lease = crate::SessionRealizationLease {
             owner: "test-worker".into(),
             runtime_incarnation: "test-runtime".into(),
@@ -1209,7 +1211,9 @@ mod tests {
         .unwrap()
     }
 
-    fn repository_preparation(session_id: &str) -> SessionCleanupRepositoryPreparation {
+    pub(in crate::terminal_cleanup) fn repository_preparation(
+        session_id: &str,
+    ) -> SessionCleanupRepositoryPreparation {
         SessionCleanupRepositoryPreparation::new(
             &crate::SessionId::from(session_id),
             "workspace",

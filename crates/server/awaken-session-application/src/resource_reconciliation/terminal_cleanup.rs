@@ -15,12 +15,13 @@ use awaken_session_state_contract::{
 use awaken_session_types::RunError;
 
 use super::{internal, mutation_failure, repository_preparation};
+use crate::SessionAggregate;
 use crate::{SessionApplication, SessionPreparationError, SessionTerminalCleanupDriveOutcome};
 
 /// Compile all target identities and both durable fences from one atomic
 /// Runtime observation before the aggregate freezes its terminal target set.
 fn freeze_cleanup_delegations(
-    session: &mut PersistedSession,
+    session: &mut SessionAggregate,
     snapshot: awaken_session_application_contract::DelegatedRunSnapshot,
 ) -> Result<bool, awaken_session_state_contract::SessionCleanupError> {
     let thread_ids = snapshot
@@ -33,7 +34,7 @@ fn freeze_cleanup_delegations(
                 .into_iter()
                 .map(|thread| thread.0),
         );
-    session.freeze_terminal_cleanup_targets(
+    session.cleanup().freeze_terminal_cleanup_targets(
         thread_ids,
         snapshot.watermark,
         snapshot.runtime_commit_cursor,
@@ -255,8 +256,7 @@ impl SessionApplication {
 
         Box::pin(async move {
             let mut session = match self
-                .session_repository()
-                .get(&awaken_session_types::SessionId::from(session_id))
+                .session_aggregate(&awaken_session_types::SessionId::from(session_id))
                 .await
             {
                 Ok(session) => session,
@@ -274,7 +274,7 @@ impl SessionApplication {
                 // Persist the admission fence before *any* external cleanup effect.
                 // This also upgrades legacy terminal rows that predate the explicit
                 // cleanup operation.
-                if session.ensure_terminal_cleanup_fence() {
+                if session.cleanup().ensure_terminal_cleanup_fence() {
                     session = self
                         .commit_resource_snapshot(
                             owner_scope,
@@ -333,6 +333,7 @@ impl SessionApplication {
                             .await?;
                         session = next_session;
                         session
+                            .cleanup()
                             .normalize_legacy_terminal_cleanup(
                                 "Session terminated before activation completed",
                             )
@@ -364,8 +365,7 @@ impl SessionApplication {
                             .map_err(terminal_driver_failure)?;
                         drove_local_cleanup = true;
                         session = match self
-                            .session_repository()
-                            .get(&awaken_session_types::SessionId::from(session_id))
+                            .session_aggregate(&awaken_session_types::SessionId::from(session_id))
                             .await
                         {
                             Ok(session) => session,
@@ -406,7 +406,7 @@ impl SessionApplication {
                 // Pending local or remote work remains represented by this
                 // root. In particular, a hidden Delete must not compact away
                 // the aggregate that is the Work queue and receipt authority.
-                return Ok(Some(session));
+                return Ok(Some(session.into_snapshot()));
             }
             if session.is_hidden() {
                 if session.has_incomplete_event_batches() {
@@ -414,14 +414,14 @@ impl SessionApplication {
                     // resolve every accepted receipt under the same root CAS. A
                     // compact tombstone cannot carry that provenance and resource
                     // reconciliation never executes or cancels those commands.
-                    return Ok(Some(session));
+                    return Ok(Some(session.into_snapshot()));
                 }
                 self.commit_delete_tombstone(owner_scope, &session)
                     .await
                     .map_err(mutation_failure)?;
                 return Ok(None);
             }
-            Ok(Some(session))
+            Ok(Some(session.into_snapshot()))
         })
     }
 }
@@ -824,6 +824,7 @@ mod tests {
             },
         );
         SessionTerminalCleanupAssignment {
+            environment_creation_not_attempted: false,
             session_id: "session".into(),
             projection: awaken_session_realization_contract::FrozenSessionProjection {
                 workspace_id: "workspace".into(),

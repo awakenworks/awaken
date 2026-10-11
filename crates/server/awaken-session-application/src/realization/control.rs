@@ -8,6 +8,42 @@
 use super::*;
 use std::sync::Arc;
 
+/// Freeze the predecessor and apply its exact successor as one candidate command.
+fn claim_terminal_cleanup_candidate(
+    owner_scope: &str,
+    session: &mut SessionAggregate,
+    target: &awaken_session_realization_contract::SessionRealizationTarget,
+) -> Result<TerminalCleanupClaimConflict, SessionRealizationControlFailure> {
+    use awaken_lease_contract::fence::Epoch;
+    let epoch = session
+        .realization
+        .as_ref()
+        .map_or(Some(Epoch::FIRST), |lease| {
+            Epoch::from_persisted(lease.epoch).and_then(Epoch::next)
+        })
+        .ok_or_else(|| {
+            SessionRealizationControlFailure::Invalid(
+                "Session realization lease epoch is exhausted".into(),
+            )
+        })?;
+    let claim = TerminalCleanupClaimConflict {
+        owner_scope: owner_scope.to_string(),
+        session_id: session.session_id.to_string(),
+        attempted_lease: SessionRealizationLease {
+            owner: target.owner.clone(),
+            runtime_incarnation: target.runtime_incarnation.clone(),
+            epoch: epoch.get(),
+            expires_at_unix_ms: target.lease_expires_at_unix_ms,
+        },
+        previous_realization: session.realization.clone(),
+    };
+    session
+        .assignment()
+        .claim(claim.attempted_lease.clone(), false)
+        .map_err(unavailable)?;
+    Ok(claim)
+}
+
 enum TerminalCleanupWorkerRevalidation {
     Admitted,
     Ineligible,
@@ -37,12 +73,11 @@ impl SessionApplication {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self.owner(session_id).await.map_err(mutation_control)?;
             let mut session = self
-                .session_repository()
-                .get(session_id)
+                .session_aggregate(session_id)
                 .await
                 .map_err(repository_control)?;
             if session.realization_progress.run_free_initial_preparation {
-                return Ok(session);
+                return Ok(session.into_snapshot());
             }
             let external = self.requires_external_realization(&session)
                 && session
@@ -60,9 +95,12 @@ impl SessionApplication {
             if !session.needs_initial_realization_recovery() {
                 // An already-completed historical Session needs no new work;
                 // the caller must assess its actual Environment/MCP facts.
-                return Ok(session);
+                return Ok(session.into_snapshot());
             }
-            session.realization_progress.run_free_initial_preparation = true;
+            session
+                .assignment()
+                .request_run_free_preparation()
+                .map_err(unavailable)?;
             match self
                 .commit_session_snapshot_with_outcome(
                     &owner_scope,
@@ -226,8 +264,7 @@ impl SessionApplication {
                 .await
                 .map_err(mutation_control)?;
             let mut session = self
-                .session_repository()
-                .get(&command.session_id)
+                .session_aggregate(&command.session_id)
                 .await
                 .map_err(repository_control)?;
             if session.frozen_baseline().is_none() {
@@ -254,22 +291,7 @@ impl SessionApplication {
             }
             let mut renewed = current;
             renewed.expires_at_unix_ms = command.requested_expires_at_unix_ms;
-            // A terminal root lease authorizes cleanup; it is not the lease
-            // that originally published still-active MCP generations. Those
-            // frozen claims remain exact cleanup identity until their own
-            // drains complete, so advancing them to a newer terminal epoch
-            // would either fail forever or manufacture false ownership.
-            if !session.is_terminal() {
-                session
-                    .mcp
-                    .extend_active_realization_leases(
-                        &renewed.runtime_incarnation,
-                        renewed.epoch,
-                        renewed.expires_at_unix_ms,
-                    )
-                    .map_err(unavailable)?;
-            }
-            session.realization = Some(renewed);
+            session.assignment().renew(renewed).map_err(unavailable)?;
             match self
                 .commit_session_snapshot_with_outcome(
                     &owner_scope,
@@ -401,7 +423,7 @@ impl SessionApplication {
                         .expect("a live assignment was checked")
                 };
             if activate_pending_resources && session.resources.pending.is_some() {
-                session.resources.start_attempt().map_err(unavailable)?;
+                session.resources().start_attempt().map_err(unavailable)?;
             }
             let to_claim = if needs_assignment {
                 session
@@ -442,32 +464,21 @@ impl SessionApplication {
                     ),
                 };
                 let result = if needs_assignment {
-                    session.mcp.claim_recovery(&generation, claim)
+                    session.mcp().claim_recovery(&generation, claim)
                 } else {
-                    session.mcp.claim_realization(&generation, claim)
+                    session.mcp().claim_realization(&generation, claim)
                 };
                 result.map_err(unavailable)?;
             }
-            if needs_assignment
+            let counted = needs_assignment
                 && matches!(
                     session.execution,
                     SessionExecutionState::Preparing | SessionExecutionState::Activating
-                )
-            {
-                session.realization_progress.attempts = session
-                    .realization_progress
-                    .attempts
-                    .checked_add(1)
-                    .ok_or_else(|| {
-                        SessionRealizationControlFailure::Invalid(
-                            "Session realization attempt counter is exhausted".into(),
-                        )
-                    })?;
-                session.realization_progress.last_error = None;
-                session.realization_progress.failed_at_unix_ms = None;
-                session.realization_progress.failure_source_run_id = None;
-            }
-            session.realization = Some(lease);
+                );
+            session
+                .assignment()
+                .claim(lease, counted)
+                .map_err(unavailable)?;
             match self
                 .commit_session_snapshot_with_outcome(
                     &owner_scope,
@@ -606,10 +617,10 @@ impl SessionApplication {
                 .any(|attachment| attachment.state == McpAttachmentState::Realizing);
         if needs_activation_commit {
             if prepared_pending_resources {
-                session.resources.commit().map_err(unavailable)?;
+                session.resources().commit().map_err(unavailable)?;
             }
             if prepared_legacy_resources {
-                session.resources.adopt_legacy_active(&command.session_id);
+                session.resources().adopt_legacy_active();
             }
             for request in expected {
                 let attachment = session
@@ -620,7 +631,7 @@ impl SessionApplication {
                     .ok_or(SessionRealizationControlFailure::NotReady)?;
                 if attachment.state == McpAttachmentState::Realizing {
                     session
-                        .mcp
+                        .mcp()
                         .activate(request.generation.generation(), &request.realization_id)
                         .map_err(unavailable)?;
                 }
@@ -629,25 +640,18 @@ impl SessionApplication {
             // receipt. Runtime publication uses that exact receipt under its live
             // same-generation Session lease, so continual heartbeats cannot starve
             // the Stage -> Publish -> Complete transition.
-            let current_lease = session
-                .realization
-                .clone()
-                .ok_or(SessionRealizationControlFailure::NotReady)?;
             session
-                .mcp
-                .extend_active_realization_leases(
-                    &current_lease.runtime_incarnation,
-                    current_lease.epoch,
-                    current_lease.expires_at_unix_ms,
-                )
+                .assignment()
+                .refresh_projection_leases()
                 .map_err(unavailable)?;
-            session.mcp.begin_obsolete_drains().map_err(unavailable)?;
+            session.mcp().begin_obsolete_drains().map_err(unavailable)?;
             // Initial creation remains non-visible until publication acknowledgement.
             // A hot mutation belongs to an already-idle Session, so keep that lifecycle
             // status while its new generation is unacknowledged; a failed replacement
             // must not turn the established Session into a failed create.
             if !session.execution.admits_activity() {
                 session
+                    .lifecycle()
                     .transition_execution(SessionExecutionState::Activating)
                     .map_err(unavailable)?;
             }
@@ -754,45 +758,20 @@ impl SessionApplication {
                 .map(|claim| claim.realization_id.clone())
                 .ok_or(SessionRealizationControlFailure::NotReady)?;
             session
-                .mcp
+                .mcp()
                 .acknowledge_publication(generation.generation(), &realization_id)
                 .map_err(unavailable)?;
         }
         for generation in expected_drain {
             session
-                .mcp
+                .mcp()
                 .finish_drain(generation.generation())
                 .map_err(unavailable)?;
         }
-        let initial_ready = !session.has_active_activities()
-            && session.activity_epoch == 0
-            && session.execution != SessionExecutionState::Idle;
-        // Realization publication settles physical readiness, not the activity
-        // fence. An initially claimed Worker may acknowledge while the driving
-        // activity is still recorded under Preparing/Activating; promote that
-        // same activity to Running and open its one interval. A replacement may
-        // already observe Running. Only the final activity settlement may close
-        // the interval and return the Session to Idle.
-        if session.has_active_activities() {
-            if session.execution != SessionExecutionState::Running {
-                if session.execution != SessionExecutionState::Idle {
-                    session
-                        .transition_execution(SessionExecutionState::Idle)
-                        .map_err(unavailable)?;
-                }
-                session
-                    .transition_execution(SessionExecutionState::Running)
-                    .map_err(unavailable)?;
-            }
-            // The activity was admitted before its realization; the interval
-            // it opens now owns no commit this root recorded before.
-            let admitted_after = session.recorded_runtime_commit_cursor();
-            session.begin_runtime_interval(self.clock.now_ms(), admitted_after);
-        } else if session.execution != SessionExecutionState::Running {
-            session
-                .transition_execution(SessionExecutionState::Idle)
-                .map_err(unavailable)?;
-        }
+        let initial_ready = session
+            .activity()
+            .realization_ready(self.clock.now_ms())
+            .map_err(unavailable)?;
         let ready_fact = initial_ready.then(|| {
             initial_idle_fact(
                 &owner_scope,
@@ -837,7 +816,7 @@ impl SessionApplication {
         // Failure delivery is idempotent even though activation_failed is
         // terminal for every new phase command. Handle that exact replay before
         // the common terminal guard used by begin/activate/acknowledge.
-        match self.session_repository().get(&command.session_id).await {
+        match self.session_aggregate(&command.session_id).await {
             Ok(session) if session.execution == SessionExecutionState::ActivationFailed => {
                 return Ok(());
             }
@@ -858,26 +837,41 @@ impl SessionApplication {
             && session.resources.pending.is_some()
         {
             session
-                .resources
+                .resources()
                 .note_retryable_failure(command.reason.clone())
                 .map_err(unavailable)?;
         }
-        session.realization_progress.last_error = Some(command.reason.clone());
-        session.realization_progress.failed_at_unix_ms = Some(self.clock.now_ms());
-        session.realization_progress.failure_source_run_id =
-            command.source_run_id.clone().map(Box::new);
+        session.assignment().record_failure(
+            command.reason.clone(),
+            self.clock.now_ms(),
+            command.source_run_id.clone(),
+        );
         let initial_realization = session.execution != SessionExecutionState::Idle;
-        let retry_initial =
-            command.retries_initial_realization(&mut session, self.realization_retry_budget())?;
+        let retry_initial = {
+            match command
+                .initial_realization_failure_plan(&session, self.realization_retry_budget())?
+            {
+                awaken_session_realization_contract::RealizationFailureOutcome::Retry {
+                    refund_attempt,
+                } => {
+                    if refund_attempt {
+                        session
+                            .assignment()
+                            .refund_capacity_attempt()
+                            .map_err(unavailable)?;
+                    }
+                    true
+                }
+                awaken_session_realization_contract::RealizationFailureOutcome::Absorb => false,
+            }
+        };
         if retry_initial || !initial_realization {
             // The driver closes this exact local authority generation after an
             // effect failure. Any nonterminal recovery must obtain a new epoch;
             // keeping Idle's lease live would replay a permanently closed Host
             // projection after a failed hot replacement. Active MCP/Resources
             // remain retained; only this disposable assignment expires.
-            if let Some(lease) = &mut session.realization {
-                lease.expires_at_unix_ms = 0;
-            }
+            session.assignment().expire();
         }
         if retry_initial {
             // The retry intent's response carries no applied/replayed
@@ -913,7 +907,7 @@ impl SessionApplication {
             .collect::<Vec<_>>();
         for (generation, realization_id) in realizing {
             session
-                .mcp
+                .mcp()
                 .fail_realization(
                     &generation,
                     realization_id
@@ -923,26 +917,19 @@ impl SessionApplication {
                 )
                 .map_err(unavailable)?;
         }
-        let failed_running_activity = session.execution == SessionExecutionState::Running;
+        let emitted_runtime_interval = session.running_interval.is_some();
         if session.execution != SessionExecutionState::Idle {
             session
-                .transition_execution(SessionExecutionState::ActivationFailed)
+                .lifecycle()
+                .transition_execution_at(
+                    SessionExecutionState::ActivationFailed,
+                    self.clock.now_ms(),
+                )
                 .map_err(unavailable)?;
         }
-        // A terminal realization failure ends an admitted driving activity.
-        // Close its aggregate-owned interval in the same root CAS and emit the
-        // same pricing-neutral lifecycle fact as ordinary/terminal settlement.
-        // Retryable failures below budget remain Running and retain the open
-        // interval through the earlier return above.
-        let lifecycle_facts = failed_running_activity
-            .then(|| self.clock.now_ms())
-            .and_then(|ended_at_unix_ms| session.close_runtime_interval(ended_at_unix_ms))
-            .map(|interval| {
-                runtime_interval_fact(&owner_scope, command.session_id.as_str(), interval)
-            })
-            .into_iter()
-            .collect::<Vec<_>>();
-        let emitted_runtime_interval = !lifecycle_facts.is_empty();
+        // The aggregate compiler derives the closed interval fact from its
+        // exact closing revision together with this terminal transition.
+        let lifecycle_facts = Vec::new();
         // Failure is absorbing; the caller reports no applied/replayed bit.
         let _outcome = self
             .commit_session_snapshot_with_outcome(
@@ -960,37 +947,6 @@ impl SessionApplication {
             self.notify_lifecycle_fact();
         }
         Ok(())
-    }
-
-    /// Build the only terminal assignment projection from one already-read
-    /// Session root. Claim recovery and warm work polling share this adapter so
-    /// neither can select a lease or frozen projection independently.
-    pub(crate) async fn terminal_cleanup_assignment_from_snapshot(
-        &self,
-        owner_scope: &str,
-        session: &PersistedSession,
-    ) -> Result<SessionTerminalCleanupAssignment, SessionRealizationControlFailure> {
-        let lease = session
-            .realization
-            .clone()
-            .ok_or(SessionRealizationControlFailure::StaleOwnership)?;
-        // Terminal effects must retain both aggregate-authored generations.
-        // A Worker may have installed desired B before its receipt committed;
-        // projecting only active A regresses that slot to A -> A and strands
-        // cleanup. The terminal Host install stages A -> B without activating B.
-        let projection = self
-            .frozen_session_projection(owner_scope.to_string(), session, false)
-            .await
-            .map_err(unavailable)?;
-        Ok(SessionTerminalCleanupAssignment {
-            session_id: session.session_id.clone(),
-            projection,
-            authority:
-                awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
-                    lease,
-                    self.clock.now_ms(),
-                )?,
-        })
     }
 
     /// Resolve the exact current registry incarnation that may participate in
@@ -1065,7 +1021,7 @@ impl SessionApplication {
         conflict: &TerminalCleanupClaimConflict,
         initial: Option<PersistedSession>,
     ) -> Result<(), SessionRealizationControlFailure> {
-        let mut current = match initial {
+        let current = match initial {
             Some(session) => session,
             None => match self
                 .session_repository()
@@ -1077,13 +1033,21 @@ impl SessionApplication {
                 Err(error) => return Err(repository_control(error)),
             },
         };
+        let mut current =
+            crate::mutation::aggregate_from_snapshot(current).map_err(repository_control)?;
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             if current.session_id != conflict.session_id
                 || current.realization.as_ref() != Some(&conflict.attempted_lease)
             {
                 return Ok(());
             }
-            current.realization = conflict.previous_realization.clone();
+            current
+                .assignment()
+                .restore_predecessor(
+                    &conflict.attempted_lease,
+                    conflict.previous_realization.clone(),
+                )
+                .map_err(unavailable)?;
             match self
                 .commit_session_snapshot_with_outcome(
                     &conflict.owner_scope,
@@ -1096,8 +1060,9 @@ impl SessionApplication {
                 Ok(_) => return Ok(()),
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
                     current = match self
-                        .session_repository()
-                        .get(&awaken_session_types::SessionId::from(&conflict.session_id))
+                        .session_aggregate(&awaken_session_types::SessionId::from(
+                            &conflict.session_id,
+                        ))
                         .await
                     {
                         Ok(session) => session,
@@ -1153,7 +1118,7 @@ impl SessionApplication {
     async fn claim_terminal_cleanup_root(
         &self,
         owner_scope: &str,
-        mut session: PersistedSession,
+        mut session: SessionAggregate,
         target: &awaken_session_realization_contract::SessionRealizationTarget,
         scope: TerminalCleanupClaimScope<'_>,
         replay_after_conflict: Option<&TerminalCleanupClaimConflict>,
@@ -1164,17 +1129,17 @@ impl SessionApplication {
         {
             return TerminalCleanupRootClaim::Skip;
         }
-        // A realization lease is also the only durable logical-Worker affinity
-        // for Local/Namespace storage and the Container/Kubernetes realization
-        // namespace. Static manifest compatibility can narrow a candidate but
-        // can never authorize a foreign Worker to reopen that physical source.
-        if scope.is_external()
-            && session
-                .realization
-                .as_ref()
-                .is_some_and(|current| current.owner != target.owner)
+        if let Some(rejection) = terminal_cleanup_worker_affinity_rejection(
+            self.session_repository(),
+            scope,
+            owner_scope,
+            &session,
+            target,
+            self.clock.now_ms(),
+        )
+        .await
         {
-            return TerminalCleanupRootClaim::Skip;
+            return rejection;
         }
         // With no historical lease, only an Environment that has never acquired
         // a physical binding is eligible for first placement. Resident and
@@ -1265,31 +1230,10 @@ impl SessionApplication {
             };
         }
 
-        let epoch = match session.realization.as_ref() {
-            Some(current) => match current.epoch.checked_add(1) {
-                Some(epoch) => epoch,
-                None => {
-                    return TerminalCleanupRootClaim::Failed(
-                        SessionRealizationControlFailure::Invalid(
-                            "Session realization lease epoch is exhausted".into(),
-                        ),
-                    );
-                }
-            },
-            None => 1,
+        let claim = match claim_terminal_cleanup_candidate(owner_scope, &mut session, target) {
+            Ok(claim) => claim,
+            Err(error) => return TerminalCleanupRootClaim::Failed(error),
         };
-        let claim = TerminalCleanupClaimConflict {
-            owner_scope: owner_scope.to_string(),
-            session_id: session.session_id.to_string(),
-            attempted_lease: SessionRealizationLease {
-                owner: target.owner.clone(),
-                runtime_incarnation: target.runtime_incarnation.clone(),
-                epoch,
-                expires_at_unix_ms: target.lease_expires_at_unix_ms,
-            },
-            previous_realization: session.realization.clone(),
-        };
-        session.realization = Some(claim.attempted_lease.clone());
         let committed = match self
             .commit_session_snapshot_with_outcome(
                 owner_scope,
@@ -1404,7 +1348,8 @@ impl SessionApplication {
                     match self
                         .claim_terminal_cleanup_root(
                             &scoped.workspace_id,
-                            scoped.session,
+                            crate::mutation::aggregate_from_snapshot(scoped.session)
+                                .map_err(repository_control)?,
                             &target,
                             TerminalCleanupClaimScope::External,
                             replay_after_conflict,
@@ -1488,8 +1433,7 @@ impl SessionApplication {
                 .await
                 .map_err(mutation_control)?;
             let session = self
-                .session_repository()
-                .get(session_id)
+                .session_aggregate(session_id)
                 .await
                 .map_err(repository_control)?;
             match self

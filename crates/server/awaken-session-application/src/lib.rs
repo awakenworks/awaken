@@ -235,6 +235,7 @@ pub use update::{
     SessionFieldUpdate, SessionMcpUpdate, SessionMetadataUpdate, SessionUpdateChanges,
     SessionUpdateCommand, SessionUpdateError, SessionUpdateOutcome,
 };
+mod archive_intent;
 mod terminal;
 pub use terminal::{
     SessionArchiveWithRepositoryPublicationCommand, SessionArchiveWithRepositoryPublicationError,
@@ -244,3 +245,5 @@ pub use terminal::{
 
 #[cfg(test)]
 mod tests;
+
+use awaken_session_state_contract::SessionAggregate;

@@ -3646,6 +3646,7 @@ struct FaultingSessionRepository {
     >,
     tombstone_after_operation_once: Mutex<Option<String>>,
     get_not_found_once: AtomicBool,
+    fail_idempotency_receipt_once: AtomicBool,
     fail_recovery_scan_once: AtomicBool,
     fail_environment_phase_count_once: AtomicBool,
     corrupt_environment_phase_count_once: AtomicBool,
@@ -3702,6 +3703,7 @@ impl FaultingSessionRepository {
             realization_conflict_operation_once: Mutex::new(None),
             tombstone_after_operation_once: Mutex::new(None),
             get_not_found_once: AtomicBool::new(false),
+            fail_idempotency_receipt_once: AtomicBool::new(false),
             fail_recovery_scan_once: AtomicBool::new(false),
             fail_environment_phase_count_once: AtomicBool::new(false),
             corrupt_environment_phase_count_once: AtomicBool::new(false),
@@ -4163,6 +4165,16 @@ impl SessionRepository for FaultingSessionRepository {
         Option<awaken_session_state_contract::SessionIdempotencyReceipt>,
         awaken_session_state_contract::SessionRepositoryError,
     > {
+        if self
+            .fail_idempotency_receipt_once
+            .swap(false, Ordering::SeqCst)
+        {
+            return Err(
+                awaken_session_state_contract::SessionRepositoryError::AuthorityUnavailable(
+                    "injected command receipt read outage".into(),
+                ),
+            );
+        }
         self.inner.idempotency_receipt(session_id, key).await
     }
 
