@@ -3,6 +3,9 @@ name = "awaken-resource-worker-http"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Transport fixtures own their directories, ports and clocks. Compile their
+# modules once instead of independently linking the same dependency graph.
+autotests = false
 
 [package.metadata.awaken]
 context = "resources"
@@ -58,3 +61,10 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "resource_transports"
+
+# The native portability gate selects this resource domain independently.
+[[test]]
+name = "memory_transport"

@@ -106,7 +106,7 @@ def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) 
             or crate.name in PROTOCOL_ADAPTER_CRATES
         )
         for path, syntax in crate.syntax.items():
-            relative = path.relative_to(root) if root in path.parents else path
+            relative = (path.relative_to(root) if root in path.parents else path).as_posix()
             for match in _DECLARATION.finditer(syntax):
                 name, where = match.group(1), f"{relative}:{_architecture_ratchet.line_of(syntax, match.start())}"
                 if not mechanism_allowed and is_mechanism_name(name):
