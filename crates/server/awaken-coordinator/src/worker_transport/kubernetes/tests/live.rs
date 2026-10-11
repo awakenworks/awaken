@@ -4,9 +4,10 @@
 //! The shared k3d harness owns the isolated cluster; no fake provider receipts.
 use super::*;
 use awaken_lease_testkit::ManualClock;
+use awaken_worker_contract::{WorkerCurrentSource, WorkerIncarnationSource};
 
 use awaken_dispatch::{
-    AttemptAdmission, RunClaim, RunDispatch, SqliteDispatchStore, WorkerDirectory, WorkerHeartbeat,
+    AttemptAdmission, RunClaim, RunDispatch, SqliteDispatchStore, WorkerHeartbeat,
 };
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_sandbox_container::k8s::{

@@ -24,10 +24,11 @@ use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
-    AttemptAdmission, ClaimedStreamPublisher as _, MemoryDispatchStore, RegisteredWorker,
-    RegistryError, RegistryMutation, RunDispatch, SettleOutcome, WorkerDirectory, WorkerHeartbeat,
-    WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerRegistration, WorkerSnapshot,
-    WorkerState,
+    AttemptAdmission, ClaimedStreamPublisher as _, DispatchClaimOwnership as _,
+    DispatchClaims as _, DispatchEnqueue as _, DispatchExecution as _, DispatchReads as _,
+    DispatchSettlement as _, MemoryDispatchStore, RegisteredWorker, RegistryError,
+    RegistryMutation, RunDispatch, SettleOutcome, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
+    WorkerManifest, WorkerRegistration, WorkerSnapshot, WorkerState,
 };
 use awaken_dispatch_http::{
     WorkerDispatchService, dispatch_transport_router_with_service, worker_environment_warmup_router,
@@ -691,13 +692,6 @@ impl awaken_session_configuration_contract::EnvironmentWarmupSource for StaticEn
 }
 
 #[async_trait::async_trait]
-impl WorkerObservationSource for TestWorkerDirectory {
-    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
-        Ok(self.0.lock().unwrap().clone().into_iter().collect())
-    }
-}
-
-#[async_trait::async_trait]
 impl WorkerDirectory for TestWorkerDirectory {
     async fn lock_incarnation(
         &self,
@@ -797,15 +791,6 @@ impl WorkerDirectory for TestWorkerDirectory {
         _identity: &WorkerIdentity,
     ) -> Result<RegistryMutation, RegistryError> {
         Ok(RegistryMutation::Applied)
-    }
-
-    async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError> {
-        Ok(self
-            .0
-            .lock()
-            .unwrap()
-            .clone()
-            .filter(|record| record.snapshot.identity.worker_id == worker_id))
     }
 
     async fn expire_incarnation(
@@ -3223,8 +3208,3 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
         "V1/E1"
     );
 }
-
-use awaken_dispatch_contract::{
-    DispatchClaimOwnership as _, DispatchClaims as _, DispatchEnqueue as _, DispatchExecution as _,
-    DispatchReads as _, DispatchSettlement as _,
-};

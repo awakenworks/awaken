@@ -604,14 +604,72 @@ pub enum RegistryError {
     CreateLedgerChanged,
 }
 
-/// Secret-free read projection of the current Worker authority.
+/// Secret-free read projection of the one Worker Registry authority.
 ///
 /// Control-plane readers depend on this narrow port instead of receiving the
 /// mutation-capable directory. A split Control process can therefore use an
 /// authenticated HTTP adapter while AllInOne projects the exact local authority.
+///
+/// R5: roster data never grants a point-query capability. Each point-query
+/// caller must supply the corresponding read role at compile time.
+///
+/// ```compile_fail
+/// use awaken_worker_contract::{WorkerCurrentSource, WorkerObservationSource};
+/// fn current(source: &dyn WorkerObservationSource) {
+///     let _ = source.current("worker");
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use awaken_worker_contract::{WorkerIdentity, WorkerIncarnationSource, WorkerObservationSource};
+/// fn incarnation(source: &dyn WorkerObservationSource, identity: &WorkerIdentity) {
+///     let _ = source.incarnation(identity);
+/// }
+/// ```
+///
+/// R12: an observation role cannot close Registry admission or write receipts.
+///
+/// ```compile_fail
+/// use awaken_worker_contract::{WorkerIdentity, WorkerObservationSource};
+/// fn close(source: &dyn WorkerObservationSource, identity: &WorkerIdentity) {
+///     let _ = source.deregister(identity);
+/// }
+/// ```
 #[async_trait]
 pub trait WorkerObservationSource: Send + Sync {
     async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError>;
+}
+
+/// Required logical-current query over the one Worker Registry authority.
+/// List-only observations do not imply this capability.
+#[async_trait]
+pub trait WorkerCurrentSource: WorkerObservationSource {
+    async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError>;
+}
+
+/// Required exact-incarnation query over the same Worker Registry authority.
+/// This role has no logical-current or mutation capability. Historical stores
+/// and the authenticated exact-domain HTTP adapter implement it explicitly.
+#[async_trait]
+pub trait WorkerIncarnationSource: WorkerObservationSource {
+    async fn incarnation(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> Result<Option<RegisteredWorker>, RegistryError>;
+}
+
+/// Preserve the existing current-only exact-identity fallback in one place.
+/// It performs one required current read and never scans the roster or invents
+/// historical records. An absent/nonmatching current row stays None; a query
+/// failure propagates unchanged.
+pub async fn read_current_incarnation(
+    source: &dyn WorkerCurrentSource,
+    identity: &WorkerIdentity,
+) -> Result<Option<RegisteredWorker>, RegistryError> {
+    Ok(source
+        .current(&identity.worker_id)
+        .await?
+        .filter(|record| record.snapshot.identity == *identity))
 }
 
 /// Worker-directory authority. Implementations must make every mutation atomic;
@@ -620,7 +678,7 @@ pub trait WorkerObservationSource: Send + Sync {
 /// A migrated slot missing generation one cannot safely admit any different
 /// incarnation: use a new Worker id, never manufacture the discarded history.
 #[async_trait]
-pub trait WorkerDirectory: WorkerObservationSource {
+pub trait WorkerDirectory: WorkerCurrentSource + WorkerIncarnationSource {
     /// Hold the existing incarnation exclusion across a final admission and its
     /// Dispatch transaction. Provider I/O must precede this guard. Unsupported
     /// adapters fail closed rather than pretending to serialize with closure.
@@ -658,20 +716,6 @@ pub trait WorkerDirectory: WorkerObservationSource {
         &self,
         identity: &WorkerIdentity,
     ) -> Result<RegistryMutation, RegistryError>;
-
-    async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError>;
-
-    /// Read one exact historical incarnation. Unlike `current`, this remains
-    /// available after a replacement becomes the current generation.
-    async fn incarnation(
-        &self,
-        identity: &WorkerIdentity,
-    ) -> Result<Option<RegisteredWorker>, RegistryError> {
-        Ok(self
-            .current(&identity.worker_id)
-            .await?
-            .filter(|record| record.snapshot.identity == *identity))
-    }
 
     /// Atomically close only this expired incarnation. Already closed exact
     /// records return Applied without rewriting them; missing, live or replaced

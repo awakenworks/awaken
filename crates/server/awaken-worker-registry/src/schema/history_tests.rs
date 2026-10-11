@@ -4,6 +4,7 @@ use super::*;
 use crate::{PostgresWorkerDirectory, SqliteWorkerDirectory};
 use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_sqlite_pool::EmbeddedSqlite;
+use awaken_worker_contract::WorkerCurrentSource;
 use awaken_worker_contract::{
     RegisteredWorker, RegistryError, WorkerDirectory, WorkerIdentity, WorkerManifest,
     WorkerRegistration, WorkerSnapshot, WorkerState,

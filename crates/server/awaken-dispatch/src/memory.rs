@@ -78,7 +78,7 @@ mod selection;
 mod settlement;
 mod store;
 use awaken_time::WallClockExt;
-use selection::select_where;
+use selection::{retry_deadline_is_due, runnable, select_where, thread_has_claim_blocking_peer};
 pub use store::MemoryDispatchStore;
 
 #[derive(Debug, Clone)]
@@ -347,72 +347,6 @@ fn append_pending(state: &mut State, input: PendingInput) -> Result<bool, Dispat
     }
     state.pending.push(PendingRow { input, revision: 1 });
     Ok(true)
-}
-
-/// Whether another open Run on the candidate's Thread blocks this claim.
-///
-/// The candidate is deliberately excluded: an Awaiting Run must be able to wake
-/// itself from its exact reply or cancellation. Cancellation only waits for an
-/// executing peer, so historical stores containing more than one Awaiting row can
-/// drain those rows one at a time instead of deadlocking forever.
-fn thread_has_claim_blocking_peer(
-    state: &State,
-    candidate_run: &RunId,
-    include_awaiting: bool,
-) -> bool {
-    let Some(candidate) = state.rows.get(candidate_run) else {
-        return false;
-    };
-    state.rows.iter().any(|(run_id, peer)| {
-        run_id != candidate_run
-            && peer.request.thread_id() == candidate.request.thread_id()
-            && (matches!(
-                peer.state,
-                DispatchState::ReservationLeased | DispatchState::Leased
-            ) || (include_awaiting && peer.state == DispatchState::Awaiting))
-    })
-}
-
-fn retry_deadline_is_due(row: &Row, now_ms: u64) -> bool {
-    awaken_dispatch_execution::pool::retry_deadline_is_due(row.retry_not_before_ms, now_ms)
-}
-
-/// Whether one exact row is runnable under the same policy as [`select_where`]. The
-/// boolean says that the claim is crash recovery and must spend retry budget.
-fn runnable(state: &State, run_id: &RunId, now_ms: u64) -> Option<bool> {
-    let now_ms = crate::clock::normalize_millis(now_ms);
-    let row = state.rows.get(run_id)?;
-    if !retry_deadline_is_due(row, now_ms) {
-        return None;
-    }
-    if classify_exact_claim_mode(row.state, row.exact_claim_deadline(), now_ms)
-        == ExactClaimMode::ReservationRecovery
-        && !thread_has_claim_blocking_peer(state, run_id, false)
-    {
-        return Some(false);
-    }
-    if row.state == DispatchState::Leased
-        && crate::clock::deadline_has_passed(
-            row.lease.as_ref().map(|lease| lease.expires_ms()),
-            now_ms,
-        )
-    {
-        return Some(true);
-    }
-    let thread_busy = thread_has_claim_blocking_peer(state, run_id, !row.cancellation_requested);
-    if thread_busy {
-        return None;
-    }
-    if row.state == DispatchState::Awaiting
-        && (row.cancellation_requested
-            || state
-                .pending
-                .iter()
-                .any(|pending| pending.input.run_id == *run_id && is_due(&pending.input, now_ms)))
-    {
-        return Some(false);
-    }
-    (row.state == DispatchState::Pending).then_some(false)
 }
 
 fn claim_exact(

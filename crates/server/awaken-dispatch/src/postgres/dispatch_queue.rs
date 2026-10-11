@@ -1786,52 +1786,6 @@ impl awaken_dispatch_contract::SessionReservationAuthority for PostgresDispatchS
     }
 }
 
-#[async_trait]
-impl awaken_dispatch_contract::DispatchControlClaims for PostgresDispatchStore {
-    async fn claim_placed(
-        &self,
-        requester: &WorkerSnapshot,
-        workers: Vec<WorkerSnapshot>,
-        policy: std::sync::Arc<dyn PlacementPolicy>,
-        lease_ms: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        let capabilities = installed_worker_credential_capabilities(requester)?;
-        self.claim_discovered(
-            &requester.identity.lease_owner(),
-            lease_ms,
-            &capabilities,
-            CandidateAudience::Placed {
-                requester,
-                workers: &workers,
-                policy: policy.as_ref(),
-            },
-        )
-        .await
-    }
-
-    async fn claim_for_terminal_recovery(
-        &self,
-        requested_run: &RunId,
-        owner: &str,
-        lease_ms: u64,
-    ) -> Result<Option<Claimed>, DispatchError> {
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
-        let claimed = claim_exact_transaction_with_mode(
-            &mut tx,
-            ThreadLock::Wait,
-            requested_run,
-            owner,
-            lease_ms,
-            None,
-            &Default::default(),
-            ExactClaimMode::TerminalRecovery,
-        )
-        .await?;
-        tx.commit().await.map_err(store_error)?;
-        Ok(claimed)
-    }
-}
-
 impl PostgresDispatchStore {
     pub(super) async fn finish_physical_attempt_with(
         &self,

@@ -1,11 +1,14 @@
 // @formal entrypoint remote_worker.committed_terminal_recovery_skips_execution_and_settles_dispatch
 // @formal entrypoint remote_worker.pending_signal_is_consumed_by_commit
 // @formal entrypoint tool_result.terminal_run_rejects_late_result
-//! Committed-terminal recovery and pre-execution terminalization for DispatchWorker.
+//! Shared settlement, committed-terminal recovery and pre-execution terminalization for DispatchWorker.
 //! This is the existing Worker implementation split by responsibility. Every
 //! entry uses its original claim-fenced commit, observer and settlement path.
 
-use super::{DispatchWorker, PendingInputAdmission, pending_input_admission};
+use super::{
+    DispatchWorker, ExecutionAuthority, PendingInputAdmission, pending_input_admission,
+    settle_outcome,
+};
 use crate::Error;
 use crate::control_dispatch::TerminalRecoveryDispatch;
 use crate::dispatch::{Claimed, DispatchOutcome, DispatchSummary, RunClaim, SettleOutcome};
@@ -462,5 +465,164 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 "committed-terminal observer delivery failed; dispatch settlement withheld for recovery: {failures}"
             )),
         ))
+    }
+
+    /// Settle a claimed dispatch and record the operational `runs.settled` counter
+    /// (labelled by outcome) on the runtime's metrics recorder. The single choke all
+    /// of `drive_claimed`'s settle arms route through, so every settle is metered
+    /// exactly once regardless of which branch reached it.
+    pub(super) async fn settle(
+        &self,
+        claimed: &Claimed,
+        expected_committed_state: Option<&RunState>,
+        outcome: DispatchOutcome,
+        consumed: &[String],
+    ) -> Result<SettleOutcome, Error> {
+        let run_id = claimed.request.run_id();
+        let claim = RunClaim::from(&claimed.lease);
+        let mut coordinated_committed_state = None;
+        let coordinated_claim_is_stale = if claimed.request.session_activity_epoch.is_some()
+            && let Some(expected) = expected_committed_state
+        {
+            let committed = self.reader.run_state(run_id).ok_or_else(|| {
+                Error::Dispatch(crate::DispatchError::Rejected(format!(
+                    "coordinated child Run {} has no committed settlement state",
+                    run_id.0
+                )))
+            })?;
+            if &committed != expected || settle_outcome(&committed)? != outcome {
+                return Err(Error::Dispatch(crate::DispatchError::Rejected(format!(
+                    "coordinated child Run {} settlement does not match committed truth",
+                    run_id.0
+                ))));
+            }
+            if !self.store.claim_is_current(&claim).await? {
+                true
+            } else {
+                let observer = self.settlement_observer.as_ref().ok_or_else(|| {
+                    Error::Dispatch(crate::DispatchError::Rejected(
+                        "coordinated child settlement observer is not installed".to_string(),
+                    ))
+                })?;
+                // Pre-settlement Session effects need the same physical gate as
+                // the queue CAS. A remote observer checks its authority-side
+                // guard; a local observer consumes the colocated locked facts.
+                let guard = if observer.owns_dispatch_fence() {
+                    None
+                } else {
+                    let ExecutionAuthority::Local(store) = &self.ports else {
+                        return Err(Error::Dispatch(crate::DispatchError::Rejected(
+                            "remote settlement observer must own its dispatch fence".into(),
+                        )));
+                    };
+                    let Some(guard) = store.lock_commit_epoch(&claim).await? else {
+                        return Ok(SettleOutcome::Fenced);
+                    };
+                    if !guard.permits_settlement() {
+                        guard.release().await.map_err(|error| {
+                            Error::Dispatch(crate::DispatchError::Unavailable(error))
+                        })?;
+                        return Ok(SettleOutcome::Fenced);
+                    }
+                    Some(guard)
+                };
+                // Do not hold Dispatch's lock across a Session application
+                // callback: report/interrupt handling may re-enter Dispatch.
+                // This is the same release boundary as the remote coordinator.
+                // The callback is exact/idempotent and final queue CAS still
+                // rejects a superseding epoch; logical Ended cannot restart.
+                if let Some(guard) = guard {
+                    guard.release().await.map_err(|error| {
+                        Error::Dispatch(crate::DispatchError::Unavailable(error))
+                    })?;
+                }
+                let observed = observer
+                    .before_settle(
+                        &claimed.request,
+                        &claim,
+                        &committed,
+                        claimed.cancellation_requested,
+                    )
+                    .await;
+                observed.map_err(|error| Error::SettlementObservationPending(error.to_string()))?;
+                coordinated_committed_state = Some(committed);
+                false
+            }
+        } else if claimed.request.session_activity_epoch.is_some()
+            && outcome != DispatchOutcome::Awaiting
+        {
+            return Err(Error::Dispatch(crate::DispatchError::Rejected(
+                "coordinated child settlement has no committed boundary".to_string(),
+            )));
+        } else {
+            false
+        };
+        let label = match outcome {
+            DispatchOutcome::Done => "done",
+            DispatchOutcome::Awaiting => "awaiting",
+        };
+        let started = awaken_time::mono::Stopwatch::start();
+        let settlement = if coordinated_claim_is_stale {
+            Ok(SettleOutcome::Fenced)
+        } else {
+            self.store
+                .settle(run_id, claimed.lease.epoch(), outcome, consumed)
+                .await
+        };
+        match settlement {
+            Ok(result) => {
+                self.record_settlement_outcome(result, label, started.elapsed());
+                if result == SettleOutcome::Applied
+                    && let Some(committed) = coordinated_committed_state.as_ref()
+                {
+                    self.settlement_observer
+                        .as_ref()
+                        .expect("coordinated settlement installed its observer")
+                        .after_settle(
+                            &claimed.request,
+                            &claim,
+                            committed,
+                            claimed.cancellation_requested,
+                        )
+                        .await
+                        .map_err(|error| {
+                            Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
+                        })?;
+                }
+                Ok(result)
+            }
+            Err(error) => {
+                self.runtime
+                    .metrics()
+                    .record_dispatch_commit("error", started.elapsed());
+                Err(error.into())
+            }
+        }
+    }
+
+    /// Record one authoritative settlement decision. Queue CAS fencing and the
+    /// coordinated pre-observer ownership fence both converge here, preventing
+    /// transport/topology-specific metric paths from drifting or double-counting.
+    fn record_settlement_outcome(
+        &self,
+        result: SettleOutcome,
+        applied_label: &str,
+        duration: std::time::Duration,
+    ) {
+        let commit_outcome = match result {
+            SettleOutcome::Applied => {
+                self.runtime
+                    .metrics()
+                    .record_dispatch_settled(applied_label);
+                "applied"
+            }
+            SettleOutcome::Fenced => {
+                self.runtime.metrics().record_dispatch_fenced();
+                "fenced"
+            }
+        };
+        self.runtime
+            .metrics()
+            .record_dispatch_commit(commit_outcome, duration);
     }
 }

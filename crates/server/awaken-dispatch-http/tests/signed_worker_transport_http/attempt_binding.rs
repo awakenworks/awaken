@@ -3,6 +3,7 @@ use super::*;
 use awaken_dispatch::{
     ApplicationError, AttemptExecutionBinding, RunClaim, WorkerExecutionBindingSource,
 };
+use awaken_worker_contract::WorkerCurrentSource;
 
 use awaken_dispatch_testkit::worker_http as support;
 use serde_json::{Value, json};

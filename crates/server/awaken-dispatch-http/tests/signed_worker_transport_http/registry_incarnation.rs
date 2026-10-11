@@ -1,5 +1,37 @@
-//! A terminal cleanup claim is admitted only for the current registry incarnation.
+//! Registry-incarnation fixtures and terminal-cleanup admission tests.
 use super::*;
+
+#[async_trait::async_trait]
+impl awaken_worker_contract::WorkerObservationSource for TestWorkerDirectory {
+    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
+        Ok(self.0.lock().unwrap().clone().into_iter().collect())
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_worker_contract::WorkerCurrentSource for TestWorkerDirectory {
+    async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .clone()
+            .filter(|record| record.snapshot.identity.worker_id == worker_id))
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_worker_contract::WorkerIncarnationSource for TestWorkerDirectory {
+    async fn incarnation(
+        &self,
+        identity: &awaken_worker_contract::WorkerIdentity,
+    ) -> Result<
+        Option<awaken_worker_contract::RegisteredWorker>,
+        awaken_worker_contract::RegistryError,
+    > {
+        awaken_worker_contract::read_current_incarnation(self, identity).await
+    }
+}
 
 /// Cause/effect design: C1 the cleanup claim route has authenticated Worker-id
 /// evidence but no Coordinator Worker Directory; C2 the request supplies a
