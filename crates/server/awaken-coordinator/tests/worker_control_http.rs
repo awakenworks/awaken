@@ -1,5 +1,6 @@
 // @formal evidence worker_credential.stale_heartbeat_never_rolls_back_revision
 use awaken_dispatch::ClaimedCheckpointTransport as _;
+use awaken_worker_contract::WorkerCurrentSource;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -22,7 +23,7 @@ use awaken_runtime_contract::snapshot::{
 use awaken_store_inmem::MemoryStreamCheckpointStore;
 use awaken_worker_registry::{
     MemoryWorkerDirectory, RegistryMutation, WorkerCredentialObservation, WorkerCredentialRevision,
-    WorkerDirectory, WorkerHeartbeat, WorkerManifest, WorkerState,
+    WorkerHeartbeat, WorkerManifest, WorkerState,
 };
 use awaken_coordinator_client::HttpDispatchQueue;
 use awaken_coordinator_client::{WorkerControlClient, WorkerRegistrationError};

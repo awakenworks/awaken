@@ -2,6 +2,7 @@
 
 use super::*;
 use awaken_lease_testkit::ManualClock;
+use awaken_worker_contract::WorkerCurrentSource;
 use awaken_worker_contract::{
     RegistryMutation, WorkerDirectory, WorkerHeartbeat, WorkerRegistration,
 };

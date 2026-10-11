@@ -6,13 +6,147 @@
 
 use awaken_store_conformance::worker_directory::*;
 use awaken_worker_contract::{
-    RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
-    WorkerState,
+    RegisteredWorker, RegistryError, RegistryMutation, WorkerCurrentSource, WorkerDirectory,
+    WorkerHeartbeat, WorkerIncarnationSource, WorkerObservationSource, WorkerState,
 };
 #[cfg(feature = "test-support")]
 use awaken_worker_registry::MemoryWorkerDirectory;
 use awaken_worker_registry::{PostgresWorkerDirectory, SqliteWorkerDirectory};
 use std::sync::Arc;
+
+struct CurrentOnlyObservation {
+    record: Option<RegisteredWorker>,
+    unavailable: bool,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl WorkerObservationSource for CurrentOnlyObservation {
+    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
+        panic!("an exact-current fallback must never scan the list")
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_worker_contract::WorkerCurrentSource for CurrentOnlyObservation {
+    async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.unavailable {
+            return Err(RegistryError::Persistence(
+                "fixture current read unavailable".into(),
+            ));
+        }
+        Ok(self
+            .record
+            .clone()
+            .filter(|record| record.snapshot.identity.worker_id == worker_id))
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_worker_contract::WorkerIncarnationSource for CurrentOnlyObservation {
+    async fn incarnation(
+        &self,
+        identity: &awaken_worker_contract::WorkerIdentity,
+    ) -> Result<
+        Option<awaken_worker_contract::RegisteredWorker>,
+        awaken_worker_contract::RegistryError,
+    > {
+        awaken_worker_contract::read_current_incarnation(self, identity).await
+    }
+}
+
+struct ListOnlyObservation {
+    record: RegisteredWorker,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl WorkerObservationSource for ListOnlyObservation {
+    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(vec![self.record.clone()])
+    }
+}
+
+#[tokio::test]
+async fn observation_current_fallback_keeps_exact_identity_absence_and_error() {
+    // R4: current exists/exact -> same record; absent or any full-identity axis
+    // differs -> None; current refusal -> the same error. Each row performs
+    // exactly one point read and no list, preserving the former Directory
+    // fallback rather than manufacturing historical query capability.
+    let temporary = tempfile::tempdir().unwrap();
+    let directory = SqliteWorkerDirectory::open(temporary.path().join("current.sqlite"))
+        .await
+        .unwrap();
+    let record = directory
+        .register(registration("read-current", "boot"), 100, 50)
+        .await
+        .unwrap();
+    for rule in [
+        "exact",
+        "worker",
+        "generation",
+        "boot",
+        "absent",
+        "unavailable",
+    ] {
+        let source = CurrentOnlyObservation {
+            record: (rule != "absent").then(|| record.clone()),
+            unavailable: rule == "unavailable",
+            reads: Default::default(),
+        };
+        let mut identity = record.snapshot.identity.clone();
+        match rule {
+            "worker" => identity.worker_id.push_str("-other"),
+            "generation" => identity.generation += 1,
+            "boot" => identity.incarnation_id.push_str("-other"),
+            _ => {}
+        }
+        let result = source.incarnation(&identity).await;
+        if rule == "unavailable" {
+            assert!(
+                matches!(result, Err(RegistryError::Persistence(ref error)) if error == "fixture current read unavailable"),
+                "R4/{rule}"
+            );
+        } else {
+            assert_eq!(
+                result.unwrap(),
+                (rule == "exact").then(|| record.clone()),
+                "R4/{rule}"
+            );
+        }
+        assert_eq!(source.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test]
+async fn list_only_observation_never_infers_current_or_historical_point_reads() {
+    // R5: even a matching roster record grants no point-query capability.
+    // The WorkerObservationSource compile-fail examples own refusal of current
+    // and incarnation calls; this positive case proves the same list-only type
+    // can return the exact record through its sole supported operation. R12
+    // retains the separate compile-fail mutation boundary.
+    let temporary = tempfile::tempdir().unwrap();
+    let directory = SqliteWorkerDirectory::open(temporary.path().join("list.sqlite"))
+        .await
+        .unwrap();
+    let record = directory
+        .register(registration("read-list", "boot"), 100, 50)
+        .await
+        .unwrap();
+    let source = Arc::new(ListOnlyObservation {
+        record: record.clone(),
+        reads: Default::default(),
+    });
+    let observations: Arc<dyn WorkerObservationSource> = source.clone();
+    assert_eq!(
+        observations.list().await.unwrap(),
+        vec![record],
+        "R5 list is supported"
+    );
+    assert_eq!(source.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
 
 #[tokio::test]
 #[cfg(feature = "test-support")]

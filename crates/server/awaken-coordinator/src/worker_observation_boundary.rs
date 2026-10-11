@@ -56,7 +56,7 @@ pub(crate) struct DomainState {
 
 /// A read-only composition of the original Registry, Dispatch, and WorkQueue
 /// owners. Neither this DTO nor its route can close or retire an attempt.
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct WorkerDomainObservation {
     registered: RegisteredWorker,
     physical_attempt_active: bool,
@@ -286,9 +286,21 @@ async fn handle_list(
 }
 
 /// Read-only remote adapter used by a split Control process.
+/// Authenticated roster and exact-incarnation observations from one Coordinator.
+/// R8: the exact-domain adapter does not implement the logical-current role.
+/// Its capability refusal is checked before any HTTP request, not by a hidden
+/// unsupported implementation or a guessed current row from the roster.
+///
+/// ```compile_fail
+/// use awaken_coordinator::worker_observation_boundary::HttpWorkerObservationSource;
+/// use awaken_worker_contract::WorkerCurrentSource;
+/// fn requires_current<T: WorkerCurrentSource>() {}
+/// requires_current::<HttpWorkerObservationSource>();
+/// ```
 #[derive(Clone)]
 pub struct HttpWorkerObservationSource {
     endpoint: String,
+    domain_endpoint: String,
     token_source: Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource>,
     client: awaken_outbound_http::InternalHttpClient,
 }
@@ -321,16 +333,20 @@ impl HttpWorkerObservationSource {
         awaken_service_auth_contract::resolve_service_bearer_token(token_source.as_ref())?;
         Ok(Self {
             endpoint: format!("{base_url}{WORKER_OBSERVATIONS_PATH}"),
+            domain_endpoint: format!("{base_url}{WORKER_DOMAIN_PATH}"),
             token_source,
             client: awaken_outbound_http::InternalHttpClient::new(REQUEST_TIMEOUT)
                 .map_err(|error| error.to_string())?,
         })
     }
-}
 
-#[async_trait]
-impl WorkerObservationSource for HttpWorkerObservationSource {
-    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
+    /// The original authenticated GET/retry boundary shared by both read
+    /// projections. Only the exact domain endpoint interprets 409 as absence.
+    async fn get_observation(
+        &self,
+        endpoint: &str,
+        missing_incarnation_is_none: bool,
+    ) -> Result<Option<awaken_outbound_http::HttpReply>, RegistryError> {
         let mut last_error = "Coordinator Worker-observation service unavailable".to_owned();
         for attempt in 0..ATTEMPTS {
             let bearer_token = awaken_service_auth_contract::resolve_service_bearer_token(
@@ -340,21 +356,15 @@ impl WorkerObservationSource for HttpWorkerObservationSource {
             match self
                 .client
                 .send(
-                    &awaken_outbound_http::JsonRequest::get(&self.endpoint)
-                        .bearer(bearer_token.as_ref()),
+                    &awaken_outbound_http::JsonRequest::get(endpoint).bearer(bearer_token.as_ref()),
                 )
                 .await
             {
                 Ok(response) if response.is_success() => {
-                    return serde_json::from_str::<Result<Vec<RegisteredWorker>, String>>(
-                        response.body(),
-                    )
-                    .map_err(|error| {
-                        RegistryError::Persistence(format!(
-                            "decode Coordinator Worker observations: {error}"
-                        ))
-                    })?
-                    .map_err(RegistryError::Persistence);
+                    return Ok(Some(response));
+                }
+                Ok(response) if missing_incarnation_is_none && response.status() == 409 => {
+                    return Ok(None);
                 }
                 Ok(response) if response.is_unauthorized() => {
                     let rotated = awaken_service_auth_contract::service_bearer_token_rotated(
@@ -393,8 +403,64 @@ impl WorkerObservationSource for HttpWorkerObservationSource {
     }
 }
 
+#[async_trait]
+impl WorkerObservationSource for HttpWorkerObservationSource {
+    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
+        let response = self
+            .get_observation(&self.endpoint, false)
+            .await?
+            .ok_or_else(|| {
+                RegistryError::Persistence("Coordinator Worker observations are missing".into())
+            })?;
+        serde_json::from_str::<Result<Vec<RegisteredWorker>, String>>(response.body())
+            .map_err(|error| {
+                RegistryError::Persistence(format!(
+                    "decode Coordinator Worker observations: {error}"
+                ))
+            })?
+            .map_err(RegistryError::Persistence)
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_worker_contract::WorkerIncarnationSource for HttpWorkerObservationSource {
+    async fn incarnation(
+        &self,
+        identity: &awaken_worker_registry::WorkerIdentity,
+    ) -> Result<Option<RegisteredWorker>, RegistryError> {
+        let mut endpoint = url::Url::parse(&self.domain_endpoint).map_err(|error| {
+            RegistryError::Persistence(format!("Coordinator Worker domain URL: {error}"))
+        })?;
+        endpoint
+            .query_pairs_mut()
+            .append_pair("worker_id", &identity.worker_id)
+            .append_pair("incarnation_id", &identity.incarnation_id)
+            .append_pair("generation", &identity.generation.to_string());
+        let Some(response) = self.get_observation(endpoint.as_str(), true).await? else {
+            return Ok(None);
+        };
+        if response.status() != 200 {
+            return Err(RegistryError::Persistence(format!(
+                "Coordinator Worker domain did not return an exact read: {}",
+                response.status()
+            )));
+        }
+        let observation: WorkerDomainObservation =
+            serde_json::from_str(response.body()).map_err(|error| {
+                RegistryError::Persistence(format!("decode Coordinator Worker domain: {error}"))
+            })?;
+        if observation.registered.snapshot.identity != *identity {
+            return Err(RegistryError::Persistence(
+                "Coordinator Worker domain returned another incarnation".into(),
+            ));
+        }
+        Ok(Some(observation.registered))
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use awaken_worker_contract::WorkerIncarnationSource;
     use awaken_worker_registry::WorkerObservationSource;
     use axum::body::Body;
     use axum::http::Request;
@@ -426,6 +492,257 @@ mod tests {
         async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
             Ok(Vec::new())
         }
+    }
+
+    fn historical_worker(identity: awaken_worker_registry::WorkerIdentity) -> RegisteredWorker {
+        let manifest = awaken_worker_contract::WorkerManifest::default();
+        RegisteredWorker {
+            snapshot: awaken_worker_contract::WorkerSnapshot {
+                identity,
+                state: awaken_worker_contract::WorkerState::Dead,
+                capability_fingerprint: manifest.fingerprint().unwrap(),
+                manifest,
+                in_flight: 0,
+                warm_environment_shapes: Default::default(),
+                credential_observations: Default::default(),
+                acp_capability_observations: Default::default(),
+                expires_at_ms: 5,
+            },
+            heartbeat_sequence: 1,
+            observation_sequence: 1,
+            registered_at_ms: 1,
+            heartbeat_at_ms: 2,
+            drain_deadline_ms: None,
+            process_exit: Some(
+                awaken_worker_contract::WorkerProcessExit::new("original", "process", "exit")
+                    .unwrap(),
+            ),
+            create_ledger: Some(
+                awaken_worker_contract::WorkerCreateLedger::new(
+                    "original",
+                    "control",
+                    "ledger",
+                    "original-uid",
+                    "configuration",
+                )
+                .unwrap(),
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn historical_http_read_preserves_exact_identity_wire_and_failure_kinds() {
+        // R6 old exact row, including original exit/ledger and true domain
+        // flags -> return that row only, with no closure decision. R7 a 200
+        // mismatched identity/missing field/bad JSON or non-200 success (202/204)
+        // cannot qualify. R8 only domain409 is None; list409/400/401 refuse.
+        // R9 503 retries exactly the existing bound. R10 reserved/Unicode
+        // identity values round-trip through the actual HTTP query decoder.
+        // No path falls back to list or mutates the Registry.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let identity = awaken_worker_registry::WorkerIdentity::new(
+            "worker:space &+?#%/雪",
+            "boot &+?#%/雪",
+            2,
+        );
+        let original = historical_worker(identity.clone());
+        for rule in [
+            "exact",
+            "identity",
+            "field",
+            "bad-json",
+            "accepted",
+            "no-content",
+            "missing",
+            "bad-query",
+            "unauthorized",
+            "unavailable",
+        ] {
+            let domain_calls = Arc::new(AtomicUsize::new(0));
+            let list_calls = Arc::new(AtomicUsize::new(0));
+            let app = Router::new()
+                .route(WORKER_DOMAIN_PATH, get({
+                    let domain_calls = domain_calls.clone();
+                    let original = original.clone();
+                    let expected = identity.clone();
+                    move |headers: HeaderMap, Query(actual): Query<awaken_worker_registry::WorkerIdentity>| {
+                        let domain_calls = domain_calls.clone();
+                        let original = original.clone();
+                        let expected = expected.clone();
+                        async move {
+                            domain_calls.fetch_add(1, Ordering::SeqCst);
+                            assert_eq!(actual, expected, "R10 exact encoded query");
+                            assert_eq!(headers.get(header::AUTHORIZATION).unwrap(), "Bearer secret");
+                            if rule == "bad-json" {
+                                return (StatusCode::OK, "{").into_response();
+                            }
+                            let observation = WorkerDomainObservation {
+                                registered: original,
+                                physical_attempt_active: true,
+                                work_claims_active: true,
+                                session_realizations_active: true,
+                            };
+                            let mut value = serde_json::to_value(observation).unwrap();
+                            let keys = value.as_object().unwrap().keys().map(String::as_str).collect::<std::collections::BTreeSet<_>>();
+                            assert_eq!(keys, std::collections::BTreeSet::from(["registered", "physical_attempt_active", "work_claims_active", "session_realizations_active"]), "R6 original four-key wire");
+                            let status = match rule {
+                                "identity" => {
+                                    value["registered"]["snapshot"]["identity"]["generation"] = serde_json::json!(3);
+                                    StatusCode::OK
+                                }
+                                "field" => {
+                                    value.as_object_mut().unwrap().remove("physical_attempt_active");
+                                    StatusCode::OK
+                                }
+                                "accepted" => StatusCode::ACCEPTED,
+                                "no-content" => StatusCode::NO_CONTENT,
+                                "missing" => StatusCode::CONFLICT,
+                                "bad-query" => StatusCode::BAD_REQUEST,
+                                "unauthorized" => StatusCode::UNAUTHORIZED,
+                                "unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+                                _ => StatusCode::OK,
+                            };
+                            (status, Json(value)).into_response()
+                        }
+                    }
+                }))
+                .route(WORKER_OBSERVATIONS_PATH, get({
+                    let list_calls = list_calls.clone();
+                    move || {
+                        let list_calls = list_calls.clone();
+                        async move {
+                            list_calls.fetch_add(1, Ordering::SeqCst);
+                            StatusCode::CONFLICT
+                        }
+                    }
+                }));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let source =
+                HttpWorkerObservationSource::new(format!("http://{address}"), "secret").unwrap();
+            let point_source: &dyn WorkerIncarnationSource = &source;
+            let result = point_source.incarnation(&identity).await;
+            match rule {
+                "exact" => assert_eq!(result.unwrap(), Some(original.clone()), "R6"),
+                "missing" => assert_eq!(result.unwrap(), None, "R8"),
+                _ => assert!(
+                    matches!(result, Err(RegistryError::Persistence(_))),
+                    "R7/R8/R9 {rule}"
+                ),
+            }
+            assert_eq!(
+                domain_calls.load(Ordering::SeqCst),
+                if rule == "unavailable" { ATTEMPTS } else { 1 },
+                "R9 {rule}"
+            );
+            assert_eq!(
+                list_calls.load(Ordering::SeqCst),
+                0,
+                "no historical fallback"
+            );
+            assert_eq!(
+                domain_calls.load(Ordering::SeqCst),
+                if rule == "unavailable" { ATTEMPTS } else { 1 }
+            );
+            assert!(source.list().await.is_err(), "R8 list409 remains a refusal");
+            assert_eq!(list_calls.load(Ordering::SeqCst), 1);
+            server.abort();
+            let _ = server.await;
+        }
+    }
+
+    struct RotatingTokenSource(std::sync::atomic::AtomicUsize);
+
+    impl awaken_service_auth_contract::ServiceBearerTokenSource for RotatingTokenSource {
+        fn current_token(&self) -> Result<Arc<str>, String> {
+            // Constructor and first request see the original token. The
+            // existing unauthorized boundary then observes one real rotation.
+            let read = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Arc::from(if read < 2 { "before" } else { "after" }))
+        }
+    }
+
+    #[tokio::test]
+    async fn historical_http_read_reuses_token_rotation_and_transient_retry_policy() {
+        // R9 changed token after401 -> one authenticated retry; unchanged
+        // token -> immediate refusal (the table above). Two503 responses then
+        // exact200 use exactly the original three attempts, not another loop.
+        // Connection refusal remains unavailable, never missing history.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let identity = awaken_worker_registry::WorkerIdentity::new("historical", "original", 1);
+        let original = historical_worker(identity.clone());
+        for rotating in [false, true] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let app = Router::new().route(
+                WORKER_DOMAIN_PATH,
+                get({
+                    let calls = calls.clone();
+                    let original = original.clone();
+                    move |headers: HeaderMap| {
+                        let calls = calls.clone();
+                        let original = original.clone();
+                        async move {
+                            let number = calls.fetch_add(1, Ordering::SeqCst);
+                            let status = if rotating
+                                && headers.get(header::AUTHORIZATION).unwrap() == "Bearer before"
+                            {
+                                StatusCode::UNAUTHORIZED
+                            } else if !rotating && number < 2 {
+                                StatusCode::SERVICE_UNAVAILABLE
+                            } else {
+                                StatusCode::OK
+                            };
+                            (
+                                status,
+                                Json(WorkerDomainObservation {
+                                    registered: original,
+                                    physical_attempt_active: false,
+                                    work_claims_active: false,
+                                    session_realizations_active: false,
+                                }),
+                            )
+                                .into_response()
+                        }
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let tokens: Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource> =
+                if rotating {
+                    Arc::new(RotatingTokenSource(AtomicUsize::new(0)))
+                } else {
+                    awaken_service_auth_contract::static_token_source("secret").unwrap()
+                };
+            let source =
+                HttpWorkerObservationSource::with_token_source(format!("http://{address}"), tokens)
+                    .unwrap();
+            assert_eq!(
+                source.incarnation(&identity).await.unwrap(),
+                Some(original.clone()),
+                "R9"
+            );
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                if rotating { 2 } else { ATTEMPTS }
+            );
+            server.abort();
+            let _ = server.await;
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let source =
+            HttpWorkerObservationSource::new(format!("http://{address}"), "secret").unwrap();
+        assert!(
+            matches!(
+                source.incarnation(&identity).await,
+                Err(RegistryError::Persistence(_))
+            ),
+            "R9 connection refusal is unavailable, not None"
+        );
     }
 
     #[tokio::test]

@@ -1228,6 +1228,7 @@ dependencies = [
  "awaken-session-execution-contract",
  "awaken-session-types",
  "awaken-time",
+ "awaken-worker-contract",
  "axum",
  "serde_json",
  "tokio",
