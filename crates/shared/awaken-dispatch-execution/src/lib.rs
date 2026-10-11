@@ -6,6 +6,8 @@
 
 pub mod claimed_stream;
 mod commit_fence;
+#[cfg(test)]
+mod composition_tests;
 mod control_dispatch;
 mod error;
 pub mod execution_capacity;
@@ -28,16 +30,16 @@ mod dispatch {
 }
 
 pub use awaken_dispatch_contract::{
-    ClaimedStreamPublisher, DispatchError, DispatchQueue, DispatchSettlementObserver,
-    DispatchState, DispatchSummary, RunClaim, RunDispatch, SettleOutcome,
+    ClaimedStreamPublisher, DispatchError, DispatchSettlementObserver, DispatchState,
+    DispatchSummary, RunClaim, RunDispatch, SettleOutcome,
 };
 pub use commit_fence::{
     ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit, validate_commit_dispatch_binding,
 };
-pub use control_dispatch::ControlDispatch;
+pub use control_dispatch::{ControlDispatch, LocalWorkerDispatch, TerminalRecoveryDispatch};
 pub use error::Error;
 pub use fenced_checkpoint::FencedStreamCheckpointStore;
-pub use live_control::{Error as LiveRunControlError, LiveRunControlService};
+pub use live_control::{Error as LiveRunControlError, LiveAttemptControl, LiveRunControlService};
 pub use pool::{CompletionSink, DispatchPool, DispatchReconciler, PoolDrainFence, WorkerResolver};
 pub use reconciliation::TerminalReconciliationScan;
 pub use recovery_projection::{RecoveryProjection, RecoveryProjectionError};
@@ -46,4 +48,9 @@ pub use session_admission::SessionRunAdmissionObserver;
 pub use wake::{LocalWakeSignal, WakeSignal, publish_dispatch_hint};
 pub use worker::{DEFAULT_LEASE_MS, DispatchWorker, claim_bound_ownership_verifier};
 pub use worker_context::{ClaimedModelRequestGateFactory, InferenceMaterializerFn};
-pub use worker_evidence::WorkerEvidenceRelease;
+pub use worker_evidence::{PhysicalAttemptReads, WorkerEvidenceRelease};
+
+pub use awaken_dispatch_erasure::{
+    AnyCoordinatorDispatch, AnyDispatchStore, Dispatch, DispatchBinding, DispatchTopology,
+    DurableDispatch, RemoteDispatch,
+};

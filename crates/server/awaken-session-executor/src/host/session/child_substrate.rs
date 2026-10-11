@@ -116,7 +116,9 @@ mod tests {
         AdoptionModel, eager_environment, install_complete_projection_for_snapshot,
         test_activation, with_empty_session_resources,
     };
-    use awaken_dispatch::{DispatchQueue as _, WorkerResolver as _};
+    use awaken_dispatch::WorkerResolver as _;
+    use awaken_dispatch_contract::DispatchClaims;
+    use awaken_dispatch_contract::DispatchEnqueue;
     use awaken_runtime_contract::resolved::ModelBinding;
 
     #[tokio::test]

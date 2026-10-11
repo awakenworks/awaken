@@ -1569,8 +1569,7 @@ impl WorkerNode {
         // Committed truth lives in the Coordinator: the Host reaches it only
         // through these claim-fenced transports.
         let authority = awaken_session_executor::UpstreamAuthority::default()
-            .with_dispatch_transport(dispatch)
-            .with_claimed_commit(claimed_commit)
+            .with_dispatch_binding(awaken_dispatch_erasure::DispatchBinding::remote(dispatch, claimed_commit))
             .with_memory_reference_encoder(Arc::new(
                 awaken_resource_worker_http::HttpMemoryMaterializationReferenceEncoder,
             ))

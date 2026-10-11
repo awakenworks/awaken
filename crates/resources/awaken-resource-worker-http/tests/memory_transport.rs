@@ -17,7 +17,7 @@ use awaken_resource_worker_http::{
 use awaken_resource_worker_http::{
     memory_materialization_reference, terminal_memory_materialization_reference,
 };
-use awaken_dispatch::{DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch};
+use awaken_dispatch::{MemoryDispatchStore, RunClaim, RunDispatch};
 use awaken_session_realization_contract::{
     SessionRealizationControlFailure, SessionResourceMaterializationIntent,
 };
@@ -1275,3 +1275,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
         );
     }
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaims as _, DispatchEnqueue as _, DispatchSettlement as _,
+};

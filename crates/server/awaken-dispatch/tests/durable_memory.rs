@@ -10,7 +10,6 @@
 
 mod harness;
 
-use awaken_dispatch_contract::ControlDispatchQueue;
 use awaken_time::system_clock;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -23,9 +22,9 @@ use awaken_agent_contract::audit::kind::Kind as AuditKind;
 use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::PlacementRequirements;
 use awaken_dispatch::{
-    ContinuationAdmission, DEFAULT_LEASE_MS, DispatchOutcome, DispatchQueue,
-    DispatchSettlementError, DispatchSettlementObserver, DispatchTestHarness, DispatchWorker,
-    Inbox, MemoryDispatchStore, PendingInput, RunClaim, RunDispatch, SessionChildAdmission,
+    ContinuationAdmission, DEFAULT_LEASE_MS, DispatchOutcome, DispatchSettlementError,
+    DispatchSettlementObserver, DispatchTestHarness, DispatchWorker, Inbox, MemoryDispatchStore,
+    PendingInput, RunClaim, RunDispatch, SessionChildAdmission,
 };
 use awaken_dispatch_contract::SessionContinuationOutbox as _;
 use awaken_dispatch_testkit::ConformanceClock as _;
@@ -2866,3 +2865,9 @@ async fn dispatch_harness_lists_dispatches_and_purges_aged_dead_letters() {
     assert_eq!(ingress.purge_dead_letters_before(1_000).await.unwrap(), 1);
     assert!(ingress.list_dispatches().await.unwrap().is_empty());
 }
+
+use awaken_dispatch_contract::{
+    DispatchAdministration as _, DispatchClaims as _, DispatchControlClaims as _,
+    DispatchControlReads as _, DispatchEnqueue as _, DispatchReads as _, DispatchSettlement as _,
+    InboxRead as _, SessionRunReservations as _,
+};

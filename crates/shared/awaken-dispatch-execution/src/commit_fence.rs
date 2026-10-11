@@ -24,7 +24,7 @@ use awaken_agent_contract::thread::commit::operation::{
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 
-use crate::dispatch::{ClaimedCommitCommand, DispatchQueue, RunClaim};
+use crate::dispatch::{ClaimedCommitCommand, DispatchCommitAuthority, RunClaim};
 use crate::{RecoveryProjection, RunDispatch};
 pub use awaken_dispatch_contract::ClaimedRunCommit;
 
@@ -56,11 +56,11 @@ pub fn validate_commit_dispatch_binding(
 /// across the ordinary thread commit, and fail closed when the claim is stale.
 pub struct GuardedRunCommit {
     inner: Arc<dyn CommitCoordinator>,
-    store: Arc<dyn DispatchQueue>,
+    store: Arc<dyn DispatchCommitAuthority>,
 }
 
 impl GuardedRunCommit {
-    pub fn new(inner: Arc<dyn CommitCoordinator>, store: Arc<dyn DispatchQueue>) -> Self {
+    pub fn new(inner: Arc<dyn CommitCoordinator>, store: Arc<dyn DispatchCommitAuthority>) -> Self {
         Self { inner, store }
     }
 }

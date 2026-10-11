@@ -66,13 +66,10 @@ pub enum CasOutcome {
 /// closed on a mismatch, so a concurrent change is never silently overwritten.
 /// Records are mutable only before the worker consumes them.
 #[async_trait]
-pub trait Inbox: Send + Sync {
+pub trait Inbox: InboxRead {
     /// Idempotently append one pending input at revision 1. Returns `true` if
     /// newly stored, `false` if the `message_id` was already present.
     async fn append(&self, input: PendingInput) -> Result<bool, DispatchError>;
-
-    /// The thread's undelivered pending input, in arrival order, with revisions.
-    async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError>;
 
     /// Retract one pending record if it is still at `expected_revision`.
     async fn retract(
@@ -201,4 +198,11 @@ mod delivery_tests {
         let back: PendingInput = serde_json::from_value(v).expect("legacy row loads");
         assert_eq!(back.available_at_ms, None);
     }
+}
+
+/// Read pending input without authority to append, edit or retract.
+#[async_trait]
+pub trait InboxRead: Send + Sync {
+    /// The thread's undelivered pending input, in arrival order, with revisions.
+    async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError>;
 }

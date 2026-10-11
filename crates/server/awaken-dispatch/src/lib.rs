@@ -13,7 +13,7 @@
 //! (G1/G13). Historical reexports preserve caller source compatibility without
 //! retaining another execution implementation here.
 //!
-//! The aggregates follow the dispatch design's DDD split: [`DispatchQueue`] owns
+//! The aggregates follow the dispatch design's DDD split: [`DispatchEnqueue`] and [`DispatchClaims`] owns
 //! delivery opportunity (claim/lease/recovery), [`Inbox`] owns the
 //! thread's pending input, and run outcome stays in committed facts, read back
 //! through the commit boundary's single `CommittedThreadView` port.
@@ -78,7 +78,7 @@ pub use application::{
     has_active_physical_attempt_for_owner, release_closed_idle_worker_evidence,
     stop_expired_predecessor,
 };
-pub use awaken_dispatch_erasure::{AnyDispatchStore, Dispatch};
+pub use awaken_dispatch_execution::{AnyDispatchStore, Dispatch};
 pub use awaken_dispatch_execution::{
     ClaimedCommitCoordinator, ClaimedModelRequestGateFactory, ClaimedRunCommit, CompletionSink,
     ControlDispatch, DEFAULT_LEASE_MS, DispatchPool, DispatchReconciler, DispatchService,
@@ -87,7 +87,6 @@ pub use awaken_dispatch_execution::{
     PoolDrainFence, RecoveryProjection, RecoveryProjectionError, TerminalReconciliationScan,
     WorkerResolver, claim_bound_ownership_verifier, publish_dispatch_hint,
 };
-pub use awaken_dispatch_contract::ClaimedStreamPublisher;
 pub use awaken_dispatch_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
     DispatchPage, LeaseLossReason,
@@ -115,15 +114,16 @@ pub use awaken_dispatch_contract::{
     SessionRunReservationResolutionRequest, SettleRequest, StreamEventRequest,
     StreamObservationRequest, WorkerIdentityRequest,
 };
+pub use awaken_dispatch_contract::{ClaimedStreamPublisher, SessionContinuationOutbox};
 pub use dispatch::{
     AttemptAdmission, AttemptCredentialBinding, AttemptExecutionBinding, CandidateFingerprint,
     CasOutcome, Claimed, ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport,
-    CommitEpochGuard, ContinuationAdmission, ControlDispatchQueue, CredentialRealizationReceipt,
-    DispatchCompletion, DispatchDepths, DispatchError, DispatchLease, DispatchOutcome,
-    DispatchQueue, DispatchSettlementError, DispatchSettlementObserver, DispatchState,
-    DispatchSummary, Inbox, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord,
-    PhysicalAttempt, RunClaim, SessionChildAdmission, SessionRunReservationActivation,
-    SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
+    CommitEpochGuard, ContinuationAdmission, CredentialRealizationReceipt, DispatchCompletion,
+    DispatchDepths, DispatchError, DispatchLease, DispatchOutcome, DispatchSettlementError,
+    DispatchSettlementObserver, DispatchState, DispatchSummary, Inbox, LeaseRenewalOutcome, Outbox,
+    PendingInput, PendingRecord, PhysicalAttempt, RunClaim, SessionChildAdmission,
+    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
+    SettleOutcome, SubmitOptions,
 };
 pub use dispatch_schema::dispatch_bundle;
 #[cfg(feature = "test-support")]
@@ -292,6 +292,19 @@ pub(crate) fn policy_selects_requester(
         Err(error) => Err(DispatchError::Rejected(error.to_string())),
     }
 }
+
+pub use application::AttemptControlAuthority;
+pub use awaken_dispatch_execution::{
+    AnyCoordinatorDispatch, DispatchBinding, DispatchTopology, DurableDispatch, RemoteDispatch,
+};
+pub use awaken_dispatch_contract::{
+    DispatchAdministration, DispatchAttemptControl, DispatchClaimOwnership, DispatchClaims,
+    DispatchCommitAuthority, DispatchControlClaims, DispatchControlReads, DispatchEnqueue,
+    DispatchExecution, DispatchMaintenance, DispatchReads, DispatchSettlement, InboxRead,
+    SessionReservationAuthority, SessionRunReservations,
+};
+
+pub use awaken_dispatch_execution::PhysicalAttemptReads;
 
 #[cfg(test)]
 mod supersession_epoch_tests {

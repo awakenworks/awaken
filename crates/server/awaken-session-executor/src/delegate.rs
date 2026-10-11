@@ -636,10 +636,21 @@ impl CancellableRunDelegationService for HostRunDelegationService {
         let worker = Arc::new(crate::agent_runner::ChildWorkerFactory::cancellation(
             runtime, scheduler,
         ));
-        awaken_dispatch_execution::LiveRunControlService::new(worker, scheduler.clock.clone())
-            .cancel(&cancellation.child_run_id.0)
-            .await
-            .map_err(|error| DelegationExecutionError::retryable(error.to_string()))
+        let awaken_dispatch_erasure::DispatchTopology::Local(local) = scheduler.binding.placement()
+        else {
+            return Err(DelegationExecutionError::retryable(
+                "durable child cancellation requires Coordinator administration authority",
+            ));
+        };
+        awaken_dispatch_execution::LiveRunControlService::from_local_owner(
+            worker,
+            local.clone(),
+            scheduler.clock.clone(),
+        )
+        .map_err(|error| DelegationExecutionError::retryable(error.to_string()))?
+        .cancel(&cancellation.child_run_id.0)
+        .await
+        .map_err(|error| DelegationExecutionError::retryable(error.to_string()))
     }
 }
 
@@ -652,7 +663,8 @@ mod durable_cancel_tests {
     use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
     use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
-    use awaken_dispatch_contract::DispatchQueue;
+    use awaken_dispatch_contract::DispatchReads;
+
     use awaken_runtime_contract::agent_bindings::{
         AgentAdvisorBinding, AgentBindings, AgentDelegateBinding, InferenceOptions, ReasoningEffort,
     };
@@ -1212,12 +1224,10 @@ mod durable_cancel_tests {
         let commit = Arc::new(MemoryCommitCoordinator::new(clock.clone()));
         let scheduler = RunScheduler {
             clock: clock.clone(),
-            store: store.clone(),
+            binding: awaken_dispatch_erasure::DispatchBinding::local(store.clone()),
             commit: commit.clone(),
             reader: commit.clone(),
             owner: "advisor-child-owner".to_string(),
-            claimed_commit: None,
-            recovery_projection: None,
             session_resources: None,
             publication_source: None,
             claimed_model_request_gate: None,
@@ -1475,12 +1485,10 @@ mod durable_cancel_tests {
         let commit = Arc::new(MemoryCommitCoordinator::new(clock.clone()));
         let scheduler = RunScheduler {
             clock: clock.clone(),
-            store: store.clone(),
+            binding: awaken_dispatch_erasure::DispatchBinding::local(store.clone()),
             commit: commit.clone(),
             reader: commit.clone(),
             owner: "child-owner".to_string(),
-            claimed_commit: None,
-            recovery_projection: None,
             session_resources: None,
             publication_source: None,
             claimed_model_request_gate: None,

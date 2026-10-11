@@ -1,7 +1,6 @@
 // @formal evidence model_operation.coverage_commit_strictly_precedes_model_entry
 // @formal evidence sandbox.k8s_process_observation_requires_complete_exit
 use super::*;
-use awaken_dispatch::ControlDispatchQueue;
 mod hand_recovery;
 mod live;
 use axum::{
@@ -401,7 +400,7 @@ async fn relay_target_reuses_the_selected_worker_pod_observer() {
 
 #[tokio::test]
 async fn legacy_closed_idle_worker_without_a_frozen_create_ledger_never_retires_a_pod() {
-    use awaken_dispatch::{DispatchQueue, WorkerDirectory};
+    use awaken_dispatch::WorkerDirectory;
     // C1 legacy registration has no Registry-frozen Create ledger/process
     // binding; C2 Registry spans Starting/Ready/Draining/Quiesced/Dead; C3
     // an exact, unbound or foreign Dispatch slot may exist. Rule CI1=C1 with
@@ -533,7 +532,7 @@ async fn legacy_closed_idle_worker_without_a_frozen_create_ledger_never_retires_
 
 #[tokio::test]
 async fn independent_stop_consumes_only_original_closed_binding_and_preserves_dispatch_veto() {
-    use awaken_dispatch::{DispatchQueue, WorkerDirectory};
+    use awaken_dispatch::WorkerDirectory;
     use awaken_store_inmem::MemoryCommitCoordinator;
     // S1 current successor + persisted old binding + exact expired Registry
     // => independent UID/resourceVersion stop with Coordinator client (no token
@@ -785,3 +784,7 @@ fn shared_policy_validation_rejects_invalid_provider_coordinates_before_io() {
         );
     }
 }
+
+use awaken_dispatch::{
+    DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _, DispatchExecution as _,
+};

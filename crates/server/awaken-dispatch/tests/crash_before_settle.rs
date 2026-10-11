@@ -28,7 +28,7 @@
 mod harness;
 
 use awaken_dispatch::ControlDispatch;
-use awaken_dispatch_contract::ControlDispatchQueue;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -44,8 +44,8 @@ use awaken_agent_contract::thread::read::lifecycle::{
 };
 use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
-    DispatchOutcome, DispatchQueue, DispatchWorker, Inbox, MemoryDispatchStore, RunDispatch,
-    SettleOutcome, SqliteDispatchStore,
+    DispatchOutcome, DispatchWorker, Inbox, MemoryDispatchStore, RunDispatch, SettleOutcome,
+    SqliteDispatchStore,
 };
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -990,3 +990,8 @@ fn now_nanos() -> u128 {
         .map(|d| d.as_nanos())
         .unwrap_or(0)
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _, DispatchReads as _,
+    DispatchSettlement as _, InboxRead as _,
+};

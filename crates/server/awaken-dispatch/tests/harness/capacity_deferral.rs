@@ -16,7 +16,7 @@ use super::*;
 /// | D3 | after N capacity deferrals | `attempt_count` equals its value before them |
 /// | D4 | a stale claim defers after the hand-off | fenced; the new owner keeps the lease |
 pub async fn assert_capacity_deferrals_hand_off_without_spending_budget<
-    S: awaken_dispatch::ControlDispatch,
+    S: awaken_dispatch::ControlDispatch + awaken_dispatch::DispatchReads,
 >(
     store: &S,
     clock: &dyn ConformanceClock,

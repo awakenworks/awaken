@@ -96,49 +96,6 @@ impl Inbox for PostgresDispatchStore {
         Ok(inserted)
     }
 
-    async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
-        let p = NS;
-        let rows = sqlx::query(&format!(
-            "SELECT message_id, run_id, correlation_id, result, context_messages, revision, available_at \
-             FROM {p}_pending WHERE thread_id = $1 ORDER BY created_at"
-        ))
-        .bind(&thread_id.0)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(store_error)?;
-
-        let mut records = Vec::with_capacity(rows.len());
-        for row in rows {
-            let message_id: String = row.try_get("message_id").map_err(store_error)?;
-            let run_id: String = row.try_get("run_id").map_err(store_error)?;
-            let correlation_id: String = row.try_get("correlation_id").map_err(store_error)?;
-            let Json(result): Json<ResumeResult> = row.try_get("result").map_err(store_error)?;
-            let context_messages = row
-                .try_get::<Option<Json<Vec<Message>>>, _>("context_messages")
-                .map_err(store_error)?
-                .map(|Json(messages)| messages)
-                .unwrap_or_default();
-            let revision: i64 = row.try_get("revision").map_err(store_error)?;
-            let available_at: Option<i64> = row.try_get("available_at").map_err(store_error)?;
-            records.push(PendingRecord {
-                input: PendingInput {
-                    message_id,
-                    run_id: RunId(run_id),
-                    thread_id: thread_id.clone(),
-                    correlation_id,
-                    available_at_ms: available_at
-                        .map(crate::clock::millis_from_db)
-                        .transpose()
-                        .map_err(|err| DispatchError::Rejected(err.to_string()))?,
-                    result,
-                    context_messages,
-                },
-                revision: durable_u64("pending input revision", revision)?,
-            });
-        }
-        Ok(records)
-    }
-
     async fn retract(
         &self,
         message_id: &str,
@@ -203,6 +160,52 @@ impl Inbox for PostgresDispatchStore {
         };
         tx.commit().await.map_err(store_error)?;
         Ok(outcome)
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::InboxRead for PostgresDispatchStore {
+    async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
+        let p = NS;
+        let rows = sqlx::query(&format!(
+            "SELECT message_id, run_id, correlation_id, result, context_messages, revision, available_at \
+             FROM {p}_pending WHERE thread_id = $1 ORDER BY created_at"
+        ))
+        .bind(&thread_id.0)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+
+        let mut records = Vec::with_capacity(rows.len());
+        for row in rows {
+            let message_id: String = row.try_get("message_id").map_err(store_error)?;
+            let run_id: String = row.try_get("run_id").map_err(store_error)?;
+            let correlation_id: String = row.try_get("correlation_id").map_err(store_error)?;
+            let Json(result): Json<ResumeResult> = row.try_get("result").map_err(store_error)?;
+            let context_messages = row
+                .try_get::<Option<Json<Vec<Message>>>, _>("context_messages")
+                .map_err(store_error)?
+                .map(|Json(messages)| messages)
+                .unwrap_or_default();
+            let revision: i64 = row.try_get("revision").map_err(store_error)?;
+            let available_at: Option<i64> = row.try_get("available_at").map_err(store_error)?;
+            records.push(PendingRecord {
+                input: PendingInput {
+                    message_id,
+                    run_id: RunId(run_id),
+                    thread_id: thread_id.clone(),
+                    correlation_id,
+                    available_at_ms: available_at
+                        .map(crate::clock::millis_from_db)
+                        .transpose()
+                        .map_err(|err| DispatchError::Rejected(err.to_string()))?,
+                    result,
+                    context_messages,
+                },
+                revision: durable_u64("pending input revision", revision)?,
+            });
+        }
+        Ok(records)
     }
 }
 

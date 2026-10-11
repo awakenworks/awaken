@@ -6,17 +6,17 @@ use std::future::{Future, poll_fn};
 use std::task::Poll;
 
 struct ObservedResolver {
-    inner: FlakyResolver,
+    worker: Arc<DispatchWorker<awaken_dispatch::AnyDispatchStore>>,
     probe: Arc<MaintenanceProbe>,
 }
 #[async_trait]
-impl WorkerResolver<FlakyDispatchStore> for ObservedResolver {
+impl WorkerResolver<awaken_dispatch::AnyDispatchStore> for ObservedResolver {
     async fn worker_for(
         &self,
-        thread: &ThreadId,
-        agent: Option<&str>,
-    ) -> Result<Arc<FlakyWorker>, Error> {
-        self.inner.worker_for(thread, agent).await
+        _thread: &ThreadId,
+        _agent: Option<&str>,
+    ) -> Result<Arc<DispatchWorker<awaken_dispatch::AnyDispatchStore>>, Error> {
+        Ok(self.worker.clone())
     }
     async fn reconcile_committed_terminals(
         &self,
@@ -78,22 +78,24 @@ async fn check_case(
 ) -> serde_json::Value {
     let probe = Arc::new(MaintenanceProbe::new(pause, fail));
     let clock = Arc::new(ManualClock::new(0));
-    let store = Arc::new(
-        FlakyDispatchStore::new(0, clock.clone())
-            .with_local_maintenance(owns)
-            .with_maintenance_probe(probe.clone()),
-    );
+    let store =
+        Arc::new(FlakyDispatchStore::new(0, clock.clone()).with_maintenance_probe(probe.clone()));
     let wake = Arc::new(LocalWakeSignal::new());
-    let worker = Arc::new(DispatchWorker::new(
+    let binding = if owns {
+        awaken_dispatch::DispatchBinding::local(Arc::new(
+            awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(store.clone()),
+        ))
+    } else {
+        awaken_dispatch::DispatchBinding::remote(store.clone(), store.clone())
+    };
+    let worker = Arc::new(DispatchWorker::new_bound(
         text_runtime(),
-        store.clone(),
+        binding.clone(),
         Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock())),
         "pool",
     ));
     let resolver = Arc::new(ObservedResolver {
-        inner: FlakyResolver {
-            worker: worker.clone(),
-        },
+        worker: worker.clone(),
         probe: probe.clone(),
     });
     let config = DispatchServiceConfig {
@@ -104,17 +106,19 @@ async fn check_case(
     };
     let mut stop: std::pin::Pin<Box<dyn Future<Output = ()>>> = match topology {
         "service" => Box::pin(
-            awaken_dispatch::DispatchService::spawn_with_wake(
+            awaken_dispatch::DispatchService::spawn_bound(
                 worker,
+                binding.clone(),
                 clock,
                 config,
                 wake.clone(),
             )
+            .expect("service retains the same selected binding")
             .shutdown(),
         ),
         "pool" => Box::pin(
-            DispatchPool::spawn_with_wake(
-                store.clone(),
+            DispatchPool::spawn_bound(
+                binding.clone(),
                 clock,
                 "pool",
                 DEFAULT_LEASE_MS,
@@ -122,13 +126,30 @@ async fn check_case(
                 resolver,
                 1,
                 wake.clone(),
+                None,
             )
             .shutdown(),
         ),
-        "reconciler" => Box::pin(
-            DispatchReconciler::spawn(store.clone(), clock, wake.clone(), config, resolver, None)
-                .shutdown(),
-        ),
+        "reconciler" => {
+            let selected = DispatchReconciler::spawn_for_binding(
+                binding,
+                clock,
+                wake.clone(),
+                config,
+                resolver,
+                None,
+            );
+            assert_eq!(
+                selected.is_some(),
+                owns,
+                "only the durable owner can construct maintenance"
+            );
+            Box::pin(async move {
+                if let Some(selected) = selected {
+                    selected.shutdown().await;
+                }
+            })
+        }
         _ => unreachable!(),
     };
     if pause.is_some() {

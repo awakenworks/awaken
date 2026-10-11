@@ -53,7 +53,7 @@ pub(crate) async fn adoption_host() -> Arc<SharedHost> {
 
 /// A Host over [`adoption_dependencies`] whose dispatch transport is `store`.
 pub(crate) async fn adoption_host_over(
-    store: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
+    store: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
 ) -> Arc<SharedHost> {
     (adoption_dependencies().await.with_ephemeral_dispatch(store))
         .build()
@@ -547,14 +547,15 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Blocki
 }
 
 pub(crate) async fn claim(
-    store: &awaken_dispatch_erasure::AnyDispatchStore,
+    store: &Arc<
+        impl awaken_dispatch_contract::DispatchEnqueue + awaken_dispatch_contract::DispatchClaims,
+    >,
     thread: &str,
     run: &str,
     owner: &str,
     now: u64,
     clock: &awaken_lease_testkit::ManualClock,
 ) -> awaken_dispatch_contract::Claimed {
-    use awaken_dispatch_contract::DispatchQueue;
     store
         .enqueue(awaken_dispatch_contract::RunDispatch::new(
             test_activation(thread, run),

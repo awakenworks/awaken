@@ -3,7 +3,7 @@
 // @formal evidence sandbox.k8s_process_observation_requires_complete_exit
 //! Real Native Runtime/Hand journal and exact Dispatch retirement over the existing mock API.
 use super::*;
-use awaken_dispatch::{DispatchQueue, WorkerDirectory};
+use awaken_dispatch::{DispatchClaims, DispatchEnqueue, DispatchExecution, WorkerDirectory};
 use awaken_runtime_contract::{RunExecutor, RunRecoverySource};
 use awaken_tool_contract::tool::{ToolCall, ToolError, ToolExecutor, ToolOutput};
 

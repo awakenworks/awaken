@@ -548,6 +548,8 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
     }
 }
 
+use awaken_dispatch_contract::DispatchExecution as _;
+
 #[cfg(test)]
 mod canonical_projection_tests {
     use super::canonical_session_projection_is_installed;

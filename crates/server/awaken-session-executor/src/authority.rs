@@ -353,7 +353,7 @@ pub trait RuntimeAuthority: Send + Sync {
 
     async fn durable_thread_exists(&self, thread: &str) -> Result<bool, RuntimeAuthorityError>;
 
-    fn dispatch_store(&self) -> Arc<awaken_dispatch_erasure::AnyDispatchStore>;
+    fn dispatch_store(&self) -> Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>;
 
     fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_execution::WakeSignal>>;
 
@@ -395,7 +395,7 @@ pub struct EphemeralRuntimeAuthority {
     commits: std::sync::Mutex<std::collections::HashMap<String, Arc<dyn LocalCommit>>>,
     checkpoints:
         std::sync::Mutex<std::collections::HashMap<String, Arc<dyn StreamCheckpointStore>>>,
-    dispatch: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
+    dispatch: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -416,7 +416,7 @@ impl EphemeralRuntimeAuthority {
     #[must_use]
     pub fn with_dispatch(
         clock: Arc<dyn awaken_time::WallClock>,
-        dispatch: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
+        dispatch: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
     ) -> Self {
         Self {
             clock,
@@ -432,7 +432,7 @@ impl EphemeralRuntimeAuthority {
     #[cfg(test)]
     #[must_use]
     pub fn new(clock: Arc<dyn awaken_time::WallClock>) -> Self {
-        let dispatch = awaken_dispatch_erasure::AnyDispatchStore::from_durable_store(
+        let dispatch = awaken_dispatch_erasure::AnyCoordinatorDispatch::from_durable_store(
             awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
             None,
         );
@@ -471,7 +471,7 @@ impl RuntimeAuthority for EphemeralRuntimeAuthority {
             })
     }
 
-    fn dispatch_store(&self) -> Arc<awaken_dispatch_erasure::AnyDispatchStore> {
+    fn dispatch_store(&self) -> Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch> {
         self.dispatch.clone()
     }
 
@@ -522,6 +522,7 @@ pub(crate) trait SessionAuthority: Send + Sync {
 
     /// The claim-fenced commit transport claimed Runs write through; `None`
     /// when they commit through this process's own authority.
+    #[cfg(test)]
     fn claimed_commit(
         &self,
     ) -> Result<Option<Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>>, crate::HostError>;
@@ -541,7 +542,7 @@ pub(crate) trait SessionAuthority: Send + Sync {
     async fn durable_thread_exists(&self, thread: &str) -> Result<bool, crate::HostError>;
 
     /// The durable dispatch store this process owns, if any.
-    fn dispatch_store(&self) -> Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>>;
+    fn dispatch_binding(&self) -> Option<awaken_dispatch_erasure::DispatchBinding>;
 
     /// The cross-node dispatch wake this process owns, if any.
     fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_execution::WakeSignal>>;
@@ -606,6 +607,7 @@ impl SessionAuthority for LocalAuthority {
         Ok(Some(self.runtime.stream_checkpoint(thread)?))
     }
 
+    #[cfg(test)]
     fn claimed_commit(
         &self,
     ) -> Result<Option<Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>>, crate::HostError>
@@ -629,8 +631,10 @@ impl SessionAuthority for LocalAuthority {
         Ok(self.runtime.durable_thread_exists(thread).await?)
     }
 
-    fn dispatch_store(&self) -> Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>> {
-        Some(self.runtime.dispatch_store())
+    fn dispatch_binding(&self) -> Option<awaken_dispatch_erasure::DispatchBinding> {
+        Some(awaken_dispatch_erasure::DispatchBinding::local(
+            self.runtime.dispatch_store(),
+        ))
     }
 
     fn dispatch_wake(&self) -> Option<Arc<dyn awaken_dispatch_execution::WakeSignal>> {
@@ -668,8 +672,7 @@ impl SessionAuthority for LocalAuthority {
 /// used; no transport grants the Worker a local write authority.
 #[derive(Default)]
 pub struct UpstreamAuthority {
-    dispatch: Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>>,
-    claimed_commit: Option<Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>>,
+    dispatch: Option<awaken_dispatch_erasure::DispatchBinding>,
     stream_publisher: Option<Arc<dyn awaken_dispatch_contract::ClaimedStreamPublisher>>,
     terminal_cleanup_control:
         Option<Arc<dyn awaken_session_realization_contract::SessionTerminalCleanupControl>>,
@@ -683,10 +686,6 @@ impl UpstreamAuthority {
     pub(crate) fn validate_worker_connections(&self) -> Result<(), crate::HostError> {
         let required = [
             (self.dispatch.is_some(), "upstream dispatch transport"),
-            (
-                self.claimed_commit.is_some(),
-                "claim-fenced commit transport",
-            ),
             (
                 self.stream_publisher.is_some(),
                 "claim-fenced stream publisher",
@@ -710,23 +709,11 @@ impl UpstreamAuthority {
 
     /// The Worker's sole queue transport, selected with its other upstream ports.
     #[must_use]
-    pub fn with_dispatch_transport(
+    pub fn with_dispatch_binding(
         mut self,
-        dispatch: Arc<dyn awaken_dispatch_erasure::Dispatch>,
+        binding: awaken_dispatch_erasure::DispatchBinding,
     ) -> Self {
-        self.dispatch = Some(Arc::new(
-            awaken_dispatch_erasure::AnyDispatchStore::from_dispatch(dispatch),
-        ));
-        self
-    }
-
-    /// The claim-fenced commit transport claimed Runs write through.
-    #[must_use]
-    pub fn with_claimed_commit(
-        mut self,
-        claimed_commit: Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>,
-    ) -> Self {
-        self.claimed_commit = Some(claimed_commit);
+        self.dispatch = Some(binding);
         self
     }
 
@@ -787,15 +774,25 @@ impl SessionAuthority for UpstreamAuthority {
         Ok(None)
     }
 
+    #[cfg(test)]
     fn claimed_commit(
         &self,
     ) -> Result<Option<Arc<dyn awaken_dispatch_contract::ClaimedRunCommit>>, crate::HostError>
     {
-        self.claimed_commit.clone().map(Some).ok_or_else(|| {
-            crate::HostError::internal(
-                "database-less Worker requires an injected claimed-commit transport",
-            )
-        })
+        self.dispatch
+            .as_ref()
+            .and_then(|binding| match binding.placement() {
+                awaken_dispatch_erasure::DispatchTopology::Remote { commit, .. } => {
+                    Some(commit.clone())
+                }
+                awaken_dispatch_erasure::DispatchTopology::Local(_) => None,
+            })
+            .map(Some)
+            .ok_or_else(|| {
+                crate::HostError::internal(
+                    "database-less Worker requires an injected claimed-commit transport",
+                )
+            })
     }
 
     fn live_progress_publisher(
@@ -814,7 +811,7 @@ impl SessionAuthority for UpstreamAuthority {
         Ok(false)
     }
 
-    fn dispatch_store(&self) -> Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>> {
+    fn dispatch_binding(&self) -> Option<awaken_dispatch_erasure::DispatchBinding> {
         self.dispatch.clone()
     }
 
@@ -851,19 +848,19 @@ impl SessionAuthority for UpstreamAuthority {
 mod worker_connection_tests {
     #[test]
     fn executable_worker_requires_every_existing_upstream_connection() {
-        // C1 claim commit; C2 stream publisher; C3 terminal cleanup; C4 fenced
-        // Memory encoder; C5 queue transport. R1 all => complete connection selection. R2-R6 each
-        // absent => construction refusal naming that missing port, zero effects.
-        // This is MC/DC for C1 && C2 && C3 && C4 && C5; multiple absent ports also
-        // refuse. Runtime fence and dependency failures remain owned by callers.
+        // C1 dispatch binding (queue + checkpoint + credentials + claim commit);
+        // C2 stream publisher; C3 terminal cleanup; C4 fenced Memory encoder.
+        // R1 all present; R2-R5 each connection absent => refusal, zero effects.
+        // A binding with a missing claim commit is unrepresentable: the erasure
+        // crate's compile-fail cases cover that construction boundary.
         let selected = crate::host::test_upstream_authority();
         assert!(selected.validate_worker_connections().is_ok(), "R1");
-        for missing in 0..5 {
+        for missing in 0..4 {
             let mut selected = crate::host::test_upstream_authority();
             let expected = match missing {
                 0 => {
-                    selected.claimed_commit = None;
-                    "claim-fenced commit"
+                    selected.dispatch = None;
+                    "dispatch transport"
                 }
                 1 => {
                     selected.stream_publisher = None;

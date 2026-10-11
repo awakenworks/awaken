@@ -23,7 +23,9 @@ async fn terminal_resolution_storage_faults_and_takeover_preserve_queue_progress
             let store = Arc::new(if sqlite {
                 any_in_memory_with_clock_handle(clock.clone()).await
             } else {
-                AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(clock.clone())))
+                AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(MemoryDispatchStore::new(
+                    clock.clone(),
+                )))
             });
             let committed = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
             exercise_failure(
@@ -48,7 +50,9 @@ async fn terminal_resolution_storage_faults_and_takeover_preserve_queue_progress
             let store = Arc::new(if sqlite {
                 any_in_memory_with_clock_handle(clock.clone()).await
             } else {
-                AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(clock.clone())))
+                AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(MemoryDispatchStore::new(
+                    clock.clone(),
+                )))
             });
             exercise_failure(
                 store,
@@ -73,7 +77,7 @@ async fn terminal_resolution_storage_faults_and_takeover_preserve_queue_progress
 }
 
 async fn exercise_failure<C>(
-    store: Arc<AnyDispatchStore>,
+    store: Arc<AnyCoordinatorDispatch>,
     committed: Arc<C>,
     count: impl Fn() -> u64,
     fault: &str,
@@ -177,3 +181,5 @@ async fn exercise_failure<C>(
         .unwrap();
     assert_eq!(follower.request.run_id().0, "follower");
 }
+
+use awaken_dispatch_contract::{DispatchClaims as _, DispatchEnqueue as _};

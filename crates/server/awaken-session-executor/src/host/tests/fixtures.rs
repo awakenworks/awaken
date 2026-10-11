@@ -944,10 +944,13 @@ impl<C> awaken_resource_contract::MemoryMaterializationReferenceEncoder<C> for S
 pub(crate) fn test_upstream_authority() -> crate::UpstreamAuthority {
     let ports = Arc::new(SelectedOnly);
     crate::UpstreamAuthority::default()
-        .with_dispatch_transport(Arc::new(awaken_dispatch::MemoryDispatchStore::new(
-            awaken_time::system_clock(),
-        )))
-        .with_claimed_commit(ports.clone())
+        .with_dispatch_binding(awaken_dispatch_erasure::DispatchBinding::remote(
+            Arc::new(awaken_coordinator_client::HttpDispatchQueue::new(
+                "http://127.0.0.1:9",
+                awaken_dispatch_contract::WorkerIdentity::new("fixture", "fixture-boot", 1),
+            )),
+            ports.clone(),
+        ))
         .with_stream_publisher(ports.clone())
         .with_memory_reference_encoder(ports)
         .with_terminal_cleanup_control(Arc::new(RemoteTerminalCleanupControl::default()))

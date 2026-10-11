@@ -123,7 +123,7 @@ async fn undecodable_dispatched_runtime_projection_is_an_absorbing_resolution_fa
     // E1 resolution fails as a typed terminal resolution, so the claimed Run
     // settles as failed instead of being retried against the same bytes; E2
     // the failure names the invalid projection.
-    use awaken_dispatch::{DispatchQueue, WorkerResolver as _};
+    use awaken_dispatch::WorkerResolver as _;
 
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(
@@ -170,3 +170,5 @@ async fn undecodable_dispatched_runtime_projection_is_an_absorbing_resolution_fa
         "E2: {error}"
     );
 }
+
+use awaken_dispatch_contract::{DispatchClaims as _, DispatchEnqueue as _};

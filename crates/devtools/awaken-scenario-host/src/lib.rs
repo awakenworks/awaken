@@ -39,7 +39,7 @@ pub use web::build_management_web_router;
 pub use worker::run_echo_worker;
 
 mod scenario_shell;
-use awaken_dispatch::ControlDispatchQueue;
+
 use deployment::{
     resource_host, resource_host_with_deployment, runtime_resource_host_with_deployment,
 };
@@ -58,6 +58,7 @@ use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::Role;
 use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
 use awaken_provider_genai::GenaiExecutor;
+use awaken_dispatch::SessionRunReservations as _;
 use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
@@ -1511,7 +1512,7 @@ pub async fn build_config_router() -> Router {
     )
     .await;
     let scenario_dispatch = host
-        .dispatch_store()
+        .coordinator_dispatch()
         .expect("config scenario installs one Dispatch authority");
     let flat = flat
         .merge(config_router(plane))
@@ -1532,10 +1533,10 @@ struct SessionReservationScenarioRequest {
 /// crash boundary. It delegates the production Dispatch command and owns no
 /// state, transition, clock, or SQL mutation of its own.
 async fn session_reservation_scenario_router(
-    dispatch: Arc<awaken_dispatch::AnyDispatchStore>,
+    dispatch: Arc<awaken_dispatch::AnyCoordinatorDispatch>,
 ) -> Router {
     async fn reserve(
-        State(dispatch): State<Arc<awaken_dispatch::AnyDispatchStore>>,
+        State(dispatch): State<Arc<awaken_dispatch::AnyCoordinatorDispatch>>,
         Json(command): Json<SessionReservationScenarioRequest>,
     ) -> (StatusCode, Json<serde_json::Value>) {
         match dispatch

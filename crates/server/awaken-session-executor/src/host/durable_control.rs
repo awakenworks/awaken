@@ -42,10 +42,8 @@ impl SharedHost {
         run_id: &RunId,
         live_runtime: Option<&Runtime>,
     ) -> Result<bool, HostError> {
-        use awaken_dispatch_contract::DispatchQueue as _;
-
         let accepted = self
-            .dispatch_store()?
+            .coordinator_dispatch()?
             .cancel(run_id)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?
@@ -73,9 +71,7 @@ impl SharedHost {
         run_id: &RunId,
         live_runtime: Option<&Runtime>,
     ) -> Result<bool, HostError> {
-        use awaken_dispatch_contract::DispatchQueue as _;
-
-        self.dispatch_store()?
+        self.coordinator_dispatch()?
             .requeue(run_id)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
@@ -126,7 +122,7 @@ impl SharedHost {
             .ok_or_else(|| {
                 map_live_control_error(LiveRunControlError::NoSubscriber(run_id.to_owned()))
             })?;
-        awaken_dispatch_execution::LiveRunControlService::new(worker, self.clock())
+        awaken_dispatch_execution::LiveAttemptControl::new(worker.runtime().clone())
             .wake(run_id)
             .await
             .map_err(map_live_control_error)
@@ -165,7 +161,7 @@ impl SharedHost {
             .is_durable()
             .then(|| ctx.claimed_worker.clone())
             .ok_or_else(|| HostError::bad_request("pause requires durable delivery"))?;
-        awaken_dispatch_execution::LiveRunControlService::new(worker, self.clock())
+        awaken_dispatch_execution::LiveAttemptControl::new(worker.runtime().clone())
             .pause(&run_id)
             .await
             .map_err(map_live_control_error)?;
@@ -203,7 +199,7 @@ impl SharedHost {
                 ResumeResult::deny(None)
             },
         };
-        self.dispatch_store()?
+        self.coordinator_dispatch()?
             .stage(input)
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
@@ -233,7 +229,7 @@ impl SharedHost {
                 "durable text resume requires a manual-pause ticket",
             ));
         }
-        self.dispatch_store()?
+        self.coordinator_dispatch()?
             .stage(awaken_dispatch_contract::PendingInput {
                 message_id: awaken_runtime::fresh_process_id("manual-resume"),
                 run_id: run_id.clone(),
@@ -249,3 +245,5 @@ impl SharedHost {
         Ok(run_id.0)
     }
 }
+
+use awaken_dispatch_contract::DispatchAdministration as _;

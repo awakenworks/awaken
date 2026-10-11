@@ -11,7 +11,6 @@ use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch_erasure::AnyDispatchStore;
 use awaken_dispatch_execution::DEFAULT_LEASE_MS;
-use awaken_dispatch_contract::{ControlDispatchQueue, DispatchQueue};
 use std::sync::Arc;
 
 /// The coordinator-only maintenance loop and the terminal scan it drives.
@@ -64,12 +63,13 @@ impl HostWorkerResolver {
         awaken_dispatch_execution::Error,
     > {
         let recovery_projection = commit.recovery_projection();
-        let store = host
-            .dispatch_store()
-            .map_err(|error| Self::execution_error(error.to_string()))?;
-        let mut worker = awaken_dispatch_execution::DispatchWorker::new(
+        let binding = host
+            .authority
+            .dispatch_binding()
+            .ok_or_else(|| Self::execution_error("claimed recovery requires a dispatch binding"))?;
+        let mut worker = awaken_dispatch_execution::DispatchWorker::new_bound(
             Arc::new(awaken_runtime::Runtime::new().with_clock(host.clock.clone())),
-            store,
+            binding,
             commit.clone(),
             claimed.lease.owner().to_owned(),
         );
@@ -116,15 +116,9 @@ impl HostWorkerResolver {
             })?;
             worker.install_attempt_executor(executor);
         }
-        if let Some(claimed_commit) = host
-            .authority
-            .claimed_commit()
-            .map_err(|error| Self::execution_error(error.to_string()))?
-        {
-            worker = worker.with_claimed_commit(claimed_commit);
-        }
+
         if let Some(projection) = recovery_projection {
-            worker = worker.with_recovery_projection(projection);
+            worker = worker.with_recovery_projection(projection)?;
         }
         Ok(worker)
     }
@@ -141,9 +135,9 @@ pub(super) async fn reconcile_committed_terminals(
         return Ok(Vec::new());
     }
 
-    let store = host
-        .dispatch_store()
-        .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?;
+    let store = host.optional_dispatch_store().ok_or_else(|| {
+        HostWorkerResolver::execution_error("terminal scan requires a Coordinator dispatch owner")
+    })?;
     host.dispatch
         .terminal_reconciliation
         .terminal_scan
@@ -203,12 +197,20 @@ pub(super) async fn reconcile_committed_terminals(
         .await
 }
 
+use awaken_dispatch_contract::{DispatchControlClaims as _, DispatchSettlement as _};
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::host::worker_resolver::test_support::{AdoptionModel, claim, test_activation};
     use async_trait::async_trait;
     use awaken_agent_contract::agent::{run::EndCause, thread::Id as ThreadId};
+    use awaken_dispatch_contract::DispatchClaims;
+    use awaken_dispatch_contract::DispatchCommitAuthority;
+    use awaken_dispatch_contract::DispatchControlReads;
+    use awaken_dispatch_contract::DispatchExecution;
+    use awaken_dispatch_contract::DispatchReads;
+    use awaken_dispatch_contract::SessionRunReservations;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct IdleEvidence {
@@ -600,7 +602,7 @@ mod tests {
         // expires the Registry. Rules UE1=U1+U2=>E1+E3+E4;
         // UE2=U1+U3=>E2+E3. This uses normal registration/claim/admission APIs,
         // not a database backfill or synthetic termination assertion.
-        use awaken_dispatch::{DispatchQueue as _, WorkerDirectory as _};
+        use awaken_dispatch::WorkerDirectory as _;
         let directory = Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new());
         let mut identities = Vec::new();
         for (id, ttl) in [("legacy-a", 1), ("legacy-b", u64::MAX)] {
@@ -716,7 +718,6 @@ mod tests {
     #[tokio::test]
     async fn host_reconciles_only_exact_committed_terminals_without_opening_sessions() {
         use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
-        use awaken_dispatch_contract::DispatchQueue;
 
         let mut local_pool =
             crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await;
@@ -863,7 +864,7 @@ mod tests {
         // | A2 | Leased | no | expired | coordinator scan | E1 leave recovery to Worker |
         // | A3 | Leased | no | expired | Worker B | E2 reclaim epoch + 1 |
         // | A4 | Leased | no | superseded | Worker A | E3 fenced |
-        use awaken_dispatch::{DispatchQueue, SettleOutcome};
+        use awaken_dispatch::SettleOutcome;
 
         let storage = tempfile::tempdir().expect("storage");
         let now = awaken_time::system_clock().now().as_epoch_ms();
@@ -994,7 +995,7 @@ mod tests {
         // Cause/effect table: H1 expired+exhausted exact claim -> boundary Worker
         // commits Indeterminate and Done; H2 no Session/Environment exists -> no
         // realization is attempted; H3 current epoch -> one completion tombstone.
-        use awaken_dispatch::{DispatchQueue, WorkerResolver};
+        use awaken_dispatch::WorkerResolver;
 
         let storage = tempfile::tempdir().expect("storage");
         let now = awaken_time::system_clock().now().as_epoch_ms();
@@ -1081,7 +1082,7 @@ mod tests {
         // created. Rule P1=C1+C2+C3=>E1+E2+E3. An implementation that opens the
         // queue Thread before claiming leaves the row Awaiting on FS/SQLite.
         use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
-        use awaken_dispatch::{DispatchQueue, SessionChildAdmission};
+        use awaken_dispatch::SessionChildAdmission;
 
         let storage = tempfile::tempdir().expect("storage");
         let now = awaken_time::system_clock().now().as_epoch_ms();

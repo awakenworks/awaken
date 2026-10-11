@@ -25,7 +25,7 @@
 /// come from the existing store ports. Rules: SF1=C1+C2+C3 -> E1;
 /// SF2=SF1+C4 -> E2; SF3=SF1+C5+C6 -> E3; SF4=C6+C7(stale/current)
 /// -> E4+E5; PI1=C8(omit/name) -> E6.
-async fn settlement_fence_and_pending_input_are_atomic<S: ControlDispatchQueue + Inbox + Outbox>(
+async fn settlement_fence_and_pending_input_are_atomic<S: ConformanceDispatch + Inbox + Outbox>(
     store: &S,
     ns: &str,
     capabilities: ConformanceCapabilities,
@@ -430,7 +430,7 @@ pub struct DispatchRecoveryHistory {
 /// backend. The production Dispatch transition and physical-attempt reducers
 /// remain authoritative; this helper merely records their observable trace.
 pub async fn record_dispatch_recovery_history(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     namespace: &str,
     clock: &dyn ConformanceClock,
 ) -> DispatchRecoveryHistory {
@@ -594,7 +594,7 @@ pub async fn record_dispatch_recovery_history(
 }
 
 async fn occupied_recovery_does_not_starve_other_threads(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     namespace: &str,
     clock: &dyn ConformanceClock,
 ) {
@@ -618,7 +618,7 @@ async fn occupied_recovery_does_not_starve_other_threads(
                 let ns = format!("{namespace}-fair-{selector}-{cancelled}-{occupied}");
                 let worker = ready_dispatch_worker(&ns, "candidate");
                 async fn pick(
-                    store: &dyn ControlDispatchQueue,
+                    store: &dyn ConformanceDispatch,
                     worker: &WorkerSnapshot,
                     selector: u8,
                     now: u64,

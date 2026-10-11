@@ -16,10 +16,9 @@ use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch::ClaimedCommitService;
 use awaken_dispatch::{
-    ClaimedCommitCommand, ClaimedRunCommit, DispatchQueue, MemoryDispatchStore, RegisteredWorker,
-    RegistryError, RegistryMutation, RunClaim, RunDispatch, WorkerDirectory, WorkerHeartbeat,
-    WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerRegistration, WorkerSnapshot,
-    WorkerState,
+    ClaimedCommitCommand, ClaimedRunCommit, MemoryDispatchStore, RegisteredWorker, RegistryError,
+    RegistryMutation, RunClaim, RunDispatch, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
+    WorkerManifest, WorkerObservationSource, WorkerRegistration, WorkerSnapshot, WorkerState,
 };
 use awaken_dispatch_http::{ClaimedCommitHttpService, claimed_commit_router};
 use awaken_dispatch_testkit::ConformanceClock as _;
@@ -416,3 +415,5 @@ async fn non_retryable_claimed_commit_preserves_the_server_cause() {
             .contains("400 Bad Request: run claim is stale")
     );
 }
+
+use awaken_dispatch_contract::{DispatchClaims as _, DispatchEnqueue as _};

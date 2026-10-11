@@ -34,7 +34,7 @@ use awaken_dispatch_execution::{CompletionSink, DEFAULT_LEASE_MS, DispatchPool, 
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
 #[cfg(any(test, feature = "test-support"))]
 use awaken_resource_contract::{FileCatalog, FileStore};
-use awaken_dispatch_contract::{DispatchQueue, Inbox, PendingInput, RunDispatch, SubmitOptions};
+use awaken_dispatch_contract::{Inbox, PendingInput, RunDispatch, SubmitOptions};
 use awaken_runtime::{DirectAttemptDriver, Runtime};
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::RunDelegations;

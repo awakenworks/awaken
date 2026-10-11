@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::AgentSkillKind;
 use awaken_resource_contract::SkillVersion;
-use awaken_dispatch_contract::{DispatchQueue, RunClaim};
+use awaken_dispatch_contract::{DispatchCommitAuthority, RunClaim};
 use awaken_session_configuration_contract::{
     SkillBundleSource, SkillBundleSourceError, validate_skill_bundle,
 };
@@ -58,7 +58,7 @@ struct SkillBundleResponse {
 /// Handler dependencies for claim-fenced exact custom-Skill reads.
 pub struct WorkerSkillBundleService {
     source: Arc<dyn SkillBundleSource<RunClaim>>,
-    dispatch: Arc<dyn DispatchQueue>,
+    dispatch: Arc<dyn DispatchCommitAuthority>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
     materialization_control:
@@ -71,7 +71,7 @@ impl WorkerSkillBundleService {
     #[must_use]
     pub fn new(
         source: Arc<dyn SkillBundleSource<RunClaim>>,
-        dispatch: Arc<dyn DispatchQueue>,
+        dispatch: Arc<dyn DispatchCommitAuthority>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {

@@ -40,7 +40,9 @@ pub struct DispatchTestHarness<S> {
     clock: Arc<dyn WallClock>,
 }
 
-impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
+impl<S: ControlDispatch + awaken_dispatch_contract::DispatchReads + 'static>
+    DispatchTestHarness<S>
+{
     /// Install the session-selected attempt executor before the first claim.
     /// Queueing, fencing, scheduled actions, metrics, and settlement remain owned
     /// by the authoritative Worker; only fresh/resume execution is polymorphic.
@@ -224,24 +226,13 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
         self
     }
 
-    /// Replace the local guarded commit service with another atomic claimed-run
-    /// implementation. Database-less workers use this to send one combined
-    /// claim-and-commit request to the store-owning server.
-    #[must_use]
-    pub fn with_claimed_commit(mut self, commit: Arc<dyn crate::ClaimedRunCommit>) -> Self {
-        let worker = Arc::into_inner(self.worker)
-            .expect("claimed commit must be configured before sharing the worker")
-            .with_claimed_commit(commit);
-        self.worker = Arc::new(worker);
-        self
-    }
-
     /// Install the remote committed-read projection before the worker is shared.
     #[must_use]
     pub fn with_recovery_projection(mut self, projection: Arc<crate::RecoveryProjection>) -> Self {
         let worker = Arc::into_inner(self.worker)
             .expect("recovery projection must be configured before sharing the worker")
-            .with_recovery_projection(projection);
+            .with_recovery_projection(projection)
+            .expect("harness constructor supplies its required recovery source");
         // The harness replay guard and the Worker execution path must retain the
         // exact same projection. Do not keep the constructor's provisional
         // reader alive as a parallel empty committed view.
@@ -345,7 +336,9 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
         &self,
         limit: usize,
     ) -> Result<Vec<(RunId, RunState)>, Error> {
-        self.worker.reconcile_committed_terminals(limit).await
+        self.worker
+            .reconcile_committed_terminals(limit, self.worker.store().as_ref())
+            .await
     }
 
     /// Stage a cross-thread delivery to another thread's awaiting run (M3b). It is
@@ -422,7 +415,9 @@ impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
     }
 }
 
-impl<S: ControlDispatch + 'static> DispatchTestHarness<S> {
+impl<S: ControlDispatch + awaken_dispatch_contract::DispatchReads + 'static>
+    DispatchTestHarness<S>
+{
     /// Persist or signal cancellation through the durable control authority.
     pub async fn cancel(&self, run_id: &RunId) -> Result<(), ControlError> {
         self.live_control()

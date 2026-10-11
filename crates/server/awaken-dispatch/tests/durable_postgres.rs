@@ -17,7 +17,6 @@
 
 mod harness;
 
-use awaken_dispatch_contract::ControlDispatchQueue;
 use awaken_time::system_clock;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -32,8 +31,8 @@ use awaken_agent_contract::thread::commit::coordinator::{
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, RunDisposition, ThreadCommit};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch::{
-    ClaimedCommitCoordinator, ClaimedRunCommit, DEFAULT_LEASE_MS, DispatchQueue,
-    DispatchTestHarness, DispatchWorker, GuardedRunCommit, Inbox, LeastLoadedPolicy, PendingInput,
+    ClaimedCommitCoordinator, ClaimedRunCommit, DEFAULT_LEASE_MS, DispatchTestHarness,
+    DispatchWorker, GuardedRunCommit, Inbox, LeastLoadedPolicy, PendingInput,
     PlacementRequirements, PostgresDispatchStore, PostgresStreamCheckpointStore, RunClaim,
     RunDispatch, SubmitOptions,
 };
@@ -2167,3 +2166,8 @@ async fn thread_locks_follow_the_resolved_dispatch_relation_not_a_search_path_pr
     );
     alias.close().await;
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaimOwnership as _, DispatchClaims as _, DispatchControlClaims as _,
+    DispatchEnqueue as _, DispatchExecution as _, DispatchReads as _, InboxRead as _,
+};

@@ -62,7 +62,11 @@ domain problem it solves:
    - **Execution** (new): `awaken-session-executor`, `awaken-session-mcp`, the future
      `awaken-session-realization`, `awaken-run-executor-acp`, `awaken-run-executor-a2a`,
      `awaken-execution-composition`, `awaken-agent-channel`, `awaken-acp-contract`,
-     `awaken-dispatch-execution`.
+     `awaken-dispatch-execution`, `awaken-dispatch-erasure`. The latter owns
+     immutable execution bindings and role projections; Dispatch's published
+     leaf ports remain in `awaken-dispatch-contract`. Backend adapters and
+     Worker transports consume that binding through their existing execution
+     entrypoint, without a second cross-context infrastructure dependency.
    - **The `worker` context is retired.** `awaken-coordinator-client`,
      `awaken-worker-registry`, `awaken-worker-contract`,
      `awaken-worker-transport-security` and `awaken-connection-plan` join Dispatch. A

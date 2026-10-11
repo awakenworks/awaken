@@ -5,10 +5,8 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_lease_testkit::ManualClock;
-use awaken_dispatch::ControlDispatchQueue;
-use awaken_dispatch::{
-    DEFAULT_LEASE_MS, DispatchQueue, DispatchWorker, MemoryDispatchStore, RunDispatch,
-};
+
+use awaken_dispatch::{DEFAULT_LEASE_MS, DispatchWorker, MemoryDispatchStore, RunDispatch};
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_store_inmem::MemoryCommitCoordinator;
@@ -213,3 +211,8 @@ fn authenticated_cancellation_recovery_obeys_claim_and_terminal_evidence() {
         }
     });
 }
+
+use awaken_dispatch::{
+    DispatchAdministration as _, DispatchControlReads as _, DispatchEnqueue as _,
+    DispatchReads as _,
+};

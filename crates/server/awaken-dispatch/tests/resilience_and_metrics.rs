@@ -15,8 +15,7 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
-    ControlDispatchQueue, DispatchQueue, DispatchService, DispatchServiceConfig, DispatchWorker,
-    MemoryDispatchStore, RunDispatch,
+    DispatchService, DispatchServiceConfig, DispatchWorker, MemoryDispatchStore, RunDispatch,
 };
 use awaken_store_inmem::MemoryCommitCoordinator;
 
@@ -612,3 +611,7 @@ async fn a_stale_settlement_increments_the_fenced_metric() {
     assert_eq!(metrics.commits_applied.load(Ordering::SeqCst), 1);
     assert_eq!(metrics.in_flight.load(Ordering::SeqCst), 0);
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _, DispatchReads as _,
+};

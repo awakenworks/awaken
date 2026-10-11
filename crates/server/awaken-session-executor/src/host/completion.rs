@@ -9,7 +9,6 @@
 use super::placement::remote_worker_placement;
 use super::*;
 pub(crate) use crate::session_environment::requires_local_environment;
-use awaken_dispatch_contract::ControlDispatchQueue;
 #[cfg(test)]
 use awaken_dispatch_contract::{
     HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
@@ -43,7 +42,7 @@ impl SharedHost {
                 "Session User Run activity epoch must be nonzero",
             ));
         }
-        let store = self.dispatch_store()?;
+        let store = self.coordinator_dispatch()?;
         let outcome = store
             .activate_session_run_reservation(
                 &delivery.run_id,
@@ -202,7 +201,7 @@ impl SharedHost {
                 "durable submit requires durable delivery",
             ));
         }
-        let store = self.dispatch_store()?;
+        let store = self.coordinator_dispatch()?;
         if supersede {
             store
                 .enqueue_with(
@@ -246,7 +245,7 @@ impl SharedHost {
                 "durable resume requires durable delivery",
             ));
         }
-        let store = self.dispatch_store()?;
+        let store = self.coordinator_dispatch()?;
         store
             .append(input)
             .await
@@ -623,3 +622,5 @@ impl StreamSink for CompletionRegistry {
 
 #[cfg(test)]
 mod completion_tests;
+
+use awaken_dispatch_contract::{DispatchEnqueue as _, SessionRunReservations as _};

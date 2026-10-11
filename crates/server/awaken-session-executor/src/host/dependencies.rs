@@ -523,7 +523,7 @@ impl HostDependencies {
     #[must_use]
     pub fn with_ephemeral_dispatch(
         mut self,
-        store: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
+        store: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
     ) -> Self {
         assert!(
             self.authority.hosts_session_application(),
@@ -542,7 +542,7 @@ impl HostDependencies {
     #[must_use]
     pub fn with_ephemeral_coordinator_dispatch(
         self,
-        store: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
+        store: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
     ) -> Self {
         let mut selected = self.with_ephemeral_dispatch(store);
         selected.execution.local = crate::LocalExecution::RemoteWorkersOnly;

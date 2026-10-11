@@ -160,9 +160,9 @@ pub fn volatile_runtime_authority(
     // Cause/effect fixture rule: C1 a volatile scenario selects its authority
     // before Host construction; C2 the same clock stamps Dispatch and Thread commits.
     // R1 C1+C2 -> one Ingress MemoryDispatchStore is selected here, retains its
-    // continuation and operational-feed roles through AnyDispatchStore, and is injected once;
+    // continuation and operational-feed roles through AnyCoordinatorDispatch, and is injected once;
     // product Host construction never selects a Coordinator backend implicitly.
-    let dispatch = awaken_dispatch::AnyDispatchStore::from_durable_store(
+    let dispatch = awaken_dispatch::AnyCoordinatorDispatch::from_durable_store(
         awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
         None,
     );

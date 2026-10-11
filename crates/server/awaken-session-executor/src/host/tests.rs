@@ -205,7 +205,7 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
         "R4 receipt leaves Inbox unchanged"
     );
 }
-use awaken_dispatch_contract::ControlDispatchQueue;
+
 use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_session_execution_contract::{EnvironmentRuntime, TerminalCleanupRuntime};
 use awaken_session_types::SessionId;
@@ -2431,3 +2431,7 @@ fn install_test_renewal_authority(
         .unwrap()
         .insert(session_id.into(), lease);
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaims as _, DispatchEnqueue as _, DispatchSettlement as _, InboxRead as _,
+};

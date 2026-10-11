@@ -23,7 +23,7 @@ use awaken_agent_contract::thread::commit::operation::{
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_dispatch::ClaimedCommitService;
 use awaken_dispatch::{
-    ClaimedCommitCommand, ClaimedRunCommit, DispatchOutcome, DispatchQueue, PostgresDispatchStore,
+    ClaimedCommitCommand, ClaimedRunCommit, DispatchOutcome, PostgresDispatchStore,
     RegisteredWorker, RegistryError, RegistryMutation, RunClaim, RunDispatch, SettleOutcome,
     WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerObservationSource,
     WorkerRegistration, WorkerSnapshot, WorkerState,
@@ -511,3 +511,7 @@ fn postgres_configuration_contract() {
         "two_control_processes_retry_recover_and_settle_without_sticky_routing",
     ]);
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaims as _, DispatchEnqueue as _, DispatchSettlement as _,
+};

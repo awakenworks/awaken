@@ -1094,8 +1094,6 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
 
 #[tokio::test]
 async fn managed_user_run_reservation_precedes_physical_environment_realization() {
-    use awaken_dispatch_contract::DispatchQueue as _;
-
     // Cause/effect graph: C1 a cold Managed Session has no Runtime or
     // Environment; C2 its complete command is exact or operation/capabilities
     // change; C3 durable phase is Reserved, Activated, Recovery, or Completed;
@@ -1829,3 +1827,8 @@ async fn claimed_inference_only_context_keeps_scope_without_a_resource_transitio
         "R2 exact non-default Workspace survives dispatch"
     );
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaims as _, DispatchControlReads as _, DispatchReads as _, DispatchSettlement as _,
+    SessionRunReservations as _,
+};

@@ -20,7 +20,8 @@
 //! wake target the current attempt only and return [`Error::NoSubscriber`] when no
 //! subscriber accepts them.
 
-use crate::ControlDispatch;
+use awaken_dispatch_erasure::{AnyCoordinatorDispatch, AnyDispatchStore, Dispatch};
+use awaken_dispatch_contract::DispatchAdministration;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::Id as RunId;
@@ -52,19 +53,28 @@ pub enum Error {
 /// rather than silently succeeding (G5).
 pub struct LiveRunControlService<S> {
     worker: Arc<DispatchWorker<S>>,
+    administration: Arc<dyn DispatchAdministration>,
     /// The control edge's clock for the cancellation drive it performs. Claim,
     /// renewal, ownership verification and settlement are judged by the store
     /// that owns the row; this clock times only what the attempt itself reads.
     clock: Arc<dyn awaken_time::WallClock>,
 }
 
-impl<S: ControlDispatch + 'static> LiveRunControlService<S> {
+impl<S: Dispatch + 'static> LiveRunControlService<S> {
     /// Build from a dispatch worker. The worker carries both the runtime
     /// live-control handle and the durable dispatch store, keeping this service
     /// free of a second commit boundary (G6/G13). `clock` is the composing
     /// Host's clock.
-    pub fn new(worker: Arc<DispatchWorker<S>>, clock: Arc<dyn awaken_time::WallClock>) -> Self {
-        Self { worker, clock }
+    pub fn new(worker: Arc<DispatchWorker<S>>, clock: Arc<dyn awaken_time::WallClock>) -> Self
+    where
+        S: DispatchAdministration,
+    {
+        let administration = worker.store().clone();
+        Self {
+            worker,
+            clock,
+            administration,
+        }
     }
 
     /// Cancel the run identified by `correlation_id`.
@@ -78,8 +88,7 @@ impl<S: ControlDispatch + 'static> LiveRunControlService<S> {
     pub async fn cancel(&self, correlation_id: &str) -> Result<(), Error> {
         let run_id = RunId(correlation_id.to_owned());
         let thread_id = self
-            .worker
-            .store()
+            .administration
             .cancel(&run_id)
             .await
             .map_err(|e| Error::Dispatch(e.to_string()))?;
@@ -129,17 +138,9 @@ impl<S: ControlDispatch + 'static> LiveRunControlService<S> {
     /// next safe boundary. Pause is live-only: once accepted, the executor commits
     /// a durable `ManualPause` ticket that may be resumed after process replacement.
     pub async fn pause(&self, correlation_id: &str) -> Result<(), Error> {
-        let run_id = RunId(correlation_id.to_owned());
-        match self
-            .worker
-            .runtime()
-            .deliver_to_current_attempt(LiveCommand::Pause { run_id })
+        LiveAttemptControl::new(self.worker.runtime().clone())
+            .pause(correlation_id)
             .await
-        {
-            Ok(()) => Ok(()),
-            Err(ControlError::NotActive) => Err(Error::NoSubscriber(correlation_id.to_owned())),
-            Err(error) => Err(Error::Dispatch(error.to_string())),
-        }
     }
 
     /// Deliver a `PendingBoundaryWake` nudge to the run identified by
@@ -150,10 +151,43 @@ impl<S: ControlDispatch + 'static> LiveRunControlService<S> {
     /// rather than silently succeeding (G5: durable-only absent on direct
     /// ingress means fail-closed, not silent-drop).
     pub async fn wake(&self, correlation_id: &str) -> Result<(), Error> {
+        LiveAttemptControl::new(self.worker.runtime().clone())
+            .wake(correlation_id)
+            .await
+    }
+}
+
+impl LiveRunControlService<AnyDispatchStore> {
+    pub fn from_local_owner(
+        worker: Arc<DispatchWorker<AnyDispatchStore>>,
+        owner: Arc<AnyCoordinatorDispatch>,
+        clock: Arc<dyn awaken_time::WallClock>,
+    ) -> Result<Self, Error> {
+        if !Arc::ptr_eq(worker.store(), &owner.worker_view()) {
+            return Err(Error::Dispatch(
+                "live control must retain the Worker's exact bound owner".into(),
+            ));
+        }
+        Ok(Self {
+            worker,
+            administration: owner,
+            clock,
+        })
+    }
+}
+
+/// Control only the current local attempt; no durable queue mutation authority is required.
+pub struct LiveAttemptControl {
+    runtime: Arc<awaken_runtime::Runtime>,
+}
+impl LiveAttemptControl {
+    pub fn new(runtime: Arc<awaken_runtime::Runtime>) -> Self {
+        Self { runtime }
+    }
+    pub async fn wake(&self, correlation_id: &str) -> Result<(), Error> {
         let run_id = RunId(correlation_id.to_owned());
         match self
-            .worker
-            .runtime()
+            .runtime
             .deliver_to_current_attempt(LiveCommand::Wake {
                 run_id,
                 reason: "live-wake".to_owned(),
@@ -165,11 +199,25 @@ impl<S: ControlDispatch + 'static> LiveRunControlService<S> {
             Err(e) => Err(Error::Dispatch(e.to_string())),
         }
     }
+    pub async fn pause(&self, correlation_id: &str) -> Result<(), Error> {
+        let run_id = RunId(correlation_id.to_owned());
+        match self
+            .runtime
+            .deliver_to_current_attempt(LiveCommand::Pause { run_id })
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(ControlError::NotActive) => Err(Error::NoSubscriber(correlation_id.to_owned())),
+            Err(error) => Err(Error::Dispatch(error.to_string())),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_dispatch_contract::DispatchClaims;
+    use awaken_dispatch_contract::DispatchEnqueue;
     use std::sync::Arc;
 
     use awaken_runtime::Runtime;
@@ -184,8 +232,8 @@ mod tests {
     use awaken_store_inmem::MemoryCommitCoordinator;
     use tokio::sync::Notify;
 
+    use crate::RunDispatch;
     use crate::worker::DispatchWorker;
-    use crate::{DispatchQueue, RunDispatch};
     use awaken_dispatch::MemoryDispatchStore;
 
     fn make_service() -> LiveRunControlService<MemoryDispatchStore> {

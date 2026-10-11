@@ -278,7 +278,7 @@ impl PostgresDispatchStore {
 }
 
 #[async_trait]
-impl DispatchQueue for PostgresDispatchStore {
+impl awaken_dispatch_contract::DispatchCommitAuthority for PostgresDispatchStore {
     async fn worker_owns_run(
         &self,
         identity: &crate::WorkerIdentity,
@@ -288,6 +288,16 @@ impl DispatchQueue for PostgresDispatchStore {
         current_worker_claim(&self.pool, NS, identity, run_id, now_ms).await
     }
 
+    async fn lock_commit_epoch(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<CommitEpochGuard>, DispatchError> {
+        self.lock_claim_epoch_in_status(claim, "running").await
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::DispatchClaims for PostgresDispatchStore {
     async fn resolve_claimed_session_run_reservation(
         &self,
         claim: &RunClaim,
@@ -409,29 +419,6 @@ impl DispatchQueue for PostgresDispatchStore {
         }
         tx.commit().await.map_err(store_error)?;
         Ok(SettleOutcome::Applied)
-    }
-
-    async fn enqueue_with(
-        &self,
-        request: RunDispatch,
-        options: SubmitOptions,
-    ) -> Result<(), DispatchError> {
-        let p = NS;
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
-        lock_run_identity(&mut tx, &request.run_id().0).await?;
-
-        // Run-id idempotency survives successful completion: a live row or the
-        // permanent completion tombstone makes the whole command a no-op. Check
-        // before supersession so replay cannot mutate sibling dispatches.
-        if exact_run_replay(&mut tx, p, &request).await? {
-            tx.commit().await.map_err(store_error)?;
-            return Ok(());
-        }
-
-        validate_executable_dispatch_admission(&request)?;
-        insert_new_dispatch(&mut tx, p, &request, &options).await?;
-        tx.commit().await.map_err(store_error)?;
-        Ok(())
     }
 
     async fn claim_new_run(
@@ -576,29 +563,6 @@ impl DispatchQueue for PostgresDispatchStore {
         Ok(claimed)
     }
 
-    async fn lock_commit_epoch(
-        &self,
-        claim: &RunClaim,
-    ) -> Result<Option<CommitEpochGuard>, DispatchError> {
-        self.lock_claim_epoch_in_status(claim, "running").await
-    }
-
-    async fn claim_is_current(&self, claim: &RunClaim) -> Result<bool, DispatchError> {
-        let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
-        sqlx::query_scalar(&format!(
-            "SELECT EXISTS(SELECT 1 FROM {NS}_dispatch WHERE run_id = $1 \
-             AND status = 'running' AND lease_owner = $2 AND lease_epoch = $3 \
-             AND lease_until IS NOT NULL AND lease_until > \
-             FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint)"
-        ))
-        .bind(&claim.run_id.0)
-        .bind(&claim.owner)
-        .bind(epoch)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(store_error)
-    }
-
     async fn claim(
         &self,
         owner: &str,
@@ -703,7 +667,55 @@ impl DispatchQueue for PostgresDispatchStore {
         tx.commit().await.map_err(store_error)?;
         Ok(claimed)
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::DispatchEnqueue for PostgresDispatchStore {
+    async fn enqueue_with(
+        &self,
+        request: RunDispatch,
+        options: SubmitOptions,
+    ) -> Result<(), DispatchError> {
+        let p = NS;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        lock_run_identity(&mut tx, &request.run_id().0).await?;
+
+        // Run-id idempotency survives successful completion: a live row or the
+        // permanent completion tombstone makes the whole command a no-op. Check
+        // before supersession so replay cannot mutate sibling dispatches.
+        if exact_run_replay(&mut tx, p, &request).await? {
+            tx.commit().await.map_err(store_error)?;
+            return Ok(());
+        }
+
+        validate_executable_dispatch_admission(&request)?;
+        insert_new_dispatch(&mut tx, p, &request, &options).await?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::DispatchClaimOwnership for PostgresDispatchStore {
+    async fn claim_is_current(&self, claim: &RunClaim) -> Result<bool, DispatchError> {
+        let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
+        sqlx::query_scalar(&format!(
+            "SELECT EXISTS(SELECT 1 FROM {NS}_dispatch WHERE run_id = $1 \
+             AND status = 'running' AND lease_owner = $2 AND lease_epoch = $3 \
+             AND lease_until IS NOT NULL AND lease_until > \
+             FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint)"
+        ))
+        .bind(&claim.run_id.0)
+        .bind(&claim.owner)
+        .bind(epoch)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(store_error)
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::DispatchExecution for PostgresDispatchStore {
     async fn renew_lease(
         &self,
         claim: &RunClaim,
@@ -894,7 +906,10 @@ impl DispatchQueue for PostgresDispatchStore {
     ) -> Result<SettleOutcome, DispatchError> {
         self.release_claim(claim, Some(retry_after_ms)).await
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::DispatchSettlement for PostgresDispatchStore {
     async fn settle(
         &self,
         run_id: &RunId,
@@ -1045,7 +1060,10 @@ impl DispatchQueue for PostgresDispatchStore {
         tx.commit().await.map_err(store_error)?;
         Ok(SettleOutcome::Applied)
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::DispatchMaintenance for PostgresDispatchStore {
     async fn quarantine_retry_exhausted(
         &self,
         max_attempts: u64,
@@ -1154,6 +1172,51 @@ impl DispatchQueue for PostgresDispatchStore {
         Ok(quarantined)
     }
 
+    async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
+        let p = NS;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        sqlx::query(&format!(
+            "DELETE FROM {p}_pending WHERE run_id IN \
+             (SELECT run_id FROM {p}_dispatch WHERE status = 'dead_letter')"
+        ))
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let result = sqlx::query(&format!(
+            "DELETE FROM {p}_dispatch WHERE status = 'dead_letter'"
+        ))
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(result.rows_affected() as usize)
+    }
+
+    async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, DispatchError> {
+        let p = NS;
+        let cond = "status = 'dead_letter' AND dead_lettered_at IS NOT NULL \
+                    AND dead_lettered_at <= $1";
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        sqlx::query(&format!(
+            "DELETE FROM {p}_pending WHERE run_id IN \
+             (SELECT run_id FROM {p}_dispatch WHERE {cond})"
+        ))
+        .bind(crate::clock::db_millis(cutoff_ms))
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let result = sqlx::query(&format!("DELETE FROM {p}_dispatch WHERE {cond}"))
+            .bind(crate::clock::db_millis(cutoff_ms))
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(result.rows_affected() as usize)
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::DispatchReads for PostgresDispatchStore {
     async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
         self.run_ids_by_status("dead_letter").await
     }
@@ -1165,7 +1228,10 @@ impl DispatchQueue for PostgresDispatchStore {
     async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
         self.read_dispatch_summaries(None).await
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::DispatchAdministration for PostgresDispatchStore {
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(store_error)?;
@@ -1296,56 +1362,10 @@ impl DispatchQueue for PostgresDispatchStore {
         tx.commit().await.map_err(store_error)?;
         Ok(Some(ThreadId(thread)))
     }
-
-    async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
-        let p = NS;
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
-        sqlx::query(&format!(
-            "DELETE FROM {p}_pending WHERE run_id IN \
-             (SELECT run_id FROM {p}_dispatch WHERE status = 'dead_letter')"
-        ))
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let result = sqlx::query(&format!(
-            "DELETE FROM {p}_dispatch WHERE status = 'dead_letter'"
-        ))
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        tx.commit().await.map_err(store_error)?;
-        Ok(result.rows_affected() as usize)
-    }
-
-    async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, DispatchError> {
-        let p = NS;
-        let cond = "status = 'dead_letter' AND dead_lettered_at IS NOT NULL \
-                    AND dead_lettered_at <= $1";
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
-        sqlx::query(&format!(
-            "DELETE FROM {p}_pending WHERE run_id IN \
-             (SELECT run_id FROM {p}_dispatch WHERE {cond})"
-        ))
-        .bind(crate::clock::db_millis(cutoff_ms))
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let result = sqlx::query(&format!("DELETE FROM {p}_dispatch WHERE {cond}"))
-            .bind(crate::clock::db_millis(cutoff_ms))
-            .execute(&mut *tx)
-            .await
-            .map_err(store_error)?;
-        tx.commit().await.map_err(store_error)?;
-        Ok(result.rows_affected() as usize)
-    }
-
-    fn control(&self) -> Option<&dyn ControlDispatchQueue> {
-        Some(self)
-    }
 }
 
 #[async_trait]
-impl ControlDispatchQueue for PostgresDispatchStore {
+impl awaken_dispatch_contract::DispatchAttemptControl for PostgresDispatchStore {
     async fn finish_attempt_closure(
         &self,
         claim: &RunClaim,
@@ -1381,7 +1401,10 @@ impl ControlDispatchQueue for PostgresDispatchStore {
         self.admit_physical_attempt_transaction(claim, handoff, binding, tx, Some(snapshot))
             .await
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::DispatchControlReads for PostgresDispatchStore {
     async fn current_credential_binding(
         &self,
         claim: &RunClaim,
@@ -1423,6 +1446,122 @@ impl ControlDispatchQueue for PostgresDispatchStore {
         Ok(binding)
     }
 
+    async fn dispatch_depths(&self) -> Result<Option<DispatchDepths>, DispatchError> {
+        let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
+        let p = NS;
+        let thread_available = thread_available_for_claim(p);
+        let (runnable, leased): (i64, i64) = sqlx::query_as(&format!(
+            "SELECT (SELECT COUNT(*) FROM {p}_dispatch d WHERE (\
+             (d.status IN ('reserved', 'reservation_running') \
+               AND d.lease_until IS NOT NULL AND d.lease_until <= $1 AND {}) OR \
+             (d.status = 'pending' AND {thread_available}) OR \
+             (d.status = 'running' AND d.lease_until <= $1) OR \
+             (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (\
+               SELECT 1 FROM {p}_pending i WHERE i.run_id = d.run_id \
+               AND (i.available_at IS NULL OR i.available_at <= $1)\
+             )) AND {thread_available})) \
+             AND (d.retry_not_before IS NULL \
+                  OR d.retry_not_before <= $1)), \
+             (SELECT COUNT(*) FROM {p}_dispatch d \
+              WHERE d.status IN ('reservation_running', 'running') \
+                AND d.lease_until > $1)",
+            no_running_peer(p)
+        ))
+        .bind(crate::clock::db_millis(now_ms))
+        .fetch_one(&self.pool)
+        .await
+        .map_err(store_error)?;
+        Ok(Some(DispatchDepths {
+            runnable: durable_u64("runnable dispatch depth", runnable)?,
+            leased: durable_u64("leased dispatch depth", leased)?,
+        }))
+    }
+
+    async fn load_physical_attempt(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<PhysicalAttempt>, DispatchError> {
+        let p = NS;
+        let row = sqlx::query(&format!(
+            "SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, request, active_attempt_closing FROM {p}_dispatch WHERE run_id = $1"
+        )).bind(&run_id.0).fetch_optional(&self.pool).await.map_err(store_error)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let epoch: Option<i64> = row.try_get("active_attempt_epoch").map_err(store_error)?;
+        let Json(request): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
+        let closing: bool = row.try_get("active_attempt_closing").map_err(store_error)?;
+        crate::dispatch::decode_physical_attempt(
+            run_id,
+            row.try_get("active_attempt_owner").map_err(store_error)?,
+            epoch
+                .map(|v| durable_u64("dispatch attempt epoch", v))
+                .transpose()?,
+            row.try_get("active_attempt_binding").map_err(store_error)?,
+        )
+        .map(|attempt| {
+            attempt.map(|mut attempt| {
+                attempt.closing = closing;
+                attempt.thread_id = Some(request.thread_id().clone());
+                attempt.session_thread_id = request.session_thread_id.clone();
+                attempt
+            })
+        })
+    }
+
+    async fn completion_events_after(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
+        load_completion_events(&self.pool, NS, after_sequence, limit).await
+    }
+
+    async fn scan_dispatch_ids(
+        &self,
+        after: Option<&RunId>,
+        limit: usize,
+    ) -> Result<Vec<RunId>, DispatchError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).map_err(|_| {
+            DispatchError::Rejected("dispatch scan limit exceeds database range".into())
+        })?;
+        let clause = if after.is_some() {
+            "WHERE run_id > $2"
+        } else {
+            ""
+        };
+        let sql = format!("SELECT run_id FROM {NS}_dispatch {clause} ORDER BY run_id LIMIT $1");
+        let query = sqlx::query_scalar::<_, String>(&sql).bind(limit);
+        let query = if let Some(after) = after {
+            query.bind(&after.0)
+        } else {
+            query
+        };
+        Ok(query
+            .fetch_all(&self.pool)
+            .await
+            .map_err(store_error)?
+            .into_iter()
+            .map(RunId)
+            .collect())
+    }
+
+    async fn dispatch_summary(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<DispatchSummary>, DispatchError> {
+        Ok(self
+            .read_dispatch_summaries(Some(run_id.0.clone()))
+            .await?
+            .pop())
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::SessionRunReservations for PostgresDispatchStore {
     async fn reserve_session_run(
         &self,
         request: RunDispatch,
@@ -1634,7 +1773,10 @@ impl ControlDispatchQueue for PostgresDispatchStore {
         tx.commit().await.map_err(store_error)?;
         Ok(())
     }
+}
 
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::SessionReservationAuthority for PostgresDispatchStore {
     async fn lock_session_run_reservation_epoch(
         &self,
         claim: &RunClaim,
@@ -1642,7 +1784,10 @@ impl ControlDispatchQueue for PostgresDispatchStore {
         self.lock_claim_epoch_in_status(claim, "reservation_running")
             .await
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::DispatchControlClaims for PostgresDispatchStore {
     async fn claim_placed(
         &self,
         requester: &WorkerSnapshot,
@@ -1684,119 +1829,6 @@ impl ControlDispatchQueue for PostgresDispatchStore {
         .await?;
         tx.commit().await.map_err(store_error)?;
         Ok(claimed)
-    }
-
-    async fn dispatch_depths(&self) -> Result<Option<DispatchDepths>, DispatchError> {
-        let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
-        let p = NS;
-        let thread_available = thread_available_for_claim(p);
-        let (runnable, leased): (i64, i64) = sqlx::query_as(&format!(
-            "SELECT (SELECT COUNT(*) FROM {p}_dispatch d WHERE (\
-             (d.status IN ('reserved', 'reservation_running') \
-               AND d.lease_until IS NOT NULL AND d.lease_until <= $1 AND {}) OR \
-             (d.status = 'pending' AND {thread_available}) OR \
-             (d.status = 'running' AND d.lease_until <= $1) OR \
-             (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (\
-               SELECT 1 FROM {p}_pending i WHERE i.run_id = d.run_id \
-               AND (i.available_at IS NULL OR i.available_at <= $1)\
-             )) AND {thread_available})) \
-             AND (d.retry_not_before IS NULL \
-                  OR d.retry_not_before <= $1)), \
-             (SELECT COUNT(*) FROM {p}_dispatch d \
-              WHERE d.status IN ('reservation_running', 'running') \
-                AND d.lease_until > $1)",
-            no_running_peer(p)
-        ))
-        .bind(crate::clock::db_millis(now_ms))
-        .fetch_one(&self.pool)
-        .await
-        .map_err(store_error)?;
-        Ok(Some(DispatchDepths {
-            runnable: durable_u64("runnable dispatch depth", runnable)?,
-            leased: durable_u64("leased dispatch depth", leased)?,
-        }))
-    }
-
-    async fn load_physical_attempt(
-        &self,
-        run_id: &RunId,
-    ) -> Result<Option<PhysicalAttempt>, DispatchError> {
-        let p = NS;
-        let row = sqlx::query(&format!(
-            "SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, request, active_attempt_closing FROM {p}_dispatch WHERE run_id = $1"
-        )).bind(&run_id.0).fetch_optional(&self.pool).await.map_err(store_error)?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let epoch: Option<i64> = row.try_get("active_attempt_epoch").map_err(store_error)?;
-        let Json(request): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
-        let closing: bool = row.try_get("active_attempt_closing").map_err(store_error)?;
-        crate::dispatch::decode_physical_attempt(
-            run_id,
-            row.try_get("active_attempt_owner").map_err(store_error)?,
-            epoch
-                .map(|v| durable_u64("dispatch attempt epoch", v))
-                .transpose()?,
-            row.try_get("active_attempt_binding").map_err(store_error)?,
-        )
-        .map(|attempt| {
-            attempt.map(|mut attempt| {
-                attempt.closing = closing;
-                attempt.thread_id = Some(request.thread_id().clone());
-                attempt.session_thread_id = request.session_thread_id.clone();
-                attempt
-            })
-        })
-    }
-
-    async fn completion_events_after(
-        &self,
-        after_sequence: u64,
-        limit: usize,
-    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
-        load_completion_events(&self.pool, NS, after_sequence, limit).await
-    }
-
-    async fn scan_dispatch_ids(
-        &self,
-        after: Option<&RunId>,
-        limit: usize,
-    ) -> Result<Vec<RunId>, DispatchError> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
-        let limit = i64::try_from(limit).map_err(|_| {
-            DispatchError::Rejected("dispatch scan limit exceeds database range".into())
-        })?;
-        let clause = if after.is_some() {
-            "WHERE run_id > $2"
-        } else {
-            ""
-        };
-        let sql = format!("SELECT run_id FROM {NS}_dispatch {clause} ORDER BY run_id LIMIT $1");
-        let query = sqlx::query_scalar::<_, String>(&sql).bind(limit);
-        let query = if let Some(after) = after {
-            query.bind(&after.0)
-        } else {
-            query
-        };
-        Ok(query
-            .fetch_all(&self.pool)
-            .await
-            .map_err(store_error)?
-            .into_iter()
-            .map(RunId)
-            .collect())
-    }
-
-    async fn dispatch_summary(
-        &self,
-        run_id: &RunId,
-    ) -> Result<Option<DispatchSummary>, DispatchError> {
-        Ok(self
-            .read_dispatch_summaries(Some(run_id.0.clone()))
-            .await?
-            .pop())
     }
 }
 
@@ -1859,7 +1891,6 @@ impl PostgresDispatchStore {
         Ok(outcome)
     }
 }
-
 impl PostgresDispatchStore {
     pub(super) async fn close_physical_attempt(
         &self,

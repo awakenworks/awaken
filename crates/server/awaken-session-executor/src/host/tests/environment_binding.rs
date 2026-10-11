@@ -369,7 +369,7 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     let ephemeral = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
-    assert!(!ephemeral.durable_ingress(), "T1 precondition");
+    assert!(!ephemeral.dispatch.durable_ingress(), "T1 precondition");
     ephemeral.ensure_dispatch_pool();
     assert!(ephemeral.dispatch.dispatch_pool.get().is_some(), "T1/E1");
 
@@ -384,13 +384,13 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     .build()
     .expect("validated Host dependencies");
     assert!(
-        Arc::ptr_eq(&local_store, &local.dispatch_store().unwrap()),
+        Arc::ptr_eq(&local_store, &local.coordinator_dispatch().unwrap()),
         "T2 one selected queue"
     );
     assert!(
         Arc::ptr_eq(
-            &local.dispatch_store().unwrap(),
-            &local.authority.dispatch_store().unwrap()
+            &local.coordinator_dispatch().unwrap(),
+            &local.optional_dispatch_store().unwrap()
         ),
         "T2 Host reads the sole authority"
     );
@@ -409,7 +409,10 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     .build()
     .expect("validated Host dependencies");
     assert!(
-        Arc::ptr_eq(&coordinator_store, &coordinator.dispatch_store().unwrap()),
+        Arc::ptr_eq(
+            &coordinator_store,
+            &coordinator.coordinator_dispatch().unwrap()
+        ),
         "T3 one selected queue"
     );
     assert!(!coordinator.runs_local_dispatch_pool(), "coordinator");
@@ -464,7 +467,11 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
             file.clone(),
             memory.clone(),
             process(),
-            crate::host::test_upstream_authority().with_dispatch_transport(store),
+            crate::host::test_upstream_authority().with_dispatch_binding(
+                awaken_dispatch_erasure::DispatchBinding::local(Arc::new(
+                    awaken_dispatch_erasure::AnyCoordinatorDispatch::from_durable_dispatch(store),
+                )),
+            ),
             registered,
         )
         .unwrap())
@@ -494,7 +501,7 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
                 memory,
                 coordinator_only,
                 crate::host::test_upstream_authority()
-                    .with_dispatch_transport(worker.dispatch_store().unwrap()),
+                    .with_dispatch_binding(worker.authority.dispatch_binding().unwrap()),
                 awaken_dispatch_contract::RegisteredCapacity::of(&manifest).unwrap(),
             )
             .is_err(),

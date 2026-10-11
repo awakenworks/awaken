@@ -13,7 +13,7 @@ use super::*;
 use awaken_dispatch_contract as ingress;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshotId};
-use ingress::ControlDispatchQueue;
+
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[path = "tests/trusted_host_admission.rs"]
@@ -31,7 +31,6 @@ async fn session_run_reservation_repair_skips_execution_realization() {
     // boundary Worker; E3 no Session Environment or Sandbox side effect is
     // created. Decision rule R1=C0+C1+C2+C3=>E1+E2+E3. Missing/unknown command
     // fingerprints remain owned by the queue conformance table.
-    use ingress::DispatchQueue;
 
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let store = Arc::new(
@@ -109,7 +108,7 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
     // | Rule | Authority | Parent delivery | Claimed Thread | Effect |
     // |---|---|---|---|---|
     // | E1 | ephemeral | direct | child != parent, C4 | E1+E2 |
-    use awaken_dispatch::{DispatchQueue as _, WorkerResolver as _};
+    use awaken_dispatch::WorkerResolver as _;
 
     let host = adoption_host().await;
     let managed = managed_test_host(host.clone());
@@ -174,7 +173,7 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     // | R1 | direct | yes | yes, C4 | E1+E2 |
     // | R2 | durable | yes | no | E3 |
     // | R3 | durable | no | yes | E4 |
-    use awaken_dispatch::{DispatchQueue as _, WorkerResolver as _};
+    use awaken_dispatch::WorkerResolver as _;
 
     let ephemeral = adoption_host().await;
     let ephemeral_managed = managed_test_host(ephemeral.clone());
@@ -335,7 +334,6 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
         AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,
         AgentSnapshotMetadata,
     };
-    use ingress::DispatchQueue;
 
     let now = awaken_time::system_clock().now().as_epoch_ms();
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
@@ -476,7 +474,6 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
     // are Runtime construction inputs. Rules K1=C1+C2=>E1+E2,
     // K2=C3=>E3, K3=C4=>E4.
     use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
-    use ingress::DispatchQueue;
 
     let child_v1 = awaken_runtime_contract::ExecutableAgentSnapshot::builder("researcher")
         .instructions("catalog v1")
@@ -634,8 +631,6 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
 /// represent one attempted mutation plus its authoritative readback replay.
 #[tokio::test]
 async fn durable_deferred_sandbox_publication_decision_table() {
-    use ingress::DispatchQueue;
-
     let now = awaken_time::system_clock().now().as_epoch_ms();
     let storage = tempfile::tempdir().expect("isolated deferred Sandbox root");
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
@@ -867,8 +862,6 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRe
 
 #[tokio::test]
 async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() {
-    use ingress::DispatchQueue;
-
     /* Claimed sandbox-stdio recovery cause/effect decision table. Causes:
      * C1 a cold Worker has no process-local Agent publication; C2 the durable
      * Run carries its exact immutable snapshot and non-default backend
@@ -1179,8 +1172,6 @@ fn ordinary_frozen_projection() -> awaken_session_realization_contract::FrozenSe
 /// | O5 | live Run without Session pointer | n/a | present | bypass Session control |
 #[tokio::test]
 async fn claimed_worker_uses_only_frozen_session_realization() {
-    use ingress::DispatchQueue;
-
     let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));
     let dispatch = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
@@ -1349,8 +1340,6 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
 
 #[tokio::test]
 async fn claimed_resource_conflict_is_terminal_before_realization() {
-    use ingress::DispatchQueue;
-
     // Cause/effect graph: C1 the Run claim is live; C2 its immutable Resource
     // envelope differs from Control's desired Workspace/revision/bindings.
     // C1+C2 => E1 typed terminal resolution, E2 no Worker realization effects.
@@ -2828,7 +2817,6 @@ async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
 
 #[tokio::test]
 async fn outcome_work_receipt_installs_baseline_before_runtime_and_later_session_use() {
-    use ingress::DispatchQueue;
     // Cause/effect table: ordinary Run + Coordinator-issued Session Work receipt
     // -> canonical frozen realization before runtime. No receipt -> O5's existing
     // ordinary path. Wrong Session/owner receipt -> reject before environment effects.
@@ -2978,3 +2966,7 @@ fn active_manifest(
 ) -> Option<awaken_session_resource_contract::SessionResourceManifest> {
     host.realizer.staging.thread_resource_manifest(thread)
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaims as _, DispatchEnqueue as _, DispatchSettlement as _, SessionRunReservations as _,
+};

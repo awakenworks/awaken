@@ -827,12 +827,11 @@ async fn terminal_quiescence_rejects_an_unstarted_cancelled_reservation_without_
     // materialize an Environment. Rule T1=C1+C2=>E1+E2+E3. If activation wins,
     // guarded rejection stutters and the existing Pending cancellation Worker
     // owns settlement; the sibling parent/child tests cover that branch.
-    use awaken_dispatch_contract::DispatchQueue as _;
 
     let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
-    let dispatch = host.dispatch_store().expect("T1 dispatch authority");
+    let dispatch = host.coordinator_dispatch().expect("T1 dispatch authority");
     let session = ThreadId("terminal-reservation-session".into());
     let run = RunId("terminal-reservation-run".into());
     let activation =
@@ -896,13 +895,13 @@ async fn terminal_physical_claim_fixture(
     ttl_ms: u64,
 ) -> (
     Arc<SharedHost>,
-    Arc<awaken_dispatch_erasure::AnyDispatchStore>,
+    Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
     Arc<awaken_lease_testkit::ManualClock>,
     ThreadId,
     RunId,
     awaken_dispatch_contract::RunClaim,
 ) {
-    use awaken_dispatch::{DispatchQueue, RunDispatch};
+    use awaken_dispatch::RunDispatch;
     use awaken_dispatch_contract::RunClaim;
 
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
@@ -972,7 +971,6 @@ async fn terminal_quiescence_does_not_rewait_an_expired_physical_claim() {
     // Rules Q1=C1+C2+C3=>E1+E2+E3; Q2 in the sibling test retains the
     // ordinary wait for a Claim that was live before cancellation. Expiry is
     // supplied by the Dispatch clock, not a sleep or a caller assertion.
-    use awaken_dispatch::{ControlDispatchQueue, DispatchQueue};
 
     let (host, dispatch, clock, session, run, physical_claim) =
         terminal_physical_claim_fixture("expired", 100).await;
@@ -1020,7 +1018,7 @@ async fn terminal_quiescence_still_waits_for_a_pre_cancel_live_physical_claim() 
     // E1 terminal cleanup does not mistake C2 for prior staleness; E2 it waits
     // until C3+C4, then succeeds; E3 no physical slot or runnable row remains.
     // Rule Q2=C1+C2+C3+C4=>E1+E2+E3. Q1 covers pre-cancel expiry instead.
-    use awaken_dispatch::{DispatchOutcome, DispatchQueue};
+    use awaken_dispatch::DispatchOutcome;
 
     let (host, dispatch, _clock, session, run, physical_claim) =
         terminal_physical_claim_fixture("live", 30_000).await;
@@ -1075,11 +1073,11 @@ async fn terminal_quiescence_still_waits_for_a_pre_cancel_live_physical_claim() 
 }
 
 async fn settle_cancelled_dispatch_rows(
-    dispatch: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
+    dispatch: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
     expected_rows: usize,
     worker: &'static str,
 ) -> Vec<RunId> {
-    use awaken_dispatch::{DispatchOutcome, DispatchQueue as _};
+    use awaken_dispatch::DispatchOutcome;
 
     loop {
         let rows = dispatch.list_dispatches().await.unwrap();
@@ -1128,9 +1126,9 @@ async fn terminal_quiescence_fences_ephemeral_children_before_cold_link_enrichme
     let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
-    assert!(!host.durable_ingress(), "R1/C3");
+    assert!(!host.dispatch.durable_ingress(), "R1/C3");
     let dispatch = host
-        .dispatch_store()
+        .coordinator_dispatch()
         .expect("R1 ephemeral dispatch authority");
     let parent = ThreadId("cold-terminal-parent".into());
     let child = ThreadId("cold-terminal-child".into());
@@ -1184,7 +1182,7 @@ async fn coordinator_terminal_quiescence_waits_for_remote_parent_and_child_settl
     // | Rule | topology | cancellation | settlement | Effect |
     // | Q1 | coordinator-only | requested | pending | E1 + E2 |
     // | Q2 | coordinator-only | requested | exact Done | E3 + E4 |
-    use awaken_dispatch::{DispatchQueue, RunDispatch};
+    use awaken_dispatch::RunDispatch;
 
     let dispatch = Arc::new(
         awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
@@ -1234,3 +1232,9 @@ async fn coordinator_terminal_quiescence_waits_for_remote_parent_and_child_settl
         "Q2/E4"
     );
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaimOwnership as _, DispatchClaims as _, DispatchControlReads as _,
+    DispatchEnqueue as _, DispatchExecution as _, DispatchReads as _, DispatchSettlement as _,
+    SessionRunReservations as _,
+};

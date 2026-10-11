@@ -9,9 +9,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::stream::sink::Sink;
 use awaken_lease_testkit::ManualClock;
-use awaken_dispatch::{
-    DispatchQueue, DispatchTestHarness, DispatchWorker, MemoryDispatchStore, RunDispatch,
-};
+use awaken_dispatch::{DispatchTestHarness, DispatchWorker, MemoryDispatchStore, RunDispatch};
 use awaken_runtime_contract::control::Error as ControlError;
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
 use awaken_time::system_clock;
@@ -313,3 +311,5 @@ async fn dispatch_harness_unknown_live_cancel_is_typed() {
     // The worker accessor is reachable for out-of-band driving.
     let _ = ingress.worker();
 }
+
+use awaken_dispatch_contract::{DispatchClaims as _, DispatchEnqueue as _};

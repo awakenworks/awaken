@@ -7,7 +7,7 @@ use awaken_resource_contract::{
     ConfigVersion, LiveResourceBindingVerifier, RepositoryBindingVerifier,
     RepositoryBindingVerifierError, RepositoryTransport,
 };
-use awaken_dispatch_contract::{DispatchQueue, RunClaim};
+use awaken_dispatch_contract::{DispatchCommitAuthority, RunClaim};
 use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{
@@ -40,7 +40,7 @@ struct RepositoryBindingRequest {
 
 pub struct WorkerRepositoryBindingService {
     validator: Arc<dyn LiveResourceBindingVerifier>,
-    dispatch: Arc<dyn DispatchQueue>,
+    dispatch: Arc<dyn DispatchCommitAuthority>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
     materialization_control:
@@ -310,7 +310,7 @@ impl WorkerRepositoryBindingService {
     #[must_use]
     pub fn new(
         validator: Arc<dyn LiveResourceBindingVerifier>,
-        dispatch: Arc<dyn DispatchQueue>,
+        dispatch: Arc<dyn DispatchCommitAuthority>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {

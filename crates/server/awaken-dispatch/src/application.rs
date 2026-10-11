@@ -4,7 +4,6 @@
 // @formal evidence session_execution.one_physical_attempt_per_thread
 //! Protocol-neutral application ports used by Coordinator HTTP adapters.
 
-use awaken_dispatch_contract::ControlDispatchQueue;
 pub use awaken_session_execution_contract::{
     ApplicationError, ApplicationErrorKind, DurableDispatchStatus, DurableRunOperations,
     DurableSupersedeResult,
@@ -309,7 +308,7 @@ impl awaken_dispatch_execution::WorkerEvidenceRelease for WorkerEvidenceReleaseA
 
     async fn release_closed_idle_worker_evidence(
         &self,
-        dispatch: &dyn ControlDispatchQueue,
+        dispatch: &dyn PhysicalAttemptReads,
         directory: &dyn crate::WorkerDirectory,
         identity: &crate::WorkerIdentity,
         now_ms: u64,
@@ -329,7 +328,7 @@ impl awaken_dispatch_execution::WorkerEvidenceRelease for WorkerEvidenceReleaseA
 /// physical-slot authority. HTTP withdrawal and maintenance share this operation;
 /// no provider result here becomes a process-exit or Session cleanup receipt.
 pub async fn release_closed_idle_worker_evidence(
-    dispatch: &dyn awaken_dispatch_contract::ControlDispatchQueue,
+    dispatch: &dyn PhysicalAttemptReads,
     directory: &dyn crate::WorkerDirectory,
     source: &dyn WorkerExecutionStopSource,
     identity: &crate::WorkerIdentity,
@@ -395,7 +394,7 @@ pub async fn release_closed_idle_worker_evidence(
 /// observation share this one scan. A concurrent or inconsistent read fails
 /// closed; it never manufactures a process-exit or whole-attempt receipt.
 pub async fn has_active_physical_attempt_for_owner(
-    dispatch: &dyn awaken_dispatch_contract::ControlDispatchQueue,
+    dispatch: &dyn PhysicalAttemptReads,
     owner: &str,
 ) -> Result<bool, ApplicationError> {
     for summary in dispatch
@@ -428,7 +427,7 @@ pub async fn has_active_physical_attempt_for_owner(
 /// a separate complete assertion from `close_attempt_execution`; the existing
 /// Dispatch slot is the sole retirement authority, not this return value.
 pub async fn stop_expired_predecessor(
-    dispatch: &dyn ControlDispatchQueue,
+    dispatch: &dyn AttemptControlAuthority,
     directory: &dyn crate::WorkerDirectory,
     source: &dyn WorkerExecutionStopSource,
     recovery: Option<&dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>,
@@ -543,7 +542,7 @@ pub async fn stop_expired_predecessor(
 }
 
 async fn independently_close_worker(
-    dispatch: &dyn ControlDispatchQueue,
+    dispatch: &dyn AttemptControlAuthority,
     directory: &dyn crate::WorkerDirectory,
     source: &dyn WorkerExecutionStopSource,
     predecessor: &crate::PhysicalAttempt,
@@ -680,14 +679,14 @@ impl ClaimedOperationCoordinatorResolver for FixedOperationCoordinatorResolver {
 /// Exact-epoch committed-truth application service. Authentication and HTTP
 /// status mapping are deliberately outside this owner.
 pub struct ClaimedCommitService {
-    dispatch: Arc<dyn ControlDispatchQueue>,
+    dispatch: Arc<dyn DispatchCommitAuthority>,
     coordinator: Arc<dyn ClaimedOperationCoordinatorResolver>,
 }
 
 impl ClaimedCommitService {
     #[must_use]
     pub fn new(
-        dispatch: Arc<dyn ControlDispatchQueue>,
+        dispatch: Arc<dyn DispatchCommitAuthority>,
         coordinator: Arc<dyn OperationCoordinator>,
     ) -> Self {
         Self {
@@ -698,7 +697,7 @@ impl ClaimedCommitService {
 
     #[must_use]
     pub fn with_coordinator_resolver(
-        dispatch: Arc<dyn ControlDispatchQueue>,
+        dispatch: Arc<dyn DispatchCommitAuthority>,
         coordinator: Arc<dyn ClaimedOperationCoordinatorResolver>,
     ) -> Self {
         Self {
@@ -757,7 +756,7 @@ impl ClaimedCommitService {
 /// slot operation. PostgreSQL transfers the same resource into its transaction.
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 pub(crate) async fn admit_with_incarnation_guard(
-    dispatch: &dyn crate::DispatchQueue,
+    dispatch: &dyn DispatchExecution,
     claim: &crate::RunClaim,
     binding: Option<&crate::AttemptExecutionBinding>,
     guard: awaken_dispatch_contract::WorkerIncarnationGuard,
@@ -796,6 +795,32 @@ pub(crate) async fn admit_with_incarnation_guard(
         .map_err(crate::DispatchError::unavailable)?;
     admission
 }
+
+use awaken_dispatch_contract::{
+    DispatchAttemptControl, DispatchClaimOwnership, DispatchCommitAuthority, DispatchControlReads,
+    DispatchExecution, DispatchReads,
+};
+pub trait AttemptControlAuthority:
+    DispatchExecution
+    + DispatchClaimOwnership
+    + DispatchCommitAuthority
+    + DispatchReads
+    + DispatchAttemptControl
+    + DispatchControlReads
+{
+}
+impl<
+    T: DispatchExecution
+        + DispatchClaimOwnership
+        + DispatchCommitAuthority
+        + DispatchReads
+        + DispatchAttemptControl
+        + DispatchControlReads,
+> AttemptControlAuthority for T
+{
+}
+
+use awaken_dispatch_execution::PhysicalAttemptReads;
 
 #[cfg(test)]
 mod tests {

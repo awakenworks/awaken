@@ -5,6 +5,7 @@
 
 use super::types::VerifiedStepProjection;
 use super::*;
+use awaken_dispatch_contract::SessionContinuationOutbox as _;
 use awaken_runtime_contract::control::{LiveCommand, LiveRunControl};
 
 mod projection;
@@ -396,10 +397,12 @@ impl SharedHost {
                 // A standalone Host has no autonomous pool. Preserve its direct
                 // ingress behavior for tests/embedders while served deployments
                 // always take the non-blocking process-pool branch above.
-                awaken_dispatch_execution::LiveRunControlService::new(
+                awaken_dispatch_execution::LiveRunControlService::from_local_owner(
                     (*ingress).clone(),
+                    self.coordinator_dispatch()?,
                     self.clock(),
                 )
+                .map_err(|error| HostError::internal(error.to_string()))?
                 .cancel(&run_id.0)
                 .await
                 .map_err(|error| HostError::internal(error.to_string()))?;
@@ -704,7 +707,7 @@ impl SharedHost {
     /// store. The queue remains delivery truth; this guard only selects whether
     /// the deployment exposes that authority.
     pub(super) fn require_durable_delivery(&self) -> Result<(), HostError> {
-        if self.durable_ingress() {
+        if self.dispatch.durable_ingress() {
             Ok(())
         } else {
             Err(HostError::bad_request(
@@ -722,7 +725,7 @@ impl SharedHost {
     ) -> Result<Vec<awaken_dispatch_contract::DispatchSummary>, HostError> {
         self.require_durable_delivery()?;
         let thread_id = ThreadId(thread.to_owned());
-        self.dispatch_store()?
+        self.coordinator_dispatch()?
             .list_dispatches()
             .await
             .map_err(|error| HostError::internal(error.to_string()))
@@ -739,7 +742,7 @@ impl SharedHost {
         let worker = self.durable_worker(thread).await?;
         let clock = self.clock.clone();
         let mut processed = worker
-            .reconcile_committed_terminals(256)
+            .reconcile_committed_terminals(256, self.coordinator_dispatch()?.as_ref())
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
         processed.extend(
@@ -760,9 +763,8 @@ impl SharedHost {
         max_attempts: u64,
         now_ms: u64,
     ) -> Result<usize, HostError> {
-        self.durable_worker(thread)
-            .await?
-            .store()
+        self.durable_worker(thread).await?;
+        self.coordinator_dispatch()?
             .quarantine_retry_exhausted(max_attempts, now_ms)
             .await
             .map_err(|e| HostError::internal(e.to_string()))
@@ -781,9 +783,9 @@ impl SharedHost {
     /// Return one dead-lettered run to the durable queue with a fresh retry
     /// budget after the operator has repaired the external failure.
     pub async fn requeue_dead_letter(&self, thread: &str, run_id: &str) -> Result<bool, HostError> {
-        let worker = self.durable_worker(thread).await?;
-        let belongs_to_thread = worker
-            .store()
+        self.require_durable_delivery()?;
+        let store = self.coordinator_dispatch()?;
+        let belongs_to_thread = store
             .list_dispatches()
             .await
             .map_err(|error| HostError::internal(error.to_string()))?
@@ -796,8 +798,7 @@ impl SharedHost {
         if !belongs_to_thread {
             return Ok(false);
         }
-        worker
-            .store()
+        store
             .requeue(&RunId(run_id.to_owned()))
             .await
             .map_err(|error| HostError::internal(error.to_string()))
@@ -806,9 +807,8 @@ impl SharedHost {
     /// Operator GC: purge every dead-lettered dispatch on `thread` (ADR-0015,
     /// slice E). Returns how many were removed.
     pub async fn purge_dead_letters(&self, thread: &str) -> Result<usize, HostError> {
-        self.durable_worker(thread)
-            .await?
-            .store()
+        self.durable_worker(thread).await?;
+        self.coordinator_dispatch()?
             .purge_dead_letters()
             .await
             .map_err(|e| HostError::internal(e.to_string()))
@@ -886,10 +886,9 @@ impl SharedHost {
             // Coordinator-only durable server (no local pool): enqueue straight into
             // the shared store so a remote database-less worker drains it over the
             // dispatch transport. Non-durable keeps the original "enable the pool" error.
-            Err(e) if self.durable_ingress() => {
-                use awaken_dispatch_contract::DispatchQueue;
+            Err(e) if self.dispatch.durable_ingress() => {
                 let _ = e;
-                let store = self.dispatch_store()?;
+                let store = self.coordinator_dispatch()?;
                 store
                     .enqueue(request)
                     .await
@@ -908,18 +907,13 @@ impl SharedHost {
         session_id: &str,
         ticket: &ResumeTicket,
         session_activity_epoch: u64,
-    ) -> Result<Arc<awaken_dispatch_erasure::AnyDispatchStore>, HostError> {
-        use awaken_dispatch_contract::DispatchQueue as _;
-
+    ) -> Result<Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>, HostError> {
         if ticket.thread_id.0 != session_id || session_activity_epoch == 0 {
             return Err(HostError::internal(
                 "only an exact foreground Session root can enter durable resume",
             ));
         }
-        let store = self.dispatch_store()?;
-        store.session_continuation().ok_or_else(|| {
-            HostError::internal("foreground resume requires a continuation owner")
-        })?;
+        let store = self.coordinator_dispatch()?;
         let ctx = self.ctx_for(session_id, None).await?;
         if ticket.inherited_toolsets.is_none()
             && !ctx
@@ -991,7 +985,7 @@ impl SharedHost {
         logical_thread_id: &ThreadId,
         commit: &HostCommit,
     ) -> Result<Vec<RunId>, HostError> {
-        let store = self.dispatch_store()?;
+        let store = self.coordinator_dispatch()?;
         let parent = ThreadId(session_id.to_string());
         let rows = store
             .list_dispatches()
@@ -1128,10 +1122,6 @@ impl SharedHost {
             result: ResumeResult::Continue,
         };
         store
-            .session_continuation()
-            .ok_or_else(|| {
-                HostError::internal("Session budget resume requires a continuation owner")
-            })?
             .stage_session_resume(
                 input,
                 &ThreadId(delivery.session_id.into_string()),
@@ -1511,6 +1501,10 @@ impl SharedHost {
         ))
     }
 }
+
+use awaken_dispatch_contract::{
+    DispatchAdministration as _, DispatchEnqueue as _, DispatchMaintenance as _, DispatchReads as _,
+};
 
 #[cfg(test)]
 mod ticket_projection_tests {

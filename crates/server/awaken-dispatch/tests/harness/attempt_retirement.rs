@@ -1,12 +1,11 @@
 // @formal evidence session_execution.one_physical_attempt_per_thread
 use awaken_dispatch::{
-    AttemptAdmission as A, DispatchQueue, LeaseRenewalOutcome as L, RunClaim, RunDispatch,
-    SettleOutcome as S,
+    AttemptAdmission as A, LeaseRenewalOutcome as L, RunClaim, RunDispatch, SettleOutcome as S,
 };
 
 /// One oracle for Memory, SQLite and PostgreSQL; real stores, no shadow reducer.
 pub async fn assert_retirement(
-    store: &impl DispatchQueue,
+    store: &impl ConformanceDispatch,
     now: u64,
     clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
@@ -142,3 +141,5 @@ pub async fn assert_retirement(
     );
     assert_eq!(store.finish_attempt(&d).await.unwrap(), S::Applied);
 }
+
+use awaken_dispatch_testkit::ConformanceDispatch;

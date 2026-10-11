@@ -107,6 +107,7 @@ test-support = [
 k8s-tests = ["awaken-sandbox-container/k8s"]
 
 [dev-dependencies]
+awaken-coordinator-client.workspace = true
 # MCP relay tests call the relay over plain loopback HTTP.
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 # The in-process MCP server fixture and the relay/state fixture hooks.

@@ -8,7 +8,7 @@
 // Dispatch single-writer and bounded Session-child conformance rules. Included
 // at crate root so the shared public conformance API retains its original paths.
 async fn settle_done(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     claim: &awaken_dispatch_contract::Claimed,
 ) {
     let consumed = claim
@@ -49,12 +49,12 @@ async fn settle_done(
 /// | SW5 | Awaiting | fresh | placed | E1 then E3 |
 /// | SW6 | two Awaiting | cancelled exact rows | broad local | E4 |
 async fn open_run_single_writer_is_uniform(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {
     async fn checkpoint_awaiting(
-        store: &dyn ControlDispatchQueue,
+        store: &dyn ConformanceDispatch,
         request: &RunDispatch,
         owner: &str,
         now_ms: u64,
@@ -468,7 +468,7 @@ async fn open_run_single_writer_is_uniform(
 /// | SC12 | - | - | completed | - | - | - | N | Y | E5 |
 /// | SC13 | Y | Y | exact/conflict after Done | - | N | N | N | N | E2/E3 |
 async fn session_child_admission_is_atomic_and_bounded(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {

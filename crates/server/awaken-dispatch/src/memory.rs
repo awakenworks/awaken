@@ -26,7 +26,6 @@
 //! plays for the commit boundary). It is the executable specification of the
 //! claim/lease/wake/recovery rules; the Postgres store must match it.
 
-use awaken_dispatch_contract::ControlDispatchQueue;
 use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::{Arc, Mutex};
@@ -44,19 +43,18 @@ use crate::dispatch::{
     AttemptAdmission, AttemptCredentialBinding, AttemptExecutionBinding, CasOutcome,
     ClaimCredentialOperation, Claimed, CommitEpochGuard, ContinuationAdmission,
     CredentialRealizationPersistenceDecision, CredentialRealizationReceipt, DispatchCompletion,
-    DispatchDepths, DispatchError, DispatchLease, DispatchOutcome, DispatchQueue, DispatchState,
-    DispatchSummary, ExactClaimMode, Inbox, LeaseRenewalOutcome, Outbox, PendingInput,
-    PendingInputSettlementPlan, PendingRecord, PhysicalAttempt, RunClaim, RunIdentityDecision,
-    SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
-    SessionRunReservationResolution, SettleOutcome, StoredRunIdentity, SubmitOptions,
-    can_admit_claim_credentials, claim_credential_operation, claim_with_frozen,
-    classify_completed_session_run_reservation, classify_exact_claim_mode,
-    classify_live_session_run_reservation, classify_session_run_reservation_activation,
-    compile_claim_credential_bindings, credential_realization_persistence_decision,
-    decide_lease_renewal, decide_run_identity, ensure_session_child_capacity,
-    installed_worker_credential_capabilities, normalize_pending_millis,
-    pending_input_settlement_plan, session_child_parent, session_child_thread,
-    validate_executable_dispatch_admission, validate_outbox_continuation,
+    DispatchDepths, DispatchError, DispatchLease, DispatchOutcome, DispatchState, DispatchSummary,
+    ExactClaimMode, Inbox, LeaseRenewalOutcome, Outbox, PendingInput, PendingInputSettlementPlan,
+    PendingRecord, PhysicalAttempt, RunClaim, RunIdentityDecision, SessionChildAdmission,
+    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
+    SettleOutcome, StoredRunIdentity, SubmitOptions, can_admit_claim_credentials,
+    claim_credential_operation, claim_with_frozen, classify_completed_session_run_reservation,
+    classify_exact_claim_mode, classify_live_session_run_reservation,
+    classify_session_run_reservation_activation, compile_claim_credential_bindings,
+    credential_realization_persistence_decision, decide_lease_renewal, decide_run_identity,
+    ensure_session_child_capacity, installed_worker_credential_capabilities,
+    normalize_pending_millis, pending_input_settlement_plan, session_child_parent,
+    session_child_thread, validate_executable_dispatch_admission, validate_outbox_continuation,
     validate_session_resume_activity_transition, validate_session_resume_evidence,
     validate_session_resume_target, validate_session_run_replacement_candidates,
     validate_session_run_reservation_request, validate_session_run_reservation_resolution,
@@ -873,7 +871,7 @@ fn release_claim(
 }
 
 #[async_trait]
-impl DispatchQueue for MemoryDispatchStore {
+impl awaken_dispatch_contract::DispatchCommitAuthority for MemoryDispatchStore {
     async fn worker_owns_run(
         &self,
         identity: &crate::WorkerIdentity,
@@ -905,7 +903,10 @@ impl DispatchQueue for MemoryDispatchStore {
         self.lock_claim_epoch_in_state(claim, DispatchState::Leased)
             .await
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::DispatchClaims for MemoryDispatchStore {
     async fn resolve_claimed_session_run_reservation(
         &self,
         claim: &RunClaim,
@@ -983,15 +984,6 @@ impl DispatchQueue for MemoryDispatchStore {
             GuardedTransition::Fenced => unreachable!(),
         }
         Ok(SettleOutcome::Applied)
-    }
-
-    async fn enqueue_with(
-        &self,
-        request: RunDispatch,
-        options: SubmitOptions,
-    ) -> Result<(), DispatchError> {
-        let mut state = lock(&self.state)?;
-        enqueue_with_local(&mut state, request, options)
     }
 
     async fn claim_new_run(
@@ -1210,7 +1202,22 @@ impl DispatchQueue for MemoryDispatchStore {
             &installed_worker_credential_capabilities(worker)?,
         )
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::DispatchEnqueue for MemoryDispatchStore {
+    async fn enqueue_with(
+        &self,
+        request: RunDispatch,
+        options: SubmitOptions,
+    ) -> Result<(), DispatchError> {
+        let mut state = lock(&self.state)?;
+        enqueue_with_local(&mut state, request, options)
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::DispatchExecution for MemoryDispatchStore {
     async fn record_credential_realization(
         &self,
         claim: &RunClaim,
@@ -1270,18 +1277,6 @@ impl DispatchQueue for MemoryDispatchStore {
             return Ok(SettleOutcome::Applied);
         }
         Ok(SettleOutcome::Fenced)
-    }
-
-    /// The store's own clock decides liveness, exactly as it does for every
-    /// other deadline this backend judges. This used to ride the trait default
-    /// on a caller-supplied `now_ms`; the caller no longer has a say in when
-    /// "now" is for rows this store owns.
-    async fn claim_is_current(&self, claim: &RunClaim) -> Result<bool, DispatchError> {
-        let now_ms = self.clock.now_ms();
-        Ok(self
-            .lock_commit_epoch(claim)
-            .await?
-            .is_some_and(|guard| guard.is_live_at(now_ms)))
     }
 
     async fn renew_lease(
@@ -1365,7 +1360,25 @@ impl DispatchQueue for MemoryDispatchStore {
             )),
         )
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::DispatchClaimOwnership for MemoryDispatchStore {
+    /// The store's own clock decides liveness, exactly as it does for every
+    /// other deadline this backend judges. This used to ride the trait default
+    /// on a caller-supplied `now_ms`; the caller no longer has a say in when
+    /// "now" is for rows this store owns.
+    async fn claim_is_current(&self, claim: &RunClaim) -> Result<bool, DispatchError> {
+        let now_ms = self.clock.now_ms();
+        Ok(self
+            .lock_commit_epoch(claim)
+            .await?
+            .is_some_and(|guard| guard.is_live_at(now_ms)))
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::DispatchSettlement for MemoryDispatchStore {
     async fn settle(
         &self,
         run_id: &RunId,
@@ -1375,7 +1388,10 @@ impl DispatchQueue for MemoryDispatchStore {
     ) -> Result<SettleOutcome, DispatchError> {
         self.settle_dispatch(run_id, epoch, outcome, consumed).await
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::DispatchMaintenance for MemoryDispatchStore {
     async fn quarantine_retry_exhausted(
         &self,
         max_attempts: u64,
@@ -1441,6 +1457,17 @@ impl DispatchQueue for MemoryDispatchStore {
         Ok(quarantined)
     }
 
+    async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
+        self.purge_dead(|_| true)
+    }
+
+    async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, DispatchError> {
+        self.purge_dead(|row| row.dead_lettered_at.is_some_and(|at| at <= cutoff_ms))
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::DispatchReads for MemoryDispatchStore {
     async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
         let state = lock(&self.state)?;
         Ok(state
@@ -1479,7 +1506,10 @@ impl DispatchQueue for MemoryDispatchStore {
             .filter_map(|run| state.rows.get(run).map(|row| row.summary(run)))
             .collect())
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::DispatchAdministration for MemoryDispatchStore {
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {
         let mut state = lock(&self.state)?;
         match state.rows.get_mut(run_id) {
@@ -1544,22 +1574,10 @@ impl DispatchQueue for MemoryDispatchStore {
         }
         Ok(Some(thread))
     }
-
-    async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
-        self.purge_dead(|_| true)
-    }
-
-    async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, DispatchError> {
-        self.purge_dead(|row| row.dead_lettered_at.is_some_and(|at| at <= cutoff_ms))
-    }
-
-    fn control(&self) -> Option<&dyn ControlDispatchQueue> {
-        Some(self)
-    }
 }
 
 #[async_trait]
-impl ControlDispatchQueue for MemoryDispatchStore {
+impl awaken_dispatch_contract::DispatchAttemptControl for MemoryDispatchStore {
     async fn finish_attempt_closure(
         &self,
         claim: &RunClaim,
@@ -1576,7 +1594,10 @@ impl ControlDispatchQueue for MemoryDispatchStore {
     ) -> Result<AttemptAdmission, DispatchError> {
         crate::application::admit_with_incarnation_guard(self, claim, binding, guard, handoff).await
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::DispatchControlReads for MemoryDispatchStore {
     async fn current_credential_binding(
         &self,
         claim: &RunClaim,
@@ -1589,14 +1610,88 @@ impl ControlDispatchQueue for MemoryDispatchStore {
         ))
     }
 
-    async fn lock_session_run_reservation_epoch(
-        &self,
-        claim: &RunClaim,
-    ) -> Result<Option<CommitEpochGuard>, DispatchError> {
-        self.lock_claim_epoch_in_state(claim, DispatchState::ReservationLeased)
-            .await
+    async fn dispatch_depths(&self) -> Result<Option<DispatchDepths>, DispatchError> {
+        let now_ms = self.clock.now_ms();
+        let state = lock(&self.state)?;
+        let mut depths = DispatchDepths {
+            runnable: 0,
+            leased: 0,
+        };
+        for (run_id, row) in &state.rows {
+            if runnable(&state, run_id, now_ms).is_some() {
+                depths.runnable += 1;
+            } else if matches!(
+                row.state,
+                DispatchState::ReservationLeased | DispatchState::Leased
+            ) && row
+                .lease
+                .as_ref()
+                .is_some_and(|lease| lease.expires_ms() > now_ms)
+            {
+                depths.leased += 1;
+            }
+        }
+        Ok(Some(depths))
     }
 
+    async fn load_physical_attempt(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<PhysicalAttempt>, DispatchError> {
+        let state = lock(&self.state)?;
+        Ok(state.rows.get(run_id).and_then(|row| {
+            row.active_attempt.as_ref().map(|claim| PhysicalAttempt {
+                claim: claim.clone(),
+                binding: row.active_attempt_binding.clone(),
+                thread_id: Some(row.request.thread_id().clone()),
+                session_thread_id: row.request.session_thread_id.clone(),
+                closing: row.active_attempt_closing,
+            })
+        }))
+    }
+
+    async fn completion_events_after(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
+        let state = lock(&self.state)?;
+        Ok(state
+            .completions
+            .iter()
+            .filter(|completion| completion.sequence > after_sequence)
+            .take(limit)
+            .cloned()
+            .collect())
+    }
+
+    async fn scan_dispatch_ids(
+        &self,
+        after: Option<&RunId>,
+        limit: usize,
+    ) -> Result<Vec<RunId>, DispatchError> {
+        let state = lock(&self.state)?;
+        Ok(state
+            .rows
+            .range((after.map_or(Unbounded, Excluded), Unbounded))
+            .take(limit)
+            .map(|(run_id, _)| run_id.clone())
+            .collect())
+    }
+
+    async fn dispatch_summary(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<DispatchSummary>, DispatchError> {
+        Ok(lock(&self.state)?
+            .rows
+            .get(run_id)
+            .map(|row| row.summary(run_id)))
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::SessionRunReservations for MemoryDispatchStore {
     async fn reserve_session_run(
         &self,
         request: RunDispatch,
@@ -1716,7 +1811,21 @@ impl ControlDispatchQueue for MemoryDispatchStore {
         )?;
         enqueue_with_local(&mut state, request, SubmitOptions::default())
     }
+}
 
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::SessionReservationAuthority for MemoryDispatchStore {
+    async fn lock_session_run_reservation_epoch(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<CommitEpochGuard>, DispatchError> {
+        self.lock_claim_epoch_in_state(claim, DispatchState::ReservationLeased)
+            .await
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::DispatchControlClaims for MemoryDispatchStore {
     async fn claim_placed(
         &self,
         requester: &WorkerSnapshot,
@@ -1808,85 +1917,6 @@ impl ControlDispatchQueue for MemoryDispatchStore {
             ExactClaimMode::TerminalRecovery,
         )
     }
-
-    async fn dispatch_depths(&self) -> Result<Option<DispatchDepths>, DispatchError> {
-        let now_ms = self.clock.now_ms();
-        let state = lock(&self.state)?;
-        let mut depths = DispatchDepths {
-            runnable: 0,
-            leased: 0,
-        };
-        for (run_id, row) in &state.rows {
-            if runnable(&state, run_id, now_ms).is_some() {
-                depths.runnable += 1;
-            } else if matches!(
-                row.state,
-                DispatchState::ReservationLeased | DispatchState::Leased
-            ) && row
-                .lease
-                .as_ref()
-                .is_some_and(|lease| lease.expires_ms() > now_ms)
-            {
-                depths.leased += 1;
-            }
-        }
-        Ok(Some(depths))
-    }
-
-    async fn load_physical_attempt(
-        &self,
-        run_id: &RunId,
-    ) -> Result<Option<PhysicalAttempt>, DispatchError> {
-        let state = lock(&self.state)?;
-        Ok(state.rows.get(run_id).and_then(|row| {
-            row.active_attempt.as_ref().map(|claim| PhysicalAttempt {
-                claim: claim.clone(),
-                binding: row.active_attempt_binding.clone(),
-                thread_id: Some(row.request.thread_id().clone()),
-                session_thread_id: row.request.session_thread_id.clone(),
-                closing: row.active_attempt_closing,
-            })
-        }))
-    }
-
-    async fn completion_events_after(
-        &self,
-        after_sequence: u64,
-        limit: usize,
-    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
-        let state = lock(&self.state)?;
-        Ok(state
-            .completions
-            .iter()
-            .filter(|completion| completion.sequence > after_sequence)
-            .take(limit)
-            .cloned()
-            .collect())
-    }
-
-    async fn scan_dispatch_ids(
-        &self,
-        after: Option<&RunId>,
-        limit: usize,
-    ) -> Result<Vec<RunId>, DispatchError> {
-        let state = lock(&self.state)?;
-        Ok(state
-            .rows
-            .range((after.map_or(Unbounded, Excluded), Unbounded))
-            .take(limit)
-            .map(|(run_id, _)| run_id.clone())
-            .collect())
-    }
-
-    async fn dispatch_summary(
-        &self,
-        run_id: &RunId,
-    ) -> Result<Option<DispatchSummary>, DispatchError> {
-        Ok(lock(&self.state)?
-            .rows
-            .get(run_id)
-            .map(|row| row.summary(run_id)))
-    }
 }
 
 #[async_trait]
@@ -1914,3 +1944,5 @@ impl DispatchOperationalFeed for MemoryDispatchStore {
         })
     }
 }
+
+use awaken_dispatch_contract::DispatchCommitAuthority as _;

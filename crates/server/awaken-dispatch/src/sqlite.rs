@@ -12,7 +12,6 @@
 //! operation holds the store's one sqlx connection (ADR-0087) for its whole span.
 
 use crate::dispatch::{no_running_peer, thread_available_for_claim};
-use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -30,23 +29,22 @@ use crate::dispatch::{
     AttemptAdmission, AttemptCredentialBinding, AttemptExecutionBinding, CasOutcome,
     ClaimEpochStorageRow, Claimed, CommitEpochGuard, ContinuationAdmission,
     CredentialRealizationPersistenceDecision, CredentialRealizationReceipt, DispatchCompletion,
-    DispatchDepths, DispatchError, DispatchLease, DispatchOutcome, DispatchQueue, DispatchState,
-    DispatchSummary, ExactClaimMode, Inbox, LeaseRenewalOutcome, Outbox, PendingInput,
-    PendingInputSettlementPlan, PendingRecord, PhysicalAttempt, RunClaim, RunIdentityDecision,
-    SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
-    SessionRunReservationResolution, SettleOutcome, StoredRunIdentity, SubmitOptions,
-    can_admit_claim_credentials, claim_credential_operation, claim_with_frozen,
-    classify_completed_session_run_reservation, classify_exact_claim_mode,
-    classify_live_session_run_reservation, classify_session_run_reservation_activation,
-    compile_claim_credential_bindings, credential_realization_persistence_decision,
-    decide_lease_renewal, decide_run_identity, ensure_session_child_capacity,
-    installed_worker_credential_capabilities, normalize_pending_millis,
-    pending_input_settlement_plan, retry_exhaustion_evidence_is_eligible, session_child_parent,
-    session_child_thread, validate_executable_dispatch_admission, validate_outbox_continuation,
-    validate_session_resume_activity_transition, validate_session_resume_evidence,
-    validate_session_resume_target, validate_session_run_replacement_candidates,
-    validate_session_run_reservation_request, validate_session_run_reservation_resolution,
-    verify_credential_realization_receipt,
+    DispatchDepths, DispatchError, DispatchLease, DispatchOutcome, DispatchState, DispatchSummary,
+    ExactClaimMode, Inbox, LeaseRenewalOutcome, Outbox, PendingInput, PendingInputSettlementPlan,
+    PendingRecord, PhysicalAttempt, RunClaim, RunIdentityDecision, SessionChildAdmission,
+    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
+    SettleOutcome, StoredRunIdentity, SubmitOptions, can_admit_claim_credentials,
+    claim_credential_operation, claim_with_frozen, classify_completed_session_run_reservation,
+    classify_exact_claim_mode, classify_live_session_run_reservation,
+    classify_session_run_reservation_activation, compile_claim_credential_bindings,
+    credential_realization_persistence_decision, decide_lease_renewal, decide_run_identity,
+    ensure_session_child_capacity, installed_worker_credential_capabilities,
+    normalize_pending_millis, pending_input_settlement_plan, retry_exhaustion_evidence_is_eligible,
+    session_child_parent, session_child_thread, validate_executable_dispatch_admission,
+    validate_outbox_continuation, validate_session_resume_activity_transition,
+    validate_session_resume_evidence, validate_session_resume_target,
+    validate_session_run_replacement_candidates, validate_session_run_reservation_request,
+    validate_session_run_reservation_resolution, verify_credential_realization_receipt,
 };
 use crate::dispatch_schema::{
     BUNDLE_ID, CONVERGED_BUNDLE_ID, selected_converged_dispatch_bundle, selected_dispatch_bundle,

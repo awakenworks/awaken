@@ -670,8 +670,6 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     let follow_up_admission =
         || ContinuationAdmission::SessionChild(SessionChildAdmission::new(24, Vec::new()));
     dispatch
-        .session_continuation()
-        .expect("CR5 Coordinator continuation capability")
         .relay_and_enqueue(
             follow_up_input.clone(),
             follow_up_request.clone(),
@@ -680,8 +678,6 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         .await
         .expect("CR5 admit fresh ExistingThread follow-up");
     dispatch
-        .session_continuation()
-        .expect("CR6 Coordinator continuation capability")
         .relay_and_enqueue(
             follow_up_input.clone(),
             follow_up_request.clone(),
@@ -696,8 +692,6 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     };
     assert!(
         dispatch
-            .session_continuation()
-            .expect("CR6 Coordinator continuation capability")
             .relay_and_enqueue(
                 changed_follow_up,
                 follow_up_request.clone(),
@@ -1982,8 +1976,6 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn durable_client_result_settles_the_authoritative_dispatch() {
-    use awaken_dispatch_contract::DispatchQueue as _;
-
     async fn bounded_stage<T>(
         stage: &'static str,
         future: impl std::future::Future<Output = T>,
@@ -2078,8 +2070,6 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn coordinator_only_foreground_admission_survives_request_drop_without_a_pool() {
-    use awaken_dispatch_contract::DispatchQueue as _;
-
     // Causes: C1 durable dispatch is installed; C2 this Coordinator owns no
     // local pool; C3 the foreground request is dropped before a remote Worker
     // claims. Effects: E1 one row is committed to the same DispatchStore;
@@ -2246,8 +2236,6 @@ async fn supersede_run_without_durable_ingress_fails_closed() {
 
 #[tokio::test]
 async fn managed_session_root_rejects_legacy_host_run_ingress() {
-    use awaken_dispatch_contract::DispatchQueue as _;
-
     // Cause/effect graph: C1 the Thread is marked as a Managed Session root;
     // C2 a caller selects ordinary or superseding Host Run ingress. Effects:
     // E1 both commands fail as bad requests before context realization; E2 the
@@ -2289,3 +2277,8 @@ async fn managed_session_root_rejects_legacy_host_run_ingress() {
         "E2"
     );
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaims as _, DispatchEnqueue as _, DispatchReads as _, DispatchSettlement as _,
+    InboxRead as _, SessionContinuationOutbox as _,
+};

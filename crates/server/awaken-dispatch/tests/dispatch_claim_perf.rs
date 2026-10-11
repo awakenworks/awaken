@@ -8,7 +8,7 @@ mod harness;
 
 use std::time::Instant;
 
-use awaken_dispatch::{ControlDispatchQueue, DispatchQueue, PostgresDispatchStore, RunDispatch};
+use awaken_dispatch::{PostgresDispatchStore, RunDispatch};
 use sqlx::types::Json;
 
 // The schemas isolate rows, not CPU/IO/WAL. All scenarios in this binary share
@@ -376,3 +376,7 @@ async fn concurrent_incompatible_front_claim_throughput() {
         );
     }
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _,
+};

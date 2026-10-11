@@ -9,7 +9,7 @@
 //!
 //! Two aggregates, per the run-ingress DDD split:
 //!
-//! - [`DispatchQueue`] owns *delivery opportunity* — enqueue, single-owner claim,
+//! - [`DispatchEnqueue`] and [`DispatchClaims`] owns *delivery opportunity* — enqueue, single-owner claim,
 //!   lease, settle, and lease-expiry recovery. It never owns message payload
 //!   truth or a run's outcome; those are the thread and run aggregates, read back
 //!   from committed facts.
@@ -1038,7 +1038,7 @@ mod tests {
         assert_eq!(back.sandbox, None);
     }
 
-    /// A `DispatchQueue` that records the options its `enqueue_with` was called with,
+    /// An enqueue adapter that records the options its `enqueue_with` was called with,
     /// to prove the default `enqueue` delegates at `SubmitOptions::default()` and that
     /// `bind_sandbox` defaults to a no-op `Ok(())`. Every other method fails with an
     /// explicit typed error, so extending the test cannot introduce a panic path.
@@ -1056,23 +1056,8 @@ mod tests {
     }
 
     #[async_trait]
-    impl DispatchQueue for CapturingQueue {
+    impl crate::DispatchExecution for CapturingQueue {
         async fn close_attempt(&self, _claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
-            Self::unsupported()
-        }
-        async fn resolve_claimed_session_run_reservation(
-            &self,
-            _claim: &RunClaim,
-            _resolution: SessionRunReservationResolution,
-        ) -> Result<SettleOutcome, DispatchError> {
-            Self::unsupported()
-        }
-
-        async fn worker_owns_run(
-            &self,
-            _identity: &WorkerIdentity,
-            _run_id: &RunId,
-        ) -> Result<Option<RunClaim>, DispatchError> {
             Self::unsupported()
         }
 
@@ -1084,20 +1069,57 @@ mod tests {
             Self::unsupported()
         }
 
-        async fn lock_commit_epoch(
+        async fn begin_attempt(
             &self,
             _claim: &RunClaim,
-        ) -> Result<Option<CommitEpochGuard>, DispatchError> {
+            _binding: Option<&AttemptExecutionBinding>,
+        ) -> Result<AttemptAdmission, DispatchError> {
             Self::unsupported()
         }
 
-        async fn enqueue_with(
+        async fn handoff_attempt(
             &self,
-            _request: RunDispatch,
-            options: SubmitOptions,
-        ) -> Result<(), DispatchError> {
-            *self.last_options.lock().unwrap() = Some(options);
-            Ok(())
+            _claim: &RunClaim,
+            _binding: Option<&AttemptExecutionBinding>,
+        ) -> Result<AttemptAdmission, DispatchError> {
+            Self::unsupported()
+        }
+
+        async fn finish_attempt(&self, _claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+            Self::unsupported()
+        }
+
+        async fn relinquish_claim(
+            &self,
+            _claim: &RunClaim,
+        ) -> Result<SettleOutcome, DispatchError> {
+            Self::unsupported()
+        }
+
+        async fn defer_claim(
+            &self,
+            _claim: &RunClaim,
+            _retry_after_ms: u64,
+        ) -> Result<SettleOutcome, DispatchError> {
+            Self::unsupported()
+        }
+        async fn renew_lease(
+            &self,
+            _claim: &RunClaim,
+            _lease_ms: u64,
+        ) -> Result<LeaseRenewalOutcome, DispatchError> {
+            Self::unsupported()
+        }
+    }
+
+    #[async_trait]
+    impl crate::DispatchClaims for CapturingQueue {
+        async fn resolve_claimed_session_run_reservation(
+            &self,
+            _claim: &RunClaim,
+            _resolution: SessionRunReservationResolution,
+        ) -> Result<SettleOutcome, DispatchError> {
+            Self::unsupported()
         }
         async fn claim_new_run(
             &self,
@@ -1175,51 +1197,47 @@ mod tests {
         ) -> Result<Option<Claimed>, DispatchError> {
             Self::unsupported()
         }
+    }
 
-        async fn begin_attempt(
+    #[async_trait]
+    impl crate::DispatchCommitAuthority for CapturingQueue {
+        async fn worker_owns_run(
             &self,
-            _claim: &RunClaim,
-            _binding: Option<&AttemptExecutionBinding>,
-        ) -> Result<AttemptAdmission, DispatchError> {
-            Self::unsupported()
-        }
-
-        async fn handoff_attempt(
-            &self,
-            _claim: &RunClaim,
-            _binding: Option<&AttemptExecutionBinding>,
-        ) -> Result<AttemptAdmission, DispatchError> {
+            _identity: &WorkerIdentity,
+            _run_id: &RunId,
+        ) -> Result<Option<RunClaim>, DispatchError> {
             Self::unsupported()
         }
 
-        async fn finish_attempt(&self, _claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+        async fn lock_commit_epoch(
+            &self,
+            _claim: &RunClaim,
+        ) -> Result<Option<CommitEpochGuard>, DispatchError> {
             Self::unsupported()
         }
+    }
 
-        async fn relinquish_claim(
+    #[async_trait]
+    impl crate::DispatchEnqueue for CapturingQueue {
+        async fn enqueue_with(
             &self,
-            _claim: &RunClaim,
-        ) -> Result<SettleOutcome, DispatchError> {
-            Self::unsupported()
+            _request: RunDispatch,
+            options: SubmitOptions,
+        ) -> Result<(), DispatchError> {
+            *self.last_options.lock().unwrap() = Some(options);
+            Ok(())
         }
+    }
 
-        async fn defer_claim(
-            &self,
-            _claim: &RunClaim,
-            _retry_after_ms: u64,
-        ) -> Result<SettleOutcome, DispatchError> {
-            Self::unsupported()
-        }
-        async fn renew_lease(
-            &self,
-            _claim: &RunClaim,
-            _lease_ms: u64,
-        ) -> Result<LeaseRenewalOutcome, DispatchError> {
-            Self::unsupported()
-        }
+    #[async_trait]
+    impl crate::DispatchClaimOwnership for CapturingQueue {
         async fn claim_is_current(&self, _claim: &RunClaim) -> Result<bool, DispatchError> {
             Self::unsupported()
         }
+    }
+
+    #[async_trait]
+    impl crate::DispatchSettlement for CapturingQueue {
         async fn settle(
             &self,
             _run_id: &RunId,
@@ -1229,22 +1247,24 @@ mod tests {
         ) -> Result<SettleOutcome, DispatchError> {
             Self::unsupported()
         }
+    }
+
+    #[async_trait]
+    impl crate::DispatchMaintenance for CapturingQueue {
         async fn quarantine_retry_exhausted(&self, _: u64, _: u64) -> Result<usize, DispatchError> {
-            Self::unsupported()
-        }
-        async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
-            Self::unsupported()
-        }
-        async fn requeue(&self, _run_id: &RunId) -> Result<bool, DispatchError> {
-            Self::unsupported()
-        }
-        async fn cancel(&self, _run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
             Self::unsupported()
         }
         async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
             Self::unsupported()
         }
         async fn purge_dead_letters_before(&self, _cutoff_ms: u64) -> Result<usize, DispatchError> {
+            Self::unsupported()
+        }
+    }
+
+    #[async_trait]
+    impl crate::DispatchReads for CapturingQueue {
+        async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
             Self::unsupported()
         }
         async fn superseded(&self) -> Result<Vec<RunId>, DispatchError> {
@@ -1255,20 +1275,23 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl crate::DispatchAdministration for CapturingQueue {
+        async fn requeue(&self, _run_id: &RunId) -> Result<bool, DispatchError> {
+            Self::unsupported()
+        }
+        async fn cancel(&self, _run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
+            Self::unsupported()
+        }
+    }
+
     #[test]
     fn worker_side_queue_has_no_control_rung() {
-        // Cause/effect rules: L1 a queue that does not own the Control-side
-        // rung answers `control()` with None, so bounded identity reads,
-        // reservations and placement claims are unreachable from a Worker
-        // handle at the type level instead of failing at the effect; L2 a
-        // queue that owns the rung answers Some(self) and the Control suite
-        // (`awaken-dispatch-testkit`) checks its bounded reads never fall
-        // back to a full scan.
+        // A narrow caller can receive only enqueue authority. Local ownership
+        // is absent from this projection; negative type examples in the erasure
+        // crate establish that a Worker view cannot supply Coordinator roles.
         let q = CapturingQueue::default();
-        assert!(
-            q.control().is_none(),
-            "L1 no Control rung on a capturing queue"
-        );
+        let _: &dyn DispatchEnqueue = &q;
     }
 
     #[tokio::test]

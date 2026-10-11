@@ -71,7 +71,7 @@ fn projected_dispatch(ns: &str, run: &str, environment_id: &str, published: bool
 /// | U6 | legacy tombstone | current, same command | replay |
 /// | U7 | legacy tombstone | current, different projection | conflict |
 async fn upgrade_window_retry_replays_rows_written_before_typed_requirements(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {

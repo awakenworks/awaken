@@ -9,7 +9,7 @@ use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_resource_contract::{
     FileContentSource, FileContentSourceError, FileReadPurpose, ResolvedFileContent, content_id,
 };
-use awaken_dispatch_contract::DispatchQueue;
+use awaken_dispatch_contract::DispatchCommitAuthority;
 use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{
@@ -53,7 +53,7 @@ struct FileContentMetadata {
 
 pub struct WorkerFileContentService {
     source: Arc<dyn FileContentSource<ResourceOperationFence>>,
-    dispatch: Arc<dyn DispatchQueue>,
+    dispatch: Arc<dyn DispatchCommitAuthority>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
     session_repository: Option<Arc<dyn awaken_session_repository_contract::SessionRepository>>,
@@ -68,7 +68,7 @@ impl WorkerFileContentService {
     #[must_use]
     pub fn new(
         source: Arc<dyn FileContentSource<ResourceOperationFence>>,
-        dispatch: Arc<dyn DispatchQueue>,
+        dispatch: Arc<dyn DispatchCommitAuthority>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {

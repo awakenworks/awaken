@@ -13,19 +13,6 @@ impl Inbox for MemoryDispatchStore {
         append_pending(&mut state, input)
     }
 
-    async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
-        let state = lock(&self.state)?;
-        Ok(state
-            .pending
-            .iter()
-            .filter(|p| &p.input.thread_id == thread_id)
-            .map(|p| PendingRecord {
-                input: p.input.clone(),
-                revision: p.revision,
-            })
-            .collect())
-    }
-
     async fn retract(
         &self,
         message_id: &str,
@@ -86,9 +73,26 @@ impl Inbox for MemoryDispatchStore {
     }
 }
 
+#[async_trait]
+impl awaken_dispatch_contract::InboxRead for MemoryDispatchStore {
+    async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
+        let state = lock(&self.state)?;
+        Ok(state
+            .pending
+            .iter()
+            .filter(|p| &p.input.thread_id == thread_id)
+            .map(|p| PendingRecord {
+                input: p.input.clone(),
+                revision: p.revision,
+            })
+            .collect())
+    }
+}
+
 #[cfg(test)]
 mod revision_tests {
     use super::*;
+    use awaken_dispatch_contract::InboxRead;
 
     #[tokio::test]
     async fn exhausted_pending_edit_preserves_result_revision_and_retractability() {
