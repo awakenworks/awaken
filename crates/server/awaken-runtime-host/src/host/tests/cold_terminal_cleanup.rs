@@ -488,6 +488,10 @@ async fn cold_terminal_cleanup_never_drives_more_than_four_assignments() {
     // the other three remain blocked; E3 active calls never exceed four and
     // every claimed assignment completes. Rules B1=C1+C2->E1,
     // B2=B1+C3->E2+E3. The gate changes only test I/O timing, not lease truth.
+    // Constraint: the fixture publishes poll arrival and active/max counters
+    // under the same arrival lock. Observing the fifth arrival must imply its
+    // active increment; observing four active calls must wait for their arrivals
+    // through that lock. Neither assertion may sample between those events.
     let control = Arc::new(RemoteTerminalCleanupControl::default());
     let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
         .await

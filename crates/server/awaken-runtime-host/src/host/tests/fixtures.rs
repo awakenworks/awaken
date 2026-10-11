@@ -453,14 +453,15 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue
         awaken_session_realization_contract::SessionRealizationControlFailure,
     > {
         self.events.lock().unwrap().push("cleanup:poll".into());
-        self.terminal_work_seen
-            .lock()
-            .unwrap()
-            .push(session_id.to_string());
-        let active = self.terminal_work_active.fetch_add(1, Ordering::SeqCst) + 1;
-        let _active = ActiveControlCallGuard(&self.terminal_work_active);
-        self.max_terminal_work_active
-            .fetch_max(active, Ordering::SeqCst);
+        let _active = {
+            let mut seen = self.terminal_work_seen.lock().unwrap();
+            let active = self.terminal_work_active.fetch_add(1, Ordering::SeqCst) + 1;
+            let guard = ActiveControlCallGuard(&self.terminal_work_active);
+            self.max_terminal_work_active
+                .fetch_max(active, Ordering::SeqCst);
+            seen.push(session_id.to_string());
+            guard
+        };
         let gate = self.terminal_work_gate.lock().unwrap().clone();
         if let Some(gate) = gate {
             gate.acquire_owned()
