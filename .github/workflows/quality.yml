@@ -96,6 +96,7 @@ jobs:
           path: |
             target/test-timings/
             target/cargo-timings/
+            !target/test-timings/build-benchmark-*/round-*-jobs-*/debug/**
           if-no-files-found: error
 
   full_quality:
@@ -196,6 +197,7 @@ jobs:
             target/cargo-timings/
             web/test-results/
             scripts/ci/gate_record.json
+            !target/test-timings/build-benchmark-*/round-*-jobs-*/debug/**
           if-no-files-found: error
 
   performance_summary:

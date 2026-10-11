@@ -246,6 +246,11 @@ and slow cases. Performance telemetry always carries `full_gate: false`.
 Missing CI data remains unavailable rather than borrowing another commit's
 results. A manual `build_benchmark` input runs the representative Resource HTTP
 workload at jobs 1/2 for two rounds with fresh target directories.
+Both observation uploads exclude only the benchmark targets' `debug` payload.
+Results, raw execution/listing logs and Cargo timing HTML stay in the artifact;
+the static performance policy rejects missing exclusions or broader evidence
+removal. Uploading these fresh compiler caches would add gigabytes of avoidable
+artifact compression and transfer to the measurement itself.
 
 ### Ordinary build benchmarks
 

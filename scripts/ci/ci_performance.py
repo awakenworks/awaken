@@ -18,6 +18,29 @@ import urllib.error
 import urllib.request
 
 
+def artifact_policy_errors(workflow):
+    """Keep compiler payload out of observations without dropping gate evidence."""
+    exclusion = '!target/test-timings/build-benchmark-*/round-*-jobs-*/debug/**'
+    common = {'target/test-timings/', 'target/cargo-timings/', exclusion}
+    owners = {
+        'Retain native build and cache observations': common,
+        'Retain exact-SHA quality evidence': common | {'web/test-results/', 'scripts/ci/gate_record.json'},
+    }
+    errors = []
+    for owner, expected in owners.items():
+        blocks = re.findall(r'^      - name: ' + re.escape(owner) +
+                            r'\n(.*?)(?=^      - |^  [A-Za-z_]+:|\Z)', workflow, re.MULTILINE | re.DOTALL)
+        if len(blocks) != 1:
+            errors.append(owner + ': missing or duplicate observation upload')
+            continue
+        paths = re.findall(r'^          path: \|\n((?:^            [^\n]+\n)+)', blocks[0], re.MULTILINE)
+        actual = paths[0].splitlines() if len(paths) == 1 else []
+        actual = [path.strip() for path in actual]
+        if set(actual) != expected or len(actual) != len(expected):
+            errors.append(owner + ': retain raw evidence and exclude only benchmark debug payload')
+    return errors
+
+
 def seconds(start, end):
     if start is None or end is None:
         return None
@@ -206,7 +229,7 @@ def write_report(data, output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument('mode', choices=('report', 'cache', 'github'), nargs='?', default='report')
+    parser.add_argument('mode', choices=('report', 'cache', 'github', 'workflow'), nargs='?', default='report')
     parser.add_argument('--root', type=Path, default=Path('target/test-timings'))
     parser.add_argument('--revision', default=os.environ.get('GITHUB_SHA'))
     parser.add_argument('--output', type=Path, default=Path('target/test-timings/performance.json'))
@@ -215,6 +238,12 @@ def main():
     args = parser.parse_args()
     if args.self_test:
         return int(not unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromTestCase(PerformanceTests)).wasSuccessful())
+    if args.mode == 'workflow':
+        errors = artifact_policy_errors(Path('.github/workflows/quality.yml').read_text(encoding='utf-8'))
+        if errors:
+            raise ValueError('; '.join(errors))
+        print('Performance artifact policy: compiler payload excluded; raw gate evidence retained')
+        return 0
     if not args.revision:
         parser.error('--revision or GITHUB_SHA is required')
     if args.mode == 'cache':
@@ -234,6 +263,23 @@ def main():
 
 
 class PerformanceTests(unittest.TestCase):
+    def test_upload_owners_cannot_mask_missing_exclusions_or_lost_evidence(self):
+        workflow = (Path(__file__).resolve().parents[2] / '.github/workflows/quality.yml').read_text(encoding='utf-8')
+        self.assertEqual(artifact_policy_errors(workflow), [])
+        exclusion = '!target/test-timings/build-benchmark-*/round-*-jobs-*/debug/**'
+        # C1 both owners exclude compiler payload, C2 both retain logs and
+        # canonical qualification files. Reject either missing exclusion,
+        # broad evidence deletion, duplicate owner or unrelated lookalike.
+        first = workflow.index(exclusion)
+        for bad in (workflow[:first] + workflow[first:].replace(exclusion, 'removed', 1),
+                    workflow[:first + len(exclusion)] + workflow[first + len(exclusion):].replace(exclusion, 'removed', 1),
+                    workflow.replace(exclusion, '!target/test-timings/**'),
+                    workflow.replace('            scripts/ci/gate_record.json\n', ''),
+                    workflow.replace('Retain native build and cache observations', 'Unrelated cache upload'),
+                    workflow + '\n      - name: Retain exact-SHA quality evidence\n'):
+            with self.subTest(bad=bad[-80:]):
+                self.assertTrue(artifact_policy_errors(bad))
+
     def test_exhausted_footprint_budget_reports_unavailable_size(self):
         with tempfile.TemporaryDirectory() as temporary:
             (Path(temporary) / 'artifact').write_bytes(b'actual contents')
