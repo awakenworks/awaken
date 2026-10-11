@@ -673,9 +673,23 @@ mod tests {
                 .unwrap(),
             crate::MissingHandleTerminalEvidence::ExactIncarnation {
                 container_id: name.clone(),
-                runtime_handle: crate::ContainerContinuationHandle::KubernetesContinuationV2 {
+                runtime_handle: crate::ContainerContinuationHandle::KubernetesContinuationV3 {
                     pod_uid: "old-uid".into(),
                     claim_uid: None,
+                    // J1 reuses the original sealed group's complete successful
+                    // set plus exact old Pod projection. With no successful
+                    // ConfigMap/Secret ticket this is an authoritative empty
+                    // set; no current GET, new ledger or annotation fills it.
+                    participants: Box::new(
+                        crate::kubernetes_handle::KubernetesProjectedParticipants::joined_empty(
+                            "default".into(),
+                            "old-uid".into(),
+                            attempt.as_str().to_owned(),
+                            fence.clone(),
+                            "old-group".into()
+                        )
+                        .unwrap(),
+                    ),
                 },
             },
             "J1"
@@ -806,9 +820,19 @@ mod tests {
         let joined = || vec![claim_ticket.clone(), created.clone()];
         let exact = crate::MissingHandleTerminalEvidence::ExactIncarnation {
             container_id: name.clone(),
-            runtime_handle: crate::ContainerContinuationHandle::KubernetesContinuationV2 {
+            runtime_handle: crate::ContainerContinuationHandle::KubernetesContinuationV3 {
                 pod_uid: "old-uid".into(),
                 claim_uid: Some("claim-uid".into()),
+                participants: Box::new(
+                    crate::kubernetes_handle::KubernetesProjectedParticipants::joined_empty(
+                        "default".into(),
+                        "old-uid".into(),
+                        attempt.as_str().to_owned(),
+                        fence.clone(),
+                        "old-group".into(),
+                    )
+                    .unwrap(),
+                ),
             },
         };
         assert_eq!(

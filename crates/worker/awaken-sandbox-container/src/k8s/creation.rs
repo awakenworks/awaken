@@ -57,6 +57,7 @@ pub(super) async fn prepare(
         continuation::bind_claim_uid(&mut pod, uid);
     }
     runtime.stamp_effect_evidence(&mut pod, context, realization_fingerprint);
+    participants::declare(&mut pod, &runtime_id, plan)?;
     stamp_pod_realization(&mut pod)?;
     let mut created = create_or_verify(&pods, &pod).await?;
     restore::verify_pod_projection(&pod, &created, None)?;
@@ -138,6 +139,16 @@ pub(super) fn verify_interrupted_pod_projection(
         continuation::bind_claim_uid(&mut expected, uid);
     }
     runtime.stamp_effect_evidence(&mut expected, &context, &realization);
+    if observed
+        .metadata
+        .annotations
+        .as_ref()
+        .is_some_and(|values| values.contains_key(participants::DECLARATION))
+    {
+        participants::declare(&mut expected, &runtime_id, plan)?;
+    } else if participants::retained(observed)?.is_some() {
+        return Err(backend("original projected results lack their declaration"));
+    }
     stamp_pod_realization(&mut expected)?;
     restore::verify_pod_projection(&expected, observed, None)
 }
@@ -155,57 +166,16 @@ pub(super) async fn converge(
     realization_fingerprint: &pc::SandboxRealizationFingerprint,
 ) -> Result<(), RuntimeError> {
     let pod = runtime.pods().get(pod_name).await.map_err(backend)?;
-    let pod_owner = Some(pod_owner_reference(&pod, expected_pod_uid)?);
-    let cms = runtime.configmaps();
-    for (index, bind) in content_binds(plan).iter().enumerate() {
-        if crate::live_inputs::manages(bind) {
-            continue;
-        }
-        let mut configmap = build_configmap(
-            runtime_id,
-            index,
-            bind.content.as_deref(),
-            bind.content_bytes.as_deref(),
-            &pod_owner,
-        );
-        runtime.stamp_effect_evidence(&mut configmap, context, realization_fingerprint);
-        stamp_realization(&mut configmap)?;
-        if let Some(effect_fence) = context.effect_fence {
-            runtime.validate_effect_fence(effect_fence)?;
-        }
-        let configmap = create_or_verify(&cms, &configmap).await?;
-        verify_projected_content(
-            &configmap.metadata,
-            pod_name,
-            expected_pod_uid,
-            context.attempt.as_str(),
-        )?;
-    }
-    let secrets = runtime.secrets();
-    for (index, bind) in credential_binds(plan).iter().enumerate() {
-        let mut secret = build_credential_secret(
-            runtime_id,
-            index,
-            credential_key(bind),
-            bind.secret_content
-                .as_ref()
-                .expect("credential bind has secret bytes")
-                .expose(),
-            &pod_owner,
-        );
-        runtime.stamp_effect_evidence(&mut secret, context, realization_fingerprint);
-        stamp_realization(&mut secret)?;
-        if let Some(effect_fence) = context.effect_fence {
-            runtime.validate_effect_fence(effect_fence)?;
-        }
-        let secret = create_or_verify(&secrets, &secret).await?;
-        verify_projected_content(
-            &secret.metadata,
-            pod_name,
-            expected_pod_uid,
-            context.attempt.as_str(),
-        )?;
-    }
+    pod_owner_reference(&pod, expected_pod_uid)?;
+    participants::realize(
+        runtime,
+        pod,
+        runtime_id,
+        plan,
+        Some((context, realization_fingerprint)),
+        None,
+    )
+    .await?;
     let wait = runtime.unschedulable_wait;
     let pods = runtime.pods();
     let ready = realization::await_pod_ready(&pods, pod_name, wait, runtime.clock.as_ref());
@@ -282,13 +252,17 @@ pub(super) async fn dispose_unscheduled_pod(
     else {
         return Ok(());
     };
+    let projected = participants::retained(&pod)?
+        .ok_or_else(|| backend("unscheduled Pod has no original projected-object set"))?;
+    participants::finish_projected(runtime, &projected, name, true, admit).await?;
     runtime
         .begin_exact_pod_delete(&pod, uid, &version, Some(attempt), admit)
         .await?;
     if create_ledger::original_guard_release_required(Some(&pod), true)? {
         create_ledger::release_original_guard(&runtime.pods(), name, uid, admit).await?;
     }
-    runtime.await_exact_pod_deleted(name, uid, admit).await
+    runtime.await_exact_pod_deleted(name, uid, admit).await?;
+    participants::finish_projected(runtime, &projected, name, false, admit).await
 }
 
 /// Realize or adopt the one exact checkpoint-restore target. Ordinary
@@ -337,36 +311,16 @@ pub(super) async fn restore_or_adopt(
         .map(|outcome| continuation::claim_uid(&outcome.object))
         .transpose()?;
 
-    let cms = runtime.configmaps();
-    for (index, bind) in content_binds(plan).iter().enumerate() {
-        if crate::live_inputs::manages(bind) {
-            continue;
-        }
-        let mut configmap = build_configmap(
-            &runtime_id,
-            index,
-            bind.content.as_deref(),
-            bind.content_bytes.as_deref(),
-            &runtime.owner,
-        );
-        stamp_realization(&mut configmap)?;
-        create_or_verify(&cms, &configmap).await?;
-    }
-    let secrets = runtime.secrets();
-    for (index, bind) in credential_binds(plan).iter().enumerate() {
-        let mut secret = build_credential_secret(
-            &runtime_id,
-            index,
-            credential_key(bind),
-            bind.secret_content
-                .as_ref()
-                .expect("credential bind has secret bytes")
-                .expose(),
-            &runtime.owner,
-        );
-        stamp_realization(&mut secret)?;
-        create_or_verify(&secrets, &secret).await?;
-    }
+    let projected = participants::create_objects(
+        runtime,
+        &runtime_id,
+        plan,
+        &runtime.owner,
+        None,
+        Some((evidence, plan_fingerprint)),
+        &|| Ok(()),
+    )
+    .await?;
 
     let mut pod = runtime.pod(&runtime_id, plan);
     stamp_sandbox_release_annotations(&mut pod, id, &plan.image);
@@ -375,6 +329,7 @@ pub(super) async fn restore_or_adopt(
     }
     realization::stamp_restoration(&mut pod, evidence);
     realization::stamp_restoration_plan(&mut pod, plan_fingerprint);
+    participants::declare(&mut pod, &runtime_id, plan)?;
     stamp_pod_realization(&mut pod)?;
     let outcome = realization::create_or_verify_with_status_exact(
         &runtime.pods(),
@@ -394,13 +349,31 @@ pub(super) async fn restore_or_adopt(
         .uid
         .clone()
         .ok_or_else(|| backend("created restore Pod has no UID"))?;
-    realization::transfer_runtime_owner(
-        &runtime.pods(),
-        outcome.object,
+    let projected = crate::kubernetes_handle::KubernetesProjectedParticipants::new(
+        runtime.namespace.clone(),
+        pod_uid.clone(),
+        projected,
+        None,
+        Some((evidence.clone(), plan_fingerprint.to_owned())),
+    )
+    .map_err(backend)?;
+    participants::publish(
+        runtime,
+        outcome.object.clone(),
         &pod_uid,
-        &runtime.owner_id,
+        &projected,
+        &|| Ok(()),
     )
     .await?;
+    let published = runtime.pods().get(&name).await.map_err(backend)?;
+    realization::verify_restoration(&published, evidence)?;
+    if realization::restoration_plan_fingerprint(&published) != Some(plan_fingerprint) {
+        return Err(backend(
+            "restore projected-object CAS changed its original operation",
+        ));
+    }
+    realization::transfer_runtime_owner(&runtime.pods(), published, &pod_uid, &runtime.owner_id)
+        .await?;
     let wait = runtime.unschedulable_wait;
     realization::await_pod_ready(&runtime.pods(), &name, wait, runtime.clock.as_ref()).await?;
     live_inputs::project_manifest(runtime, &name, plan).await?;

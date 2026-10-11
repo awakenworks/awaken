@@ -11,6 +11,474 @@ use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Notify, Semaphore};
 
+#[tokio::test]
+async fn original_joined_empty_runs_the_provider_terminal_protocol_but_never_adopts_for_execution()
+{
+    // JE1: old immutable Pod has no new handoff, original broker group is
+    // sealed/Complete with exactly its Pod UID, and frozen plan is narrow empty.
+    // Actual provider preparation -> caller-authorized preparation receipt ->
+    // disposal must remove that exact Pod. JE2: the same terminal-only carrier
+    // cannot adopt for ordinary work or start an exec, while UID queries remain
+    // available to the cleanup protocol. The fixture mocks the trusted original
+    // Complete group; it does not qualify a real Registry exit or cluster.
+    use crate::k8s::{K8sCreateRequest, K8sCreateResponse, K8sCreateTransport};
+    use awaken_container_contract::{ContainerEnvironmentAdoption, ContainerEnvironmentProvider};
+    struct OriginalGroup(Vec<CreateTicket>);
+    #[async_trait::async_trait]
+    impl K8sCreateTransport for OriginalGroup {
+        async fn create(
+            &self,
+            _request: K8sCreateRequest,
+        ) -> Result<K8sCreateResponse, RuntimeError> {
+            panic!("terminal protocol cannot Create");
+        }
+        async fn seal_predecessor(
+            &self,
+            _scope: &str,
+            _fence: &ContainerEffectFence,
+            _name: &str,
+        ) -> Result<RequestJoin, RuntimeError> {
+            Ok(RequestJoin::Complete(self.0.clone()))
+        }
+    }
+    let (runtime, state, _, _, server) = fixture(0, false).await;
+    let mut spec = crate::tests::spec("joined-provider");
+    spec.mounts.clear();
+    spec.env.clear();
+    spec.filesystem_continuity = pc::FilesystemContinuity::Ephemeral;
+    spec.control_services.clear();
+    // This original fixture is a Kubernetes-supported demand. PID isolation
+    // refusal remains independently covered by the runtime admission table.
+    spec.limits.pids = None;
+    let clock = awaken_time::system_clock();
+    let image = "joined-provider-image";
+    let plan = crate::container_plan_with_allowlist(
+        &spec,
+        image,
+        &crate::environment_keepalive_command(),
+        None,
+        None,
+        Some(&clock),
+    )
+    .unwrap();
+    let original_name = pod_name(&runtime.realization_runtime_id(&spec.scope).unwrap());
+    let ticket = CreateTicket {
+        request: CreateTicketRequest::new(
+            "old-group",
+            "pods",
+            "default",
+            &original_name,
+            "a".repeat(64),
+        )
+        .unwrap(),
+        status: TicketStatus::Finished(TicketResult::Created {
+            uid: "pod-uid".into(),
+        }),
+        origin: Default::default(),
+        isolation_id: String::new(),
+        isolation_pending: false,
+    };
+    let runtime = runtime
+        .with_create_transport(Arc::new(OriginalGroup(vec![ticket])))
+        .unwrap();
+    let fingerprint = crate::runtime::container_adoption_fingerprint(
+        &spec,
+        &plan,
+        None,
+        &runtime.realization_configuration().unwrap(),
+    );
+    let realization =
+        crate::runtime::container_realization_fingerprint(&spec, &fingerprint, &plan.image);
+    let create =
+        pc::SandboxEffectFence::new("create", "old-owner", "old-boot", 1, u64::MAX - 1).unwrap();
+    let terminal =
+        pc::SandboxEffectFence::new("cleanup", "old-owner", "old-boot", 2, u64::MAX - 1).unwrap();
+    let attempt = ContainerCreateAttempt::new("original-attempt");
+    let intent = ContainerRealizationIntent::Create;
+    let context = ContainerRealizationContext::new(
+        &spec.scope,
+        &fingerprint,
+        Some(&create),
+        &intent,
+        &attempt,
+    );
+    let id = runtime.realization_runtime_id(&spec.scope).unwrap();
+    let mut original = runtime.pod_for_effect(&id, &plan, Some(&create));
+    crate::k8s_package_realization::stamp_sandbox_release_annotations(
+        &mut original,
+        &spec.scope,
+        &plan.image,
+    );
+    runtime.stamp_effect_evidence(&mut original, &context, &realization);
+    stamp_pod_realization(&mut original).unwrap(); // exact original historical producer shape
+    original.metadata.uid = Some("pod-uid".into());
+    original.metadata.resource_version = Some("1".into());
+    original.metadata.namespace = Some("default".into());
+    original.status = Some(serde_json::from_value(json!({"phase":"Succeeded"})).unwrap());
+    assert_eq!(
+        original.metadata.name.as_deref(),
+        Some(original_name.as_str())
+    );
+    {
+        let mut state = state.lock().unwrap();
+        state.pod = Some(original);
+        state.claim = None;
+        state.projected.clear();
+    }
+    let provider = crate::ContainerProvider::new(Arc::new(runtime), image).with_clock(clock);
+    let authority = EffectAuthority::new(&terminal);
+    let environment = provider
+        .prepare_terminal_environment_for_effect(&spec, None, Some(&create), &terminal, &authority)
+        .await
+        .unwrap()
+        .expect("JE1 original joined Pod is retained for terminal cleanup");
+    let handle = environment.handle();
+    assert_eq!(
+        provider.physical_incarnation(&handle).unwrap(),
+        "pod-uid",
+        "physical fact is not execution authority"
+    );
+    assert!(
+        provider
+            .adopt_unattached_environment(ContainerEnvironmentAdoption::new(&spec, &handle))
+            .await
+            .is_err(),
+        "JE2 ordinary adoption"
+    );
+    assert!(
+        environment.spawn(pc::Command::new(["true"])).await.is_err(),
+        "JE2 no Session exec"
+    );
+    let prepared = environment
+        .prepare_disposal_for_effect(&terminal, &authority)
+        .await
+        .unwrap();
+    let prepared = pc::SandboxDisposalPreparation::new(
+        prepared,
+        handle.realization_fingerprint().unwrap().as_str(),
+    )
+    .unwrap();
+    // JE3: the existing preparation law rejects the old operation id. The
+    // caller derives the disposal identity from this same durable preparation,
+    // preserving holder/epoch/expiry; no fresh unrelated receipt is invented.
+    assert!(
+        prepared.authorize(terminal.clone()).is_err(),
+        "JE3 wrong operation cannot authorize disposal"
+    );
+    let source = prepared.prepared_effect_fence();
+    let current = pc::SandboxEffectFence::new(
+        prepared.operation_id().unwrap(),
+        source.owner(),
+        source.runtime_incarnation(),
+        source.epoch(),
+        source.expires_at_unix_ms(),
+    )
+    .unwrap();
+    let authority = EffectAuthority::new(&current);
+    let authorization = prepared.authorize(current).unwrap();
+    environment
+        .dispose_for_effect(&authorization, &authority)
+        .await
+        .unwrap();
+    assert!(
+        state.lock().unwrap().pod.is_none(),
+        "JE1 actual exact Pod absence"
+    );
+    assert!(
+        state
+            .lock()
+            .unwrap()
+            .writes
+            .iter()
+            .any(|call| call == "DELETE pods")
+    );
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
+}
+
+#[tokio::test]
+async fn terminal_total_absence_uses_the_same_complete_original_projected_set() {
+    // Causes: C1 complete original carrier / legacy V2 missing set; C2 Pod and
+    // PVC absent; C3 original CM/Secret UID present, gone, replacement, missing/
+    // blank UID, or API failure. Effects: T1 complete+gone/replacement -> physical
+    // absence; T2 complete+original present -> Disposing, never AlreadyAbsent;
+    // T3 legacy/bad UID/API -> Unknown/error. All rows are read-only. The fixture
+    // LIST advertises continuation: no row may borrow any sampled listing as
+    // complete membership. Its original set is retained before Pod loss.
+    for row in [
+        "present",
+        "gone",
+        "replacement",
+        "missing-uid",
+        "blank-uid",
+        "api-error",
+        "legacy",
+    ] {
+        let (runtime, state, _, _, server) = fixture(0, false).await;
+        let mut handle = continuation::handle_extra(state.lock().unwrap().pod.as_ref().unwrap())
+            .unwrap()
+            .unwrap();
+        {
+            let mut state = state.lock().unwrap();
+            state.pod = None;
+            state.claim = None;
+            if row == "gone" {
+                state.projected.clear();
+            }
+            if row == "replacement" {
+                for name in ["configmaps-0", "configmaps-1", "secrets-0", "secrets-1"] {
+                    state.projected_behavior.insert(name.into(), "replacement");
+                }
+            }
+            if matches!(row, "missing-uid" | "blank-uid" | "api-error") {
+                state.projected_behavior.insert("configmaps-0".into(), row);
+            }
+        }
+        if row == "legacy" {
+            handle = crate::ContainerContinuationHandle::KubernetesContinuationV2 {
+                pod_uid: "pod-uid".into(),
+                claim_uid: Some("claim-uid".into()),
+            };
+        }
+        let fingerprint = serde_json::from_value(json!("frozen-spec")).unwrap();
+        let fence =
+            pc::SandboxEffectFence::new("cleanup", "owner", "boot", 1, u64::MAX - 1).unwrap();
+        let result = runtime
+            .observe(ContainerObservationExpectation {
+                purpose: ContainerObservationPurpose::TerminalCleanup,
+                container_id: "awaken-cleanup",
+                adoption_fingerprint: Some(&fingerprint),
+                realization_fingerprint: Some(&fingerprint),
+                runtime_handle: Some(&handle),
+                effect_fence: Some(&fence),
+                retained_attempt: None,
+            })
+            .await;
+        match row {
+            "present" => assert!(
+                matches!(result.unwrap(), pc::SandboxObservation::Disposing { .. }),
+                "T2"
+            ),
+            "gone" | "replacement" => assert!(
+                matches!(
+                    result.unwrap(),
+                    pc::SandboxObservation::DefinitivelyUnavailable { .. }
+                ),
+                "T1/{row}"
+            ),
+            _ => assert!(result.is_err(), "T3/{row}"),
+        }
+        {
+            let state = state.lock().unwrap();
+            assert!(state.writes.is_empty());
+            assert_eq!(state.projected_lists, 0);
+        }
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+    }
+}
+
+#[tokio::test]
+async fn accepted_projected_delete_waits_for_the_original_uid_behind_a_finalizer() {
+    // F1/F2 causes: complete original set, exact Pod/PVC and live grant; each
+    // kind's DELETE is accepted but original UID remains behind a finalizer.
+    // Effects: no success/receipt or Pod release until controller removal of that
+    // UID. Cleanup never removes arbitrary finalizers. F3 renew/revoke/cancel at
+    // each actual response is covered by KCA, including the new projected GET,
+    // DELETE and absence wait. This fixture qualifies wiring, not a real GC.
+    for (name, kind) in [("configmaps-0", "configmaps"), ("secrets-0", "secrets")] {
+        let (runtime, state, _, _, server) = fixture(0, false).await;
+        let handle =
+            continuation::handle_extra(state.lock().unwrap().pod.as_ref().unwrap()).unwrap();
+        let accepted = state.lock().unwrap().projected_deleted.clone();
+        state
+            .lock()
+            .unwrap()
+            .projected_behavior
+            .insert(name.into(), "finalizer");
+        let authorization = crate::tests::disposal_authorization(
+            &pc::SandboxEffectFence::new("cleanup", "owner", "boot", 1, u64::MAX - 1).unwrap(),
+        );
+        let authority = EffectAuthority::new(authorization.effect_fence());
+        let mut task = tokio::spawn(async move {
+            runtime
+                .remove_exact_incarnation(
+                    "awaken-cleanup",
+                    handle.as_ref(),
+                    &authorization,
+                    &authority,
+                )
+                .await
+        });
+        while !state
+            .lock()
+            .unwrap()
+            .writes
+            .iter()
+            .any(|call| call == &format!("DELETE {kind}"))
+        {
+            tokio::time::timeout(Duration::from_secs(5), accepted.acquire())
+                .await
+                .unwrap()
+                .unwrap()
+                .forget();
+        }
+        assert!(!task.is_finished(), "F1/F2 accepted DELETE is not absence");
+        assert!(
+            state.lock().unwrap().pod.is_some(),
+            "owner is not released before members close"
+        );
+        state.lock().unwrap().projected.remove(name); // observed controller absence
+        tokio::time::timeout(Duration::from_secs(5), &mut task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        {
+            let state = state.lock().unwrap();
+            assert!(state.projected.is_empty());
+            assert_eq!(state.projected_lists, 0);
+        }
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+    }
+}
+
+#[tokio::test]
+async fn absent_pod_cleanup_response_loss_replay_waits_for_original_gc_members() {
+    // G1: Pod/PVC absent + retained original set + surviving original member ->
+    // same disposal stays pending and sends zero DELETE while native GC owns
+    // removal. G2 cancel/lost response -> retry same handle/UIDs; only actual
+    // complete member absence permits completion. No sampled empty LIST or new
+    // Create substitutes for the original result set.
+    let (runtime, state, _, _, server) = fixture(0, false).await;
+    let handle = continuation::handle_extra(state.lock().unwrap().pod.as_ref().unwrap()).unwrap();
+    {
+        let mut state = state.lock().unwrap();
+        state.pod = None;
+        state.claim = None;
+    }
+    let authorization = crate::tests::disposal_authorization(
+        &pc::SandboxEffectFence::new("cleanup", "owner", "boot", 1, u64::MAX - 1).unwrap(),
+    );
+    let authority = Arc::new(EffectAuthority::new(authorization.effect_fence()));
+    let runtime = Arc::new(runtime);
+    let task = tokio::spawn({
+        let (runtime, handle, authorization, authority) = (
+            runtime.clone(),
+            handle.clone(),
+            authorization.clone(),
+            authority.clone(),
+        );
+        async move {
+            runtime
+                .remove_exact_incarnation(
+                    "awaken-cleanup",
+                    handle.as_ref(),
+                    &authorization,
+                    authority.as_ref(),
+                )
+                .await
+        }
+    });
+    while state.lock().unwrap().calls.len() < 3 {
+        tokio::task::yield_now().await;
+    }
+    assert!(!task.is_finished(), "G1 original survivor cannot complete");
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert!(
+        state.lock().unwrap().writes.is_empty(),
+        "G1/G2 no orphan/replacement delete"
+    );
+    state.lock().unwrap().projected.clear();
+    runtime
+        .remove_exact_incarnation(
+            "awaken-cleanup",
+            handle.as_ref(),
+            &authorization,
+            authority.as_ref(),
+        )
+        .await
+        .unwrap();
+    assert!(state.lock().unwrap().writes.is_empty());
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
+}
+
+#[tokio::test]
+async fn late_read_only_absence_cannot_acknowledge_a_revoked_disposal_grant() {
+    // A1/A2 causes: complete original handle, all physical objects absent,
+    // read-only observer reply delayed; actual current grant stable/renewed/
+    // revoked/replaced/expired/caller-cancelled at that reply. Effects: only
+    // stable/renewed returns success. Other rows return error/cancellation and
+    // zero DELETE/receipt. Effect-free probe may finish remaining reads; the
+    // shared disposition kernel must re-enter real authority before returning.
+    for change in ['s', 'r', 'v', 'g', 'e', 'c'] {
+        let (runtime, state, reached, release, server) = fixture(3, false).await;
+        let handle =
+            continuation::handle_extra(state.lock().unwrap().pod.as_ref().unwrap()).unwrap();
+        {
+            let mut state = state.lock().unwrap();
+            state.pod = None;
+            state.claim = None;
+            state.projected.clear();
+        }
+        let authorization = crate::tests::disposal_authorization(
+            &pc::SandboxEffectFence::new("cleanup", "owner", "boot", 1, u64::MAX - 1).unwrap(),
+        );
+        let authority = Arc::new(EffectAuthority::new(authorization.effect_fence()));
+        let current = authority.clone();
+        let mut task = tokio::spawn(async move {
+            let fingerprint = serde_json::from_value(json!("frozen-spec")).unwrap();
+            let expectation = ContainerObservationExpectation {
+                purpose: ContainerObservationPurpose::TerminalCleanup,
+                container_id: "awaken-cleanup",
+                adoption_fingerprint: Some(&fingerprint),
+                realization_fingerprint: Some(&fingerprint),
+                runtime_handle: handle.as_ref(),
+                effect_fence: Some(authorization.effect_fence()),
+                retained_attempt: None,
+            };
+            runtime
+                .dispose_authorized(expectation, &authorization, current.as_ref())
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), reached.notified())
+            .await
+            .unwrap();
+        if change == 'c' {
+            task.abort();
+        } else {
+            let mut grant = authority.current.lock().unwrap();
+            match change {
+                's' => {}
+                'r' => grant.as_mut().unwrap().0.renew(),
+                'v' => *grant = None,
+                'g' => grant.as_mut().unwrap().0.reassign(),
+                'e' => grant.as_mut().unwrap().1 = Duration::ZERO,
+                _ => unreachable!(),
+            }
+        }
+        release.add_permits(1);
+        let result = tokio::time::timeout(Duration::from_secs(5), &mut task)
+            .await
+            .unwrap();
+        if change == 'c' {
+            assert!(result.unwrap_err().is_cancelled());
+        } else {
+            assert_eq!(
+                result.unwrap().is_ok(),
+                matches!(change, 's' | 'r'),
+                "A1/A2/{change}"
+            );
+        }
+        assert!(state.lock().unwrap().writes.is_empty());
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+    }
+}
+
 struct ApiState {
     server_addr: std::net::SocketAddr,
     pod: Option<Pod>,
@@ -19,6 +487,9 @@ struct ApiState {
     calls: Vec<String>,
     writes: Vec<String>,
     projected: std::collections::HashSet<String>,
+    projected_behavior: std::collections::HashMap<String, &'static str>,
+    projected_lists: usize,
+    projected_deleted: Arc<Semaphore>,
     release_conflict: bool,
     read_failure: Option<u16>,
 }
@@ -133,6 +604,9 @@ impl ApiState {
                 metadata.deletion_timestamp =
                     Some(serde_json::from_value(json!("2026-09-07T00:00:00Z")).unwrap());
                 self.writes.push(call);
+                if resource == "pods" && metadata.finalizers.as_ref().is_none_or(Vec::is_empty) {
+                    self.pod = None;
+                }
                 (
                     200,
                     json!({"kind":"Status", "apiVersion":"v1", "status":"Success"}),
@@ -144,25 +618,60 @@ impl ApiState {
                 } else {
                     "Secret"
                 };
-                let items: Vec<_> = (0..2).filter(|index| self.projected.contains(&format!("{resource}-{index}"))).map(|index| json!({
-                    "kind":kind, "apiVersion":"v1", "metadata": {
-                        "name":format!("{resource}-{index}"), "uid":format!("{resource}-{index}-uid"), "resourceVersion":"1",
+                let object = |name: &str| {
+                    let mut object = json!({"kind":kind,"apiVersion":"v1","metadata":{
+                        "name":name,"uid":format!("{name}-uid"),"resourceVersion":"1",
                         "annotations":{SANDBOX_ATTEMPT_ANNOTATION:"attempt"},
                         "labels":{crate::SANDBOX_ATTEMPT_LABEL:k8s_attempt_label("attempt")},
-                        "ownerReferences":[{"apiVersion":"v1", "kind":"Pod", "name":"awaken-cleanup", "uid":"pod-uid", "controller":true}]
+                        "ownerReferences":[{"apiVersion":"v1","kind":"Pod","name":"awaken-cleanup","uid":"pod-uid","controller":true}]
+                    }});
+                    match self.projected_behavior.get(name).copied() {
+                        Some("replacement") => object["metadata"]["uid"] = "replacement-uid".into(),
+                        Some("missing-uid") => {
+                            object["metadata"].as_object_mut().unwrap().remove("uid");
+                        }
+                        Some("blank-uid") => object["metadata"]["uid"] = " ".into(),
+                        Some("finalizer") => {
+                            object["metadata"]["finalizers"] = json!(["fixture/finalizer"]);
+                            object["metadata"]["deletionTimestamp"] = "2026-10-12T00:00:00Z".into();
+                        }
+                        _ => {}
                     }
-                })).collect();
-                (
-                    200,
-                    json!({"kind":format!("{kind}List"), "apiVersion":"v1", "metadata":{}, "items":items}),
-                )
+                    object
+                };
+                if let Some(name) = path.split('/').nth(6) {
+                    if !self.projected.contains(name) {
+                        return missing();
+                    }
+                    if self.projected_behavior.get(name) == Some(&"api-error") {
+                        return (
+                            500,
+                            json!({"kind":"Status","apiVersion":"v1","code":500,"reason":"Unavailable"}),
+                        );
+                    }
+                    (200, object(name))
+                } else {
+                    let items: Vec<_> = (0..2)
+                        .filter(|index| self.projected.contains(&format!("{resource}-{index}")))
+                        .map(|index| object(&format!("{resource}-{index}")))
+                        .collect();
+                    self.projected_lists += 1;
+                    (
+                        200,
+                        json!({"kind":format!("{kind}List"),"apiVersion":"v1","metadata":{"continue":"unread-next-page"},"items":items}),
+                    )
+                }
             }
             ("DELETE", "configmaps" | "secrets") => {
                 let name = path.split('/').nth(6).unwrap();
                 assert_eq!(body["preconditions"]["uid"], format!("{name}-uid"));
                 assert_eq!(body["preconditions"]["resourceVersion"], "1");
-                assert!(self.projected.remove(name));
+                assert!(self.projected.contains(name));
+                if self.projected_behavior.get(name) != Some(&"finalizer") {
+                    self.projected.remove(name);
+                }
                 self.writes.push(call);
+                self.projected_deleted.add_permits(1);
                 (
                     200,
                     json!({"kind":"Status", "apiVersion":"v1", "status":"Success"}),
@@ -205,7 +714,9 @@ async fn unscheduled_pod_cleanup_retains_current_authority_at_every_response() {
                 runtime.unschedulable_wait = Duration::ZERO;
                 {
                     let mut state = state.lock().unwrap();
+                    state.projected.clear();
                     let pod = state.pod.as_mut().unwrap();
+                    fixture_original_participants(pod, &runtime.namespace, std::iter::empty());
                     pod.metadata.finalizers =
                         Some(vec![create_ledger::ORIGINAL_GUARD_FINALIZER.into()]);
                     pod.status = Some(serde_json::from_value(json!({
@@ -279,19 +790,9 @@ async fn unscheduled_pod_cleanup_retains_current_authority_at_every_response() {
                             "UCA1 exact absence before capacity return"
                         );
                         assert!(state.projected.is_empty());
-                        assert_eq!(
-                            state.writes,
-                            [
-                                "DELETE pods",
-                                "DELETE configmaps",
-                                "DELETE configmaps",
-                                "DELETE secrets",
-                                "DELETE secrets",
-                                "PUT pods"
-                            ]
-                        );
+                        assert_eq!(state.writes, ["DELETE pods", "PUT pods"]);
                         boundaries = state.calls.len();
-                        assert_eq!(boundaries, if conflict { 16 } else { 14 });
+                        assert_eq!(boundaries, if conflict { 9 } else { 7 });
                     } else {
                         if *change == 'c' {
                             assert!(result.unwrap_err().is_cancelled(), "UCA3");
@@ -440,6 +941,68 @@ async fn request(stream: &mut TcpStream) -> Option<(String, String, Value)> {
     Some((method, path, body))
 }
 
+fn fixture_original_participants<'a>(
+    pod: &mut Pod,
+    namespace: &str,
+    names: impl Iterator<Item = &'a str>,
+) {
+    // Fixture only: these names/UIDs are its original accepted API results, not
+    // discovery from a current LIST. Production must use creation's same plan.
+    use crate::kubernetes_handle::{
+        KubernetesProjectedKind as Kind, KubernetesProjectedObject, KubernetesProjectedParticipants,
+    };
+    let objects = names
+        .map(|name| KubernetesProjectedObject {
+            kind: if name.starts_with("configmaps") {
+                Kind::ConfigMap
+            } else {
+                Kind::Secret
+            },
+            name: name.into(),
+            uid: format!("{name}-uid"),
+            owner_references_fingerprint: participants::owner_fingerprint(&ObjectMeta {
+                owner_references: Some(vec![OwnerReference {
+                    api_version: "v1".into(),
+                    kind: "Pod".into(),
+                    name: "awaken-cleanup".into(),
+                    uid: "pod-uid".into(),
+                    controller: Some(true),
+                    block_owner_deletion: None,
+                }]),
+                ..Default::default()
+            })
+            .unwrap(),
+        })
+        .collect();
+    let set = KubernetesProjectedParticipants::new(
+        namespace.into(),
+        pod.metadata.uid.clone().unwrap(),
+        objects,
+        Some("attempt".into()),
+        None,
+    )
+    .unwrap();
+    let declaration = set
+        .objects
+        .iter()
+        .map(|object| (object.kind, object.name.clone()))
+        .collect::<Vec<_>>();
+    let annotations = pod
+        .metadata
+        .annotations
+        .get_or_insert_with(Default::default);
+    annotations.insert(
+        participants::DECLARATION.into(),
+        serde_json::to_string(&declaration).unwrap(),
+    );
+    annotations.insert(
+        "awaken.dev/projected-object-results".into(),
+        serde_json::to_string(&set).unwrap(),
+    );
+    annotations.insert(SANDBOX_ADOPTION_ANNOTATION.into(), "frozen-spec".into());
+    annotations.insert(SANDBOX_REALIZATION_ANNOTATION.into(), "frozen-spec".into());
+}
+
 async fn fixture(
     cut: usize,
     conflict: bool,
@@ -480,6 +1043,11 @@ async fn fixture_with_cut(
         "name":"awaken-cleanup", "uid":"pod-uid", "resourceVersion":"1", "annotations": {SANDBOX_ATTEMPT_ANNOTATION:"attempt"}
     }, "spec":{"containers":[], "volumes":[{"name":pod_projection::CONTINUATION_VOLUME, "persistentVolumeClaim":{"claimName":"awc-cleanup"}}]}})).unwrap();
     continuation::bind_claim_uid(&mut pod, "claim-uid");
+    fixture_original_participants(
+        &mut pod,
+        &runtime.namespace,
+        ["configmaps-0", "configmaps-1", "secrets-0", "secrets-1"].into_iter(),
+    );
     runtime.continuation_volume = Some(volume);
     let state = Arc::new(Mutex::new(ApiState {
         server_addr: addr,
@@ -492,6 +1060,9 @@ async fn fixture_with_cut(
             .map(str::to_owned)
             .into_iter()
             .collect(),
+        projected_behavior: Default::default(),
+        projected_lists: 0,
+        projected_deleted: Arc::new(Semaphore::new(0)),
         release_conflict: conflict,
         read_failure: None,
     }));
@@ -635,11 +1206,12 @@ async fn exact_deletion_wait_requires_absence_or_a_valid_replacement_uid() {
                     "EW3"
                 );
             }
-            let state = state.lock().unwrap();
-            assert_eq!(state.calls.len(), before + 1, "one actual wait GET");
-            assert!(state.writes.is_empty(), "no replacement mutation");
-            assert_eq!(state.projected.len(), 4, "no participant policy change");
-            drop(state);
+            {
+                let state = state.lock().unwrap();
+                assert_eq!(state.calls.len(), before + 1, "one actual wait GET");
+                assert!(state.writes.is_empty(), "no replacement mutation");
+                assert_eq!(state.projected.len(), 4, "no participant policy change");
+            }
             server.abort();
             assert!(server.await.unwrap_err().is_cancelled());
         }
@@ -695,15 +1267,16 @@ async fn exact_deletion_wait_keeps_polling_the_same_uid_and_preserves_each_deadl
             } else {
                 result.unwrap();
             }
-            let state = state.lock().unwrap();
-            let first_wait = if claim { 2 } else { 1 };
-            assert_eq!(
-                state.calls.len(),
-                first_wait + usize::from(!expires),
-                "EW5/6 actual GETs"
-            );
-            assert!(state.writes.is_empty());
-            drop(state);
+            {
+                let state = state.lock().unwrap();
+                let first_wait = if claim { 2 } else { 1 };
+                assert_eq!(
+                    state.calls.len(),
+                    first_wait + usize::from(!expires),
+                    "EW5/6 actual GETs"
+                );
+                assert!(state.writes.is_empty());
+            }
             server.abort();
             assert!(server.await.unwrap_err().is_cancelled());
         }
@@ -867,7 +1440,7 @@ async fn cancelled_connections_before_http_acceptance_leave_cleanup_available() 
         let state = state.lock().unwrap();
         assert_eq!(
             state.calls.len(),
-            18,
+            27,
             "R1/R2 only complete HTTP requests count"
         );
         assert_eq!(state.writes.len(), 8, "R2 exact cleanup effects");
@@ -1447,7 +2020,8 @@ async fn checkpoint_identity_and_source_state_denials_have_zero_writes() {
 async fn cleanup_requires_both_current_authority_and_exact_incarnation() {
     // KCE causes: C1 current/denied authority; C2 exact/missing/foreign Pod UID;
     // C3 exact/foreign PVC UID. KCE1 denied -> zero HTTP even for exact identity;
-    // KCE2 current + missing/foreign identity -> one read, no writes. Positive
+    // KCE2 missing original carrier -> zero reads; a complete original carrier
+    // with foreign Pod/PVC identity -> one actual read, no writes. Positive
     // C1+C2+C3 is KCA1. Identity never substitutes for current authority, nor
     // may an authority grant bypass the existing immutable-incarnation gates.
     for row in ["denied", "missing", "foreign-pod", "foreign-claim"] {
@@ -1463,24 +2037,27 @@ async fn cleanup_requires_both_current_authority_and_exact_incarnation() {
         let handle = if row == "missing" {
             None
         } else {
-            Some(
-                crate::ContainerContinuationHandle::KubernetesContinuationV2 {
-                    pod_uid: if row == "foreign-pod" {
-                        "foreign"
-                    } else {
-                        "pod-uid"
-                    }
-                    .into(),
-                    claim_uid: Some(
-                        if row == "foreign-claim" {
-                            "foreign"
-                        } else {
-                            "claim-uid"
-                        }
-                        .into(),
-                    ),
-                },
-            )
+            let mut handle =
+                continuation::handle_extra(state.lock().unwrap().pod.as_ref().unwrap())
+                    .unwrap()
+                    .unwrap();
+            if let crate::ContainerContinuationHandle::KubernetesContinuationV3 {
+                pod_uid,
+                claim_uid,
+                participants,
+            } = &mut handle
+            {
+                if row == "foreign-pod" {
+                    *pod_uid = "foreign".into();
+                    participants.pod_uid = "foreign".into();
+                }
+                if row == "foreign-claim" {
+                    *claim_uid = Some("foreign".into());
+                }
+            } else {
+                panic!("KCE fixture requires its original complete carrier");
+            }
+            Some(handle)
         };
         assert!(
             runtime
@@ -1497,7 +2074,10 @@ async fn cleanup_requires_both_current_authority_and_exact_incarnation() {
         server.abort();
         assert!(server.await.unwrap_err().is_cancelled());
         let state = state.lock().unwrap();
-        assert_eq!(state.calls.len(), usize::from(row != "denied"));
+        assert_eq!(
+            state.calls.len(),
+            usize::from(matches!(row, "foreign-pod" | "foreign-claim"))
+        );
         assert!(state.writes.is_empty());
         assert!(!continuation::pod_cleanup_gate_held(
             state.pod.as_ref().unwrap()
@@ -1601,16 +2181,16 @@ async fn current_authority_is_required_after_every_kubernetes_cleanup_response()
                             [
                                 "PUT pods",
                                 "DELETE persistentvolumeclaims",
+                                "DELETE configmaps",
+                                "DELETE configmaps",
+                                "DELETE secrets",
+                                "DELETE secrets",
                                 "DELETE pods",
-                                "DELETE configmaps",
-                                "DELETE configmaps",
-                                "DELETE secrets",
-                                "DELETE secrets",
                                 "PUT pods"
                             ]
                         );
                         boundaries = state.calls.len();
-                        assert_eq!(boundaries, if conflict { 20 } else { 18 });
+                        assert_eq!(boundaries, if conflict { 29 } else { 27 });
                     } else {
                         if *change == 'c' {
                             assert!(result.unwrap_err().is_cancelled());

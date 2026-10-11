@@ -29,10 +29,15 @@ fn admit_pod(
     access: ContainerCheckpointAccess<'_>,
 ) -> Result<(), RuntimeError> {
     access.admit().map_err(backend)?;
-    let Some(crate::ContainerContinuationHandle::KubernetesContinuationV2 {
-        pod_uid,
-        claim_uid: Some(claim_uid),
-    }) = expectation.runtime_handle
+    if expectation
+        .runtime_handle
+        .is_some_and(crate::ContainerContinuationHandle::terminal_only)
+    {
+        return Err(backend("joined-empty evidence cannot authorize checkpoint"));
+    }
+    let Some((pod_uid, Some(claim_uid))) = expectation
+        .runtime_handle
+        .and_then(crate::ContainerContinuationHandle::kubernetes_incarnation)
     else {
         return Err(backend(
             "Kubernetes checkpoint requires exact Pod and retained PVC UIDs",
@@ -42,7 +47,7 @@ fn admit_pod(
         || pod.metadata.name.as_deref() != Some(expectation.container_id)
         || pod.metadata.deletion_timestamp.is_some()
         || continuation::observed_pod_cleanup_authorization(pod)?.is_some()
-        || continuation::bound_claim_uid(pod) != Some(claim_uid.as_str())
+        || continuation::bound_claim_uid(pod) != Some(claim_uid)
         || continuation::bound_claim_name(pod)?
             != Some(continuation_claim_for_pod(expectation.container_id)?.as_str())
     {

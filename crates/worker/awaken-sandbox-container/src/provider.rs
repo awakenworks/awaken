@@ -1000,6 +1000,14 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
         admit()?;
         let payload = recovery::decode_handle(handle)?;
+        if let Some(runtime_handle) = payload.runtime_handle.as_ref()
+            && runtime_handle.terminal_only()
+            && purpose != ContainerObservationPurpose::TerminalCleanup
+        {
+            return Err(pc::SandboxError::unsupported(
+                "joined-empty evidence is terminal cleanup only",
+            ));
+        }
         let control_services = pc::validate_adopted_sandbox_control_services(
             spec.map(|spec| &spec.control_services),
             &payload.control_services,
@@ -1269,7 +1277,12 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             (None, Some(recovered)) => &recovered.handle,
             (None, None) => return Ok(None),
         };
-        if guarded_claim {
+        let terminal_only = handle
+            .container_payload()?
+            .runtime_handle
+            .as_ref()
+            .is_some_and(crate::ContainerContinuationHandle::terminal_only);
+        if guarded_claim || terminal_only {
             // The original Pod never became the Session environment. The
             // provider already re-observed the exact immutable reservation and
             // PVC above; preparation has no user bytes to harvest. The same

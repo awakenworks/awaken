@@ -175,7 +175,7 @@ fn unmaterialized_absence_shape_is_closed(
 
 #[derive(Default)]
 struct JoinedOriginalTickets {
-    created_pod_uid: Option<String>,
+    created_pod: Option<(String, String)>,
     created_claim_uid: Option<String>,
     isolated_pod: Option<(CreateTicket, String)>,
 }
@@ -208,10 +208,10 @@ fn joined_original_tickets(
                 if ticket.request.resource == "pods"
                     && ticket.request.namespace == namespace
                     && ticket.request.name == pod_name
-                    && joined.created_pod_uid.is_none()
+                    && joined.created_pod.is_none()
                     && joined.isolated_pod.is_none() =>
             {
-                joined.created_pod_uid = Some(uid.clone());
+                joined.created_pod = Some((uid.clone(), ticket.request.group.clone()));
             }
             TicketStatus::Finished(TicketResult::Created { uid })
                 if claim_required
@@ -226,7 +226,7 @@ fn joined_original_tickets(
                 if ticket.request.resource == "pods"
                     && ticket.request.namespace == namespace
                     && ticket.request.name == pod_name
-                    && joined.created_pod_uid.is_none()
+                    && joined.created_pod.is_none()
                     && joined.isolated_pod.is_none() =>
             {
                 joined.isolated_pod = Some((ticket.clone(), uid.clone()));
@@ -235,6 +235,51 @@ fn joined_original_tickets(
         }
     }
     Some(joined)
+}
+
+fn joined_empty_evidence(
+    runtime: &K8sRuntime,
+    pod: &Pod,
+    pod_uid: &str,
+    claim_uid: Option<String>,
+    predecessor: &ContainerEffectFence,
+    original_group: String,
+) -> Result<MissingHandleTerminalEvidence, RuntimeError> {
+    // Only the already-checked Complete/narrow/original projection caller can
+    // emit this terminal fact. A conflicting new handoff is never overwritten.
+    let projected = match participants::retained(pod) {
+        Ok(Some(projected))
+            if projected.objects.is_empty() && projected.restoration().is_none() =>
+        {
+            projected
+        }
+        Ok(None) => crate::kubernetes_handle::KubernetesProjectedParticipants::joined_empty(
+            runtime.namespace.clone(),
+            pod_uid.to_owned(),
+            pod.metadata
+                .annotations
+                .as_ref()
+                .and_then(|values| values.get(SANDBOX_ATTEMPT_ANNOTATION))
+                .cloned()
+                .ok_or_else(|| backend("original Pod attempt is missing"))?,
+            predecessor.clone(),
+            original_group,
+        )
+        .map_err(backend)?,
+        _ => return Ok(MissingHandleTerminalEvidence::Unknown),
+    };
+    Ok(MissingHandleTerminalEvidence::ExactIncarnation {
+        container_id: pod
+            .metadata
+            .name
+            .clone()
+            .ok_or_else(|| backend("original Pod name is missing"))?,
+        runtime_handle: crate::ContainerContinuationHandle::KubernetesContinuationV3 {
+            pod_uid: pod_uid.to_owned(),
+            claim_uid,
+            participants: Box::new(projected),
+        },
+    })
 }
 
 struct GuardedOriginalContext<'a> {
@@ -394,6 +439,11 @@ pub(super) fn deletion_incarnation(
         Some(crate::ContainerContinuationHandle::KubernetesContinuationV2 {
             pod_uid,
             claim_uid,
+        })
+        | Some(crate::ContainerContinuationHandle::KubernetesContinuationV3 {
+            pod_uid,
+            claim_uid,
+            ..
         }) => Ok((Some(pod_uid.as_str()), claim_uid.as_deref())),
         Some(crate::ContainerContinuationHandle::KubernetesContinuation { .. }) => Err(backend(
             "legacy Kubernetes handle has no Pod UID deletion fence",
@@ -415,8 +465,8 @@ impl ContainerRuntime for K8sRuntime {
         container_id: &str,
         handle: Option<&crate::ContainerContinuationHandle>,
     ) -> Result<Option<String>, RuntimeError> {
-        let Some(crate::ContainerContinuationHandle::KubernetesContinuationV2 { pod_uid, .. }) =
-            handle
+        let Some((pod_uid, _)) =
+            handle.and_then(crate::ContainerContinuationHandle::kubernetes_incarnation)
         else {
             return Ok(None);
         };
@@ -461,9 +511,7 @@ impl ContainerRuntime for K8sRuntime {
     ) -> Result<Option<std::collections::BTreeMap<String, String>>, RuntimeError> {
         // A typed V2 absence is not legacy missing evidence. Do not infer an
         // old PVC's storage class/size from its UID or today's deployment.
-        if !matches!(handle, Some(crate::ContainerContinuationHandle::KubernetesContinuationV2 {
-            pod_uid, claim_uid: None,
-        }) if !pod_uid.trim().is_empty())
+        if !matches!(handle.and_then(crate::ContainerContinuationHandle::kubernetes_incarnation), Some((pod_uid, None)) if !pod_uid.trim().is_empty())
         {
             return Ok(None);
         }
@@ -676,7 +724,7 @@ impl ContainerRuntime for K8sRuntime {
             JoinedOriginalTickets::default()
         };
         let JoinedOriginalTickets {
-            created_pod_uid,
+            created_pod,
             created_claim_uid,
             isolated_pod,
         } = joined;
@@ -707,7 +755,7 @@ impl ContainerRuntime for K8sRuntime {
             .get_opt(&runtime_pod_name)
             .await
             .map_err(backend)?;
-        if let Some(pod_uid) = created_pod_uid {
+        if let Some((pod_uid, original_group)) = created_pod {
             let Some(pod) = pod else {
                 return Ok(MissingHandleTerminalEvidence::Unknown);
             };
@@ -748,13 +796,14 @@ impl ContainerRuntime for K8sRuntime {
             {
                 return Ok(MissingHandleTerminalEvidence::Unknown);
             }
-            return Ok(MissingHandleTerminalEvidence::ExactIncarnation {
-                container_id: runtime_pod_name,
-                runtime_handle: crate::ContainerContinuationHandle::KubernetesContinuationV2 {
-                    pod_uid,
-                    claim_uid,
-                },
-            });
+            return joined_empty_evidence(
+                self,
+                &pod,
+                &pod_uid,
+                claim_uid,
+                expected_effect_fence,
+                original_group,
+            );
         }
         unmaterialized_after_join(
             self,
@@ -986,6 +1035,15 @@ impl ContainerRuntime for K8sRuntime {
         &self,
         expectation: ContainerObservationExpectation<'_>,
     ) -> Result<pc::SandboxObservation, RuntimeError> {
+        if expectation.purpose == ContainerObservationPurpose::Recovery
+            && expectation
+                .runtime_handle
+                .is_some_and(crate::ContainerContinuationHandle::terminal_only)
+        {
+            return Ok(pc::SandboxObservation::Incompatible {
+                reason: "joined-empty evidence is terminal cleanup only".into(),
+            });
+        }
         if let Some(crate::ContainerContinuationHandle::KubernetesGuardedClaim(guarded)) =
             expectation.runtime_handle
         {
@@ -993,6 +1051,9 @@ impl ContainerRuntime for K8sRuntime {
         }
         let expected_pod_uid = match expectation.runtime_handle {
             Some(crate::ContainerContinuationHandle::KubernetesContinuationV2 {
+                pod_uid, ..
+            })
+            | Some(crate::ContainerContinuationHandle::KubernetesContinuationV3 {
                 pod_uid, ..
             }) => Some(pod_uid.as_str()),
             Some(crate::ContainerContinuationHandle::HostBindRestoration(_)) => {
@@ -1004,15 +1065,10 @@ impl ContainerRuntime for K8sRuntime {
         };
         let current_handle = expectation.realization_fingerprint.is_some();
         let effect_fenced_total_absence = expectation.effect_fence.is_some()
-            && matches!(
-                expectation.runtime_handle,
-                Some(
-                    crate::ContainerContinuationHandle::KubernetesContinuationV2 {
-                        claim_uid: Some(_),
-                        ..
-                    }
-                )
-            );
+            && expectation
+                .runtime_handle
+                .and_then(crate::ContainerContinuationHandle::kubernetes_incarnation)
+                .is_some_and(|(_, claim)| claim.is_some());
         let pod = match self.pods().get(expectation.container_id).await {
             Ok(pod) => Some(pod),
             Err(error) if api_not_found(&error) => None,
@@ -1101,6 +1157,25 @@ impl ContainerRuntime for K8sRuntime {
                 return Ok(pc::SandboxObservation::Incompatible {
                     reason: "Kubernetes Sandbox continuation state differs from its durable handle"
                         .into(),
+                });
+            }
+        }
+        if expectation.purpose == ContainerObservationPurpose::TerminalCleanup {
+            let participants = expectation
+                .runtime_handle
+                .and_then(crate::ContainerContinuationHandle::projected_participants)
+                .ok_or_else(|| {
+                    backend("terminal Kubernetes projected-object membership is unknown")
+                })?;
+            let admit = || Ok(());
+            let absent = participants::projected_absent(self, participants, &admit).await?;
+            if !absent
+                && let pc::SandboxObservation::DefinitivelyUnavailable {
+                    physical_incarnation: Some(physical_incarnation),
+                } = observation
+            {
+                return Ok(pc::SandboxObservation::Disposing {
+                    physical_incarnation,
                 });
             }
         }
@@ -1360,7 +1435,7 @@ impl ContainerRuntime for K8sRuntime {
     }
 
     async fn remove(&self, container_id: &str) -> Result<(), RuntimeError> {
-        self.remove_bound(container_id, None, None, false, None)
+        self.remove_bound(container_id, None, None, None, false, None)
             .await
     }
 
@@ -1385,8 +1460,15 @@ impl ContainerRuntime for K8sRuntime {
             .clone()
             .ok_or_else(|| backend("Kubernetes warm capacity Pod has no incarnation UID"))?;
         let claim_uid = continuation::bound_claim_uid(&observed).map(str::to_owned);
-        self.remove_bound(&pod_name, Some(&pod_uid), claim_uid.as_deref(), false, None)
-            .await
+        self.remove_bound(
+            &pod_name,
+            Some(&pod_uid),
+            claim_uid.as_deref(),
+            None,
+            false,
+            None,
+        )
+        .await
     }
 
     async fn remove_with_handle(
@@ -1395,8 +1477,15 @@ impl ContainerRuntime for K8sRuntime {
         runtime_handle: Option<&crate::ContainerContinuationHandle>,
     ) -> Result<(), RuntimeError> {
         let (pod_uid, claim_uid) = deletion_incarnation(runtime_handle)?;
-        self.remove_bound(container_id, pod_uid, claim_uid, true, None)
-            .await
+        self.remove_bound(
+            container_id,
+            pod_uid,
+            claim_uid,
+            runtime_handle.and_then(crate::ContainerContinuationHandle::projected_participants),
+            true,
+            None,
+        )
+        .await
     }
 
     async fn remove_exact_incarnation(
@@ -1417,6 +1506,7 @@ impl ContainerRuntime for K8sRuntime {
             container_id,
             pod_uid,
             claim_uid,
+            runtime_handle.and_then(crate::ContainerContinuationHandle::projected_participants),
             true,
             Some((authorization, authority)),
         )

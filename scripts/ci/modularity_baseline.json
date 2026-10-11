@@ -348,7 +348,7 @@
     "awaken-runtime::engine/run_loop.rs::infer_step": 240,
     "awaken-runtime::engine/run_loop.rs::run_agent_loop": 212,
     "awaken-sandbox-container::k8s.rs::build_pod_with_continuation": 309,
-    "awaken-sandbox-container::k8s.rs::remove_bound": 203,
+    "awaken-sandbox-container::k8s.rs::remove_bound": 195,
     "awaken-sandbox-container::k8s_package_image.rs::build_objects": 229,
     "awaken-sandbox-container::k8s_package_realization.rs::verify_k8s_package_realization": 194,
     "awaken-sandbox-container::lib.rs::resolve_and_stage": 164,
@@ -404,12 +404,12 @@
     },
     "awaken-sandbox-container": {
       "deps": 11,
-      "lines": 23799,
+      "lines": 24841,
       "reason": "ADR-0092 quota/unschedulable/probe handling; removed when W34 moves the Kubernetes backend into its own crate"
     },
     "awaken-session-application": {
       "deps": 24,
-      "lines": 18141,
+      "lines": 18139,
       "reason": "W21 (plan 9.12): split by use case around one SessionMutations core; if it stays one aggregate after W21, record that review here"
     }
   },
@@ -424,7 +424,7 @@
       "awaken-session-executor::host/session/context/extensions.rs::skills": "Inject the existing shared WallClock at Runtime and Host composition; fail before approval or Fresh child effects; retain one approval loop and no ambient clock; then: Compose the existing ForkAgentTool with Host clock at Session context assembly; keep the canonical registry adapter narrow and free of duplicated inference dependencies"
     },
     "crate-budget": {
-      "awaken-sandbox-container": "ADR-0091 D2: the existing Kubernetes adapter owns exact-incarnation absence. Consolidating Pod/PVC polling removes the second algorithm; 23 production lines add valid-UID rejection and current-effect checks before and after polling sleep while retaining typed adapters, 60s/30s deadlines, 100ms pacing, existing ports and dependencies. This is mandatory Native cleanup proof in its existing final owner, not new product behavior or a new cleanup service."
+      "awaken-sandbox-container": "ADR-0091 D2: the existing Kubernetes adapter owns exact-incarnation absence. Consolidating Pod/PVC polling removes the second algorithm; 23 production lines add valid-UID rejection and current-effect checks before and after polling sleep while retaining typed adapters, 60s/30s deadlines, 100ms pacing, existing ports and dependencies. This is mandatory Native cleanup proof in its existing final owner, not new product behavior or a new cleanup service.; then: P0 Native original-participant closure: one schema3 Container carrier and immutable exact Create-result UID set replace selector cleanup; creation, restore, observation, and disposal share that sole projection and existing deletion waiter. No new service, registry, ledger, dependencies, impl spread, glob, or SCC; legacy partial evidence remains Unknown. Required reviewed adapter/codec production growth is bound to Container365 and broker5 actual passes; removed duplication and shorter functions tighten simultaneously.; then: Keep the sole pure Container codec feature-neutral while gating its private K8s-only physical attempt accessor to its actual consumer graph; one cfg production line closes default-graph dead-code rejection without an allow, artificial call or second wire definition."
     }
   }
 }
