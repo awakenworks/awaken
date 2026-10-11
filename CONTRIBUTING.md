@@ -86,7 +86,10 @@ Use each owning script:
 - architecture naming, single-owner and contract-map: their
   `_naming_fitness.py`, `_single_owner_fitness.py` and `_contract_map_fitness.py`
   scripts use the same check/tighten/reasoned-write modes.
-- test waits: `python3 scripts/ci/check_test_waits.py --write-baseline`.
+- test waits: `python3 scripts/ci/check_test_waits.py --tighten` records decreases.
+  Default/`--check` is read-only. `--write-baseline` also refuses new unexempted
+  waits, even with `--reason`; convert them to a durable wait or document the
+  existing timing exemption first. Short source/allow reasons are hard errors.
 - test inventory: `python3 scripts/ci/check_test_inventory.py --write`; a
   removed or renamed test is also recorded in
   [`test_inventory_ledger.json`](scripts/ci/test_inventory_ledger.json).

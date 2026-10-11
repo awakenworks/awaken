@@ -24,7 +24,7 @@ component does the work satisfies it late.
 
 The owners, one per side, are the only places a wait loop belongs:
 
-* Rust: `awaken_protocol_managed::test_support::wait_for_session_events`, whose
+* Rust: `awaken_protocol_managed_testkit::wait_for_session_events`, whose
   settle parameter is the typed `DurableFact`, and its sibling
   `wait_for_delivered_lifecycle_facts`.
 * TypeScript: `e2e/harness.mjs`'s `waitForValue` (bounded poll on a committed
@@ -47,15 +47,30 @@ read at all. Two of those suites fell out of a readiness poll with no failure
 branch and ran their load profile against a port nothing was listening on, and
 the rule that exists to refuse exactly that reported OK for as long as it had
 been written.
+
+Default/`--check` is read-only and requires the measured debt to equal its
+baseline. `--tighten` and `--write-baseline` record decreases only, against an
+existing baseline; neither may admit a new unexempted wait, even with `--reason`.
+The shared CLI owns parsing and JSON IO, while this guard retains that rule.
+Convert the wait to its durable owner, or document the existing genuine timing
+exemption, before recording a decrease. No CLI reason waives a hard rule:
+
+* `wait-reason`: every matched `awaken-wait:` reason must have at least 20
+  characters, including markers whose waits the scanner already exempted.
+* `allow-reason`: a baseline `allow` decision exempts only its exact path/rule
+  pair and must explain why in at least 20 characters. Its owner, expiry and
+  unknown metadata are preserved, not reinterpreted by the writer.
+* `baseline-present`: the tracked test-waits baseline must already exist;
+  restore it rather than initialize a new allowance for unconverted waits.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import re
-import sys
 from pathlib import Path
+
+import _architecture_ratchet
 
 # This checker reads the repository's test trees and its own baseline, so its
 # lefthook trigger is rendered from exactly that set.
@@ -75,6 +90,10 @@ INPUT_GLOBS: tuple[str, ...] = (
     "web/e2e/**/*.ts",
     "web/e2e/**/*.mjs",
     "scripts/ci/test_waits_baseline.json",
+    # CLI imports and the generator/navigation self-test read the Python
+    # owners as source; these data inputs never widen the dialect corpus.
+    "scripts/ci/*.py",
+    "lefthook.yml",
 )
 
 # An in-crate `#[cfg(test)]` module waits on the same product the integration
@@ -87,7 +106,7 @@ INLINE_TEST_MODULE = re.compile(r"^\s*(?:pub(?:\([\w:]+\))?\s+)?mod\s+\w+\s*\{")
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = Path(__file__).resolve().parent / "test_waits_baseline.json"
 
-RUST_OWNER = "awaken_protocol_managed::test_support::wait_for_session_events"
+RUST_OWNER = "awaken_protocol_managed_testkit::wait_for_session_events"
 TS_OWNER = "e2e/harness.mjs waitForValue / waitForSessionEventReceipt"
 # Shell suites have no cross-script library to own their waits, so the owner is
 # a shape rather than a symbol: one named `wait_for_…` helper per script that
@@ -332,7 +351,7 @@ DIALECTS: dict[str, Dialect] = {
 MESSAGES = {
     "sleep-then-assert": (
         "this wait names no durable fact -- it sleeps a fixed time and then "
-        f"asserts. Settle on a committed value through {{owner}} (Rust) and anchor "
+        f"asserts. Settle on a committed value through {{owner}} and anchor "
         "on the command's own processed_at, an outbox that drained, a revision, "
         "or a lifecycle fact. A real timeout/expiry test keeps its sleep and "
         "says why in an `awaken-wait: <reason>` comment above it"
@@ -576,13 +595,13 @@ def file_violations(relative: str, text: str) -> list[tuple[str, int, str]]:
     ]
 
 
-def short_reasons(text: str) -> list[str]:
-    """`awaken-wait:` markers that do not actually say why."""
+def short_reasons(text: str) -> list[tuple[int, str]]:
+    """Line/reason pairs for matched markers that do not actually say why."""
 
     return [
-        match.group("reason")
-        for match in (REASON.search(line) for line in text.splitlines())
-        if match and len(match.group("reason")) < MIN_REASON
+        (number, match.group("reason"))
+        for number, line in enumerate(text.splitlines(), 1)
+        if (match := REASON.search(line)) and len(match.group("reason")) < MIN_REASON
     ]
 
 
@@ -590,54 +609,78 @@ def owner_for(relative: str) -> str:
     return dialect_for(relative).owner
 
 
-def load_baseline(path: Path) -> tuple[dict[str, dict[str, int]], list[dict[str, str]]]:
-    document = json.loads(path.read_text(encoding="utf-8"))
-    return document.get("baseline", {}), document.get("allow", [])
+# The one measurement shared by every mode. Counts are derived from the exact
+# occurrence lists, so diagnostics and candidates cannot measure different debt.
+WaitPlaces = dict[str, dict[str, list[tuple[int, str]]]]
+Measurement = tuple[_architecture_ratchet.Counts, WaitPlaces]
 
 
-def allowed(allow: list[dict[str, str]]) -> set[tuple[str, str]]:
-    """(`path`, `rule`) pairs a registered decision exempts, reason required."""
+def measurement(found: dict[str, list[tuple[str, int, str]]]) -> Measurement:
+    places: WaitPlaces = {rule: {} for rule in RULES}
+    for relative, violations in found.items():
+        for rule, number, source in violations:
+            places[rule].setdefault(relative, []).append((number, source))
+    counts = {rule: {path: len(occurrences) for path, occurrences in paths.items()}
+              for rule, paths in places.items()}
+    return counts, places
 
-    exempt: set[tuple[str, str]] = set()
+
+def measure() -> tuple[list[str], Measurement]:
+    # Unlike structural ratchets, test-waits has no first-write authorization:
+    # its original writer required this tracked debt record to exist as well.
+    if not BASELINE.exists():
+        return [f"baseline-present: {BASELINE.name} missing -> required; "
+                "fix: git restore -- scripts/ci/test_waits_baseline.json"], measurement({})
+    found = {}
+    errors = []
+    for relative, text in sources(ROOT).items():
+        found[relative] = file_violations(relative, text)
+        for number, reason in short_reasons(text):
+            errors.append(f"wait-reason: {relative}:{number} {len(reason)} -> >= {MIN_REASON}; "
+                          f"`awaken-wait: {reason}` must explain the wait; "
+                          "fix: python3 scripts/ci/guards.py explain check_test_waits:wait-reason")
+    return errors, measurement(found)
+
+
+def allowed(allow: list[dict]) -> tuple[list[str], set[tuple[str, str]]]:
+    """Validate the existing path/rule decisions; no writer can skip reasons."""
+
+    errors = []
+    exempt = set()
     for entry in allow:
         reason = entry.get("reason", "")
         if len(reason) < MIN_REASON:
-            raise SystemExit(
-                f"check_test_waits: allowlist entry {entry.get('path')} "
-                f"/ {entry.get('rule')} must say why in at least {MIN_REASON} characters"
-            )
-        exempt.add((entry["path"], entry["rule"]))
-    return exempt
+            errors.append(f"allow-reason: {entry.get('path')}/{entry.get('rule')} "
+                          f"{len(reason)} -> >= {MIN_REASON}; the decision must explain why; "
+                          "fix: python3 scripts/ci/guards.py explain check_test_waits:allow-reason")
+        else:
+            exempt.add((entry["path"], entry["rule"]))
+    return errors, exempt
 
 
 def report(
-    found: dict[str, list[tuple[str, int, str]]],
+    measured: Measurement,
     baseline: dict[str, dict[str, int]],
     exempt: set[tuple[str, str]],
 ) -> tuple[list[str], list[str]]:
-    """Errors (new or unregistered waits) and ratchet notes (ground gained)."""
+    """The sole comparison: new waits are errors; decreases must be recorded."""
 
-    errors: list[str] = []
-    gained: list[str] = []
-    counted: dict[str, dict[str, int]] = {rule: {} for rule in RULES}
-    for relative, violations in found.items():
-        for rule, number, source in violations:
-            if (relative, rule) in exempt:
-                continue
-            counted[rule][relative] = counted[rule].get(relative, 0) + 1
-            if counted[rule][relative] > baseline.get(rule, {}).get(relative, 0):
-                message = MESSAGES[rule].format(owner=owner_for(relative))
-                errors.append(f"{relative}:{number}: [{rule}] {message}\n    {source}")
+    counts, places = measured
+    errors = []
+    gained = []
     for rule in RULES:
-        for relative, allowance in sorted(baseline.get(rule, {}).items()):
+        for relative in sorted(set(counts[rule]) | set(baseline.get(rule, {}))):
             if (relative, rule) in exempt:
                 continue
-            now = counted[rule].get(relative, 0)
-            if now < allowance:
-                gained.append(
-                    f"{relative}: [{rule}] {now} left, baseline {allowance}. "
-                    f"Lower the baseline to {now} so the ground gained is held."
-                )
+            now, was = counts[rule].get(relative, 0), baseline.get(rule, {}).get(relative, 0)
+            if now > was:
+                message = MESSAGES[rule].format(owner=owner_for(relative))
+                for number, source in places[rule][relative][was:]:
+                    errors.append(f"{rule}: {relative} {was} -> {now} ({relative}:{number}); {message}; "
+                                  f"fix: python3 scripts/ci/guards.py explain check_test_waits:{rule}\n    {source}")
+            elif now < was:
+                gained.append(f"{rule}: {relative} {was} -> {now}; lower the baseline to hold the ground gained; "
+                              "fix: python3 scripts/ci/check_test_waits.py --tighten")
     return errors, gained
 
 
@@ -832,10 +875,10 @@ def selftest() -> None:
     baseline = {"sleep-then-assert": {"a.rs": 1}}
     one = {"a.rs": [("sleep-then-assert", 3, "sleep(d)")]}
     two = {"a.rs": [("sleep-then-assert", 3, "sleep(d)"), ("sleep-then-assert", 9, "sleep(d)")]}
-    assert report(one, baseline, set()) == ([], []), "ratchet holds at the baseline"
-    assert report(two, baseline, set())[0], "a new wait above the baseline is refused"
-    assert report({}, baseline, set())[1], "ground gained must lower the baseline"
-    assert report(two, baseline, {("a.rs", "sleep-then-assert")}) == ([], []), "registered"
+    assert report(measurement(one), baseline, set()) == ([], []), "ratchet holds at the baseline"
+    assert report(measurement(two), baseline, set())[0], "a new wait above the baseline is refused"
+    assert report(measurement({}), baseline, set())[1], "ground gained must lower the baseline"
+    assert report(measurement(two), baseline, {("a.rs", "sleep-then-assert")}) == ([], []), "registered"
 
     h1 = (
         "submit_background inflight 'x'\n"
@@ -1004,84 +1047,213 @@ def selftest() -> None:
                 f"{relative} is inside the claimed tree {root_name}/ and a dialect "
                 "reads its suffix, but no INPUT_GLOBS pattern covers it"
             )
+    _selftest_cli()
     print("check_test_waits selftest: the decision table holds")
 
 
-def main() -> int:
-    baseline, allow = load_baseline(BASELINE)
-    exempt = allowed(allow)
-    found: dict[str, list[tuple[str, int, str]]] = {}
-    empty_reasons: list[str] = []
-    for relative, text in sources(ROOT).items():
-        violations = file_violations(relative, text)
-        if violations:
-            found[relative] = violations
-        for reason in short_reasons(text):
-            empty_reasons.append(
-                f"{relative}: `awaken-wait: {reason}` must say why in at least "
-                f"{MIN_REASON} characters"
-            )
-    errors, gained = report(found, baseline, exempt)
-    for problem in empty_reasons + errors + gained:
-        print(f"ERROR: {problem}", file=sys.stderr)
-    if empty_reasons or errors or gained:
-        print(
-            f"\nRegenerate the ratchet with `python3 {Path(__file__).name} --write-baseline` "
-            "only after the new waits are converted, never to admit them.",
-            file=sys.stderr,
-        )
-        return 1
-    total = sum(len(v) for v in found.values())
-    print(f"OK - test waits held at the baseline ({total} registered, none new).")
-    return 0
+def main(argv: list[str] | None = None) -> int:
+    def check(current, previous):
+        errors, exempt = allowed(previous.get("allow", []))
+        growth, gained = report(current, previous.get("baseline", {}), exempt)
+        return errors + growth + gained
 
+    def lower(current, previous):
+        errors, exempt = allowed(previous.get("allow", []))
+        growth, _ = report(current, previous.get("baseline", {}), exempt)
+        if errors or growth:
+            # Keep the old authority so the shared candidate check refuses a
+            # new bad wait, even if an explicit write carries a CLI reason.
+            return previous
+        counts, _ = current
+        return {**previous, "baseline": {
+            **previous.get("baseline", {}),
+            **{rule: {path: count for path, count in sorted(counts[rule].items())
+                      if (path, rule) not in exempt} for rule in RULES},
+        }}
 
-def write_baseline() -> int:
-    """Rewrite the ratchet from the working tree (a deliberate, reviewed act)."""
-
-    _, allow = load_baseline(BASELINE)
-    exempt = allowed(allow)
-    counted: dict[str, dict[str, int]] = {rule: {} for rule in RULES}
-    for relative, text in sources(ROOT).items():
-        for rule, _, _ in file_violations(relative, text):
-            if (relative, rule) in exempt:
-                continue
-            counted[rule][relative] = counted[rule].get(relative, 0) + 1
-    document = {
-        "baseline": {rule: dict(sorted(paths.items())) for rule, paths in counted.items()},
-        "allow": allow,
-    }
-    BASELINE.write_text(json.dumps(document, indent=2, sort_keys=False) + "\n", encoding="utf-8")
-    print(f"wrote {BASELINE.relative_to(ROOT)}")
-    return 0
-
-
-# One canonical spelling per flag, and nothing else admitted. A checker that
-# accepted an unknown argument and fell through to its normal scan exited zero
-# having run something other than what the caller asked for: that is how
-# `check-all.sh` invoked `--selftest` for years while the flag was `--self-test`
-# and the self-test never once executed. ``allow_abbrev=False`` closes the
-# second half: without it ``--self-tes`` is also accepted, so the flag has no
-# single spelling.
-def parse(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        prog="check_test_waits.py", description=__doc__, allow_abbrev=False
+    return _architecture_ratchet.baseline_cli(
+        argv, prog="check_test_waits.py", description=__doc__, baseline_path=BASELINE,
+        self_test=selftest, measure=measure, check=check, tighten=lower,
+        write=lambda current, previous, _reason: (lower(current, previous), []),
     )
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument(
-        "--self-test", action="store_true", help="run the decision table instead of the scan"
-    )
-    mode.add_argument(
-        "--write-baseline", action="store_true", help="rewrite the committed wait baseline"
-    )
-    return parser.parse_args(argv)
+
+
+def _selftest_cli() -> None:
+    """CLI cause/effect graph and decision table, attached to the tested cases.
+
+    Valid argv AND existing baseline AND valid source/allow reasons -> one
+    scan -> per-key growth? refuse : decrease? read-only refusal / write a
+    checked lower candidate : equal/no write. Any hard failure blocks writes.
+    Constraints: modes exclusive; a nonempty reason belongs only to write;
+    growth and decrease may coexist and never cancel; CLI reason cannot admit
+    bad waits or replace a source/allow decision. Effects: status, exact bytes,
+    one source/scanner invocation, diagnostics and retained foreign metadata.
+
+    TCLI1 equal/fall x default/check -> read-only success/refusal.
+    TCLI2 equal/fall x tighten/write -> no write/shrink, preserve metadata.
+    TCLI3 growth/new path/new rule/mixed fall -> refuse, even reasoned write.
+    TCLI4 short source/allow reason -> hard refusal; length 20 is admitted.
+    TCLI5 genuine timing/valid path+rule allow -> scoped exemption, data kept.
+    TCLI6 missing/empty baseline cannot initialize unconverted waits.
+    TCLI7 invalid/abbreviated/conflicting argv -> usage before measurement.
+    TCLI8 self-test -> existing tests, no normal scan or baseline write.
+    TCLI9 every measured mode -> one real scan, once per actual source file.
+    TCLI10 original corpus/argv and helper closure -> generated hooks/navigation.
+    """
+    import contextlib
+    import io
+    import tempfile
+    from unittest.mock import patch
+
+    path = "e2e/probe.mjs"
+    sleep = "await sleep(10);\nassert.equal(calls, 1);\n"
+    held = {"baseline": {rule: {} for rule in RULES}, "allow": [],
+            "owner": "waits", "expiry": "after-conversion", "foreign": {"exact": [1, 2]}}
+    held["baseline"]["sleep-then-assert"][path] = 1
+    held["baseline"]["future-rule"] = {"foreign-path": 7, "owner": "other", "expiry": "later"}
+    held["growth_reasons"] = {"future-rule": {"foreign-path": "  preserve exact reason  "}}
+    original_sources, original_scanner = sources, file_violations
+
+    def invoke(argv, texts=None, baseline=held):
+        # TCLI9 uses the actual sources(), file reads and scanner, rather than
+        # a stub measurement that would miss a writer's second corpus scan.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "baseline.json"
+            if baseline is not None:
+                target.write_text(json.dumps(baseline) + "\n", encoding="utf-8")
+            for relative, text in (texts if texts is not None else {path: sleep}).items():
+                source = root / relative
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_text(text, encoding="utf-8")
+            before = target.read_bytes() if target.exists() else None
+            observed, tests = [], []
+
+            def scan(actual_root):
+                observed.append("sources")
+                return original_sources(actual_root)
+
+            def classify(relative, text):
+                observed.append(relative)
+                return original_scanner(relative, text)
+
+            output, errors = io.StringIO(), io.StringIO()
+            with patch.dict(main.__globals__, {"ROOT": root, "BASELINE": target, "sources": scan,
+                    "file_violations": classify, "selftest": lambda: tests.append("selftest")}), \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                try:
+                    status = main(argv)
+                except SystemExit as error:
+                    status = error.code
+            after = target.read_bytes() if target.exists() else None
+            if observed:
+                assert observed.count("sources") == 1, "TCLI9 exactly one corpus read"
+                scanned = [item for item in observed if item != "sources"]
+                assert set(scanned) == set(texts if texts is not None else {path: sleep}), "TCLI9 complete fixture"
+                assert len(scanned) == len(set(scanned)), "TCLI9 each actual file scanned once"
+            return status, before, after, observed, tests, output.getvalue(), errors.getvalue()
+
+    for argv in ([], ["--check"]):
+        status, before, after, observed, _, _, _ = invoke(argv)
+        assert status == 0 and before == after and observed, f"TCLI1 equal {argv}"
+        status, before, after, observed, _, _, errors = invoke(argv, {})
+        assert status == 1 and before == after and observed and "--tighten" in errors, "TCLI1 strict fall"
+    writes = (["--tighten"], ["--write-baseline"], ["--write-baseline", "--reason", "reviewed"])
+    for argv in writes:
+        status, before, after, _, _, _, _ = invoke(argv)
+        assert status == 0 and before == after, "TCLI2 equal never rewrites bytes"
+        status, _, after, _, _, _, _ = invoke(argv, {})
+        document = json.loads(after)
+        assert status == 0 and document["baseline"]["sleep-then-assert"] == {}, "TCLI2 shrink"
+        assert {key: value for key, value in document.items() if key != "baseline"} == \
+               {key: value for key, value in held.items() if key != "baseline"}, "TCLI2 root metadata exact"
+        assert document["baseline"]["future-rule"] == held["baseline"]["future-rule"], "TCLI2 foreign rule exact"
+
+    modes = ([], ["--check"], *writes)
+    empty = {**held, "baseline": {"future-rule": held["baseline"]["future-rule"]}}
+    cases = (({path: sleep + sleep}, held), ({"e2e/new.mjs": sleep}, held),
+             ({path: sleep}, empty))
+    for texts, baseline in cases:
+        for argv in modes:
+            status, before, after, _, _, _, errors = invoke(argv, texts, baseline)
+            assert status == 1 and before == after, f"TCLI3/TCLI6 refuse growth {argv}"
+            assert "sleep-then-assert:" in errors and " -> " in errors and "fix:" in errors, "TCLI3 diagnostic"
+    # TCLI3 mixed decrease of old path and increase of new path is not a net
+    # zero allowance transfer: the same report must still name the new wait.
+    status, before, after, _, _, _, errors = invoke(["--write-baseline", "--reason", "move"],
+                                                  {"e2e/new.mjs": sleep})
+    assert status == 1 and before == after and "e2e/new.mjs:1" in errors, "TCLI3 mixed growth/fall"
+
+    for argv in modes:
+        status, before, after, _, _, _, errors = invoke(argv, {path: "// awaken-wait: flaky\n" + sleep})
+        assert status == 1 and before == after and "wait-reason:" in errors, "TCLI4 short exempt marker"
+        invalid = {**held, "allow": [{"path": path, "rule": "sleep-then-assert", "reason": "short"}]}
+        status, before, after, _, _, _, errors = invoke(argv, baseline=invalid)
+        assert status == 1 and before == after and "allow-reason:" in errors, "TCLI4 short allow"
+    for reason in ("x" * MIN_REASON, "the lease TTL itself is the subject of this test"):
+        for argv in writes:
+            status, _, after, _, _, _, _ = invoke(argv, {path: "// awaken-wait: " + reason + "\n" + sleep})
+            assert status == 0 and json.loads(after)["baseline"]["sleep-then-assert"] == {}, "TCLI4/TCLI5 valid reason"
+    decision = {"path": path, "rule": "sleep-then-assert", "reason": "x" * MIN_REASON,
+                "owner": "test-owner", "expiry": "review", "unknown": {"keep": True}}
+    registered = {**held, "allow": [decision]}
+    for argv in modes:
+        status, _, after, _, _, _, _ = invoke(argv, baseline=registered)
+        assert status == 0 and json.loads(after)["allow"] == [decision], "TCLI5 registered decision exact"
+        status, before, after, _, _, _, _ = invoke(argv, {"e2e/new.mjs": sleep}, registered)
+        assert status == 1 and before == after, "TCLI5 allow does not cover another file"
+    other_rule = "waitForValue(read, (v) => v.status === 'idle');\n"
+    status, before, after, _, _, _, errors = invoke(writes[-1], {path: other_rule}, registered)
+    assert status == 1 and before == after and "generic-settle:" in errors, "TCLI5 allow does not cover another rule"
+    status, _, after, _, _, _, _ = invoke(writes[0], {path: sleep + sleep}, registered)
+    assert status == 0 and json.loads(after)["allow"] == [decision], "TCLI5 allowed occurrences remain exempt"
+
+    for argv in modes:
+        for texts in ({}, {path: sleep}):
+            status, before, after, observed, _, _, _ = invoke(argv, texts, None)
+            assert status == 1 and before is None and after is None and not observed, "TCLI6 missing refuses before scan"
+    for argv in (["--awaken-gate-argument-probe"], ["--self-tes"], ["--selftest"], ["--write-baselin"],
+                 ["--check", "--tighten"], ["--self-test", "--write-baseline"],
+                 ["--check", "--reason", "reviewed"], ["--tighten", "--reason", "reviewed"],
+                 ["--write-baseline", "--reason", ""], ["--write-baseline", "--reason", "   "]):
+        status, before, after, observed, _, _, errors = invoke(argv)
+        assert status == 2 and before == after and not observed and "usage:" in errors, f"TCLI7 {argv}"
+    status, before, after, observed, tests, _, _ = invoke(["--self-test"])
+    assert status == 0 and before == after and not observed and tests == ["selftest"], "TCLI8 self-test only"
+    # TCLI9 language owners share the same measurement and candidate: shell's
+    # sleep/assert and Rust's inline test projection are still actually scanned.
+    texts = {"e2e/probe.sh": "sleep 2\n[ \"$n\" -eq 1 ] || fail bad\n",
+             "crates/fixture/src/lib.rs": "pub fn product() {}\n#[cfg(test)]\nmod tests {\n"
+                 "    // awaken-wait: the lease TTL itself is the subject of this test\n"
+                 "    tokio::time::sleep(d).await;\n    assert_eq!(calls, 1);\n}\n"}
+    shell_held = {**held, "baseline": {"sleep-then-assert": {"e2e/probe.sh": 1}}}
+    for argv in modes:
+        status, _, _, observed, _, _, _ = invoke(argv, texts, shell_held)
+        assert status == 0 and observed.count("sources") == 1, "TCLI9 real multi-dialect scan"
+    # TCLI10 source declaration remains the corpus/filter and sole hook input
+    # closure. Navigation reads RULES/docstring as AST, not another rule registry.
+    import generate_hooks
+    import guards
+    import ast
+    helpers = ("_architecture_ratchet.py", "_crate_boundary_workspace.py", "_arch_fitness.py", "_crate_dependency_fitness.py")
+    for name in helpers:
+        assert any(generate_hooks.glob_matches(pattern, "scripts/ci/" + name)
+                   for pattern in INPUT_GLOBS), "TCLI10 helper input closure"
+    assert ".py" not in DIALECTS, "TCLI10 helpers do not widen test corpus"
+    own = Path(__file__).read_text(encoding="utf-8")
+    tree = ast.parse(own)
+    assert set(RULES) <= set(guards.rule_names(tree, ast.get_docstring(tree))), "TCLI10 source rule navigation"
+    declarations = generate_hooks.declared_input_globs(ROOT / "scripts/ci")
+    hooks = (ROOT / "lefthook.yml").read_text(encoding="utf-8")
+    assert generate_hooks.render(hooks, declarations) == hooks, "TCLI10 generated hook fixpoint"
+    region = "".join(generate_hooks._region([Path(__file__).name], declarations))
+    declared = declarations[Path(__file__).name]
+    assert all(pattern in region for pattern in declared), "TCLI10 hook uses the complete owned declaration"
+    for name in helpers:
+        assert any(generate_hooks.glob_matches(pattern, "scripts/ci/" + name)
+                   for pattern in declared), "TCLI10 helper edits trigger owning hook"
+
 
 
 if __name__ == "__main__":
-    _arguments = parse(sys.argv[1:])
-    if _arguments.self_test:
-        selftest()
-        raise SystemExit(0)
-    if _arguments.write_baseline:
-        raise SystemExit(write_baseline())
     raise SystemExit(main())
