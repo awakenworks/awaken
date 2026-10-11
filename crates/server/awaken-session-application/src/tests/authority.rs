@@ -13,7 +13,6 @@ use super::*;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_session_repository_contract::LifecycleOutbox as _;
-use awaken_session_execution_contract::SessionCoordinationReads as _;
 use awaken_session_state_contract::ManagedLifecycleFact;
 use awaken_session_types::SessionId;
 mod coordinated_resources;

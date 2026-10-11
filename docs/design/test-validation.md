@@ -105,8 +105,13 @@ bash scripts/ci/check-trusted-host-portability.sh
 Required focused Rust runs list and execute identical arguments, then compare
 named outcomes and occurrence counts. Equal totals with different names,
 empty selections, ignored cases, fixture skips, and failed processes cannot
-qualify. The listing and execution share one deadline; PostgreSQL stages also
-share the existing whole-gate budget.
+qualify. The existing host admission accepts listing and execution as one job
+before their shared execution deadline starts. The ordinary command sequence
+checks the same working-source identity before and after each phase; an invalid
+listing starts no test run. The named receipt and reported count use the same
+validated observation. Original command failures remain distinct from later
+source or receipt failures. PostgreSQL stages also share the existing whole-gate
+wall-clock budget; this change does not extend it or qualify a full gate.
 
 ## Reduce total time without losing evidence
 
