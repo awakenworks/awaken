@@ -4,7 +4,7 @@
 // @formal evidence session_event_batch.run_reservation_precedes_distinct_activity_receipt
 // @formal evidence session_execution.initial_event_path_reaches_idle_only_after_full_settlement
 // @formal evidence tool_result.one_pending_occurrence_has_one_admitted_reply
-// awaken-allow(file-limit-ceiling): 6600 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 6395 (legacy oversized test file: split, never grow)
 use awaken_session_execution_contract::{
     CoordinationRuntime as _, SessionCoordinationReads as _, StreamingRunRuntime as _,
     ThreadReadRuntime as _,

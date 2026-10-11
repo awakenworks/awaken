@@ -859,6 +859,8 @@ mod tests {
         // C1 same-generation renewal succeeds; C2 positive 30ms response horizon
         // gives the canonical 20ms proof; C3 Control I/O advances/regresses the
         // local elapsed clock, independently of the Tokio scheduling clock.
+        // C4 the original assignment carries the archive no-Create witness.
+        // T1 must preserve it across renewal; T2-T4 install no assignment.
         // E1 only strictly-before expiry installs the exact remaining 1us and
         // keeps the existing drive; E2 equal/after/regressed observations stop
         // the drive with StaleOwnership and publish no terminal assignment.
@@ -895,9 +897,11 @@ mod tests {
                 let calls = calls.clone();
                 async move {
                     let renewal_runtime = runtime.clone();
+                    let mut initial = local_assignment(10_000_000);
+                    initial.environment_creation_not_attempted = true;
                     supervise_local_terminal_cleanup_lease(
                         &awaken_session_types::SessionId::from("session"),
-                        &local_assignment(10_000_000),
+                        &initial,
                         runtime.as_ref(), runtime.as_ref(),
                         async move {
                             let _drop = DriveDropGuard(dropped);
@@ -940,6 +944,10 @@ mod tests {
                 "{rule}"
             );
             if admitted {
+                assert!(
+                    runtime.installed.lock().unwrap()[0].environment_creation_not_attempted,
+                    "{rule} preserve the original no-Create witness"
+                );
                 assert!(!task.is_finished(), "{rule} drive remains pending");
                 assert_eq!(
                     runtime.installed_remaining_us.load(Ordering::SeqCst),
@@ -1053,6 +1061,10 @@ mod tests {
         );
         for (installed, command) in runtime.installed.lock().unwrap().iter().zip(&commands) {
             assert_eq!(installed.session_id, command.session_id, "L1/E2");
+            assert!(
+                !installed.environment_creation_not_attempted,
+                "L1/E2 renewal must not invent a no-Create witness"
+            );
             assert_eq!(
                 installed.projection, expected_projection,
                 "L1/E2 renewal must reuse the original frozen projection"
