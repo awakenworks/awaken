@@ -5,7 +5,7 @@
 //! Exporter wiring from typed deployment configuration, with shutdown flushing.
 //!
 //! Two collector sinks are supported, in priority order:
-//!   1. `trace_file` — every finished span appended as one JSON line. This
+//!   1. `trace_file` — bounded, asynchronous JSON-line diagnostics. This
 //!      is the collector-free sink the e2e trace validator reads back, so span
 //!      trees can be asserted without a running OTLP collector.
 //!   2. configured OTLP endpoint — standard OTLP/HTTP
@@ -45,9 +45,7 @@ where
 
     if let Some(path) = &observability.trace_file {
         let exporter = file_exporter::JsonFileSpanExporter::new(path.as_os_str().to_owned());
-        let provider = SdkTracerProvider::builder()
-            .with_simple_exporter(exporter)
-            .build();
+        let provider = file_exporter::provider(exporter);
         let tracer = provider.tracer("awaken-observability");
         opentelemetry::global::set_tracer_provider(provider.clone());
         let _ = PROVIDER.set(provider);
@@ -150,9 +148,27 @@ mod file_exporter {
     use opentelemetry_sdk::error::{OTelSdkError, OTelSdkResult};
     use opentelemetry_sdk::trace::{SpanData, SpanExporter};
 
+    const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
+    pub(super) fn provider(exporter: impl SpanExporter + 'static) -> super::SdkTracerProvider {
+        use opentelemetry_sdk::trace::{BatchConfigBuilder, BatchSpanProcessor};
+        let config = BatchConfigBuilder::default()
+            .with_max_queue_size(512)
+            .with_max_export_batch_size(128)
+            .build();
+        super::SdkTracerProvider::builder()
+            .with_span_processor(
+                BatchSpanProcessor::builder(exporter)
+                    .with_batch_config(config)
+                    .build(),
+            )
+            .build()
+    }
+
     #[derive(Debug)]
     pub(crate) struct JsonFileSpanExporter {
         path: OsString,
+        max_bytes: u64,
         // Serialize concurrent batch writes so JSON lines never interleave.
         lock: Mutex<()>,
     }
@@ -161,26 +177,17 @@ mod file_exporter {
         pub(crate) fn new(path: OsString) -> Self {
             Self {
                 path,
+                max_bytes: MAX_FILE_BYTES,
                 lock: Mutex::new(()),
             }
         }
 
         fn write_batch(&self, batch: &[SpanData]) -> std::io::Result<()> {
-            let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-            let mut file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&self.path)?;
-            for span in batch {
+            self.write_lines(batch.iter().map(|span| {
                 let attrs: serde_json::Map<String, serde_json::Value> = span
                     .attributes
                     .iter()
-                    .map(|kv| {
-                        (
-                            kv.key.to_string(),
-                            serde_json::Value::String(kv.value.to_string()),
-                        )
-                    })
+                    .map(|kv| (kv.key.to_string(), serde_json::Value::String(kv.value.to_string())))
                     .collect();
                 let parent = span.parent_span_id;
                 let line = serde_json::json!({
@@ -194,7 +201,62 @@ mod file_exporter {
                     },
                     "attributes": attrs,
                 });
-                writeln!(file, "{line}")?;
+                let mut bytes = serde_json::to_vec(&line)?;
+                bytes.push(b'\n');
+                Ok(bytes)
+            }))
+        }
+
+        fn write_lines(
+            &self,
+            lines: impl IntoIterator<Item = std::io::Result<Vec<u8>>>,
+        ) -> std::io::Result<()> {
+            let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+            let mut rollover = self.path.clone();
+            rollover.push(".1");
+            // An older append-only sink may already exceed the new retention
+            // budget. Retain no oversized diagnostic file across this upgrade.
+            match std::fs::metadata(&rollover) {
+                Ok(metadata) if metadata.len() > self.max_bytes => std::fs::remove_file(&rollover)?,
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)?;
+            let mut size = file.metadata()?.len();
+            if size > self.max_bytes {
+                file.set_len(0)?;
+                size = 0;
+            }
+            for line in lines {
+                let line = line?;
+                let length = u64::try_from(line.len()).map_err(std::io::Error::other)?;
+                if length > self.max_bytes {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "trace record exceeds file retention budget",
+                    ));
+                }
+                if size > self.max_bytes - length {
+                    file.flush()?;
+                    drop(file);
+                    match std::fs::remove_file(&rollover) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(error),
+                    }
+                    std::fs::rename(&self.path, &rollover)?;
+                    file = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&self.path)?;
+                    size = 0;
+                }
+                file.write_all(&line)?;
+                size += length;
             }
             file.flush()
         }
@@ -211,21 +273,210 @@ mod file_exporter {
             async move { result }
         }
     }
+
+    #[cfg(test)]
+    mod retention_tests {
+        use super::*;
+
+        fn fixture() -> (std::path::PathBuf, JsonFileSpanExporter) {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "awaken-trace-retention-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&path).unwrap();
+            let mut exporter = JsonFileSpanExporter::new(path.join("trace.jsonl").into_os_string());
+            exporter.max_bytes = 8;
+            (path, exporter)
+        }
+
+        #[test]
+        fn capacity_decision_table_keeps_two_bounded_whole_line_files() {
+            // Causes: current size S, record size R including newline, cap B.
+            // R<=B and S+R<=B -> append; R<=B and S+R>B -> replace one rollover;
+            // S>B -> discard legacy excess; R>B -> error with no record write.
+            // Boundary rows use exactly B, B+1 and multiple rotations. Each
+            // retained line must remain valid JSON, never a truncated record.
+            let (dir, exporter) = fixture();
+            let write = |value: &str| exporter.write_lines([Ok(value.as_bytes().to_vec())]);
+            write("0\n").unwrap();
+            write("1\n2\n3\n").unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&exporter.path).unwrap(),
+                "0\n1\n2\n3\n",
+                "exact cap appends"
+            );
+            write("4\n").unwrap();
+            assert_eq!(
+                std::fs::read_to_string(dir.join("trace.jsonl.1")).unwrap(),
+                "0\n1\n2\n3\n"
+            );
+            write("5\n6\n7\n").unwrap();
+            write("8\n").unwrap();
+            assert_eq!(
+                std::fs::read_to_string(dir.join("trace.jsonl.1")).unwrap(),
+                "4\n5\n6\n7\n",
+                "one prior file replaces older rollover"
+            );
+            let before = std::fs::read(&exporter.path).unwrap();
+            assert_eq!(
+                write("12345678\n").unwrap_err().kind(),
+                std::io::ErrorKind::InvalidData
+            );
+            assert_eq!(std::fs::read(&exporter.path).unwrap(), before);
+            for path in [&exporter.path, &dir.join("trace.jsonl.1").into_os_string()] {
+                let contents = std::fs::read_to_string(path).unwrap();
+                assert!(contents.len() <= 8);
+                for line in contents.lines() {
+                    serde_json::from_str::<serde_json::Value>(line).unwrap();
+                }
+            }
+            std::fs::write(&exporter.path, "0123456789").unwrap();
+            std::fs::write(dir.join("trace.jsonl.1"), "0123456789").unwrap();
+            write("9\n").unwrap();
+            assert_eq!(std::fs::read_to_string(&exporter.path).unwrap(), "9\n");
+            assert!(
+                !dir.join("trace.jsonl.1").exists(),
+                "legacy excess cannot remain in rollover"
+            );
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+
+        #[test]
+        fn missing_parent_returns_export_failure_without_creating_storage() {
+            // Missing parent -> I/O error; diagnostics never provision another
+            // directory or invent successful persistence after this failure.
+            let (dir, mut exporter) = fixture();
+            exporter.path = dir.join("absent/trace.jsonl").into_os_string();
+            assert_eq!(
+                exporter
+                    .write_lines([Ok(b"0\n".to_vec())])
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::NotFound
+            );
+            assert!(!dir.join("absent").exists());
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+
+        #[test]
+        fn concurrent_rotation_retains_complete_lines_within_the_same_budget() {
+            // Concurrent writers + repeated rollover -> the existing exporter
+            // mutex serializes rename/write. The retained tail may drop older
+            // records, but neither file can grow or contain a partial JSON line.
+            let (dir, exporter) = fixture();
+            let exporter = std::sync::Arc::new(exporter);
+            let writers = (0..4)
+                .map(|value| {
+                    let exporter = exporter.clone();
+                    std::thread::spawn(move || {
+                        for _ in 0..50 {
+                            exporter
+                                .write_lines([Ok(format!("{value}\n").into_bytes())])
+                                .unwrap();
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            for writer in writers {
+                writer.join().unwrap();
+            }
+            for path in [dir.join("trace.jsonl"), dir.join("trace.jsonl.1")] {
+                let bytes = std::fs::read(&path).unwrap();
+                assert!(bytes.len() <= 8);
+                assert_eq!(bytes.last(), Some(&b'\n'));
+                for line in String::from_utf8(bytes).unwrap().lines() {
+                    let value: u8 = serde_json::from_str(line).unwrap();
+                    assert!(value < 4);
+                }
+            }
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
 }
 
 #[cfg(test)]
 mod file_sink_tests {
     use super::file_exporter::JsonFileSpanExporter;
     use opentelemetry::trace::TracerProvider as _;
-    use opentelemetry_sdk::trace::SdkTracerProvider;
     use tracing_subscriber::Registry;
     use tracing_subscriber::layer::SubscriberExt;
+
+    #[test]
+    fn blocked_export_does_not_block_the_business_span_end() {
+        use opentelemetry::trace::{Span as _, Tracer as _};
+        use opentelemetry_sdk::trace::{SpanData, SpanExporter};
+        use std::sync::{
+            Mutex,
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        };
+        use std::time::Duration;
+
+        // Causes: production SDK processor selected + first export blocked.
+        // Effect: a second request's span can end before the export is released.
+        // Channels establish that exact ordering; bounded receives prevent a
+        // regressed synchronous exporter from hanging the suite. Release/join
+        // happen before the assertion, including the negative control path.
+        #[derive(Debug)]
+        struct GatedExporter {
+            first: AtomicBool,
+            started: mpsc::SyncSender<()>,
+            release: Mutex<mpsc::Receiver<()>>,
+        }
+        impl SpanExporter for GatedExporter {
+            fn export(
+                &self,
+                _: Vec<SpanData>,
+            ) -> impl std::future::Future<Output = opentelemetry_sdk::error::OTelSdkResult> + Send
+            {
+                if self.first.swap(false, Ordering::SeqCst) {
+                    self.started.send(()).unwrap();
+                    self.release.lock().unwrap().recv().unwrap();
+                }
+                async { Ok(()) }
+            }
+        }
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+        let provider = super::file_exporter::provider(GatedExporter {
+            first: AtomicBool::new(true),
+            started: started_tx,
+            release: Mutex::new(release_rx),
+        });
+        let first = std::thread::spawn({
+            let provider = provider.clone();
+            move || {
+                provider.tracer("file-sink-test").start("first").end();
+                provider.force_flush().unwrap();
+            }
+        });
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let (finished_tx, finished_rx) = mpsc::sync_channel(1);
+        let second = std::thread::spawn({
+            let tracer = provider.tracer("file-sink-test");
+            move || {
+                tracer.start("second").end();
+                finished_tx.send(()).unwrap();
+            }
+        });
+        let finished_before_release = finished_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+        release_tx.send(()).unwrap();
+        first.join().unwrap();
+        second.join().unwrap();
+        provider.shutdown().unwrap();
+        assert!(
+            finished_before_release,
+            "a diagnostic file stall cannot delay a business span end"
+        );
+    }
 
     /// The configured trace-file sink is the collector-free contract the e2e trace
     /// validator reads back: each finished span appended as ONE JSON line with a
     /// fixed shape. This drives a real span through the exporter (exactly as
     /// `build_layer` wires it, minus the env/global install) and asserts the emitted
-    /// line's fields round-trip. Deterministic: a simple exporter flushes on span end.
+    /// line's fields round-trip through the production batch processor and explicit flush.
     #[test]
     fn exported_span_round_trips_as_one_json_line() {
         // Unique temp path (no `tempfile` dev-dep); cleaned up at the end.
@@ -239,9 +490,9 @@ mod file_sink_tests {
                 .as_nanos()
         ));
 
-        let provider = SdkTracerProvider::builder()
-            .with_simple_exporter(JsonFileSpanExporter::new(path.clone().into_os_string()))
-            .build();
+        let provider = super::file_exporter::provider(JsonFileSpanExporter::new(
+            path.clone().into_os_string(),
+        ));
         let tracer = provider.tracer("awaken-observability-file-sink-test");
         let subscriber =
             Registry::default().with(tracing_opentelemetry::layer().with_tracer(tracer));
