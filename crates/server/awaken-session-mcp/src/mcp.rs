@@ -40,7 +40,7 @@ pub use sessions::{McpGenerationAuthority, McpQuiescenceProof, McpSessionSlots, 
 /// Native Worker-side MCP calls may legitimately outlive control-plane
 /// discovery. This policy is deliberately private runtime composition, not
 /// attachment desired state or a public Managed Agents wire extension.
-const MATERIALIZED_HTTP_MCP_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(300);
+const MATERIALIZED_MCP_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Project private Runtime material to ACP configuration. Worker-held material
 /// becomes an exact-generation loopback route; an explicitly admitted
@@ -286,8 +286,7 @@ impl McpProbe for ExtMcpProbe {
 pub(crate) async fn connect_materialized(
     staged: &[McpTransportMaterial],
 ) -> Result<McpWiring, McpError> {
-    connect_materialized_with_tool_call_timeout(staged, MATERIALIZED_HTTP_MCP_TOOL_CALL_TIMEOUT)
-        .await
+    connect_materialized_with_tool_call_timeout(staged, MATERIALIZED_MCP_TOOL_CALL_TIMEOUT).await
 }
 
 async fn connect_materialized_with_tool_call_timeout(
@@ -371,6 +370,7 @@ pub(crate) async fn connect_sandbox_stdio(
             server.name
         ))
     })?;
+    let transport = transport.tool_call_timeout(MATERIALIZED_MCP_TOOL_CALL_TIMEOUT);
     let list_changed = transport.subscribe_list_changed();
     let transport: Arc<dyn awaken_ext_mcp::transport::McpToolTransport> = Arc::new(transport);
     let mut wiring = McpWiring::empty();
@@ -734,6 +734,92 @@ mod acp_projection_tests {
 mod native_mcp_wiring_tests {
     use super::*;
 
+    struct GatedSandboxTool {
+        started: tokio::sync::Notify,
+        returned: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_ext_mcp::jsonrpc::ServerRequestHandler for GatedSandboxTool {
+        async fn handle(
+            &self,
+            _id: &serde_json::Value,
+            method: &str,
+            _params: serde_json::Value,
+        ) -> Result<serde_json::Value, awaken_ext_mcp::jsonrpc::ServerRequestError> {
+            Ok(match method {
+                "initialize" => {
+                    serde_json::json!({"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"sandbox","version":"1"}})
+                }
+                "tools/list" => {
+                    serde_json::json!({"tools":[{"name":"echo","inputSchema":{"type":"object"}}]})
+                }
+                "tools/call" => {
+                    self.started.notify_one();
+                    self.returned.notified().await;
+                    serde_json::json!({"content":[{"type":"text","text":"returned"}]})
+                }
+                _ => {
+                    return Err(
+                        awaken_ext_mcp::jsonrpc::ServerRequestError::method_not_found(method),
+                    );
+                }
+            })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sandbox_stdio_wiring_uses_the_same_materialized_tool_budget_as_http() {
+        // S1 sandbox process is already attached; S2 initialize/discovery returns;
+        // S3 tools/call crosses the shared 30s control deadline but returns before
+        // the one 300s materialized tool deadline => original result, no retry.
+        // S4 still pending past 300s => Indeterminate, never pretend termination.
+        // The production constructor and canonical Peer exchange real duplex
+        // frames; virtual time exercises both boundary outcomes without sleeps.
+        for expires in [false, true] {
+            let (client, server) = tokio::io::duplex(64 * 1024);
+            let handler = Arc::new(GatedSandboxTool {
+                started: tokio::sync::Notify::new(),
+                returned: tokio::sync::Notify::new(),
+            });
+            let (reader, writer) = tokio::io::split(server);
+            let (_peer, _notifications) =
+                awaken_ext_mcp::jsonrpc::JsonRpcPeer::new(reader, writer, Some(handler.clone()));
+            let staged = McpTransportMaterial {
+                name: "sandbox".into(),
+                prompts_as_skills: false,
+                transport: McpTransportMaterialKind::SandboxStdio {
+                    command: "unused-owner-launch".into(),
+                    args: vec![],
+                },
+            };
+            let wiring = connect_sandbox_stdio(&staged, Box::new(client))
+                .await
+                .unwrap();
+            let tools = wiring.plugins[0].resolve();
+            let executable = tools.dynamic_tools[0].executable();
+            let mut call = Box::pin(executable.invoke(awaken_tool_contract::tool::ToolCall {
+                call_id: "same-call".into(),
+                tool_id: "mcp__sandbox__echo".into(),
+                arguments: serde_json::json!({}),
+            }));
+            tokio::select! { result=&mut call=>panic!("returned before server: {result:?}"), _=handler.started.notified()=>{} }
+            tokio::time::advance(Duration::from_secs(if expires { 301 } else { 31 })).await;
+            if expires {
+                assert!(matches!(
+                    call.await,
+                    Err(awaken_tool_contract::tool::ToolError::Indeterminate(_))
+                ));
+            } else {
+                tokio::select! {biased; result=&mut call=>panic!("stdio kept the control deadline: {result:?}"), _=tokio::task::yield_now()=>{} }
+                handler.returned.notify_one();
+                let output = call.await.unwrap();
+                assert_eq!(output.call_id, "same-call");
+                assert_eq!(output.text(), "returned");
+            }
+        }
+    }
+
     // MCP Prompt Skill cause/effect table:
     // T1 opt-out -> tools only and no prompts/list; T2 opt-in + Native +
     // capability -> metadata catalog now, prompts/get only at activation;
@@ -764,10 +850,7 @@ mod native_mcp_wiring_tests {
         // 300s policy; neither attachment desired state nor probe wiring carries
         // this override. FMECA: omitting the host builder override silently leaves
         // materialized calls on the shared 30s default.
-        assert_eq!(
-            MATERIALIZED_HTTP_MCP_TOOL_CALL_TIMEOUT,
-            Duration::from_secs(300)
-        );
+        assert_eq!(MATERIALIZED_MCP_TOOL_CALL_TIMEOUT, Duration::from_secs(300));
         let (url, seen) =
             crate::test_mcp::start_with_tool_call_delay(Duration::from_millis(100)).await;
         let wiring = connect_materialized_with_tool_call_timeout(
