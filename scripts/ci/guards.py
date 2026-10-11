@@ -3,7 +3,7 @@
 
 `list` shows Python check entry points and the architecture fitness modules.
 `explain <rule>` accepts a guard's file stem or a rule declared in its RULES
-or documented bullet list. A repeated rule needs `<guard>:<rule>`. Names,
+or documented definition. A repeated rule needs `<guard>:<rule>`. Names,
 descriptions and advice come from those source files; there is no second
 catalog, baseline writer or check dispatcher here.
 """
@@ -21,7 +21,11 @@ from check_gate_arguments import is_entry_point
 
 INPUT_GLOBS: tuple[str, ...] = ("scripts/ci/*.py",)
 ROOT = Path(__file__).resolve().parents[2]
-DOCUMENTED_RULE = re.compile(r"^\* `([a-z][a-z0-9_-]*)`(?=[:\s(])", re.MULTILINE)
+# A definition names a rule and ends its name (and optional qualification)
+# with a colon. Merely mentioning a checker in a historical bullet is not a
+# rule declaration. Numbered rule IDs use the same explicit colon spelling.
+DOCUMENTED_RULE = re.compile(r"^\* `([a-z][a-z0-9_-]*)`(?:\s+\([^\n)]*\))?:", re.MULTILINE)
+NUMBERED_RULE = re.compile(r"^([A-Z][0-9]+):\s", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -36,8 +40,8 @@ class Guard:
 
 
 def rule_names(tree: ast.Module, documentation: str) -> tuple[str, ...]:
-    """Read declarations as syntax, including Rule(name, advice) and strings."""
-    names = set(DOCUMENTED_RULE.findall(documentation))
+    """Read literal rule declarations and explicit documentation definitions."""
+    names = set(DOCUMENTED_RULE.findall(documentation)) | set(NUMBERED_RULE.findall(documentation))
     for statement in tree.body:
         if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
             continue
@@ -51,6 +55,11 @@ def rule_names(tree: ast.Module, documentation: str) -> tuple[str, ...]:
         for item in elements:
             if isinstance(item, ast.Call) and isinstance(item.func, ast.Name) and item.func.id == "Rule":
                 item = item.args[0] if item.args else None
+            elif (isinstance(item, (ast.Tuple, ast.List)) and len(item.elts) == 2
+                  and all(isinstance(part, ast.Constant) and isinstance(part.value, str) for part in item.elts)):
+                # Some owners keep (rule ID, label) pairs. The label is advice,
+                # not a second rule, and no expression is evaluated here.
+                item = item.elts[0]
             if isinstance(item, ast.Constant) and isinstance(item.value, str):
                 names.add(item.value)
     return tuple(sorted(names))
@@ -128,7 +137,8 @@ def self_test() -> None:
     unchanged source bytes. Constraints: parsing precedes reads; a guard's
     executable body and measurement never run; no persisted navigation catalog.
     N1 list/explain -> source docs; N2 add/remove -> immediate discovery;
-    N3 string/Rule/dict/doc rule -> lookup; N4 ambiguity/unknown -> refusal;
+    N3 string/Rule/dict/tuple/definition rule -> lookup; historical mentions and
+    tuple labels are excluded; N4 ambiguity/unknown -> refusal;
     N5 invalid argv -> usage before reads; N6 executable body -> never run;
     N7 bad source -> fail closed; N8 missing docs -> list the owner, explain
     refuses to invent advice. Every row is read-only.
@@ -142,9 +152,13 @@ def self_test() -> None:
         directory = root / "scripts/ci"
         directory.mkdir(parents=True)
         first = directory / "check_first.py"
-        first.write_text('"""First owner.\n\n* `documented`: original advice.\n"""\n'
+        first.write_text('"""First owner.\n\n* `documented`: original advice.\n'
+                         '* `qualified` (a hard rule): actual qualification.\n'
+                         'W1: explicit numbered rule.\n'
+                         '* `historical_checker` scanned a different corpus in the past.\n"""\n'
                          'raise RuntimeError("must not import")\n'
-                         'RULES = ("string-rule", Rule("shared", "fix"))\n'
+                         'RULES = ("string-rule", Rule("shared", "fix"), ("tuple-rule", "tuple label"),\n'
+                         '         ["list-rule", "list label"], ("dynamic-rule", dangerous()), (42, "not an ID"))\n'
                          'if __name__ == "__main__":\n    raise RuntimeError("must not execute")\n')
         (directory / "helper.py").write_text('"""Not a guard."""\n')
         (directory / "baseline.json").write_text('{"held": 7}\n')
@@ -162,9 +176,16 @@ def self_test() -> None:
 
         status, output, _ = invoke(["list"])
         assert status == 0 and "check_first" in output and "helper" not in output, "N1/N6"
-        for key in ("check_first", "string-rule", "documented", "shared"):
+        for key in ("check_first", "string-rule", "documented", "qualified", "W1", "shared", "tuple-rule", "list-rule"):
             status, output, _ = invoke(["explain", key])
             assert status == 0 and "First owner" in output and "original advice" in output, "N1/N3/N6"
+        # N3 causes: literal ID/label tuples and explicit definition colon;
+        # historical mentions, labels, dynamic/non-string tuples. Effects:
+        # exact IDs resolve, all other selectors refuse; source bytes unchanged
+        # and neither the guard nor its dangerous() expression is executed.
+        for key in ("historical_checker", "tuple label", "list label", "dynamic-rule", "not an ID"):
+            status, _, errors = invoke(["explain", key])
+            assert status == 2 and "unknown" in errors, "N3 only authoritative literal rule definitions"
         second = directory / "_second_fitness.py"
         second.write_text('"""Second owner."""\nRULES = {"shared": "advice"}\n')
         status, output, _ = invoke(["list"])

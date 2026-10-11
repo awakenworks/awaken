@@ -31,14 +31,14 @@ themselves a corpus, and a *new* hand-written scope list among them is refused.
 
 Two rules, each ratcheted, each with a registry whose entries must say why:
 
-W1  A module-level literal collection of two or more repository paths, path
+W1: A module-level literal collection of two or more repository paths, path
     globs or file suffixes is a hand-written scope list. `INPUT_GLOBS` is the
     one exception, because it is the declaration everything else derives from:
     `generate_hooks.py` renders the lefthook trigger from it and a checker
     walks it to build its corpus. Every other such list is registered in
     `scan_scope_registry.json` with the reason it cannot be derived.
 
-W2  Every entry point under `scripts/ci` that walks the repository declares
+W2: Every entry point under `scripts/ci` that walks the repository declares
     `INPUT_GLOBS`, or is registered with the shell gate that runs it -- and the
     registry is checked: the named runner must really invoke the script, so a
     registration cannot go stale without failing.
