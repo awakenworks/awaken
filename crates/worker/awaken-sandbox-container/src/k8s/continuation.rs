@@ -244,7 +244,6 @@ mod rebuild_continuation_tests {
 }
 
 const DELETE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-const DELETE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 pub(super) const CLAIM_UID_ANNOTATION: &str = "awaken.dev/continuation-claim-uid";
 pub(super) const CONTINUATION_CLEANUP_FINALIZER: &str = "awaken.dev/continuation-cleanup";
 const CONTINUATION_CLEANUP_GATE_ANNOTATION: &str = "awaken.dev/continuation-cleanup-gate";
@@ -1162,26 +1161,15 @@ pub(super) async fn await_claim_deletion(
     pending: &PendingClaimDeletion,
     admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
 ) -> Result<(), RuntimeError> {
-    let deadline = awaken_time::mono::MonoDeadline::after(DELETE_TIMEOUT);
-    loop {
-        admit()?;
-        let observed = claims.get(&pending.name).await;
-        admit()?;
-        match observed {
-            Err(error) if api_not_found(&error) => return Ok(()),
-            Err(error) => return Err(backend(error)),
-            Ok(observed) if claim_uid(&observed)? != pending.uid => return Ok(()),
-            Ok(_) if deadline.has_passed() => {
-                return Err(backend(format!(
-                    "continuation PVC `{}` incarnation `{}` was not deleted within {}s",
-                    pending.name,
-                    pending.uid,
-                    DELETE_TIMEOUT.as_secs()
-                )));
-            }
-            Ok(_) => tokio::time::sleep(DELETE_POLL).await,
-        }
-    }
+    super::lifecycle::await_exact_deletion(
+        claims,
+        &pending.name,
+        &pending.uid,
+        DELETE_TIMEOUT,
+        "continuation PVC",
+        admit,
+    )
+    .await
 }
 
 #[cfg(test)]

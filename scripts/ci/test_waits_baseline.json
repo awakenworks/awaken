@@ -75,7 +75,6 @@
       "crates/server/awaken-webhook/tests/webhook_e2e.rs": 1,
       "crates/stores/awaken-credential-store/tests/repo_conformance.rs": 1,
       "crates/worker/awaken-local-process/src/lib.rs": 1,
-      "crates/worker/awaken-sandbox-container/src/k8s/continuation.rs": 1,
       "crates/worker/awaken-sandbox-container/tests/docker_it.rs": 1,
       "crates/worker/awaken-sandbox-container/tests/hand_docker.rs": 1,
       "crates/worker/awaken-sandbox-container/tests/k8s_e2e.rs": 8,

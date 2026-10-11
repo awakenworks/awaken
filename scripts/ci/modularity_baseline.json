@@ -398,18 +398,18 @@
     },
     "awaken-session-executor": {
       "deps": 47,
-      "lines": 35948,
+      "lines": 35914,
       "reason": "runtime-host split (plan 10.4 slices R, E, H): lines hold host plus the realizer being extracted in place (+142 approved 2026-10-10 for the SessionRealizations view, leaves with the realization crate; +24 approved 2026-10-10 for k8s_unschedulable_wait_secs settings, leaves with the deployment configuration to the composition root); host_lines may only fall; target < 20000 lines, about 26-28 dependencies",
-      "host_lines": 24580
+      "host_lines": 24546
     },
     "awaken-sandbox-container": {
       "deps": 11,
-      "lines": 23776,
+      "lines": 23799,
       "reason": "ADR-0092 quota/unschedulable/probe handling; removed when W34 moves the Kubernetes backend into its own crate"
     },
     "awaken-session-application": {
       "deps": 24,
-      "lines": 18427,
+      "lines": 18141,
       "reason": "W21 (plan 9.12): split by use case around one SessionMutations core; if it stays one aggregate after W21, record that review here"
     }
   },
@@ -422,6 +422,9 @@
       "awaken-session-executor::host/session/context/assembly.rs::assemble": "Inject the existing shared WallClock at Runtime and Host composition; fail before approval or Fresh child effects; retain one approval loop and no ambient clock",
       "awaken-session-executor::host/session/context/extensions.rs::memory": "Inject the existing shared WallClock at Runtime and Host composition; fail before approval or Fresh child effects; retain one approval loop and no ambient clock",
       "awaken-session-executor::host/session/context/extensions.rs::skills": "Inject the existing shared WallClock at Runtime and Host composition; fail before approval or Fresh child effects; retain one approval loop and no ambient clock; then: Compose the existing ForkAgentTool with Host clock at Session context assembly; keep the canonical registry adapter narrow and free of duplicated inference dependencies"
+    },
+    "crate-budget": {
+      "awaken-sandbox-container": "ADR-0091 D2: the existing Kubernetes adapter owns exact-incarnation absence. Consolidating Pod/PVC polling removes the second algorithm; 23 production lines add valid-UID rejection and current-effect checks before and after polling sleep while retaining typed adapters, 60s/30s deadlines, 100ms pacing, existing ports and dependencies. This is mandatory Native cleanup proof in its existing final owner, not new product behavior or a new cleanup service."
     }
   }
 }
