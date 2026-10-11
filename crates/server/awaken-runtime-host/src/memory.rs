@@ -395,6 +395,7 @@ impl BoundMemory {
             &catalog,
             crate::agent_runner::AgentRunSandbox::Fresh(auxiliary_sandboxes.as_ref()),
             executor,
+            self.runtime.clock.clone(),
             &intent.extractor.agent.root_agent_id.0,
             &auxiliary_thread_id,
             RunId(intent.auxiliary_run_id()),

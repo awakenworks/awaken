@@ -310,6 +310,8 @@ async fn direct_on_tool_use_brain_skill_adapter_keeps_the_environment_absent() {
     // the canonical registry; E2 it returns the catalog; E3 Hand remains absent.
     // Rule L2: !Managed+C1+C2+C3 => E1+E2+E3. Constraint: the adapter consumes
     // the one registry; it neither creates a second catalog nor grants Hand.
+    // Assembly rule S1: absent Environment passes no fork tool to this same
+    // adapter; narrowing its inputs must retain the Brain-only result.
     use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,

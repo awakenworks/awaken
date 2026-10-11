@@ -215,6 +215,9 @@ pub struct Runtime {
     snapshots: Mutex<HashMap<ExecutableAgentSnapshotId, ExecutableAgentSnapshot>>,
     /// Model provider, built from the catalog at the composition root.
     llm: Option<Arc<dyn LlmExecutor>>,
+    /// The composition's one wall clock, shared with its commit store. Only
+    /// completion-driving approval uses it; replay and ordinary runs need none.
+    pub(crate) clock: Option<Arc<dyn awaken_time::WallClock>>,
     /// Executable tools keyed by id; concrete ids come from extensions.
     pub(crate) tools: RawToolRegistry,
     /// The authorization gate; absent means tools run ungated (test-only).
@@ -276,6 +279,7 @@ impl Default for Runtime {
         Self {
             snapshots: Default::default(),
             llm: None,
+            clock: None,
             tools: Default::default(),
             gate: None,
             run_delegation: None,
@@ -295,6 +299,14 @@ impl Default for Runtime {
 impl Runtime {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Inject the same wall clock that the composition supplies to its store.
+    /// Approval never selects a system clock or invents an observation time.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn awaken_time::WallClock>) -> Self {
+        self.clock = Some(clock);
+        self
     }
 
     /// Acquire the sole process-local execution slot for `thread_id`.

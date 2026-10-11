@@ -301,7 +301,9 @@ COMPOSITION_ROOTS: frozenset[str] = frozenset(
         "crates/devtools/awaken-scenario-host/src/lib.rs",
         "crates/devtools/awaken-eval/src/acp_runner.rs",
         "crates/devtools/awaken-eval/src/replay.rs",
-        "crates/devtools/awaken-runtime-examples/src/coding_agent/mod.rs",
+        # Clock selection moved from CodingSession's library constructor to
+        # this declared coding_agent example's actual process entry point.
+        "crates/devtools/awaken-runtime-examples/examples/coding_agent/main.rs",
     }
 )
 
@@ -847,6 +849,17 @@ def selftest() -> None:
     assert not defaulted_clock_violations(
         {"a.rs": "let now = system_clock().now_ms();\n"}
     ), "an in-place read is R2's, not counted twice"
+
+    # D8 cause/effect table: the same factory at the declared example main
+    # is composition (accept); moving it back into CodingSession::new is an
+    # ambient library default (reject). Migrate the one named root rather than
+    # retain both choices or grow a pattern/waiver. Injected library handles
+    # remain ordinary use of the one WallClock port, without selecting time.
+    coding_main = "crates/devtools/awaken-runtime-examples/examples/coding_agent/main.rs"
+    coding_library = "crates/devtools/awaken-runtime-examples/src/coding_agent/mod.rs"
+    assert not defaulted_clock_violations({coding_main: "fn main() { system_clock(); }"}), "D8 root"
+    assert defaulted_clock_violations({coding_library: "fn new() { system_clock(); }"}), "D8 library"
+    assert not defaulted_clock_violations({coding_library: "fn new(clock: Arc<dyn WallClock>) { store(clock); }"}), "D8 injected"
 
     # ── R5 ──
     assert shadow_clock_violations({"a.rs": "fn now_ms() -> u64 { 0 }\n"}), "S1/E2"

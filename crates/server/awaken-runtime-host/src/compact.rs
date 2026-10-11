@@ -34,6 +34,7 @@ pub(crate) fn compact_runner(
     llm: Arc<dyn LlmExecutor>,
     snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
     commit: Arc<HostCommit>,
+    clock: Arc<dyn awaken_time::WallClock>,
     sandboxes: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
 ) -> Arc<dyn RawTool> {
     let catalog = Arc::new(AgentCatalog::new().with_agent(snapshot));
@@ -42,6 +43,7 @@ pub(crate) fn compact_runner(
         provider: sandboxes,
         catalog,
         execution: commit,
+        clock,
     })
 }
 
@@ -205,6 +207,7 @@ mod tests {
 
     #[tokio::test]
     async fn compact_runner_recovers_the_stable_compactor_run_without_reinference() {
+        let clock = awaken_time::system_clock();
         let model = Arc::new(SummaryModel(AtomicU64::new(0)));
         let runner = compact_runner(
             model.clone(),
@@ -212,9 +215,10 @@ mod tests {
                 .expect("literal model reference"),
             Arc::new(HostCommit::Local(Arc::new(
                 crate::LocalCommitAdapter::projected(
-                    awaken_store_inmem::MemoryCommitCoordinator::new(awaken_time::system_clock()),
+                    awaken_store_inmem::MemoryCommitCoordinator::new(clock.clone()),
                 ),
             ))),
+            clock.clone(),
             awaken_session_environment_contract::AuxiliarySandboxFactory::provider(
                 &awaken_sandbox_local::LocalAuxiliarySandboxes::in_process_temp_dir(),
                 "compact",
@@ -242,6 +246,7 @@ mod tests {
 
     #[tokio::test]
     async fn prefetch_returns_before_inference_and_hard_resolution_joins_it() {
+        let clock = awaken_time::system_clock();
         let started = Arc::new(tokio::sync::Semaphore::new(0));
         let release = Arc::new(tokio::sync::Semaphore::new(0));
         let model = Arc::new(GatedSummaryModel {
@@ -255,9 +260,10 @@ mod tests {
                 .expect("literal model reference"),
             Arc::new(HostCommit::Local(Arc::new(
                 crate::LocalCommitAdapter::projected(
-                    awaken_store_inmem::MemoryCommitCoordinator::new(awaken_time::system_clock()),
+                    awaken_store_inmem::MemoryCommitCoordinator::new(clock.clone()),
                 ),
             ))),
+            clock.clone(),
             awaken_session_environment_contract::AuxiliarySandboxFactory::provider(
                 &awaken_sandbox_local::LocalAuxiliarySandboxes::in_process_temp_dir(),
                 "compact",

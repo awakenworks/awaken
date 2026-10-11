@@ -203,7 +203,9 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
     // This is the same typed adoption cause used by the production provider
     // path: its durable handle/path evidence above is retained, while the
     // process-local Resource completion cache must be re-established.
-    host.session_slots.update_realization(thread, |state| {
+    // Rebased fixture rule: cold adoption updates the canonical installed
+    // Session view; a legacy registry or forwarding alias must not participate.
+    host.installed_sessions.update_realization(thread, |state| {
         state.environment_resource_reconciliation =
             crate::staged_resources::EnvironmentResourceReconciliation::Adopted;
     });
@@ -225,13 +227,13 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
     ])).await.unwrap();
     assert_eq!(status.code, Some(0), "R1 branch/commit/WIP preserved");
     assert_eq!(
-        host.realizer.thread_resource_manifest(thread),
+        host.realizer.staging.thread_resource_manifest(thread),
         Some(manifest)
     );
     // Retention provider rules: R2 an exact owned writable tree preserves
     // changed refs; R3 readonly mismatch, R4 foreign origin, R5 absent path,
     // R6 symlink refuse before clone/reset. All refusal rows preserve bytes.
-    let plan = host.realizer.thread_repository_activations(thread)[0]
+    let plan = host.realizer.staging.thread_repository_activations(thread)[0]
         .plan
         .clone();
     let mut readonly = plan.clone();

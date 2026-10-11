@@ -128,7 +128,7 @@ impl<'a> EmbeddedSession<'a> {
             .await
     }
 
-    /// Recover with the same store clock and callback policy as a fresh Run.
+    /// Recover with the Runtime's injected store clock and this callback timeout.
     pub async fn resume_with_id_async_with_options<F, Fut>(
         &self,
         run_id: RunId,

@@ -143,14 +143,22 @@ pub(super) async fn skills(
             // The MCP-aware base gate keeps this direct Session's
             // pre-authorized MCP tools while the adapter narrows active
             // Skill tools. Managed Sessions never construct this value.
+            // The context composes the existing fork tool; the registry adapter
+            // receives that port and never selects another executor or clock.
+            let agent_tool = env.as_ref().map(|env| {
+                Arc::new(crate::skills::ForkAgentTool {
+                    llm: host.agent.llm.clone(),
+                    model_ref: host.agent.model_ref.clone(),
+                    sandbox: env.clone(),
+                    execution: commit.clone(),
+                    clock: host.clock.clone(),
+                }) as Arc<dyn awaken_tool_contract::tool::RawTool>
+            });
             let adapter = crate::skills::semantic_skill_adapter(
                 registry.clone(),
-                env.clone(),
-                host.agent.llm.clone(),
-                &host.agent.model_ref,
                 thread,
                 base_gate.clone(),
-                commit.clone(),
+                agent_tool,
             );
             if installed.is_some() && !is_acp {
                 session_content_plugins.push(Arc::new(
@@ -289,6 +297,7 @@ pub(super) async fn memory(
                     host.agent.llm.clone(),
                     snapshot,
                     commit.clone(),
+                    host.clock.clone(),
                     host.realizer.env.auxiliary_sandboxes.provider("mem-select"),
                 ))
                     as Arc<dyn awaken_ext_memory::RecallSelector>)
@@ -395,6 +404,7 @@ pub(super) async fn memory(
                 host.agent.llm.clone(),
                 snapshot,
                 commit.clone(),
+                host.clock.clone(),
                 host.realizer.env.auxiliary_sandboxes.provider("compact"),
             );
             let backend = build_compact_backend(agent_tool, host.resources.memory.background());

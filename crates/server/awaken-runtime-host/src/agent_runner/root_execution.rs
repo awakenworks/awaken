@@ -96,6 +96,7 @@ pub(crate) async fn run_configured_agent(
     catalog: &AgentCatalog,
     sandbox: AgentRunSandbox<'_>,
     llm: Arc<dyn LlmExecutor>,
+    clock: Arc<dyn awaken_time::WallClock>,
     agent_id: &str,
     thread: &str,
     seed: impl Into<RunInput>,
@@ -108,6 +109,7 @@ pub(crate) async fn run_configured_agent(
         catalog,
         sandbox,
         llm,
+        clock,
         agent_id,
         thread,
         seed.into(),
@@ -130,6 +132,7 @@ pub(crate) async fn run_configured_agent_with_id(
     catalog: &AgentCatalog,
     sandbox: AgentRunSandbox<'_>,
     llm: Arc<dyn LlmExecutor>,
+    clock: Arc<dyn awaken_time::WallClock>,
     agent_id: &str,
     thread: &str,
     run_id: RunId,
@@ -141,6 +144,7 @@ pub(crate) async fn run_configured_agent_with_id(
         catalog,
         sandbox,
         llm,
+        clock,
         agent_id,
         thread,
         seed.into(),
@@ -158,6 +162,7 @@ async fn run_configured_agent_inner(
     catalog: &AgentCatalog,
     sandbox: AgentRunSandbox<'_>,
     llm: Arc<dyn LlmExecutor>,
+    clock: Arc<dyn awaken_time::WallClock>,
     agent_id: &str,
     thread: &str,
     seed: RunInput,
@@ -247,7 +252,7 @@ async fn run_configured_agent_inner(
     );
     // Auxiliary Runs do not install the Session-owned BackgroundTask plugin:
     // they have no committed Session terminal observer to execute its effects.
-    let mut runtime = build_runtime_with_authorization(llm, env, &authorization, None);
+    let mut runtime = build_runtime_with_authorization(llm, clock, env, &authorization, None);
     // Tools the caller provisions on top of the sandbox's own (e.g. a
     // persistent write_memory scoped outside the ephemeral sandbox).
     for tool in extra_tools {
@@ -297,6 +302,7 @@ fn completed_agent_result(
 /// richer catalog through [`run_configured_agent`] instead.
 pub(crate) async fn run_agent(
     llm: Arc<dyn LlmExecutor>,
+    clock: Arc<dyn awaken_time::WallClock>,
     execution: AgentExecution<'_>,
     sandbox: AgentRunSandbox<'_>,
     thread: &str,
@@ -325,6 +331,7 @@ pub(crate) async fn run_agent(
         &catalog,
         sandbox,
         llm,
+        clock,
         execution.agent_id,
         thread,
         input,
@@ -342,6 +349,7 @@ pub(crate) async fn run_agent(
 #[cfg(test)]
 pub(crate) async fn run_agent_until_boundary(
     llm: Arc<dyn LlmExecutor>,
+    clock: Arc<dyn awaken_time::WallClock>,
     execution: AgentExecution<'_>,
     sandbox: AgentRunSandbox<'_>,
     request: ChildRunRequest,
@@ -373,7 +381,7 @@ pub(crate) async fn run_agent_until_boundary(
         request.resume,
         execution.context.unwrap_or_else(|| {
             let commit = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
-                awaken_time::system_clock(),
+                clock.clone(),
             ));
             RuntimeRunContext::new()
                 .with_commit(commit.clone())
@@ -382,7 +390,10 @@ pub(crate) async fn run_agent_until_boundary(
         execution.run_delegation,
         request.parent_thread_id,
         execution.scheduler,
-        ChildExecutionAdapters::default(),
+        ChildExecutionAdapters {
+            clock: Some(clock),
+            ..Default::default()
+        },
     )
     .await
 }
@@ -408,8 +419,8 @@ mod tests {
     use crate::agent_catalog::AgentCatalog;
     use crate::agent_runner::fixtures::{agent, user};
 
-    fn memory_context() -> RuntimeRunContext {
-        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+    fn memory_context(clock: Arc<dyn awaken_time::WallClock>) -> RuntimeRunContext {
+        let commit = Arc::new(MemoryCommitCoordinator::new(clock));
         RuntimeRunContext::new()
             .with_commit(commit.clone())
             .with_reader(commit)
@@ -446,6 +457,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolves_agent_config_by_id() {
+        let clock = awaken_time::system_clock();
         let base = std::env::temp_dir().join(format!(
             "awaken-subrun-test-{}",
             std::time::SystemTime::now()
@@ -463,12 +475,13 @@ mod tests {
             &catalog,
             AgentRunSandbox::Fresh(&provider),
             llm.clone(),
+            clock.clone(),
             "memory-extractor",
             "t-mem",
             vec![user("go")],
             Vec::new(),
             None,
-            Some(memory_context()),
+            Some(memory_context(clock.clone())),
             None,
         )
         .await
@@ -479,12 +492,13 @@ mod tests {
             &catalog,
             AgentRunSandbox::Fresh(&provider),
             llm.clone(),
+            clock.clone(),
             "judge",
             "t-judge",
             vec![user("go")],
             Vec::new(),
             None,
-            Some(memory_context()),
+            Some(memory_context(clock.clone())),
             None,
         )
         .await
@@ -571,7 +585,8 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let provider = LocalProvider::new(tmp.path());
             let catalog = AgentCatalog::new().with_agent(agent("worker", "WORK"));
-            let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+            let clock = awaken_time::system_clock();
+            let commit = Arc::new(MemoryCommitCoordinator::new(clock.clone()));
             let context = RuntimeRunContext::new()
                 .with_commit(commit.clone())
                 .with_reader(commit.clone());
@@ -581,6 +596,7 @@ mod tests {
                 &catalog,
                 AgentRunSandbox::Fresh(&provider),
                 Arc::new(RejectedModel(evidence)),
+                clock.clone(),
                 "worker",
                 "aux/rejected",
                 run_id.clone(),
@@ -625,12 +641,16 @@ mod tests {
         // before provider I/O. Decision table: R1 !C2 && C3 -> E1;
         // R2 C2 && C4 && !C3 -> E2+E3; R3 C2 && !C4 && !C3 -> E4. The poisoned
         // provider root makes R2/R3 fail if terminal admission follows create.
+        // C5 the caller supplies its commit owner's exact clock Arc on every
+        // ordinary/replayed call; terminal truth returns before Runtime factory
+        // construction, so clock injection cannot re-execute a completed Run.
         let tmp = tempfile::tempdir().unwrap();
         let provider_root = tmp.path().join("provider");
         let provider = LocalProvider::new(&provider_root);
         let catalog = AgentCatalog::new().with_agent(agent("worker", "WORK"));
         let model = Arc::new(CountingModel(AtomicUsize::new(0)));
-        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+        let clock = awaken_time::system_clock();
+        let commit = Arc::new(MemoryCommitCoordinator::new(clock.clone()));
         let context = || {
             RuntimeRunContext::new()
                 .with_commit(commit.clone())
@@ -642,6 +662,7 @@ mod tests {
             &catalog,
             AgentRunSandbox::Fresh(&provider),
             model.clone(),
+            clock.clone(),
             "worker",
             "aux/stable",
             run_id.clone(),
@@ -659,6 +680,7 @@ mod tests {
             &catalog,
             AgentRunSandbox::Fresh(&provider),
             model.clone(),
+            clock.clone(),
             "worker",
             "aux/stable",
             run_id.clone(),
@@ -674,6 +696,7 @@ mod tests {
             &catalog,
             AgentRunSandbox::Fresh(&provider),
             model.clone(),
+            clock.clone(),
             "worker",
             "aux/foreign-thread",
             run_id.clone(),
@@ -703,6 +726,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_run_returns_its_accumulated_usage() {
+        let clock = awaken_time::system_clock();
         let base = std::env::temp_dir().join(format!(
             "awaken-subrun-usage-{}",
             std::time::SystemTime::now()
@@ -717,12 +741,13 @@ mod tests {
             &catalog,
             AgentRunSandbox::Fresh(&provider),
             Arc::new(UsageModel),
+            clock.clone(),
             "worker",
             "t-usage",
             vec![user("go")],
             Vec::new(),
             None,
-            Some(memory_context()),
+            Some(memory_context(clock.clone())),
             None,
         )
         .await
@@ -746,6 +771,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_agent_is_an_error() {
+        let clock = awaken_time::system_clock();
         let base = std::env::temp_dir().join("awaken-subrun-test-unknown");
         let provider = LocalProvider::new(&base);
         let catalog = AgentCatalog::new().with_agent(agent("assistant", "hi"));
@@ -753,6 +779,7 @@ mod tests {
             &catalog,
             AgentRunSandbox::Fresh(&provider),
             Arc::new(InstructionEchoModel),
+            clock.clone(),
             "nope",
             "t",
             vec![user("go")],
@@ -768,6 +795,7 @@ mod tests {
 
     #[tokio::test]
     async fn known_agent_without_commit_history_authority_fails_closed() {
+        let clock = awaken_time::system_clock();
         // Cause/effect graph:
         // C1 agent resolves; C2 commit authority supplied; C3 history reader supplied.
         // E1 execute on caller authority; E2 configuration error; E3 no provider I/O.
@@ -780,6 +808,7 @@ mod tests {
             &catalog,
             AgentRunSandbox::Fresh(&provider),
             Arc::new(InstructionEchoModel),
+            clock.clone(),
             "assistant",
             "t",
             vec![user("go")],

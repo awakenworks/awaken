@@ -185,12 +185,15 @@ async fn run_to_completion_drives_an_ungated_run_without_asking() {
     // No gate → no await → `decide` is never called; the run reaches a terminal
     // state in one shot. (The gated await→resume path is covered by the coding-agent
     // example's tests.)
-    let runtime = Runtime::new().with_llm(Arc::new(TextLlm("done")));
+    let clock = awaken_time::system_clock();
+    let runtime = Runtime::new()
+        .with_clock(clock.clone())
+        .with_llm(Arc::new(TextLlm("done")));
     let config = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("demo", "stub", "stub"))
         .build();
 
-    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+    let commit = Arc::new(MemoryCommitCoordinator::new(clock));
     let ctx = RuntimeRunContext::new()
         .with_commit(commit.clone())
         .with_reader(commit.clone());

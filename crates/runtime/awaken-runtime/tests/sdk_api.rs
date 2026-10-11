@@ -2,6 +2,7 @@
 
 use awaken_agent_contract::agent::run::{EndCause, RunState};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_lease_testkit::ManualClock;
 use awaken_runtime::tools::{Tool, ToolError, ToolRegistration};
 use awaken_runtime::{ApprovalError, ApprovalOptions, RunOutcome, Runtime};
 use awaken_runtime_contract::llm::{
@@ -12,6 +13,7 @@ use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::{ExecutableAgentSnapshot, RuntimeRunContext};
 use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_time::WallClockExt;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::{
@@ -89,6 +91,7 @@ impl ToolGateHook for ApprovalGate {
 
 fn setup(
     gated: bool,
+    clock: Arc<dyn awaken_time::WallClock>,
 ) -> (
     Runtime,
     ExecutableAgentSnapshot,
@@ -100,7 +103,11 @@ fn setup(
     let hits = Arc::new(AtomicUsize::new(0));
     let registration = ToolRegistration::new("app", Echo(hits.clone())).unwrap();
     let mut runtime = registration
-        .install(Runtime::new().with_llm(model.clone()))
+        .install(
+            Runtime::new()
+                .with_clock(clock.clone())
+                .with_llm(model.clone()),
+        )
         .unwrap();
     let descriptor = registration.descriptor().clone();
     assert_eq!(descriptor.id, Echo::ID);
@@ -113,13 +120,13 @@ fn setup(
     if gated {
         runtime = runtime.with_gate(Arc::new(ApprovalGate));
     }
-    let store = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+    let store = Arc::new(MemoryCommitCoordinator::new(clock));
     (runtime, snapshot, model, hits, store)
 }
 
 #[tokio::test]
 async fn typed_tool_and_named_outcome_work_without_builtin_dependencies() {
-    let (runtime, snapshot, model, hits, store) = setup(false);
+    let (runtime, snapshot, model, hits, store) = setup(false, awaken_time::system_clock());
     let first = runtime
         .session(
             &snapshot,
@@ -166,7 +173,7 @@ async fn typed_tool_and_named_outcome_work_without_builtin_dependencies() {
 #[tokio::test]
 async fn asynchronous_approval_and_denial_use_the_same_durable_resume_path() {
     for allow in [true, false] {
-        let (runtime, snapshot, _, hits, store) = setup(true);
+        let (runtime, snapshot, _, hits, store) = setup(true, awaken_time::system_clock());
         let state = runtime
             .session(
                 &snapshot,
@@ -201,7 +208,8 @@ async fn asynchronous_approval_and_denial_use_the_same_durable_resume_path() {
 
 #[tokio::test]
 async fn approval_timeout_preserves_ticket_and_rebuilt_runtime_can_resume_once() {
-    let (runtime, snapshot, model, hits, store) = setup(true);
+    let clock = awaken_time::system_clock();
+    let (runtime, snapshot, model, hits, store) = setup(true, clock.clone());
     let error = runtime
         .session(
             &snapshot,
@@ -227,6 +235,7 @@ async fn approval_timeout_preserves_ticket_and_rebuilt_runtime_can_resume_once()
     let rebuilt = registration
         .install(
             Runtime::new()
+                .with_clock(clock)
                 .with_llm(model.clone())
                 .with_gate(Arc::new(ApprovalGate)),
         )
@@ -262,7 +271,7 @@ async fn approval_timeout_preserves_ticket_and_rebuilt_runtime_can_resume_once()
 
 #[tokio::test]
 async fn cancellation_during_approval_commits_cancelled_without_running_the_tool() {
-    let (runtime, snapshot, _, hits, store) = setup(true);
+    let (runtime, snapshot, _, hits, store) = setup(true, awaken_time::system_clock());
     let token = tokio_util::sync::CancellationToken::new();
     let callback_token = token.clone();
     let state = runtime
@@ -296,7 +305,7 @@ async fn cancellation_during_approval_commits_cancelled_without_running_the_tool
 
 #[tokio::test]
 async fn callback_failure_keeps_cause_and_does_not_consume_the_ticket() {
-    let (runtime, snapshot, _, hits, store) = setup(true);
+    let (runtime, snapshot, _, hits, store) = setup(true, awaken_time::system_clock());
     let error = runtime
         .session(
             &snapshot,
@@ -324,7 +333,8 @@ async fn callback_failure_keeps_cause_and_does_not_consume_the_ticket() {
 
 #[tokio::test]
 async fn a_concurrent_reply_cannot_execute_the_same_tool_twice() {
-    let (runtime, snapshot, _, hits, store) = setup(true);
+    let clock = awaken_time::system_clock();
+    let (runtime, snapshot, _, hits, store) = setup(true, clock.clone());
     let context = RuntimeRunContext::new().with_store(store.clone());
     let error = runtime
         .session(&snapshot, "race", context.clone())
@@ -333,8 +343,10 @@ async fn a_concurrent_reply_cannot_execute_the_same_tool_twice() {
             let context = context.clone();
             let runtime = &runtime;
             let store = store.clone();
+            let clock = clock.clone();
             async move {
-                let command = ResumeCommand::from_ticket(&ticket, ResumeResult::allow(), 0);
+                let command =
+                    ResumeCommand::from_ticket(&ticket, ResumeResult::allow(), clock.now_ms());
                 runtime
                     .resume(command, store.as_ref(), context)
                     .await
@@ -350,7 +362,7 @@ async fn a_concurrent_reply_cannot_execute_the_same_tool_twice() {
 
 #[tokio::test]
 async fn cold_recovery_rejects_each_identity_mismatch_before_approval_or_effects() {
-    let (runtime, snapshot, model, hits, store) = setup(true);
+    let (runtime, snapshot, model, hits, store) = setup(true, awaken_time::system_clock());
     let context = RuntimeRunContext::new().with_store(store.clone());
     let outcome = runtime
         .session(&snapshot, "identity", context.clone())
@@ -395,24 +407,18 @@ async fn cold_recovery_rejects_each_identity_mismatch_before_approval_or_effects
     }
 }
 
-struct FrozenClock(u64);
-impl awaken_time::WallClock for FrozenClock {
-    fn now(&self) -> awaken_time::UtcTime {
-        awaken_time::UtcTime::from_epoch_ms(self.0)
-    }
-}
-
 #[tokio::test]
 async fn recovery_enforces_ticket_deadline_using_the_supplied_owner_clock() {
     use awaken_agent_contract::thread::commit::coordinator::Coordinator;
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
 
-    // Boundary design: one reading before expiry may resume; the deadline itself
-    // and a later reading reject without a tool effect or a ticket-consumption commit.
+    // A1 one composition injects the SAME ManualClock into Runtime and store.
+    // A2/A3 its reading at/beyond the deadline refuses the existing resume kernel
+    // without a tool effect/ticket-consumption commit; A1 before expiry resumes.
+    // The helper samples after callback, not the ticket's original commit time.
     for now in [19, 20, 21] {
-        let (runtime, snapshot, _, hits, _) = setup(true);
-        let clock: Arc<dyn awaken_time::WallClock> = Arc::new(FrozenClock(now));
-        let store = Arc::new(MemoryCommitCoordinator::new(clock.clone()));
+        let clock = Arc::new(ManualClock::new(0));
+        let (runtime, snapshot, _, hits, store) = setup(true, clock.clone());
         let context = RuntimeRunContext::new().with_store(store.clone());
         let session = runtime.session(&snapshot, "deadline", context).unwrap();
         let outcome = session.run("hello").await.unwrap();
@@ -433,13 +439,11 @@ async fn recovery_enforces_ticket_deadline_using_the_supplied_owner_clock() {
             .await
             .unwrap();
         let commits = store.commit_count();
+        clock.set(now);
         let result = session
-            .resume_with_id_async_with_options(
-                outcome.run_id().clone(),
-                "ignored",
-                ApprovalOptions::default().with_clock(clock),
-                |_| async { Ok(ResumeResult::allow()) },
-            )
+            .resume_with_id_async(outcome.run_id().clone(), "ignored", |_| async {
+                Ok(ResumeResult::allow())
+            })
             .await;
         if now < 20 {
             assert_eq!(result.unwrap().end_cause(), Some(&EndCause::NaturalEnd));
@@ -451,6 +455,124 @@ async fn recovery_enforces_ticket_deadline_using_the_supplied_owner_clock() {
             assert!(store.resume_ticket(outcome.run_id()).is_some());
         }
     }
+}
+
+#[tokio::test]
+async fn missing_owner_clock_refuses_approval_before_callback_or_resume() {
+    // M1 a real committed Awaiting ticket + no injected clock -> typed
+    // InvalidConfiguration/missing_clock, zero callback/tool/resume commit.
+    // No deadline is required: an actual ResumeCommand always carries an
+    // observation. Initial execution may commit Awaiting; it never consumes it.
+    let clock = Arc::new(ManualClock::new(10));
+    let (runtime, snapshot, model, hits, store) = setup(true, clock);
+    let context = RuntimeRunContext::new().with_store(store.clone());
+    let outcome = runtime
+        .session(&snapshot, "missing-clock", context.clone())
+        .unwrap()
+        .run("hello")
+        .await
+        .unwrap();
+    let ticket = store.resume_ticket(outcome.run_id()).unwrap();
+    let commits = store.commit_count();
+    let model_calls = model.calls.load(Ordering::SeqCst);
+    let callbacks = Arc::new(AtomicUsize::new(0));
+    let without_clock = ToolRegistration::new("app", Echo(hits.clone()))
+        .unwrap()
+        .install(
+            Runtime::new()
+                .with_llm(model.clone())
+                .with_gate(Arc::new(ApprovalGate)),
+        )
+        .unwrap();
+    let error = without_clock
+        .session(&snapshot, "missing-clock", context)
+        .unwrap()
+        .resume_with_id_async(outcome.run_id().clone(), "ignored", |_| {
+            callbacks.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(Ok(ResumeResult::allow()))
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "missing_clock");
+    assert_eq!(
+        error.kind(),
+        awaken_runtime_contract::diagnostic::RuntimeErrorKind::InvalidConfiguration
+    );
+    assert_eq!(callbacks.load(Ordering::SeqCst), 0, "M1 no callback");
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "M1 no tool");
+    assert_eq!(model.calls.load(Ordering::SeqCst), model_calls);
+    assert_eq!(store.commit_count(), commits, "M1 no resume");
+    assert_eq!(store.resume_ticket(outcome.run_id()), Some(ticket));
+}
+
+#[tokio::test]
+async fn callback_elapsed_time_cannot_borrow_an_earlier_clock_reading() {
+    use awaken_agent_contract::thread::commit::coordinator::Coordinator;
+    use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
+
+    // A4 callback starts at19, returns at20: the original expiry law rejects
+    // at the inclusive boundary. One shared ManualClock supplies store and
+    // Runtime; sampling before callback would incorrectly execute the tool.
+    let clock = Arc::new(ManualClock::new(19));
+    let (runtime, snapshot, _, hits, store) = setup(true, clock.clone());
+    let context = RuntimeRunContext::new().with_store(store.clone());
+    let session = runtime.session(&snapshot, "elapsed", context).unwrap();
+    let outcome = session.run("hello").await.unwrap();
+    let ticket = store
+        .resume_ticket(outcome.run_id())
+        .unwrap()
+        .with_deadline(Some(20));
+    store
+        .commit(ThreadCommit::assemble(
+            outcome.thread_id().clone(),
+            RunDisposition::awaiting(ticket.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    let commits = store.commit_count();
+    let error = session
+        .resume_with_id_async(outcome.run_id().clone(), "ignored", |_| {
+            clock.set(20);
+            std::future::ready(Ok(ResumeResult::allow()))
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "resume_expired", "A4");
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+    assert_eq!(store.commit_count(), commits);
+    assert_eq!(store.resume_ticket(outcome.run_id()), Some(ticket));
+}
+
+#[tokio::test]
+async fn committed_terminal_replay_requires_neither_clock_nor_callback() {
+    // M2 after real completion, a fresh Runtime with no clock/model returns the
+    // exact committed terminal before accessing approval dependencies. Identity
+    // and terminal delivery remain the existing authority, not a time fallback.
+    let (runtime, snapshot, _, hits, store) = setup(true, Arc::new(ManualClock::new(10)));
+    let context = RuntimeRunContext::new().with_store(store.clone());
+    let first = runtime
+        .session(&snapshot, "terminal-clock", context.clone())
+        .unwrap()
+        .run_to_completion_async("hello", |_| std::future::ready(Ok(ResumeResult::allow())))
+        .await
+        .unwrap();
+    let commits = store.commit_count();
+    let replay_runtime = Runtime::new();
+    let replay = replay_runtime
+        .session(&snapshot, "terminal-clock", context)
+        .unwrap()
+        .resume_with_id_async(first.run_id().clone(), "ignored", |_| async {
+            panic!("M2 terminal replay cannot call approval")
+        })
+        .await
+        .unwrap();
+    assert_eq!(replay, first);
+    assert_eq!(store.commit_count(), commits);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
 }
 
 #[test]

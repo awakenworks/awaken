@@ -438,8 +438,9 @@ async fn runtime_convenience_entries_freeze_inherited_sources_before_await() {
     }
     for entry in ["run_to_completion", "run_to_completion_with_id"] {
         let ran = Arc::new(AtomicUsize::new(0));
-        let runtime = runtime(ran.clone());
-        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+        let clock = awaken_time::system_clock();
+        let runtime = runtime(ran.clone()).with_clock(clock.clone());
+        let commit = Arc::new(MemoryCommitCoordinator::new(clock));
         let mut tickets = 0;
         let mut decide = |ticket: &awaken_agent_contract::agent::awaiting::ResumeTicket| {
             assert_eq!(ticket.inherited_toolsets, Some(source.clone()), "R3/R4 E1");

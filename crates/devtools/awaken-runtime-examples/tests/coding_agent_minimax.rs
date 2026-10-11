@@ -67,6 +67,7 @@ async fn minimax_agent_edits_a_real_file() {
     let session = CodingSession::new(
         build_runtime(llm),
         coding_config(&model).expect("model reference is an executable binding"),
+        awaken_time::system_clock(),
     );
 
     let dir = std::env::temp_dir().join(format!("awaken_minimax_{}", std::process::id()));
@@ -108,6 +109,7 @@ async fn minimax_agent_denied_edit_leaves_the_file_unchanged() {
     let session = CodingSession::new(
         build_runtime(llm),
         coding_config(&model).expect("model reference is an executable binding"),
+        awaken_time::system_clock(),
     );
 
     let dir = std::env::temp_dir().join(format!("awaken_deny_{}", std::process::id()));

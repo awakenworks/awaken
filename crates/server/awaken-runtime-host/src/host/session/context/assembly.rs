@@ -42,12 +42,14 @@ pub(super) async fn assemble(
     let mut runtime = match env.as_ref() {
         Some(env) => build_runtime_with_authorization(
             host.agent.llm.clone(),
+            host.clock.clone(),
             env.as_ref(),
             authorization,
             Some(host.background_supervisor.clone()),
         ),
         None => build_runtime_with_authorization(
             host.agent.llm.clone(),
+            host.clock.clone(),
             &crate::config::DeferredHandToolSource,
             authorization,
             Some(host.background_supervisor.clone()),

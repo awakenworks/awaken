@@ -2405,6 +2405,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-ext-background-task",
  "awaken-ext-compact",
+ "awaken-lease-testkit",
  "awaken-runtime-contract",
  "awaken-store-fs",
  "awaken-store-inmem",

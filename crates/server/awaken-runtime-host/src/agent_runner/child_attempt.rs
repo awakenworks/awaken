@@ -111,9 +111,10 @@ pub(crate) struct ChildExecutionAdapters {
     /// The same host-configured plugin instance shape used by a root Native Run.
     /// The child snapshot still decides whether the plugin is selected.
     pub(crate) web_fetch: Option<Arc<awaken_ext_builtin_tools::WebFetchPlugin>>,
-    /// The parent Host's process clock, on which a directly delegated remote
-    /// child's credential bindings are stamped. Absent in a composition that
-    /// installs no remote child execution; such a child is then refused.
+    /// The parent Host's process clock, shared by Native approval/resume and
+    /// directly delegated remote credential bindings. Native child composition
+    /// requires this existing clock before any Fresh provider effect; absence
+    /// is a typed configuration refusal, never a process-clock fallback.
     pub(crate) clock: Option<Arc<dyn awaken_time::WallClock>>,
     /// The Host-owned slot registry also installed on the root Native Runtime.
     pub(crate) background_supervisor:

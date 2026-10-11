@@ -28,11 +28,12 @@ impl LlmExecutor for Model {
 }
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-let runtime = Runtime::new().with_llm(Arc::new(Model));
+let clock = awaken_time::system_clock();
+let runtime = Runtime::new().with_clock(clock.clone()).with_llm(Arc::new(Model));
 let agent = ExecutableAgentSnapshot::builder("assistant")
     .model(ModelBinding::parse("demo", "stub", "stub")?)
     .build();
-let store = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+let store = Arc::new(MemoryCommitCoordinator::new(clock));
 let context = RuntimeRunContext::new().with_store(store.clone());
 let session = runtime.session(&agent, "conversation", context)?;
 let first = session.run("Hello").await?;
@@ -79,8 +80,12 @@ let outcome = session.run_to_completion_async("Do the task",
 # }
 ```
 
+Inject the same `WallClock` into `Runtime::with_clock` and the commit store at
+your application's composition root. The SDK requires it before calling an
+approval callback; an absent clock returns `missing_clock` without consuming
+the committed ticket. Ordinary runs and committed terminal replay need no clock.
 Use `ApprovalOptions` with `run_to_completion_async_with_options` to set a
-per-callback timeout or supply the store owner's clock. Timeout and callback
+per-callback timeout. Timeout and callback
 failure leave the committed Run Awaiting with its ticket available. Cancellation
 through the context commits a terminal outcome through the existing control
 path; it does not prove an external operation stopped. Dropping the caller's
@@ -89,7 +94,7 @@ future is not a durable cancellation request.
 For restart/replay, retain the Snapshot, Run ID and Thread ID and call
 `EmbeddedSession::resume_with_id_async`. The Snapshot must match the committed ticket;
 terminal replay returns committed truth without another model/tool invocation.
-`resume_with_id_async_with_options` also accepts the owner's clock and wait policy.
+`resume_with_id_async_with_options` also accepts the callback wait policy.
 The synchronous callbacks use the same driver. All completion-driving entries
 require a history reader before starting; `with_store` binds it with the writer.
 

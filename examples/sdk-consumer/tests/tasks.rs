@@ -230,8 +230,11 @@ impl ToolGateHook for ApprovalGate {
 async fn asynchronous_approval_resumes_the_committed_ticket() {
     let hits = Arc::new(AtomicUsize::new(0));
     let (runtime, agent) = tool_runtime(hits.clone());
-    let runtime = runtime.with_gate(Arc::new(ApprovalGate));
-    let store = memory();
+    let clock = awaken_time::system_clock();
+    let runtime = runtime
+        .with_clock(clock.clone())
+        .with_gate(Arc::new(ApprovalGate));
+    let store = Arc::new(MemoryCommitCoordinator::new(clock));
     let state = runtime
         .session(
             &agent,

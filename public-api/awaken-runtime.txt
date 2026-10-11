@@ -64,6 +64,7 @@ pub fn awaken_runtime_contract::execution::Error::from(awaken_runtime::ApprovalE
 #[non_exhaustive] pub enum awaken_runtime::ConfigurationError
 pub awaken_runtime::ConfigurationError::DuplicateTool
 pub awaken_runtime::ConfigurationError::DuplicateTool::id: alloc::string::String
+pub awaken_runtime::ConfigurationError::MissingClock
 pub awaken_runtime::ConfigurationError::MissingCommitCoordinator
 pub awaken_runtime::ConfigurationError::MissingHistoryReader
 pub awaken_runtime::ConfigurationError::MissingModelProvider
@@ -96,10 +97,7 @@ impl core::ops::drop::Drop for awaken_runtime::ActiveAttemptScope<'_>
 pub fn awaken_runtime::ActiveAttemptScope<'_>::drop(&mut self)
 pub struct awaken_runtime::ApprovalOptions
 impl awaken_runtime::ApprovalOptions
-pub fn awaken_runtime::ApprovalOptions::with_clock(self, alloc::sync::Arc<dyn awaken_time::clock::WallClock>) -> Self
 pub fn awaken_runtime::ApprovalOptions::with_timeout(self, core::time::Duration) -> Self
-impl core::default::Default for awaken_runtime::ApprovalOptions
-pub fn awaken_runtime::ApprovalOptions::default() -> Self
 pub struct awaken_runtime::CircuitBreakerConfig
 pub awaken_runtime::CircuitBreakerConfig::cooldown: core::time::Duration
 pub awaken_runtime::CircuitBreakerConfig::failure_threshold: u32
@@ -181,6 +179,7 @@ pub async fn awaken_runtime::Runtime::stop_run(&self, awaken_agent_contract::age
 pub fn awaken_runtime::Runtime::try_with_tool(self, alloc::sync::Arc<dyn awaken_tool_contract::tool::RawTool>) -> core::result::Result<Self, awaken_runtime::ConfigurationError>
 pub fn awaken_runtime::Runtime::validate_plugins(&self, &awaken_runtime_contract::resolved::ResolvedSpec) -> core::result::Result<(), awaken_runtime_contract::plugin::env::MergeError>
 pub fn awaken_runtime::Runtime::with_circuit_breaker(self, awaken_runtime::CircuitBreakerConfig) -> Self
+pub fn awaken_runtime::Runtime::with_clock(self, alloc::sync::Arc<dyn awaken_time::clock::WallClock>) -> Self
 pub fn awaken_runtime::Runtime::with_gate(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> Self
 pub fn awaken_runtime::Runtime::with_infer_retries(self, usize) -> Self
 pub fn awaken_runtime::Runtime::with_llm(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>) -> Self

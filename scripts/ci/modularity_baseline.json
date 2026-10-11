@@ -25,6 +25,11 @@
       "methods": 267,
       "reason": "slice H: each of the eleven session-runtime roles gets one owning component (plan 10.3 item 11)"
     },
+    "awaken-runtime::Runtime": {
+      "files": 4,
+      "methods": 61,
+      "reason": "Inject the existing shared WallClock at Runtime and Host composition; fail before approval or Fresh child effects; retain one approval loop and no ambient clock"
+    },
     "awaken-session-application::SessionApplication": {
       "files": 28,
       "methods": 303,
@@ -304,7 +309,7 @@
     "awaken-run-ingress::postgres/claim.rs::claim_exact_transaction_with_mode": 264,
     "awaken-run-ingress::sqlite/claim.rs::claim_exact_transaction_with_mode": 243,
     "awaken-run-ingress::sqlite/dispatch_queue.rs::settle": 164,
-    "awaken-runtime-host::agent_runner/child_execution.rs::run_configured_agent_until_boundary": 273,
+    "awaken-runtime-host::agent_runner/child_execution.rs::run_configured_agent_until_boundary": 277,
     "awaken-runtime-host::application.rs::install_frozen_session_projection_with_resource_authority": 288,
     "awaken-runtime-host::background_task.rs::launch": 182,
     "awaken-runtime-host::background_task.rs::launch_remote": 342,
@@ -312,10 +317,10 @@
     "awaken-runtime-host::host/coordination.rs::admit_coordinated_run": 181,
     "awaken-runtime-host::host/run.rs::resume": 154,
     "awaken-runtime-host::host/run/quiescence.rs::quiesce_terminal_delegations": 224,
-    "awaken-runtime-host::host/session/context/assembly.rs::assemble": 533,
+    "awaken-runtime-host::host/session/context/assembly.rs::assemble": 535,
     "awaken-runtime-host::host/session/context/execution.rs::prepare": 234,
-    "awaken-runtime-host::host/session/context/extensions.rs::memory": 220,
-    "awaken-runtime-host::host/session/context/extensions.rs::skills": 165,
+    "awaken-runtime-host::host/session/context/extensions.rs::memory": 222,
+    "awaken-runtime-host::host/session/context/extensions.rs::skills": 173,
     "awaken-runtime-host::host/session/context/plan.rs::prepare": 195,
     "awaken-runtime-host::host/session/context/resources.rs::acquire": 270,
     "awaken-runtime-host::host/session/environment_lifecycle.rs::adopt_bound_session_environment_under_lifecycle": 252,
@@ -388,24 +393,35 @@
   "crate-budget": {
     "awaken-protocol-managed": {
       "deps": 39,
-      "lines": 25270,
+      "lines": 24414,
       "reason": "W20 (plan 9.11): Session lifecycle and deployment decisions move to their application services; the adapter keeps protocol translation only"
     },
     "awaken-runtime-host": {
       "deps": 47,
-      "lines": 36079,
+      "lines": 35948,
       "reason": "runtime-host split (plan 10.4 slices R, E, H): lines hold host plus the realizer being extracted in place (+142 approved 2026-10-10 for the SessionRealizations view, leaves with the realization crate; +24 approved 2026-10-10 for k8s_unschedulable_wait_secs settings, leaves with the deployment configuration to the composition root); host_lines may only fall; target < 20000 lines, about 26-28 dependencies",
-      "host_lines": 25052
+      "host_lines": 24580
     },
     "awaken-sandbox-container": {
       "deps": 11,
-      "lines": 23792,
+      "lines": 23776,
       "reason": "ADR-0092 quota/unschedulable/probe handling; removed when W34 moves the Kubernetes backend into its own crate"
     },
     "awaken-session-application": {
       "deps": 24,
-      "lines": 18558,
+      "lines": 18427,
       "reason": "W21 (plan 9.12): split by use case around one SessionMutations core; if it stays one aggregate after W21, record that review here"
+    }
+  },
+  "growth_reasons": {
+    "impl-spread": {
+      "awaken-runtime::Runtime": "Inject the existing shared WallClock at Runtime and Host composition; fail before approval or Fresh child effects; retain one approval loop and no ambient clock"
+    },
+    "long-function": {
+      "awaken-runtime-host::agent_runner/child_execution.rs::run_configured_agent_until_boundary": "Inject the existing shared WallClock at Runtime and Host composition; fail before approval or Fresh child effects; retain one approval loop and no ambient clock",
+      "awaken-runtime-host::host/session/context/assembly.rs::assemble": "Inject the existing shared WallClock at Runtime and Host composition; fail before approval or Fresh child effects; retain one approval loop and no ambient clock",
+      "awaken-runtime-host::host/session/context/extensions.rs::memory": "Inject the existing shared WallClock at Runtime and Host composition; fail before approval or Fresh child effects; retain one approval loop and no ambient clock",
+      "awaken-runtime-host::host/session/context/extensions.rs::skills": "Inject the existing shared WallClock at Runtime and Host composition; fail before approval or Fresh child effects; retain one approval loop and no ambient clock; then: Compose the existing ForkAgentTool with Host clock at Session context assembly; keep the canonical registry adapter narrow and free of duplicated inference dependencies"
     }
   }
 }
