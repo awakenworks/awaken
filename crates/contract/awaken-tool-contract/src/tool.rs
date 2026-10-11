@@ -1132,7 +1132,28 @@ pub fn parse_tool_args<A: serde::de::DeserializeOwned>(
     } else {
         arguments
     };
-    serde_json::from_value(raw).map_err(|error| ToolError::InvalidArguments(error.to_string()))
+    let string_bytes = raw.as_str().map(str::len);
+    serde_json::from_value(raw).map_err(|error| {
+        let detail = error.to_string();
+        // Provider normalization owns decoding. A malformed captured JSON
+        // string still fails here; do not echo an entire unfinished source
+        // file back into the model transcript or introduce another decoder.
+        let detail = if let Some(bytes) = string_bytes {
+            let expected = detail
+                .rsplit_once(", expected ")
+                .map(|(_, expected)| expected)
+                .filter(|expected| expected.len() <= 256)
+                .unwrap_or("the declared tool schema");
+            format!(
+                "expected {expected}; received string arguments ({bytes} bytes). \
+                 Send complete JSON matching the declared schema, not a quoted or \
+                 incomplete payload. Split large file content into smaller valid calls."
+            )
+        } else {
+            detail
+        };
+        ToolError::InvalidArguments(detail)
+    })
 }
 
 /// Parse arguments for a legacy [`RawTool`] that intentionally reports invalid
@@ -1448,6 +1469,57 @@ mod recovery_tests {
             parse_tool_args::<OptionalArgs>(serde_json::json!({"extra": true})),
             Err(ToolError::InvalidArguments(_))
         ));
+    }
+
+    #[test]
+    fn rejected_string_arguments_return_repair_guidance_without_echoing_source() {
+        // Cause/effect table A1 valid typed string/object (including large
+        // content) => unchanged parsed value; A2 rejected string, empty/short/
+        // large/UTF-8/incomplete JSON => InvalidArguments, bounded schema and
+        // split-write guidance, no payload echo; A3 legacy RawTool adapter =>
+        // the same error detail and original call ID. A4 missing/unknown object
+        // fields retain existing actionable diagnostics. No repair, executor
+        // call, additional JSON decoder or payload-size admission rule exists.
+        for source in [
+            String::new(),
+            "source-canary".into(),
+            format!("{{\"topic\":\"{}", "source-canary界🦀".repeat(4_000)),
+        ] {
+            let arguments = serde_json::Value::String(source.clone());
+            assert_eq!(
+                parse_tool_args::<String>(arguments.clone()).unwrap(),
+                source,
+                "A1"
+            );
+            let Err(ToolError::InvalidArguments(detail)) =
+                parse_tool_args::<OptionalArgs>(arguments.clone())
+            else {
+                panic!("A2 malformed object arguments must remain rejected");
+            };
+            assert!(detail.len() < 512, "A2 bounded model context");
+            assert!(detail.contains("expected struct OptionalArgs"), "A2 schema");
+            assert!(detail.contains("Split large file content"), "A2 recovery");
+            assert!(!detail.contains("source-canary"), "A2 no source echo");
+            let output = parse_tool_args_or_error_output::<OptionalArgs>("same-call", arguments)
+                .unwrap_err();
+            assert_eq!(output.call_id, "same-call", "A3");
+            assert!(output.is_error, "A3");
+            assert_eq!(output.text(), format!("invalid arguments: {detail}"), "A3");
+        }
+        let source = "large valid content界".repeat(4_000);
+        assert_eq!(
+            parse_tool_args::<OptionalArgs>(serde_json::json!({"topic": source})).unwrap(),
+            OptionalArgs {
+                topic: Some(source)
+            },
+            "A1 valid content is not bounded by diagnostic policy"
+        );
+        let Err(ToolError::InvalidArguments(detail)) =
+            parse_tool_args::<OptionalArgs>(serde_json::json!({"extra": true}))
+        else {
+            panic!("A4 unknown object fields must remain rejected");
+        };
+        assert!(detail.contains("unknown field `extra`"), "A4");
     }
 
     #[tokio::test]
