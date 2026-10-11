@@ -3,6 +3,8 @@
 # Mounted Windows checkouts must execute unchanged in Linux/Dev Containers.
 *.sh text eol=lf
 *.py text eol=lf
+# Public API comparisons must be reproducible in fresh Windows checkouts.
+public-api/*.txt text eol=lf
 # Reviewed compiler patches and upstream templates carry raw-byte digests.
 *.patch text eol=lf
 deploy/storage/local-pv/chart/** text eol=lf
