@@ -69,7 +69,12 @@ async fn terminal_observation_pending_defers_only_the_exact_claim() {
         .expect("P1 runnable dispatch");
     assert_eq!(
         store
-            .settle(&run_id, parked.lease.epoch, DispatchOutcome::Awaiting, &[])
+            .settle(
+                &run_id,
+                parked.lease.epoch(),
+                DispatchOutcome::Awaiting,
+                &[]
+            )
             .await
             .expect("P1 park for terminal recovery"),
         crate::SettleOutcome::Applied,
@@ -79,7 +84,7 @@ async fn terminal_observation_pending_defers_only_the_exact_claim() {
         .await
         .expect("P1 terminal recovery claim")
         .expect("P1 scanner claims Awaiting dispatch");
-    let first_epoch = first.lease.epoch;
+    let first_epoch = first.lease.epoch();
     let reader: Arc<dyn CommittedThreadView> = Arc::new(TerminalView(RunRecord {
         id: run_id.clone(),
         thread_id,
@@ -144,7 +149,7 @@ async fn terminal_observation_pending_defers_only_the_exact_claim() {
         .await
         .expect("P2 claim B")
         .expect("P2 retry became eligible");
-    assert!(second.lease.epoch > first_epoch, "P2/E3 higher epoch");
+    assert!(second.lease.epoch() > first_epoch, "P2/E3 higher epoch");
     assert_eq!(
         worker("worker-b")
             .settle_claimed_terminal(second)

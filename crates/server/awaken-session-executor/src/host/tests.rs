@@ -93,7 +93,7 @@ async fn native_free_input_reuses_session_continuation_and_committed_reply_recei
         .unwrap()
         .unwrap();
     dispatch
-        .settle(&run, claimed.lease.epoch, DispatchOutcome::Awaiting, &[])
+        .settle(&run, claimed.lease.epoch(), DispatchOutcome::Awaiting, &[])
         .await
         .unwrap();
     let command = awaken_session_execution_contract::SessionThreadToolReplyCommand {

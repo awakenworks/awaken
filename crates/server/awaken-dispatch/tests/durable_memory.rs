@@ -1534,7 +1534,7 @@ async fn expired_lease_is_reclaimable_for_recovery() {
         .await
         .unwrap();
     assert_eq!(
-        recovered.map(|c| c.lease.owner),
+        recovered.map(|c| c.lease.owner().to_owned()),
         Some("worker-b".to_string()),
         "an expired lease is reclaimed by the next worker"
     );
@@ -1647,7 +1647,7 @@ async fn settle_done_clears_pending_and_dispatch() {
     store
         .settle(
             &RunId("run-1".to_string()),
-            claimed.lease.epoch,
+            claimed.lease.epoch(),
             DispatchOutcome::Done,
             &[],
         )
@@ -1775,8 +1775,8 @@ async fn reconciliation_repairs_committed_terminal_awaiting_and_expired_rows() {
         .expect("control is runnable");
     store
         .settle(
-            &control_claim.lease.run_id,
-            control_claim.lease.epoch,
+            control_claim.lease.run_id(),
+            control_claim.lease.epoch(),
             DispatchOutcome::Awaiting,
             &[],
         )
@@ -2645,7 +2645,7 @@ async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
         .await
         .unwrap()
         .expect("B reclaims");
-    assert_eq!((a.lease.epoch, b.lease.epoch), (1, 2));
+    assert_eq!((a.lease.epoch(), b.lease.epoch()), (1, 2));
 
     let plan = |run: &RunId, thread: &str| {
         ThreadCommit::assemble(

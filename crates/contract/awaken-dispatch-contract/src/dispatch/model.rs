@@ -1,40 +1,15 @@
 use super::*;
 
-/// A lease over one claimed dispatch: the single owner allowed to execute this
-/// run until `expires_ms`. An expired lease is reclaimable (recovery).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Lease {
-    pub run_id: RunId,
-    pub owner: String,
-    pub expires_ms: u64,
-    /// Monotonic fence token, bumped on every claim of this run (fresh, wake, or
-    /// recovery). The holder passes it back on [`settle`](DispatchQueue::settle) so
-    /// a *stale* owner — one whose lease lapsed and was re-claimed by another node
-    /// under a higher epoch — cannot settle the dispatch out from under the current
-    /// owner: the store rejects a settle whose epoch is not the row's current one.
-    /// This is the canonical fencing token (Kleppmann): owner strings can collide
-    /// or be reused, but a monotone epoch cannot, so the fence is topology- and
-    /// owner-name-independent. A row that has never been claimed has epoch 0,
-    /// so a lease — which only a claim mints — never carries 0.
-    ///
-    /// Required and nonzero on the wire: a missing epoch used to decode as 0 through
-    /// `#[serde(default)]`, a value no claim grants. Dispatch rows persist the
-    /// epoch in their own `lease_epoch` column, never as this JSON, so only the
-    /// Control/Worker transport (one release on both ends) carries this field.
-    #[serde(deserialize_with = "awaken_lease_contract::fence::Epoch::deserialize_u64")]
-    pub epoch: u64,
-}
-
 /// The Coordinator↔Worker claim lives in `awaken-worker-contract`; dispatch
-/// mints it from a [`Lease`] and keeps this path for its callers.
+/// mints it from a [`DispatchLease`] and keeps this path for its callers.
 pub use awaken_worker_contract::RunClaim;
 
-impl From<&Lease> for RunClaim {
-    fn from(lease: &Lease) -> Self {
+impl From<&DispatchLease> for RunClaim {
+    fn from(lease: &DispatchLease) -> Self {
         Self {
-            run_id: lease.run_id.clone(),
-            owner: lease.owner.clone(),
-            epoch: lease.epoch,
+            run_id: lease.run_id().clone(),
+            owner: lease.owner().to_owned(),
+            epoch: lease.epoch(),
         }
     }
 }
@@ -56,7 +31,7 @@ pub struct ClaimedCommitCommand {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Claimed {
     pub request: RunDispatch,
-    pub lease: Lease,
+    pub lease: DispatchLease,
     /// Exact subordinate Session Work authority issued by the Coordinator edge
     /// for this claim. Registered remote Session attempts require it before any
     /// committed Thread read; ordinary and colocated attempts omit it.

@@ -207,13 +207,13 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
         .await
         .unwrap()
         .expect("initial claim");
-    clock.set(stale.lease.expires_ms.saturating_add(1));
+    clock.set(stale.lease.expires_ms().saturating_add(1));
     let current = dispatch
         .claim(&identity.lease_owner(), 30_000, &Default::default())
         .await
         .unwrap()
         .expect("same-incarnation reclaim");
-    assert_eq!(current.lease.epoch, stale.lease.epoch + 1, "R2/C2");
+    assert_eq!(current.lease.epoch(), stale.lease.epoch() + 1, "R2/C2");
     let coordinator = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let service = Arc::new(ClaimedCommitHttpService::new(
         Arc::new(ClaimedCommitService::new(dispatch, coordinator.clone())),

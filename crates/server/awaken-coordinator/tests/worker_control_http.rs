@@ -441,7 +441,7 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
         .expect("compatible work");
     assert_eq!(claimed.request.run_id().0, "cpu");
     assert_eq!(
-        claimed.lease.owner,
+        claimed.lease.owner(),
         registered.worker.snapshot.identity.lease_owner()
     );
     assert_eq!(
@@ -457,7 +457,7 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
             .applied()
     );
     let partial = StreamCheckpoint {
-        run_id: claimed.lease.run_id.0.clone(),
+        run_id: claimed.lease.run_id().0.clone(),
         thread_id: "thread-cpu".to_string(),
         model: "model".to_string(),
         partial_text: "partial".to_string(),
@@ -649,8 +649,8 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
     assert_eq!(claimed.assignment.as_ref().unwrap().identity, exact, "R1");
     dispatch
         .settle(
-            &claimed.lease.run_id,
-            claimed.lease.epoch,
+            claimed.lease.run_id(),
+            claimed.lease.epoch(),
             awaken_dispatch::DispatchOutcome::Done,
             &[],
         )

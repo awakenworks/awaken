@@ -80,8 +80,7 @@
   },
   "duplicate-type": {
     "Command": 2,
-    "Error": 2,
-    "Lease": 2
+    "Error": 2
   },
   "contract-reexport": {
     "awaken-credential-contract": 29,

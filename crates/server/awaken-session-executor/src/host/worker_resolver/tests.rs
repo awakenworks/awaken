@@ -587,8 +587,8 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
 
     store
         .settle(
-            &reclaimed.lease.run_id,
-            reclaimed.lease.epoch,
+            reclaimed.lease.run_id(),
+            reclaimed.lease.epoch(),
             ingress::DispatchOutcome::Done,
             &[],
         )
@@ -1232,7 +1232,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
     // early-claim-publication bug that the static 20-case selector cannot.
     let predecessor = ingress::RunClaim {
         run_id: awaken_agent_contract::agent::run::Id("previous-run".into()),
-        owner: claimed.lease.owner.clone(),
+        owner: claimed.lease.owner().to_owned(),
         epoch: 0,
     };
     host.installed_sessions.update("ordinary-remote", |slot| {
@@ -1240,8 +1240,8 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         slot.realization.authority = crate::installed_session::SessionRealizationAuthority::Live(
             crate::installed_session::test_observed_lease(
                 awaken_session_resource_contract::SessionRealizationLease {
-                    owner: claimed.lease.owner.clone(),
-                    runtime_incarnation: claimed.lease.owner.clone(),
+                    owner: claimed.lease.owner().to_owned(),
+                    runtime_incarnation: claimed.lease.owner().to_owned(),
                     epoch: 0,
                     expires_at_unix_ms: u64::MAX,
                 },
@@ -1306,7 +1306,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
             .read("ordinary-remote", |slot| {
                 slot.inputs.baseline.is_some()
                     && slot.realization.authority.lease().is_some_and(|lease| {
-                        lease.owner == claimed.lease.owner && lease.epoch == claimed.lease.epoch
+                        lease.owner == claimed.lease.owner() && lease.epoch == claimed.lease.epoch()
                     })
             })
             .unwrap_or(false),
@@ -1466,12 +1466,7 @@ async fn resource_manifest_must_match_the_durable_execution_scope() {
         ));
     let claimed = ingress::Claimed {
         request,
-        lease: ingress::Lease {
-            run_id: run,
-            owner: "worker-a".to_string(),
-            expires_ms: 100,
-            epoch: 1,
-        },
+        lease: ingress::DispatchLease::from_persisted(run, "worker-a".to_string(), 100, 1).unwrap(),
         session_work_authority: None,
         credential_bindings: Vec::new(),
         credential_deliveries: Vec::new(),
@@ -1517,12 +1512,7 @@ async fn malformed_resource_manifest_is_rejected_before_sandbox_creation() {
         ));
     let claimed = ingress::Claimed {
         request,
-        lease: ingress::Lease {
-            run_id: run,
-            owner: "worker-a".to_string(),
-            expires_ms: 100,
-            epoch: 1,
-        },
+        lease: ingress::DispatchLease::from_persisted(run, "worker-a".to_string(), 100, 1).unwrap(),
         session_work_authority: None,
         credential_bindings: Vec::new(),
         credential_deliveries: Vec::new(),
@@ -2807,12 +2797,8 @@ async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
     );
     let claimed = ingress::Claimed {
         request: ingress::RunDispatch::new(activation),
-        lease: ingress::Lease {
-            run_id: run,
-            owner: "control-owner".to_string(),
-            expires_ms: 100,
-            epoch: 2,
-        },
+        lease: ingress::DispatchLease::from_persisted(run, "control-owner".to_string(), 100, 2)
+            .unwrap(),
         session_work_authority: None,
         credential_bindings: Vec::new(),
         credential_deliveries: Vec::new(),

@@ -84,6 +84,9 @@ pub use attempt_binding::{
     AttemptExecutionBinding, PhysicalAttempt, attempt_binding_retry_is_exact,
 };
 
+mod lease;
+pub use lease::DispatchLease;
+
 mod model;
 pub use model::*;
 
@@ -947,14 +950,12 @@ mod tests {
     /// transport (a cross-node worker claims/settles over the wire, not the DB).
     #[test]
     fn lease_and_outcome_round_trip_through_serde() {
-        let lease = Lease {
-            run_id: RunId("run-1".into()),
-            owner: "host-7-42".into(),
-            expires_ms: 9_999,
-            epoch: 3,
-        };
-        let back: Lease = serde_json::from_str(&serde_json::to_string(&lease).expect("serializes"))
-            .expect("deserializes");
+        let lease =
+            DispatchLease::from_persisted(RunId("run-1".into()), "host-7-42".into(), 9_999, 3)
+                .unwrap();
+        let back: DispatchLease =
+            serde_json::from_str(&serde_json::to_string(&lease).expect("serializes"))
+                .expect("deserializes");
         assert_eq!(back, lease);
 
         // A pre-fence wire lease (no `epoch` key) is refused rather than read
@@ -963,7 +964,7 @@ mod tests {
         // like renewal, the transport requires a coordinated cutover.
         let mut v = serde_json::to_value(&lease).expect("to value");
         v.as_object_mut().expect("object").remove("epoch");
-        assert!(serde_json::from_value::<Lease>(v).is_err());
+        assert!(serde_json::from_value::<DispatchLease>(v).is_err());
 
         for outcome in [DispatchOutcome::Done, DispatchOutcome::Awaiting] {
             let back: DispatchOutcome =
@@ -1007,12 +1008,8 @@ mod tests {
         // the bound and unbound sandbox partitions over the same claim.
         let claimed = Claimed {
             request: a_request(),
-            lease: Lease {
-                run_id: RunId("run-1".into()),
-                owner: "host-7".into(),
-                expires_ms: 5_000,
-                epoch: 2,
-            },
+            lease: DispatchLease::from_persisted(RunId("run-1".into()), "host-7".into(), 5_000, 2)
+                .unwrap(),
             session_work_authority: None,
             credential_bindings: Vec::new(),
             credential_deliveries: Vec::new(),

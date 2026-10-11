@@ -66,7 +66,7 @@ fn select_in_physical_band(
         if let Some(row) = state.rows.get(run)
             && row.active_attempt.is_some() == occupied
             && row.state == DispatchState::Leased
-            && crate::clock::deadline_has_passed(row.lease.as_ref().map(|l| l.expires_ms), now_ms)
+            && crate::clock::deadline_has_passed(row.lease.as_ref().map(|l| l.expires_ms()), now_ms)
             && retry_deadline_is_due(row, now_ms)
             && compatible(row)
         {

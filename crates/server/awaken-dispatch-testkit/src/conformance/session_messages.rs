@@ -193,7 +193,7 @@ pub async fn assert_session_reply_activity_rotation_conformance_with_clock(
         store
             .settle(
                 unbound.run_id(),
-                unbound_first_claim.lease.epoch,
+                unbound_first_claim.lease.epoch(),
                 DispatchOutcome::Awaiting,
                 &[],
             )
@@ -223,7 +223,7 @@ pub async fn assert_session_reply_activity_rotation_conformance_with_clock(
         store
             .settle(
                 unbound.run_id(),
-                unbound_resumed.lease.epoch,
+                unbound_resumed.lease.epoch(),
                 DispatchOutcome::Done,
                 &[unbound_input.message_id],
             )
@@ -311,7 +311,7 @@ pub async fn assert_session_reply_activity_rotation_conformance_with_clock(
         store
             .settle(
                 initial.run_id(),
-                claimed.lease.epoch,
+                claimed.lease.epoch(),
                 DispatchOutcome::Awaiting,
                 &[],
             )
@@ -473,7 +473,7 @@ pub async fn assert_session_reply_activity_rotation_conformance_with_clock(
         store
             .settle(
                 initial.run_id(),
-                resumed.lease.epoch,
+                resumed.lease.epoch(),
                 DispatchOutcome::Done,
                 std::slice::from_ref(&input.message_id),
             )
@@ -565,7 +565,7 @@ pub async fn assert_session_reply_activity_rotation_conformance_with_clock(
         store
             .settle(
                 race.run_id(),
-                race_claim.lease.epoch,
+                race_claim.lease.epoch(),
                 DispatchOutcome::Awaiting,
                 &[],
             )
@@ -702,7 +702,7 @@ pub async fn assert_atomic_report_continuation_conformance_with_clock(
         store
             .settle(
                 root.run_id(),
-                claimed.lease.epoch,
+                claimed.lease.epoch(),
                 DispatchOutcome::Done,
                 std::slice::from_ref(&message_id),
             )
@@ -1114,7 +1114,7 @@ pub async fn assert_atomic_report_continuation_conformance_with_clock(
         store
             .settle(
                 first_run.run_id(),
-                first_claim.lease.epoch,
+                first_claim.lease.epoch(),
                 DispatchOutcome::Done,
                 std::slice::from_ref(&first_input.message_id),
             )
@@ -1143,7 +1143,7 @@ pub async fn assert_atomic_report_continuation_conformance_with_clock(
         store
             .settle(
                 second_run.run_id(),
-                second_claim.lease.epoch,
+                second_claim.lease.epoch(),
                 DispatchOutcome::Done,
                 std::slice::from_ref(&second_input.message_id),
             )

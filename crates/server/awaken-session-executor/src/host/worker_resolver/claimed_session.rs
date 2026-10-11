@@ -129,7 +129,7 @@ pub(super) async fn install_claimed_session_projection(
             return Err(awaken_dispatch_execution::Error::ResolutionNotReady(
                 format!(
                     "run {} is waiting for its co-located frozen Session projection",
-                    claimed.lease.run_id.0
+                    claimed.lease.run_id().0
                 ),
             ));
         }
@@ -155,7 +155,7 @@ pub(super) async fn install_claimed_session_projection(
     ownership.verify_current().await.map_err(|error| {
         HostWorkerResolver::execution_error(format!(
             "run {} lost ownership before Session realization: {error}",
-            claimed.lease.run_id.0
+            claimed.lease.run_id().0
         ))
     })?;
     let request_started = awaken_authority_clock::authority_proof_started()
@@ -168,7 +168,7 @@ pub(super) async fn install_claimed_session_projection(
             continuation.as_ref(),
         )
         .await
-        .map_err(|error| map_claimed_session_control_error(&claimed.lease.run_id.0, error))?
+        .map_err(|error| map_claimed_session_control_error(&claimed.lease.run_id().0, error))?
         .ok_or_else(|| {
             HostWorkerResolver::execution_error(
                 "WorkQueue dispatched a Session whose creation was not finalized",
@@ -189,7 +189,7 @@ pub(super) async fn install_claimed_session_projection(
     ownership.verify_current().await.map_err(|error| {
         HostWorkerResolver::execution_error(format!(
             "run {} lost ownership during frozen Session resume: {error}",
-            claimed.lease.run_id.0
+            claimed.lease.run_id().0
         ))
     })?;
     if let Some(dispatched) = dispatched_resources {

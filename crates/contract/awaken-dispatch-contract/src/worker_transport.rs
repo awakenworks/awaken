@@ -326,7 +326,7 @@ mod tests {
             "S2"
         );
         assert!(
-            serde_json::from_value::<crate::Lease>(serde_json::json!({
+            serde_json::from_value::<crate::DispatchLease>(serde_json::json!({
                 "run_id": "run-settle",
                 "owner": "worker",
                 "expires_ms": 10,
@@ -337,7 +337,7 @@ mod tests {
     }
 
     /// The complete dispatch-epoch wire table is shared by all four entrances.
-    /// Causes: C1 Lease/RunClaim/Renew/Settle shape; C2 epoch missing, zero,
+    /// Causes: C1 DispatchLease/RunClaim/Renew/Settle shape; C2 epoch missing, zero,
     /// positive or maximal. Effects: E1 no request is admitted for missing/zero;
     /// E2 a minted epoch is retained exactly (including u64::MAX, which cannot
     /// advance). Missing/zero never reach a server-side effect because decoding
@@ -361,12 +361,12 @@ mod tests {
                 settle["epoch"] = epoch.into();
             }
             let decoded = [
-                serde_json::from_value::<crate::Lease>(lease).map(|v| v.epoch),
+                serde_json::from_value::<crate::DispatchLease>(lease).map(|v| v.epoch()),
                 serde_json::from_value::<crate::RunClaim>(claim).map(|v| v.epoch),
                 serde_json::from_value::<RenewRequest>(renew).map(|v| v.lease_epoch),
                 serde_json::from_value::<SettleRequest>(settle).map(|v| v.epoch),
             ];
-            for (entrance, result) in ["Lease", "RunClaim", "Renew", "Settle"]
+            for (entrance, result) in ["DispatchLease", "RunClaim", "Renew", "Settle"]
                 .into_iter()
                 .zip(decoded)
             {

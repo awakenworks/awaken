@@ -1290,8 +1290,8 @@ pub(crate) mod tests {
 
         dispatch
             .settle(
-                &claimed.lease.run_id,
-                claimed.lease.epoch,
+                claimed.lease.run_id(),
+                claimed.lease.epoch(),
                 awaken_dispatch_contract::DispatchOutcome::Done,
                 &[],
             )
