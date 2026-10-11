@@ -75,7 +75,9 @@ impl DispatchOperation {
     }
 }
 
-/// One durable dispatch operation in store-assigned order.
+/// One durable dispatch operation in store-assigned order. Its cursor is an
+/// opaque identity: sequence allocations rolled back by the database may leave
+/// holes. Readers must not advance beyond an unresolved lower allocation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DispatchOperationalEvent {
     pub cursor: DispatchCursor,
@@ -101,6 +103,9 @@ pub trait DispatchOperationalFeed: Send + Sync {
     /// Select the optional exact Run before applying the page limit. Cursors
     /// remain the store's original global operation identities in either view;
     /// an empty page retains the requested cursor. `None` reads the whole feed.
+    /// Every page is a complete committed prefix of the selected view. A
+    /// concurrent lower-cursor transaction must settle before a higher cursor
+    /// can become a consumer checkpoint; filtered views keep this same barrier.
     async fn events_after(
         &self,
         cursor: DispatchCursor,

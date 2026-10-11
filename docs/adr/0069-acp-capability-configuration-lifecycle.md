@@ -273,6 +273,14 @@ Worker incarnation (`deployment.dispatch_owner`), not their shared platform
 Workspace. Concurrent replicas and successor incarnations cannot collide on
 an unattached probe while a retry within one incarnation retains its scope.
 
+The existing Worker Kubernetes Create transport retains the original serialized
+request through a bounded control wait. A transient response loss retries that
+same identity, name, body and attempt through the Coordinator's existing Create
+ledger. A definitive already-created result rejoins the provider's original
+verification; it never starts another create intent. Authentication rejection
+and budget exhaustion remain errors/Unknown, and a transport retry cannot
+authorize a stale Worker or provide a physical termination receipt.
+
 The local-ACP application merges live negotiation with catalog annotations:
 
 | Rule | Live declaration | Catalog annotation | Effective status |

@@ -923,3 +923,10 @@
   keeps probe cleanup owned through caller cancellation and peer failure.
 - [Observability boundary](../design/observability-eval-dataset-boundary.md)
   records queue/request deadline stages and RPC correlation without changing authority.
+
+## 2026-10-11 — Observe complete dispatch prefixes and retain exact Create requests
+
+- [Operational feed contract](../../crates/contract/awaken-run-ingress-contract/src/operational.rs)
+  keeps store identities sparse and forbids advancing past unresolved lower inserts.
+- [ADR-0069](../adr/0069-acp-capability-configuration-lifecycle.md)
+  reuses the original Create ticket through transient control response loss.
