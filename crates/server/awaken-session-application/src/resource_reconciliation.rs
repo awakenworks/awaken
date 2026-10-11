@@ -19,8 +19,7 @@ use awaken_session_state_contract::{
     SessionExecutionState, SessionMutation, SessionMutationPayload, SessionMutationResult,
     SessionTombstone,
 };
-use awaken_session_types::RunError;
-use awaken_session_types::SessionRevision;
+use awaken_session_types::{RunError, SessionRevision};
 use awaken_time::WallClockExt as _;
 
 use super::{
