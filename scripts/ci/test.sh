@@ -11,6 +11,7 @@
 #
 # usage: scripts/ci/test.sh [--dry-run] -p <crate> [nextest arguments...]
 #        scripts/ci/test.sh --self-test
+#        scripts/ci/test.sh --affected --base <revision>
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 source scripts/ci/_cargo_target.sh
@@ -20,13 +21,17 @@ awaken_unset_ambient_api_keys
 awaken_append_repo_tools
 
 case "${1:-}" in
+  --affected)
+    shift
+    exec python3 scripts/ci/rust_test_plan.py --run "$@"
+    ;;
   --self-test)
     [ "$#" -eq 1 ] || { echo "usage: scripts/ci/test.sh [--dry-run] -p <crate> [nextest arguments...] | --self-test" >&2; exit 2; }
     exec python3 scripts/ci/crate_test.py --self-test
     ;;
   -p|--dry-run) exec python3 scripts/ci/crate_test.py "$@" ;;
   *)
-    echo "usage: scripts/ci/test.sh [--dry-run] -p <crate> [nextest arguments...] | --self-test" >&2
+    echo "usage: scripts/ci/test.sh [--dry-run] -p <crate> [nextest arguments...] | --affected --base <revision> | --self-test" >&2
     exit 2
     ;;
 esac

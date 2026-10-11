@@ -364,7 +364,7 @@ def _foreign_persistence_ports(sources, ports: dict[str, list], implemented_by: 
         first: dict[str, str] = {}
         for path, syntax in crate.syntax.items():
             for match in named.finditer(syntax):
-                relative = path.relative_to(root) if root in path.parents else path
+                relative = (path.relative_to(root) if root in path.parents else path).as_posix()
                 first.setdefault(match.group(1), f"{relative}:{_architecture_ratchet.line_of(syntax, match.start())}")
         for name, where in sorted(first.items()):
             implements = name in implemented_by.get(crate.name, set())
@@ -386,7 +386,7 @@ def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) 
     typed: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))  # name -> crate -> places
     for crate in sources:
         for path, syntax in crate.syntax.items():
-            relative = path.relative_to(root) if root in path.parents else path
+            relative = (path.relative_to(root) if root in path.parents else path).as_posix()
             implemented_by[crate.name] |= implemented_traits(syntax)
             if crate.metadata.get("layer") != TOOLING_LAYER:
                 implemented |= implemented_by[crate.name]

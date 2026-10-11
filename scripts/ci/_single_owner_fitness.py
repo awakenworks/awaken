@@ -175,7 +175,7 @@ def measure(sources: tuple[_architecture_ratchet.CrateSource, ...], root: Path) 
         owner = realization_owner(crate.name, crate.metadata)
         layers = _module_layer_fitness.layer_table()
         for path, syntax in crate.syntax.items():
-            relative = path.relative_to(root) if root in path.parents else path
+            relative = (path.relative_to(root) if root in path.parents else path).as_posix()
             for enum, offset in state_constructions(syntax, enums):
                 key = f"{crate.name}::{enum}"
                 counts["state-construction"][key] += 1

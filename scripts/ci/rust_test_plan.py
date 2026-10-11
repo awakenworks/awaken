@@ -14,6 +14,8 @@ import time
 import tomllib
 import unittest
 
+import crate_test
+
 ROOT = Path(__file__).resolve().parents[2]
 PROFILE = ROOT / ".config/rust-tests.toml"
 INPUT_GLOBS = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "crates/**", ".config/**", "scripts/ci/**")
@@ -75,7 +77,80 @@ def source_snapshot() -> tuple[str, bytes]:
     return source_digest(git_output("rev-parse", "HEAD"), patch, untracked), patch
 
 
+def execution_commands(metadata: dict, selected: list[str], features: list[str],
+                       companions: list[dict[str, str]]) -> list[list[str]]:
+    if not selected:
+        return []
+    return crate_test.plan_packages(metadata, features, companions, selected, [])
+
+
+def execute_commands(commands: list[list[str]], environment: dict[str, str],
+                     run=subprocess.run) -> tuple[int, list[dict]]:
+    rows = []
+    for command in commands:
+        print("Affected command: " + json.dumps(command), flush=True)
+        started = time.monotonic()
+        error = None
+        try:
+            status = run(command, cwd=ROOT, env=environment).returncode
+        except OSError as exception:
+            status, error = 1, str(exception)
+        row = {"command": command, "exit_code": status,
+               "duration_seconds": time.monotonic() - started}
+        if error is not None:
+            row["error"] = error
+        rows.append(row)
+        if status:
+            return status, rows
+    return 0, rows
+
+
 class PlanTests(unittest.TestCase):
+    def test_build_selection_features_and_companions_follow_the_affected_graph(self) -> None:
+        metadata = crate_test.CrateTestPlan.metadata()
+        metadata["resolve"]["nodes"].append(
+            {"id": "second", "features": ["default", "sqlite"], "deps": [{"pkg": "launcher"}]})
+        metadata["workspace_members"].append("second")
+        metadata["packages"].append({"id": "second", "name": "second"})
+        features = crate_test.CrateTestPlan.features
+        companions = crate_test.CrateTestPlan.companions
+        # B1 no changes: no build; B2 a leaf: no workspace-wide compilation;
+        # B3 two consumers: one companion and one multi-package test build,
+        # with each package's full-graph features and no unrelated test target.
+        self.assertEqual(execution_commands(metadata, [], features, companions), [])
+        self.assertEqual(execution_commands(metadata, ["leaf"], features, companions),
+                         [["cargo", "nextest", "run", "--locked", "-p", "leaf"]])
+        self.assertEqual(execution_commands(metadata, ["cli", "second"], features, companions), [
+            ["cargo", "build", "--locked", "-p", "hand", "--bin", "hand-bin", "--features", "hand"],
+            ["cargo", "nextest", "run", "--locked", "-p", "cli", "-p", "second",
+             "--features", "cli/k8s,second/sqlite"],
+        ])
+        for selected in (["missing"], ["leaf", "leaf"]):
+            with self.assertRaises(crate_test.PlanError):
+                execution_commands(metadata, selected, features, companions)
+
+    def test_companion_failure_stops_execution_and_preserves_the_status(self) -> None:
+        for statuses, expected in (([23, 0], 23), ([0, 47], 47), ([0, 0], 0)):
+            calls = []
+            def run(command, **kwargs):
+                calls.append(command)
+                return subprocess.CompletedProcess(command, statuses[len(calls) - 1])
+            status, rows = execute_commands([["build"], ["test"]], {}, run=run)
+            self.assertEqual(status, expected)
+            self.assertEqual(len(rows), 1 if statuses[0] else 2)
+            self.assertEqual([row["command"] for row in rows], calls)
+
+    def test_spawn_failure_retains_completed_commands_and_the_failing_command(self) -> None:
+        def run(command, **kwargs):
+            if command == ["test"]:
+                raise OSError("spawn failed")
+            return subprocess.CompletedProcess(command, 0)
+        status, rows = execute_commands([["build"], ["test"], ["must-not-run"]], {}, run=run)
+        self.assertEqual(status, 1)
+        self.assertEqual([row["command"] for row in rows], [["build"], ["test"]])
+        self.assertEqual(rows[0]["exit_code"], 0)
+        self.assertEqual(rows[1]["error"], "spawn failed")
+
     def test_receipt_identity_includes_untracked_bytes_and_boundaries(self) -> None:
         expected = source_digest(b"revision", b"patch", {"a": b"bc"})
         for revision, patch, files in ((b"other", b"patch", {"a": b"bc"}), (b"revision", b"changed", {"a": b"bc"}), (b"revision", b"patch", {"a": b"different"}), (b"revision", b"patch", {"ab": b"c"})):
@@ -128,33 +203,42 @@ def main() -> int:
     if not args.base:
         parser.error("--base is required for an affected plan")
     base = git_output("rev-parse", "--verify", "--end-of-options", args.base + "^{commit}").decode().strip()
+    fingerprint, patch = source_snapshot()
     changed = sorted(set(git_output("diff", "--name-only", "-z", base, "--").decode().split("\0") + git_output("ls-files", "--others", "--exclude-standard", "-z").decode().split("\0")) - {""})
-    features = workspace_features()
-    environment = dict(os.environ)
-    environment.setdefault("CARGO_TARGET_DIR", str(ROOT / "target"))
-    environment["CARGO_BUILD_BUILD_DIR"] = environment["CARGO_TARGET_DIR"]
-    metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--locked", "--format-version", "1", "--features", features], cwd=ROOT, env=environment))
+    features, companions = crate_test.load_profile()
+    environment = crate_test.environment()
+    metadata = crate_test.full_graph_metadata(features)
+    errors = crate_test.companion_errors(metadata, companions)
+    if errors:
+        raise crate_test.PlanError("; ".join(errors))
     selected, reason = affected_packages(metadata, changed)
-    command = ["cargo", "nextest", "run", "--workspace", "--locked", "--features", features]
-    if selected:
-        command += ["-E", " | ".join(f"package(={name})" for name in selected)]
-    plan = {"schema_version": 1, "kind": "local-affected", "revision": git_output("rev-parse", "HEAD").decode().strip(), "base": base, "changed": changed, "selected_packages": selected, "reason": reason, "command": command if selected else [], "full_gate": False}
+    commands = execution_commands(metadata, selected, features, companions)
+    if source_snapshot()[0] != fingerprint:
+        print("Source changed while deriving affected packages; refusing the stale plan", file=sys.stderr)
+        return 1
+    plan = {"schema_version": 2, "kind": "local-affected", "revision": git_output("rev-parse", "HEAD").decode().strip(), "base": base, "changed": changed, "selected_packages": selected, "reason": reason, "commands": commands, "full_gate": False}
     print(json.dumps(plan, indent=2), flush=True)
     if not args.run or not selected:
         return 0
     directory = Path(environment["CARGO_TARGET_DIR"]) / "test-timings"
     directory.mkdir(parents=True, exist_ok=True)
     receipt = directory / f"affected-{time.time_ns()}.json"
-    fingerprint, patch = source_snapshot()
     plan["source_digest"] = fingerprint
     receipt.with_suffix(".patch").write_bytes(patch)
+    plan["status"] = "running"
+    receipt.write_text(json.dumps(plan, indent=2), encoding="utf-8")
     started = time.monotonic()
-    status = subprocess.run(command, cwd=ROOT, env=environment).returncode
+    try:
+        status, rows = execute_commands(commands, environment)
+    except OSError as error:
+        plan["error"] = str(error)
+        status, rows = 1, []
     unchanged = source_snapshot()[0] == fingerprint
     if not unchanged:
         print("Source changed during affected execution; result cannot qualify this tree", file=sys.stderr)
         status = status or 1
-    plan.update(exit_code=status, source_unchanged=unchanged, duration_seconds=time.monotonic() - started)
+    plan.update(status="passed" if status == 0 else "failed", rows=rows,
+                exit_code=status, source_unchanged=unchanged, duration_seconds=time.monotonic() - started)
     receipt.write_text(json.dumps(plan, indent=2), encoding="utf-8")
     print(f"Affected execution evidence: {receipt}")
     return status

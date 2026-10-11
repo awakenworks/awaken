@@ -203,6 +203,7 @@ run static "test-orchestration self-test" python3 scripts/ci/check_test_orchestr
 run static "test-orchestration" python3 scripts/ci/check_test_orchestration.py
 run static "required Rust execution self-test" python3 scripts/ci/check_rust_test_execution.py --self-test
 run static "affected Rust plan self-test" python3 scripts/ci/rust_test_plan.py --self-test
+run static "ordinary Rust benchmark evidence self-test" python3 scripts/ci/benchmark_rust_build.py --self-test
 run static "parallel static check tests" python3 scripts/ci/test_parallel_checks.py
 run static "combined coverage gate tests" python3 scripts/ci/test_combined_coverage.py
 run static "unit-test CLI decision table" python3 scripts/ci/test_strict_unittest.py

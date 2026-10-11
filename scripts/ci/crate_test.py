@@ -163,6 +163,27 @@ def environment() -> dict[str, str]:
     return values
 
 
+def plan_packages(metadata: dict, features: list[str], companions: list[dict[str, str]],
+                  crates: list[str], passthrough: list[str]) -> list[list[str]]:
+    """Build each companion once, then build/test only the selected packages."""
+    if not crates or len(set(crates)) != len(crates):
+        raise PlanError("selected packages must be nonempty and unique")
+    commands: list[list[str]] = []
+    for crate in crates:
+        for command in plan(metadata, features, companions, crate, passthrough)[:-1]:
+            if command not in commands:
+                commands.append(command)
+    members = _members(metadata)
+    nodes = {node["id"]: node for node in metadata["resolve"]["nodes"]}
+    resolved = sorted(f"{crate}/{feature}" for crate in crates
+                      for feature in nodes[members[crate]["id"]]["features"] if feature != "default")
+    locked = [] if "--locked" in passthrough else ["--locked"]
+    commands.append(["cargo", "nextest", "run", *locked,
+                     *(argument for crate in crates for argument in ("-p", crate)),
+                     *(["--features", ",".join(resolved)] if resolved else []), *passthrough])
+    return commands
+
+
 def parse(argv: list[str]) -> tuple[bool, str, list[str]]:
     dry_run = False
     while argv and argv[0] == "--dry-run":
@@ -254,7 +275,16 @@ class CrateTestPlan(unittest.TestCase):
         return cls._workspace
 
     def dry_run(self, crate: str) -> list[list[str]]:
-        result = subprocess.run([str(ROOT / "scripts/ci/test.sh"), "--dry-run", "-p", crate, "--no-fail-fast"],
+        command = [str(ROOT / "scripts/ci/test.sh"), "--dry-run", "-p", crate, "--no-fail-fast"]
+        if os.name == "nt":
+            # CreateProcess cannot execute a POSIX shebang. Select native Git
+            # Bash explicitly; a System32 WSL bash is a different substrate.
+            bash = os.environ.get("AWAKEN_NATIVE_BASH") or str(
+                Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git/bin/bash.exe")
+            if not Path(bash).is_file():
+                raise PlanError("native shell self-test requires Git Bash or AWAKEN_NATIVE_BASH")
+            command = [bash, *command]
+        result = subprocess.run(command,
                                 cwd=ROOT, capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         return [shlex.split(line) for line in result.stdout.splitlines() if line.strip()]

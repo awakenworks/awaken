@@ -68,10 +68,18 @@ determines affected owners and their transitive consumers:
 ```sh
 python3 scripts/ci/rust_test_plan.py --base origin/main
 python3 scripts/ci/rust_test_plan.py --base origin/main --run
+# The same execution with checkout-local Cargo and sanitized provider settings:
+bash scripts/ci/test.sh --affected --base origin/main
 ```
 
 The plan includes committed changes since the base, working changes, and
 untracked inputs. Global/unowned inputs fall back to the whole workspace.
+The execution selects Cargo packages as well as test cases. It derives each
+selected package's features from the full Cargo graph, builds each required
+Hand companion once, and runs the selected packages together. An execution
+filter on a workspace build alone would still compile unrelated test targets.
+The plan retains every command and its result; a failed companion build stops
+the dependent test run. The native shell entry point uses Git Bash on Windows.
 Documentation-only Markdown changes can have no Rust owner, but still require
 the documentation gate. The plan and execution receipts explicitly carry
 `full_gate: false`. The source digest covers HEAD, the binary working patch,
@@ -152,6 +160,52 @@ same candidate SHA, feature/tool/substrate configuration and expected cases.
 The aggregator must reject missing/duplicate shards and partial/skipped
 results. A scheduler or cache hit alone cannot produce a green full receipt.
 The current implementation keeps full-suite composition unchanged.
+
+### Ordinary build benchmarks
+
+Use an explicit workload and compare both first builds and unchanged builds:
+
+```sh
+python3 scripts/ci/benchmark_rust_build.py \
+  -p awaken-authority-clock -p awaken-lease-contract --jobs 1 2 4 --rounds 2
+```
+
+Each observation uses a fresh checkout-local Cargo target/build directory;
+the order alternates across rounds. The benchmark removes temporary compiler
+wrappers and output preparation, preserves ordinary profile settings, and
+retains exact commands, compiler identity, source patch/digest, Cargo timing
+reports, build counts, executable identities and actual passed test names.
+Missing/empty executables, any skipped case, changed source or test identities,
+unexpected recompilation in the unchanged warm phase, and failed commands
+reject the comparison. A failed observation stops immediately and remains in
+the record; there are no automatic retries. This is a selected-workload
+benchmark (`full_gate: false`), not a full-workspace qualification or a general
+speedup claim. Run it separately from other Cargo work.
+
+Choose concurrency from the representative workload and current host capacity,
+not just logical CPU count. In particular, Windows can run out of commit memory
+even when physical memory remains available: WinError 1455 rejects the build.
+Record that failure and release competing memory pressure before measuring a
+heavier workload. Do not turn up global Cargo concurrency or change the system
+page file as part of a benchmark. Local development keeps incremental caches;
+compiler-cache experiments that disable incremental compilation belong to a
+separate measured CI configuration.
+
+The 2026-10-11 native MSVC probe used the two leaf packages above, 56 compiled
+units and 11 executed tests per successful observation. The first round took
+52.9/28.0/23.7 seconds at jobs 1/2/4; unchanged builds were under one second.
+The second round reached jobs 4 in 18.7 seconds, then jobs 2 failed with
+LNK1105/error 1224 while closing `serde_derive.dll`. The overall comparison is
+failed, not a concurrency qualification. A separate resource HTTP jobs-2 build
+also hit WinError 1455 under low commit-memory availability. Retain those
+failures and establish ordinary native linker/resource stability before
+changing defaults or attributing a general workspace speedup to this sample.
+
+Resource HTTP artifact/file/repository/skill transport tests share one native
+test target while retaining their original modules, cases and independent
+fixtures. Memory keeps the portability gate's named target. Tests owning
+one-shot process state or real child re-entry keep independent executables;
+target consolidation must compare executed case identities, not just totals.
 
 Recorded qualification uses the canonical host admission command before work
 starts. The same host policy supplies all filesystem reserves, MemAvailable and
