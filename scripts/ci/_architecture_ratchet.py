@@ -98,7 +98,8 @@ def compare(rules: tuple[Rule, ...], counts: Counts, places: Places, baseline: d
                     errors.extend(details)
                 where = ", ".join(details[:5]) if not full_details else ""
                 errors.append(diagnostic(rule.name, key, was, current, rule.advice, details=where))
-            elif current <= was - max(rule.slack, 1):
+            elif (current <= was - max(rule.slack, 1)
+                  or (rule.slack == 0 and current < was)):
                 advice = lower_advice or f"lower {baseline_name} in this commit with its owning guard's --tighten"
                 errors.append(diagnostic(rule.name, key, was, current, advice))
     return errors
@@ -479,6 +480,50 @@ def selftest() -> None:
     assert "r: a 2 -> 3; fix: fix it" in compare(rules, {"r": {"a": 3}, "lines": {"c": 100}}, {}, held, "b.json")[0], "B1"
     assert "lower b.json" in compare(rules, {"r": {"a": 1}, "lines": {"c": 100}}, {}, held, "b.json")[0], "B2"
     assert "lower b.json" in compare(rules, {"lines": {"c": 100}}, {}, held, "b.json")[0], "B2 gone"
+    # B2a graph: count relation + zero/nonzero slack -> numeric refusal. The
+    # documented no-slack rule rejects every decrease, including parser-readable
+    # fractional held values; an integer minimum step used to admit 1 under1.5.
+    # The original threshold remains for every slack, including negative slack
+    # and parser-readable special numbers; only zero-slack strict decreases are
+    # added. No type schema, rounding or alternative comparison is introduced.
+    #
+    # | Row | slack        | relation                 | effect |
+    # | B2a | zero         | lower/equal/higher        | reject/admit/reject |
+    # | B2b | positive     | fall below/at threshold   | admit/reject |
+    # | B2c | negative     | fall below/at step1       | admit/reject |
+    # | B2d | key absent   | original implicit count0  | same zero-key admission |
+    # | B2e | special      | equal infinities/NaN      | original reject/admit |
+    for slack, was, current, failed in (
+        (0, 2, 1, True), (0, 2, 2, False), (0, 2, 3, True),
+        (0, 1.5, 1, True), (0, 1.5, 1.5, False), (0, 1.5, 2, True), (0, 2, 1.75, True),
+        (2, 2, 1, False), (2, 2, 0, True), (2, 2, 2, False), (2, 2, 3, True),
+        (2, 3.5, 2, False), (2, 3.5, 1.5, True), (2, 3.5, 3.5, False), (2, 3.5, 4, True),
+        (-2, 2, 1, True), (-2, 2, 2, False), (-2, 2, 3, True),
+        (-2, 1.5, 1, False), (-2, 1.5, 0.5, True), (-2, 1.5, 1.5, False), (-2, 1.5, 2, True),
+        (0.5, 1.5, 1, False), (0.5, 1.5, 0.5, True),
+    ):
+        errors = compare((Rule("fraction", "fix", slack=slack),), {"fraction": {"key": current}}, {},
+                         {"fraction": {"key": was}}, "fixture", lower_advice="lower the original record")
+        assert bool(errors) == failed, ("B2a-B2c", slack, was, current, errors)
+    for counts, previous, failed in (({}, {"r": {"key": 0.5}}, True),
+                                     ({"r": {"key": 1}}, {}, True),
+                                     ({"r": {"key": 0}}, {}, False)):
+        assert bool(compare((Rule("r", "fix"),), counts, {}, previous, "fixture")) == failed, "B2d absence"
+    # B2e compatibility: json.loads already reads Infinity/-Infinity/NaN and
+    # compare has no numeric schema. Equal infinities retain the original
+    # threshold refusal; NaN retains its original unordered admission. These
+    # cases preserve the old boundary, not a claim that special counts are valid.
+    # finite against infinity follows the original growth/fall decisions.
+    for was, current, failed in (
+        (float("inf"), float("inf"), True),
+        (float("-inf"), float("-inf"), True),
+        (float("inf"), 1, True), (float("-inf"), 1, True),
+        (1, float("inf"), True), (1, float("-inf"), True),
+        (float("nan"), 1, False), (1, float("nan"), False),
+        (float("nan"), float("nan"), False),
+    ):
+        assert bool(compare((Rule("special", "fix"),), {"special": {"key": current}}, {},
+                            {"special": {"key": was}}, "fixture")) == failed, "B2e original special-number boundary"
     assert compare(rules, {"r": {"a": 2}, "lines": {"c": 91}}, {}, held, "b.json") == [], "B4 float"
     assert "lower" in compare(rules, {"r": {"a": 2}, "lines": {"c": 90}}, {}, held, "b.json")[0], "B4 fall"
     assert "lines: c 100 -> 101" in compare(rules, {"r": {"a": 2}, "lines": {"c": 101}}, {}, held, "b.json")[0], "B4 grow"

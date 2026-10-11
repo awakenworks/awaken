@@ -8,7 +8,6 @@ import json
 import os
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -196,15 +195,21 @@ def current_inputs() -> tuple[dict[str, object], str, set[str], dict[str, str]]:
 # Stub cargo variants for the tool-query decision table: every other
 # subcommand must still succeed, so the gate reaches the query it is about.
 QUERY_FAILS_CARGO = """#!/usr/bin/env bash
+if [ "$1" = awaken-ci-deadline ]; then entry=$(command -v "cargo-$1"); exec "$entry" "$@"; fi
 case "$*" in
   "install --list") exit 3 ;;
+  *--list*) echo 'reliability_fixture: test' ;;
+  *--show-output*) echo 'test reliability_fixture ... ok'; echo 'test result: ok. 1 passed; 0 failed; 0 ignored;' ;;
   *"heartbeat_snapshot_never_mixes_concurrent_publication_batches"*)
     echo 'test result: ok. 1 passed; 0 failed; 0 ignored;' ;;
 esac
 """
 PARTIAL_LIST_CARGO = """#!/usr/bin/env bash
+if [ "$1" = awaken-ci-deadline ]; then entry=$(command -v "cargo-$1"); exec "$entry" "$@"; fi
 case "$*" in
   "install --list") echo 'cargo-mutants 1' ;;
+  *--list*) echo 'reliability_fixture: test' ;;
+  *--show-output*) echo 'test reliability_fixture ... ok'; echo 'test result: ok. 1 passed; 0 failed; 0 ignored;' ;;
   *"heartbeat_snapshot_never_mixes_concurrent_publication_batches"*)
     echo 'test result: ok. 1 passed; 0 failed; 0 ignored;' ;;
 esac
@@ -212,6 +217,26 @@ esac
 
 
 class ReliabilityCheckerTests(unittest.TestCase):
+    @staticmethod
+    def runner_fixture(root: Path) -> Path:
+        # D0/Q0: actual required execution imports its transitive closure and
+        # reads a real private index, before reaching the tool decision. Reuse
+        # the same fixture owner; no stale copy list or fake Git source proof.
+        from check_rust_test_execution import ExecutionTests
+        return ExecutionTests.runner_fixture(root, "scripts/ci/check-reliability.sh",
+                                              "scripts/ci/_cargo_target.sh", "scripts/ci/_provider_environment.sh")
+
+    @staticmethod
+    def python_adapter() -> str:
+        # Only domain/tool validation is stubbed in these tool-orchestration
+        # tests. Source capture, required list/run and deadline must execute.
+        return f'''#!/usr/bin/env bash
+case "$1" in
+  *deadline.py|*cargo-awaken-ci-deadline|*check_rust_test_execution.py) exec {shlex.quote(sys.executable)} "$@" ;;
+  *) exit 0 ;;
+esac
+'''
+
     def test_mutant_receipts_require_executed_tests_and_complete_coverage(self) -> None:
         # M1 complete nonempty batch + passing baseline + assertion failure for
         # every mutant => accept. M2 baseline absent/failed/zero/ignored => reject.
@@ -280,22 +305,22 @@ class ReliabilityCheckerTests(unittest.TestCase):
         for case in ("fresh", "existing", "nested", "blocked", "tool-failure", "missing-init", "fuzz-lock-stale"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
-                scripts = root / "scripts/ci"
-                scripts.mkdir(parents=True)
+                scripts = self.runner_fixture(root)
                 (root / "fuzz").mkdir()
-                for name in ("check-reliability.sh", "_cargo_target.sh", "_provider_environment.sh", "_rust_test_execution.sh", "_deadline.sh", "deadline.py"):
-                    shutil.copyfile(ROOT / "scripts/ci" / name, scripts / name)
                 if case == "missing-init":
                     runner = scripts / "check-reliability.sh"
                     runner.write_text(runner.read_text().replace('mkdir -p "$mutation_evidence"\n', ""))
                 binary = root / "bin"
                 binary.mkdir()
                 cargo = '''#!/usr/bin/env bash
+if [ "$1" = awaken-ci-deadline ]; then entry=$(command -v "cargo-$1"); exec "$entry" "$@"; fi
 printf '%q ' "$@" >> "$CALL_LOG"
 printf '\\n' >> "$CALL_LOG"
 printf '%s|%s|%s\\n' "$CARGO_TARGET_DIR" "${CARGO_BUILD_BUILD_DIR:-}" "$1" >> "$CALL_TARGET_LOG"
 case "$*" in
   "install --list") echo 'cargo-fuzz 1'; echo 'cargo-mutants 1' ;;
+  *--list*) echo 'reliability_fixture: test' ;;
+  *--show-output*) echo 'test reliability_fixture ... ok'; echo 'test result: ok. 1 passed; 0 failed; 0 ignored;' ;;
   "+nightly metadata --locked --format-version 1")
     [ "$FAIL_FUZZ_LOCK" != 1 ] || exit 41 ;;
   "mutants "*)
@@ -306,7 +331,7 @@ case "$*" in
     echo 'test result: ok. 1 passed; 0 failed; 0 ignored;' ;;
 esac
 '''
-                for name, body in {"cargo": cargo, "python3": "#!/bin/sh\nexit 0\n", "git": "#!/bin/sh\necho aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n", "rustup": "#!/bin/sh\necho nightly-test\n", "rustc": "#!/bin/sh\necho 'host: x86_64-unknown-linux-gnu'\n"}.items():
+                for name, body in {"cargo": cargo, "python3": self.python_adapter(), "rustup": "#!/bin/sh\necho nightly-test\n", "rustc": "#!/bin/sh\necho 'host: x86_64-unknown-linux-gnu'\n"}.items():
                     tool = binary / name
                     tool.write_text(body)
                     tool.chmod(0o755)
@@ -315,11 +340,11 @@ esac
                     output.mkdir()
                 if case == "blocked":
                     output.write_text("owned file must remain unchanged")
-                env = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", CARGO_TARGET_DIR=str(root / "target"), CARGO_BUILD_BUILD_DIR=str(root / "normal-build"), AWAKEN_RELIABILITY_EVIDENCE_DIR=str(output), CALL_LOG=str(root / "calls"), CALL_TARGET_LOG=str(root / "targets"), FAIL_MUTANT=str(int(case == "tool-failure")), FAIL_FUZZ_LOCK=str(int(case == "fuzz-lock-stale")))
+                env = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", CARGO_TARGET_DIR=str(root / "target"), CARGO_BUILD_BUILD_DIR=str(root / "normal-build"), AWAKEN_RELIABILITY_EVIDENCE_DIR=str(output), CALL_LOG=str(root / "target/calls"), CALL_TARGET_LOG=str(root / "target/targets"), FAIL_MUTANT=str(int(case == "tool-failure")), FAIL_FUZZ_LOCK=str(int(case == "fuzz-lock-stale")))
                 result = subprocess.run(["bash", str(scripts / "check-reliability.sh"), "--require-tools"], env=env, capture_output=True, text=True, timeout=20)
-                calls = [line.rstrip() for line in (root / "calls").read_text().splitlines()]
+                calls = [line.rstrip() for line in (root / "target/calls").read_text().splitlines()]
                 mutations = [line for line in calls if line.startswith("mutants ")]
-                targets = [line.split("|") for line in (root / "targets").read_text().splitlines()]
+                targets = [line.split("|") for line in (root / "target/targets").read_text().splitlines()]
                 for target, build, command in targets:
                     isolated = command in ("clean", "mutants")
                     expected_target = root / "target" / "reliability-mutation-build" if isolated else root / "target"
@@ -397,17 +422,13 @@ esac
         ):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
-                scripts = root / "scripts/ci"
-                scripts.mkdir(parents=True)
+                scripts = self.runner_fixture(root)
                 (root / "fuzz").mkdir()
-                for name in ("check-reliability.sh", "_cargo_target.sh", "_provider_environment.sh", "_rust_test_execution.sh", "_deadline.sh", "deadline.py"):
-                    shutil.copyfile(ROOT / "scripts/ci" / name, scripts / name)
                 binary = root / "bin"
                 binary.mkdir()
                 for name, body in {
                     "cargo": listing,
-                    "python3": "#!/bin/sh\nexit 0\n",
-                    "git": "#!/bin/sh\necho aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+                    "python3": self.python_adapter(),
                     "rustup": "#!/bin/sh\necho nightly-test\n",
                     "rustc": "#!/bin/sh\necho 'host: x86_64-unknown-linux-gnu'\n",
                 }.items():

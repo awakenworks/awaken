@@ -73,8 +73,9 @@ run_required_rust_tests -p awaken-session-environment --lib trusted_host_install
 run_required_rust_tests -p awaken-session-environment --lib workdir_unknown_hand_reap
 # The launch adapter moved to execution-composition; the former Host filter
 # selected zero tests. Bind this obligation to its current exact test identity.
+launch_selection=sandbox_source::tests::configured_working_directory_drives_process_and_acp_from_one_view
 run_required_rust_tests -p awaken-execution-composition --lib \
-  sandbox_source::tests::configured_working_directory_drives_process_and_acp_from_one_view -- --exact
+  "$launch_selection" --require-case="$launch_selection" -- --exact
 run_required_rust_tests -p awaken-session-executor --lib \
   model_pool_working_directory_is_one_attempt_invariant
 run_required_rust_tests -p awaken-session-executor --lib \

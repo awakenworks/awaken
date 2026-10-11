@@ -8,9 +8,6 @@ use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, SessionRunActivation, SessionRunDelivery,
     SessionRunReservation,
 };
-use awaken_session_execution_contract::{
-    SessionCoordinationReads as _, StreamingRunRuntime as _, ThreadReadRuntime as _,
-};
 use awaken_session_types::SessionId;
 
 struct ProtocolProjectionRuntime;
