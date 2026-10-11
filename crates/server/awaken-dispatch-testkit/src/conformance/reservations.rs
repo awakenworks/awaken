@@ -9,7 +9,7 @@
 // @formal reason: Static owner: dispatch-reservation conformance cases. Dynamic path: the tooling-only
 // @formal reason: testkit includes this exact file to assert store behavior; it does not reserve product
 // @formal reason: work itself. Evidence: crates/server/awaken-dispatch-testkit/src/lib.rs.
-// awaken-file-limit-ceiling: 1593
+// awaken-allow(file-limit-ceiling): 1593
 // Session reservation, claim guard, sandbox recovery, and completion rules.
 // Included at crate root to retain all existing conformance function paths.
 /// Session Run reservation cause/effect graph. Causes: C1 canonical dispatch is

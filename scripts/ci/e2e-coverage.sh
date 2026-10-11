@@ -151,8 +151,8 @@ run_coverage_suites() {
   npm run test:deterministic
   if [ "${AWAKEN_COVERAGE_REAL:-0}" = "1" ] && [ -n "${coverage_anthropic_key}${coverage_kimi_key}" ]; then
     (
-      export ANTHROPIC_API_KEY="$coverage_anthropic_key" # awaken-allow: secret
-      export KIMI_API_KEY="$coverage_kimi_key" # awaken-allow: secret
+      export ANTHROPIC_API_KEY="$coverage_anthropic_key" # awaken-allow(secret):
+      export KIMI_API_KEY="$coverage_kimi_key" # awaken-allow(secret):
       npm run test:real
     )
   else

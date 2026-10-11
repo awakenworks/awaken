@@ -6,7 +6,7 @@ Rust source files are measured by what they are, not by how long they look:
 * functional lines -- non-blank production lines, comments and `cfg(test)` code
   excluded -- warn at RUST_FUNCTIONAL_WARNING_LIMIT and stop at
   RUST_FUNCTIONAL_ERROR_LIMIT; a file already over the stop line when the rule
-  arrived carries an `awaken-file-limit-ceiling: N` marker (functional lines) that
+  arrived carries an `awaken-allow(file-limit-ceiling): N` marker (functional lines) that
   may only fall;
 * inline test lines (the file's `cfg(test)` code) stop at TEST_ERROR_LIMIT, the
   room a separate test file gets, so tests can stay beside the code they verify;
@@ -15,6 +15,10 @@ Rust source files are measured by what they are, not by how long they look:
 A Rust file is a test file when its path says so or when its crate does not
 compile it into production (a `#[cfg(test)] mod x;` file); test files keep the
 physical test limit. Other languages keep the physical CODE_* limits.
+
+* `file-limit-ceiling`: the numeric allowance in the first 5 lines after the
+  opening formal header may only fall against HEAD. This marker does not
+  authorize a new oversized file or a stale allowance below the hard limit.
 """
 
 from __future__ import annotations
@@ -27,6 +31,8 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import formal_sources
 
 # Input set: `--staged` size-checks every staged file; the suffix tables below
 # only choose which limit applies, never whether the file is read. The trigger
@@ -47,13 +53,12 @@ RUST_FUNCTIONAL_WARNING_LIMIT = 800
 RUST_FUNCTIONAL_ERROR_LIMIT = 1500
 RUST_PHYSICAL_BACKSTOP = 4000
 # A test file that was already over TEST_ERROR_LIMIT when the limit arrived
-# carries its ceiling in its own first lines, as `awaken-file-limit-ceiling: N`.
+# carries its ceiling in its own first lines, as `awaken-allow(file-limit-ceiling): N`.
 # The ceiling lives with the file, not in a path list here, so a split or a
 # rename carries it (or drops it) in the same diff. At commit time the ceiling
 # may only fall: it may not exceed the committed one, and a file that had none
 # may take one only if it was already over the limit, which after the first
 # commit is never. Once the file is back under the limit the marker is stale.
-CEILING_MARKER_RE = re.compile(r"awaken-file-limit-ceiling:\s*(\d+)")
 CEILING_MARKER_SCAN_LINES = 5
 # The opening `// @formal ...` lines of a source are the obligation ledger's
 # file-head anchors (scripts/ci/formal_anchors.py): ledger metadata that moved
@@ -182,45 +187,6 @@ def limit_for(rel: str) -> int | None:
     return None
 
 
-def git_lines(args: list[str]) -> list[str]:
-    try:
-        out = subprocess.check_output(args, cwd=REPO_ROOT, text=True)
-    except subprocess.CalledProcessError:
-        return []
-    return [line for line in out.splitlines() if line]
-
-
-def staged_files() -> list[str]:
-    return git_lines(["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"])
-
-
-def tracked_files() -> list[str]:
-    files = git_lines(["git", "ls-files"])
-    if files:
-        return files
-    return [
-        str(path.relative_to(REPO_ROOT))
-        for path in REPO_ROOT.rglob("*")
-        if path.is_file() and not is_excluded(str(path.relative_to(REPO_ROOT)))
-    ]
-
-
-def read_content(rel: str, staged: bool) -> str | None:
-    if staged:
-        try:
-            return subprocess.check_output(
-                ["git", "show", f":{rel}"],
-                cwd=REPO_ROOT,
-                stderr=subprocess.DEVNULL,
-            ).decode("utf-8", errors="replace")
-        except subprocess.CalledProcessError:
-            return None
-    path = REPO_ROOT / rel
-    if not path.is_file():
-        return None
-    return path.read_text(encoding="utf-8", errors="replace")
-
-
 # rustfmt runs as its own pre-commit command, in parallel with this one, and
 # restages what it rewrites (`stage_fixed`). Judging the staged bytes therefore
 # measured a file rustfmt was about to reflow: an expression broken over more
@@ -299,21 +265,18 @@ def is_test_code_file(rel: str) -> bool:
     return Path(rel).suffix in CODE_SUFFIXES and is_test_path(rel)
 
 
-def declared_ceiling(text: str) -> int | None:
+def declared_ceiling(text: str, *, historical: bool = False) -> int | None:
     for line in without_formal_header(text).splitlines()[:CEILING_MARKER_SCAN_LINES]:
-        match = CEILING_MARKER_RE.search(line)
+        if historical:
+            # Only the committed prior schema is normalized. Current sources
+            # have one syntax; both old and later new HEADs use this one decoder
+            # so the original held N never becomes measure(HEAD)+1 at cutover.
+            line = line.replace("awaken-file-limit-ceiling:", "awaken-allow(file-limit-ceiling):", 1)
+        reason = formal_sources.allow_reason(line, "file-limit-ceiling")
+        match = re.match(r"(\d+)", reason) if reason is not None else None
         if match:
             return int(match.group(1))
     return None
-
-
-def committed_text(rel: str) -> str | None:
-    try:
-        return subprocess.check_output(
-            ["git", "show", f"HEAD:{rel}"], cwd=REPO_ROOT, stderr=subprocess.DEVNULL
-        ).decode("utf-8", errors="replace")
-    except subprocess.CalledProcessError:
-        return None
 
 
 def test_file_errors(rel: str, text: str, previous: str | None, staged: bool) -> list[str]:
@@ -326,10 +289,11 @@ def test_file_errors(rel: str, text: str, previous: str | None, staged: bool) ->
 
 
 def ceiling_errors(rel: str, text: str, previous: str | None, staged: bool, measure, limit: int,
-                   unit: str, label: str, split_advice: str, grow_advice: str) -> list[str]:
-    """A hard limit that a legacy file's in-file `awaken-file-limit-ceiling` may exceed, only downward."""
+                   unit: str, label: str, split_advice: str, grow_advice: str,
+                   *, measured: int | None = None) -> list[str]:
+    """A hard limit that a legacy file's in-file numeric allowance may exceed, only downward."""
 
-    lines = measure(text)
+    lines = measure(text) if measured is None else measured
     ceiling = declared_ceiling(text)
     errors: list[str] = []
     if ceiling is None:
@@ -339,27 +303,28 @@ def ceiling_errors(rel: str, text: str, previous: str | None, staged: bool, meas
     if lines <= limit:
         errors.append(
             f"{rel}: {lines} {unit} is within the {label} {limit}; remove its "
-            "awaken-file-limit-ceiling marker so it cannot grow back"
+            "awaken-allow(file-limit-ceiling) marker so it cannot grow back"
         )
         return errors
     if lines > ceiling:
-        errors.append(f"{rel}: {lines} {unit} > its awaken-file-limit-ceiling {ceiling}; {grow_advice}")
+        errors.append(f"{rel}: {lines} {unit} > its awaken-allow(file-limit-ceiling) {ceiling}; {grow_advice}")
     if staged:
         if previous is None:
             errors.append(
-                f"{rel}: a new file may not declare awaken-file-limit-ceiling; keep it under {limit} {unit}"
+                f"{rel}: a new file may not declare awaken-allow(file-limit-ceiling); keep it under {limit} {unit}"
             )
         else:
-            before = declared_ceiling(previous)
-            bound = before if before is not None else measure(previous) + 1
-            if before is None and measure(previous) <= limit:
+            before = declared_ceiling(previous, historical=True)
+            previous_lines = measure(previous) if before is None else None
+            bound = before if before is not None else previous_lines + 1
+            if before is None and previous_lines <= limit:
                 errors.append(
-                    f"{rel}: declares awaken-file-limit-ceiling {ceiling} but was within the {label} "
+                    f"{rel}: declares awaken-allow(file-limit-ceiling) {ceiling} but was within the {label} "
                     f"{limit}; a ceiling may not be introduced to admit growth"
                 )
             elif ceiling > bound:
                 errors.append(
-                    f"{rel}: raises awaken-file-limit-ceiling to {ceiling} from {bound}; the ceiling only falls"
+                    f"{rel}: raises awaken-allow(file-limit-ceiling) to {ceiling} from {bound}; the ceiling only falls"
                 )
     return errors
 
@@ -371,6 +336,7 @@ def rust_source_results(rel: str, text: str, previous: str | None, staged: bool)
         rel, text, previous, staged, functional_lines, RUST_FUNCTIONAL_ERROR_LIMIT, "functional lines",
         "functional limit", "split the module by responsibility",
         "a file over the functional limit may shrink but never grow -- put new behaviour in a new module",
+        measured=functional,
     )
     if inline_tests > TEST_ERROR_LIMIT:
         errors.append(f"{rel}: {inline_tests} inline test lines > test limit {TEST_ERROR_LIMIT}; "
@@ -391,20 +357,20 @@ def find_results(files: list[str], staged: bool,
     warnings: list[str] = []
     has_code_violation = False
     texts = {rel: text for rel in sorted(files)
-             if limit_for(rel) is not None and (text := read_content(rel, staged)) is not None}
+             if limit_for(rel) is not None and (text := formal_sources.file_text(REPO_ROOT, rel, staged)) is not None}
     if staged:
         texts = as_committed(texts, formatter)
     for rel, text in texts.items():
         limit = limit_for(rel)
         if is_rust_source(rel):
-            previous = committed_text(rel) if staged else None
+            previous = formal_sources.committed_text(REPO_ROOT, rel) if staged else None
             found_warnings, found = rust_source_results(rel, text, previous, staged)
             warnings.extend(found_warnings)
             errors.extend(found)
             has_code_violation = has_code_violation or bool(found)
             continue
         if is_test_code_file(rel) or Path(rel).suffix == ".rs":
-            previous = committed_text(rel) if staged else None
+            previous = formal_sources.committed_text(REPO_ROOT, rel) if staged else None
             found = test_file_errors(rel, text, previous, staged)
             errors.extend(found)
             has_code_violation = has_code_violation or bool(found)
@@ -424,6 +390,7 @@ def find_results(files: list[str], staged: bool,
 
 
 def self_test() -> int:
+    _selftest_source_ceilings()
     failures: list[str] = []
     cases = [
         ("src/lib.rs", CODE_ERROR_LIMIT),
@@ -445,7 +412,7 @@ def self_test() -> int:
     anchors = "// @formal evidence run.safe\n// @formal entrypoint run.other\n"
     if count_lines(anchors + "a\nb\n") != 2 or count_lines("a\n" + anchors) != 3:
         failures.append("F1/F2 opening @formal anchors are metadata; later ones are lines")
-    if declared_ceiling(anchors * 3 + "// awaken-file-limit-ceiling: 3005\n") != 3005:
+    if declared_ceiling(anchors * 3 + "// awaken-allow(file-limit-ceiling): 3005\n") != 3005:
         failures.append("F3 a ceiling marker below the @formal anchors must still be read")
     line_cases = [
         ("src/lib.rs", CODE_WARNING_LIMIT - 1, None),
@@ -469,18 +436,18 @@ def self_test() -> int:
     # Cause/effect table for test files. Causes: C1 lines vs limit, C2 marker
     # present, C3 lines vs marker, C4 staged against HEAD (absent / unmarked
     # under limit / unmarked over limit / marked). Effects: E1 accept, E2 reject.
-    big = "// awaken-file-limit-ceiling: 3005\n" + "x\n" * 3000
+    big = "// awaken-allow(file-limit-ceiling): 3005\n" + "x\n" * 3000
     small = "x\n" * 10
     rows = [
         ("T1 under the limit, no marker", small, None, False, False),
         ("T2 over the limit, no marker", "x\n" * 3001, None, False, True),
         ("T3 marked, at its ceiling", big, None, False, False),
         ("T4 marked, over its ceiling", big + "x\n" * 10, None, False, True),
-        ("T5 marked but back under the limit", "// awaken-file-limit-ceiling: 3005\n" + small, None, False, True),
+        ("T5 marked but back under the limit", "// awaken-allow(file-limit-ceiling): 3005\n" + small, None, False, True),
         ("T6 staged new file with a marker", big, None, True, True),
         ("T7 staged marker added to a file under the limit", big, small, True, True),
         ("T8 staged marker added to a legacy oversized file", big, "x\n" * 3004, True, False),
-        ("T9 staged ceiling raised", big, "// awaken-file-limit-ceiling: 3002\n" + "x\n" * 3000, True, True),
+        ("T9 staged ceiling raised", big, "// awaken-allow(file-limit-ceiling): 3002\n" + "x\n" * 3000, True, True),
         ("T10 staged ceiling held", big, big, True, False),
     ]
     for name, text, previous, staged, rejected in rows:
@@ -490,7 +457,7 @@ def self_test() -> int:
     # 800 / 1500, comments and cfg(test) code (never functional), a legacy ceiling
     # marker, inline tests vs 3000, physical lines vs 4000. Effects: accept, warn, reject.
     def body(functional: int, comments: int = 0, inline_tests: int = 0, marker: int | None = None) -> str:
-        head = f"// awaken-file-limit-ceiling: {marker}\n" if marker is not None else ""
+        head = f"// awaken-allow(file-limit-ceiling): {marker}\n" if marker is not None else ""
         code = "".join(f"pub fn f{i}() {{}}\n" for i in range(functional))
         notes = "// note\n" * comments
         tests = ("#[cfg(test)]\nmod tests {\n" + "    fn t() {}\n" * max(inline_tests - 2, 0) + "}\n"
@@ -529,7 +496,8 @@ def self_test() -> int:
         failures.append("W2 a file rustfmt cannot format keeps its staged bytes")
     if as_committed({"docs/x.md": "# x\n"}, refused) != {"docs/x.md": "# x\n"}:
         failures.append("W3 only Rust sources are formatted")
-    on_disk = next((rel for rel in tracked_files() if rel.endswith(".rs") and limit_for(rel)), None)
+    on_disk = next((rel for rel in formal_sources.tracked_files(REPO_ROOT, allow_nonrepository=True)
+                    if rel.endswith(".rs") and limit_for(rel)), None)
     try:
         find_results([on_disk] if on_disk else [], staged=False, formatter=refused)
     except AssertionError:
@@ -549,6 +517,87 @@ def self_test() -> int:
     return 0
 
 
+def _selftest_source_ceilings() -> None:
+    """SX3/SX4 decision table for a single historical/current decoder.
+
+    Exact rule + number + first 5-after-opening-header -> original inline bound.
+    Sixth line/bad number/old current syntax -> unmarked; stale/current>bound
+    -> original rejection. Current new syntax x HEAD old/new/unmarked/absent
+    retains the original held N or genuinely-unmarked measure+1/new-file law.
+    Cross held-1/equal/+1: the cutover must never substitute measure(HEAD)+1
+    for an old held record. Actual main/Git fixtures test the complete staged
+    read and original rustfmt projection; no second comparison is implemented.
+    """
+    import contextlib
+    import io
+    import tempfile
+    from unittest.mock import patch
+
+    current_prefix = "awaken-allow(file-limit-ceiling):"
+    legacy_prefix = "awaken-" + "file-limit-ceiling:"
+    body = "// existing test note\n" * 3000
+    old = f"// {legacy_prefix} 3005 (legacy test file; owner=held; expires=opaque)\n" + body
+    new = old.replace(legacy_prefix, current_prefix)
+    assert declared_ceiling(old) is None and declared_ceiling(old, historical=True) == 3005, "SX4 historical-only old schema"
+    assert declared_ceiling(new) == declared_ceiling(new, historical=True) == 3005, "SX4 one new decoder"
+    assert declared_ceiling("\n" * 4 + new) == 3005, "SX3 fifth line"
+    assert declared_ceiling("\n" * 5 + new) is None, "SX3 sixth line"
+    anchors = "// @formal evidence held.rule\n" * 8
+    assert declared_ceiling(anchors + "\n" * 4 + new) == 3005, "SX3 opening formal header excluded"
+    assert declared_ceiling("// code note\n" + anchors + new) is None, "SX3 later anchors count"
+    for payload, expected in (("3005", 3005), ("3005 owner=unchanged; expires=unchanged; foreign=opaque", 3005),
+                              ("", None), ("N", None), ("-1", None)):
+        assert declared_ceiling(f"// {current_prefix} {payload}\n") == expected, "SX3 original numeric payload"
+    assert test_file_errors("tests/probe.rs", old, old, True), "SX4 old current cannot provide an allowance"
+    for previous in (old, new):
+        for bound in (3004, 3005, 3006):
+            candidate = new.replace("3005", str(bound), 1)
+            assert bool(test_file_errors("tests/probe.rs", candidate, previous, True)) == (bound > 3005), "SX4 held decrease/equal/growth across schemas"
+    assert test_file_errors("tests/probe.rs", new, None, True), "SX4 new oversized file refused"
+    assert test_file_errors("tests/probe.rs", new, "// short\n", True), "SX4 unmarked historical file under limit"
+    assert not test_file_errors("tests/probe.rs", new, "// note\n" * 3004, True), "SX4 genuinely unmarked legacy bound stays measure+1"
+    # SX7 cause/effect: the production caller already measured the complete
+    # tuple; reuse it. A marked HEAD needs no count, an unmarked HEAD exactly
+    # one. Actual rust_measures instrumentation distinguishes parser reuse
+    # from a stub scalar that could conceal a second current scan.
+    real_measure = rust_measures
+    production = "// awaken-allow(file-limit-ceiling): 1503\n" + "pub fn item() {}\n" * 1501
+    unmarked = "pub fn item() {}\n" * 1502
+    for previous, expected in ((production, [production]), (unmarked, [production, unmarked])):
+        measured_sources = []
+        def observed(text):
+            measured_sources.append(text)
+            return real_measure(text)
+        with patch.dict(rust_source_results.__globals__, rust_measures=observed):
+            assert not rust_source_results("crates/fixture/src/lib.rs", production, previous, True)[1], "SX7 original policy result"
+        assert measured_sources == expected, "SX7 each required source projection/count only once"
+
+    environment = formal_sources.detached_git_environment()
+    with tempfile.TemporaryDirectory(prefix="awaken-ceiling-cutover-") as temporary:
+        root = Path(temporary)
+        (root / "tests").mkdir()
+        source = root / "tests/probe.rs"
+        def git(*arguments):
+            return subprocess.check_output(["git", *arguments], cwd=root, env=environment)
+        for previous in (old, new):
+            source.write_text(previous)
+            if not (root / ".git").exists():
+                git("init", "--quiet")
+            git("add", ".")
+            git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                "-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "--quiet", "-m", "fixture")
+            for bound in (3004, 3005, 3006):
+                source.write_text(new.replace("3005", str(bound), 1))
+                git("add", ".")
+                output, errors = io.StringIO(), io.StringIO()
+                with patch.dict(main.__globals__, REPO_ROOT=root), patch.dict(os.environ, environment, clear=True), \
+                        contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                    status = main(["--staged"])
+                assert status == int(bound > 3005), "SX4 actual staged main across old/new HEAD"
+                if bound > 3005:
+                    assert "from 3005" in errors.getvalue(), "SX4 diagnostics use original held N, not measured 3002"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__)
     parser.add_argument("--staged", action="store_true")
@@ -557,7 +606,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.self_test:
         return self_test()
 
-    files = staged_files() if args.staged else tracked_files()
+    files = (formal_sources.git_paths(REPO_ROOT, "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR")
+             if args.staged else formal_sources.tracked_files(REPO_ROOT, allow_nonrepository=True))
     if args.staged and not files:
         print("OK - no staged files to size-check.")
         return 0

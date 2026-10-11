@@ -35,6 +35,14 @@ import re
 from pathlib import Path
 
 import _crate_boundary_workspace
+import _architecture_ratchet
+from _architecture_ratchet import Rule
+
+
+RULES = (
+    Rule("open-request-body", "Close the type, or record the decision in OPEN_REQUEST_BODY_EXEMPTIONS"),
+    Rule("escaping-unit-variant", "Close the type, or record the decision in ESCAPING_UNIT_VARIANT_EXEMPTIONS"),
+)
 
 
 # Key: the request-body type. Value: why it must keep accepting keys it does not
@@ -272,48 +280,20 @@ def constructor_wire_disagreements(sources: dict[Path, str], repo_root: Path) ->
     return found
 
 
-def _ratcheted(
-    found: list[tuple[str, str]],
-    exemptions: dict[str, str],
-    baseline: int,
-    label: str,
-    registry: str,
-) -> list[str]:
-    live = [message for key, message in found if key not in exemptions]
-    seen = {key for key, _ in found}
-    errors = [
-        f"{registry} names {key}, which no longer holds; drop the stale exemption"
-        for key in sorted(exemptions)
-        if key not in seen
-    ]
-    if len(live) > baseline:
-        errors.extend(sorted(live))
-        errors.append(
-            f"{len(live)} {label}, baseline {baseline}: {len(live) - baseline} new one(s). "
-            f"Close the type, or record the decision in {registry}."
-        )
-    elif len(live) < baseline:
-        errors.append(
-            f"{len(live)} {label}, below the baseline of {baseline}. Lower the baseline to "
-            f"{len(live)} so the ground gained is held."
-        )
-    return errors
-
-
 def check_all(repo_root: Path, crates: Path) -> list[str]:
     sources = _production_sources(crates)
-    return _ratcheted(
+    return _architecture_ratchet.compare_registered(
         open_request_bodies(sources, repo_root),
         OPEN_REQUEST_BODY_EXEMPTIONS,
         OPEN_REQUEST_BODY_BASELINE,
-        "open HTTP request bodies",
-        "OPEN_REQUEST_BODY_EXEMPTIONS",
-    ) + _ratcheted(
+        "OPEN_REQUEST_BODY_EXEMPTIONS", rule=RULES[0],
+        baseline_name=f"{__file__}::OPEN_REQUEST_BODY_BASELINE",
+    ) + _architecture_ratchet.compare_registered(
         escaping_unit_variants(sources, repo_root),
         ESCAPING_UNIT_VARIANT_EXEMPTIONS,
         ESCAPING_UNIT_VARIANT_BASELINE,
-        "unit variants escaping their enum's deny_unknown_fields",
-        "ESCAPING_UNIT_VARIANT_EXEMPTIONS",
+        "ESCAPING_UNIT_VARIANT_EXEMPTIONS", rule=RULES[1],
+        baseline_name=f"{__file__}::ESCAPING_UNIT_VARIANT_BASELINE",
     ) + [message for _, message in constructor_wire_disagreements(sources, repo_root)]
 
 
@@ -345,6 +325,8 @@ def selftest() -> None:
     | V5   | T  | T  | T  | F  | T  | E2     |
     """
     import tempfile
+    from functools import partial
+    from unittest.mock import patch
 
     def sources(text: str) -> dict[Path, str]:
         return {Path("crates/server/example/src/lib.rs"): _crate_boundary_workspace.production_rust(text)}
@@ -390,6 +372,8 @@ def selftest() -> None:
     # fails too (so ground gained is held), an exemption removes an instance,
     # and an exemption that names nothing live is stale.
     found = [("A", "a"), ("B", "b")]
+    registered = partial(_architecture_ratchet.compare_registered,
+                         rule=RULES[0], baseline_name="_wire_closure_fitness.py::OPEN_REQUEST_BODY_BASELINE")
 
     # Constructor/wire agreement. Causes: N1 the type decodes through
     # `try_from`; N2 it has an infallible `pub fn new(..) -> Self`; N3 that
@@ -413,11 +397,11 @@ def selftest() -> None:
                               "pub fn new(a: String) -> Result<Self, String> { Self::parse(a) }")
     assert not constructor_wire_disagreements(sources(fallible), root), "K3"
     assert not constructor_wire_disagreements(sources(strict.replace('#[serde(try_from = "Wire")]\n', "")), root), "K4"
-    assert _ratcheted(found, {}, 1, "x", "REG"), "ratchet: above baseline rejects"
-    assert not _ratcheted(found, {}, 2, "x", "REG"), "ratchet: at baseline admits"
-    assert _ratcheted(found, {}, 3, "x", "REG"), "ratchet: below baseline demands a lower number"
-    assert not _ratcheted(found, {"A": "why"}, 1, "x", "REG"), "ratchet: an exemption removes one"
-    assert _ratcheted(found, {"C": "why"}, 2, "x", "REG"), "ratchet: a stale exemption rejects"
+    assert registered(found, {}, 1, "REG"), "ratchet: above baseline rejects"
+    assert not registered(found, {}, 2, "REG"), "ratchet: at baseline admits"
+    assert registered(found, {}, 3, "REG"), "ratchet: below baseline demands a lower number"
+    assert not registered(found, {"A": "why"}, 1, "REG"), "ratchet: an exemption removes one"
+    assert registered(found, {"C": "why"}, 2, "REG"), "ratchet: a stale exemption rejects"
 
     with tempfile.TemporaryDirectory() as directory:
         crates = Path(directory) / "crates"
@@ -426,5 +410,13 @@ def selftest() -> None:
         _crate_boundary_workspace.ensure_fixture_manifest(source)
         source.write_text(handler + tagged, encoding="utf-8")
         assert check_all(Path(directory), crates), "an unregistered instance fails check_all"
+        # A3 constructor/wire disagreement is hard, independent of both
+        # ratchet counts. At held debt zero a strict-but-bypassable constructor
+        # must still fail; the same constructor delegating to parse succeeds.
+        with patch.dict(check_all.__globals__, {"OPEN_REQUEST_BODY_BASELINE": 0, "ESCAPING_UNIT_VARIANT_BASELINE": 0}):
+            source.write_text(strict, encoding="utf-8")
+            assert any("Binding" in error for error in check_all(Path(directory), crates)), "A3 hard constructor"
+            source.write_text(delegating, encoding="utf-8")
+            assert not check_all(Path(directory), crates), "A3 same zero debt, qualified constructor"
 
     print("_wire_closure_fitness selftest: the decision tables hold")

@@ -137,7 +137,7 @@ test('provider setup does not create an unused profile for a Managed Agent', asy
       : url.endsWith('/catalog') ? { offerings: [{ model_id: 'model', provider_id: 'deepseek', protocol_endpoint_id: 'ep' }] } : {};
     return new Response(JSON.stringify(body), { status: 200 });
   });
-  const input = { id: 'unit', provider_id: 'deepseek', dialect: 'open_ai_chat', secret: 'test-only', model_id: 'model' }; // awaken-allow: secret (synthetic fixture)
+  const input = { id: 'unit', provider_id: 'deepseek', dialect: 'open_ai_chat', secret: 'test-only', model_id: 'model' }; // awaken-allow(secret): (synthetic fixture)
   const direct = await provisionProviderTestModel('http://fixture', 'ws', input);
   assert.equal(direct.model, 'model'); assert.equal(calls.length, 2);
   const profiled = await provisionProviderTestModel('http://fixture', 'ws', input, 'profile');

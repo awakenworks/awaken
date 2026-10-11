@@ -30,7 +30,7 @@ import {
 
 const BASE_PORT = Number(process.env.E2E_PORT ?? 38441);
 const BETAS = ['managed-agents-2026-04-01'];
-const FAKE_KEY = 'sk-awaken-durability-fake-key'; // awaken-allow: secret
+const FAKE_KEY = 'sk-awaken-durability-fake-key'; // awaken-allow(secret):
 const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
 const AGENT = 'durable-agent';
 const MODEL = 'fake-haiku';

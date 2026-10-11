@@ -8,7 +8,7 @@
 // @formal evidence session_run.execution_requires_dispatch_work_and_realization_owner
 // @formal evidence session_time.root_observations_are_revision_bound_and_replay_stable
 // @formal evidence session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
-// awaken-file-limit-ceiling: 8501 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 8501 (legacy oversized test file: split, never grow)
 use super::*;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;

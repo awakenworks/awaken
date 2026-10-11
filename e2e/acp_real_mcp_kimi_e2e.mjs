@@ -38,7 +38,7 @@ import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 import { loadKimiConfig } from './kimi_config.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
-const CALC_TOKEN = 'calc-bearer-token-e2e'; // awaken-allow: secret
+const CALC_TOKEN = 'calc-bearer-token-e2e'; // awaken-allow(secret):
 
 async function main() {
   const kimi = loadKimiConfig();

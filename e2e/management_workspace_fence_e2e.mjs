@@ -87,7 +87,7 @@ async function main() {
       kind: 'vault',
       provider_id: 'anthropic',
       env_key: 'ANTHROPIC_API_KEY',
-      secret: 'sk-fence-e2e', // awaken-allow: secret
+      secret: 'sk-fence-e2e', // awaken-allow(secret):
     });
     assertForbidden(evilBody, 'body fence');
     // A matching body workspace passes the fence (whatever the handler then does,
@@ -97,7 +97,7 @@ async function main() {
       kind: 'vault',
       provider_id: 'anthropic',
       env_key: 'ANTHROPIC_API_KEY',
-      secret: 'sk-fence-e2e', // awaken-allow: secret
+      secret: 'sk-fence-e2e', // awaken-allow(secret):
     });
     assert.notEqual(okBody.status, 403, `own-workspace body passes the fence (got ${okBody.status})`);
     pass('body workspace_id fence: mismatch -> 403, match -> passes');

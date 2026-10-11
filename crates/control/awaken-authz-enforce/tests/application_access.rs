@@ -137,7 +137,7 @@ async fn explicit_stop_uses_the_existing_run_grant_and_exact_thread_binding() {
     // C3 read-only grant; C4 wrong protocol. Effects: E1 DELETE resolves the
     // existing managed Session; E2-E4 reject before reaching interrupt.
     // R1=C1->E1, R2=C2->E2, R3=C3->E3, R4=C4->E4. No second cancel grant.
-    let token = "stop-application-token"; // awaken-allow: secret -- inert fixture
+    let token = "stop-application-token"; // awaken-allow(secret): -- inert fixture
     let router = app(authenticator(token, grant(&["ai-sdk"], &["thread.run"])));
     let exact = router
         .clone()
@@ -172,7 +172,7 @@ async fn explicit_stop_uses_the_existing_run_grant_and_exact_thread_binding() {
         .await
         .unwrap();
     assert_eq!(wrong_protocol.status(), StatusCode::FORBIDDEN, "R4");
-    let read_only = "read-only-application-token"; // awaken-allow: secret -- inert fixture
+    let read_only = "read-only-application-token"; // awaken-allow(secret): -- inert fixture
     let denied = app(authenticator(
         read_only,
         grant(&["ai-sdk"], &["thread.messages.read"]),
@@ -186,7 +186,7 @@ async fn explicit_stop_uses_the_existing_run_grant_and_exact_thread_binding() {
     .await
     .unwrap();
     assert_eq!(denied.status(), StatusCode::FORBIDDEN, "R3");
-    let ag_ui = "ag-ui-stop-token"; // awaken-allow: secret -- inert fixture
+    let ag_ui = "ag-ui-stop-token"; // awaken-allow(secret): -- inert fixture
     let accepted = app(authenticator(ag_ui, grant(&["ag-ui"], &["thread.run"])))
         .oneshot(request(
             "DELETE",
@@ -231,7 +231,7 @@ async fn json_body(response: axum::response::Response) -> Value {
 /// alias. Later tests cover R3-R7 for each rejected cause.
 #[tokio::test]
 async fn exact_binding_rewrites_to_the_existing_managed_session() {
-    let token = "valid-application-token"; // awaken-allow: secret -- inert test fixture
+    let token = "valid-application-token"; // awaken-allow(secret): -- inert test fixture
     let authenticator = authenticator(
         token,
         grant(
@@ -329,7 +329,7 @@ async fn application_token_fences_and_projects_its_workspace() {
         scope.0
     }
 
-    let token = "workspace-application-token"; // awaken-allow: secret -- inert test fixture
+    let token = "workspace-application-token"; // awaken-allow(secret): -- inert test fixture
     let authenticator = authenticator(token, grant(&["ai-sdk"], &["thread.run"]));
     let router = Router::new()
         .route("/v1/ai-sdk/chat", post(workspace))
@@ -431,7 +431,7 @@ fn application_grant_rejects_a_parallel_response_operation() {
 /// R7 requested Agent differs from the bound Session baseline -> 403/E2.
 #[tokio::test]
 async fn conflicting_request_identity_cannot_override_the_binding() {
-    let token = "identity-application-token"; // awaken-allow: secret -- inert test fixture
+    let token = "identity-application-token"; // awaken-allow(secret): -- inert test fixture
     let router = app(authenticator(token, grant(&["ai-sdk"], &["thread.run"])));
 
     let thread_mismatch = router
@@ -462,7 +462,7 @@ async fn conflicting_request_identity_cannot_override_the_binding() {
 /// route means no operation exists to authorize, so the terminal effect is 403.
 #[tokio::test]
 async fn unknown_routes_are_not_inferred_from_the_http_method() {
-    let token = "unknown-route-application-token"; // awaken-allow: secret -- inert test fixture
+    let token = "unknown-route-application-token"; // awaken-allow(secret): -- inert test fixture
     let response = app(authenticator(
         token,
         grant(&["ai-sdk"], &["thread.messages.read"]),

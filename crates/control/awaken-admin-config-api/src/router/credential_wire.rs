@@ -273,7 +273,7 @@ mod tests {
             "kind": "vault",
             "provider_id": "anthropic",
             "env_key": "ANTHROPIC_API_KEY",
-            "secret": "sk-entry", // awaken-allow: secret
+            "secret": "sk-entry", // awaken-allow(secret):
             "idempotency_key": "cmd-1",
             "material": {"type_id": "anthropic.api_key.v1", "fields": {"api_key": "sk-x"}},
         });
@@ -310,7 +310,7 @@ mod tests {
         assert!(
             serde_json::from_value::<RotateCredentialRequest>(serde_json::json!({
                 "expected_version": 3,
-                "secret": "sk-rotated", // awaken-allow: secret
+                "secret": "sk-rotated", // awaken-allow(secret):
             }))
             .is_ok(),
             "K1 rotate"

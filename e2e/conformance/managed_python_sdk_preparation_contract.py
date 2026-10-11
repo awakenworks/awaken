@@ -153,7 +153,7 @@ async def exercise_request_preparation(anthropic, transport, call, *, asynchrono
                 closes.append("async")
 
         client_type = anthropic.AsyncAnthropic if asynchronous else anthropic.Anthropic
-        client = client_type(api_key="stream-preparation-fixture")  # awaken-allow: secret
+        client = client_type(api_key="stream-preparation-fixture")  # awaken-allow(secret):
         response = transport.Response(200, stream=ByteStream(), request=transport.Request("GET", "https://fixture.invalid"))
         stream_type = anthropic.AsyncStream if asynchronous else anthropic.Stream
         stream = stream_type(cast_to=dict[str, object], response=response, client=client)

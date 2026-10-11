@@ -207,7 +207,7 @@ async fn credential_timestamps_are_durable_clock_instants() {
         Some(json!({
             "type": "mcp_oauth",
             "mcp_server_url": "https://mcp.example.test/mcp",
-            "access_token": "at-timestamps", // awaken-allow: secret
+            "access_token": "at-timestamps", // awaken-allow(secret):
         })),
     )
     .await
@@ -315,7 +315,7 @@ async fn idempotent_credential_replay_keeps_the_first_creation_instant() {
     let body = json!({
         "type": "environment_variable",
         "secret_name": "REPLAY_KEY",
-        "secret_value": "sk-replay", // awaken-allow: secret
+        "secret_value": "sk-replay", // awaken-allow(secret):
         "networking": { "type": "unrestricted" }
     });
     let send = |app: Router, body: Value| {

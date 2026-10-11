@@ -148,7 +148,7 @@ pass "thread 'committed' survived the SIGTERM restart with exactly 1 reply"
 # No run is lost: the in-flight run is driven (drained or lease-recovered) exactly once.
 wait_for_assistants inflight 1 "$RECOVERY_TIMEOUT"
 # Give any erroneous double-drive a window to also land, then assert it did NOT.
-# awaken-wait: a double-drive would commit a second reply, and only elapsed time can show that none arrived
+# awaken-allow(wait): a double-drive would commit a second reply, and only elapsed time can show that none arrived
 sleep 2
 n_inflight="$(assistant_count inflight)"
 [ "$n_inflight" -eq 1 ] || fail "thread 'inflight' has $n_inflight replies (expected exactly 1: not lost, not double-driven)"

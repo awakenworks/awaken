@@ -29,7 +29,7 @@ import { cargoExecutable } from './cargo_binary.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38816);
-const TOKEN = 'mcp-official-sdk-token'; // awaken-allow: secret
+const TOKEN = 'mcp-official-sdk-token'; // awaken-allow(secret):
 
 function buildDemo(): string {
   return cargoExecutable({

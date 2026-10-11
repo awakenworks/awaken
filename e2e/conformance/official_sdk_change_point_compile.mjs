@@ -303,6 +303,9 @@ export function officialSdkChangePointFixture({
   managedTypesV132 = false,
   workspaceRouting = false,
 }) {
+  // SX5: this factory's source string changes when its secret comment spelling
+  // changes. Generated TypeScript tokens, API inputs and compiler oracles stay
+  // the same; the annotation is not a SDK credential or permission change.
   return `// Generated in memory by official_sdk_change_point_compile.mjs.
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { accumulateManagedAgentsEvent } from '@anthropic-ai/sdk/lib/sessions/accumulate';
@@ -313,7 +316,7 @@ import {
 } from '@anthropic-ai/sdk/tools/agent-toolset/node';
 type AgentToolsetModule = typeof import('@anthropic-ai/sdk/tools/agent-toolset/node');
 
-const client = new Anthropic({ apiKey: 'compile-only' }); // awaken-allow: secret
+const client = new Anthropic({ apiKey: 'compile-only' }); // awaken-allow(secret):
 
 async function exerciseChangePoints() {
   ${resolveSkillVersion ? `const resolveVersion: typeof resolveSkillVersion = resolveSkillVersion;

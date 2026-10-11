@@ -157,7 +157,7 @@ async function assertEnvironmentHelpers(module, Anthropic, label) {
   for (const retryable of [408, 409, 429]) assert.equal(module.isFatal4xx(statuses.get(retryable)), false);
 
   const client = new Anthropic({
-    apiKey: 'helper-contract', // awaken-allow: secret
+    apiKey: 'helper-contract', // awaken-allow(secret):
     baseURL: 'https://managed.invalid',
   });
   const poller = new module.WorkPoller({
@@ -196,7 +196,7 @@ async function assertEnvironmentHelpers(module, Anthropic, label) {
   // | X-Api-Key   | environment key  | pre-aborted | zero     | clean return |
   let observedRequest;
   const wireClient = new Anthropic({
-    apiKey: 'parent-must-not-leak', // awaken-allow: secret
+    apiKey: 'parent-must-not-leak', // awaken-allow(secret):
     baseURL: 'https://managed.invalid',
     maxRetries: 0,
     defaultHeaders: { 'x-parent-routing': 'preserved' },
@@ -243,7 +243,7 @@ async function assertEnvironmentHelpers(module, Anthropic, label) {
 
   let deniedRequests = 0;
   const deniedClient = new Anthropic({
-    apiKey: 'parent-must-not-leak', // awaken-allow: secret
+    apiKey: 'parent-must-not-leak', // awaken-allow(secret):
     baseURL: 'https://managed.invalid',
     maxRetries: 0,
     logger: { debug() {}, info() {}, warn() {}, error() {} },
@@ -261,7 +261,7 @@ async function assertEnvironmentHelpers(module, Anthropic, label) {
   const deniedPoller = new module.WorkPoller({
     client: deniedClient,
     environmentId: 'environment_wire',
-    environmentKey: 'invalid-environment-helper', // awaken-allow: secret
+    environmentKey: 'invalid-environment-helper', // awaken-allow(secret):
     workerId: 'worker-helper',
     drain: true,
     blockMs: null,
@@ -275,7 +275,7 @@ async function assertEnvironmentHelpers(module, Anthropic, label) {
 
   let cancelledRequests = 0;
   const cancelledClient = new Anthropic({
-    apiKey: 'parent-must-not-leak', // awaken-allow: secret
+    apiKey: 'parent-must-not-leak', // awaken-allow(secret):
     baseURL: 'https://managed.invalid',
     fetch: async () => {
       cancelledRequests += 1;
@@ -425,7 +425,7 @@ async function assertAgentToolset(module, Anthropic, label) {
       assert.equal(memoryError.name, 'SessionMemoryError');
       assert.equal(memoryError.cause, cause);
       const client = new Anthropic({
-        apiKey: 'helper-contract', // awaken-allow: secret
+        apiKey: 'helper-contract', // awaken-allow(secret):
         baseURL: 'https://managed.invalid',
       });
       assert.throws(

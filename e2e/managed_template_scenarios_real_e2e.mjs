@@ -38,7 +38,7 @@ const MODEL = process.env.DEEPSEEK_MODEL ?? 'deepseek-flash';
 const timeoutMs = Number(process.env.AWAKEN_TEMPLATE_TIMEOUT_MS ?? 240_000);
 const directory = path.resolve(process.env.AWAKEN_EVAL_ARTIFACT_DIR ?? `artifacts/template-live-${Date.now()}`);
 const selected = process.env.AWAKEN_TEMPLATE_CASES?.split(',') ?? TEMPLATE_IDS;
-const clientFor = (baseURL) => new Anthropic({ apiKey: 'e2e-local', baseURL, maxRetries: 0 }); // awaken-allow: secret (no-login test service placeholder)
+const clientFor = (baseURL) => new Anthropic({ apiKey: 'e2e-local', baseURL, maxRetries: 0 }); // awaken-allow(secret): (no-login test service placeholder)
 assert.ok(selected.length > 0 && selected.every((id) => TEMPLATE_IDS.includes(id)), 'only known template cases may be selected');
 assert.equal(new Set(selected).size, selected.length, 'no duplicate cases');
 

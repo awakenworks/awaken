@@ -1291,7 +1291,7 @@ mod tests {
         );
 
         let session_file = data_dir.join("sessions.db");
-        // awaken-wait: LM5 deletes the exact Session authority only after the
+        // awaken-allow(wait): LM5 deletes the exact Session authority only after the
         // dropped migration pool's last SQLite connection has closed. Windows
         // refuses deletion while that handle remains open; no elapsed sleep or
         // retry of the delete operation substitutes for the owned close fact.

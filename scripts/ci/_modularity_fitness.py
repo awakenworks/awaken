@@ -236,6 +236,7 @@ def crate_measures(manifest_path: Path) -> dict:
 
 def modularity_errors(measures: dict[str, dict], baseline: dict) -> list[str]:
     errors: list[str] = []
+    lower = f"python3 scripts/ci/{Path(__file__).name} --tighten to lower {BASELINE.name} in this commit"
     spread_held: dict[str, dict] = baseline.get("impl-spread", {})
     seen_spread: set[str] = set()
     for crate, measure in sorted(measures.items()):
@@ -244,42 +245,42 @@ def modularity_errors(measures: dict[str, dict], baseline: dict) -> list[str]:
             held = spread_held.get(key)
             if held is None:
                 if files > MAX_IMPL_FILES or methods > MAX_IMPL_METHODS:
-                    errors.append(
-                        f"impl-spread: {key} has inherent impls in {files} files with {methods} methods "
-                        f"(limit {MAX_IMPL_FILES} files, {MAX_IMPL_METHODS} methods); split it into components "
-                        "that own their state"
-                    )
+                    errors.append(_architecture_ratchet.diagnostic(
+                        "impl-spread", key, f"{MAX_IMPL_FILES} files/{MAX_IMPL_METHODS} methods",
+                        f"{files} files/{methods} methods", "split it into components that own their state"))
                 continue
             seen_spread.add(key)
             for label, now, was in (("files", files, held["files"]), ("methods", methods, held["methods"])):
                 if now > was:
-                    errors.append(f"impl-spread: {key} grew to {now} {label}, baseline {was}")
+                    errors.append(_architecture_ratchet.diagnostic(
+                        "impl-spread", f"{key}.{label}", was, now, "split the type into components that own their state"))
                 elif now < was:
-                    errors.append(f"impl-spread: {key} has {now} {label}, below the baseline {was}; "
-                                  f"lower {BASELINE.name} in this commit")
+                    errors.append(_architecture_ratchet.diagnostic("impl-spread", f"{key}.{label}", was, now, lower))
             if not str(held.get("reason", "")).strip():
-                errors.append(f"impl-spread: baseline entry {key} must name the change that removes it")
+                errors.append(_architecture_ratchet.diagnostic(
+                    "impl-spread", f"{key}.reason", "reviewed change", "missing",
+                    f"restore the owning reviewed change in {BASELINE.name} impl-spread[{key}].reason"))
     for key in sorted(set(spread_held) - seen_spread):
-        errors.append(f"impl-spread: {key} no longer exists; remove it from {BASELINE.name} in this commit")
+        errors.append(_architecture_ratchet.diagnostic("impl-spread", key, "recorded type", "absent", lower))
     for rule in ("super-glob", "module-cycle"):
         held: dict[str, int] = baseline.get(rule, {})
         for crate in sorted(set(measures) | set(held)):
             now, was = measures.get(crate, {}).get(rule, 0), held.get(crate, 0)
             if now > was:
-                errors.append(f"{rule}: {crate} is at {now}, baseline {was}" + (
-                    "; import the names the module uses" if rule == "super-glob"
-                    else "; reach the other module through a port, or move the shared part down"))
+                errors.append(_architecture_ratchet.diagnostic(rule, crate, was, now,
+                    "import the names the module uses" if rule == "super-glob"
+                    else "reach the other module through a port, or move the shared part down"))
             elif now < was:
-                errors.append(f"{rule}: {crate} is at {now}, below the baseline {was}; lower {BASELINE.name} "
-                              "in this commit")
+                errors.append(_architecture_ratchet.diagnostic(rule, crate, was, now, lower))
     pending = set(baseline.get("unreachable-pub-pending", []))
     for crate, measure in sorted(measures.items()):
         if measure["unreachable-pub"] and crate in pending:
-            errors.append(f"unreachable-pub: {crate} adopted the lint; remove it from the pending list in this commit")
+            errors.append(_architecture_ratchet.diagnostic("unreachable-pub", crate, "pending", "adopted", lower))
         elif not measure["unreachable-pub"] and crate not in pending:
-            errors.append(f"unreachable-pub: {crate} must declare #![warn(unreachable_pub)] in its crate root")
+            errors.append(_architecture_ratchet.diagnostic(
+                "unreachable-pub", crate, "required lint", "missing", "declare #![warn(unreachable_pub)] in its crate root"))
     for crate in sorted(pending - set(measures)):
-        errors.append(f"unreachable-pub: {crate} is pending but is no longer a crate; remove it in this commit")
+        errors.append(_architecture_ratchet.diagnostic("unreachable-pub", crate, "pending crate", "absent", lower))
     long_held: dict[str, int] = baseline.get("long-function", {})
     seen_long: set[str] = set()
     for crate, measure in sorted(measures.items()):
@@ -287,62 +288,66 @@ def modularity_errors(measures: dict[str, dict], baseline: dict) -> list[str]:
             key = f"{crate}::{function}"
             held = long_held.get(key)
             if held is None:
-                errors.append(f"long-function: {key} is {lines} lines (limit {MAX_FUNCTION_LINES}); split it, or "
-                              f"rename its key in {BASELINE.name} if it moved")
+                errors.append(_architecture_ratchet.diagnostic(
+                    "long-function", key, MAX_FUNCTION_LINES, lines,
+                    f"split it, or rename its key in {BASELINE.name} if it moved"))
                 continue
             seen_long.add(key)
             if lines > held:
-                errors.append(f"long-function: {key} grew to {lines} lines, baseline {held}")
+                errors.append(_architecture_ratchet.diagnostic("long-function", key, held, lines, "split the function"))
             elif lines < held:
-                errors.append(f"long-function: {key} is {lines} lines, below the baseline {held}; lower "
-                              f"{BASELINE.name} in this commit")
+                errors.append(_architecture_ratchet.diagnostic("long-function", key, held, lines, lower))
     budgeted = baseline.get("crate-budget", {})
     for crate, measure in sorted(measures.items()):
         lines = measure.get("lines", 0)
         if lines > CRATE_REVIEW_LINES and crate not in budgeted:
-            errors.append(f"crate-budget: {crate} has {lines} production code lines, over the review threshold "
-                          f"{CRATE_REVIEW_LINES}; check it is still one boundary (ADR-0091 D2) and record it in "
-                          f"{BASELINE.name} with the review or the work item that shrinks it")
+            errors.append(_architecture_ratchet.diagnostic(
+                "crate-budget", f"{crate}.lines", CRATE_REVIEW_LINES, lines,
+                f"review that it is still one boundary (ADR-0091 D2), then record the review or shrinking work item "
+                f"with python3 scripts/ci/{Path(__file__).name} --write-baseline --reason '<review or work item>'"))
     for crate, measure in sorted(measures.items()):
         extracting = measure.get("extracting-realization-lines", 0)
         if extracting > CRATE_REVIEW_LINES:
-            errors.append(f"crate-budget: the realization being extracted from {crate} has {extracting} production "
-                          f"code lines, over the review threshold {CRATE_REVIEW_LINES}; review its boundary "
-                          "(ADR-0091 D2) before it grows further")
+            errors.append(_architecture_ratchet.diagnostic(
+                "crate-budget", f"{crate}.extracting-realization-lines", CRATE_REVIEW_LINES, extracting,
+                "review and split the realization boundary to meet the review threshold (ADR-0091 D2)"))
     for crate, held in sorted(budgeted.items()):
         measure = measures.get(crate)
         if measure is None:
-            errors.append(f"crate-budget: {crate} is no longer a crate; remove it from {BASELINE.name} in this commit")
+            errors.append(_architecture_ratchet.diagnostic("crate-budget", crate, "recorded crate", "absent", lower))
             continue
         if not str(held.get("reason", "")).strip():
-            errors.append(f"crate-budget: baseline entry {crate} must name the split it guards")
+            errors.append(_architecture_ratchet.diagnostic(
+                "crate-budget", f"{crate}.reason", "reviewed split", "missing",
+                f"restore the owning reviewed split in {BASELINE.name} crate-budget[{crate}].reason"))
         lines, deps = measure.get("lines", 0), len(measure.get("workspace-deps", ()))
         if lines <= CRATE_REVIEW_LINES:
-            errors.append(f"crate-budget: {crate} is at {lines} production code lines, within the review "
-                          f"threshold {CRATE_REVIEW_LINES}; remove it from {BASELINE.name} in this commit")
+            errors.append(_architecture_ratchet.diagnostic(
+                "crate-budget", f"{crate}.lines", held.get("lines", "recorded above review threshold"), lines, lower,
+                details=f"within review threshold {CRATE_REVIEW_LINES}"))
             continue
         if lines > held["lines"]:
-            errors.append(f"crate-budget: {crate} grew to {lines} production lines, budget {held['lines']}; "
-                          "put the new behavior in the crate it is moving to")
+            errors.append(_architecture_ratchet.diagnostic(
+                "crate-budget", f"{crate}.lines", held["lines"], lines, "put the new behavior in the crate it is moving to"))
         elif lines <= held["lines"] - BUDGET_LINE_SLACK:
-            errors.append(f"crate-budget: {crate} is at {lines} production lines, {BUDGET_LINE_SLACK}+ below the "
-                          f"budget {held['lines']}; lower {BASELINE.name} in this commit")
+            errors.append(_architecture_ratchet.diagnostic("crate-budget", f"{crate}.lines", held["lines"], lines, lower))
         if "host_lines" in held:
             host = measure.get("host-lines", lines)
             if host > held["host_lines"]:
-                errors.append(f"crate-budget: {crate} host part grew to {host} production lines, budget "
-                              f"{held['host_lines']}; put the new behavior in the crate it is moving to")
+                errors.append(_architecture_ratchet.diagnostic(
+                    "crate-budget", f"{crate}.host_lines", held["host_lines"], host,
+                    "put the new behavior in the crate it is moving to"))
             elif host <= held["host_lines"] - BUDGET_LINE_SLACK:
-                errors.append(f"crate-budget: {crate} host part is at {host} production lines, {BUDGET_LINE_SLACK}+ "
-                              f"below the budget {held['host_lines']}; lower {BASELINE.name} in this commit")
+                errors.append(_architecture_ratchet.diagnostic("crate-budget", f"{crate}.host_lines", held["host_lines"], host, lower))
         if deps > held["deps"]:
-            errors.append(f"crate-budget: {crate} grew to {deps} workspace dependencies, budget {held['deps']}")
+            errors.append(_architecture_ratchet.diagnostic(
+                "crate-budget", f"{crate}.deps", held["deps"], deps, "put the new dependency in the crate it is moving to"))
         elif deps < held["deps"]:
-            errors.append(f"crate-budget: {crate} has {deps} workspace dependencies, below the budget "
-                          f"{held['deps']}; lower {BASELINE.name} in this commit")
+            errors.append(_architecture_ratchet.diagnostic("crate-budget", f"{crate}.deps", held["deps"], deps, lower))
     for key in sorted(set(long_held) - seen_long):
-        errors.append(f"long-function: {key} is no longer over {MAX_FUNCTION_LINES} lines or no longer exists; "
-                      f"remove it from {BASELINE.name} in this commit (or rename it if it moved)")
+        errors.append(_architecture_ratchet.diagnostic(
+            "long-function", key, long_held[key], f"absent or <= {MAX_FUNCTION_LINES}",
+            f"{lower} (or rename the key if it moved)"))
     return [f"modularity: {error}" for error in errors]
 
 
@@ -453,6 +458,13 @@ def selftest() -> None:
     | M8   | budgeted crate: lines grow / float < slack / fall >= slack; deps grow / shrink / equal | error / accept / error (lower); error / error (lower) / accept |
     | M11  | runtime-host file in a realization / host module; other crate; extracting realization over / at threshold | extracting / host lines; host lines; error / accept |
     | M12  | split crate: whole grows / host grows / host falls >= slack / move host->realization at equal whole; tighten | error / error / error (lower) / accept; host_lines lowered, never raised |
+
+    D3/D4 graph: existing threshold/held/dimension/metadata condition -> the
+    same accept/growth/fall/stale/hard result -> explicit transition + owning
+    fix. M1-M7 cross spread dimensions, exact counts, pending lint and long
+    keys; M8/M10-M12 cross review thresholds, line slack, exact dependencies
+    and separate whole/host/extracting scope. MCLI3 crosses those hard rules
+    with reasoned/initial writes, so formatting cannot authorize a repair.
     """
     spread = impl_spread({"a.rs": "impl Big { fn x(&self) {} fn y(&self) {} }", "b.rs": "impl<T> Big { fn z() {} }"})
     assert spread == {"Big": (2, 3)}, "impl-spread counting"
@@ -468,44 +480,46 @@ def selftest() -> None:
     assert "split it" in modularity_errors({"c": measure({"T": (1, 61)})}, {})[0], "M2 methods"
     held = {"impl-spread": {"c::T": {"files": 10, "methods": 100, "reason": "split in H"}}}
     assert modularity_errors({"c": measure({"T": (10, 100)})}, held) == [], "M3 equal"
-    assert "grew" in modularity_errors({"c": measure({"T": (11, 100)})}, held)[0], "M3 grow"
-    assert "below the baseline" in modularity_errors({"c": measure({"T": (10, 90)})}, held)[0], "M3 shrink"
-    assert "no longer exists" in modularity_errors({"c": measure()}, held)[0], "M3 gone"
+    assert "c::T.files 10 -> 11" in modularity_errors({"c": measure({"T": (11, 100)})}, held)[0], "M3 grow"
+    assert "c::T.methods 100 -> 90" in modularity_errors({"c": measure({"T": (10, 90)})}, held)[0], "M3 shrink"
+    assert "c::T recorded type -> absent" in modularity_errors({"c": measure()}, held)[0], "M3 gone"
     unreasoned = {"impl-spread": {"c::T": {"files": 10, "methods": 100, "reason": ""}}}
-    assert "must name" in modularity_errors({"c": measure({"T": (10, 100)})}, unreasoned)[0], "M3 reason"
-    assert "baseline 1" in modularity_errors({"c": measure(globs=2)}, {"super-glob": {"c": 1}})[0], "M4 above"
-    assert "below the baseline" in modularity_errors({"c": measure(globs=0)}, {"super-glob": {"c": 1}})[0], "M4 below"
+    assert "c::T.reason reviewed change -> missing" in modularity_errors({"c": measure({"T": (10, 100)})}, unreasoned)[0], "M3 reason"
+    assert "impl-spread[c::T].reason" in modularity_errors({"c": measure({"T": (10, 100)})}, unreasoned)[0], \
+        "D3 existing review metadata is fixed at its owner, not by a CLI reason"
+    assert "super-glob: c 1 -> 2" in modularity_errors({"c": measure(globs=2)}, {"super-glob": {"c": 1}})[0], "M4 above"
+    assert "super-glob: c 1 -> 0" in modularity_errors({"c": measure(globs=0)}, {"super-glob": {"c": 1}})[0], "M4 below"
     assert modularity_errors({"c": measure(globs=1)}, {"super-glob": {"c": 1}}) == [], "M4 equal"
     cycle = largest_module_cycle(
         {"a.rs": "use crate::b::X;", "b/mod.rs": "use super::a::Y;", "c.rs": "use crate::a::Z;"}, {"a", "b", "c"}
     )
     assert cycle == 2, "M5"
-    assert "remove it from the pending" in modularity_errors(
+    assert "unreachable-pub: c pending -> adopted" in modularity_errors(
         {"c": measure(adopted=True)}, {"unreachable-pub-pending": ["c"]})[0], "M6 adopted"
-    assert "must declare" in modularity_errors({"c": measure(adopted=False)}, {})[0], "M6 missing"
+    assert "required lint -> missing" in modularity_errors({"c": measure(adopted=False)}, {})[0], "M6 missing"
     body = "fn big() {\n" + "    let x = \"{\";\n" * (MAX_FUNCTION_LINES + 1) + "}\nfn small() {\n}\n"
     assert long_functions({"a.rs": body}) == {"a.rs::big": MAX_FUNCTION_LINES + 2}, "M7 measure (braces in literals)"
     held = {"long-function": {"c::a.rs::big": 200}}
     assert "split it" in modularity_errors({"c": measure(long={"a.rs::big": 200})}, {})[0], "M7 unrecorded"
-    assert "grew" in modularity_errors({"c": measure(long={"a.rs::big": 201})}, held)[0], "M7 grew"
-    assert "below the baseline" in modularity_errors({"c": measure(long={"a.rs::big": 190})}, held)[0], "M7 shorter"
+    assert "c::a.rs::big 200 -> 201" in modularity_errors({"c": measure(long={"a.rs::big": 201})}, held)[0], "M7 grew"
+    assert "c::a.rs::big 200 -> 190" in modularity_errors({"c": measure(long={"a.rs::big": 190})}, held)[0], "M7 shorter"
     assert modularity_errors({"c": measure(long={"a.rs::big": 200})}, held) == [], "M7 equal"
-    assert "no longer over" in modularity_errors({"c": measure()}, held)[0], "M7 gone"
+    assert "c::a.rs::big 200 -> absent or <= 150" in modularity_errors({"c": measure()}, held)[0], "M7 gone"
     budget = {"crate-budget": {"c": {"lines": 20000, "deps": 3, "reason": "split"}}}
 
     def sized(lines, deps):
         return {"c": {**measure(), "lines": lines, "workspace-deps": frozenset(f"d{i}" for i in range(deps))}}
 
     assert modularity_errors(sized(20000, 3), budget) == [], "M8 equal"
-    assert "grew to 20001" in modularity_errors(sized(20001, 3), budget)[0], "M8 lines grow"
+    assert "c.lines 20000 -> 20001" in modularity_errors(sized(20001, 3), budget)[0], "M8 lines grow"
     assert modularity_errors(sized(20000 - BUDGET_LINE_SLACK + 1, 3), budget) == [], "M8 float"
     assert "lower" in modularity_errors(sized(20000 - BUDGET_LINE_SLACK, 3), budget)[0], "M8 fall"
-    assert "workspace dependencies, budget" in modularity_errors(sized(20000, 4), budget)[0], "M8 deps grow"
-    assert "below the budget" in modularity_errors(sized(20000, 2), budget)[0], "M8 deps shrink"
+    assert "c.deps 3 -> 4" in modularity_errors(sized(20000, 4), budget)[0], "M8 deps grow"
+    assert "c.deps 3 -> 2" in modularity_errors(sized(20000, 2), budget)[0], "M8 deps shrink"
     # M10 review threshold: an unrecorded crate over it is an error; a recorded one at or below it is removed.
-    assert "review threshold" in modularity_errors(sized(CRATE_REVIEW_LINES + 1, 3), {})[0], "M10 unrecorded over"
+    assert "c.lines 15000 -> 15001" in modularity_errors(sized(CRATE_REVIEW_LINES + 1, 3), {})[0], "M10 unrecorded over"
     assert modularity_errors(sized(CRATE_REVIEW_LINES, 3), {}) == [], "M10 unrecorded at threshold"
-    assert "remove it" in modularity_errors(sized(CRATE_REVIEW_LINES, 3), budget)[0], "M10 recorded fell to threshold"
+    assert "c.lines 20000 -> 15000" in modularity_errors(sized(CRATE_REVIEW_LINES, 3), budget)[0], "M10 recorded fell to threshold"
     assert "c" not in tightened(sized(CRATE_REVIEW_LINES, 3), budget)["crate-budget"], "M10 tighten drops it"
     # M11 the realization being extracted from runtime-host is measured as its future crate.
     layers = _module_layer_fitness.layer_table((
@@ -518,7 +532,7 @@ def selftest() -> None:
         "M11 other crates are measured whole"
     over = {"c": {**measure(), "lines": 10, "extracting-realization-lines": CRATE_REVIEW_LINES + 1,
                   "workspace-deps": frozenset()}}
-    assert "realization being extracted" in modularity_errors(over, {})[0], "M11 extracting over threshold"
+    assert "c.extracting-realization-lines 15000 -> 15001" in modularity_errors(over, {})[0], "M11 extracting over threshold"
     over["c"]["extracting-realization-lines"] = CRATE_REVIEW_LINES
     assert modularity_errors(over, {}) == [], "M11 extracting at threshold"
     # M12 a crate being split holds its whole size and, separately, its host part.
@@ -527,9 +541,9 @@ def selftest() -> None:
     def parts(whole: int, host: int) -> dict:
         return {"c": {**measure(), "lines": whole, "host-lines": host, "extracting-realization-lines": whole - host,
                       "workspace-deps": frozenset({"d0", "d1", "d2"})}}
-    assert any("grew to 20001" in e for e in modularity_errors(parts(20001, 15000), split)), "M12 whole grows"
-    assert any("host part grew" in e for e in modularity_errors(parts(20000, 15001), split)), "M12 host grows"
-    assert any("host part is at" in e for e in modularity_errors(parts(20000, 14000), split)), "M12 host falls"
+    assert any("c.lines 20000 -> 20001" in e for e in modularity_errors(parts(20001, 15000), split)), "M12 whole grows"
+    assert any("c.host_lines 15000 -> 15001" in e for e in modularity_errors(parts(20000, 15001), split)), "M12 host grows"
+    assert any("c.host_lines 15000 -> 14000" in e for e in modularity_errors(parts(20000, 14000), split)), "M12 host falls"
     assert modularity_errors(parts(20000, 14500), split) == [], "M12 move inside the crate is not growth"
     assert tightened(parts(20000, 14000), split)["crate-budget"]["c"]["host_lines"] == 14000, "M12 tighten lowers"
     assert tightened(parts(20000, 15500), split)["crate-budget"]["c"]["host_lines"] == 15000, "M12 never raises"

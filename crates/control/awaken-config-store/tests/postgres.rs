@@ -1170,7 +1170,7 @@ async fn postgres_publication_commit_order_lock_serializes_only_its_workspace() 
             .put_publication_if_source_current_scoped(&waiting_author, &second)
             .await
     });
-    // awaken-wait: holding this exact PG lock is the behavior under test;
+    // awaken-allow(wait): holding this exact PG lock is the behavior under test;
     // the next query proves the task reached the database, not merely a timer.
     assert!(
         tokio::time::timeout(std::time::Duration::from_secs(2), &mut waiting)
@@ -1233,7 +1233,7 @@ async fn postgres_publication_commit_order_lock_serializes_only_its_workspace() 
             .put_publication_if_source_current_scoped(&rollback_author, &after_rollback)
             .await
     });
-    // awaken-wait: rollback release of this exact PG lock is the behavior
+    // awaken-allow(wait): rollback release of this exact PG lock is the behavior
     // under test; the database waiter is checked before rolling back.
     assert!(
         tokio::time::timeout(std::time::Duration::from_secs(2), &mut after_rollback)

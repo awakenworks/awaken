@@ -226,8 +226,8 @@ async function main() {
     const set = await client.setTaskPushNotificationConfig({
       taskId,
       pushNotificationConfig: {
-        id: 'control-hook', url: 'https://example.invalid/a2a-hook', token: 'must-not-echo', // awaken-allow: secret
-        authentication: { schemes: ['Bearer'], credentials: 'must-not-echo-auth' }, // awaken-allow: secret
+        id: 'control-hook', url: 'https://example.invalid/a2a-hook', token: 'must-not-echo', // awaken-allow(secret):
+        authentication: { schemes: ['Bearer'], credentials: 'must-not-echo-auth' }, // awaken-allow(secret):
       },
     });
     assert.equal(set.result?.pushNotificationConfig?.id, 'control-hook');

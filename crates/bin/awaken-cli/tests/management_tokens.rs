@@ -217,7 +217,7 @@ fn the_org_bootstrap_binding_rejects_an_unregistered_workspace() {
             Some(json!({
                 "workspace_id": BOOTSTRAP_WORKSPACE, "kind": "vault", "provider_id": "anthropic",
                 "env_key": "ANTHROPIC_API_KEY",
-                "secret": "sk-tokens-two" // awaken-allow: secret
+                "secret": "sk-tokens-two" // awaken-allow(secret):
             })),
         )
         .await;

@@ -6,7 +6,7 @@
 // @formal entrypoint credential.restart_recovery_compensates_unpublished_material
 // @formal entrypoint credential.rotation_revision_cas
 // @formal entrypoint credential.visible_row_always_has_material
-// awaken-file-limit-ceiling: 1724
+// awaken-allow(file-limit-ceiling): 1724
 use super::*;
 use crate::persist_material_exact;
 use awaken_time::WallClock;

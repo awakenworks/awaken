@@ -63,7 +63,7 @@ def main() -> None:
     # matrix; retries are disabled; no caller-supplied Workspace is accepted as
     # evidence; the fresh deployment's final page is the persistence authority.
     with anthropic.Anthropic(
-        api_key=f"invalid-{version}",  # awaken-allow: secret
+        api_key=f"invalid-{version}",  # awaken-allow(secret):
         base_url=BASE_URL,
         max_retries=0,
     ) as invalid:

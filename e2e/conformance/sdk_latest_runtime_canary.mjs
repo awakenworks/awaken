@@ -226,7 +226,7 @@ async function exercisePathAndToolErrorAdmission() {
     // -> preserve query; P3 adjacent empty segments -> both diagnostic marks.
     // Exact generated methods and the candidate's own tag execute the rules.
     let requests = 0;
-    const client = new Anthropic({ apiKey: 'path-only', // awaken-allow: secret
+    const client = new Anthropic({ apiKey: 'path-only', // awaken-allow(secret):
       maxRetries: 0, fetch: async () => { requests++; throw new Error('unexpected path I/O'); } });
     for (const id of ['', '.', '..']) {
       assert.throws(() => client.beta.files.retrieveMetadata(id), /invalid segments/u);
@@ -457,7 +457,7 @@ async function exerciseSdkCoreTransport() {
   // identity are owned once by the shared all-anchor transport matrix.
   let requests = 0;
   const client = new Anthropic({
-    apiKey: 'transport-only', // awaken-allow: secret
+    apiKey: 'transport-only', // awaken-allow(secret):
     baseURL: 'https://managed.invalid',
     maxRetries: 0,
     fetch: async (input, init) => {
@@ -480,7 +480,7 @@ async function exerciseSdkCoreTransport() {
     // current anchors without this override retain their existing owner.
     const observedUrls = [];
     const paged = new Anthropic({
-      apiKey: 'transport-only', // awaken-allow: secret
+      apiKey: 'transport-only', // awaken-allow(secret):
       baseURL: 'https://managed.invalid',
       maxRetries: 0,
       fetch: async (input, init) => {
@@ -506,7 +506,7 @@ async function exerciseSdkCoreTransport() {
   // construction, so a misconfigured client can never retry forever or NaN times.
   for (const maxRetries of [-1, 1.5, Number.NaN]) {
     assert.throws(
-      () => new Anthropic({ apiKey: 'transport-only', maxRetries }), // awaken-allow: secret
+      () => new Anthropic({ apiKey: 'transport-only', maxRetries }), // awaken-allow(secret):
       /maxRetries/u,
       `T2 maxRetries=${maxRetries} is refused`,
     );
@@ -565,7 +565,7 @@ async function exerciseWorkspaceRequestRouting() {
     assert.equal(guards.length, destructures.length, `${runtimePath}: W1 omission guard coverage`);
   }
   const client = new Anthropic({
-    apiKey: 'transport-only', // awaken-allow: secret
+    apiKey: 'transport-only', // awaken-allow(secret):
     baseURL: 'https://managed.invalid',
     maxRetries: 0,
     fetch: async (input, init) => {
@@ -656,7 +656,7 @@ async function exerciseStreamingBufferViews() {
     { id: 'event_candidate_2', type: 'session.status_idle' },
   ];
   const client = new Anthropic({
-    apiKey: 'transport-only', // awaken-allow: secret
+    apiKey: 'transport-only', // awaken-allow(secret):
     baseURL: 'https://managed.invalid',
     maxRetries: 0,
     fetch: async () => sseResponse(events),
@@ -725,7 +725,7 @@ async function exerciseSdkNodeRuntimeFacade() {
     await writeCredentialsFileAtomic(credentialsPath, {
       version: '1.0',
       type: 'oauth_token',
-      access_token: 'candidate-oauth-token', // awaken-allow: secret
+      access_token: 'candidate-oauth-token', // awaken-allow(secret):
     });
     writeFileSync(identityPath, 'candidate-identity-token\n', { mode: 0o600 });
     writeFileSync(resolve(root, 'configs/fixture.json'), JSON.stringify({
@@ -746,7 +746,7 @@ async function exerciseSdkNodeRuntimeFacade() {
       'anthropic-workspace-id': 'workspace_candidate',
     }, 'N1 profile Workspace header');
     assert.deepEqual(await credentials.provider(), {
-      token: 'candidate-oauth-token', // awaken-allow: secret (synthetic canary fixture)
+      token: 'candidate-oauth-token', // awaken-allow(secret): (synthetic canary fixture)
       expiresAt: null,
     }, 'N1 user OAuth file result');
     assert.equal(
@@ -860,7 +860,7 @@ async function exerciseRefusalFallbackMiddleware() {
           stop_details: {
             type: 'refusal',
             category: 'policy',
-            fallback_credit_token: 'credit-non-streaming', // awaken-allow: secret (synthetic canary fixture)
+            fallback_credit_token: 'credit-non-streaming', // awaken-allow(secret): (synthetic canary fixture)
           },
         }), { headers: { 'content-type': 'application/json' } });
       }
@@ -928,7 +928,7 @@ async function exerciseRefusalFallbackMiddleware() {
             stop_details: {
               type: 'refusal',
               category: 'policy',
-              fallback_credit_token: 'credit-streaming', // awaken-allow: secret (synthetic canary fixture)
+              fallback_credit_token: 'credit-streaming', // awaken-allow(secret): (synthetic canary fixture)
               fallback_has_prefill_claim: managedTypesV127,
             },
           }, usage: { output_tokens: 1 } },
@@ -1065,7 +1065,7 @@ async function exerciseSdkHelperRuntime() {
       [Symbol.toStringTag]: 'DOMException',
     };
     const client = new Anthropic({
-      apiKey: 'transport-only', // awaken-allow: secret
+      apiKey: 'transport-only', // awaken-allow(secret):
       baseURL: 'https://managed.invalid',
       maxRetries: 0,
       fetch: async (input, init) => {
@@ -1084,7 +1084,7 @@ async function exerciseSdkHelperRuntime() {
   if (hasRuntime('internal/uploads.mjs')) {
     const requestUrls = [];
     const client = new Anthropic({
-      apiKey: 'transport-only', // awaken-allow: secret
+      apiKey: 'transport-only', // awaken-allow(secret):
       baseURL: 'https://managed.invalid',
       maxRetries: 0,
       fetch: async (input) => {
@@ -1123,7 +1123,7 @@ async function exerciseSdkHelperRuntime() {
       assert.equal((await toFile(file)).name, file.name, 'U3 toFile identity');
       let filename;
       const namedClient = new Anthropic({
-        apiKey: 'transport-only', // awaken-allow: secret
+        apiKey: 'transport-only', // awaken-allow(secret):
         baseURL: 'https://managed.invalid',
         maxRetries: 0,
         fetch: async (input, init) => {
@@ -1149,7 +1149,7 @@ async function exerciseSdkHelperRuntime() {
       error(...values) { errors.push(values); },
     };
     const client = new Anthropic({
-      apiKey: 'transport-only', // awaken-allow: secret
+      apiKey: 'transport-only', // awaken-allow(secret):
       baseURL: 'https://managed.invalid',
       logger,
       logLevel: 'debug',
@@ -1221,7 +1221,7 @@ async function exerciseSessionToolRunnerTerminalIdle() {
           { timeoutMs: 1_000, pollMs: 5 },
         );
       } else {
-        // awaken-wait: the candidate idle timer is 5ms; after four timer
+        // awaken-allow(wait): the candidate idle timer is 5ms; after four timer
         // windows, requires_action must still be live until explicit abort.
         await new Promise((resolveWait) => setTimeout(resolveWait, 20));
         assert.equal(runner.signal.aborted, false, 'T2 requires_action stays live');
@@ -1492,7 +1492,7 @@ async function exerciseBetaGaRecovery() {
     ...realServerEnv('mcp', upstream, { mode: 'management' }),
   };
   const clientFor = (baseURL, authToken) => new Anthropic({
-    ...(authToken ? { authToken } : { apiKey: 'unauthorized' }), // awaken-allow: secret
+    ...(authToken ? { authToken } : { apiKey: 'unauthorized' }), // awaken-allow(secret):
     baseURL,
     fetch: candidateRecordingFetch,
     maxRetries: 0,

@@ -109,7 +109,7 @@ async fn author_catalog_and_credential_then_resolve_a_run() {
             "kind": "vault",
             "provider_id": "anthropic",
             "env_key": "ANTHROPIC_API_KEY",
-            "secret": "sk-admin-secret" // awaken-allow: secret
+            "secret": "sk-admin-secret" // awaken-allow(secret):
         })),
     )
     .await;

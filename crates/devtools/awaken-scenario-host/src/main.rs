@@ -481,6 +481,15 @@ mod dispatch_tests {
         // futures compound this test frame. Pin each future on the heap before
         // awaiting; the default-stack regression must execute every original
         // mode/argument and retain the same mounted-route assertion below.
+        // Stack decision rows: L5 unchanged 25 factories/order/Local deployment
+        // and this original current-thread test, with the full authored feature
+        // graph and no RUST_MIN_STACK override -> one real test, all routes200.
+        // L6 removing only these 25 heap wrappers -> observe this exact frame's
+        // original stack-overflow outcome; if it does not recur, report that
+        // result rather than add a factory, shrink a stack or change a selector.
+        // Service/composed-test32MiB wrappers and the Local tier's recursive Box
+        // exercise different boundaries. This table calls factories directly;
+        // main's inline mode selection still needs its own static/e2e evidence.
         // (AWAKEN_MODEL_MODE string, the router its `main()` arm builds). Kept in the
         // same order as the `match` in `main()` so drift is easy to spot.
         let mut local_test_deployment = awaken_session_executor::DeploymentConfig::ephemeral();

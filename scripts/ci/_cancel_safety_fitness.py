@@ -41,6 +41,14 @@ import re
 from pathlib import Path
 
 import _crate_boundary_workspace
+import _architecture_ratchet
+from _architecture_ratchet import Rule
+
+
+RULES = (
+    Rule("unowned-effect", "Own the in-flight effect, or record the decision in CANCEL_SAFETY_EXEMPTIONS"),
+    Rule("unrecorded-admission", "Only the reaper's own sweep may admit without a ledger; take the attempt from ExecAttempts"),
+)
 
 
 # Effect methods whose successful completion creates a resource on the host.
@@ -345,40 +353,13 @@ def _production_sources(crates: Path) -> dict[Path, str]:
         if path.resolve() not in reachable:
             continue
         raw = path.read_text(encoding="utf-8", errors="ignore")
-        # A file naming no registered effect and no `Drop for` can neither
-        # report nor admit anything, so the (costly) projection is skipped.
-        if "Drop for" not in raw and not any(name in raw for name in EFFECT_METHODS):
+        # The same snapshot serves both rules. A ledgerless admission alone
+        # is a candidate too, even without an effect name or a Drop owner.
+        if ("Drop for" not in raw and not any(name in raw for name in EFFECT_METHODS)
+                and not UNRECORDED_ADMISSION.search(raw)):
             continue
         sources[path] = _crate_boundary_workspace.production_rust(raw)
     return sources
-
-
-def _ratcheted(
-    found: list[tuple[str, str]],
-    exemptions: dict[str, str],
-    baseline: int,
-    label: str,
-    registry: str,
-) -> list[str]:
-    live = [message for key, message in found if key not in exemptions]
-    seen = {key for key, _ in found}
-    errors = [
-        f"{registry} names {key}, which no longer holds; drop the stale exemption"
-        for key in sorted(exemptions)
-        if key not in seen
-    ]
-    if len(live) > baseline:
-        errors.extend(sorted(live))
-        errors.append(
-            f"{len(live)} {label}, baseline {baseline}: {len(live) - baseline} new one(s). "
-            f"Own the in-flight effect, or record the decision in {registry}."
-        )
-    elif len(live) < baseline:
-        errors.append(
-            f"{len(live)} {label}, below the baseline of {baseline}. Lower the baseline to "
-            f"{len(live)} so the ground gained is held."
-        )
-    return errors
 
 
 # An `AdmittedExec` is the proof that a container process was written into an
@@ -394,10 +375,10 @@ UNRECORDED_ADMISSION = re.compile(r"AdmittedExec::unrecorded\s*\(")
 UNRECORDED_ADMISSION_BASELINE = 1
 
 
-def unrecorded_admissions(crates: Path, repo_root: Path) -> list[tuple[str, str]]:
+def unrecorded_admissions(sources: dict[Path, str], repo_root: Path) -> list[tuple[str, str]]:
     """Every production site that starts a process with no ledger behind it."""
     found: list[tuple[str, str]] = []
-    for path, text in _production_sources(crates).items():
+    for path, text in sources.items():
         for number, line in enumerate(text.splitlines(), start=1):
             if line.lstrip().startswith(("//", "#")):
                 continue
@@ -418,18 +399,19 @@ def live_findings(repo_root: Path, crates: Path) -> list[tuple[str, str]]:
 
 
 def check_all(repo_root: Path, crates: Path) -> list[str]:
-    return _ratcheted(
-        unowned_effects(_production_sources(crates), repo_root),
+    sources = _production_sources(crates)
+    return _architecture_ratchet.compare_registered(
+        unowned_effects(sources, repo_root),
         CANCEL_SAFETY_EXEMPTIONS,
         CANCEL_SAFETY_BASELINE,
-        "awaited physical effects with no owner surviving the caller",
-        "CANCEL_SAFETY_EXEMPTIONS",
-    ) + _ratcheted(
-        unrecorded_admissions(crates, repo_root),
+        "CANCEL_SAFETY_EXEMPTIONS", rule=RULES[0],
+        baseline_name=f"{__file__}::CANCEL_SAFETY_BASELINE",
+    ) + _architecture_ratchet.compare_registered(
+        unrecorded_admissions(sources, repo_root),
         {},
         UNRECORDED_ADMISSION_BASELINE,
-        "production execs admitted with no ledger behind them",
-        "the reaper's own sweep",
+        "the reaper's own sweep", rule=RULES[1],
+        baseline_name=f"{__file__}::UNRECORDED_ADMISSION_BASELINE",
     )
 
 
@@ -464,6 +446,7 @@ def selftest() -> None:
     per-crate Drop lookup are exercised, not just the matcher.
     """
     import tempfile
+    from functools import partial
 
     unregistered = (
         "pub struct Stage { slot: Option<u8> }\n"
@@ -565,15 +548,105 @@ def selftest() -> None:
     # The ratchet itself: above the baseline fails, at it admits, below it
     # demands a lower number, an exemption removes one, a stale one rejects.
     found = [("A", "a"), ("B", "b")]
-    assert _ratcheted(found, {}, 1, "x", "REG"), "ratchet: above baseline rejects"
-    assert not _ratcheted(found, {}, 2, "x", "REG"), "ratchet: at baseline admits"
-    assert _ratcheted(found, {}, 3, "x", "REG"), "ratchet: below baseline demands a lower number"
-    assert not _ratcheted(found, {"A": "why"}, 1, "x", "REG"), "ratchet: an exemption removes one"
-    assert _ratcheted(found, {"C": "why"}, 2, "x", "REG"), "ratchet: a stale exemption rejects"
+    registered = partial(_architecture_ratchet.compare_registered,
+                         rule=RULES[0], baseline_name="_cancel_safety_fitness.py::CANCEL_SAFETY_BASELINE")
+    assert registered(found, {}, 1, "REG"), "ratchet: above baseline rejects"
+    assert not registered(found, {}, 2, "REG"), "ratchet: at baseline admits"
+    assert registered(found, {}, 3, "REG"), "ratchet: below baseline demands a lower number"
+    assert not registered(found, {"A": "why"}, 1, "REG"), "ratchet: an exemption removes one"
+    assert registered(found, {"C": "why"}, 2, "REG"), "ratchet: a stale exemption rejects"
 
     with tempfile.TemporaryDirectory() as directory:
         crates = Path(directory) / "crates"
         write_crate(crates, "worker/example/src/lib.rs", unregistered)
         assert check_all(Path(directory), crates), "an unregistered instance fails check_all"
 
+    _selftest_source_snapshot()
     print("_cancel_safety_fitness selftest: the decision table holds")
+
+
+def _selftest_source_snapshot() -> None:
+    """A4 source-scope/read/projection cause/effect table.
+
+    A4a reachable effect / Drop / ledgerless-only -> same snapshot selected;
+    A4b none / unreachable / external cfg(test) -> absent;
+    A4c inline cfg(test) -> raw candidate projected, no finding;
+    A4d check_all -> one snapshot/discovery for both predicates; within its
+    candidate pass each reachable source is read once and each candidate is
+    projected once. The unchanged structural discovery owns its earlier reads.
+    Constraint: keep original production reachability and classification;
+    only the already-declared ledgerless pattern extends candidate filtering.
+    Effects: exact selected files, original findings, no reread/rescan wrapper.
+    """
+    import tempfile
+    from collections import Counter
+    from unittest.mock import patch
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        crate = root / "crates/example"
+        (crate / "src").mkdir(parents=True)
+        (crate / "Cargo.toml").write_text('[package]\nname="example"\nversion="0.0.0"\n')
+        bodies = {
+            "lib.rs": "mod effect; mod owner; mod admission; mod plain; mod inline;\n#[cfg(test)]\nmod test_only;\n",
+            "effect.rs": "pub async fn create(m: &dyn Mounter) { m.mount(&r, &p, a).await; }\n",
+            "owner.rs": "struct Stage; impl Drop for Stage { fn drop(&mut self) {} }\n",
+            "admission.rs": "pub fn admit() { let claim = AdmittedExec::unrecorded(); }\n",
+            "plain.rs": "pub fn plain() {}\n",
+            "inline.rs": "#[cfg(test)]\nmod tests { fn admit() { AdmittedExec::unrecorded(); } }\n",
+            "test_only.rs": "pub fn admit() { AdmittedExec::unrecorded(); }\n",
+            "orphan.rs": "pub fn admit() { AdmittedExec::unrecorded(); }\n",
+        }
+        for name, body in bodies.items():
+            (crate / "src" / name).write_text(body)
+        original_read = Path.read_text
+        original_projection = _crate_boundary_workspace.production_rust
+        original_sources = _production_sources
+        reads, projections, scans, consumers = Counter(), Counter(), [], []
+        original_effects, original_admissions = unowned_effects, unrecorded_admissions
+
+        def read(path, *args, **kwargs):
+            if path.suffix == ".rs":
+                reads[path.name] += 1
+            return original_read(path, *args, **kwargs)
+
+        def project(text):
+            projections[text] += 1
+            return original_projection(text)
+
+        def snapshot(crates):
+            scans.append(crates)
+            return original_sources(crates)
+
+        def effects(sources, repo_root):
+            consumers.append(id(sources))
+            return original_effects(sources, repo_root)
+
+        def admissions(sources, repo_root):
+            consumers.append(id(sources))
+            return original_admissions(sources, repo_root)
+
+        with patch.object(Path, "read_text", read), patch.object(_crate_boundary_workspace, "production_rust", project), \
+                patch.dict(check_all.__globals__, {"_production_sources": snapshot, "CANCEL_SAFETY_BASELINE": 1,
+                         "UNRECORDED_ADMISSION_BASELINE": 1, "CANCEL_SAFETY_EXEMPTIONS": {},
+                         "unowned_effects": effects, "unrecorded_admissions": admissions}):
+            assert not check_all(root, root / "crates"), "A4a same two original predicates at held counts"
+        assert len(scans) == 1, "A4d one source snapshot for both rules"
+        assert len(consumers) == 2 and len(set(consumers)) == 1, "A4d both original predicates consume the same object"
+        # Reachability discovery also reads Rust, so count only the canonical
+        # candidate pass below when proving once-per-source reads/projections.
+        reachable = _crate_boundary_workspace.production_module_files(
+            _crate_boundary_workspace.crate_manifests(root / "crates"))
+        reads.clear(); projections.clear()
+        with patch.object(Path, "read_text", read), patch.object(_crate_boundary_workspace, "production_rust", project), \
+                patch.object(_crate_boundary_workspace, "production_module_files", lambda _manifests: reachable):
+            selected = original_sources(root / "crates")
+        assert {p.name for p in selected} == {"effect.rs", "owner.rs", "admission.rs", "inline.rs"}, "A4a/A4b candidates"
+        assert reads == Counter({name: 1 for name in ("lib.rs", "effect.rs", "owner.rs", "admission.rs", "plain.rs", "inline.rs")}), \
+            "A4d each production-reachable source read once in the snapshot pass"
+        assert projections == Counter({bodies[name]: 1 for name in ("effect.rs", "owner.rs", "admission.rs", "inline.rs")}), \
+            "A4d each candidate projected once"
+        admitted = unrecorded_admissions(selected, root)
+        assert len(admitted) == 1 and "admission.rs" in admitted[0][0], "A4a kills the old ledgerless-only miss"
+        assert len(unowned_effects(selected, root)) == 1, "A4 original effect predicate"
+        assert not unrecorded_admissions({crate / "src/inline.rs": selected[crate / "src/inline.rs"]}, root), "A4c inline test blanked"

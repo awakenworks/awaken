@@ -8,7 +8,7 @@ import { HttpAgent } from '@ag-ui/client';
 import { fakeAnthropicServerEnv, withServer, pass } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
-const FAKE_KEY = 'sk-fake-agui-key'; // awaken-allow: secret
+const FAKE_KEY = 'sk-fake-agui-key'; // awaken-allow(secret):
 
 async function main() {
   const upstream = await startFakeAnthropic(FAKE_KEY, { behavior: 'reasoning' });

@@ -41,7 +41,7 @@ pre-commit:
     # the checker's real input set is a gate that never runs when it matters.
     hook-globs:
       # >>> generated glob from generate_hooks.py INPUT_GLOBS — do not edit
-      glob: "{lefthook.yml,scripts/ci/*.py}"
+      glob: "{lefthook.yml,scripts/ci/*.py,scripts/ci/check-rust.sh}"
       # <<< generated glob
       run: python3 scripts/ci/generate_hooks.py --check
 
@@ -115,7 +115,7 @@ pre-commit:
     #     in main came from that one shape; the ratchet freezes today's debt.
     test-waits:
       # >>> generated glob from check_test_waits.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/src/**/*.rs,crates/**/tests/**/*.rs,e2e/**/*.js,e2e/**/*.mjs,e2e/**/*.rs,e2e/**/*.sh,e2e/**/*.ts,scripts/ci/check_test_waits.py,scripts/ci/test_waits_baseline.json,web/e2e/**/*.mjs,web/e2e/**/*.ts}"
+      glob: "{crates/**/src/**/*.rs,crates/**/tests/**/*.rs,e2e/**/*.js,e2e/**/*.mjs,e2e/**/*.rs,e2e/**/*.sh,e2e/**/*.ts,lefthook.yml,scripts/ci/*.py,scripts/ci/test_waits_baseline.json,web/e2e/**/*.mjs,web/e2e/**/*.ts}"
       # <<< generated glob
       run: python3 scripts/ci/check_test_waits.py
 
@@ -134,15 +134,15 @@ pre-commit:
     #     rename or deletion is recorded in the ledger in the same commit.
     test-inventory:
       # >>> generated glob from check_test_inventory.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/*.rs,scripts/ci/check_test_inventory.py,scripts/ci/test_inventory.txt,scripts/ci/test_inventory_ledger.json}"
+      glob: "{crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/*.py,scripts/ci/test_inventory.txt,scripts/ci/test_inventory_ledger.json}"
       # <<< generated glob
       run: python3 scripts/ci/check_test_inventory.py
 
     affected-rust-plan:
-      # >>> generated glob from rust_test_plan.py INPUT_GLOBS — do not edit
-      glob: "{.config/**,Cargo.lock,Cargo.toml,crates/**,rust-toolchain.toml,scripts/ci/**}"
+      # >>> generated glob from benchmark_rust_build.py, rust_test_plan.py INPUT_GLOBS — do not edit
+      glob: "{.cargo/**,.config/**,.config/rust-tests.toml,Cargo.lock,Cargo.toml,apps/**,crates/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,scripts/ci/benchmark_rust_build.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_sources.py,scripts/ci/nextest_execution.py,scripts/ci/test.sh,tests/**,xtask/**}"
       # <<< generated glob
-      run: python3 scripts/ci/rust_test_plan.py --self-test
+      run: python3 scripts/ci/rust_test_plan.py --self-test && python3 scripts/ci/benchmark_rust_build.py --self-test
 
     # 3b. A failed read of durable state may never become an absence. The
     #     recovery path is derived -- every production module that names a
@@ -163,6 +163,15 @@ pre-commit:
       glob: "{scripts/ci/*.py,scripts/ci/*.sh,scripts/ci/scan_scope_registry.json}"
       # <<< generated glob
       run: python3 scripts/ci/check_scan_scope.py
+
+    # The existing release source validator inventories every tracked writer.
+    # Its declaration and pre-commit trigger cover that same repository corpus.
+    sandbox-release-source:
+      # >>> generated glob from check_sandbox_image_release.py INPUT_GLOBS — do not edit
+      # no glob: check_sandbox_image_release.py reads every staged file, so this command
+      # must keep the whole staged set as its trigger.
+      # <<< generated glob
+      run: python3 scripts/ci/check_sandbox_image_release.py
 
     # 3b. The one declaration of every external tool a gate needs. Its self-test
     #    proves each row can still be located by the method it states, so a row
@@ -204,7 +213,7 @@ pre-commit:
     #    lane kept mutating the old path; nothing ran until hours later.
     gate-path-references:
       # >>> generated glob from check_gate_path_references.py INPUT_GLOBS — do not edit
-      glob: "{.github/**/*.yml,crates/**,deploy/**/*.sh,deploy/**/*.yaml,deploy/**/*.yml,e2e/**/*.sh,lefthook.yml,scripts/**/*.sh,scripts/ci/check_gate_path_references.py}"
+      glob: "{.github/**/*.yml,crates/**,deploy/**/*.sh,deploy/**/*.yaml,deploy/**/*.yml,e2e/**/*.sh,lefthook.yml,scripts/**/*.sh,scripts/ci/check_gate_path_references.py,scripts/ci/formal_sources.py}"
       # <<< generated glob
       run: python3 scripts/ci/check_gate_path_references.py --self-test && python3 scripts/ci/check_gate_path_references.py
 
@@ -236,7 +245,9 @@ pre-commit:
     # One Rust gate owns source and boundary checks. Trigger it for checker
     # edits too; separate hook invocations would execute the same scan twice.
     rust-quick:
-      glob: "{lefthook.yml,scripts/ci/check-rust.sh,scripts/ci/check_sdk_consumer.py,scripts/ci/check_dependency_sources.py,scripts/ci/check_crate_boundaries.py,scripts/ci/_bounded_context_fitness.py,scripts/ci/bounded_context_baseline.json,scripts/ci/check_feature_matrix.py,Cargo.toml,Cargo.lock,crates/**/*.rs,crates/**/Cargo.toml,examples/sdk-consumer/**,apps/**/*.rs,apps/**/Cargo.toml,tests/**/*.rs,xtask/**/*.rs,xtask/**/Cargo.toml}"
+      # >>> generated glob from check_sdk_consumer.py, rust_test_plan.py INPUT_GLOBS — do not edit
+      glob: "{.cargo/**,.config/**,Cargo.lock,Cargo.toml,apps/**,crates/**,examples/sdk-consumer/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,scripts/ci/*.py,scripts/ci/check-rust.sh,tests/**,xtask/**}"
+      # <<< generated glob
       run: scripts/ci/check-rust.sh --quick
 
     # An observation time is a fact its owner observed, not a value the code
@@ -287,7 +298,7 @@ pre-commit:
     # when the types, the baseline, or the oracle change.
     managed-wire-naming:
       # >>> generated glob from check_managed_wire_naming.py INPUT_GLOBS — do not edit
-      glob: "{contracts/anthropic-managed/upstream-oracle.generated.json,crates/server/awaken-protocol-managed/contracts/wire-naming-baseline.json,crates/server/awaken-protocol-managed/src/types/**/*.rs,scripts/ci/check_managed_wire_naming.py}"
+      glob: "{contracts/anthropic-managed/upstream-oracle.generated.json,crates/server/awaken-protocol-managed/contracts/wire-naming-baseline.json,crates/server/awaken-protocol-managed/src/types/**/*.rs,lefthook.yml,scripts/ci/*.py}"
       # <<< generated glob
       run: python3 scripts/ci/check_managed_wire_naming.py --self-test && python3 scripts/ci/check_managed_wire_naming.py
 

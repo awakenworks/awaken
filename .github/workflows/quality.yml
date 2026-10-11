@@ -5,10 +5,6 @@ name: awaken-full-quality
 
 on:
   workflow_call:
-    inputs:
-      rust_shards:
-        type: string
-        default: "1"
   pull_request:
   push:
     branches:
@@ -20,11 +16,6 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
-      rust_shards:
-        description: Rust test partitions sharing one build and thread budget
-        type: choice
-        default: "1"
-        options: ["1", "2", "4"]
       build_benchmark:
         description: Measure representative cold and warm Cargo builds
         type: boolean
@@ -105,9 +96,6 @@ jobs:
   full_quality:
     env:
       AWAKEN_STATIC_JOBS: "4"
-      # Opt-in until representative timing establishes a benefit. Ordinary
-      # nextest already schedules tests in parallel; partitioning is not free.
-      AWAKEN_RUST_SHARDS: ${{ inputs.rust_shards || '1' }}
     # The strict sandbox group requires Docker, unprivileged user namespaces,
     # /dev/fuse, k3d and kubectl. A named runner contract makes missing
     # substrates a scheduling failure instead of a successful test skip.

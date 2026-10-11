@@ -266,13 +266,16 @@ def classification_errors(modules: set[Module], table: dict[Module, str]) -> lis
         if table[key] != target_of(key[:length], table)
     }
     errors = [
-        f"module-layer: {'::'.join(module)} is not classified; add it to LAYERS in {Path(__file__).name} as "
-        f"'{REALIZATION}' or '{HOST}' with the reason"
+        _architecture_ratchet.diagnostic(
+            "module-layer", "::".join(module), "classified", "unclassified",
+            f"add it to {Path(__file__).name}::LAYERS as '{REALIZATION}' or '{HOST}' with the reason")
         for module in sorted(modules)
         if module and module not in table and (len(module) == 1 or module[:-1] in mixed)
     ]
     errors += [
-        f"module-layer: LAYERS lists {'::'.join(key)}, which is not a module of {CRATE}; remove it"
+        _architecture_ratchet.diagnostic(
+            "module-layer", "::".join(key), "listed module", "absent",
+            f"remove it from {Path(__file__).name}::LAYERS; it is not a module of {CRATE}")
         for key in sorted(set(table) - modules)
     ]
     return errors
@@ -330,33 +333,32 @@ def measure(sources: dict[Module, str], table: dict[Module, str]) -> tuple[dict[
 
 def layer_errors(edges: dict[str, set[str]], shared_host: dict[str, int], baseline: dict) -> list[str]:
     errors: list[str] = []
+    lower = f"python3 scripts/ci/{Path(__file__).name} --tighten to lower {BASELINE.name} in this commit"
     held_edges: dict[str, list[str]] = baseline.get("upward-edges", {})
     for pair in sorted(set(edges) | set(held_edges)):
         now, was = edges.get(pair, set()), set(held_edges.get(pair, []))
         for item in sorted(now - was):
-            errors.append(
-                f"upward-edge: {pair} names host item {item}; a realization module may not reach up into the host. "
-                "Move the shared part down into a realization or leaf module, or take it through a port"
-            )
+            errors.append(_architecture_ratchet.diagnostic(
+                "upward-edge", f"{pair}::{item}", "absent", "named host item",
+                "move the shared part down into a realization or leaf module, or take it through a port"))
         for item in sorted(was - now):
-            errors.append(f"upward-edge: {pair} no longer names {item}; lower {BASELINE.name} in this commit "
-                          f"(`{Path(__file__).name} --tighten`)")
+            errors.append(_architecture_ratchet.diagnostic("upward-edge", f"{pair}::{item}", "named host item", "absent", lower))
     held_impl: dict[str, int] = baseline.get("shared-host-impl", {})
     for module in sorted(set(shared_host) | set(held_impl)):
         now, was = shared_host.get(module, 0), held_impl.get(module, 0)
         if now > was:
-            errors.append(f"shared-host-impl: {module} has {now} SharedHost methods, baseline {was}; give the "
-                          "realization state its own owner instead of adding host methods")
+            errors.append(_architecture_ratchet.diagnostic(
+                "shared-host-impl", module, was, now, "give the realization state its own owner instead of adding host methods"))
         elif now < was:
-            errors.append(f"shared-host-impl: {module} has {now} SharedHost methods, below the baseline {was}; "
-                          f"lower {BASELINE.name} in this commit (`{Path(__file__).name} --tighten`)")
+            errors.append(_architecture_ratchet.diagnostic("shared-host-impl", module, was, now, lower))
     return [f"module-layer: {error}" for error in errors]
 
 
 def workspace_measures(crates: Path) -> tuple[list[str], tuple[dict[str, set[str]], dict[str, int]]]:
     manifest = _crate_boundary_workspace.crate_manifest(CRATE, crates)
     if manifest is None:
-        return [f"module-layer: {CRATE} is not a crate any more; retire {Path(__file__).name}"], ({}, {})
+        return [_architecture_ratchet.diagnostic(
+            "module-layer", CRATE, "active crate", "absent", f"retire {Path(__file__).name}")], ({}, {})
     table = layer_table()
     sources = module_sources(manifest)
     errors = classification_errors(set(sources), table)
@@ -431,8 +433,8 @@ def selftest() -> None:
     modules = {(), ("real",), ("real", "inner"), ("mix",), ("mix", "env"), ("mix", "run"), ("top",)}
     assert classification_errors(modules, table) == [], "L2"
     assert target_of(("real", "inner"), table) == REALIZATION, "L2 inherit"
-    assert "not classified" in classification_errors(modules | {("new",)}, table)[0], "L1 top-level"
-    assert "not classified" in classification_errors(modules | {("mix", "new")}, table)[0], "L1 mixed child"
+    assert "classified -> unclassified" in classification_errors(modules | {("new",)}, table)[0], "L1 top-level"
+    assert "classified -> unclassified" in classification_errors(modules | {("mix", "new")}, table)[0], "L1 mixed child"
     assert classification_errors(modules | {("top", "new")}, table) == [], "L2 unmixed child"
     assert "not a module" in classification_errors(modules - {("top",)}, table)[0], "L3"
 
@@ -451,11 +453,17 @@ def selftest() -> None:
     baseline = {"upward-edges": {pair: sorted(items) for pair, items in edges.items()}, "shared-host-impl": {"real": 4}}
     assert layer_errors(edges, shared_host, baseline) == [], "L4 recorded"
     grown = {**edges, "real -> top": {"Alpha", "Beta", "Zeta"}}
-    assert "names host item Zeta" in layer_errors(grown, shared_host, baseline)[0], "L4 new"
+    assert "real -> top::Zeta absent -> named host item" in layer_errors(grown, shared_host, baseline)[0], "L4 new"
     shrunk = {**edges, "real -> top": {"Alpha"}}
-    assert "no longer names Beta" in layer_errors(shrunk, shared_host, baseline)[0], "L4 gone"
-    assert "baseline 4" in layer_errors(edges, {"real": 5}, baseline)[0], "L8 above"
-    assert "below the baseline" in layer_errors(edges, {"real": 3}, baseline)[0], "L8 below"
+    assert "real -> top::Beta named host item -> absent" in layer_errors(shrunk, shared_host, baseline)[0], "L4 gone"
+    # D5: same-cardinality replacement has two independent set effects.
+    # Member identity -> added and removed diagnostics; totals cannot cancel.
+    swapped = layer_errors({"r -> h": {"new"}}, {}, {"upward-edges": {"r -> h": ["old"]}})
+    assert len(swapped) == 2 and "r -> h::new absent -> named host item" in swapped[0] \
+        and "r -> h::old named host item -> absent" in swapped[1], "D5 set identity, growth before removal"
+    assert all("; fix: " in error for error in swapped), "D5 canonical output with the original fixes"
+    assert "shared-host-impl: real 4 -> 5" in layer_errors(edges, {"real": 5}, baseline)[0], "L8 above"
+    assert "shared-host-impl: real 4 -> 3" in layer_errors(edges, {"real": 3}, baseline)[0], "L8 below"
     now_edges = {"real -> top": {"Alpha", "Zeta"}, "mix::env -> mix::run": {"Delta"}}
     tight = tightened(now_edges, {"real": 2, "new": 1}, baseline)
     assert tight["upward-edges"] == {"mix::env -> mix::run": ["Delta"], "real -> top": ["Alpha"]}, "L9 edges"
@@ -479,6 +487,9 @@ def _selftest_cli() -> None:
     explicit reviewed growth retains reasons; unreasoned growth is refused.
     LCLI5 no reason overrides classification, even in report mode. LCLI6
     missing baseline and invalid mode/reason combinations precede measurement.
+    D8: these same actual CLI cases keep status, bytes, summary JSON and hard
+    failure authority independent from the diagnostic formatter. D5/L1-L3
+    additionally exercise the real classification predicate and source fix.
     """
     foreign = {"future-counter": {"k": "  foreign review  "}}
     held = {"owner": "layer", "expiry": "extraction", "future-counter": {"k": 9}, "growth_reasons": foreign, "upward-edges": {"r -> h": ["old", "gone"]},

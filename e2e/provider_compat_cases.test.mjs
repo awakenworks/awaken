@@ -22,7 +22,7 @@ test('authored third-party provider is opaque, normalized, and secret-free in pu
     base_url: 'https://edge.vendor.example/v9',
     model_id: 'vendor/model',
     secret_env: 'VENDOR_TOKEN',
-  }], { VENDOR_TOKEN: 'do-not-print' })); // awaken-allow: secret -- inert non-leak fixture
+  }], { VENDOR_TOKEN: 'do-not-print' })); // awaken-allow(secret): -- inert non-leak fixture
   assert.equal(value.secret, 'do-not-print');
   assert.equal(value.timeout_secs, 300);
   assert.ok(!JSON.stringify(publicProviderCase(value)).includes('do-not-print'));
@@ -166,7 +166,7 @@ for (const backendRef of ['genai', 'acp:claude'])
 for (const mode of ['key', 'oauth', 'implicit', 'missing-model', 'empty', 'leak', 'denied', 'profile-denied']) {
   test(`shared provider setup: ${backendRef} / ${mode}`, async (t) => {
     const calls = [];
-    const secret = 'inert-provider-test-material'; // awaken-allow: secret -- loopback-only test
+    const secret = 'inert-provider-test-material'; // awaken-allow(secret): -- loopback-only test
     const item = { id: 'fixture', provider_id: 'fixture', dialect: 'open_ai_chat',
       base_url: 'https://provider.invalid', timeout_secs: 300,
       ...(mode === 'implicit' ? {} : { model_id: mode === 'missing-model' ? 'absent' : 'chosen' }),

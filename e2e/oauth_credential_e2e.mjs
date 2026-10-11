@@ -19,7 +19,7 @@ import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 const BETAS = ['managed-agents-2026-04-01'];
 // The token the server's OAuth helper mints (`printf oauth-minted-key`). The
 // upstream accepts only this, so a valid run proves the helper ran.
-const MINTED_KEY = 'oauth-minted-key'; // awaken-allow: secret
+const MINTED_KEY = 'oauth-minted-key'; // awaken-allow(secret):
 
 async function main() {
   const upstream = await startFakeAnthropic(MINTED_KEY);
@@ -62,7 +62,7 @@ async function main() {
       assert.ok(upstream.requests.length >= 1, 'the upstream served the OAuth-credentialed inference');
       pass('an OAuth-kind credential mints its token via the helper and authenticates the run (#5)');
     }, fakeAnthropicServerEnv(upstream, {
-      ANTHROPIC_API_KEY: 'sk-not-the-minted-key', // awaken-allow: secret
+      ANTHROPIC_API_KEY: 'sk-not-the-minted-key', // awaken-allow(secret):
     }));
 
     console.log('E2E PASS: OAuth credential materialization over the real wire (#5).');

@@ -1,6 +1,6 @@
 // @formal entrypoint resource_reclamation.continuation_claim_deletion_requires_exact_incarnation_fence
 // @formal entrypoint sandbox_continuation.ephemeral_never_allocates_or_references_a_claim
-// awaken-file-limit-ceiling: 1602
+// awaken-allow(file-limit-ceiling): 1602
 //! Real Kubernetes backend (ADR-0041 Slice 5, `k8s` feature).
 //!
 //! Implements [`ContainerRuntime`] over **kube** — the kube-apiserver via the SDK,

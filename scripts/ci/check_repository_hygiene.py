@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import argparse
 import re
-import subprocess
 import sys
 from pathlib import Path
+
+import formal_sources
 
 # Input set: `--staged` asks git for the complete staged list and inspects every
 # one of those paths (root/name shape) and their contents (hidden Unicode,
@@ -103,62 +104,6 @@ EXECUTABLE_MAGIC: tuple[tuple[bytes, str], ...] = (
 )
 
 
-def git_lines(args: list[str]) -> list[str]:
-    try:
-        out = subprocess.check_output(args, cwd=REPO_ROOT, text=True)
-    except subprocess.CalledProcessError:
-        return []
-    return [line for line in out.splitlines() if line]
-
-
-def staged_files() -> list[str]:
-    return git_lines(["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"])
-
-
-def added_staged_files() -> list[str]:
-    return git_lines(["git", "diff", "--cached", "--name-only", "--diff-filter=A"])
-
-
-def tracked_files() -> list[str]:
-    files = git_lines(["git", "ls-files"])
-    if files:
-        return files
-    return [str(path.relative_to(REPO_ROOT)) for path in REPO_ROOT.rglob("*") if path.is_file()]
-
-
-def read_content(rel: str, staged: bool) -> str | None:
-    if staged:
-        try:
-            return subprocess.check_output(
-                ["git", "show", f":{rel}"],
-                cwd=REPO_ROOT,
-                stderr=subprocess.DEVNULL,
-            ).decode("utf-8", errors="replace")
-        except subprocess.CalledProcessError:
-            return None
-    path = REPO_ROOT / rel
-    if not path.is_file():
-        return None
-    return path.read_text(encoding="utf-8", errors="replace")
-
-
-def read_head(rel: str, staged: bool, size: int = 512) -> bytes | None:
-    if staged:
-        try:
-            return subprocess.check_output(
-                ["git", "cat-file", "blob", f":{rel}"],
-                cwd=REPO_ROOT,
-                stderr=subprocess.DEVNULL,
-            )[:size]
-        except subprocess.CalledProcessError:
-            return None
-    path = REPO_ROOT / rel
-    if not path.is_file():
-        return None
-    with path.open("rb") as handle:
-        return handle.read(size)
-
-
 def executable_format(head: bytes) -> str | None:
     for magic, name in EXECUTABLE_MAGIC:
         if head.startswith(magic):
@@ -172,13 +117,10 @@ def executable_format(head: bytes) -> str | None:
     return None
 
 
-def check_executable_content(files: list[str], staged: bool) -> list[str]:
+def check_executable_content(contents: dict[str, bytes]) -> list[str]:
     violations: list[str] = []
-    for rel in sorted(files):
-        head = read_head(rel, staged)
-        if head is None:
-            continue
-        kind = executable_format(head)
+    for rel, data in sorted(contents.items()):
+        kind = executable_format(data[:512])
         if kind is not None:
             violations.append(f"{rel}: tracked {kind} binary; compiled output must not be committed")
     return violations
@@ -220,14 +162,12 @@ def check_path_shape(files: list[str], added_files: list[str]) -> list[str]:
     return violations
 
 
-def check_text_content(files: list[str], staged: bool) -> list[str]:
+def check_text_content(contents: dict[str, bytes]) -> list[str]:
     violations: list[str] = []
-    for rel in sorted(files):
+    for rel, data in sorted(contents.items()):
         if not is_text_file(rel):
             continue
-        text = read_content(rel, staged)
-        if text is None:
-            continue
+        text = data.decode("utf-8", errors="replace")
         for lineno, line in enumerate(text.splitlines(), 1):
             if HIDDEN_UNICODE_RE.search(line):
                 violations.append(f"{rel}:{lineno}: hidden Unicode control character")
@@ -321,15 +261,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.self_test:
         return self_test()
 
-    files = staged_files() if args.staged else tracked_files()
-    added = added_staged_files() if args.staged else files
+    files = (formal_sources.git_paths(REPO_ROOT, "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR")
+             if args.staged else formal_sources.tracked_files(REPO_ROOT, allow_nonrepository=True))
+    added = (formal_sources.git_paths(REPO_ROOT, "diff", "--cached", "--name-only", "-z", "--diff-filter=A")
+             if args.staged else files)
     if args.staged and not files:
         print("OK - no staged files to check for repository hygiene.")
         return 0
 
     violations = check_path_shape(files, added)
-    violations.extend(check_text_content(files, args.staged))
-    violations.extend(check_executable_content(files, args.staged))
+    contents = {rel: data for rel in sorted(files)
+                if (data := formal_sources.file_bytes(REPO_ROOT, rel, args.staged)) is not None}
+    violations.extend(check_text_content(contents))
+    violations.extend(check_executable_content(contents))
     if violations:
         print("Repository hygiene failed:", file=sys.stderr)
         for violation in violations:

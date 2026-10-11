@@ -551,7 +551,7 @@ mod mcp_wiring_tests {
                 "mcp_servers": [{
                     "name": "github",
                     "transport": { "kind": "stdio", "command": "npx", "args": ["-y", "@mcp/github"] },
-                    "credential": { "auth": "trusted_inline", "secret": "sk-retained" } // awaken-allow: secret
+                    "credential": { "auth": "trusted_inline", "secret": "sk-retained" } // awaken-allow(secret):
                 }]
             }),
         );

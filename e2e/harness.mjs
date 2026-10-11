@@ -1467,7 +1467,7 @@ export async function withServer(mode, port, fn, extraEnv = {}) {
 // The fake-upstream key the real-wire harness authenticates with, exported so a
 // test that spawns the server itself (restart/durability suites) can build the same
 // env via `realServerEnv`.
-export const FAKE_KEY = 'sk-fake-upstream-key'; // awaken-allow: secret
+export const FAKE_KEY = 'sk-fake-upstream-key'; // awaken-allow(secret):
 
 // Explicit fake-provider configuration is layered through `extraEnv` after
 // inherited provider keys are removed by `serverProcessEnv`. Custom upstream

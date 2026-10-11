@@ -10,6 +10,7 @@ cd "$(dirname "$0")/../.."
 source scripts/ci/_cargo_target.sh
 source scripts/ci/_provider_environment.sh
 awaken_configure_cargo_target "$PWD"
+export CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"
 awaken_unset_ambient_api_keys
 awaken_append_repo_tools
 
@@ -310,8 +311,23 @@ case "$mode" in
     # workspace check must include the production Worker composition. Boxing at
     # the owned boundary fixes layout without detaching execution or increasing
     # recursion limits; an ingress-only replacement would lose this coverage.
-    step "check" "fix the compile errors shown above" \
-      cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}"
+    # Layout decision rows: L1 the original owned physical-attempt Box/erasure
+    # plus this production all-target graph -> compile. L2 removing only that
+    # boundary while retaining the ScheduledAction loop, output type and claim/
+    # cancellation/cleanup path must be checked by BOTH original whole argv and
+    # this quick path on the same working subject. A real production layout
+    # overflow is the negative effect; an unused import, inference error, other
+    # factory or leaf-only success is not that effect. L3 admission75/source or
+    # profile uncertainty -> retain the exact refusal, no retry/flag change.
+    # UNKNOWN_CONFIG still keeps whole; a focused PASS cannot qualify a subset.
+    if [ "$mode" = "--quick" ]; then
+      step "check" "fix the compile errors shown above" \
+        python3 scripts/ci/rust_test_plan.py --base HEAD --run --check-command \
+        cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}"
+    else
+      step "check" "fix the compile errors shown above" \
+        cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}"
+    fi
     if [ "$mode" = "--push" ]; then
       # Push cause/effect table. P1 a commit compiles but carries dead code or
       # another `-D warnings` lint -> the quick check passes, main goes red at
@@ -373,19 +389,8 @@ case "$mode" in
       # without nightly JSON instrumentation.
       if step "test-build" "fix the test compilation/link errors shown above" \
         cargo test --workspace --features "$workspace_features" "${locked[@]}" --no-run --timings; then
-        if [ "${AWAKEN_RUST_SHARDS:-1}" = 1 ]; then
-          step "test" "re-run a single failure with: cargo nextest run --workspace -E 'test(<test_name>)' --no-capture" \
-            cargo nextest run --workspace --features "$workspace_features" "${locked[@]}"
-        else
-          shard_threads=()
-          if [ -n "${NEXTEST_TEST_THREADS:-}" ] && [ "$NEXTEST_TEST_THREADS" != num-cpus ]; then
-            shard_threads=(--threads "$NEXTEST_TEST_THREADS")
-          fi
-          step "test" "inspect the partition receipts; all listed cases must execute exactly once" \
-            python3 scripts/ci/rust_test_shards.py --shards "$AWAKEN_RUST_SHARDS" "${shard_threads[@]}" \
-              --timeout "${AWAKEN_RUST_TEST_TIMEOUT_SECONDS:-1800}" -- \
-              --workspace --features "$workspace_features" "${locked[@]}"
-        fi
+        step "test" "re-run a single failure with: cargo nextest run --workspace -E 'test(<test_name>)' --no-capture" \
+          cargo nextest run --workspace --features "$workspace_features" "${locked[@]}"
       else
         echo "   (skipping workspace execution until test binaries compile)" >&2
       fi

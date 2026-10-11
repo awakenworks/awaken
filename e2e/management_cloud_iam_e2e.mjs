@@ -52,7 +52,7 @@ const PORT = await availablePort(Number(process.env.E2E_PORT));
 const ISSUER = 'https://accounts.e2e.awakenworks.test';
 const AUDIENCE = 'awaken-runtime';
 const KEY_ID = 'cloud-e2e-ed25519';
-const SERVICE_TOKEN = 'cloud-e2e-service-credential'; // awaken-allow: secret
+const SERVICE_TOKEN = 'cloud-e2e-service-credential'; // awaken-allow(secret):
 const SEAL_KEY = '12233445566778899aabbccddeeff00112233445566778899aabbccddeeff001';
 
 function b64url(value) {
@@ -493,7 +493,7 @@ async function main() {
         dialect: 'open_ai_chat',
         base_url: `${iam.url}/v1/`,
         timeout_secs: 30,
-        secret: 'sk-cloud-byok-publication-e2e', // awaken-allow: secret
+        secret: 'sk-cloud-byok-publication-e2e', // awaken-allow(secret):
       },
     });
     assert.equal(result.status, 201, JSON.stringify(result.body));
@@ -631,7 +631,7 @@ async function main() {
         // ProviderConnection credentials are exact-endpoint proofs. A second
         // qualified endpoint therefore needs its own connection proof; reusing
         // the primary credential is the incompatible-credential unit partition.
-        secret: 'sk-cloud-byok-publication-secondary-e2e', // awaken-allow: secret
+        secret: 'sk-cloud-byok-publication-secondary-e2e', // awaken-allow(secret):
       },
     });
     assert.equal(result.status, 201, JSON.stringify(result.body));

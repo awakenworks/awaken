@@ -24,7 +24,7 @@ async fn publish_until_woken(
     mut wait_task: tokio::task::JoinHandle<()>,
     budget: Duration,
 ) -> bool {
-    // awaken-wait: settle on delivered wake, never a sleep or LISTEN query.
+    // awaken-allow(wait): settle on delivered wake, never a sleep or LISTEN query.
     let outcome = tokio::time::timeout(budget, async {
         loop {
             publisher.publish().await.expect("publish wake hint");

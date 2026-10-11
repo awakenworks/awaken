@@ -123,7 +123,7 @@ async function exerciseResources(baseURL, creatorSpec, operatorSpec) {
   const credential = await creator.beta.vaults.credentials.create(vault.id, {
     type: 'environment_variable',
     secret_name: `SDK_COMPAT_${suffix.replace('-', '_')}`,
-    secret_value: 'sdk-compat-placeholder', // awaken-allow: secret
+    secret_value: 'sdk-compat-placeholder', // awaken-allow(secret):
     networking: { type: 'unrestricted' },
   });
   assert.equal((await operator.beta.vaults.credentials.retrieve(credential.id, {

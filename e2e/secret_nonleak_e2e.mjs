@@ -34,7 +34,7 @@ const TRACE_FILE = `/tmp/awaken-secret-nonleak-trace-${process.pid}.jsonl`;
 // A unique, unguessable sentinel: if this exact string appears on any read-back
 // surface, a real secret leaked. Long enough (> 12 chars) that `preview()` masks
 // its middle, so a masked form can never accidentally reproduce the full value.
-const SENTINEL = `sk-nonleak-SENTINEL-9f31c0dead${Date.now()}`; // awaken-allow: secret
+const SENTINEL = `sk-nonleak-SENTINEL-9f31c0dead${Date.now()}`; // awaken-allow(secret):
 
 // Assert a surface's serialized form does not contain the full sentinel. A masked
 // preview (head4 + "***" + tail4) is fine; the full plaintext is a leak.

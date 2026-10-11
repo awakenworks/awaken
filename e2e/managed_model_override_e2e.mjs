@@ -20,7 +20,7 @@ const PORT = Number(process.env.E2E_PORT) || 38166;
 const ENVIRONMENT_ID = 'env_local';
 
 async function main() {
-  const fixture = await startCalcFixture('unused-anonymous-token', { allowAnonymous: true }); // awaken-allow: secret
+  const fixture = await startCalcFixture('unused-anonymous-token', { allowAnonymous: true }); // awaken-allow(secret):
   try {
     await withScenarioServer('management', 'mcp', PORT, async (base) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });

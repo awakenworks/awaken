@@ -1087,7 +1087,7 @@ mod tests {
         mut connection: awaken_sqlite_pool::EmbeddedConnection,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
-            // awaken-wait: R2/R3/R5 hold the sibling write lock for a short, fixed span so the store must busy-wait for it.
+            // awaken-allow(wait): R2/R3/R5 hold the sibling write lock for a short, fixed span so the store must busy-wait for it.
             tokio::time::sleep(Duration::from_millis(100)).await;
             sqlx::query("COMMIT")
                 .execute(&mut *connection)

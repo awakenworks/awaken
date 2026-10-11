@@ -64,7 +64,7 @@ await withScenarioServer('management', 'mcp', PORT, async (baseURL) => {
   await assert.rejects(
     () => client.beta.sessions.resources.update(fileResource.id, {
       session_id: session.id,
-      authorization_token: 'must-not-enter', // awaken-allow: secret
+      authorization_token: 'must-not-enter', // awaken-allow(secret):
       betas: BETAS,
     }),
     (error) => error?.status === 400,

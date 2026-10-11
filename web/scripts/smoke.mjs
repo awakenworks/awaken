@@ -100,7 +100,7 @@ const connection = await step("verify and save provider connection", "POST", "/v
   timeout_secs: 60,
   ...(reusableCredential
     ? { credential_source_id: reusableCredential.id }
-    : { secret: "sk-test-not-a-real-key" }), // awaken-allow: secret (synthetic smoke fixture)
+    : { secret: "sk-test-not-a-real-key" }), // awaken-allow(secret): (synthetic smoke fixture)
 }, (s, p) => s === 201 && p.sync.discovered === 1 && p.credential.status === "active");
 const cred = connection.credential;
 await step("catalog snapshot", "GET", "/v1/config/catalog", undefined, (s, p) => s === 200 && p.offerings.length >= 1);
@@ -260,7 +260,7 @@ const vault = await step("create vault", "POST", "/v1/vaults", { display_name: "
 await step("vault credential (static_bearer)", "POST", `/v1/vaults/${vault.id}/credentials`, {
   type: "static_bearer",
   mcp_server_url: "https://mcp.example.com/docs",
-  token: "test-token", // awaken-allow: secret (synthetic smoke fixture)
+  token: "test-token", // awaken-allow(secret): (synthetic smoke fixture)
 });
 
 // ---- Sessions on the flat data plane (surfaces/sessions.tsx via ws()) ----

@@ -110,7 +110,7 @@ async fn hosted_application_bearer_http_contract_is_stable_and_rotatable() {
             "application_authority_id": "awaken-flow",
             "mcp_server_url": url,
             "credential_generation": generation,
-            "token": token // awaken-allow: secret
+            "token": token // awaken-allow(secret):
         })
     };
 

@@ -121,7 +121,7 @@ fn credential_body() -> Value {
     json!({
         "workspace_id": BOOTSTRAP_WORKSPACE, "kind": "vault", "provider_id": "anthropic",
         "env_key": "ANTHROPIC_API_KEY",
-        "secret": "sk-authz-secret" // awaken-allow: secret
+        "secret": "sk-authz-secret" // awaken-allow(secret):
     })
 }
 
