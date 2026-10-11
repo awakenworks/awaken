@@ -518,13 +518,13 @@ mod tests {
             .store(
                 &issuer,
                 CachedCredential {
-                    token: IamSecret::new("expired-runtime-access"), // awaken-allow: secret
+                    token: IamSecret::new("expired-runtime-access"), // awaken-allow(secret):
                     principal: PrincipalRef::Account {
                         account_id: IamAccountId("acct-expired-runtime".into()),
                     },
                     expires_at: 0,
                     oauth: Some(CachedOAuthGrant {
-                        refresh_token: IamSecret::new("runtime-refresh"), // awaken-allow: secret
+                        refresh_token: IamSecret::new("runtime-refresh"), // awaken-allow(secret):
                         client_id: config.oauth_client_id.clone(),
                         scopes: vec!["openid".into()],
                     }),

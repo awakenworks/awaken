@@ -117,7 +117,7 @@ impl AcpToolExporter for FaultExporter {
                 .unwrap()
                 .send(())
                 .unwrap();
-            // awaken-wait: force cancellation at the production export await,
+            // awaken-allow(wait): force cancellation at the production export await,
             // with a partial transport lease already owned by this future.
             std::future::pending::<()>().await;
         }

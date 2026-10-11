@@ -19,7 +19,7 @@ import { cargoExecutable } from './cargo_binary.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38815);
 const BASE = `http://127.0.0.1:${PORT}/mcp`;
-const TOKEN = 'mcp-ts-demo-token'; // awaken-allow: secret
+const TOKEN = 'mcp-ts-demo-token'; // awaken-allow(secret):
 const VERSION = '2025-11-25';
 
 function buildDemo(): string {
@@ -158,7 +158,7 @@ async function main(): Promise<void> {
         params: {
           name: 'count',
           arguments: { steps: 4 },
-          _meta: { progressToken: 'http-progress' }, // awaken-allow: secret
+          _meta: { progressToken: 'http-progress' }, // awaken-allow(secret):
         },
       },
       {

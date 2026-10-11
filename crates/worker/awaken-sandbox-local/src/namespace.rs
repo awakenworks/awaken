@@ -1,5 +1,5 @@
 // @formal entrypoint sandbox.workspace_path_projection_is_one_logical_root_and_never_discloses_provider_host_paths
-// awaken-file-limit-ceiling: 1677
+// awaken-allow(file-limit-ceiling): 1677
 //! `NamespaceProvider` — the OS-native process sandbox tier: bubblewrap namespaces
 //! on Linux and Seatbelt on macOS (ADR-0041 Slice 2). Unlike the lexical
 //! `LocalProvider`, this tier is **tool-transparent**: an opaque process (Claude

@@ -21,6 +21,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts/ci"))
 import formal_ledger
+from formal_sources import detached_git_environment, git_output
 from formal_profile import profile_result
 from formal_run_evidence import canonical_bytes, committed_file_digest, digest_bytes, digest_file, proof_toolchain, validate_record
 
@@ -422,6 +423,13 @@ def validate_manifest(
 
 
 class VerificationManifestTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # S4: all release-case/subshell/clone fixtures inherit this detached
+        # environment; the shared prepare helper also isolates its own Git.
+        environment = patch.dict(os.environ, detached_git_environment(), clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
+
     @staticmethod
     def release_case(directory: Path) -> tuple[Path, Path, dict]:
         # Reuse the receipt fixture and production archive builder. The bytes
@@ -494,7 +502,7 @@ class VerificationManifestTests(unittest.TestCase):
             root, artifact, before = self.release_case(Path(temporary))
             windows = Path(temporary) / "windows"
             subprocess.run(["git", "clone", "--quiet", "--config", "core.autocrlf=true", str(root), str(windows)],
-                           check=True, capture_output=True)
+                           check=True, capture_output=True, env=detached_git_environment())
             model = windows / "formal/tla/Fixture.tla"
             self.assertIn(b"\r\n", model.read_bytes())
             after = build_manifest(artifact, profile="standard", source_commit=source_commit(windows),
@@ -809,9 +817,7 @@ class VerificationManifestTests(unittest.TestCase):
 
 
 def source_commit(repository: Path) -> str:
-    return subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=repository, text=True
-    ).strip()
+    return git_output(repository, "rev-parse", "HEAD").decode().strip()
 
 
 def main() -> int:

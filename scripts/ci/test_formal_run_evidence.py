@@ -12,11 +12,14 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 import _strict_unittest as strict_unittest
 
 import formal_budget
 import formal_plan
-from formal_run_evidence import FULL_SELECTION, ROOT, begin_record, finish_record, validate_record, write_record, begin_artifacts, finish_artifacts, verify_artifacts
+import formal_sources
+from formal_sources import detached_git_environment
+from formal_run_evidence import FULL_SELECTION, ROOT, begin_record, finish_record, validate_record, write_record, begin_artifacts, finish_artifacts, verify_artifacts, source_snapshot, digest_bytes, committed_file_digest
 
 
 def nested_shell_function(source: str, name: str) -> str:
@@ -87,7 +90,8 @@ def prepare_source_fixture(root: Path, extra_sources: dict[str, str] | None = No
     for arguments in (("init", "--quiet"), ("config", "core.autocrlf", "false"), ("add", "."),
                       ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                        "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "fixture")):
-        subprocess.run(["git", *arguments], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", *arguments], cwd=root, check=True, capture_output=True,
+                       env=detached_git_environment())
 
 
 # Beside Cargo and the pinned solver, the batch runner uses four ordinary
@@ -113,13 +117,19 @@ def link_runner_tools(bindir: Path) -> None:
 
 class EvidenceTests(unittest.TestCase):
     def setUp(self):
+        # S4: hooks name the caller's repository; a throwaway fixture must never
+        # initialize/configure it. Explicit hook cases inject their own decoy.
+        environment = mock.patch.dict(os.environ, detached_git_environment(), clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
         self.temporary = tempfile.TemporaryDirectory(prefix="awaken-proof-receipt-test-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name) / "repo"
         prepare_source_fixture(self.root)
 
     def git(self, *args):
-        return subprocess.check_output(["git", *args], cwd=self.root, stderr=subprocess.STDOUT)
+        return subprocess.check_output(["git", *args], cwd=self.root, stderr=subprocess.STDOUT,
+                                       env=detached_git_environment())
 
     def test_kani_batch_uses_the_canonical_deadline_and_driver_target_directory(self):
         # Cause/effect graph: C1 an explicit Cargo target directory and C2 a
@@ -775,6 +785,170 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "clean release source"):
             validate_record(record, self.root, 110)
 
+    def test_dirty_mutation_cannot_hide_behind_the_same_status_and_working_patch(self):
+        # S5/S7: cross already-dirty untracked same-path bytes with an index
+        # change hidden by WT restoration (same MM status, empty HEAD->WT).
+        # Old formal before/after snapshots called this unchanged. Real Git and
+        # artifact lifecycle must now yield Failed/source_unchanged=false.
+        for cause in ("untracked", "index"):
+            with self.subTest(cause=cause):
+                path = self.root / ("untracked.rs" if cause == "untracked" else "transitive.rs")
+                original = path.read_bytes() if path.exists() else None
+                path.write_bytes(b"first\n")
+                if cause == "index":
+                    self.git("add", str(path))
+                    path.write_bytes(original)
+                before = source_snapshot(self.root)
+                directory = begin_artifacts(self.root, self.root / "target/evidence", "formal")
+                path.write_bytes(b"second\n")
+                if cause == "index":
+                    self.git("add", str(path))
+                    path.write_bytes(original)
+                after = source_snapshot(self.root)
+                self.assertEqual(before["status_digest"], after["status_digest"], "the hidden axis actually stayed hidden")
+                record = finish_artifacts(directory, self.root, 0)
+                self.assertEqual((record["status"], record["source_unchanged"]), ("failed", False))
+                self.assertNotEqual(before["working_diff_digest"], after["working_diff_digest"])
+                if original is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(original)
+                    self.git("add", str(path))
+
+    def test_old_weak_dirty_artifact_is_rejected_without_a_compatibility_fallback(self):
+        # S11: schema1 stays unchanged, but an old dirty artifact bound only
+        # HEAD->WT bytes. Keeping that old digest cannot qualify the stronger
+        # dirty source on this code; fail closed rather than trying both bases.
+        (self.root / "untracked.rs").write_bytes(b"old dirty bytes")
+        directory = begin_artifacts(self.root, self.root / "target/evidence", "formal")
+        record = finish_artifacts(directory, self.root, 0)
+        record["source"]["working_diff_digest"] = digest_bytes(self.git("diff", "--binary", "HEAD"))
+        write_record(directory / "evidence.json", record)
+        with self.assertRaisesRegex(ValueError, "source mismatch"):
+            verify_artifacts(directory, self.root)
+
+    def test_shared_capture_preserves_partial_index_and_detaches_foreign_hooks(self):
+        # S2/S3/S4: same-repo alternate index is truth; a foreign real decoy
+        # cannot supply source/blob/commit, nor be mutated by fixture creation.
+        # Check actual config/index/HEAD/refs/WT bytes, not just return status.
+        import rust_test_plan as planner
+        with mock.patch.object(sys, "path", [str(ROOT / "scripts/release"), *sys.path]):
+            import verification_manifest
+        original = (self.root / "transitive.rs").read_bytes()
+        (self.root / "transitive.rs").write_bytes(b"staged\n")
+        self.git("add", ".")
+        (self.root / "transitive.rs").write_bytes(original)
+        partial = self.root / ".git/partial-index"
+        subprocess.run(["git", "read-tree", "HEAD"], cwd=self.root, check=True,
+                       env={**detached_git_environment(), "GIT_INDEX_FILE": str(partial)})
+        with mock.patch.object(planner, "ROOT", self.root):
+            default = planner.source_snapshot()[0]
+            expected = source_snapshot(self.root)
+            for work_tree, git_dir in ((str(self.root), str(self.root / ".git")), (".", ".git"), ("../repo", "../repo/.git")):
+                # Git resolves relative WORK_TREE after -C root, independently
+                # of this test process's actual checkout cwd. Use Git as oracle.
+                hook = dict(detached_git_environment(), GIT_DIR=git_dir,
+                            GIT_INDEX_FILE=str(partial), GIT_WORK_TREE=work_tree)
+                self.assertEqual(subprocess.check_output(["git", "-C", str(self.root), "status", "--porcelain=v1"], env=hook), b"")
+                with mock.patch.dict(os.environ, hook, clear=True):
+                    self.assertNotEqual(planner.source_snapshot()[0], default)
+                    self.assertTrue(source_snapshot(self.root)["clean"], "partial matches HEAD and WT")
+        decoy = self.root.parent / "decoy"
+        prepare_source_fixture(decoy, {"transitive.rs": "foreign source\n"})
+        def protected():
+            paths = [decoy / ".git" / n for n in ("config", "index", "HEAD")]
+            paths += [p for p in (decoy / ".git/refs").rglob("*") if p.is_file()]
+            paths += [p for p in decoy.rglob("*") if p.is_file() and ".git" not in p.relative_to(decoy).parts]
+            return {p.relative_to(decoy).as_posix(): p.read_bytes() for p in paths}
+        before = protected()
+        for case, directory in enumerate((str(decoy / ".git"), str(self.root / ".git"), "../decoy/.git")):
+            # Also cross a matching GIT_DIR with a foreign WORK_TREE; matching
+            # only the object directory must not admit another working source.
+            with mock.patch.dict(os.environ, GIT_DIR=directory, GIT_INDEX_FILE=str(decoy / ".git/index"),
+                                 GIT_WORK_TREE=str(decoy), GIT_PREFIX="hook/"):
+                prepare_source_fixture(self.root.parent / f"from-hook-{case}")
+                with mock.patch.object(planner, "ROOT", self.root):
+                    self.assertEqual(planner.source_snapshot()[0], default)
+                self.assertEqual(source_snapshot(self.root), expected)
+                self.assertEqual(committed_file_digest(self.root, "transitive.rs"), digest_bytes(original))
+                self.assertEqual(verification_manifest.source_commit(self.root), expected["commit"])
+        self.assertEqual(protected(), before)
+
+    def test_unmerged_diagnostics_and_invalid_roots_keep_their_distinct_boundaries(self):
+        # S8: conflict stages still bind formal dirty diagnostics, while working
+        # write-tree refuses. No-repo preserves Git128; parent-repo subdirectory
+        # must refuse source/blob/manifest instead of borrowing a clean parent.
+        import rust_test_plan as planner
+        with mock.patch.object(sys, "path", [str(ROOT / "scripts/release"), *sys.path]):
+            import verification_manifest
+        blob = self.git("hash-object", "transitive.rs").decode().strip()
+        subprocess.run(["git", "update-index", "--index-info"], cwd=self.root, check=True,
+                       input=f"100644 {blob} 1\ttransitive.rs\n".encode(), env=detached_git_environment())
+        before = source_snapshot(self.root)
+        changed = subprocess.check_output(["git", "hash-object", "-w", "--stdin"], cwd=self.root,
+                                          input=b"another conflict object", env=detached_git_environment()).decode().strip()
+        subprocess.run(["git", "update-index", "--index-info"], cwd=self.root, check=True,
+                       input=f"100644 {changed} 1\ttransitive.rs\n".encode(), env=detached_git_environment())
+        after = source_snapshot(self.root)
+        self.assertFalse(after["clean"])
+        self.assertEqual(before["status_digest"], after["status_digest"])
+        self.assertNotEqual(before["working_diff_digest"], after["working_diff_digest"])
+        with mock.patch.object(planner, "ROOT", self.root), self.assertRaises(subprocess.CalledProcessError) as refused:
+            planner.source_snapshot()
+        self.assertEqual(refused.exception.returncode, 128)
+        for relative, error in (("outside", subprocess.CalledProcessError), ("repo/subdirectory", ValueError)):
+            directory = self.root.parent / relative
+            directory.mkdir(exist_ok=True)
+            with self.subTest(root=relative), self.assertRaises(error) as refused:
+                source_snapshot(directory)
+            if error is subprocess.CalledProcessError:
+                self.assertEqual(refused.exception.returncode, 128)
+            else:
+                self.assertIn("repository top", str(refused.exception))
+            with self.assertRaises(error):
+                committed_file_digest(directory, "transitive.rs")
+            with mock.patch.object(planner, "ROOT", directory), self.assertRaises(error):
+                planner.source_snapshot()
+            with self.assertRaises(error):
+                verification_manifest.source_commit(directory)
+        with mock.patch.dict(os.environ, PATH=str(self.root.parent / "outside")), self.assertRaises(OSError):
+            source_snapshot(self.root)
+
+    def test_shared_capture_refuses_actual_late_axes_and_preserves_clean_schema(self):
+        # S1/S6/S9/S11: the clean legacy five fields retain empty Git-byte
+        # digests. Cross late index/HEAD/untracked bytes during the shared read;
+        # actual callback and exact capture refusal must both be observed.
+        clean = source_snapshot(self.root)
+        self.assertEqual(set(clean), {"commit", "tree", "clean", "working_diff_digest", "status_digest"})
+        self.assertEqual((clean["working_diff_digest"], clean["status_digest"]), (digest_bytes(b""),) * 2)
+        original_reader = formal_sources._git_output
+        for axis in ("index", "revision", "untracked"):
+            with self.subTest(axis=axis):
+                hit = False
+                if axis == "untracked":
+                    (self.root / "fresh.rs").write_bytes(b"first bytes")
+                def read(root, environment, *arguments):
+                    nonlocal hit
+                    result = original_reader(root, environment, *arguments)
+                    if not hit and arguments == ("status", "--porcelain=v1", "--untracked-files=all"):
+                        hit = True
+                        original = (self.root / "transitive.rs").read_bytes()
+                        if axis in {"index", "revision"}:
+                            (self.root / "transitive.rs").write_text(axis + "\n")
+                            self.git("add", ".")
+                        if axis == "index":
+                            (self.root / "transitive.rs").write_bytes(original)
+                        if axis == "revision":
+                            self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                                     "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "late revision")
+                        if axis == "untracked":
+                            (self.root / "fresh.rs").write_bytes(b"second bytes")
+                    return result
+                with mock.patch.object(formal_sources, "_git_output", side_effect=read), \
+                        self.assertRaisesRegex(ValueError, "Source changed while capturing Git source facts"):
+                    source_snapshot(self.root)
+                self.assertTrue(hit)
+
     def test_git_normalized_windows_checkout_preserves_source_identity(self):
         # E1 a clean LF checkout completes; E2 Windows-style autocrlf checkout
         # changes physical bytes but not Git source. The same receipt validates.
@@ -786,7 +960,8 @@ class EvidenceTests(unittest.TestCase):
         passed = finish_record(begin_record(self.root, True, 100, FULL_SELECTION), self.root, False, 110)
         windows = self.root.parent / "windows-checkout"
         subprocess.run(["git", "clone", "--quiet", "--no-hardlinks", "--config", "core.autocrlf=true",
-                        str(self.root), str(windows)], check=True, capture_output=True)
+                        str(self.root), str(windows)], check=True, capture_output=True,
+                       env=detached_git_environment())
         runner = windows / "scripts/ci/check_formal.sh"
         self.assertTrue(b"\r\n" in runner.read_bytes(), "CRLF fixture")
         validate_record(passed, windows, 110)

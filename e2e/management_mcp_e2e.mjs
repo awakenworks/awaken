@@ -30,7 +30,7 @@ const validators = Object.fromEntries(
 );
 
 const BETAS = ['managed-agents-2026-04-01'];
-const CALC_TOKEN = 'calc-mgmt-bearer-token'; // awaken-allow: secret
+const CALC_TOKEN = 'calc-mgmt-bearer-token'; // awaken-allow(secret):
 
 function mcpBearerDescriptor(audience) {
   return {
@@ -350,7 +350,7 @@ async function main() {
         idempotency_key: 'management-mcp-wrong',
         workspace_id: workspace,
         kind: 'vault',
-        secret: 'wrong-mcp-token', // awaken-allow: secret (deliberate auth-failure fixture)
+        secret: 'wrong-mcp-token', // awaken-allow(secret): (deliberate auth-failure fixture)
         descriptor: mcpBearerDescriptor(calcAudience),
       });
       assert.equal(wrong.status, 201);
@@ -377,7 +377,7 @@ async function main() {
         'F2: rejected MCP credentials must fail creation without leaking material',
       );
       assert.ok(
-        fixture.tokenRequests['wrong-mcp-token'] > 0, // awaken-allow: secret
+        fixture.tokenRequests['wrong-mcp-token'] > 0, // awaken-allow(secret):
         'F2: exact pinned credential reached only the MCP target during staging',
       );
       pass('F2: MCP 401 rejects the staged generation before Session activation');

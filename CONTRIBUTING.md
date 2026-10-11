@@ -24,7 +24,7 @@ commands and their flags by `check_gate_arguments.py`).
 
 | Scope | Command | Notes |
 | --- | --- | --- |
-| One crate | `scripts/ci/test.sh -p awaken-cli` | Adds the features and companion build the full gate supplies; `--dry-run` prints the exact commands. Extra arguments go to `cargo nextest run`. |
+| One crate | `scripts/ci/test.sh -p awaken-cli` | Compiles the authored whole test graph, filters execution to the requested package, and builds its companion once; `--dry-run` prints exact commands. Supported runner/profile arguments retain their meaning; graph-changing requests fail explicitly before tests. |
 | Everything Rust | `scripts/ci/check-rust.sh --full` | Clippy over all features, then the workspace tests. A clippy failure skips the tests. |
 | End to end | `scripts/ci/check-all.sh --group e2e` | Real binaries and processes. `scripts/ci/check-all.sh --list-groups` lists the other groups (postgres, k3d, sandbox, ...). |
 | Formal | `scripts/ci/check_formal.sh --tier pr` | `--affected <base>` narrows a pr run; the default full tier runs every harness. Read [`formal/README.md`](formal/README.md) first. |
@@ -45,9 +45,9 @@ Kani needs; `scripts/ci/bootstrap_kani.sh` installs the qualified Kani.
 - **Required test features** live in one place,
   [`.config/rust-tests.toml`](.config/rust-tests.toml): `workspace_features`
   (today `awaken-cli/container-k8s,awaken-sandbox/hand`) and the `[[companion]]`
-  binary some tests launch (`awaken-sandbox`). `scripts/ci/test.sh` derives a
-  crate's features from it and Cargo's resolve; a bare `cargo nextest run -p`
-  does not.
+  binary some tests launch (`awaken-sandbox`). `scripts/ci/test.sh` retains the authored whole graph and filters package
+  execution; copying a root's resolved features cannot preserve a peer's
+  requests on shared dependencies.
 - **`CARGO_BUILD_BUILD_DIR` must equal `CARGO_TARGET_DIR`** for tests: they find
   the companion beside their own executable. `scripts/ci/test.sh` and
   `scripts/ci/check-rust.sh --full` set it.
@@ -86,17 +86,37 @@ Use each owning script:
 - architecture naming, single-owner and contract-map: their
   `_naming_fitness.py`, `_single_owner_fitness.py` and `_contract_map_fitness.py`
   scripts use the same check/tighten/reasoned-write modes.
-- test waits: `python3 scripts/ci/check_test_waits.py --write-baseline`.
-- test inventory: `python3 scripts/ci/check_test_inventory.py --write`; a
-  removed or renamed test is also recorded in
-  [`test_inventory_ledger.json`](scripts/ci/test_inventory_ledger.json).
+- test waits: `python3 scripts/ci/check_test_waits.py --tighten` records decreases.
+  Default/`--check` is read-only. `--write-baseline` also refuses new unexempted
+  waits, even with `--reason`; convert them to a durable wait or document the
+  existing timing exemption first. Short source/allow reasons are hard errors.
+- Managed wire naming: `python3 scripts/ci/check_managed_wire_naming.py --tighten`
+  removes annotated or deleted debt. Default/`--check` is read-only; write modes,
+  including reasoned writes, refuse new unannotated types and inline hard errors.
+  Retained decisions keep their metadata. A first write permits zero debt only.
+- test inventory: `python3 scripts/ci/check_test_inventory.py --tighten` adds
+  names or raises minimum occurrence counts while retaining held requirements.
+  `--write-baseline` records the current multiset after the ledger check.
+  Removed or renamed tests require an authored decision in
+  [`test_inventory_ledger.json`](scripts/ci/test_inventory_ledger.json);
+  `--reason` never substitutes for that decision. Default/`--check` is read-only
+  and retains the original empty floor when the TXT file is absent.
 - public API snapshots: `scripts/ci/check_public_api.sh --bless`, on the
   nightly pinned as `PUBLIC_API_NIGHTLY` in
   [`check_public_api.sh`](scripts/ci/check_public_api.sh), never a rolling one.
 - file limits: an oversized legacy file carries an
-  `awaken-file-limit-ceiling: N` marker that may only fall.
+  `awaken-allow(file-limit-ceiling): N` marker in the first five lines, excluding
+  an opening formal header. The ceiling may only fall against its HEAD value.
 
-Never edit a baseline JSON by hand; rerun the guard's own flag.
+For a guard with a writer, use its owning flag instead of hand-editing its baseline.
+The context/SPI/expiry/registry helpers have no writer: their source or metadata
+decision remains the owning interface. A CLI reason cannot replace that decision.
+
+Source exemptions use `awaken-allow(<rule>): <payload>` with the owning guard's
+existing policy. `awaken-allow(secret):` applies only to its own line and permits
+an empty explanation. `awaken-allow(wait): <reason>` applies on the same line or
+within the three preceding lines; its timing reason must have at least 20
+characters. File-limit payloads are numeric ceilings, not exemption reasons.
 
 ## Commits
 

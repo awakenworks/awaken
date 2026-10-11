@@ -9,8 +9,8 @@ import {
 
 const completeReference = Object.freeze({
   ANTHROPIC_MANAGED_REFERENCE_BASE_URL: 'https://reference.invalid',
-  ANTHROPIC_MANAGED_REFERENCE_API_KEY: 'reference-key', // awaken-allow: secret
-  ANTHROPIC_MANAGED_REFERENCE_TUNNEL_ACCESS_TOKEN: 'reference-token', // awaken-allow: secret
+  ANTHROPIC_MANAGED_REFERENCE_API_KEY: 'reference-key', // awaken-allow(secret):
+  ANTHROPIC_MANAGED_REFERENCE_TUNNEL_ACCESS_TOKEN: 'reference-token', // awaken-allow(secret):
   ANTHROPIC_MANAGED_REFERENCE_AGENT_ID: 'agent-reference',
   ANTHROPIC_MANAGED_REFERENCE_ENVIRONMENT_ID: 'environment-reference',
   ANTHROPIC_MANAGED_REFERENCE_WORKSPACE_ID: 'workspace-reference',
@@ -20,8 +20,8 @@ const completeReference = Object.freeze({
 
 const completeAwaken = Object.freeze({
   AWAKEN_MANAGED_BASE_URL: 'https://awaken.invalid',
-  AWAKEN_MANAGED_API_KEY: 'awaken-key', // awaken-allow: secret
-  AWAKEN_MANAGED_TUNNEL_ACCESS_TOKEN: 'awaken-token', // awaken-allow: secret
+  AWAKEN_MANAGED_API_KEY: 'awaken-key', // awaken-allow(secret):
+  AWAKEN_MANAGED_TUNNEL_ACCESS_TOKEN: 'awaken-token', // awaken-allow(secret):
   AWAKEN_MANAGED_AGENT_ID: 'agent-awaken',
   AWAKEN_MANAGED_ENVIRONMENT_ID: 'environment-awaken',
   AWAKEN_MANAGED_WORKSPACE_ID: 'workspace-awaken',
@@ -64,8 +64,8 @@ test('official reference configuration is all-or-nothing and release is fail-clo
     officialReferenceFromEnvironment(completeReference, { requireReference: true }),
     {
       baseURL: 'https://reference.invalid',
-      apiKey: 'reference-key', // awaken-allow: secret
-      tunnelAccessToken: 'reference-token', // awaken-allow: secret
+      apiKey: 'reference-key', // awaken-allow(secret):
+      tunnelAccessToken: 'reference-token', // awaken-allow(secret):
       agent: 'agent-reference',
       environmentId: 'environment-reference',
       workspaceId: 'workspace-reference',
@@ -121,8 +121,8 @@ test('Awaken hosted configuration is complete before any release side effect', (
   // access type fails before hosted traffic or recovery artifacts can exist.
   assert.deepEqual(awakenTargetFromEnvironment(completeAwaken), {
     baseURL: 'https://awaken.invalid',
-    apiKey: 'awaken-key', // awaken-allow: secret
-    tunnelAccessToken: 'awaken-token', // awaken-allow: secret
+    apiKey: 'awaken-key', // awaken-allow(secret):
+    tunnelAccessToken: 'awaken-token', // awaken-allow(secret):
     agent: 'agent-awaken',
     environmentId: 'environment-awaken',
     workspaceId: 'workspace-awaken',

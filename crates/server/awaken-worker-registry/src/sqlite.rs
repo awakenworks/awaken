@@ -427,7 +427,7 @@ mod scheduler_isolation_tests {
 
         let started = Instant::now();
         let timer = tokio::spawn(async move {
-            // awaken-wait: W1 measures the timer itself; its prompt firing proves runtime workers are not blocked.
+            // awaken-allow(wait): W1 measures the timer itself; its prompt firing proves runtime workers are not blocked.
             tokio::time::sleep(Duration::from_millis(10)).await;
             started.elapsed()
         });

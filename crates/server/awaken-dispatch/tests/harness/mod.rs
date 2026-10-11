@@ -4,7 +4,7 @@
 // @formal evidence run_ingress.renewal_projects_cancel_only_to_exact_physical_attempt
 // @formal evidence run_ingress.request_local_resolution_retry_honors_persisted_deadline
 // @formal evidence session_execution.one_physical_attempt_per_thread
-// awaken-file-limit-ceiling: 3918 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 3918 (legacy oversized test file: split, never grow)
 //! Shared runtime harness for the durable-ingress integration tests.
 //!
 //! It builds a real `Runtime` with deterministic model providers — a plain text
@@ -2649,7 +2649,7 @@ pub async fn assert_defer_claim_is_request_local<
     if clock.exact_boundary_is_controllable() {
         clock.set(1_002);
     } else {
-        // awaken-wait: PostgreSQL owns a moving wall clock; wait past this
+        // awaken-allow(wait): PostgreSQL owns a moving wall clock; wait past this
         // test's persisted 1000ms retry expiry with a 100ms scheduling margin.
         tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
     }

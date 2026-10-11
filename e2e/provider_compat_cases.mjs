@@ -51,7 +51,7 @@ function autoCases(env) {
       model_id: optional(env.KIMI_ANTHROPIC_MODEL)
         ?? optional(env.KIMI_MODEL)
         ?? 'kimi-for-coding',
-      secret_env: optional(env.KIMI_ANTHROPIC_API_KEY) ? 'KIMI_ANTHROPIC_API_KEY' : 'KIMI_API_KEY', // awaken-allow: secret -- selector name only
+      secret_env: optional(env.KIMI_ANTHROPIC_API_KEY) ? 'KIMI_ANTHROPIC_API_KEY' : 'KIMI_API_KEY', // awaken-allow(secret): -- selector name only
     },
     {
       id: 'anyrouter',
@@ -68,7 +68,7 @@ function autoCases(env) {
       base_url: optional(env.GEMINI_BASE_URL)
         ?? 'https://generativelanguage.googleapis.com/v1beta',
       model_id: optional(env.GEMINI_MODEL),
-      secret_env: optional(env.GEMINI_API_KEY) ? 'GEMINI_API_KEY' : 'GOOGLE_API_KEY', // awaken-allow: secret -- selector name only
+      secret_env: optional(env.GEMINI_API_KEY) ? 'GEMINI_API_KEY' : 'GOOGLE_API_KEY', // awaken-allow(secret): -- selector name only
     },
     {
       id: 'vertex',

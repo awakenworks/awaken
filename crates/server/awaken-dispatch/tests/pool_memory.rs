@@ -7,7 +7,7 @@
 // @formal evidence worker_drain.closed_generation_is_absorbing
 // @formal evidence worker_drain.no_claim_after_acknowledgement
 // @formal evidence worker_drain.no_claim_attempt_after_registry_drain
-// awaken-file-limit-ceiling: 4500 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 4500 (legacy oversized test file: split, never grow)
 //! The process-level dispatch pool (O2) over the in-memory store, and its
 //! no-loss guarantees (O5).
 //!

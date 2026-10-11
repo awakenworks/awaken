@@ -61,7 +61,7 @@ async function main() {
       assert.ok(sendError !== null || events.length > 0, 'the auth failure surfaced through the run loop');
       pass('a non-retryable 401 surfaces immediately (no retry, no fabricated reply)');
     }, fakeAnthropicServerEnv(upstream, {
-      ANTHROPIC_API_KEY: 'the-wrong-key', // awaken-allow: secret
+      ANTHROPIC_API_KEY: 'the-wrong-key', // awaken-allow(secret):
     }));
     console.log('E2E PASS: non-retryable upstream auth error surfaces through the run loop.');
     process.exitCode = 0;

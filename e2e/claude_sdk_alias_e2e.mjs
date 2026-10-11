@@ -27,7 +27,7 @@ async function run(enabled, allow) {
       cwd:root, model:'claude-sonnet-4-6', settingSources:[], tools:[], disallowedTools:['Bash'], maxTurns:3,
       abortController, mcpServers:{ awaken_session:mcp },
       ...(enabled?{ toolAliases:{ Bash:'mcp__awaken_session__bash' } }:{}),
-      env:{ ...process.env, ANTHROPIC_API_KEY:'fixture-key', ANTHROPIC_AUTH_TOKEN:'', CLAUDE_CODE_OAUTH_TOKEN:'', ANTHROPIC_BASE_URL:provider.url, CLAUDE_CONFIG_DIR:root, HOME:root, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1' }, // awaken-allow: secret -- loopback-only fixture key, no provider account
+      env:{ ...process.env, ANTHROPIC_API_KEY:'fixture-key', ANTHROPIC_AUTH_TOKEN:'', CLAUDE_CODE_OAUTH_TOKEN:'', ANTHROPIC_BASE_URL:provider.url, CLAUDE_CONFIG_DIR:root, HOME:root, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1' }, // awaken-allow(secret): -- loopback-only fixture key, no provider account
       canUseTool:async (_name,input) => allow ? ({ behavior:'allow',updatedInput:input }) : ({ behavior:'deny',message:'fixture denied' }),
     } });
     const events = []; for await (const event of stream) events.push(event);

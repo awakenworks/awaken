@@ -443,7 +443,7 @@ test('response shape partitions JSON arrays, binary, stream, and empty bodies wi
     headers: { 'x-stainless-lang': 'js', 'x-stainless-package-version': sdkVersion },
   });
   const cases = [
-    new Response(JSON.stringify([{ token: 'must-not-leak' }, { token: 'another-secret' }]), { // awaken-allow: secret
+    new Response(JSON.stringify([{ token: 'must-not-leak' }, { token: 'another-secret' }]), { // awaken-allow(secret):
       headers: { 'content-type': 'application/json; charset=utf-8' },
     }),
     new Response('bytes', { headers: { 'content-type': 'application/octet-stream' } }),
@@ -538,7 +538,7 @@ test('transport hook records only non-secret completed exchange coordinates', ()
       '--input-type=module',
       '--eval',
       "await fetch('data:application/json,%7B%7D', { headers: {"
-        + " 'x-api-key': 'must-not-leak', 'x-stainless-lang': 'js'," // awaken-allow: secret
+        + " 'x-api-key': 'must-not-leak', 'x-stainless-lang': 'js'," // awaken-allow(secret):
         + " 'anthropic-beta': 'one,two' } })",
     ], {
       env: {
@@ -583,7 +583,7 @@ test('in-process and child-process receipt collection share one encoder', async 
   const input = new Request('https://managed.invalid/v1/files/file_1?beta=true', {
     headers: {
       'anthropic-beta': 'files-api-2025-04-14',
-      'x-api-key': 'must-not-leak', // awaken-allow: secret
+      'x-api-key': 'must-not-leak', // awaken-allow(secret):
       'x-stainless-lang': 'js',
       'x-stainless-package-version': sdkVersion,
     },

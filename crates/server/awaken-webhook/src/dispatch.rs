@@ -316,7 +316,7 @@ mod tests {
     use std::collections::{HashMap, HashSet};
     use std::sync::Mutex;
 
-    const SECRET: &str = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"; // awaken-allow: secret (test sample key)
+    const SECRET: &str = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"; // awaken-allow(secret): (test sample key)
 
     /// An in-memory [`SubscriptionSource`]: holds one resolved subscription and a
     /// disabled set, so `matching` fences out anything the dispatcher auto-disabled.

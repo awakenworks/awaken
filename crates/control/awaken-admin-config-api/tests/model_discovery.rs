@@ -363,7 +363,7 @@ async fn hosted_supply_rejects_every_model_authoring_entry_before_side_effects()
                 "provider_id":"anthropic",
                 "display_name":"Anthropic",
                 "dialect":"anthropic_messages",
-                "secret":"must-not-be-read" // awaken-allow: secret -- inert denial fixture
+                "secret":"must-not-be-read" // awaken-allow(secret): -- inert denial fixture
             }),
         ),
         (
@@ -373,7 +373,7 @@ async fn hosted_supply_rejects_every_model_authoring_entry_before_side_effects()
                 "workspace_id":"workspace-a",
                 "kind":"vault",
                 "provider_id":"anthropic",
-                "secret":"must-not-be-stored" // awaken-allow: secret -- inert denial fixture
+                "secret":"must-not-be-stored" // awaken-allow(secret): -- inert denial fixture
             }),
         ),
         (
@@ -463,7 +463,7 @@ async fn author_prerequisites(app: &Router) -> String {
         "/v1/config/credentials",
         json!({
             "workspace_id":"workspace-a", "kind":"vault", "provider_id":"anthropic",
-            "secret":"test-discovery-secret" // awaken-allow: secret -- inert in-memory fixture
+            "secret":"test-discovery-secret" // awaken-allow(secret): -- inert in-memory fixture
         }),
     )
     .await;
@@ -712,7 +712,7 @@ async fn discovery_reconciles_through_the_existing_catalog_truth() {
 #[tokio::test]
 async fn test_and_save_activates_all_facts_only_after_discovery_succeeds() {
     let harness = harness();
-    let secret = "connection-test-secret"; // awaken-allow: secret -- inert fixture
+    let secret = "connection-test-secret"; // awaken-allow(secret): -- inert fixture
     let (status, result) = call(
         &harness.app,
         "POST",
@@ -769,7 +769,7 @@ async fn provider_and_dialect_are_the_only_authored_endpoint_identity() {
                 "provider_id":"openai",
                 "display_name":"OpenAI",
                 "dialect":dialect,
-                "secret":"surface-fixture" // awaken-allow: secret -- inert fixture
+                "secret":"surface-fixture" // awaken-allow(secret): -- inert fixture
             });
             if let Some(endpoint_id) = endpoint_id {
                 request["endpoint_id"] = json!(endpoint_id);
@@ -866,7 +866,7 @@ async fn provider_connection_command_is_idempotent_and_requires_an_explicit_key(
             "provider_id":"anthropic",
             "display_name":"Anthropic",
             "dialect":"anthropic_messages",
-            "secret":"idempotent-fixture" // awaken-allow: secret -- inert fixture
+            "secret":"idempotent-fixture" // awaken-allow(secret): -- inert fixture
         })
     };
 
@@ -967,7 +967,7 @@ async fn existing_credential_connection_reuses_the_source_without_creating_a_dup
             "workspace_id":"workspace-a",
             "kind":"vault",
             "provider_id":"openai",
-            "secret":"test-value" // awaken-allow: secret
+            "secret":"test-value" // awaken-allow(secret):
         }),
     )
     .await;
@@ -1020,7 +1020,7 @@ async fn non_provider_credentials_cannot_drive_connection_or_readiness() {
         json!({
             "workspace_id": "workspace-a",
             "kind": "vault",
-            "secret": "extension-only-secret", // awaken-allow: secret -- inert fixture
+            "secret": "extension-only-secret", // awaken-allow(secret): -- inert fixture
             "descriptor": {
                 "provider": "anthropic",
                 "material": {
@@ -1142,7 +1142,7 @@ async fn endpoint_scoped_connection_credential_can_widen_for_the_same_provider()
             "display_name":"OpenAI",
             "dialect":"open_ai_chat",
             "endpoint_name":"primary",
-            "secret":"endpoint-fixture" // awaken-allow: secret -- inert fixture
+            "secret":"endpoint-fixture" // awaken-allow(secret): -- inert fixture
         }),
     )
     .await;
@@ -1195,7 +1195,7 @@ async fn provider_connection_rejects_a_claude_code_setup_token_before_discovery(
             "kind":"vault",
             "provider_id":"anthropic",
             "env_key":"CLAUDE_CODE_OAUTH_TOKEN",
-            "secret":"test-value" // awaken-allow: secret
+            "secret":"test-value" // awaken-allow(secret):
         }),
     )
     .await;
@@ -1336,7 +1336,7 @@ async fn catalog_rejection_disables_the_already_sealed_credential() {
             "display_name":"Anthropic",
             "dialect":"anthropic_messages",
             "base_url":"https://provider.invalid/v1",
-            "secret":"sealed-before-catalog-rejection" // awaken-allow: secret -- inert fixture
+            "secret":"sealed-before-catalog-rejection" // awaken-allow(secret): -- inert fixture
         }),
     )
     .await;
@@ -1383,7 +1383,7 @@ async fn connection_summaries_cover_not_configured_ready_stale_and_unavailable()
             "idempotency_key":"test-summary-command",
             "workspace_id":"workspace-a", "provider_id":"anthropic",
             "display_name":"Anthropic",
-            "dialect":"anthropic_messages", "secret":"summary-secret" // awaken-allow: secret -- inert fixture
+            "dialect":"anthropic_messages", "secret":"summary-secret" // awaken-allow(secret): -- inert fixture
         }),
     )
     .await;
@@ -1451,7 +1451,7 @@ async fn connection_summaries_separate_connected_from_needs_attention() {
         "/v1/config/credentials",
         json!({
             "workspace_id":"workspace-a", "kind":"vault", "provider_id":"openai",
-            "secret":"credential-only-secret" // awaken-allow: secret -- inert fixture
+            "secret":"credential-only-secret" // awaken-allow(secret): -- inert fixture
         }),
     )
     .await;

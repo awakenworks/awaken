@@ -354,7 +354,7 @@ async function bootstrap(base: string) {
   await expectRawStatus(base, 'GET', '/v1/config/catalog', 200);
   for await (const _model of client.beta.models.list({ betas: BETAS })) break;
 
-  const credentialSecret = 'adr71-must-never-be-returned'; // awaken-allow: secret
+  const credentialSecret = 'adr71-must-never-be-returned'; // awaken-allow(secret):
   const deniedCredential = await expectRawStatus(
     base,
     'POST',
@@ -578,7 +578,7 @@ export function nativeProviderInvocationErrors(value: any, marker: string, compl
 async function observeNativeProvider(base: string, marker: string, completed: boolean) {
   const value = await waitForValue(async () => {
     const response = await fetch(`${base}/__scenario/invocations/${encodeURIComponent(marker)}`, {
-      headers: { 'x-api-key': 'adr71-provider-secret' }, signal: AbortSignal.timeout(5000), // awaken-allow: secret
+      headers: { 'x-api-key': 'adr71-provider-secret' }, signal: AbortSignal.timeout(5000), // awaken-allow(secret):
     });
     if (response.status === 404) return null;
     assert.equal(response.status, 200, 'private Provider fixture observation');
@@ -596,7 +596,7 @@ async function releaseNativeProvider(base: string, marker: string) {
   // One idempotent fault command releases already-accepted work. It never
   // issues another inference or imports this mock observation into Runtime.
   const response = await fetch(`${base}/__scenario/invocations/${encodeURIComponent(marker)}/release`, {
-    method: 'POST', headers: { 'x-api-key': 'adr71-provider-secret' }, signal: AbortSignal.timeout(5000), // awaken-allow: secret
+    method: 'POST', headers: { 'x-api-key': 'adr71-provider-secret' }, signal: AbortSignal.timeout(5000), // awaken-allow(secret):
   });
   assert.equal(response.status, 202, 'release accepted Provider work');
   await observeNativeProvider(base, marker, true);

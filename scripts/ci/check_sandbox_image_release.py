@@ -12,6 +12,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+import formal_sources
+
+# Writer inventory reads every tracked path, including extensionless shebang
+# sources. Its existing corpus therefore has no narrower per-file input set.
+INPUT_GLOBS: tuple[str, ...] = ("**/*",)
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 WORKFLOW = REPO_ROOT / ".github/workflows/release.yml"
@@ -503,12 +509,6 @@ def _has_oci_distribution_http_write(source: str) -> bool:
 def _repository_sources() -> dict[str, str]:
     """Read every tracked executable/config source once for writer inventory."""
     sources: dict[str, str] = {}
-    tracked = subprocess.run(
-        ["git", "ls-files", "-z"],
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-    )
     source_suffixes = {
         ".bash",
         ".cjs",
@@ -527,7 +527,7 @@ def _repository_sources() -> dict[str, str]:
         ".yml",
     }
     source_names = {"Dockerfile", "Justfile", "Makefile"}
-    for raw_path in tracked.stdout.decode("utf-8").split("\0"):
+    for raw_path in formal_sources.tracked_files(REPO_ROOT):
         if not raw_path or raw_path == "scripts/ci/check_sandbox_image_release.py":
             continue
         path = REPO_ROOT / raw_path

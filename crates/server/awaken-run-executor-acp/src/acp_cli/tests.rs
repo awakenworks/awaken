@@ -528,7 +528,7 @@ fn claude_setup_token_uses_only_its_allowlisted_process_environment() {
 fn every_cli_egresses_through_the_gateway_with_a_lease_never_a_raw_key() {
     // D-R2 for the whole catalog: no matter which CLI runs in the sandbox, a
     // cloud-managed launch carries only a lease requirement, never a raw provider key.
-    let raw = "sk-RAW-PROVIDER-SECRET"; // awaken-allow: secret
+    let raw = "sk-RAW-PROVIDER-SECRET"; // awaken-allow(secret):
     for cli in known_acp_clis() {
         if !cli.managed_credential_delivery.allows_process_secret() {
             assert!(
@@ -673,7 +673,7 @@ fn session_persistence_is_declared_per_cli_with_the_right_keying() {
 fn cloud_managed_gateway_puts_a_lease_requirement_not_a_raw_key_in_the_plan() {
     // D-R2: an ACP CLI in the untrusted sandbox must egress through the gateway
     // with a brokered lease token, never a raw provider key.
-    let raw_provider_key = "sk-REAL-PROVIDER-SECRET"; // awaken-allow: secret
+    let raw_provider_key = "sk-REAL-PROVIDER-SECRET"; // awaken-allow(secret):
     let model = ResolvedModel::cloud_managed_gateway(
         "https://gateway.awaken.internal",
         "claude-opus-4-8",

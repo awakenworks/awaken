@@ -1,5 +1,5 @@
 // @formal evidence session_resources.repository_rotation_requires_original_live_generation
-// awaken-file-limit-ceiling: 7620 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 7620 (legacy oversized test file: split, never grow)
 //! Post-creation session-resource CRUD (`/v1/sessions/{id}/resources`) mirrors the
 //! Managed Agents contract, while whole-manifest replacement is explicitly owned
 //! by `/v1/awaken/sessions/{id}/resources`: only `file` attaches to a live Session;
@@ -1491,7 +1491,7 @@ async fn budgeted_session_backends_follow_the_exact_publication_decision_table()
                 json!([{
                     "type": "github_repository",
                     "url": "https://github.com/acme/private.git",
-                    "authorization_token": "must-not-be-written" // awaken-allow: secret
+                    "authorization_token": "must-not-be-written" // awaken-allow(secret):
                 }]),
             );
         }
@@ -4159,7 +4159,7 @@ async fn terminal_repository_reclaims_only_its_exact_inline_credential() {
             "resources": [{
                 "type": "github_repository",
                 "url": "https://github.com/awaken/private.git",
-                "authorization_token": "terminal-secret" // awaken-allow: secret
+                "authorization_token": "terminal-secret" // awaken-allow(secret):
             }]
         })),
     )
@@ -4358,7 +4358,7 @@ async fn invalid_repository_path_preflights_the_whole_create_before_resource_eff
                     "type": "github_repository",
                     "url": "https://github.com/awaken/invalid-path.git",
                     "mount_path": "/repo",
-                    "authorization_token": "must-never-enter-vault" // awaken-allow: secret
+                    "authorization_token": "must-never-enter-vault" // awaken-allow(secret):
                 }
             ]
         })),
@@ -5415,7 +5415,7 @@ async fn retained_repository_manifest_inherits_binding_without_resubmitting_secr
             "resources": [{
                 "type": "github_repository",
                 "url": "https://github.com/acme/private.git",
-                "authorization_token": "top-secret", // awaken-allow: secret
+                "authorization_token": "top-secret", // awaken-allow(secret):
                 "mount_path": "/workspace/private",
                 "checkout": { "type": "branch", "name": "main" }
             }]
@@ -5505,7 +5505,7 @@ async fn repository_authorization_fails_closed_without_vault_or_existing_binding
             "resources": [{
                 "type": "github_repository",
                 "url": "https://github.com/awaken/example.git",
-                "authorization_token": "must-not-enter" // awaken-allow: secret
+                "authorization_token": "must-not-enter" // awaken-allow(secret):
             }]
         })),
     )
@@ -5534,7 +5534,7 @@ async fn repository_authorization_fails_closed_without_vault_or_existing_binding
         &app,
         "POST",
         &format!("/v1/sessions/{session_id}/resources/{resource_id}"),
-        Some(json!({"authorization_token": "must-not-enter"})), // awaken-allow: secret
+        Some(json!({"authorization_token": "must-not-enter"})), // awaken-allow(secret):
     )
     .await
     .expect(StatusCode::BAD_REQUEST);
@@ -5630,7 +5630,7 @@ async fn repository_rotation_slot_case(slot: &str) {
             "resources": [{
                 "type": "github_repository",
                 "url": "https://github.com/awaken/private.git",
-                "authorization_token": "never-project-this-secret" // awaken-allow: secret
+                "authorization_token": "never-project-this-secret" // awaken-allow(secret):
             }]
         })),
     )
@@ -5710,7 +5710,7 @@ async fn repository_rotation_slot_case(slot: &str) {
             &app,
             "POST",
             &format!("/v1/sessions/{session_id}/resources/{resource_id}"),
-            Some(json!({"authorization_token": "must-not-rotate"})), // awaken-allow: secret
+            Some(json!({"authorization_token": "must-not-rotate"})), // awaken-allow(secret):
         )
         .await;
         response.expect_for(
@@ -5811,7 +5811,7 @@ async fn repository_rotation_slot_case(slot: &str) {
             &app,
             "POST",
             &format!("/v1/sessions/{session_id}/resources/{resource_id}"),
-            Some(json!({"authorization_token": "rotated-secret"})), // awaken-allow: secret
+            Some(json!({"authorization_token": "rotated-secret"})), // awaken-allow(secret):
         )
         .await
         .expect_for(StatusCode::CONFLICT, "B9 competing Resource winner");
@@ -5863,7 +5863,7 @@ async fn repository_rotation_slot_case(slot: &str) {
         &app,
         "POST",
         &format!("/v1/sessions/{session_id}/resources/{resource_id}"),
-        Some(json!({"authorization_token": "rotated-secret"})), // awaken-allow: secret
+        Some(json!({"authorization_token": "rotated-secret"})), // awaken-allow(secret):
     )
     .await
     .expect_for(StatusCode::INTERNAL_SERVER_ERROR, "B3");
@@ -5910,7 +5910,7 @@ async fn repository_rotation_slot_case(slot: &str) {
         &app,
         "POST",
         &format!("/v1/sessions/{session_id}/resources/{resource_id}"),
-        Some(json!({"authorization_token": "different-secret"})), // awaken-allow: secret
+        Some(json!({"authorization_token": "different-secret"})), // awaken-allow(secret):
     )
     .await
     .expect_for(StatusCode::BAD_REQUEST, "B4");
@@ -5940,7 +5940,7 @@ async fn repository_rotation_slot_case(slot: &str) {
         &app,
         "POST",
         &format!("/v1/sessions/{session_id}/resources/{resource_id}"),
-        Some(json!({"authorization_token": "rotated-secret"})), // awaken-allow: secret
+        Some(json!({"authorization_token": "rotated-secret"})), // awaken-allow(secret):
     )
     .await
     .expect_for(StatusCode::OK, "B5");

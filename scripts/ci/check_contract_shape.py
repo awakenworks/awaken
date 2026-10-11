@@ -335,9 +335,9 @@ def contract_depths(crates: dict[str, ContractCrate]) -> dict[str, int]:
 def measure(crates: dict[str, ContractCrate]) -> tuple[list[str], dict[str, Measurement]]:
     cycles = contract_cycles(crates)
     errors = [
-        "contract dependency cycle: " + " -> ".join(cycle + cycle[:1])
-        + ". Contracts are the seams between contexts; move the shared vocabulary into the "
-        "lower crate so the edge points one way"
+        _architecture_ratchet.diagnostic(
+            "depth", " -> ".join(cycle + cycle[:1]), "acyclic contract graph", "cycle",
+            "move the shared vocabulary into the lower crate so the edge points one way")
         for cycle in cycles
     ]
     if cycles:
@@ -363,26 +363,29 @@ def kind_errors(name: str, kinds: frozenset[str] | None, measurement: Measuremen
     """
     if kinds is None:
         return [
-            f"{name}: rule kinds: [package.metadata.awaken] declares no `kinds`. Fix: declare the "
-            f"ADR-0081 interface kinds this crate holds, e.g. kinds = [\"types\", \"spi\"]"
+            _architecture_ratchet.diagnostic(
+                "kinds", name, "declared interface kinds", "missing",
+                'declare the ADR-0081 interface kinds in [package.metadata.awaken], e.g. kinds = ["types", "spi"]')
         ]
     unknown = sorted(kinds - set(INTERFACE_KINDS))
     if unknown:
         return [
-            f"{name}: rule kinds: unknown kind(s) {unknown}. Fix: use only "
-            f"{list(INTERFACE_KINDS)} (ADR-0081 §1)"
+            _architecture_ratchet.diagnostic(
+                "kinds", name, list(INTERFACE_KINDS), unknown,
+                f"use only {list(INTERFACE_KINDS)} in [package.metadata.awaken] kinds (ADR-0081 §1)")
         ]
     holds_ports = measurement.role == "ports"
     if not (kinds & PORT_KINDS) and holds_ports:
         return [
-            f"{name}: rule kinds: declared types-only but holds a trait with methods. Fix: declare "
-            f"the port kind it holds (spi/api/remote/ext) or move the trait to the crate that owns it"
+            _architecture_ratchet.diagnostic(
+                "kinds", name, "types-only", "trait with methods",
+                "declare the port kind it holds (spi/api/remote/ext) or move the trait to the crate that owns it")
         ]
     if (kinds & PORT_KINDS) and not holds_ports:
         return [
-            f"{name}: rule kinds: declares {sorted(kinds & PORT_KINDS)} but holds no trait with "
-            f"methods. Fix: declare kinds = [\"types\"] so the budget and direction rules apply "
-            f"to what is really there"
+            _architecture_ratchet.diagnostic(
+                "kinds", name, sorted(kinds & PORT_KINDS), "no trait with methods",
+                'declare kinds = ["types"] so the budget and direction rules apply to what is really there')
         ]
     return []
 
@@ -407,15 +410,11 @@ def compare(measurements: dict[str, Measurement], baseline: dict) -> list[str]:
     errors: list[str] = []
     for name, current in sorted(measurements.items()):
         entry = recorded.get(name)
-        known = entry is not None
         entry = entry or {}
         # depth
         base_depth = entry.get("depth", max_depth)
         if current.depth > base_depth:
-            errors.append(
-                f"{name}: rule depth: contract depth {current.depth} exceeds baseline {base_depth}. "
-                f"Fix: {HOW_TO_FIX['depth']}"
-            )
+            errors.append(_architecture_ratchet.diagnostic("depth", name, base_depth, current.depth, HOW_TO_FIX["depth"]))
         # size, per module
         recorded_modules = entry.get("module_lines", {})
         for rel, lines in current.over_budget().items():
@@ -423,22 +422,17 @@ def compare(measurements: dict[str, Measurement], baseline: dict) -> list[str]:
             base_lines = recorded_modules.get(rel)
             if base_lines is None or lines > base_lines:
                 limit = budget_of(role) if base_lines is None else base_lines
-                errors.append(
-                    f"{name}: rule module_lines: {rel} has {lines} production lines, above the {role} "
-                    f"module budget {budget_of(role)} and the baseline {limit}. Fix: "
-                    f"{HOW_TO_FIX['module_lines']}; growth that is truly needed is recorded with "
-                    "--write-baseline --reason"
-                )
+                errors.append(_architecture_ratchet.diagnostic(
+                    "module_lines", f"{name}::{rel}", limit, lines,
+                    f"{HOW_TO_FIX['module_lines']}; reviewed growth uses python3 scripts/ci/check_contract_shape.py --write-baseline --reason '<why>'",
+                    details=f"{role} module budget {budget_of(role)}"))
         # counted instances
         for rule in RULES[2:]:
             count = current.count(rule)
             base = entry.get(rule, 0)
             if count > base:
                 instances = "\n    ".join(getattr(current, rule))
-                errors.append(
-                    f"{name}: rule {rule}: {count} instance(s), baseline {base}. Fix: "
-                    f"{HOW_TO_FIX[rule]}.\n    {instances}"
-                )
+                errors.append(_architecture_ratchet.diagnostic(rule, name, base, count, HOW_TO_FIX[rule], details=instances))
     return errors
 
 
@@ -633,10 +627,17 @@ def self_test() -> None:
     assert tightenable(measured, deeper) == ["b.depth: 2 -> 1"], "D2 and reported"
     assert not compare(measured, {"crates": {"a": {"depth": 2}, "b": {"depth": 1}, "c": {"depth": 0}}}), "G2 admits"
 
+    # D6: missing crate or depth field -> original maximum-held depth fallback;
+    # fall/equality stay admitted, growth names the actual fallback transition.
+    fallback = {"crates": {"held": {"depth": 3}, "missing": {}}}
+    for name in ("new", "missing"):
+        assert compare({name: Measurement(depth=3)}, fallback) == [], "D6 depth fallback equal"
+        assert f"depth: {name} 3 -> 4" in compare({name: Measurement(depth=4)}, fallback)[0], "D6 depth fallback growth"
+
     port = "pub trait Port {\n    fn call(&self);\n}\n"
     big = Measurement(depth=0, role="ports", modules={"p.rs": (PORT_LINE_BUDGET + 10, "ports")})
     rejected = compare({"p": big}, {"crates": {}})
-    assert rejected and "p.rs has" in rejected[0] and "split the module" in rejected[0], "L1"
+    assert rejected and "module_lines: p::p.rs 2000 -> 2010" in rejected[0] and "split the module" in rejected[0], "L1"
     recorded = {"crates": {"p": {"depth": 0, "module_lines": {"p.rs": PORT_LINE_BUDGET + 10}}}}
     assert not compare({"p": big}, recorded), "L2"
     shrunk = {"crates": {"p": {"depth": 0, "module_lines": {"p.rs": PORT_LINE_BUDGET + 10 + LINE_SLACK}}}}
@@ -646,6 +647,11 @@ def self_test() -> None:
     assert not compare({"p": small}, under) and tightenable({"p": small}, under), "L3 budget"
     moved = Measurement(depth=0, role="ports", modules={"q.rs": (10, "ports")})
     assert tightenable({"p": moved}, under) == ["p.module_lines[p.rs]: 2005 -> 0"], "L3 gone"
+    # D6: a role change can retire a held ports-sized allowance at equal lines.
+    # Role budget, not numeric decrease or crate total -> original gain token.
+    reclassified = Measurement(modules={"p.rs": (PORT_LINE_BUDGET + 5, "types")})
+    assert compare({"p": reclassified}, under) == [] and tightenable({"p": reclassified}, under) == [
+        "p.module_lines[p.rs]: 2005 -> 2005"], "D6 role budget retains equal-value gain semantics"
     whole = Measurement(depth=0, role="ports", modules={"a.rs": (PORT_LINE_BUDGET, "ports"),
                                                          "b.rs": (TYPES_LINE_BUDGET, "types")})
     assert not compare({"w": whole}, {"crates": {}}), "L6 the crate total is not budgeted"
@@ -660,6 +666,11 @@ def self_test() -> None:
     ports_measured = measure_sources({"x.rs": project(port)})
     types_measured = measure_sources({"x.rs": project("pub struct Value;\n")})
     assert kind_errors("k", None, ports_measured), "K1"
+    # D7 hard metadata mismatch -> explicit state and original metadata fix;
+    # the diagnostic is independent from every baseline/reason mode (SCLI3).
+    missing_kinds = kind_errors("k", None, ports_measured)[0]
+    assert "kinds: k declared interface kinds -> missing" in missing_kinds and "; fix: " in missing_kinds \
+        and "--write-baseline" not in missing_kinds, "D7 metadata is its own authority"
     assert kind_errors("k", frozenset({"types", "backend"}), types_measured), "K2"
     assert kind_errors("k", frozenset({"types"}), ports_measured), "K3"
     assert kind_errors("k", frozenset({"types", "spi"}), types_measured), "K4"
@@ -719,7 +730,9 @@ def self_test() -> None:
 
     counted = Measurement(depth=0, catch_all_errors=["x", "y"])
     rejected = compare({"k": counted}, {"crates": {"k": {"depth": 0, "catch_all_errors": 1}}})
-    assert rejected and "x" in rejected[0] and "baseline 1" in rejected[0], "R1"
+    assert rejected and "x" in rejected[0] and "catch_all_errors: k 1 -> 2" in rejected[0], "R1"
+    assert all(instance in rejected[0] for instance in counted.catch_all_errors) and "; fix: " in rejected[0], \
+        "D6 every original finding remains with the canonical summary"
     below = {"crates": {"k": {"depth": 0, "catch_all_errors": 3}}}
     assert not compare({"k": counted}, below), "R2 a fall is admitted"
     assert tightenable({"k": counted}, below) == ["k.catch_all_errors: 3 -> 2"], "R2 and reported"
@@ -758,6 +771,8 @@ def _selftest_cli() -> None:
     SCLI5 explicit write with an existing empty crates map is its first record,
     retaining metadata; nonempty growth still requires a reason and neither
     check nor tighten borrows this authorization.
+    D8: the formatter changes only returned rule messages. This table owns
+    unchanged statuses, root/crate bytes, gain staging, report and init rules.
     """
     from types import SimpleNamespace
 

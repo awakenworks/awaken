@@ -17,7 +17,7 @@ use awaken_webhook::{
 use axum::{Router, extract::State, http::HeaderMap, routing::post};
 use tokio::io::AsyncReadExt;
 
-const SECRET: &str = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"; // awaken-allow: secret (test sample key)
+const SECRET: &str = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"; // awaken-allow(secret): (test sample key)
 
 /// A one-subscription in-memory source (the real config-plane source is exercised
 /// in awaken-control and awaken-coordinator e2e; here we isolate the transport).

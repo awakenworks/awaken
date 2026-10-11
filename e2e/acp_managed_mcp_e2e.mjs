@@ -17,7 +17,7 @@ import {
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
-const CALC_TOKEN = 'calc-bearer-token-e2e'; // awaken-allow: secret
+const CALC_TOKEN = 'calc-bearer-token-e2e'; // awaken-allow(secret):
 const PORT = Number(process.env.E2E_PORT ?? 38196);
 
 function agentTexts(events) {

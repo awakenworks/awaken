@@ -115,7 +115,7 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-const CALC_TOKEN: &str = "calc-bearer-token"; // awaken-allow: secret
+const CALC_TOKEN: &str = "calc-bearer-token"; // awaken-allow(secret):
 
 /// Session-local MCP policy for protocol/credential tests.
 ///
@@ -694,7 +694,7 @@ async fn vault_with_refreshable_credential(
             "access_token": access_token,
             "refresh": {
                 "client_id": "cli-1",
-                "refresh_token": "rt-fixed", // awaken-allow: secret
+                "refresh_token": "rt-fixed", // awaken-allow(secret):
                 "token_endpoint": format!("{url}token"),
                 "token_endpoint_auth": token_endpoint_auth,
                 "scope": "tools"
@@ -747,7 +747,7 @@ async fn expired_mcp_oauth_token_is_refreshed_mid_connect_and_resealed() {
     // The initial access token is EXPIRED (the mock accepts nothing until the
     // token endpoint issues `new-token`).
     let mock = Arc::new(Mutex::new(OauthMock {
-        token_response: Some(json!({ "access_token": "new-token", "token_type": "Bearer" })), // awaken-allow: secret
+        token_response: Some(json!({ "access_token": "new-token", "token_type": "Bearer" })), // awaken-allow(secret):
         ..OauthMock::default()
     }));
     let url = mock_oauth_calc_mcp(mock.clone()).await;
@@ -862,7 +862,7 @@ async fn refused_refresh_exchange_fails_initial_realization_with_the_challenge()
 // The confidential-client secret used across the basic-auth scenarios. It
 // form-urlencodes to `s3cret+with+spaces%26`, so the tests pin that the pair is
 // urlencoded BEFORE the base64 (RFC 6749 §2.3.1).
-const BASIC_CLIENT_SECRET: &str = "s3cret with spaces&"; // awaken-allow: secret
+const BASIC_CLIENT_SECRET: &str = "s3cret with spaces&"; // awaken-allow(secret):
 
 /// The exact `Authorization` value the refresher must send for `cli-1` +
 /// [`BASIC_CLIENT_SECRET`]: the encoded pair is hardcoded, so this pins the
@@ -889,7 +889,7 @@ async fn expired_token_run_succeeds_with_client_secret_basic_refresh() {
     // The mock requires the exact §2.3.1 Basic header and REJECTS any
     // client_id in the form body.
     let mock = Arc::new(Mutex::new(OauthMock {
-        token_response: Some(json!({ "access_token": "new-token", "token_type": "Bearer" })), // awaken-allow: secret
+        token_response: Some(json!({ "access_token": "new-token", "token_type": "Bearer" })), // awaken-allow(secret):
         client_auth: Some(MockClientAuth::Basic {
             header: expected_basic_header(),
         }),
@@ -951,9 +951,9 @@ async fn expired_token_run_succeeds_with_client_secret_basic_refresh() {
 #[tokio::test(flavor = "multi_thread")]
 async fn expired_token_run_succeeds_with_client_secret_post_refresh() {
     let mock = Arc::new(Mutex::new(OauthMock {
-        token_response: Some(json!({ "access_token": "new-token", "token_type": "Bearer" })), // awaken-allow: secret
+        token_response: Some(json!({ "access_token": "new-token", "token_type": "Bearer" })), // awaken-allow(secret):
         client_auth: Some(MockClientAuth::Post {
-            client_secret: "cs-post-secret".to_string(), // awaken-allow: secret
+            client_secret: "cs-post-secret".to_string(), // awaken-allow(secret):
         }),
         ..OauthMock::default()
     }));
@@ -963,7 +963,7 @@ async fn expired_token_run_succeeds_with_client_secret_post_refresh() {
         &app,
         &url,
         "expired-token",
-        json!({ "type": "client_secret_post", "client_secret": "cs-post-secret" }), // awaken-allow: secret
+        json!({ "type": "client_secret_post", "client_secret": "cs-post-secret" }), // awaken-allow(secret):
     )
     .await;
     let id = create_mcp_session(&app, &vault_id, &url).await;
@@ -1006,7 +1006,7 @@ async fn wrong_client_secret_refuses_initial_realization_and_surfaces_the_challe
     // a DIFFERENT secret, so the exchange is refused and the original 401
     // challenge fails the Run loudly.
     let mock = Arc::new(Mutex::new(OauthMock {
-        token_response: Some(json!({ "access_token": "new-token", "token_type": "Bearer" })), // awaken-allow: secret
+        token_response: Some(json!({ "access_token": "new-token", "token_type": "Bearer" })), // awaken-allow(secret):
         client_auth: Some(MockClientAuth::Basic {
             header: expected_basic_header(),
         }),
@@ -1018,7 +1018,7 @@ async fn wrong_client_secret_refuses_initial_realization_and_surfaces_the_challe
         &app,
         &url,
         "expired-token",
-        json!({ "type": "client_secret_basic", "client_secret": "not-the-secret" }), // awaken-allow: secret
+        json!({ "type": "client_secret_basic", "client_secret": "not-the-secret" }), // awaken-allow(secret):
     )
     .await;
     let (s, body) = create_mcp_session_response(&app, &vault_id, &url).await;
@@ -1036,7 +1036,7 @@ async fn vault_refresher_fails_closed_when_the_client_secret_is_missing() {
     // A confidential binding whose sealed client secret is GONE from the store:
     // the exchange is never attempted (fail closed), nothing is resealed.
     let mock = Arc::new(Mutex::new(OauthMock {
-        token_response: Some(json!({ "access_token": "new-token" })), // awaken-allow: secret
+        token_response: Some(json!({ "access_token": "new-token" })), // awaken-allow(secret):
         ..OauthMock::default()
     }));
     let url = mock_oauth_calc_mcp(mock.clone()).await;
@@ -1093,7 +1093,7 @@ async fn vault_refresher_reseals_the_access_token_and_a_rotated_refresh_token() 
     let mock = Arc::new(Mutex::new(OauthMock {
         // The endpoint also ROTATES the refresh token.
         token_response: Some(
-            json!({ "access_token": "new-token", "refresh_token": "rt-rotated" }), // awaken-allow: secret
+            json!({ "access_token": "new-token", "refresh_token": "rt-rotated" }), // awaken-allow(secret):
         ),
         ..OauthMock::default()
     }));
@@ -1382,7 +1382,7 @@ async fn mcp_oauth_validate_attempts_the_refresh_exchange_over_the_management_ro
     // | X3   | yes | -   | no  | invalid | connect_error | initialize+401     |
     let issuing = Arc::new(Mutex::new(OauthMock {
         token_response: Some(
-            json!({ "access_token": "issued-token", "refresh_token": "rt-rotated", "token_type": "Bearer" }), // awaken-allow: secret
+            json!({ "access_token": "issued-token", "refresh_token": "rt-rotated", "token_type": "Bearer" }), // awaken-allow(secret):
         ),
         ..OauthMock::default()
     }));
@@ -1458,10 +1458,10 @@ async fn mcp_oauth_validate_attempts_the_refresh_exchange_over_the_management_ro
             Some(json!({
                 "type": "mcp_oauth",
                 "mcp_server_url": server_url,
-                "access_token": "expired-token", // awaken-allow: secret
+                "access_token": "expired-token", // awaken-allow(secret):
                 "refresh": {
                     "client_id": "cli-validate",
-                    "refresh_token": "rt-validate", // awaken-allow: secret
+                    "refresh_token": "rt-validate", // awaken-allow(secret):
                     "token_endpoint": token_endpoint,
                     "token_endpoint_auth": { "type": "none" }
                 }

@@ -502,7 +502,7 @@ async fn filesystem_ledger_fences_replay_but_never_persists_tool_output() {
         Arc::new(FsOperationLedger::open(directory.path()).expect("open first ledger")),
         awaken_time::system_clock(),
     );
-    let secret = "credential-secret-must-not-reach-disk"; // awaken-allow: secret
+    let secret = "credential-secret-must-not-reach-disk"; // awaken-allow(secret):
     let request = HandRequest::new(1, call("c1", "echo", secret));
     let first_reply = first.handle(request.clone()).await;
     let mut same_process_retry = request.clone();

@@ -21,7 +21,7 @@ services:
       CARGO_BUILD_BUILD_DIR: /workspaces/awaken/target
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       CARGO_BUILD_JOBS: "2"
-      AWAKEN_TEST_DATABASE_URL: postgres://postgres:awaken-test-only@postgres:5432/awaken_test # awaken-allow: secret (disposable fixture)
+      AWAKEN_TEST_DATABASE_URL: postgres://postgres:awaken-test-only@postgres:5432/awaken_test # awaken-allow(secret): (disposable fixture)
       AWAKEN_TEST_REQUIRE_POSTGRES: "1"
     depends_on:
       postgres:
@@ -29,7 +29,7 @@ services:
   postgres:
     image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
     environment:
-      POSTGRES_PASSWORD: awaken-test-only # awaken-allow: secret (disposable fixture)
+      POSTGRES_PASSWORD: awaken-test-only # awaken-allow(secret): (disposable fixture)
       POSTGRES_DB: awaken_test
     healthcheck:
       test: [CMD-SHELL, "pg_isready -U postgres -d awaken_test"]

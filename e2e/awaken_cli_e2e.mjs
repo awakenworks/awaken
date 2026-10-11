@@ -37,7 +37,7 @@ import {
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38411);
 const BETAS = ['managed-agents-2026-04-01'];
-const FAKE_KEY = 'sk-awaken-cli-fake-key'; // awaken-allow: secret
+const FAKE_KEY = 'sk-awaken-cli-fake-key'; // awaken-allow(secret):
 // The composition root receives the platform-owned coordinate explicitly; no test
 // or resource adapter relies on a compiled Workspace id.
 let WORKSPACE;
@@ -527,7 +527,7 @@ async function main() {
     const scoped = (workspace, tail) => `/v1/workspaces/${workspace}/config/${tail}`;
     const forged = await req(base, 'POST', scoped(WS_A, 'credentials'), {
       workspace_id: 'forged-body-owner', kind: 'vault', provider_id: 'anthropic',
-      env_key: null, secret: 'sk-resource-owner-e2e', // awaken-allow: secret
+      env_key: null, secret: 'sk-resource-owner-e2e', // awaken-allow(secret):
     });
     assert.equal(forged.status, 404, `T1 forged body owner is refused: ${JSON.stringify(forged.json)}`);
     assert.equal(forged.json.code, 'not_found', 'T1 refusal hides cross-tenant addressing');
@@ -542,7 +542,7 @@ async function main() {
     const ownedId = ownedCredential.json.id;
     const ownedMcpCredential = await req(base, 'POST', scoped(WS_A, 'credentials'), {
       workspace_id: WS_A, kind: 'vault',
-      env_key: null, secret: 'mcp-resource-owner-e2e', // awaken-allow: secret
+      env_key: null, secret: 'mcp-resource-owner-e2e', // awaken-allow(secret):
     });
     assert.equal(ownedMcpCredential.status, 201, JSON.stringify(ownedMcpCredential.json));
     const ownedMcpId = ownedMcpCredential.json.id;

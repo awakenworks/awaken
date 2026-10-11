@@ -1171,7 +1171,7 @@ impl LlmExecutor for SucceedingLlm {
     ) -> LlmResult<ChatResponse> {
         self.requests.lock().unwrap().push(request);
         if !self.response_delay.is_zero() {
-            // awaken-wait: this successful fixture crosses the historical
+            // awaken-allow(wait): this successful fixture crosses the historical
             // inference deadline while remaining below its Runtime watchdog.
             tokio::time::sleep(self.response_delay).await;
         }
@@ -1923,7 +1923,7 @@ impl LlmExecutor for SlowFailingLlm {
             .lock()
             .unwrap()
             .push(timing.response_deadline().instant());
-        // awaken-wait: the provider's own response time is the cause under test.
+        // awaken-allow(wait): the provider's own response time is the cause under test.
         tokio::time::sleep(self.delay).await;
         Err((self.error)().with_execution_evidence(
             awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated(

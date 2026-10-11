@@ -589,7 +589,7 @@ def exercise_sync(
 
     count = 0
     with anthropic_module.Anthropic(
-        api_key="response-contract-sync",  # awaken-allow: secret
+        api_key="response-contract-sync",  # awaken-allow(secret):
         http_client=transport_module.Client(
             transport=transport_module.MockTransport(respond)
         ),
@@ -651,7 +651,7 @@ async def exercise_async(
 
     count = 0
     async with anthropic_module.AsyncAnthropic(
-        api_key="response-contract-async",  # awaken-allow: secret
+        api_key="response-contract-async",  # awaken-allow(secret):
         http_client=transport_module.AsyncClient(
             transport=transport_module.MockTransport(respond)
         ),

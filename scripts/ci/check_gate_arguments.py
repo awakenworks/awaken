@@ -173,12 +173,16 @@ class Probe:
         return {flag for flag in found if flag != PROBE_FLAG} - {"--help"}
 
 
-def is_entry_point(path: Path) -> bool:
-    if path.name.startswith("."):
+def _entry_point_filename(path: Path) -> bool:
+    """The original filename exclusions, before any source acquisition."""
+    return (not path.name.startswith(".") and not SOURCED_LIBRARY.search("/" + path.name)
+            and path.suffix in (".py", ".sh"))
+
+
+def is_entry_point(path: Path, text: str) -> bool:
+    """Classify the caller's selected text without reading a second source."""
+    if not _entry_point_filename(path):
         return False
-    if SOURCED_LIBRARY.search("/" + path.name):
-        return False
-    text = path.read_text(encoding="utf-8", errors="ignore")
     if path.suffix == ".py":
         return '__main__' in text
     if path.suffix == ".sh":
@@ -195,9 +199,9 @@ def corpus(root: Path) -> list[str]:
         if not base.is_dir():
             continue
         for path in sorted(base.iterdir()):
-            if not path.is_file() or path.suffix not in (".py", ".sh"):
+            if not path.is_file() or not _entry_point_filename(path):
                 continue
-            if not is_entry_point(path):
+            if not is_entry_point(path, path.read_text(encoding="utf-8", errors="ignore")):
                 continue
             relative = path.relative_to(root).as_posix()
             if relative in ENTRY_POINT_EXEMPTIONS or relative in found:
@@ -485,6 +489,66 @@ def self_test() -> None:
     import tempfile  # noqa: PLC0415 - only the self-test writes fixtures
 
     native_shell_self_test()
+
+    # C16 cause/effect: caller-selected text and original filename exclusions
+    # determine entry membership. Python main substring / shell shebang admit;
+    # helpers, hidden/sourced names and other suffixes refuse. The predicate is
+    # pure: even a selected path whose reader raises must not perform IO. The
+    # caller still owns the original ignore-UTF8 acquisition in corpus().
+    from unittest.mock import patch
+
+    with patch.object(Path, "open", side_effect=AssertionError("predicate must not read")):
+        for name, text, expected in (
+            ("check_one.py", 'if __name__ == "__main__": pass', True),
+            ("check_one.py", '# __main__ is still the original substring predicate', True),
+            ("check_one.py", "pass", False),
+            ("one.sh", "#!/usr/bin/env bash\n", True),
+            ("one.sh", "echo no shebang", False),
+            (".hidden.py", "__main__", False),
+            ("_sourced.py", "__main__", False),
+            ("helper.txt", "__main__", False),
+        ):
+            assert is_entry_point(Path(name), text) is expected, "C16 original pure entry predicate"
+
+    # C17 graph: eligible filename -> one ignore-decoded source read -> original
+    # body predicate -> membership. An excluded filename stops before reading,
+    # even if its reader would fail; evaluating read_text before is_entry_point
+    # reversed that precondition and made hidden/sourced files fail discovery.
+    #
+    # | Row | filename             | body                   | effect |
+    # | C17a| hidden/sourced py/sh  | reader refuses         | zero reads, excluded |
+    # | C17b| ordinary py/sh        | main substring/shebang | one read, included |
+    # | C17c| ordinary py/sh        | neither                | one read, excluded |
+    # | C17d| another suffix        | reader refuses         | zero reads, excluded |
+    # Constraint: corpus(), not a stub predicate, must enforce the pre-read
+    # qualification; the same owner predicate also serves is_entry_point().
+    from collections import Counter
+
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        directory = root / "scripts/ci"
+        directory.mkdir(parents=True)
+        excluded = {".hidden.py", ".hidden.sh", "_sourced.py", "_sourced.sh", "other.txt"}
+        for name in excluded:
+            (directory / name).write_text("__main__", encoding="utf-8")
+        for name, source in (("plain.py", "__main__"), ("plain.sh", "#!/bin/sh\n"),
+                             ("helper.py", "pass"), ("no_header.sh", "echo no shebang")):
+            (directory / name).write_text(source, encoding="utf-8")
+        reads = Counter()
+        original_open = Path.open
+
+        def opened(path, *args, **kwargs):
+            if path.parent == directory:
+                reads[path.name] += 1
+                if path.name in excluded:
+                    raise AssertionError("excluded filename must not be read")
+            return original_open(path, *args, **kwargs)
+
+        with patch.object(Path, "open", opened):
+            found = corpus(root)
+        assert found == ["scripts/ci/plain.py", "scripts/ci/plain.sh"], "C17 original membership"
+        assert reads == {"plain.py": 1, "plain.sh": 1, "helper.py": 1, "no_header.sh": 1}, \
+            "C17 real corpus reads ordinary files once and excluded files never"
 
     strict = (
         "#!/usr/bin/env bash\n"

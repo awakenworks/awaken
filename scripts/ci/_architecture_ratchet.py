@@ -79,20 +79,57 @@ def line_of(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
 
 
-def compare(rules: tuple[Rule, ...], counts: Counts, places: Places, baseline: dict, baseline_name: str) -> list[str]:
+def diagnostic(rule: str, key: str, before: object, after: object, fix: str, *, details: str = "") -> str:
+    """Present an already-decided failure; this function makes no rule decision."""
+    return (f"{rule}: {key} {before} -> {after}" + (f" ({details})" if details else "")
+            + f"; fix: {fix}")
+
+
+def compare(rules: tuple[Rule, ...], counts: Counts, places: Places, baseline: dict, baseline_name: str,
+            *, lower_advice: str | None = None, full_details: bool = False) -> list[str]:
     errors: list[str] = []
     for rule in rules:
         now, held = counts.get(rule.name, {}), baseline.get(rule.name, {})
         for key in sorted(set(now) | set(held)):
             current, was = now.get(key, 0), held.get(key, 0)
             if current > was:
-                where = ", ".join(places.get(rule.name, {}).get(key, [])[:5])
-                errors.append(f"{rule.name}: {key} is at {current}, baseline {was}" + (f" ({where})" if where else "")
-                              + f"; {rule.advice}")
+                details = places.get(rule.name, {}).get(key, [])
+                if full_details:
+                    errors.extend(details)
+                where = ", ".join(details[:5]) if not full_details else ""
+                errors.append(diagnostic(rule.name, key, was, current, rule.advice, details=where))
             elif current <= was - max(rule.slack, 1):
-                errors.append(f"{rule.name}: {key} is at {current}, below the baseline {was}; lower {baseline_name} "
-                              "in this commit with --write-baseline")
+                advice = lower_advice or f"lower {baseline_name} in this commit with its owning guard's --tighten"
+                errors.append(diagnostic(rule.name, key, was, current, advice))
     return errors
+
+
+def compare_registered(
+    found: list[tuple[str, str]],
+    exemptions: dict[str, str],
+    baseline: int,
+    registry: str,
+    *,
+    rule: Rule,
+    baseline_name: str,
+) -> list[str]:
+    """Adapt existing registered findings to the one count comparison.
+
+    A stale decision is a hard error, separate from the measured live debt.
+    Callers keep their scanner, exact exemption keys, inline budget and advice;
+    this adapter neither writes a record nor authorizes another exemption.
+    """
+    seen = {key for key, _ in found}
+    live = sorted(message for key, message in found if key not in exemptions)
+    hard = [diagnostic(rule.name, key, "registered", "missing", f"remove its stale decision from {registry}",
+                       details=f"{registry} names {key}, which no longer holds")
+            for key in sorted(exemptions) if key not in seen]
+    return hard + compare(
+        (rule,), {rule.name: {"workspace": len(live)}}, {rule.name: {"workspace": live}},
+        {rule.name: {"workspace": baseline}}, baseline_name,
+        lower_advice=f"lower {baseline_name} to {len(live)} in the commit that removed the debt",
+        full_details=True,
+    )
 
 
 def growth(rules: tuple[Rule, ...], counts: Counts, baseline: dict) -> list[str]:
@@ -150,19 +187,30 @@ def baseline_cli(
     report_only: bool = False,
     is_initialization: Callable[[dict], bool] | None = None,
     stage: Callable[[], None] | None = None,
+    hard_rules: Callable[[dict], list[str]] | None = None,
+    decode: Callable[[str], dict] = json.loads,
+    encode: Callable[[dict], str] | None = None,
+    empty_baseline: Callable[[], dict] = dict,
+    allow_missing_check: bool = False,
+    check_message: Callable[[Measured, dict], str] | None = None,
 ) -> int:
     """One CLI and write boundary; each guard retains its measurement and rules.
 
     A tighten candidate must pass the guard's own checker: a clamp or set
     intersection alone can hide growth. Explicit writes may change recorded
     allowances, but their candidate must still pass every hard rule.
+    Baseline-dependent hard admission uses this one original snapshot before
+    any candidate is built; a candidate cannot grandfather its own new debt.
+    Owners may supply a pure record codec and their verified absent-check
+    policy; this remains the only file IO boundary. Tighter ceilings fall,
+    while a coverage floor rises. JSON defaults and reason admission stay here.
     """
     parser = argparse.ArgumentParser(prog=prog, description=description, allow_abbrev=False,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--self-test", action="store_true", help="run the decision table")
     modes.add_argument("--check", action="store_true", help="check without writing (the default)")
-    modes.add_argument("--tighten", action="store_true", help="record decreases only in an existing baseline")
+    modes.add_argument("--tighten", action="store_true", help="record tighter bounds in an existing baseline")
     modes.add_argument("--write-baseline", action="store_true", help="record the current tree (growth needs --reason)")
     parser.add_argument("--reason", help="with --write-baseline: why a recorded allowance may grow")
     if report:
@@ -183,11 +231,14 @@ def baseline_cli(
         self_test()
         return 0
     exists = baseline_path.exists()
-    if not exists and not args.write_baseline and not (report_only and args.report):
+    if (not exists and not args.write_baseline and not (report_only and args.report)
+            and not (allow_missing_check and not args.tighten)):
         print("ERROR: an existing baseline is required; initialize it with --write-baseline", file=sys.stderr)
         return 1
-    previous = json.loads(baseline_path.read_text(encoding="utf-8")) if exists else {}
+    previous = decode(baseline_path.read_text(encoding="utf-8")) if exists else empty_baseline()
     errors, measured = measure()
+    if hard_rules:
+        errors += hard_rules(previous)
     if not errors and report and args.report:
         print(report(measured))
         if report_only:
@@ -215,14 +266,15 @@ def baseline_cli(
         return 1
     if args.tighten or args.write_baseline:
         if document != previous or not exists:
-            baseline_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+            text = encode(document) if encode else json.dumps(document, indent=2) + "\n"
+            baseline_path.write_text(text, encoding="utf-8")
             print(f"wrote {baseline_path.name}")
             if args.tighten and getattr(args, "stage", False):
                 stage()
         else:
             print(f"{baseline_path.name} is already tight")
     else:
-        print(f"OK - {prog} ratchets hold.")
+        print(check_message(measured, previous) if check_message else f"OK - {prog} ratchets hold.")
     return 0
 
 
@@ -235,7 +287,7 @@ def main(
     measure: Callable[[], tuple[Counts, Places]],
     baseline_path: Path,
     self_test: Callable[[], None],
-    hard_rules: Callable[[], list[str]] | None = None,
+    hard_rules: Callable[[dict], list[str]] | None = None,
 ) -> int:
     """Count-shaped guards adapt their existing comparison to the shared CLI."""
     comment = (f"Shrink-only ratchet of scripts/ci/{prog} (ADR-0091). Numbers may only fall; write it with "
@@ -243,7 +295,7 @@ def main(
 
     def measured():
         counts, places = measure()
-        return (hard_rules() if hard_rules else []), (counts, places)
+        return [], (counts, places)
 
     def lower(current, previous):
         counts, _ = current
@@ -255,8 +307,10 @@ def main(
         return render(rules, limited, previous, None, previous.get("$comment", comment))
 
     return baseline_cli(argv, prog=prog, description=description, baseline_path=baseline_path,
-                        self_test=self_test, measure=measured,
-                        check=lambda current, previous: compare(rules, *current, previous, baseline_path.name),
+                        self_test=self_test, measure=measured, hard_rules=hard_rules,
+                        check=lambda current, previous: compare(
+                            rules, *current, previous, baseline_path.name,
+                            lower_advice=f"python3 scripts/ci/{prog} --tighten to lower {baseline_path.name} in this commit"),
                         tighten=lower,
                         write=lambda current, previous, reason: (
                             render(rules, current[0], previous, reason, comment), growth(rules, current[0], previous)))
@@ -326,7 +380,7 @@ def _selftest_cli() -> None:
                 try:
                     status = main(argv, prog="fixture.py", description="fixture", rules=rules,
                                   measure=measure, baseline_path=path, self_test=lambda: None,
-                                  hard_rules=lambda: list(hard))
+                                  hard_rules=lambda _previous: list(hard))
                 except SystemExit as error:
                     status = error.code
             after = path.read_bytes() if path.exists() else None
@@ -364,6 +418,47 @@ def _selftest_cli() -> None:
     assert status == 0 and before == after and not observed, "C9 self-test only"
 
 
+def _selftest_registered() -> None:
+    """A1/A2 registered-count cause/effect graph and decision table.
+
+    Exact key present -> exempt all its occurrences; missing registered key ->
+    hard stale error. Independently, actual live debt < / = / > held -> fall
+    error / accept / growth error through compare(). Hard errors never consume
+    debt budget or cancel a decrease. Registry values are preserved decisions,
+    not a new reason/expiry policy. Effects: errors, complete original finding
+    details, exact-key scope and unchanged input data. No CLI or writer exists.
+    """
+    from unittest.mock import patch
+
+    rule = Rule("fixture", "own the effect or review the exact decision")
+    found = [("A", "a.rs:1: original advice"), ("A", "a.rs:2: original advice"), ("B", "b.rs:3: original advice")]
+    before = list(found)
+    # A1 every count relation uses the canonical compare; A2 valid/stale/other
+    # keys are crossed with that relation, so a stale decision cannot be hidden
+    # at equality or absorbed into an allowance after a real debt disappears.
+    for exemptions in ({}, {"A": "why"}, {"missing": "why"}):
+        held_inputs = dict(exemptions)
+        actual = sum(key not in exemptions for key, _ in found)
+        for held in (actual - 1, actual, actual + 1):
+            if held < 0:
+                continue
+            errors = compare_registered(found, exemptions, held, "REG", rule=rule, baseline_name="fixture.py::HELD")
+            assert bool(errors) == (held != actual or "missing" in exemptions), "A1/A2 separate hard and debt"
+            if "missing" in exemptions:
+                assert any("registered -> missing" in error for error in errors), "A2 stale always hard"
+            assert found == before and exemptions == held_inputs, "A2 decisions/findings never modified"
+            assert not any("--write-baseline" in error for error in errors), "A1 inline owner has no writer"
+            if held < actual:
+                assert all(message in errors for key, message in found if key not in exemptions), "A1 full advice retained"
+            elif held > actual:
+                assert any("fixture.py::HELD" in error for error in errors), "A1 real inline source named"
+    # A1 prove delegation, not a second comparison hidden in the adapter.
+    with patch.dict(compare_registered.__globals__, {"compare": lambda *args, **kwargs: ["canonical compare called"]}):
+        assert compare_registered(found, {}, 3, "REG", rule=rule, baseline_name="fixture.py::HELD") == [
+            "canonical compare called"
+        ], "A1 canonical comparison owns the numeric decision"
+
+
 def selftest() -> None:
     """Decision table.
 
@@ -380,13 +475,13 @@ def selftest() -> None:
     places: Places = {"r": {"b": ["x.rs:3"]}}
     assert compare(rules, {"r": {"a": 2}, "lines": {"c": 100}}, places, held, "b.json") == [], "B3"
     grown = compare(rules, {"r": {"a": 2, "b": 1}, "lines": {"c": 100}}, places, held, "b.json")
-    assert len(grown) == 1 and "b is at 1, baseline 0 (x.rs:3); fix it" in grown[0], f"B1 {grown}"
-    assert "baseline 2; fix it" in compare(rules, {"r": {"a": 3}, "lines": {"c": 100}}, {}, held, "b.json")[0], "B1"
+    assert grown == ["r: b 0 -> 1 (x.rs:3); fix: fix it"], f"B1 {grown}"
+    assert "r: a 2 -> 3; fix: fix it" in compare(rules, {"r": {"a": 3}, "lines": {"c": 100}}, {}, held, "b.json")[0], "B1"
     assert "lower b.json" in compare(rules, {"r": {"a": 1}, "lines": {"c": 100}}, {}, held, "b.json")[0], "B2"
     assert "lower b.json" in compare(rules, {"lines": {"c": 100}}, {}, held, "b.json")[0], "B2 gone"
     assert compare(rules, {"r": {"a": 2}, "lines": {"c": 91}}, {}, held, "b.json") == [], "B4 float"
     assert "lower" in compare(rules, {"r": {"a": 2}, "lines": {"c": 90}}, {}, held, "b.json")[0], "B4 fall"
-    assert "baseline 100" in compare(rules, {"r": {"a": 2}, "lines": {"c": 101}}, {}, held, "b.json")[0], "B4 grow"
+    assert "lines: c 100 -> 101" in compare(rules, {"r": {"a": 2}, "lines": {"c": 101}}, {}, held, "b.json")[0], "B4 grow"
     assert growth(rules, {"r": {"a": 3}}, held) == ["r: a 2 -> 3"], "B5 growth"
     document = render(rules, {"r": {"a": 3}, "lines": {"c": 0}}, held, "split pending", "c")
     assert document == {"$comment": "c", "r": {"a": 3}, "lines": {}, "growth_reasons": {"r": {"a": "split pending"}}}, \
@@ -412,7 +507,66 @@ def selftest() -> None:
     added = rules + (Rule("new", "fix"),)
     first = render(added, {"r": {"a": 2}, "new": {"k": 5}}, held, "unused", "c")
     assert first["new"] == {"k": 5} and "growth_reasons" not in first, f"B6 render {first}"
-    assert "baseline 0" in compare(added, {"r": {"a": 2}, "lines": {"c": 100}, "new": {"k": 5}}, {}, held,
+    assert "new: k 0 -> 5" in compare(added, {"r": {"a": 2}, "lines": {"c": 100}, "new": {"k": 5}}, {}, held,
                                    "b.json")[0], "B6 check before the first write"
     _selftest_cli()
+    _selftest_registered()
+    _selftest_diagnostics()
     print("_architecture_ratchet selftest: the decision table holds")
+
+
+def _selftest_diagnostics() -> None:
+    """D1/D2: original decision -> formatter, with no edge back to the rule.
+
+    Rule | causes                                      | effects
+    D1   | held/current -1/= /+1, key absence, slack    | same failure count, explicit held -> current + fix
+    D2   | >5 places / full details / inline owner     | first five / all raw findings; truthful fix, no writer
+    Existing B1-B6 and A1/A2 cases own the comparison and hard-stale policy.
+    These cases check its output boundary, not a second comparison algorithm.
+    """
+    rule = Rule("fixture", "remove the offending operation", slack=2)
+    held = {"fixture": {"key": 5}}
+    locations = [f"src.rs:{line}" for line in range(1, 8)]
+    places = {"fixture": {"key": locations}}
+    for current, failed in ((6, True), (5, False), (4, False), (3, True), (0, True)):
+        errors = compare((rule,), {"fixture": {"key": current}}, places, held, "fixture.json")
+        assert bool(errors) == failed, "D1 original slack boundary"
+        if errors:
+            assert f"fixture: key 5 -> {current}" in errors[0] and "; fix: " in errors[0], "D1 explicit transition"
+    errors = compare((rule,), {"fixture": {"key": 6}}, places, held, "fixture.json")
+    assert all(where in errors[0] for where in locations[:5]) and all(where not in errors[0] for where in locations[5:]), \
+        "D2 first-five locator limit remains"
+    errors = compare((rule,), {"fixture": {"key": 6}}, places, held, "fixture.py::HELD",
+                     full_details=True, lower_advice="lower fixture.py::HELD")
+    assert errors[:-1] == locations and errors[-1] == "fixture: key 5 -> 6; fix: remove the offending operation", \
+        "D2 full raw details and summary stay separate"
+    errors = compare((rule,), {}, {}, held, "fixture.py::HELD", lower_advice="lower fixture.py::HELD")
+    assert errors == ["fixture: key 5 -> 0; fix: lower fixture.py::HELD"], "D2 real inline lower owner"
+    assert not any("--write-baseline" in error or "--tighten" in error for error in errors), "D2 NoCLI has no writer"
+
+    # D9 real check_all consumers -> their own lower command. A baseline
+    # filename is input data, never a registry from which to guess an owner.
+    # These bounded fixtures exercise the actual callbacks used by the
+    # boundary gate; the original owners' selftests retain their hard rules.
+    import tempfile
+    from unittest.mock import patch
+    import _naming_fitness
+    import _single_owner_fitness
+    import _contract_map_fitness
+
+    with tempfile.TemporaryDirectory() as temporary:
+        for owner in (_naming_fitness, _single_owner_fitness, _contract_map_fitness):
+            rule = owner.RULES[0]
+            path = Path(temporary) / "arbitrary-baseline-name.json"
+            path.write_text(json.dumps({rule.name: {"key": 2}}))
+            current = ({rule.name: {"key": 1}}, {})
+            if owner is _contract_map_fitness:
+                contracts = set(owner.TARGET_MAP) | {name for _, pending in owner.TARGET_MAP.values() for name in pending}
+                callback, result = "_workspace", (*current, contracts)
+            else:
+                callback, result = "_measure_workspace", current
+            with patch.object(owner, callback, lambda _crates: result):
+                errors = owner.check_all(Path(temporary), path)
+            assert len(errors) == 1 and f"python3 scripts/ci/{Path(owner.__file__).name} --tighten" in errors[0], \
+                "D9 actual caller supplies its truthful command"
+            assert "arbitrary-baseline-name.json" in errors[0], "D9 baseline location remains explicit"

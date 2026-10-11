@@ -8,7 +8,7 @@
 // @formal evidence credential.material_is_always_published_or_intent_tracked
 // @formal evidence credential.rotation_revision_cas
 // @formal evidence credential.vault_workspace_authority_admission_is_exact_and_non_widening
-// awaken-file-limit-ceiling: 3326 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 3326 (legacy oversized test file: split, never grow)
 //! Conformance suite for [`CredentialRepo`]: the same behavioral assertions run
 //! against the in-memory repo and (feature `sqlite`) the sqlite repo, so both
 //! backends keep identical semantics — workspace-scoped lists, upsert puts, and
@@ -321,7 +321,7 @@ async fn mutation_wal_publish_and_completion_are_idempotent(repo: &dyn Credentia
         "R0 forged epoch"
     );
     let mut forged_owner = intent.clone();
-    forged_owner.material_fence.writer_token = Some("forged-owner".into()); // awaken-allow: secret -- writer identity, not material
+    forged_owner.material_fence.writer_token = Some("forged-owner".into()); // awaken-allow(secret): -- writer identity, not material
     assert!(
         matches!(
             repo.begin_mutation(forged_owner, 1_000).await,
@@ -1538,7 +1538,7 @@ async fn managed_material_mutation_begin_and_phases_conform(
         "M1 forged epoch"
     );
     let mut forged_owner = owner.clone();
-    forged_owner.material_fence.writer_token = Some("forged-owner".into()); // awaken-allow: secret -- writer identity, not material
+    forged_owner.material_fence.writer_token = Some("forged-owner".into()); // awaken-allow(secret): -- writer identity, not material
     assert!(
         matches!(
             repo.begin_managed_mutation(forged_owner, 1_000).await,

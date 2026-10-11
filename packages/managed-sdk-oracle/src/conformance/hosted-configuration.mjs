@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 
 const AWAKEN_ENVIRONMENT = Object.freeze({
   baseURL: 'AWAKEN_MANAGED_BASE_URL',
-  apiKey: 'AWAKEN_MANAGED_API_KEY', // awaken-allow: secret
-  tunnelAccessToken: 'AWAKEN_MANAGED_TUNNEL_ACCESS_TOKEN', // awaken-allow: secret
+  apiKey: 'AWAKEN_MANAGED_API_KEY', // awaken-allow(secret):
+  tunnelAccessToken: 'AWAKEN_MANAGED_TUNNEL_ACCESS_TOKEN', // awaken-allow(secret):
   agent: 'AWAKEN_MANAGED_AGENT_ID',
   environmentId: 'AWAKEN_MANAGED_ENVIRONMENT_ID',
   workspaceId: 'AWAKEN_MANAGED_WORKSPACE_ID',
@@ -13,8 +13,8 @@ const AWAKEN_ENVIRONMENT = Object.freeze({
 
 const REFERENCE_ENVIRONMENT = Object.freeze({
   baseURL: 'ANTHROPIC_MANAGED_REFERENCE_BASE_URL',
-  apiKey: 'ANTHROPIC_MANAGED_REFERENCE_API_KEY', // awaken-allow: secret
-  tunnelAccessToken: 'ANTHROPIC_MANAGED_REFERENCE_TUNNEL_ACCESS_TOKEN', // awaken-allow: secret
+  apiKey: 'ANTHROPIC_MANAGED_REFERENCE_API_KEY', // awaken-allow(secret):
+  tunnelAccessToken: 'ANTHROPIC_MANAGED_REFERENCE_TUNNEL_ACCESS_TOKEN', // awaken-allow(secret):
   agent: 'ANTHROPIC_MANAGED_REFERENCE_AGENT_ID',
   environmentId: 'ANTHROPIC_MANAGED_REFERENCE_ENVIRONMENT_ID',
   workspaceId: 'ANTHROPIC_MANAGED_REFERENCE_WORKSPACE_ID',

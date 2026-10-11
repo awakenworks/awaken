@@ -11,7 +11,7 @@ import { Chat } from '@ai-sdk/react';
 import { fakeAnthropicServerEnv, withServer, pass } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
-const FAKE_KEY = 'sk-fake-aisdk-key'; // awaken-allow: secret
+const FAKE_KEY = 'sk-fake-aisdk-key'; // awaken-allow(secret):
 
 function newChat(base, thread) {
   return new Chat({

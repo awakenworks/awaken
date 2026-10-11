@@ -61,7 +61,7 @@ export function startCalcFixture(token, options = {}) {
   const {
     expiredInitial = false,
     refreshToken = null,
-    issueToken = 'new-token', // awaken-allow: secret
+    issueToken = 'new-token', // awaken-allow(secret):
     rotateRefreshTo = null,
     clientAuth = null,
     opaqueResult = null,

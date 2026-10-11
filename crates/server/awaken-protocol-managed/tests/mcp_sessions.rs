@@ -1,4 +1,4 @@
-// awaken-file-limit-ceiling: 3955 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 3955 (legacy oversized test file: split, never grow)
 //! Session-create MCP binding (ADR-0043 Phase 3): a session's `mcp_servers` are
 //! bound to vault credentials by the canonical normalized-URL rule. Preparing,
 //! frozen generation-1 state and realization claims are durable before Runtime
@@ -1432,7 +1432,7 @@ async fn vault_with_mcp_oauth(h: &Harness) -> (String, String) {
         Some(json!({
             "type": "mcp_oauth",
             "mcp_server_url": MCP_URL,
-            "access_token": "at-secret-token" // awaken-allow: secret
+            "access_token": "at-secret-token" // awaken-allow(secret):
         })),
     )
     .await
@@ -1604,7 +1604,7 @@ async fn session_binding_supports_static_bearer_and_normalized_mcp_urls() {
         &vault_id,
         "static_bearer",
         "HTTPS://MCP.EXAMPLE.COM:443/sse/",
-        "static-secret", // awaken-allow: secret
+        "static-secret", // awaken-allow(secret):
     )
     .await;
 
@@ -1659,7 +1659,7 @@ async fn session_binding_honors_vault_order_and_leaves_a_miss_unauthenticated() 
             &vault_id,
             "mcp_oauth",
             MCP_URL,
-            name, // awaken-allow: secret
+            name, // awaken-allow(secret):
         )
         .await;
         sources.push(
@@ -1763,10 +1763,10 @@ async fn create_carries_the_refresh_binding_of_a_refreshable_credential() {
         Some(json!({
             "type": "mcp_oauth",
             "mcp_server_url": MCP_URL,
-            "access_token": "at-secret-token", // awaken-allow: secret
+            "access_token": "at-secret-token", // awaken-allow(secret):
             "refresh": {
                 "client_id": "cli_pub",
-                "refresh_token": "rt-secret-token", // awaken-allow: secret
+                "refresh_token": "rt-secret-token", // awaken-allow(secret):
                 "token_endpoint": "https://auth.example.com/token",
                 "token_endpoint_auth": { "type": "none" },
                 "scope": "mcp:read"

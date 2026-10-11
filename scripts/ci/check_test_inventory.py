@@ -17,8 +17,15 @@ crate, splitting a file, or changing how the test constructs its host keeps it
 matched. Renaming or deleting a test is recorded in `test_inventory_ledger.json`
 with the new name or the reason, in the same commit.
 
-New tests need no bookkeeping. `--write` refreshes the inventory (recording new
-tests) and refuses to drop a name the ledger does not account for.
+New tests need no bookkeeping. Default/`--check` reads without writing; an
+absent inventory keeps the original empty floor. `--tighten` adds or raises
+minimum occurrences while retaining every held requirement. Explicit
+`--write-baseline` records the current multiset only after the original ledger
+check. Neither mode nor `--reason` can account for a missing test instead of
+the ledger. The TXT format and the ledger's name-based decisions stay intact.
+
+* `test-occurrence`: every held occurrence remains or its ledger accounts for it.
+* `test-ledger`: every removal reason or rename target has a nonempty value.
 
 A test is a function under `#[test]`, `#[tokio::test]` (any arguments),
 `#[rstest]`, `#[test_case(..)]`, `#[sqlx::test]` or `#[test_log::test]`, or a
@@ -29,7 +36,6 @@ written, so a generated family stays one stable entry.
 
 from __future__ import annotations
 
-import argparse
 import json
 import re
 import sys
@@ -38,14 +44,18 @@ from collections import Counter
 from pathlib import Path
 
 import _crate_boundary_workspace
+import _architecture_ratchet
 
 ROOT = Path(__file__).resolve().parents[2]
 INVENTORY = ROOT / "scripts/ci/test_inventory.txt"
 LEDGER = ROOT / "scripts/ci/test_inventory_ledger.json"
 
-# The scan reads every Rust file under crates/ and the two records.
+# Structural reachability reads Cargo targets and the module helper; the
+# existing local helpers and the canonical CLI/test boundary are inputs too.
 INPUT_GLOBS: tuple[str, ...] = (
     "crates/**/*.rs",
+    "crates/**/Cargo.toml",
+    "scripts/ci/*.py",
     "scripts/ci/test_inventory.txt",
     "scripts/ci/test_inventory_ledger.json",
 )
@@ -94,10 +104,9 @@ def current_inventory(root: Path = ROOT) -> Counter[str]:
     return counts
 
 
-def read_inventory(path: Path = INVENTORY) -> Counter[str]:
-    if not path.exists():
-        return Counter()
-    return Counter(line for line in path.read_text(encoding="utf-8").splitlines() if line)
+def parse_inventory(text: str) -> Counter[str]:
+    """The original TXT decoder, with physical IO owned by baseline_cli."""
+    return Counter(line for line in text.splitlines() if line)
 
 
 def read_ledger(path: Path = LEDGER) -> dict[str, dict[str, str]]:
@@ -122,14 +131,16 @@ def missing(
         if renamed is not None and current.get(renamed, 0) > 0:
             continue
         lost = count - have
-        errors.append(
-            f"test {name!r}: {lost} recorded occurrence(s) no longer exist; move the test "
-            f"rather than deleting it, or record the rename/removal in {LEDGER.name}"
-        )
+        errors.append(_architecture_ratchet.diagnostic(
+            "test-occurrence", repr(name), count, have,
+            f"move the test rather than deleting it, or record its rename/removal in {LEDGER.name}",
+            details=f"{lost} recorded occurrence(s) no longer exist"))
     for kind in ("renamed", "removed"):
         for name, value in sorted(ledger[kind].items()):
             if not str(value).strip():
-                errors.append(f"{LEDGER.name}: {kind} entry {name!r} needs a value")
+                errors.append(_architecture_ratchet.diagnostic(
+                    "test-ledger", f"{kind}[{name!r}]", "nonempty value", "missing",
+                    f"restore the owning value in {LEDGER.name}; a CLI reason cannot replace it"))
     return errors
 
 
@@ -183,6 +194,10 @@ def selftest() -> None:
     assert not missing(Counter({"a": 1}), Counter(), {"renamed": {}, "removed": {"a": "covered by b"}}), "T9"
     assert missing(Counter({"a": 2}), Counter({"a": 1}), empty), "T10"
     assert missing(Counter(), Counter(), {"renamed": {}, "removed": {"a": " "}}), "T11"
+    # IC4 the original ledger accounts by old name, never by a one-to-one
+    # occurrence transfer. Multiple names/counts may point to one live target.
+    assert not missing(Counter({"a": 2, "b": 3}), Counter({"new": 1}),
+                       {"renamed": {"a": "new", "b": "new"}, "removed": {}}), "IC4 original many-to-one rename"
     # T12 a test in a file no `mod` reaches does not count; T13 cfg(test)
     # modules and integration-test roots count; T14 a build script's modules
     # do not count (cargo test never runs them).
@@ -203,33 +218,171 @@ def selftest() -> None:
         assert current_inventory(root) == Counter(
             {"moved": 1, "unit_case": 1, "integration_case": 1}
         ), "T12/T13/T14"
+    _selftest_cli_snapshot()
     print("check_test_inventory selftest: the decision table holds")
 
 
+def _selftest_cli_snapshot() -> None:
+    """I1-I6/IC1-IC9 graph: parse -> original floor -> current/ledger -> missing.
+
+    Admission failure -> no candidate/write; admitted snapshots + mode ->
+    read-only / pointwise-max tighter floor / current explicit record. Reason
+    has no edge to ledger permission. A hypothetical later record never owns
+    the result. This is a floor: higher occurrences mean more protection.
+
+    Rule | causes                                     | effects
+    I1   | equal held/current; later read would differ | one read/decode; validated held report
+    I2   | extra current name/occurrence               | check no write; tighten protects; write records
+    I3   | missing held occurrence, no ledger/reason   | all modes refuse; original bytes intact
+    I4   | removed reason / rename target exists      | original name scope, including two old ->one new
+    I5   | absent TXT, check/write/tighten             | empty floor / init / require existing before scan
+    I6   | old/unknown/abbreviated/conflicting argv     | usage before input IO; selftest standalone
+    IC4  | blank ledger value even without loss       | hard refusal, no CLI reason repairs it
+    IC5  | authorized loss plus new names             | tighten retains old floor; write uses current
+    IC8  | original real collector + codec            | one invocation; original T1-T14/byte representation
+    IC9  | decode/collector/ledger/encoder failure     | original bytes intact; existing exception policy
+    """
+    import contextlib
+    import io
+    from unittest.mock import patch
+
+    collector, decoder, ledger_load, checker, encoder = current_inventory, parse_inventory, read_ledger, missing, render
+    original_read = Path.read_text
+
+    def invoke(argv, held="retained\n", source="#[test] fn retained() {}\n", ledger=None, failure=None):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            crate = root / "crates/fixture"
+            (crate / "src").mkdir(parents=True)
+            (crate / "Cargo.toml").write_text('[package]\nname="fixture"\n')
+            (crate / "src/lib.rs").write_text(source)
+            record, decision = root / "inventory.txt", root / "ledger.json"
+            if held is not None:
+                record.write_text(held)
+            decision.write_text(json.dumps(ledger if ledger is not None else {"removed": {}, "renamed": {}}))
+            before = record.read_bytes() if record.exists() else None
+            reads, calls, checks, decision_reads = [], [], [], []
+            def fail(phase):
+                if phase == failure:
+                    raise OSError(f"fixture {phase} failure")
+            def read(path, *args, **kwargs):
+                if path == record:
+                    reads.append(path)
+                    if len(reads) > 1:
+                        return "unvalidated\n" * 100
+                elif path == decision:
+                    decision_reads.append(path)
+                return original_read(path, *args, **kwargs)
+            def current():
+                calls.append("current"); fail("collector")
+                return collector(root)
+            def decode(text):
+                calls.append("recorded"); fail("decode")
+                return decoder(text)
+            def decisions():
+                calls.append("ledger"); fail("ledger")
+                return ledger_load(decision)
+            def checked(previous, current, ledger):
+                checks.append(previous)
+                return checker(previous, current, ledger)
+            def encode(counts):
+                fail("encode")
+                return encoder(counts)
+            output, errors = io.StringIO(), io.StringIO()
+            with patch.dict(main.__globals__, {"INVENTORY": record, "ROOT": root,
+                    "current_inventory": current, "parse_inventory": decode, "read_ledger": decisions,
+                    "missing": checked, "render": encode, "selftest": lambda: calls.append("selftest")}), \
+                    patch.object(Path, "read_text", read), \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                try:
+                    status = main(argv)
+                except SystemExit as error:
+                    status = error.code
+                except OSError:
+                    status = "OSError"
+            after = record.read_bytes() if record.exists() else None
+            assert len(reads) <= 1 and len(decision_reads) <= 1 and len(checks) <= 1, "I1/IC8 one record/ledger/admission"
+            assert calls.count("current") <= 1 and calls.count("recorded") <= 1, "IC8 one real collector/decode"
+            if checks:
+                assert calls == (["recorded"] if held is not None else []) + ["current", "ledger"], "I1 shared IO precedes measurement"
+            return status, before, after, output.getvalue(), calls, errors.getvalue()
+
+    writes = (["--write-baseline"], ["--write-baseline", "--reason", "reviewed"])
+    modes = ([], ["--check"], ["--tighten"], *writes)
+    for argv in modes:
+        status, before, after, output, _, _ = invoke(argv)
+        assert status == 0 and before == after, "I1 equal exact bytes"
+        if argv in ([], ["--check"]):
+            assert "all 1 recorded" in output, "I1 validated held report"
+    added = "#[test] fn retained() {}\n#[test] fn fresh() {}\n"
+    for argv in ([], ["--check"]):
+        status, before, after, output, _, _ = invoke(argv, source=added)
+        assert status == 0 and before == after and "all 1 recorded" in output, "I2 new tests need no write"
+    for argv in (["--tighten"], *writes):
+        status, _, after, _, _, _ = invoke(argv, source=added)
+        assert status == 0 and after == b"fresh\nretained\n", "I2 existing TXT renderer / floor tightening"
+    repeated = "mod a { #[test] fn retained() {} } mod b { #[test] fn retained() {} }"
+    status, _, after, _, _, _ = invoke(["--tighten"], source=repeated)
+    assert status == 0 and after == b"retained\nretained\n", "IC2 higher multiplicity tightens protection"
+    for argv in modes:
+        for held in ("lost\n", "retained\nretained\n"):
+            status, before, after, _, _, errors = invoke(argv, held=held)
+            assert status == 1 and before == after and "test-occurrence:" in errors, "I3 reason cannot authorize a lost occurrence"
+        for ledger in ({"removed": {"lost": "covered by retained"}, "renamed": {}},
+                       {"removed": {}, "renamed": {"lost": "retained"}}):
+            status, before, after, _, _, _ = invoke(argv, held="lost\nlost\n", ledger=ledger)
+            expected = b"retained\n" if argv in writes else b"lost\nlost\nretained\n" if argv == ["--tighten"] else before
+            assert status == 0 and after == expected, "I4/IC5 original two-old/one-new name scope"
+        for ledger in ({"removed": {"other": " "}, "renamed": {}}, {"removed": {}, "renamed": {"other": ""}}):
+            status, before, after, _, _, errors = invoke(argv, ledger=ledger)
+            assert status == 1 and before == after and "test-ledger:" in errors, "IC4 blank always hard"
+        status, before, after, _, _, _ = invoke(argv, held="lost\n", ledger={"removed": {}, "renamed": {"lost": "absent"}})
+        assert status == 1 and before == after, "I4 absent rename target refuses"
+    for argv in ([], ["--check"], *writes):
+        status, before, after, output, _, _ = invoke(argv, held=None)
+        assert status == 0 and before is None and after == (b"retained\n" if argv in writes else None), "I5 original missing floor"
+        if argv not in writes:
+            assert "all 0 recorded" in output, "I5 empty Counter success report"
+    status, before, after, _, calls, _ = invoke(["--tighten"], held=None)
+    assert status == 1 and before is None and after is None and not calls, "IC6 shared tighten needs an existing floor"
+    for argv in (["--write"], ["--unknown"], ["--w"], ["--write-baselin"], ["--self-tes"],
+                 ["--check", "--tighten"], ["--self-test", "--write-baseline"], ["--reason", "why"],
+                 ["--tighten", "--reason", "why"], ["--write-baseline", "--reason", " "]):
+        status, before, after, _, calls, errors = invoke(argv)
+        assert status == 2 and before == after and not calls and "usage:" in errors, "I6 parser before every input / no alias"
+    status, before, after, _, calls, _ = invoke(["--self-test"])
+    assert status == 0 and before == after and calls == ["selftest"], "IC7 standalone selftest"
+    for phase in ("decode", "collector", "ledger", "encode"):
+        status, before, after, _, _, _ = invoke(["--write-baseline"], source=added, failure=phase)
+        assert status == "OSError" and before == after, "IC9 failure before writer leaves exact original bytes"
+    # IC8 decoding keeps the original raw nonempty lines, including whitespace
+    # and $name. A codec port is not permission to reinterpret TXT metadata.
+    assert decoder(" z \n\n#name\n$name\n$name\n") == Counter({" z ": 1, "#name": 1, "$name": 2})
+    assert encoder(Counter({"z": 1, "$name": 2})) == "$name\n$name\nz\n", "IC8 exact sorted multiset encoding"
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__)
-    parser.add_argument("--self-test", action="store_true", help="run the decision table")
-    parser.add_argument(
-        "--write",
-        action="store_true",
-        help="refresh test_inventory.txt; refuses while a recorded test is unaccounted for",
+    current: Counter[str] = Counter()
+    ledger: dict[str, dict[str, str]] = {}
+
+    def measure():
+        nonlocal current, ledger
+        current, ledger = current_inventory(), read_ledger()
+        return [], current
+
+    return _architecture_ratchet.baseline_cli(
+        argv, prog="check_test_inventory.py", description=__doc__, baseline_path=INVENTORY,
+        self_test=selftest, measure=measure,
+        hard_rules=lambda previous: missing(previous, current, ledger),
+        # Admission is checked once against the original floor. Both candidates
+        # are built from those same snapshots: max only adds protection, and
+        # current can drop a held requirement only when the ledger allowed it.
+        check=lambda _current, _candidate: [],
+        tighten=lambda current, previous: Counter(previous) | current,
+        write=lambda current, _previous, _reason: (current, []),
+        decode=parse_inventory, encode=render, empty_baseline=Counter, allow_missing_check=True,
+        check_message=lambda _current, previous: f"OK - all {sum(previous.values())} recorded Rust tests still exist.",
     )
-    args = parser.parse_args(argv)
-    if args.self_test:
-        selftest()
-        return 0
-    current = current_inventory()
-    errors = missing(read_inventory(), current, read_ledger())
-    if errors:
-        for error in errors:
-            print(f"ERROR: {error}", file=sys.stderr)
-        return 1
-    if args.write:
-        INVENTORY.write_text(render(current), encoding="utf-8")
-        print(f"wrote {INVENTORY.relative_to(ROOT)}: {sum(current.values())} tests")
-        return 0
-    print(f"OK - all {sum(read_inventory().values())} recorded Rust tests still exist.")
-    return 0
 
 
 if __name__ == "__main__":

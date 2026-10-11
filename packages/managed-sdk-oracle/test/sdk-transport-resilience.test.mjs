@@ -47,7 +47,7 @@ for (const { version, Client } of clients) {
       },
     };
     const client = new Client({
-      apiKey: 'transport-only', // awaken-allow: secret
+      apiKey: 'transport-only', // awaken-allow(secret):
       baseURL, maxRetries: 0,
       fetch: async () => {
         requests += 1;
@@ -69,7 +69,7 @@ for (const { version, Client } of clients) {
     for (const [status, kind, className] of errorCases) {
       let attempts = 0;
       const client = new Client({
-        apiKey: 'transport-only', // awaken-allow: secret
+        apiKey: 'transport-only', // awaken-allow(secret):
         baseURL,
         maxRetries: 0,
         fetch: async () => {
@@ -125,7 +125,7 @@ for (const { version, Client } of clients) {
     for (const [status, retries, override] of cases) {
       let attempts = 0;
       const client = new Client({
-        apiKey: 'transport-only', // awaken-allow: secret
+        apiKey: 'transport-only', // awaken-allow(secret):
         baseURL,
         maxRetries: 2,
         fetch: async () => {
@@ -160,7 +160,7 @@ for (const { version, Client } of clients) {
     // command even when the first response is lost after server commit.
     const attempts = [];
     const client = new Client({
-      apiKey: 'transport-only', // awaken-allow: secret
+      apiKey: 'transport-only', // awaken-allow(secret):
       baseURL,
       maxRetries: 1,
       fetch: async (input, init) => {
@@ -206,7 +206,7 @@ for (const { version, Client } of clients) {
     // the terminal null cursor in every supported/candidate transport.
     const requests = [];
     const client = new Client({
-      apiKey: 'transport-only', // awaken-allow: secret
+      apiKey: 'transport-only', // awaken-allow(secret):
       baseURL,
       maxRetries: 0,
       fetch: async (input, init) => {
@@ -239,7 +239,7 @@ for (const { version, Client } of clients) {
     let attempts = 0;
     const controller = new AbortController();
     const client = new Client({
-      apiKey: 'transport-only', // awaken-allow: secret
+      apiKey: 'transport-only', // awaken-allow(secret):
       baseURL,
       maxRetries: 2,
       fetch: async () => {
@@ -301,7 +301,7 @@ for (const { version, Client } of clients) {
       },
     ];
     const client = new Client({
-      apiKey: 'middleware-auth', // awaken-allow: secret
+      apiKey: 'middleware-auth', // awaken-allow(secret):
       baseURL,
       maxRetries: 1,
       middleware,
@@ -338,7 +338,7 @@ for (const { version, Client } of clients) {
     let rejectedEntries = 0;
     let rejectedFetches = 0;
     const rejecting = new Client({
-      apiKey: 'middleware-auth', // awaken-allow: secret
+      apiKey: 'middleware-auth', // awaken-allow(secret):
       baseURL,
       maxRetries: 2,
       middleware: [async () => {
@@ -374,7 +374,7 @@ for (const { version, Client } of clients) {
     // | caller abort          | any     | APIUserAbortError, once (above)  |
     let failedConnectionAttempts = 0;
     const disconnected = new Client({
-      apiKey: 'transport-only', // awaken-allow: secret
+      apiKey: 'transport-only', // awaken-allow(secret):
       baseURL,
       maxRetries: 0,
       fetch: async () => {
@@ -391,7 +391,7 @@ for (const { version, Client } of clients) {
 
     let connectionAttempts = 0;
     const reconnecting = new Client({
-      apiKey: 'transport-only', // awaken-allow: secret
+      apiKey: 'transport-only', // awaken-allow(secret):
       baseURL,
       maxRetries: 1,
       fetch: async () => {
@@ -406,7 +406,7 @@ for (const { version, Client } of clients) {
 
     let timeoutAttempts = 0;
     const timingOut = new Client({
-      apiKey: 'transport-only', // awaken-allow: secret
+      apiKey: 'transport-only', // awaken-allow(secret):
       baseURL,
       maxRetries: 0,
       fetch: async (_input, init) => new Promise((_resolve, reject) => {
@@ -488,11 +488,11 @@ for (const { version, Client } of clients) {
       let shadowedProviderCalls = 0;
       let staticRequest;
       const staticClient = new Client({
-        apiKey: staticKind === 'apiKey' ? 'static-api' : null, // awaken-allow: secret
-        authToken: staticKind === 'authToken' ? 'static-token' : null, // awaken-allow: secret
+        apiKey: staticKind === 'apiKey' ? 'static-api' : null, // awaken-allow(secret):
+        authToken: staticKind === 'authToken' ? 'static-token' : null, // awaken-allow(secret):
         credentials: async () => {
           shadowedProviderCalls += 1;
-          return { token: 'must-not-be-used', expiresAt: null }; // awaken-allow: secret
+          return { token: 'must-not-be-used', expiresAt: null }; // awaken-allow(secret):
         },
         baseURL,
         maxRetries: 0,
@@ -577,7 +577,7 @@ for (const { version, Client } of clients) {
     ]);
     await new Promise((resolve) => setImmediate(resolve));
     const callsBeforeRelease = parentProviderCalls.length;
-    releaseParentProvider({ token: 'parent-provider', expiresAt: null }); // awaken-allow: secret
+    releaseParentProvider({ token: 'parent-provider', expiresAt: null }); // awaken-allow(secret):
     const pages = await overlapping;
     assert.equal(callsBeforeRelease, 1, 'overlapping clones share one unresolved provider call');
     assert.deepEqual(parentProviderCalls, [null]);
@@ -605,7 +605,7 @@ for (const { version, Client } of clients) {
     const overridden = parent.withOptions({
       credentials: async (options) => {
         overrideProviderCalls.push(options ?? null);
-        return { token: 'override-provider', expiresAt: null }; // awaken-allow: secret
+        return { token: 'override-provider', expiresAt: null }; // awaken-allow(secret):
       },
     });
     assert.deepEqual((await overridden.beta.sessions.list()).data, []);
@@ -632,7 +632,7 @@ for (const { version, Client } of clients) {
     const dynamic = new Client({
       apiKey: async () => {
         setterCalls += 1;
-        return 'dynamic-api-key'; // awaken-allow: secret
+        return 'dynamic-api-key'; // awaken-allow(secret):
       },
       baseURL,
       maxRetries: 0,

@@ -332,25 +332,22 @@ def current_sources(root: Path) -> dict[str, str]:
     # in -- it is a per-crate walk from that crate's own Cargo roots, so the
     # answer for a candidate is the same either way, and the check stays fast
     # enough to run on every commit rather than only in the nightly gate.
-    candidates = [
-        path
-        for path in _crate_boundary_workspace.crate_source_files(crates)
-        if ON_THE_RECOVERY_PATH.search(path.read_text(encoding="utf-8", errors="ignore"))
-    ]
-    candidate_set = set(candidates)
+    candidates: dict[Path, str] = {}
+    for path in _crate_boundary_workspace.crate_source_files(crates):
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if ON_THE_RECOVERY_PATH.search(text):
+            candidates[path] = text
     manifests = [
         manifest
         for manifest in _crate_boundary_workspace.crate_manifests(crates)
-        if any(manifest.parent in path.parents for path in candidate_set)
+        if any(manifest.parent in path.parents for path in candidates)
     ]
     reachable = _crate_boundary_workspace.production_module_files(manifests)
     found: dict[str, str] = {}
-    for path in candidates:
+    for path, text in candidates.items():
         if path.resolve() not in reachable:
             continue
-        production = _crate_boundary_workspace.production_rust(
-            path.read_text(encoding="utf-8", errors="ignore")
-        )
+        production = _crate_boundary_workspace.production_rust(text)
         if ON_THE_RECOVERY_PATH.search(production):
             found[path.relative_to(root).as_posix()] = production
     return found
@@ -381,6 +378,10 @@ class ObservationCollapseTests(unittest.TestCase):
     | R7   | a registered transport declaration keeping the old shape   | accept |
     | R8   | the same, once its single translation is gone              | reject |
     | R9   | a registered file that no longer carries the shape         | reject |
+    | R10  | candidate text changes on a second acquisition             | first text only |
+    | R11  | a second derivation would report a different corpus        | validated count |
+    | R12  | a missing definition or translation in the derived corpus  | reject |
+    | R13  | acquisition fails, or arguments are invalid                | fail before report |
     """
 
     # The derivation walks the whole workspace, so it runs once for the class
@@ -496,6 +497,93 @@ class ObservationCollapseTests(unittest.TestCase):
         # R0: an empty corpus must not look like a clean one.
         self.assertTrue(validation_errors({}), "R0")
 
+    def test_derivation_reuses_its_candidate_text(self) -> None:
+        # R10/R13 cause-effect table: marked+reachable -> the same acquired
+        # text is projected; marked+test-only -> excluded (including ignored
+        # invalid UTF-8); unmarked -> excluded. Module reachability has its own
+        # required reads, counted separately. A changed second candidate read
+        # must not remove a source selected from the first text.
+        import tempfile
+        from collections import Counter
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            crate = root / "crates/fixture"
+            sources = crate / "src"
+            sources.mkdir(parents=True)
+            (crate / "Cargo.toml").write_text('[package]\nname = "fixture"\n')
+            (sources / "lib.rs").write_text(
+                'mod recovery;\n#[cfg(test)] mod test_only;\n'
+            )
+            candidate = sources / "recovery.rs"
+            original = "fn read() { let _ = Observed::Absent; }\n"
+            candidate.write_text(original)
+            (sources / "test_only.rs").write_bytes(b"Observed::Absent;\xff\n")
+            (sources / "unrelated.rs").write_text("fn unrelated() {}\n")
+            reads, graph_reads = Counter(), Counter()
+            read_text = Path.read_text
+            module_files = _crate_boundary_workspace.production_module_files
+            inside_graph = False
+
+            def read(path, *args, **kwargs):
+                counter = graph_reads if inside_graph else reads
+                counter[path] += 1
+                if path == candidate and not inside_graph and counter[path] > 1:
+                    return "fn changed() {}\n"
+                return read_text(path, *args, **kwargs)
+
+            def graph(*args, **kwargs):
+                nonlocal inside_graph
+                inside_graph = True
+                try:
+                    return module_files(*args, **kwargs)
+                finally:
+                    inside_graph = False
+
+            with patch.object(Path, "read_text", read), patch.object(
+                _crate_boundary_workspace, "production_module_files", graph
+            ):
+                derived = current_sources(root)
+            self.assertEqual(derived, {
+                candidate.relative_to(root).as_posix():
+                    _crate_boundary_workspace.production_rust(original)
+            }, "R10 same candidate text")
+            self.assertEqual(reads, Counter({path: 1 for path in sources.glob("*.rs")}), "R10 acquisition")
+            self.assertEqual(graph_reads[candidate], 1, "R10 separate structural read")
+            with patch.object(Path, "read_text", side_effect=PermissionError("unreadable")):
+                with self.assertRaises(PermissionError):
+                    current_sources(root)
+
+    def test_main_reports_the_validated_derivation(self) -> None:
+        # R11/R12: clean/missing-definition/missing-translation -> success with
+        # that dict's size / original hard refusal. A different second result
+        # must never supply the report. R13 invalid argv -> zero acquisition;
+        # errors precede any success count. These are real rule evaluations.
+        import contextlib
+        import io
+        from unittest.mock import patch
+
+        missing_translation = dict(self.sources)
+        missing_translation.pop(TRANSLATOR)
+        for sources, expected in ((self.sources, 0), ({}, 1), (missing_translation, 1)):
+            output, errors = io.StringIO(), io.StringIO()
+            with patch(__name__ + ".current_sources", side_effect=[sources, {}]) as derive, \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                status = main([])
+            self.assertEqual(status, expected, "R11/R12 original rule outcome")
+            self.assertEqual(derive.call_count, 1, "R11 one derivation")
+            if expected == 0:
+                self.assertIn(f"{len(sources)} derived recovery-path files", output.getvalue(), "R11")
+            else:
+                self.assertEqual(output.getvalue(), "", "R12 no success report")
+                self.assertIn("ERROR:", errors.getvalue(), "R12 hard refusal")
+        with patch(__name__ + ".current_sources") as derive, contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as refused:
+                main(["--unknown"])
+            self.assertEqual(refused.exception.code, 2, "R13 usage")
+            derive.assert_not_called()
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False, description=__doc__)
@@ -508,7 +596,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
 
-    errors = validation_errors(current_sources(args.root))
+    sources = current_sources(args.root)
+    errors = validation_errors(sources)
     if errors:
         print("\n".join(f"ERROR: {error}" for error in errors), file=sys.stderr)
         print(
@@ -518,7 +607,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     print(
-        f"OK - {len(current_sources(args.root))} derived recovery-path files keep "
+        f"OK - {len(sources)} derived recovery-path files keep "
         "observations tri-state and uncollapsed."
     )
     return 0

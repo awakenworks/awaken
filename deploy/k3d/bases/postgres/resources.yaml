@@ -30,7 +30,7 @@ spec:
           image: postgres:16
           imagePullPolicy: Never
           env:
-            - { name: POSTGRES_PASSWORD, value: "test" } # awaken-allow: secret
+            - { name: POSTGRES_PASSWORD, value: "test" } # awaken-allow(secret):
             - { name: POSTGRES_DB, value: "awaken" }
             - { name: PGDATA, value: "/var/lib/postgresql/data/pgdata" }
           ports:

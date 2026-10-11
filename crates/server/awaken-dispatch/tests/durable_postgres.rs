@@ -145,7 +145,7 @@ async fn postgres_pending_mutations_lock_revision_before_effect_and_preserve_exh
                 tokio::time::Instant::now() < deadline,
                 "P3 both exact replica backend pids must reach row-lock wait"
             );
-            // awaken-wait: wait for the two exact PostgreSQL backend pids to
+            // awaken-allow(wait): wait for the two exact PostgreSQL backend pids to
             // report their row-lock wait; the deadline above rejects expiry.
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }

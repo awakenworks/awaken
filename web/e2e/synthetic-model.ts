@@ -1,7 +1,7 @@
 import type { APIRequestContext } from "@playwright/test";
 import { startFakeAnthropic } from "../../e2e/fixtures/fake_anthropic_fixture.mjs";
 
-const SYNTHETIC_API_KEY = "sk-synthetic-e2e"; // awaken-allow: secret (synthetic e2e fixture)
+const SYNTHETIC_API_KEY = "sk-synthetic-e2e"; // awaken-allow(secret): (synthetic e2e fixture)
 
 export class SyntheticModelDirectory {
   private readonly models: string[] = [];

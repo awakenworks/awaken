@@ -33,12 +33,15 @@ parallel_checks_drain
         # Q1 two independently submitted checks must both reach the barrier;
         # Q2 a later failed job retains its exact exit code; Q3 all jobs drain.
         # A sequential replacement cannot satisfy the first positive control.
+        # SX5: the generated child carries the shared wait spelling in its
+        # Python comment. Its raw fixture string changes; the barrier, deadline,
+        # child code and observed queue results remain these existing oracles.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "barrier.py").write_text('''import pathlib,sys,time
 p=pathlib.Path(sys.argv[1]); p.write_text('ready')
 other=pathlib.Path(sys.argv[2]); until=time.monotonic()+5
-# awaken-wait: both actual child processes acknowledge the shared barrier.
+# awaken-allow(wait): both actual child processes acknowledge the shared barrier.
 while not other.exists() and time.monotonic()<until: time.sleep(0.01)
 assert other.exists(), 'both jobs must run concurrently'
 ''')
@@ -51,11 +54,13 @@ parallel_checks_submit failure sh -c 'exit 23'
             self.assertTrue(all((root / "evidence" / f"{index}.json").is_file() for index in range(3)))
 
     def test_finished_worker_frees_capacity_while_oldest_is_still_running(self) -> None:
+        # SX5: the child program's wait annotation is source metadata; the
+        # actual third-worker fact still owns this capacity-release assertion.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "wait_for_third.py").write_text('''import pathlib,time
 until=time.monotonic()+5
-# awaken-wait: third is the actual next admitted worker's completion signal.
+# awaken-allow(wait): third is the actual next admitted worker's completion signal.
 while not pathlib.Path('third').exists() and time.monotonic()<until: time.sleep(0.01)
 assert pathlib.Path('third').exists(), 'a completed second worker must free its slot'
 ''')
@@ -98,7 +103,7 @@ test -s results || exit 55
                 child = "import os,pathlib,time,sys;pathlib.Path(sys.argv[1]).write_text(str(os.getpid()));time.sleep(120)"
                 process = subprocess.Popen([sys.executable, str(ROOT / "scripts/ci/parallel_check.py"), "--receipt", str(receipt), "--timeout", "1", "--", sys.executable, "-c", child, str(marker)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 until = time.monotonic() + 5
-                # awaken-wait: the actual child PID exists before cancellation.
+                # awaken-allow(wait): the actual child PID exists before cancellation.
                 while not marker.exists() and process.poll() is None and time.monotonic() < until:
                     time.sleep(0.01)
                 self.assertTrue(marker.exists())
@@ -118,6 +123,11 @@ test -s results || exit 55
         # 75 survives both entrypoints and starts no build. These run the actual
         # manifest over owned stubs;
         # they prove failure composition, not passing product qualification.
+        # G3 has two real manifest stages: an admitted prior runner self-test,
+        # then resource refusal75. The fixture used to omit test.sh, yielding
+        # failed127 before failed75. Supply only that explicit prerequisite
+        # port; it is not evidence that the real crate runner's tests passed.
+        # Unknown/ordinary argv cannot use the stub as a passing runner.
         for mode in ('frontend', 'full', 'rust'):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
@@ -144,6 +154,15 @@ test -s results || exit 55
                            AWAKEN_TEST_TIMINGS_FILE=str(root/'timings.tsv'))
                 for name in ('AWAKEN_CARGO_ADMITTED', 'AWAKEN_FULL_GATE_CANDIDATE', 'AWAKEN_FULL_GATE_LOG'):
                     env.pop(name, None)
+                prior = scripts / 'test.sh'
+                prior.write_text('#!/bin/sh\nif [ "$#" -eq 1 ] && [ "$1" = --self-test ]; then exit 0; fi\ntouch "$FORBIDDEN_BODY"\nexit 2\n')
+                prior.chmod(0o755)
+                for arguments in ([], ['--unknown'], ['--selftest'], ['-p', 'fixture']):
+                    refused = subprocess.run([str(prior), *arguments], env=env,
+                                             capture_output=True, text=True, timeout=5)
+                    self.assertEqual(refused.returncode, 2)
+                    self.assertTrue((root/'unexpected').exists())
+                    (root/'unexpected').unlink()
                 args = ['--full-gate', '--record'] if mode == 'full' else ['--group', mode]
                 result = subprocess.run(['bash', str(scripts/'check-all.sh'), *args],
                                         env=env, capture_output=True, text=True, timeout=10)
@@ -154,9 +173,16 @@ test -s results || exit 55
                     import csv
                     with (root/'timings.tsv').open() as stream:
                         rows = list(csv.DictReader(stream, delimiter='\t'))
-                    self.assertEqual(len(rows), 1)
-                    self.assertEqual((rows[0]['exit_code'], rows[0]['failure_kind']),
-                                     ('75', 'resource-unavailable'))
+                    if mode == 'rust':
+                        self.assertEqual(len(rows), 2)
+                        self.assertEqual((rows[0]['check'], rows[0]['status'], rows[0]['exit_code'], rows[0]['failure_kind']),
+                                         ('crate test runner self-test', 'passed', '0', 'none'))
+                        self.assertEqual((rows[1]['check'], rows[1]['status'], rows[1]['exit_code'], rows[1]['failure_kind']),
+                                         ('rust', 'failed', '75', 'resource-unavailable'))
+                    else:
+                        self.assertEqual(len(rows), 1)
+                        self.assertEqual((rows[0]['exit_code'], rows[0]['failure_kind']),
+                                         ('75', 'resource-unavailable'))
 
 
 if __name__ == "__main__":

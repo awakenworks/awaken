@@ -132,7 +132,7 @@ function kimiProfile(runtime, kimi) {
             'awaken-kimi': {
               npm: '@ai-sdk/openai-compatible',
               name: 'Awaken Kimi Code',
-              options: { baseURL: kimi.openaiBase, apiKey: '{env:OPENAI_API_KEY}' }, // awaken-allow: secret
+              options: { baseURL: kimi.openaiBase, apiKey: '{env:OPENAI_API_KEY}' }, // awaken-allow(secret):
               models: { [kimi.openaiModel]: { name: kimi.openaiModel } },
             },
           },

@@ -23,7 +23,7 @@ import {
 
 const BETAS = ['managed-agents-2026-04-01'];
 const GATEWAY = 'https://gw.e2e.internal/anthropic';
-const LEASE = 'lease-e2e-token'; // awaken-allow: secret
+const LEASE = 'lease-e2e-token'; // awaken-allow(secret):
 const PORT = Number(process.env.E2E_PORT ?? 38195);
 
 function agentTexts(events) {

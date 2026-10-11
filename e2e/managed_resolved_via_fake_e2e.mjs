@@ -17,7 +17,7 @@ import {
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
-const FAKE_KEY = 'sk-fake-resolved-key'; // awaken-allow: secret
+const FAKE_KEY = 'sk-fake-resolved-key'; // awaken-allow(secret):
 
 async function main() {
   const upstream = await startFakeAnthropic(FAKE_KEY);

@@ -31,14 +31,14 @@ themselves a corpus, and a *new* hand-written scope list among them is refused.
 
 Two rules, each ratcheted, each with a registry whose entries must say why:
 
-W1  A module-level literal collection of two or more repository paths, path
+W1: A module-level literal collection of two or more repository paths, path
     globs or file suffixes is a hand-written scope list. `INPUT_GLOBS` is the
     one exception, because it is the declaration everything else derives from:
     `generate_hooks.py` renders the lefthook trigger from it and a checker
     walks it to build its corpus. Every other such list is registered in
     `scan_scope_registry.json` with the reason it cannot be derived.
 
-W2  Every entry point under `scripts/ci` that walks the repository declares
+W2: Every entry point under `scripts/ci` that walks the repository declares
     `INPUT_GLOBS`, or is registered with the shell gate that runs it -- and the
     registry is checked: the named runner must really invoke the script, so a
     registration cannot go stale without failing.
@@ -76,7 +76,8 @@ DECLARATION = "INPUT_GLOBS"
 PATH_LITERAL = re.compile(r"^[A-Za-z0-9_.*][A-Za-z0-9_.*{}\[\],-]*(?:/[A-Za-z0-9_.*{}\[\],-]+)+$")
 # A file suffix, the other way a scope is written down: `.rs`, `*.mjs`.
 SUFFIX_LITERAL = re.compile(r"^\*?\.[A-Za-z0-9]{1,6}$")
-# A repository walk: `.glob(`/`.rglob(` anywhere in the module text.
+# Direct walks retain the original detection; delegated walks use the actual
+# imported source owner below, so removing a copied walk does not hide a scanner.
 WALKS_THE_REPOSITORY = re.compile(r"\.r?glob\s*\(")
 ENTRY_POINT = re.compile(r'^if __name__ == ["\']__main__["\']:', re.MULTILINE)
 DECLARES = re.compile(r"^INPUT_GLOBS\b", re.MULTILINE)
@@ -126,10 +127,18 @@ def is_scope(values: list[str]) -> bool:
     return all(PATH_LITERAL.match(value) or SUFFIX_LITERAL.match(value) for value in values)
 
 
-def scope_lists(module: Path) -> list[tuple[str, int, int]]:
-    """Every hand-written scope list in `module`: (name, line, size)."""
+def _module_sources(scripts: Path) -> dict[Path, tuple[str, ast.Module]]:
+    """The one working-text/AST acquisition for this owner's module corpus."""
+    modules = {}
+    for module in sorted(scripts.glob("*.py")):
+        source = module.read_text(encoding="utf-8")
+        modules[module] = (source, ast.parse(source))
+    return modules
 
-    tree = ast.parse(module.read_text(encoding="utf-8"))
+
+def scope_lists(tree: ast.Module) -> list[tuple[str, int, int]]:
+    """Every hand-written scope list in the selected AST: (name, line, size)."""
+
     found: list[tuple[str, int, int]] = []
     for statement in tree.body:
         if isinstance(statement, ast.Assign) and len(statement.targets) == 1 and isinstance(
@@ -150,13 +159,37 @@ def scope_lists(module: Path) -> list[tuple[str, int, int]]:
     return found
 
 
-def undeclared_scanners(scripts: Path) -> list[str]:
-    """Entry points under `scripts` that walk the repository without a declaration."""
+def walks_repository(source: str, tree: ast.Module) -> bool:
+    """Direct walks or calls to the existing canonical tracked-file reader."""
+    if WALKS_THE_REPOSITORY.search(source):
+        return True
+    modules: set[str] = set()
+    readers: set[str] = set()
+    for statement in tree.body:
+        if isinstance(statement, ast.Import):
+            modules.update(alias.asname or alias.name for alias in statement.names
+                           if alias.name == "formal_sources")
+        elif isinstance(statement, ast.ImportFrom) and statement.module == "formal_sources":
+            readers.update(alias.asname or alias.name for alias in statement.names
+                           if alias.name == "tracked_files")
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        function = node.func
+        if isinstance(function, ast.Name) and function.id in readers:
+            return True
+        if (isinstance(function, ast.Attribute) and function.attr == "tracked_files"
+                and isinstance(function.value, ast.Name) and function.value.id in modules):
+            return True
+    return False
+
+
+def undeclared_scanners(modules: dict[Path, tuple[str, ast.Module]]) -> list[str]:
+    """Selected entry points that walk the repository without a declaration."""
 
     found: list[str] = []
-    for module in sorted(scripts.glob("*.py")):
-        source = module.read_text(encoding="utf-8")
-        if not ENTRY_POINT.search(source) or not WALKS_THE_REPOSITORY.search(source):
+    for module, (source, tree) in modules.items():
+        if not ENTRY_POINT.search(source) or not walks_repository(source, tree):
             continue
         if DECLARES.search(source):
             continue
@@ -178,17 +211,20 @@ def _reason_errors(label: str, key: str, entry: dict) -> list[str]:
     return []
 
 
-def validation_errors(root: Path, registry: dict) -> list[str]:
-    """Every W1/W2 violation, plus every stale or unreasoned registry entry."""
+def validation_errors(
+    root: Path, registry: dict
+) -> tuple[list[str], dict[str, tuple[int, int]], list[str]]:
+    """Every W1/W2 violation and the exact facts checked for its report."""
 
     scripts = root / "scripts" / "ci"
     errors: list[str] = []
 
     # ---- W1: hand-written scope lists -----------------------------------
     registered_lists: dict[str, dict] = registry.get("scope_lists", {})
+    modules = _module_sources(scripts)
     live: dict[str, tuple[int, int]] = {}
-    for module in sorted(scripts.glob("*.py")):
-        for name, line, size in scope_lists(module):
+    for module, (_, tree) in modules.items():
+        for name, line, size in scope_lists(tree):
             live[f"{module.name}:{name}"] = (line, size)
 
     for key, (line, size) in sorted(live.items()):
@@ -227,7 +263,8 @@ def validation_errors(root: Path, registry: dict) -> list[str]:
 
     # ---- W2: entry points that scan without declaring their inputs -------
     registered_scanners: dict[str, dict] = registry.get("scanners_without_input_globs", {})
-    undeclared = undeclared_scanners(scripts)
+    undeclared = undeclared_scanners(modules)
+    runner_sources: dict[Path, str | None] = {}
     for name in undeclared:
         entry = registered_scanners.get(name)
         if entry is None:
@@ -244,12 +281,15 @@ def validation_errors(root: Path, registry: dict) -> list[str]:
         if runner is None:
             continue
         gate = root / runner
-        if not gate.is_file():
+        if gate not in runner_sources:
+            runner_sources[gate] = gate.read_text(encoding="utf-8") if gate.is_file() else None
+        text = runner_sources[gate]
+        if text is None:
             errors.append(
                 f"scanners_without_input_globs names runner {runner} for {name}, "
                 "which does not exist"
             )
-        elif name not in gate.read_text(encoding="utf-8"):
+        elif name not in text:
             errors.append(
                 f"scanners_without_input_globs claims {runner} runs {name}, but "
                 f"{runner} does not name it; the registration is stale"
@@ -276,7 +316,7 @@ def validation_errors(root: Path, registry: dict) -> list[str]:
             f"baseline {scanner_baseline}: lower the baseline to hold the ground gained."
         )
 
-    return errors
+    return errors, live, undeclared
 
 
 def selftest() -> None:
@@ -307,13 +347,7 @@ def selftest() -> None:
     | M21  | an entry point that globs and declares INPUT_GLOBS          | accept |
     """
 
-    def parsed(source: str) -> list[tuple[str, int, int]]:
-        with tempfile.TemporaryDirectory() as directory:
-            module = Path(directory) / "probe.py"
-            module.write_text(source, encoding="utf-8")
-            return scope_lists(module)
-
-    names = lambda source: {name for name, _, _ in parsed(source)}  # noqa: E731
+    names = lambda source: {name for name, _, _ in scope_lists(ast.parse(source))}  # noqa: E731
 
     assert names('A = ("crates/a/src/lib.rs", "crates/b/src/lib.rs")\n') == {"A"}, "M1"
     assert names('A = (".rs", ".mjs", ".sh")\n') == {"A"}, "M2"
@@ -339,7 +373,7 @@ def selftest() -> None:
             "scanners_without_input_globs": {},
             "baseline": {"scope_lists": 0, "scanners_without_input_globs": 0},
         }
-        assert validation_errors(root, clean) == [], "an empty corpus is clean"
+        assert validation_errors(root, clean)[0] == [], "an empty corpus is clean"
 
         probe = scripts / "check_probe.py"
         probe.write_text(
@@ -351,7 +385,7 @@ def selftest() -> None:
         )
         one = dict(clean, baseline={"scope_lists": 1, "scanners_without_input_globs": 0})
         assert any("hand-written scope list" in error for error in
-                   validation_errors(root, one)), "M11"
+                   validation_errors(root, one)[0]), "M11"
 
         reason = "the eight route owners are named by ADR, not discoverable from the tree"
         registered = {
@@ -359,29 +393,29 @@ def selftest() -> None:
             "scanners_without_input_globs": {},
             "baseline": {"scope_lists": 1, "scanners_without_input_globs": 0},
         }
-        assert validation_errors(root, registered) == [], "M12"
+        assert validation_errors(root, registered)[0] == [], "M12"
 
         short = json.loads(json.dumps(registered))
         short["scope_lists"]["check_probe.py:OWNERS"]["reason"] = "legacy"
         assert any("must say why" in error for error in
-                   validation_errors(root, short)), "M13"
+                   validation_errors(root, short)[0]), "M13"
 
         stale = json.loads(json.dumps(registered))
         stale["scope_lists"]["check_probe.py:GONE"] = {"reason": reason}
         stale["baseline"]["scope_lists"] = 1
         assert any("no longer exists" in error for error in
-                   validation_errors(root, stale)), "M14"
+                   validation_errors(root, stale)[0]), "M14"
 
         lowered = json.loads(json.dumps(registered))
         lowered["baseline"]["scope_lists"] = 0
         assert any("only goes down" in error for error in
-                   validation_errors(root, lowered)), "M15"
+                   validation_errors(root, lowered)[0]), "M15"
 
         raised = json.loads(json.dumps(registered))
         raised["baseline"]["scope_lists"] = 2
         assert any("hold the ground gained" in error for error in
-                   validation_errors(root, raised)), "M16"
-        assert validation_errors(root, registered) == [], "M21"
+                   validation_errors(root, raised)[0]), "M16"
+        assert validation_errors(root, registered)[0] == [], "M21"
 
         # W2: the same module, now scanning without a declaration.
         probe.write_text(
@@ -392,7 +426,7 @@ def selftest() -> None:
         )
         undeclared = json.loads(json.dumps(registered))
         assert any("declares no INPUT_GLOBS" in error for error in
-                   validation_errors(root, undeclared)), "M17"
+                   validation_errors(root, undeclared)[0]), "M17"
 
         runner_reason = "runs inside the rust shell gate, which has no per-file trigger"
         wired = json.loads(json.dumps(registered))
@@ -401,7 +435,7 @@ def selftest() -> None:
             "reason": runner_reason,
         }
         wired["baseline"]["scanners_without_input_globs"] = 1
-        assert validation_errors(root, wired) == [], "M18"
+        assert validation_errors(root, wired)[0] == [], "M18"
 
         wrong = json.loads(json.dumps(wired))
         (root / "scripts" / "ci" / "other-gate.sh").write_text("true\n", encoding="utf-8")
@@ -409,7 +443,39 @@ def selftest() -> None:
             "scripts/ci/other-gate.sh"
         )
         assert any("does not name it" in error for error in
-                   validation_errors(root, wrong)), "M19"
+                   validation_errors(root, wrong)[0]), "M19"
+
+        # M22: the same entry point delegates its unchanged repository scan to
+        # formal_sources instead of copying rglob. The original declaration/
+        # registry/runner rules still apply; consolidation is not ground gained.
+        # M23: comments/strings, unbound names and another owner's same method
+        # name are not that call. Recognize imports and AST calls, not mentions.
+        for imported, call in (
+            ('import formal_sources', 'formal_sources.tracked_files(ROOT)'),
+            ('import formal_sources as sources', 'sources.tracked_files(ROOT)'),
+            ('from formal_sources import tracked_files as files', 'files(ROOT)'),
+        ):
+            source = (
+                'OWNERS = ("crates/a/src/lib.rs", "crates/b/src/lib.rs")\n'
+                f'{imported}\n{call}\n'
+                'if __name__ == "__main__":\n    pass\n'
+            )
+            probe.write_text(source, encoding="utf-8")
+            assert validation_errors(root, wired)[0] == [], "M22 registered delegated scan"
+            assert any("declares no INPUT_GLOBS" in error for error in
+                       validation_errors(root, registered)[0]), "M22 declaration still required"
+            source = 'INPUT_GLOBS = ("Cargo.toml",)\n' + source
+            probe.write_text(source, encoding="utf-8")
+            assert undeclared_scanners({probe: (source, ast.parse(source))}) == [], "M22 declared delegation"
+        for source in (
+            'import formal_sources\n# formal_sources.tracked_files(ROOT)\n',
+            'import formal_sources\ntext = "formal_sources.tracked_files(ROOT)"\n',
+            'formal_sources.tracked_files(ROOT)\n',
+            'import other\nother.tracked_files(ROOT)\n',
+        ):
+            source += 'if __name__ == "__main__":\n    pass\n'
+            probe.write_text(source, encoding="utf-8")
+            assert undeclared_scanners({probe: (source, ast.parse(source))}) == [], "M23 no unrelated or textual call"
 
         # M20: a helper module that globs but has no entry point is not a scanner.
         probe.write_text(
@@ -418,24 +484,223 @@ def selftest() -> None:
             encoding="utf-8",
         )
         helper = json.loads(json.dumps(registered))
-        assert validation_errors(root, helper) == [], "M20"
+        assert validation_errors(root, helper)[0] == [], "M20"
 
     # Corpus assertion: the rule holds over the *set* of checkers, so a checker
     # added tomorrow inherits it without anyone remembering to extend anything.
     registry = load_registry(REGISTRY)
     scripts = ROOT / "scripts" / "ci"
-    modules = sorted(scripts.glob("*.py"))
+    modules = _module_sources(scripts)
     assert modules, "the checker corpus must not be empty"
-    for module in modules:
-        for name, _, _ in scope_lists(module):
+    for module, (_, tree) in modules.items():
+        for name, _, _ in scope_lists(tree):
             assert f"{module.name}:{name}" in registry["scope_lists"], (
                 f"{module.name}:{name} is a scope list with no registry entry"
             )
-    for name in undeclared_scanners(scripts):
+    for name in undeclared_scanners(modules):
         assert name in registry["scanners_without_input_globs"], (
             f"{name} scans without declaring {DECLARATION} and has no registry entry"
         )
+    _selftest_acquisition()
     print("check_scan_scope selftest: the decision table holds")
+
+
+def _selftest_acquisition() -> None:
+    """Check admission and reporting against the same actual file acquisition."""
+    import contextlib
+    import io
+    from collections import Counter
+    from itertools import product
+    from unittest.mock import patch
+
+    # M24-M30 graph: valid argv -> registry -> first module text/AST -> W1 + W2
+    # -> independent member/reason/runner/count decisions -> same-fact report.
+    # A second read cannot replace W2 or the report's subject. Each live entry
+    # still makes its own decision when entries share one runner path.
+    #
+    # | Row | cause                                      | effect |
+    # | M24 | two selectors/report, shared runner         | module read/parse1; runner read1 |
+    # | M25a| bad first scanner, clean text on reread     | first scanner rejected, no reread |
+    # | M25b| valid first list, extra list on reread      | report first list count1 |
+    # | M26 | below/equal/above/missing count × hard rule | only equal + all hard rules admit |
+    # | M27 | runner None/name/no-name/missing            | admit/admit/reject/reject |
+    # | M28 | argv/registry/source decode or IO failure  | original refusal before success |
+    # | M29 | regex shortcut/alias/hidden/decoder edges  | original source predicate unchanged |
+    # | M30 | current real corpus                        | original member-only assertions above |
+    # Constraints: len(reason), not strip, has minimum30; direct-walk regex and
+    # runner filename-substring are not replaced by stronger AST predicates.
+    # No fixture calls Git/Cargo or writes the real registry/baselines.
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        scripts = root / "scripts/ci"
+        scripts.mkdir(parents=True)
+        primary = scripts / "check_probe.py"
+        other = scripts / "check_second.py"
+        runner = scripts / "run-gate.sh"
+        registry_path = root / "registry.json"
+        list_source = 'OWNERS = ("crates/a.rs", "crates/b.rs")\n'
+        delegated = ('import formal_sources\nformal_sources.tracked_files(ROOT)\n'
+                     'if __name__ == "__main__": pass\n')
+        direct = 'list(ROOT.glob("*.rs"))\nif __name__ == "__main__": pass\n'
+        reason = "a" * MIN_REASON
+        empty = {"scope_lists": {}, "scanners_without_input_globs": {},
+                 "baseline": {"scope_lists": 0, "scanners_without_input_globs": 0}}
+        registered = {
+            "scope_lists": {"check_probe.py:OWNERS": {"reason": reason}},
+            "scanners_without_input_globs": {"check_probe.py": {"reason": reason, "runner": None}},
+            "baseline": {"scope_lists": 1, "scanners_without_input_globs": 1},
+        }
+        original_open, original_parse = Path.open, ast.parse
+
+        def invoke(record, argv=None, replacement=None, refusal=None, registry_fault=None,
+                   runner_replacement=None):
+            if registry_fault == "missing":
+                registry_path.unlink(missing_ok=True)
+            elif registry_fault == "json":
+                registry_path.write_text("{invalid\n", encoding="utf-8")
+            elif registry_fault == "utf8":
+                registry_path.write_bytes(b"\xff")
+            else:
+                registry_path.write_text(json.dumps(record), encoding="utf-8")
+            before = {path: path.read_bytes() for path in (registry_path, primary, other, runner)
+                      if path.is_file()}
+            reads, parses = Counter(), []
+
+            def opened(path, *args, **kwargs):
+                reads[path] += 1
+                if path == refusal:
+                    raise PermissionError("fixture reader refused")
+                if replacement is not None and path == primary and reads[path] > 1:
+                    return io.TextIOWrapper(io.BytesIO(replacement), encoding="utf-8")
+                if runner_replacement is not None and path == runner and reads[path] > 1:
+                    return io.TextIOWrapper(io.BytesIO(runner_replacement), encoding="utf-8")
+                return original_open(path, *args, **kwargs)
+
+            def parsed(source, *args, **kwargs):
+                parses.append(source)
+                return original_parse(source, *args, **kwargs)
+
+            output, errors = io.StringIO(), io.StringIO()
+            failure = None
+            with patch.dict(main.__globals__, {"REGISTRY": registry_path}), \
+                    patch.object(Path, "open", opened), patch.object(ast, "parse", parsed), \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                try:
+                    status = main(["--root", str(root)] if argv is None else argv)
+                except SystemExit as error:
+                    status = error.code
+                except (OSError, UnicodeError, SyntaxError, AttributeError, json.JSONDecodeError) as error:
+                    status, failure = 1, type(error)
+            assert before == {path: path.read_bytes() for path in before}, "M24-M29 fixture bytes unchanged"
+            if registry_fault == "missing":
+                assert not registry_path.exists(), "M28 no registry initialization"
+            return status, output.getvalue(), errors.getvalue(), reads, parses, failure
+
+        primary.write_text(list_source + delegated, encoding="utf-8")
+        other.write_text(direct, encoding="utf-8")
+        runner.write_text("check_probe.py\ncheck_second.py\n", encoding="utf-8")
+        both = json.loads(json.dumps(registered))
+        both["scanners_without_input_globs"] = {
+            name: {"reason": reason, "runner": "scripts/ci/run-gate.sh"}
+            for name in (primary.name, other.name)
+        }
+        both["baseline"]["scanners_without_input_globs"] = 2
+        status, output, _, reads, parses, _ = invoke(both, runner_replacement=b"true\n")
+        assert status == 0 and "1 registered scope lists and 2 registered" in output, "M24 admission/report"
+        assert reads == {registry_path: 1, primary: 1, other: 1, runner: 1}, "M24 physical reads"
+        assert parses == [list_source + delegated, direct], "M24 original actual AST parses once"
+        other.unlink()
+
+        primary.write_text(delegated, encoding="utf-8")
+        status, _, errors, reads, parses, _ = invoke(empty, replacement=b"pass\n")
+        assert status == 1 and "declares no INPUT_GLOBS" in errors, "M25a first scanner is never hidden"
+        assert reads[primary] == 1 and parses == [delegated], "M25a no second source"
+        primary.write_text(list_source, encoding="utf-8")
+        only_list = json.loads(json.dumps(registered))
+        only_list["scanners_without_input_globs"] = {}
+        only_list["baseline"]["scanners_without_input_globs"] = 0
+        later = (list_source + 'EXTRA = ("crates/c.rs", "crates/d.rs")\n').encode()
+        status, output, _, reads, _, _ = invoke(only_list, replacement=later)
+        assert status == 0 and "1 registered scope lists and 0 registered" in output, "M25b first report"
+        assert reads[primary] == 1, "M25b success does not reacquire"
+
+        primary.write_text(list_source + delegated, encoding="utf-8")
+        # M26 crosses both independent count contracts with short/valid/space
+        # reasons and stale members. Missing count records are hard too; an
+        # equal or lower numeric value cannot consume either metadata error.
+        for first, second, text, stale in product((None, 0, 1, 2), (None, 0, 1, 2),
+                                                  ("a" * 29, reason, " " * 30), (False, True)):
+            record = json.loads(json.dumps(registered))
+            for key, value in (("scope_lists", first), ("scanners_without_input_globs", second)):
+                if value is None:
+                    record["baseline"].pop(key)
+                else:
+                    record["baseline"][key] = value
+            record["scope_lists"]["check_probe.py:OWNERS"]["reason"] = text
+            record["scanners_without_input_globs"][primary.name]["reason"] = text
+            if stale:
+                record["scope_lists"]["check_probe.py:GONE"] = {"reason": reason}
+                record["scanners_without_input_globs"]["check_gone.py"] = {"reason": reason, "runner": None}
+            status, _, errors, _, _, _ = invoke(record)
+            expected = first == second == 1 and len(text) >= MIN_REASON and not stale
+            assert (status == 0) is expected, ("M26", first, second, len(text), stale, errors)
+            if len(text) < MIN_REASON:
+                assert errors.count("must say why") == 2, "M26 both short reasons remain hard"
+            if stale:
+                assert "no longer exists" in errors and "now declares" in errors, "M26 both stale decisions hard"
+        for name, content, expected in ((None, "", 0), ("run-gate.sh", "check_probe.py", 0),
+                                         ("run-gate.sh", "# check_probe.py is still the original substring", 0),
+                                         ("run-gate.sh", "true", 1), ("missing.sh", "", 1)):
+            record = json.loads(json.dumps(registered))
+            record["scanners_without_input_globs"][primary.name]["runner"] = (
+                None if name is None else "scripts/ci/" + name)
+            runner.write_text(content, encoding="utf-8")
+            status, _, _, reads, _, _ = invoke(record)
+            assert status == expected, "M27 original runner is_file/substring/None"
+            assert reads[runner] == (1 if name == runner.name else 0), "M27 conditional runner reads"
+        record = json.loads(json.dumps(registered))
+        record["scanners_without_input_globs"][primary.name]["runner"] = "scripts/ci/run-gate.sh"
+        assert invoke(record, refusal=runner)[-1] is PermissionError, "M27 unreadable runner propagates"
+
+        # M28 deliberately refuses the real registry reader for invalid argv;
+        # every source failure is caught only by this test harness, never by a
+        # production empty-corpus fallback or a new exception policy.
+        status, _, errors, reads, _, _ = invoke(empty, argv=["--unknown"], refusal=registry_path)
+        assert status == 2 and "usage:" in errors and not reads, "M28 argv before IO"
+        assert invoke(empty, refusal=registry_path)[-1] is PermissionError, "M28 registry failure"
+        for fault, expected in (("missing", FileNotFoundError), ("json", json.JSONDecodeError),
+                                ("utf8", UnicodeDecodeError)):
+            _, _, _, reads, parses, failure = invoke(empty, registry_fault=fault)
+            assert failure is expected and reads == {registry_path: 1} and not parses, \
+                "M28 original registry failure precedes module acquisition"
+        status, _, _, reads, _, failure = invoke(None)
+        assert failure is AttributeError and reads == {registry_path: 1}, "M28 registry type before module IO"
+        assert invoke(registered, refusal=primary)[-1] is PermissionError, "M28 source IO failure"
+        primary.write_bytes(b"# \xff\n")
+        assert invoke(empty)[-1] is UnicodeDecodeError, "M28 original strict UTF8"
+        primary.write_text("!invalid\n", encoding="utf-8")
+        assert invoke(empty)[-1] is SyntaxError, "M28 original syntax failure"
+        primary.unlink()
+        primary.mkdir()
+        assert invoke(empty)[-1] is IsADirectoryError, "M28 no new is_file corpus filter"
+        primary.rmdir()
+        for newline in ("\r\n", "\r"):
+            primary.write_bytes((list_source + delegated).replace("\n", newline).encode())
+            status, _, _, reads, parses, _ = invoke(registered)
+            assert status == 0 and reads[primary] == 1 and parses == [list_source + delegated], \
+                "M28 universal-newline projection unchanged"
+
+        # M29 preserves the direct regex's prose shortcut and every existing
+        # delegated alias decision; a helper's hidden/sourced name is no filter.
+        for name in (".hidden.py", "_sourced.py"):
+            hidden = scripts / name
+            hidden.write_text(list_source, encoding="utf-8")
+            modules = _module_sources(scripts)
+            assert hidden in modules and scope_lists(modules[hidden][1]), "M29 W1 includes every module name"
+            hidden.unlink()
+        prose = '# ROOT.glob("*.rs")\nif __name__ == "__main__": pass\n'
+        assert undeclared_scanners({primary: (prose, ast.parse(prose))}) == [primary.name], \
+            "M29 direct regex shortcut remains unchanged"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -448,7 +713,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     registry = load_registry(REGISTRY)
-    errors = validation_errors(arguments.root, registry)
+    errors, live, undeclared = validation_errors(arguments.root, registry)
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)
@@ -459,12 +724,9 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    counted = sum(
-        len(scope_lists(module)) for module in sorted((arguments.root / "scripts/ci").glob("*.py"))
-    )
     print(
-        f"OK - {counted} registered scope lists and "
-        f"{len(undeclared_scanners(arguments.root / 'scripts/ci'))} registered "
+        f"OK - {len(live)} registered scope lists and "
+        f"{len(undeclared)} registered "
         "undeclared scanners, none new."
     )
     return 0

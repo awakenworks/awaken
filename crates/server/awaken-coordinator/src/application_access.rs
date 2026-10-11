@@ -696,7 +696,7 @@ mod tests {
             id: "aat_1".into(),
             object: "application_access_token".into(),
             token_type: "Bearer".into(),
-            access_token: "opaque-application-token".into(), // awaken-allow: secret
+            access_token: "opaque-application-token".into(), // awaken-allow(secret):
             expires_at: "2026-08-18T12:00:00Z".into(),
             protocols: vec!["ai-sdk".into()],
             operations: vec!["thread.run".into(), "thread.messages.read".into()],

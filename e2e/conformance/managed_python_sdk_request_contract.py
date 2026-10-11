@@ -105,10 +105,10 @@ def required_fixture(name: str) -> object:
         "agent": "fixture",
         "auth": {
             "type": "static_bearer",
-            "token": "fixture-token",  # awaken-allow: secret
+            "token": "fixture-token",  # awaken-allow(secret):
             "mcp_server_url": "https://mcp.invalid",
         },
-        "authorization_token": "fixture-token",  # awaken-allow: secret
+        "authorization_token": "fixture-token",  # awaken-allow(secret):
         "ca_certificate_pem": "-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----",
         "content": "fixture",
         "display_name": "Fixture",
@@ -597,7 +597,7 @@ def exercise_declared_request_witnesses(
         return transport_module.Response(200, json={})
 
     with anthropic_module.Anthropic(
-        api_key="declared-request-sync",  # awaken-allow: secret
+        api_key="declared-request-sync",  # awaken-allow(secret):
         http_client=transport_module.Client(
             transport=transport_module.MockTransport(respond)
         ),
@@ -680,7 +680,7 @@ def exercise_declared_request_witnesses(
 
         observed: list[tuple[str, object, dict[str, Any]]] = []
         async with anthropic_module.AsyncAnthropic(
-            api_key="declared-request-async",  # awaken-allow: secret
+            api_key="declared-request-async",  # awaken-allow(secret):
             http_client=transport_module.AsyncClient(
                 transport=transport_module.MockTransport(respond)
             ),
@@ -847,7 +847,7 @@ def exercise_pathlike_upload_change_point(
         return transport_module.Response(200, json={})
 
     with anthropic_module.Anthropic(
-        api_key="pathlike-sync",  # awaken-allow: secret
+        api_key="pathlike-sync",  # awaken-allow(secret):
         http_client=transport_module.Client(
             transport=transport_module.MockTransport(sync_respond)
         ),
@@ -879,7 +879,7 @@ def exercise_pathlike_upload_change_point(
             return transport_module.Response(200, json={})
 
         async with anthropic_module.AsyncAnthropic(
-            api_key="pathlike-async",  # awaken-allow: secret
+            api_key="pathlike-async",  # awaken-allow(secret):
             http_client=transport_module.AsyncClient(
                 transport=transport_module.MockTransport(async_respond)
             ),
@@ -954,7 +954,7 @@ async def _call_session_create(
             return handler(request)
 
         options = {
-            "api_key": "async-transport-contract",  # awaken-allow: secret
+            "api_key": "async-transport-contract",  # awaken-allow(secret):
             "http_client": transport_module.AsyncClient(
                 transport=transport_module.MockTransport(async_handler)
             ),
@@ -973,7 +973,7 @@ async def _call_session_create(
             return [row async for row in response] if collect else response
 
     options = {
-        "api_key": "transport-contract",  # awaken-allow: secret
+        "api_key": "transport-contract",  # awaken-allow(secret):
         "http_client": transport_module.Client(
             transport=transport_module.MockTransport(handler)
         ),
@@ -1003,7 +1003,7 @@ async def _exercise_error_and_retry_contract_for_mode(
     # deliberately retain their prior <=60-second admission boundary.
     options_type = importlib.import_module("anthropic._models").FinalRequestOptions
     client_type = anthropic_module.AsyncAnthropic if asynchronous else anthropic_module.Anthropic
-    delay_client = client_type(api_key="delay-fixture", max_retries=0)  # awaken-allow: secret
+    delay_client = client_type(api_key="delay-fixture", max_retries=0)  # awaken-allow(secret):
     try:
         options = options_type.construct(method="get", url="/v1/sessions")
         for seconds in (120, 5_000_000):
@@ -1296,7 +1296,7 @@ async def _exercise_credential_provider_contract_for_mode(
 
     def credentials(*, force_refresh: bool = False) -> object:
         provider_calls.append(force_refresh)
-        token = "provider-stale" if len(provider_calls) == 1 else "provider-fresh"  # awaken-allow: secret
+        token = "provider-stale" if len(provider_calls) == 1 else "provider-fresh"  # awaken-allow(secret):
         return credential_module.AccessToken(token=token, expires_at=None)
 
     def refresh(request: object) -> object:
@@ -1348,7 +1348,7 @@ async def _exercise_credential_provider_contract_for_mode(
         def shadowed_credentials(*, force_refresh: bool = False) -> object:
             shadowed_calls.append(force_refresh)
             return credential_module.AccessToken(
-                token="must-not-be-used",  # awaken-allow: secret
+                token="must-not-be-used",  # awaken-allow(secret):
                 expires_at=None,
             )
 
@@ -1357,8 +1357,8 @@ async def _exercise_credential_provider_contract_for_mode(
             return transport_module.Response(200, request=request, json={})
 
         static_options = {
-            "api_key": "static-api" if static_kind == "api_key" else None,  # awaken-allow: secret
-            "auth_token": "static-token" if static_kind == "auth_token" else None,  # awaken-allow: secret
+            "api_key": "static-api" if static_kind == "api_key" else None,  # awaken-allow(secret):
+            "auth_token": "static-token" if static_kind == "auth_token" else None,  # awaken-allow(secret):
             "credentials": shadowed_credentials,
         }
         response = await _call_session_create(
@@ -1404,14 +1404,14 @@ async def _exercise_credential_provider_contract_for_mode(
     def parent_credentials(*, force_refresh: bool = False) -> object:
         parent_calls.append(force_refresh)
         return credential_module.AccessToken(
-            token="parent-provider",  # awaken-allow: secret
+            token="parent-provider",  # awaken-allow(secret):
             expires_at=None,
         )
 
     def override_credentials(*, force_refresh: bool = False) -> object:
         override_calls.append(force_refresh)
         return credential_module.AccessToken(
-            token="override-provider",  # awaken-allow: secret
+            token="override-provider",  # awaken-allow(secret):
             expires_at=None,
         )
 
@@ -1532,7 +1532,7 @@ async def _exercise_credential_provider_contract_for_mode(
             transport=transport_module.MockTransport(accept_helper_request)
         ) as http_client:
             async with anthropic_module.AsyncAnthropic(
-                api_key="parent-must-not-leak",  # awaken-allow: secret
+                api_key="parent-must-not-leak",  # awaken-allow(secret):
                 http_client=http_client,
                 max_retries=0,
                 default_headers={"x-parent-routing": "preserved"},
@@ -1589,14 +1589,14 @@ async def _exercise_credential_provider_contract_for_mode(
             transport=transport_module.MockTransport(deny_helper)
         ) as http_client:
             async with anthropic_module.AsyncAnthropic(
-                api_key="parent-must-not-leak",  # awaken-allow: secret
+                api_key="parent-must-not-leak",  # awaken-allow(secret):
                 http_client=http_client,
                 max_retries=0,
             ) as denied_parent:
                 try:
                     async for _ in denied_parent.beta.environments.work.poller(
                         environment_id="environment_wire",
-                        environment_key="invalid-environment-helper",  # awaken-allow: secret
+                        environment_key="invalid-environment-helper",  # awaken-allow(secret):
                         worker_id="worker-helper",
                         drain=True,
                         block_ms=None,
@@ -1770,7 +1770,7 @@ async def _exercise_async_credential_change_point(
     legacy_calls = []
     def legacy() -> object:
         legacy_calls.append(True)
-        return credentials.AccessToken(token="legacy-provider", expires_at=None)  # awaken-allow: secret
+        return credentials.AccessToken(token="legacy-provider", expires_at=None)  # awaken-allow(secret):
     legacy_requests = []
     def accept_legacy(request: object) -> object:
         legacy_requests.append(request)
@@ -1787,7 +1787,7 @@ async def _exercise_async_credential_change_point(
         async def __call__(self, *, force_refresh: bool = False) -> object:
             self.calls.append(force_refresh)
             return credentials.AccessToken(
-                token="async-fresh" if force_refresh else "async-stale", expires_at=None)  # awaken-allow: secret
+                token="async-fresh" if force_refresh else "async-stale", expires_at=None)  # awaken-allow(secret):
         async def aclose(self) -> None:
             self.closed = True
     provider = AsyncCredentials()
@@ -1831,7 +1831,7 @@ async def _exercise_async_credential_change_point(
         if len(calls) == 1:
             entered.set()
             await release.wait()
-        return credentials.AccessToken(token="cache-token", expires_at=None)  # awaken-allow: secret
+        return credentials.AccessToken(token="cache-token", expires_at=None)  # awaken-allow(secret):
     cache = cache_module.TokenCache(blocked)
     leader = asyncio.create_task(cache.async_get_token())
     await asyncio.wait_for(entered.wait(), 2)
@@ -1868,12 +1868,12 @@ async def _exercise_async_credential_change_point(
     async def per_request(*, force_refresh: bool = False) -> object:
         calls.append(force_refresh)
         if len(calls) == 1:
-            return credentials.AccessToken(token="seed-token", expires_at=0)  # awaken-allow: secret
+            return credentials.AccessToken(token="seed-token", expires_at=0)  # awaken-allow(secret):
         if len(calls) == 2:
             entered.set()
             await release.wait()
-            return credentials.AccessToken(token="old-token", expires_at=0)  # awaken-allow: secret
-        return credentials.AccessToken(token="fresh-token", expires_at=None)  # awaken-allow: secret
+            return credentials.AccessToken(token="old-token", expires_at=0)  # awaken-allow(secret):
+        return credentials.AccessToken(token="fresh-token", expires_at=None)  # awaken-allow(secret):
     cache = cache_module.TokenCache(per_request)
     assert await cache.async_get_token() == "seed-token", "A7"
     old = asyncio.create_task(cache.async_get_token())
@@ -1893,7 +1893,7 @@ async def _exercise_async_credential_change_point(
         calls.append(force_refresh)
         if len(calls) == 2:
             raise failure
-        return credentials.AccessToken(token="retry-token", expires_at=None)  # awaken-allow: secret
+        return credentials.AccessToken(token="retry-token", expires_at=None)  # awaken-allow(secret):
     cache = cache_module.TokenCache(fails_once)
     assert await cache.async_get_token() == "retry-token"
     cache.invalidate()

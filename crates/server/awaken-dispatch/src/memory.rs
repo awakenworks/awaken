@@ -18,7 +18,7 @@
 // @formal entrypoint session_run.reservation_ttl_uses_store_clock
 // @formal entrypoint worker.retry_preserves_pinned_binding
 // @formal evidence run_ingress.a_deadline_passes_once_it_is_reached
-// awaken-file-limit-ceiling: 1739
+// awaken-allow(file-limit-ceiling): 1739
 //! In-memory reference implementation of the durable-ingress store.
 //!
 //! It mirrors the Postgres store's behaviour exactly so the worker and ingress

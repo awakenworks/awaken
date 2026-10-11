@@ -1,46 +1,29 @@
 #!/usr/bin/env python3
 """Compare ordinary cold/warm builds of an explicit Rust test workload.
 
-Each observation gets a fresh checkout-local target directory. Test identities
-and unchanged warm artifacts are checked; a failed observation is retained and
-stops the comparison. This is a benchmark, never a full qualification receipt.
+Retain the original workload CLI and evidence comparison functions. Execution
+is explicitly pending until whole-graph case projection is proved; it starts
+no Cargo observations and owns no environment, source snapshot or runner.
 """
 from __future__ import annotations
 
 import argparse
 from collections import Counter
-import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
+from unittest import mock
 import subprocess
 import sys
-import time
 import unittest
 
 import crate_test
 import nextest_execution
-from rust_test_plan import source_snapshot
 
 ROOT = Path(__file__).resolve().parents[2]
-
-
-def plain_environment(target: Path, jobs: int) -> dict[str, str]:
-    environment = dict(os.environ)
-    for name in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "AWAKEN_LINK_OUTPUT_STAGING"):
-        environment.pop(name, None)
-    environment.update(CARGO_TARGET_DIR=str(target), CARGO_BUILD_BUILD_DIR=str(target),
-                       CARGO_BUILD_JOBS=str(jobs), CARGO_TERM_COLOR="never", PYTHONUTF8="1")
-    return environment
-
-
-def select_linker(environment: dict[str, str], linker: Path | None) -> dict[str, str]:
-    result = dict(environment)
-    if linker is not None:
-        if result.get('RUSTFLAGS') or result.get('CARGO_ENCODED_RUSTFLAGS'):
-            raise ValueError('linker comparisons require an environment without ambient Rust flags')
-        result['CARGO_ENCODED_RUSTFLAGS'] = '\x1f'.join(['-Clinker=' + str(linker), '-Clinker-flavor=lld-link'])
-    return result
+INPUT_GLOBS = ("scripts/ci/benchmark_rust_build.py", "scripts/ci/crate_test.py", "scripts/ci/nextest_execution.py", "scripts/ci/deadline.py",
+               "scripts/ci/formal_sources.py", "scripts/ci/test.sh", ".config/rust-tests.toml")
 
 
 def build_artifacts(text: str) -> tuple[int, dict[str, dict]]:
@@ -54,7 +37,8 @@ def build_artifacts(text: str) -> tuple[int, dict[str, dict]]:
             continue
         compilations += not record["fresh"]
         if record.get("executable") and record.get("profile", {}).get("test"):
-            key = record["package_id"] + "::" + record["target"]["name"]
+            key = json.dumps({field: record[field] for field in
+                              ("package_id", "target", "profile", "features", "filenames", "executable")}, sort_keys=True)
             if key in artifacts:
                 raise ValueError("duplicate test artifact: " + key)
             path = Path(record["executable"])
@@ -62,7 +46,8 @@ def build_artifacts(text: str) -> tuple[int, dict[str, dict]]:
                 raise ValueError("missing or empty test executable: " + str(path))
             if os.name == "nt" and (path.stat().st_size < 1024 or path.open("rb").read(2) != b"MZ"):
                 raise ValueError("test output is not a native Windows executable: " + str(path))
-            artifacts[key] = {"path": str(path), "bytes": path.stat().st_size}
+            artifacts[key] = {"path": str(path), "bytes": path.stat().st_size,
+                              "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
     if not artifacts:
         raise ValueError("the workload produced no test executables")
     return compilations, artifacts
@@ -92,7 +77,6 @@ def main() -> int:
     parser.add_argument("--jobs", nargs="+", type=positive, default=[1, 2, 4])
     parser.add_argument("--rounds", type=positive, default=2)
     parser.add_argument("--timeout", type=positive, default=900)
-    parser.add_argument('--linker', choices=('default', 'rust-lld'), default='default')
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -100,137 +84,72 @@ def main() -> int:
             unittest.defaultTestLoader.loadTestsFromTestCase(BenchmarkTests)).wasSuccessful())
     if not args.package or len(set(args.package)) != len(args.package) or len(set(args.jobs)) != len(args.jobs):
         parser.error("packages and job counts must be nonempty and unique")
-    linker = None
-    if args.linker == 'rust-lld':
-        host = next(line.split(': ', 1)[1] for line in subprocess.check_output(['rustc', '-vV'], text=True).splitlines() if line.startswith('host: '))
-        if os.name != 'nt' or not host.endswith('-msvc'):
-            parser.error('this rust-lld experiment requires a native Windows MSVC host')
-        sysroot = Path(subprocess.check_output(['rustc', '--print', 'sysroot'], text=True).strip())
-        linker = sysroot / 'lib/rustlib' / host / 'bin/rust-lld.exe'
-        if not linker.is_file():
-            parser.error('rust-lld was not found in the active toolchain')
-    features, companions = crate_test.load_profile()
-    metadata = crate_test.full_graph_metadata(features)
-    commands = crate_test.plan_packages(metadata, features, companions, args.package, [])
-    test = commands[-1]
-    build = ["cargo", "test", *test[3:], "--no-run", "--timings", "--message-format=json"]
-    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    output = ROOT / "target/test-timings" / ("build-benchmark-" + stamp)
-    output.mkdir(parents=True)
-    digest, patch = source_snapshot()
-    (output / "source.patch").write_bytes(patch)
-    receipt = {"kind": "ordinary-rust-build-benchmark", "full_gate": False, "status": "running",
-               "source_digest": digest, "source_head": subprocess.check_output(
-                   ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
-               "rustc": subprocess.check_output(["rustc", "-vV"], cwd=ROOT, text=True).strip(),
-               "packages": args.package, "jobs": args.jobs, "rounds": args.rounds,
-               "compiler_wrapper": None, "compiler_output_staging": False,
-               "linker": str(linker) if linker else 'toolchain default',
-               "cache": "fresh target/build directory for every observation", "rows": []}
-    def save() -> None:
-        (output / "results.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
-    print("Benchmark evidence: " + str(output), flush=True)
-    save()
-    status = 1
-    expected_cases = None
-    expected_artifacts = None
-    try:
-        for round_index in range(args.rounds):
-            # Alternate order so the first job count does not always see the
-            # coldest filesystem/compiler caches. Cargo artifact caches stay isolated.
-            order = args.jobs if round_index % 2 == 0 else list(reversed(args.jobs))
-            for jobs in order:
-                target = output / f"round-{round_index + 1}-jobs-{jobs}"
-                environment = select_linker(plain_environment(target, jobs), linker)
-                for index, command in enumerate([*commands[:-1], build, test, build]):
-                    phase = "companion" if index < len(commands) - 1 else (
-                        "cold-build", "tests", "warm-build")[index - len(commands) + 1]
-                    log = output / f"round-{round_index + 1}-jobs-{jobs}-{index}-{phase}.log"
-                    print(f"START round={round_index + 1} jobs={jobs} {phase}", flush=True)
-                    started = time.monotonic()
-                    stages = None
-                    if phase == 'tests':
-                        test_status, stages = nextest_execution.execute(command, environment,
-                            output / f'round-{round_index + 1}-jobs-{jobs}-execution', args.timeout)
-                        result = subprocess.CompletedProcess(command, test_status)
-                        log.write_text('\n'.join(Path(stage[path]).read_text(encoding='utf-8')
-                            for stage in stages for path in ('log', 'stderr') if Path(stage[path]).is_file()), encoding='utf-8')
-                    else:
-                        with log.open("w", encoding="utf-8") as stream:
-                            result = subprocess.run([sys.executable, str(ROOT / "scripts/ci/deadline.py"),
-                                                     str(args.timeout), "--", *command],
-                                                    cwd=ROOT, env=environment, stdout=stream, stderr=subprocess.STDOUT)
-                    row = {"round": round_index + 1, "jobs": jobs, "phase": phase,
-                           "command": command, "log": str(log), "exit_code": result.returncode,
-                           "elapsed_seconds": time.monotonic() - started}
-                    receipt["rows"].append(row)
-                    if stages is not None:
-                        row['stages'] = stages
-                    save()
-                    if result.returncode:
-                        status = result.returncode
-                        raise ValueError("failed observation; comparison stopped, see " + str(log))
-                    text = log.read_text(encoding="utf-8")
-                    if phase in ("cold-build", "warm-build"):
-                        count, artifacts = build_artifacts(text)
-                        row.update(compilations=count, test_artifacts=artifacts)
-                        row['test_executable_bytes'] = sum(artifact['bytes'] for artifact in artifacts.values())
-                        names = sorted(artifacts)
-                        if expected_artifacts is not None and names != expected_artifacts:
-                            raise ValueError("job counts changed the test artifact identities")
-                        expected_artifacts = names
-                        if phase == "warm-build" and count:
-                            raise ValueError("unchanged warm build unexpectedly recompiled")
-                    elif phase == "tests":
-                        cases = executed_cases(text)
-                        if expected_cases is not None and cases != expected_cases:
-                            raise ValueError("job counts changed the executed test identities")
-                        expected_cases = cases
-                        row["executed_cases"] = sorted(cases.elements())
-                    save()
-                    print(f"PASS {phase}: {row['elapsed_seconds']:.3f}s", flush=True)
-        status = 0
-    except (OSError, ValueError) as error:
-        receipt["error"] = str(error)
-        print(str(error), file=sys.stderr)
-    finally:
-        receipt["source_unchanged"] = source_snapshot()[0] == digest
-        if not receipt["source_unchanged"]:
-            status = status or 1
-            receipt["error"] = "source changed during benchmark"
-        receipt.update(status="passed" if status == 0 else "failed", exit_code=status)
-        save()
-    return status
+    print("Benchmark execution is pending complete whole-graph test/case projection; no observation started", file=sys.stderr)
+    return 2
 
 
 class BenchmarkTests(unittest.TestCase):
-    def test_explicit_linker_preserves_spaced_path_and_refuses_ambient_flags(self):
-        linker = Path('toolchain with spaces/rust-lld.exe')
-        result = select_linker({'CARGO_BUILD_JOBS': '1'}, linker)
-        self.assertEqual(result['CARGO_ENCODED_RUSTFLAGS'].split('\x1f'), ['-Clinker=' + str(linker), '-Clinker-flavor=lld-link'])
-        self.assertEqual(select_linker({'RUSTFLAGS': 'custom'}, None), {'RUSTFLAGS': 'custom'})
-        for name in ('RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS'):
-            with self.subTest(name=name), self.assertRaises(ValueError): select_linker({name: 'custom'}, linker)
-
     def test_execution_evidence_rejects_empty_skipped_missing_and_incomplete_runs(self) -> None:
         good = " PASS [ 0.1s] (1/1) package target::case\n Summary [ 0.1s] 1 tests run: 1 passed, 0 skipped\n"
         self.assertEqual(executed_cases(good), Counter({("package", "target::case"): 1}))
         self.assertEqual(executed_cases(good.replace(", 0 skipped", "")), Counter({("package", "target::case"): 1}))
-        self.assertEqual(executed_cases(good.replace('(1/1) ', '').replace('1 tests run', '1 test run')),
-                         Counter({("package", "target::case"): 1}))
         for invalid in ("", good.replace("0 skipped", "1 skipped"),
                         good.replace("1 tests run", "0 tests run"), good.splitlines()[-1], good + good):
             with self.assertRaises(ValueError):
                 executed_cases(invalid)
 
+    def test_comparison_reuses_native_and_progress_output_and_refuses_fixture_skip(self):
+        # B1 progress counters or native singular output + exact successful
+        # summary -> same named case. B2 fixture skip, duplicate or empty
+        # outcomes -> reject even with summary0. Neither form proves Source.
+        for prefix in ("(1/1) ", ""):
+            output = f"PASS [ 0.1s] {prefix}pkg::test critical\nSummary [ 0.1s] 1 test run: 1 passed\n"
+            self.assertEqual(executed_cases(output), Counter({("pkg::test", "critical"): 1}))
+            for invalid in (output + "SKIPPED PostgreSQL fixture: absent\n",
+                            output + output.splitlines()[0] + "\n", output.replace("PASS", "FAIL")):
+                with self.subTest(prefix=prefix, invalid=invalid), self.assertRaises(ValueError):
+                    executed_cases(invalid)
+
     def test_ordinary_environment_uses_exact_owned_target_and_job_count(self) -> None:
         target = ROOT / "target/test-timings/probe"
-        result = plain_environment(target, 2)
+        # N4/N13: target/BUILD comes from its existing owner; pending execution
+        # does not add a second environment or remove compiler context silently.
+        with mock.patch.dict(os.environ, CARGO_TARGET_DIR=str(target), CARGO_BUILD_JOBS="2", RUSTC_WRAPPER="caller-owned-wrapper"):
+            result = crate_test.environment()
         self.assertEqual(result["CARGO_TARGET_DIR"], str(target))
         self.assertEqual(result["CARGO_BUILD_BUILD_DIR"], str(target))
         self.assertEqual(result["CARGO_BUILD_JOBS"], "2")
-        for name in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "AWAKEN_LINK_OUTPUT_STAGING"):
-            self.assertNotIn(name, result)
+        self.assertEqual(result["RUSTC_WRAPPER"], "caller-owned-wrapper")
+
+    def test_pending_workload_starts_no_observation_or_graph_read(self):
+        # N4/N12-N15: selected workload is not proved for whole+E/no-skips.
+        # Preserve the CLI and explicit pending failure; no metadata, cold
+        # target, runner, changed profile or invented performance receipt.
+        with mock.patch.object(sys, "argv", [__file__, "-p", "leaf", "--jobs", "1", "--rounds", "1"]), \
+                mock.patch.object(subprocess, "run", side_effect=AssertionError("observation started")), \
+                mock.patch.object(crate_test, "full_graph_metadata", side_effect=AssertionError("graph read started")):
+            self.assertEqual(main(), 2)
+
+    def test_artifact_projection_retains_unit_variants_and_rejects_missing_bytes(self):
+        # N12: same package/target name x different feature/profile/path units.
+        # Full identities must not collapse; exact duplicates/missing/empty
+        # bytes reject. Comparison utilities have no execution/qualification role.
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "test-executable"
+            path.write_bytes(b"MZ" + b"x" * 2048)
+            row = {"reason": "compiler-artifact", "fresh": False, "package_id": "selected",
+                   "target": {"name": "same", "kind": ["lib"]}, "profile": {"test": True},
+                   "features": [], "filenames": [str(path)], "executable": str(path)}
+            second = dict(row, features=["rich"])
+            count, artifacts = build_artifacts("\n".join(map(json.dumps, (row, second))))
+            self.assertEqual((count, len(artifacts)), (2, 2))
+            self.assertEqual({r["sha256"] for r in artifacts.values()}, {hashlib.sha256(path.read_bytes()).hexdigest()})
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                build_artifacts("\n".join(map(json.dumps, (row, row))))
+            path.write_bytes(b"")
+            with self.assertRaisesRegex(ValueError, "missing or empty"):
+                build_artifacts(json.dumps(row))
 
 
 if __name__ == "__main__":

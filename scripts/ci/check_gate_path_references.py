@@ -16,20 +16,23 @@ source or manifest file under `crates/` -- because that is what a refactor moves
 Gate outputs never live under `crates/`, so no reference here is legitimately
 missing.
 
-The scanned files are this module's INPUT_GLOBS minus `crates/**`, which is
-there only so that a commit renaming a crate file re-runs the rule.
+The scanned files are the shell/YAML patterns in INPUT_GLOBS. Crate paths
+trigger re-runs when a referenced file moves; Python helpers are read as inputs,
+while their contents remain outside this rule's shell/YAML corpus.
 """
 
 from __future__ import annotations
 
 import argparse
 import re
-import subprocess
 import sys
 from pathlib import Path
 
+import formal_sources
+
 INPUT_GLOBS: tuple[str, ...] = (
     "crates/**",
+    "scripts/ci/formal_sources.py",
     "scripts/**/*.sh",
     "e2e/**/*.sh",
     "deploy/**/*.sh",
@@ -46,7 +49,8 @@ REFERENCE = re.compile(r"(?<![\w./-])crates/[a-z]+/[A-Za-z0-9_-]+/[A-Za-z0-9_./-
 def scanned_files(tracked: list[str]) -> list[str]:
     """Tracked files matched by INPUT_GLOBS, excluding the crate sources themselves."""
 
-    patterns = [glob for glob in INPUT_GLOBS if not glob.startswith("crates/")]
+    patterns = [glob for glob in INPUT_GLOBS if not glob.startswith("crates/")
+                and Path(glob).suffix in (".sh", ".yaml", ".yml")]
     selected = []
     for relative in tracked:
         path = Path(relative)
@@ -78,13 +82,6 @@ def dangling_references(root: Path, files: dict[str, str]) -> list[str]:
                 "current location in the commit that moved it"
             )
     return errors
-
-
-def tracked_files(root: Path) -> list[str]:
-    listed = subprocess.run(
-        ["git", "ls-files", "-z"], cwd=root, capture_output=True, check=True
-    ).stdout.decode("utf-8", "replace")
-    return [name for name in listed.split("\0") if name]
 
 
 def self_test() -> None:
@@ -128,6 +125,12 @@ def self_test() -> None:
         "scripts/ci/check-reliability.sh",
         "scripts/e2e/sub/run.sh",
     ], f"C4 scope {scanned_files(tracked)}"
+    # SX6: declaring an imported Python data input must trigger this guard
+    # without widening its existing shell/YAML matcher corpus. Exercise the
+    # actual declaration/filter, rather than a second path registry.
+    from unittest.mock import patch
+    with patch.dict(scanned_files.__globals__, INPUT_GLOBS=(*INPUT_GLOBS, "scripts/ci/formal_sources.py")):
+        assert "scripts/ci/formal_sources.py" not in scanned_files(tracked + ["scripts/ci/formal_sources.py"]), "SX6 data input"
     print("check_gate_path_references self-test: the decision table holds")
 
 
@@ -146,7 +149,7 @@ def main(argv: list[str]) -> int:
         return 0
     files = {
         relative: (ROOT / relative).read_text(encoding="utf-8", errors="replace")
-        for relative in scanned_files(tracked_files(ROOT))
+        for relative in scanned_files(formal_sources.tracked_files(ROOT))
         if (ROOT / relative).is_file()
     }
     if len(files) < 20:

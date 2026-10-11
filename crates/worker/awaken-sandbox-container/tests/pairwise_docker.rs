@@ -412,8 +412,8 @@ async fn a_real_container_rotates_and_persists_a_native_credential_file() {
     let Some((_, rt)) = setup().await else {
         return;
     };
-    let initial = br#"{"tokens":{"access_token":"old","refresh_token":"old-refresh"}}"#; // awaken-allow: secret -- synthetic test fixture
-    let refreshed = br#"{"tokens":{"access_token":"new","refresh_token":"rotated"}}"#; // awaken-allow: secret -- synthetic test fixture
+    let initial = br#"{"tokens":{"access_token":"old","refresh_token":"old-refresh"}}"#; // awaken-allow(secret): -- synthetic test fixture
+    let refreshed = br#"{"tokens":{"access_token":"new","refresh_token":"rotated"}}"#; // awaken-allow(secret): -- synthetic test fixture
     let broker = Arc::new(CredentialBroker {
         bytes: Mutex::new(initial.to_vec()),
     });

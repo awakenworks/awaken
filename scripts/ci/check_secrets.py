@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
-"""Block committed credentials and high-signal secret literals."""
+"""Block committed credentials and high-signal secret literals.
+
+* `secret`: a deliberate false positive is exempted only on the same line by
+  `awaken-allow(secret):`. Its original optional explanation stays optional;
+  this rule has no minimum reason, owner or expiry policy.
+"""
 
 from __future__ import annotations
 
 import argparse
 import re
-import subprocess
 import sys
 from pathlib import Path
+
+import formal_sources
 
 # Input set: `--staged` scans every staged file whose suffix is in TEXT_SUFFIXES.
 # A glob built from that suffix list would silently stop scanning the next file
@@ -17,7 +23,7 @@ INPUT_GLOBS: tuple[str, ...] = ("**/*",)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
-ALLOW_MARKER = "awaken-allow: secret"
+ALLOW_MARKER = "awaken-allow(secret):"
 CODE_SUFFIXES = {
     ".cjs",
     ".env",
@@ -98,43 +104,8 @@ PLACEHOLDER_EXACT = {
 }
 
 
-def git_lines(args: list[str]) -> list[str]:
-    try:
-        out = subprocess.check_output(args, cwd=REPO_ROOT, text=True)
-    except subprocess.CalledProcessError:
-        return []
-    return [line for line in out.splitlines() if line]
-
-
-def staged_files() -> list[str]:
-    return git_lines(["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"])
-
-
-def tracked_files() -> list[str]:
-    files = git_lines(["git", "ls-files"])
-    if files:
-        return files
-    return [str(path.relative_to(REPO_ROOT)) for path in REPO_ROOT.rglob("*") if path.is_file()]
-
-
 def is_excluded(rel: str) -> bool:
     return bool(set(rel.split("/")) & EXCLUDED_PARTS)
-
-
-def read_content(rel: str, staged: bool) -> str | None:
-    if staged:
-        try:
-            return subprocess.check_output(
-                ["git", "show", f":{rel}"],
-                cwd=REPO_ROOT,
-                stderr=subprocess.DEVNULL,
-            ).decode("utf-8", errors="replace")
-        except subprocess.CalledProcessError:
-            return None
-    path = REPO_ROOT / rel
-    if not path.is_file():
-        return None
-    return path.read_text(encoding="utf-8", errors="replace")
 
 
 def looks_secret(value: str) -> bool:
@@ -152,7 +123,7 @@ def looks_secret(value: str) -> bool:
 def scan_text(text: str, suffix: str) -> list[str]:
     findings: list[str] = []
     for lineno, line in enumerate(text.splitlines(), 1):
-        if ALLOW_MARKER in line:
+        if formal_sources.allow_reason(line, "secret") is not None:
             continue
         for label, pattern in HIGH_SIGNAL:
             if pattern.search(line):
@@ -165,6 +136,7 @@ def scan_text(text: str, suffix: str) -> list[str]:
 
 
 def self_test() -> int:
+    formal_sources._selftest_guard_inputs()
     private_key = "-----BEGIN " + "PRIVATE KEY-----"
     aws_key = "AKIA" + ("0" * 16)
     cases = [
@@ -175,6 +147,20 @@ def self_test() -> int:
         ("docs example", 'token = "abc12345SECRET"', ".md", False),
         ("allow marker", f'token = "abc12345SECRET" # {ALLOW_MARKER}', ".rs", False),
     ]
+    # SX1 cause/effect graph: exact secret rule AND same line -> exempt,
+    # independent of optional payload length. Other rule/line/old spelling
+    # -> original finding. Blank payload is valid; no owner/expiry/minimum
+    # reason permission is invented. Existing six matcher cases stay above.
+    legacy = "awaken-" + "allow: secret"
+    for reason in ("", "x", "fixture; owner=unchanged; expires=unchanged; foreign=text"):
+        cases.append(("SX1 optional secret payload", f'token = "abc12345SECRET" # {ALLOW_MARKER} {reason}', ".rs", False))
+    for marker in (legacy, "awaken-allow(wait): long timing reason that belongs to another rule"):
+        cases.append(("SX1 other/old rule", f'token = "abc12345SECRET" # {marker}', ".rs", True))
+    cases.extend((
+        ("SX1 prior line", f'# {ALLOW_MARKER}\ntoken = "abc12345SECRET"', ".rs", True),
+        ("SX1 later line", f'token = "abc12345SECRET"\n# {ALLOW_MARKER}', ".rs", True),
+        ("SX1 high signal", aws_key + f" # {ALLOW_MARKER}", ".txt", False),
+    ))
     failures: list[str] = []
     for name, text, suffix, expected in cases:
         hits = scan_text(text, suffix)
@@ -199,7 +185,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.self_test:
         return self_test()
 
-    files = staged_files() if args.staged else tracked_files()
+    files = (formal_sources.git_paths(REPO_ROOT, "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR")
+             if args.staged else formal_sources.tracked_files(REPO_ROOT, allow_nonrepository=True))
     if args.staged and not files:
         print("OK - no staged files to scan for secrets.")
         return 0
@@ -208,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     for rel in sorted(files):
         if rel in SELF_TEST_ALLOWLIST or is_excluded(rel) or Path(rel).suffix not in TEXT_SUFFIXES:
             continue
-        text = read_content(rel, args.staged)
+        text = formal_sources.file_text(REPO_ROOT, rel, args.staged)
         if text is None:
             continue
         for hit in scan_text(text, Path(rel).suffix):
