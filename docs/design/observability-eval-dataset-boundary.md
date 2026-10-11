@@ -28,6 +28,16 @@ explain, score, or compare runs, but they do not rewrite run truth.
 5. Public protocol ids are adapter projections; traces may reference them only as
    correlation tags.
 
+The existing JSON-lines trace exporter uses the OpenTelemetry batch processor
+with at most 512 queued spans and batches of 128. File I/O runs on that SDK's
+export thread, never synchronously when a request span ends. Overflow or export
+failure loses diagnostic evidence only; it never changes admission or recovery.
+The sink keeps the configured file and one `.1` rollover, each bounded to 8 MiB.
+Rotation preserves whole JSON lines. A single oversized record is rejected;
+oversized files retained by an older exporter are truncated before new writes.
+Tests own the capacity decision table and drive the real SDK/exporter path.
+Long-term trace retention belongs in the configured OTLP collector.
+
 ## Eval Rules
 
 Session renewal diagnostics reuse the existing observability SDK, HTTP root
