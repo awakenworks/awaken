@@ -559,6 +559,18 @@ impl RuntimeRunContext {
         self
     }
 
+    /// Bind a store that implements both ports, ensuring reads and writes use
+    /// the same committed owner. Split adapters may still bind the ports explicitly.
+    #[must_use]
+    pub fn with_store<T>(mut self, store: Arc<T>) -> Self
+    where
+        T: CommitCoordinator + CommittedThreadView + 'static,
+    {
+        self.commit = Some(store.clone());
+        self.reader = Some(store);
+        self
+    }
+
     /// Add a committed-terminal observer for this Run. Observers are inherited
     /// by in-process delegated child Runs because those children are ordinary
     /// Runs sharing the same runtime extension composition.

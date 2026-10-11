@@ -1367,8 +1367,14 @@ impl ToolDescriptor {
     /// only input-schema authority: callers provide neither JSON nor a repeated
     /// id/description, so the executable and advertised contracts cannot drift.
     pub fn for_tool<T: crate::tool::Tool>(prefix: &str) -> Self {
+        Self::try_for_tool::<T>(prefix)
+            .expect("trusted typed tool arguments must carry a valid object parameter schema")
+    }
+
+    /// Fallible typed constructor for application-defined tools.
+    pub fn try_for_tool<T: crate::tool::Tool>(prefix: &str) -> Result<Self, ToolSchemaError> {
         let parameters = model_tool_schema::<T::Args>();
-        Self::pinned(prefix, T::ID, T::DESCRIPTION, parameters)
+        Self::try_pinned(prefix, T::ID, T::DESCRIPTION, parameters)
     }
 
     /// Generate a descriptor for a typed model-visible capability that is not

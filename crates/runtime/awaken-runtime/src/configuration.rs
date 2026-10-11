@@ -27,6 +27,10 @@ pub enum ConfigurationError {
     )]
     MissingHistoryReader,
     #[error(
+        "a committed Run outcome requires a commit coordinator; configure with_store or with_commit"
+    )]
+    MissingCommitCoordinator,
+    #[error(
         "no model provider configured for this runtime; configure with_llm or with_model_executor"
     )]
     MissingModelProvider,
@@ -39,6 +43,7 @@ impl ConfigurationError {
             Self::MissingTool { .. } => "missing_tool",
             Self::MissingSandboxExecutor { .. } => "missing_sandbox_executor",
             Self::MissingHistoryReader => "missing_history_reader",
+            Self::MissingCommitCoordinator => "missing_commit_coordinator",
             Self::MissingModelProvider => "missing_model_provider",
         }
     }
@@ -79,16 +84,46 @@ impl Runtime {
         context: &RuntimeRunContext,
     ) -> Result<(), Error> {
         self.validate_configuration()?;
-        let env = self
-            .resolve_plugin_env_with(&snapshot.resolved_spec, &context.session_plugins)
-            .map_err(|error| {
+        awaken_runtime_contract::resolver::RunResolver::resolve(self, snapshot).map_err(
+            |error| {
                 RuntimeDiagnostic::new(
                     RuntimeErrorKind::InvalidConfiguration,
-                    "invalid_plugin_configuration",
+                    "invalid_snapshot",
                     error,
                 )
-            })?;
-        for descriptor in &snapshot.resolved_spec.tool_descriptors {
+            },
+        )?;
+        // Plugin contributions are resolved once at the canonical execution
+        // seam. A preflight must not instantiate active plugins a second time.
+        if snapshot.resolved_spec.plugin_ids.is_empty() && context.session_plugins.is_empty() {
+            let env = self
+                .resolve_plugin_env_with(&snapshot.resolved_spec, &context.session_plugins)
+                .map_err(|error| {
+                    RuntimeDiagnostic::new(
+                        RuntimeErrorKind::InvalidConfiguration,
+                        "invalid_plugin_configuration",
+                        error,
+                    )
+                })?;
+            self.validate_resolved_tools(&snapshot.resolved_spec, context, &env)?;
+        }
+        if snapshot.resolved_spec.plugin_ids.is_empty()
+            && context.session_plugins.is_empty()
+            && self.llm().is_none()
+            && context.model_executor.is_none()
+        {
+            return Err(ConfigurationError::MissingModelProvider.into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_resolved_tools(
+        &self,
+        spec: &awaken_runtime_contract::resolved::ResolvedSpec,
+        context: &RuntimeRunContext,
+        env: &awaken_runtime_contract::plugin::ResolvedExecutionEnv,
+    ) -> Result<(), Error> {
+        for descriptor in &spec.tool_descriptors {
             if !matches!(descriptor.kind, ToolKind::Regular | ToolKind::DetachedOnly) {
                 continue;
             }
@@ -106,15 +141,6 @@ impl Runtime {
                 }
                 .into());
             }
-        }
-        // A plugin may hand off execution without invoking a model. Require a
-        // provider here only for the plain native model path.
-        if snapshot.resolved_spec.plugin_ids.is_empty()
-            && context.session_plugins.is_empty()
-            && self.llm().is_none()
-            && context.model_executor.is_none()
-        {
-            return Err(ConfigurationError::MissingModelProvider.into());
         }
         Ok(())
     }
