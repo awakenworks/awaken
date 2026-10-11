@@ -231,6 +231,8 @@ impl SessionApplication {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<AdmittedSessionRun, RunError>> + Send + 'a>,
     > {
+        let coordination_runtime = self.runtime().coordination();
+
         // Return a boxed future at the application boundary. The admission
         // graph is intentionally deep; boxing here prevents protocol and
         // lifecycle callers from moving its complete state machine through a
@@ -272,7 +274,7 @@ impl SessionApplication {
             let projected_revision = self
                 .admit_run_session(owner_scope, session_id.as_str(), &agent_id)
                 .await?;
-            let reservation = self.runtime().reserve_session_run(command).await?;
+            let reservation = coordination_runtime.reserve_session_run(command).await?;
             let delivery = |session_activity_epoch| SessionRunDelivery {
                 session_id: session_id.clone(),
                 run_id: run_id.clone(),
@@ -332,12 +334,15 @@ impl SessionApplication {
         command: AdmitSessionRun,
         sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<StepOutcome, RunError> {
+        let coordination_runtime = self.runtime().coordination();
+
         let input_message_ids = command.input_message_ids();
         let admitted = Box::pin(self.admit_session_run(command)).await?;
-        Box::pin(
-            self.runtime()
-                .activate_and_observe_session_run(admitted, input_message_ids, sink),
-        )
+        Box::pin(coordination_runtime.activate_and_observe_session_run(
+            admitted,
+            input_message_ids,
+            sink,
+        ))
         .await
     }
 
@@ -350,12 +355,15 @@ impl SessionApplication {
         command: AdmitSessionRun,
         sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<StepOutcome, RunError> {
+        let coordination_runtime = self.runtime().coordination();
+
         let input_message_ids = command.input_message_ids();
         let admitted = Box::pin(self.admit_session_run_for_owner(owner_scope, command)).await?;
-        Box::pin(
-            self.runtime()
-                .activate_and_observe_session_run(admitted, input_message_ids, sink),
-        )
+        Box::pin(coordination_runtime.activate_and_observe_session_run(
+            admitted,
+            input_message_ids,
+            sink,
+        ))
         .await
     }
 
@@ -367,11 +375,13 @@ impl SessionApplication {
         &self,
         admitted: AdmittedSessionRun,
     ) -> Result<awaken_session_execution_contract::SessionRunActivation, RunError> {
+        let coordination_runtime = self.runtime().coordination();
+
         match admitted {
             AdmittedSessionRun::Reserved(delivery)
             | AdmittedSessionRun::AlreadyReserved(delivery)
             | AdmittedSessionRun::AlreadyActivated(delivery) => {
-                self.runtime().activate_session_run(delivery).await
+                coordination_runtime.activate_session_run(delivery).await
             }
             AdmittedSessionRun::RecoveryClaimed { .. } => {
                 Ok(awaken_session_execution_contract::SessionRunActivation::RecoveryClaimed)

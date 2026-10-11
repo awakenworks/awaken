@@ -3,6 +3,10 @@
 //! facts after the durable Session root authorized rehydration, and scripts
 //! read failures, pauses and MCP publication refusals.
 
+use awaken_session_execution_contract::{
+    EnvironmentRuntime as _, SessionCoordinationReads as _, StreamingRunRuntime as _,
+    ThreadReadRuntime as _,
+};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -326,48 +330,6 @@ impl SessionRuntime for RehydrateFake {
     fn model(&self) -> String {
         "host-default-model".to_string()
     }
-
-    fn realization(&self) -> Option<&dyn awaken_session_execution_contract::RealizationRuntime> {
-        Some(self)
-    }
-
-    fn coordination(&self) -> Option<&dyn awaken_session_execution_contract::CoordinationRuntime> {
-        Some(self)
-    }
-
-    fn budget(&self) -> Option<&dyn awaken_session_execution_contract::BudgetRuntime> {
-        Some(self)
-    }
-
-    fn streaming_runs(&self) -> Option<&dyn awaken_session_execution_contract::StreamingRunRuntime> {
-        Some(self)
-    }
-
-    fn environment(&self) -> Option<&dyn awaken_session_execution_contract::EnvironmentRuntime> {
-        Some(self)
-    }
-
-    fn thread_reads(&self) -> Option<&dyn awaken_session_execution_contract::ThreadReadRuntime> {
-        Some(self)
-    }
-
-    fn terminal_cleanup(
-        &self,
-    ) -> Option<&dyn awaken_session_execution_contract::TerminalCleanupRuntime> {
-        Some(self)
-    }
-
-    fn outcomes(&self) -> Option<&dyn awaken_session_execution_contract::OutcomeRuntime> {
-        Some(self)
-    }
-
-    fn capability(&self) -> Option<&dyn awaken_session_execution_contract::CapabilityRuntime> {
-        Some(self)
-    }
-
-    fn live_inbox(&self) -> Option<&dyn awaken_session_execution_contract::LiveInboxRuntime> {
-        Some(self)
-    }
 }
 
 awaken_session_execution_contract::neutral_role!(LiveInboxRuntime for RehydrateFake);
@@ -434,13 +396,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RehydrateFake {
             ));
         }
         if adopts_environment && let Some(binding) = projection.environment.binding() {
-            self.environment()
-                .ok_or_else(|| {
-                    awaken_session_types::RunError::unavailable(
-                        "EnvironmentRuntime is unsupported by this runtime",
-                    )
-                })?
-                .adopt_session_environment(&projection.baseline.agent_id, thread, binding)
+            self.adopt_session_environment(&projection.baseline.agent_id, thread, binding)
                 .await?;
         }
         Ok(())
@@ -535,24 +491,6 @@ impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
-    /// Read the exact Run lifecycle from existing committed Thread truth. This
-    /// is the recovery observation for batch advancement, not a completion
-    /// registry or protocol event cache.
-    async fn session_run_state(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        run_id: &awaken_agent_contract::agent::run::Id,
-    ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, awaken_session_types::RunError>
-    {
-        awaken_session_execution_contract::NeutralRuntime
-            .session_run_state(session_id, run_id)
-            .await
-    }
-
-    async fn delegated_runs(&self, _thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
-        self.order.lock().unwrap().push("delegations");
-        Ok(self.delegated.lock().unwrap().clone())
-    }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
@@ -570,19 +508,6 @@ impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
         awaken_session_execution_contract::NeutralRuntime
             .admit_coordinated_run(command)
             .await
-    }
-
-    async fn coordinated_threads(
-        &self,
-        _session_id: &awaken_session_types::SessionId,
-        _observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-    ) -> Result<Vec<awaken_session_execution_contract::CoordinatedThreadLink>, RunError> {
-        self.reads
-            .on_read("coordination")
-            .await
-            .map_err(scripted_read_failure)?;
-        self.order.lock().unwrap().push("coordination");
-        Ok(self.coordinated.lock().unwrap().clone())
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -631,48 +556,6 @@ impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
         awaken_session_execution_contract::NeutralRuntime
             .interrupt_session_thread(session_id, child_thread_id)
             .await
-    }
-
-    async fn session_thread_tool_reply_fence(
-        &self,
-        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<awaken_session_execution_contract::SessionThreadToolReplyFence, RunError> {
-        let thread_id = command.target.thread_id(&command.session_id);
-        let pending = self
-            .pending_by_thread
-            .lock()
-            .unwrap()
-            .get(&thread_id.0)
-            .cloned()
-            .filter(|pending| pending.tool_use_id == command.tool_use_id)
-            .ok_or_else(|| RunError::bad_request("reply does not match the pending ticket"))?;
-        let run_id = match &command.target {
-            awaken_session_execution_contract::SessionThreadTarget::Primary => {
-                command.expected_run_id.clone()
-            }
-            awaken_session_execution_contract::SessionThreadTarget::Child(_) => self
-                .coordinated
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|link| link.thread_id == thread_id)
-                .and_then(|link| link.latest_run_id.clone())
-                .ok_or_else(|| RunError::bad_request("coordinated child has no committed Run"))?,
-        };
-        if run_id != command.expected_run_id
-            || command.expected_correlation_id != format!("ticket:{}", pending.tool_use_id)
-        {
-            return Err(RunError::bad_request("reply ticket fence is stale"));
-        }
-        Ok(
-            awaken_session_execution_contract::SessionThreadToolReplyFence {
-                activity:
-                    awaken_session_execution_contract::SessionThreadToolReplyActivity::Session {
-                        prior_epoch: Some(1),
-                    },
-                already_applied: false,
-            },
-        )
     }
 
     async fn reply_session_thread_tool(
@@ -725,25 +608,12 @@ impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
         awaken_session_application_contract::DelegatedRunSnapshot,
         awaken_session_types::RunError,
     > {
-        self.streaming_runs()
-            .ok_or_else(|| {
-                awaken_session_types::RunError::unavailable(
-                    "StreamingRunRuntime is unsupported by this runtime",
-                )
-            })?
-            .interrupt(thread)
-            .await?;
+        self.interrupt(thread).await?;
         Ok(awaken_session_application_contract::DelegatedRunSnapshot {
             delegated_runs: self.delegated_runs(thread).await?,
             coordinated_thread_ids: Vec::new(),
             watermark: 0,
             runtime_commit_cursor: self
-                .thread_reads()
-                .ok_or_else(|| {
-                    awaken_session_types::RunError::unavailable(
-                        "ThreadReadRuntime is unsupported by this runtime",
-                    )
-                })?
                 .session_thread_recovery_snapshot(
                     &awaken_session_types::SessionId::from(thread),
                     thread,
@@ -756,6 +626,84 @@ impl awaken_session_execution_contract::CoordinationRuntime for RehydrateFake {
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
+}
+
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::SessionCoordinationReads for RehydrateFake {
+    /// Read the exact Run lifecycle from existing committed Thread truth. This
+    /// is the recovery observation for batch advancement, not a completion
+    /// registry or protocol event cache.
+    async fn session_run_state(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, awaken_session_types::RunError>
+    {
+        awaken_session_execution_contract::NeutralRuntime
+            .session_run_state(session_id, run_id)
+            .await
+    }
+
+    async fn delegated_runs(&self, _thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
+        self.order.lock().unwrap().push("delegations");
+        Ok(self.delegated.lock().unwrap().clone())
+    }
+
+    async fn coordinated_threads(
+        &self,
+        _session_id: &awaken_session_types::SessionId,
+        _observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+    ) -> Result<Vec<awaken_session_execution_contract::CoordinatedThreadLink>, RunError> {
+        self.reads
+            .on_read("coordination")
+            .await
+            .map_err(scripted_read_failure)?;
+        self.order.lock().unwrap().push("coordination");
+        Ok(self.coordinated.lock().unwrap().clone())
+    }
+
+    async fn session_thread_tool_reply_fence(
+        &self,
+        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
+    ) -> Result<awaken_session_execution_contract::SessionThreadToolReplyFence, RunError> {
+        let thread_id = command.target.thread_id(&command.session_id);
+        let pending = self
+            .pending_by_thread
+            .lock()
+            .unwrap()
+            .get(&thread_id.0)
+            .cloned()
+            .filter(|pending| pending.tool_use_id == command.tool_use_id)
+            .ok_or_else(|| RunError::bad_request("reply does not match the pending ticket"))?;
+        let run_id = match &command.target {
+            awaken_session_execution_contract::SessionThreadTarget::Primary => {
+                command.expected_run_id.clone()
+            }
+            awaken_session_execution_contract::SessionThreadTarget::Child(_) => self
+                .coordinated
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|link| link.thread_id == thread_id)
+                .and_then(|link| link.latest_run_id.clone())
+                .ok_or_else(|| RunError::bad_request("coordinated child has no committed Run"))?,
+        };
+        if run_id != command.expected_run_id
+            || command.expected_correlation_id != format!("ticket:{}", pending.tool_use_id)
+        {
+            return Err(RunError::bad_request("reply ticket fence is stale"));
+        }
+        Ok(
+            awaken_session_execution_contract::SessionThreadToolReplyFence {
+                activity:
+                    awaken_session_execution_contract::SessionThreadToolReplyActivity::Session {
+                        prior_epoch: Some(1),
+                    },
+                already_applied: false,
+            },
+        )
+    }
+
     /// Validate one model-facing Agent command against the source Run's exact
     /// committed `ActiveToolBatch`. Implementations must use the same atomic
     /// Thread recovery prefix as ordinary crash recovery; a process-local tool

@@ -5,7 +5,7 @@ use crate::host::worker_resolver::test_support::{
     test_activation,
 };
 use awaken_session_realization_contract::SessionProjectionInstallMode;
-use awaken_session_execution_contract::SessionRuntime;
+use awaken_session_execution_contract::RealizationRuntime as _;
 use awaken_session_state_contract::SessionEnvironmentState;
 
 fn observation(host: &SharedHost) -> serde_json::Value {
@@ -31,12 +31,6 @@ async fn deliver(
         crate::installed_session::FrozenProjectionReceipt::from_projection(&projection).unwrap();
     let incoming = serde_json::json!({"revision": receipt.revision.0, "fingerprint": receipt.fingerprint, "binding": projection.environment.binding().unwrap_or("none")});
     let result = managed
-        .realization()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "RealizationRuntime is unsupported by this runtime",
-            )
-        })?
         .install_session_projection(
             "projection-convergence",
             projection,

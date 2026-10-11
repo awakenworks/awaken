@@ -7,6 +7,7 @@
 //! Repository tokens use the official write-only create/update fields and are
 //! sealed into the canonical Vault before a Session snapshot is persisted.
 use awaken_session_execution_contract::ThreadReadRuntime;
+use awaken_session_execution_contract::{SessionCoordinationReads as _, StreamingRunRuntime as _};
 use awaken_session_types::SessionId;
 use std::sync::Arc;
 mod support;
@@ -1829,48 +1830,6 @@ impl SessionRuntime for AcceptingFake {
     fn model(&self) -> String {
         "test-model".into()
     }
-
-    fn realization(&self) -> Option<&dyn awaken_session_execution_contract::RealizationRuntime> {
-        Some(self)
-    }
-
-    fn coordination(&self) -> Option<&dyn awaken_session_execution_contract::CoordinationRuntime> {
-        Some(self)
-    }
-
-    fn environment(&self) -> Option<&dyn awaken_session_execution_contract::EnvironmentRuntime> {
-        Some(self)
-    }
-
-    fn thread_reads(&self) -> Option<&dyn awaken_session_execution_contract::ThreadReadRuntime> {
-        Some(self)
-    }
-
-    fn terminal_cleanup(
-        &self,
-    ) -> Option<&dyn awaken_session_execution_contract::TerminalCleanupRuntime> {
-        Some(self)
-    }
-
-    fn outcomes(&self) -> Option<&dyn awaken_session_execution_contract::OutcomeRuntime> {
-        Some(self)
-    }
-
-    fn capability(&self) -> Option<&dyn awaken_session_execution_contract::CapabilityRuntime> {
-        Some(self)
-    }
-
-    fn budget(&self) -> Option<&dyn awaken_session_execution_contract::BudgetRuntime> {
-        Some(self)
-    }
-
-    fn streaming_runs(&self) -> Option<&dyn awaken_session_execution_contract::StreamingRunRuntime> {
-        Some(self)
-    }
-
-    fn live_inbox(&self) -> Option<&dyn awaken_session_execution_contract::LiveInboxRuntime> {
-        Some(self)
-    }
 }
 
 awaken_session_execution_contract::neutral_role!(BudgetRuntime for AcceptingFake);
@@ -2064,36 +2023,9 @@ impl awaken_session_execution_contract::CoordinationRuntime for AcceptingFake {
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
-    /// Read the exact Run lifecycle from existing committed Thread truth. This
-    /// is the recovery observation for batch advancement, not a completion
-    /// registry or protocol event cache.
-    async fn session_run_state(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        run_id: &awaken_agent_contract::agent::run::Id,
-    ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, awaken_session_types::RunError>
-    {
-        awaken_session_execution_contract::NeutralRuntime
-            .session_run_state(session_id, run_id)
-            .await
-    }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
-    /// Read the runtime-owned, durable child-Run relationships for `thread`.
-    /// Protocol adapters use this only to rebuild disposable projections after a
-    /// restart; the runtime relationship registry remains the sole authority.
-    async fn delegated_runs(
-        &self,
-        thread: &str,
-    ) -> Result<
-        Vec<awaken_session_application_contract::DelegatedRun>,
-        awaken_session_types::RunError,
-    > {
-        awaken_session_execution_contract::NeutralRuntime
-            .delegated_runs(thread)
-            .await
-    }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
@@ -2115,25 +2047,6 @@ impl awaken_session_execution_contract::CoordinationRuntime for AcceptingFake {
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
-    /// Rebuild the Session's coordinated child-Thread links from existing
-    /// committed ToolBatch/transcript/dispatch facts. This is a query, not a
-    /// relationship repository.
-    /// `observed_root` may borrow an atomic prefix already read for this Session
-    /// during a larger read-only projection. Implementations must reject a
-    /// different root identity and fence enrichment to that prefix. `None`
-    /// reads the current prefix; command admission and final validation use it.
-    async fn coordinated_threads(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-    ) -> Result<
-        Vec<awaken_session_execution_contract::CoordinatedThreadLink>,
-        awaken_session_types::RunError,
-    > {
-        awaken_session_execution_contract::NeutralRuntime
-            .coordinated_threads(session_id, observed_root)
-            .await
-    }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
@@ -2185,22 +2098,6 @@ impl awaken_session_execution_contract::CoordinationRuntime for AcceptingFake {
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
-    /// Read and validate the exact committed Awaiting coordinate that a Primary
-    /// or child Thread tool reply intends to answer. The command already carries
-    /// its admission-time Run/correlation identity; this returns only the current
-    /// dispatch activity coordinate. Implementations revalidate the command when
-    /// applying the reply so a concurrent resume or later Run fails closed.
-    async fn session_thread_tool_reply_fence(
-        &self,
-        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<
-        awaken_session_execution_contract::SessionThreadToolReplyFence,
-        awaken_session_types::RunError,
-    > {
-        awaken_session_execution_contract::NeutralRuntime
-            .session_thread_tool_reply_fence(command)
-            .await
-    }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
@@ -2243,14 +2140,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for AcceptingFake {
         awaken_session_application_contract::DelegatedRunSnapshot,
         awaken_session_types::RunError,
     > {
-        self.streaming_runs()
-            .ok_or_else(|| {
-                awaken_session_types::RunError::unavailable(
-                    "StreamingRunRuntime is unsupported by this runtime",
-                )
-            })?
-            .interrupt(thread)
-            .await?;
+        self.interrupt(thread).await?;
         Ok(awaken_session_application_contract::DelegatedRunSnapshot {
             delegated_runs: self.delegated_runs(thread).await?,
             coordinated_thread_ids: Vec::new(),
@@ -2268,6 +2158,76 @@ impl awaken_session_execution_contract::CoordinationRuntime for AcceptingFake {
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
+}
+
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::SessionCoordinationReads for AcceptingFake {
+    /// Read the exact Run lifecycle from existing committed Thread truth. This
+    /// is the recovery observation for batch advancement, not a completion
+    /// registry or protocol event cache.
+    async fn session_run_state(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, awaken_session_types::RunError>
+    {
+        awaken_session_execution_contract::NeutralRuntime
+            .session_run_state(session_id, run_id)
+            .await
+    }
+
+    /// Read the runtime-owned, durable child-Run relationships for `thread`.
+    /// Protocol adapters use this only to rebuild disposable projections after a
+    /// restart; the runtime relationship registry remains the sole authority.
+    async fn delegated_runs(
+        &self,
+        thread: &str,
+    ) -> Result<
+        Vec<awaken_session_application_contract::DelegatedRun>,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .delegated_runs(thread)
+            .await
+    }
+
+    /// Rebuild the Session's coordinated child-Thread links from existing
+    /// committed ToolBatch/transcript/dispatch facts. This is a query, not a
+    /// relationship repository.
+    /// `observed_root` may borrow an atomic prefix already read for this Session
+    /// during a larger read-only projection. Implementations must reject a
+    /// different root identity and fence enrichment to that prefix. `None`
+    /// reads the current prefix; command admission and final validation use it.
+    async fn coordinated_threads(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+    ) -> Result<
+        Vec<awaken_session_execution_contract::CoordinatedThreadLink>,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .coordinated_threads(session_id, observed_root)
+            .await
+    }
+
+    /// Read and validate the exact committed Awaiting coordinate that a Primary
+    /// or child Thread tool reply intends to answer. The command already carries
+    /// its admission-time Run/correlation identity; this returns only the current
+    /// dispatch activity coordinate. Implementations revalidate the command when
+    /// applying the reply so a concurrent resume or later Run fails closed.
+    async fn session_thread_tool_reply_fence(
+        &self,
+        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
+    ) -> Result<
+        awaken_session_execution_contract::SessionThreadToolReplyFence,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .session_thread_tool_reply_fence(command)
+            .await
+    }
+
     /// Validate one model-facing Agent command against the source Run's exact
     /// committed `ActiveToolBatch`. Implementations must use the same atomic
     /// Thread recovery prefix as ordinary crash recovery; a process-local tool

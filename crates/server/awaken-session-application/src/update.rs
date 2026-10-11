@@ -493,6 +493,8 @@ impl SessionApplication {
         mcp_in_request: bool,
         budget_in_request: bool,
     ) -> Result<SessionUpdateOutcome, SessionUpdateError> {
+        let environment_runtime = self.runtime().environment();
+
         if mcp_in_request
             && mcp_projection_requires_realization(
                 &outcome.session,
@@ -515,8 +517,7 @@ impl SessionApplication {
         }
         if tools_in_request
             && (outcome.changes.tools || !outcome.command_applied)
-            && let Err(source) = self
-                .runtime()
+            && let Err(source) = environment_runtime
                 .replace_session_tools(
                     outcome.session.session_id.as_str(),
                     outcome.session.tools.clone(),
@@ -538,13 +539,14 @@ impl SessionApplication {
         &self,
         mut outcome: SessionUpdateOutcome,
     ) -> Result<SessionUpdateOutcome, SessionUpdateError> {
+        let budget_runtime = self.runtime().budget();
+
         use awaken_session_application_contract::{
             SessionBudgetResumeDelivery, SessionBudgetResumeDisposition,
         };
 
         let session_id = outcome.session.session_id.clone();
-        let tickets = self
-            .runtime()
+        let tickets = budget_runtime
             .session_budget_resume_tickets(&session_id)
             .await
             .map_err(|source| SessionUpdateError::ProjectionAfterCommit {
@@ -576,8 +578,7 @@ impl SessionApplication {
                     outcome: Box::new(outcome.clone()),
                     source: error.run_error(),
                 })?;
-            let disposition = match self
-                .runtime()
+            let disposition = match budget_runtime
                 .resume_budget_reached(SessionBudgetResumeDelivery {
                     session_id: session_id.clone(),
                     thread_id: ticket.thread_id,

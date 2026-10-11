@@ -1,14 +1,13 @@
 // @formal evidence session.agent_message_requires_exact_committed_tool_source_and_payload
-//! The ten required roles of [`SessionRuntime`]: a runtime that answers `Some` from an
-//! accessor owns every method of that role (ADR-0081 capability ladder); neutral behaviour lives in [`super::neutral`].
+//! Required Session executor roles supplied to their callers at construction.
+//! Execution commands and committed queries have distinct interfaces; neutral
+//! fixture behaviour lives in [`super::neutral`].
 
 use super::*;
 
 /// Session realization: projections, leases and binding sinks a Coordinator installs on a Worker-side runtime.
 ///
-/// A role of [`SessionRuntime`]; every method is required, so a runtime that
-/// owns the role owns all of it, and one that does not answers `None` from
-/// [`SessionRuntime::realization`].
+/// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
 pub trait RealizationRuntime: Send + Sync {
     /// Sample the execution host's elapsed clock before a Control request.
@@ -72,9 +71,7 @@ pub trait RealizationRuntime: Send + Sync {
 
 /// Session Run coordination: reservations, activation, child threads, tool replies and delegation quiescence.
 ///
-/// A role of [`SessionRuntime`]; every method is required, so a runtime that
-/// owns the role owns all of it, and one that does not answers `None` from
-/// [`SessionRuntime::coordination`].
+/// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
 pub trait CoordinationRuntime: Send + Sync {
     /// Persist one complete self-affine Session Run as an unclaimable reservation.
@@ -107,20 +104,6 @@ pub trait CoordinationRuntime: Send + Sync {
         sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<StepOutcome, RunError>;
 
-    /// Read the exact Run lifecycle from existing committed Thread truth. This
-    /// is the recovery observation for batch advancement, not a completion
-    /// registry or protocol event cache.
-    async fn session_run_state(
-        &self,
-        session_id: &crate::SessionId,
-        run_id: &awaken_agent_contract::agent::run::Id,
-    ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, RunError>;
-
-    /// Read the runtime-owned, durable child-Run relationships for `thread`.
-    /// Protocol adapters use this only to rebuild disposable projections after a
-    /// restart; the runtime relationship registry remains the sole authority.
-    async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, RunError>;
-
     /// Admit one ordinary child Run after the Session application has validated
     /// the frozen roster and lifecycle. Implementations must use their canonical
     /// durable Run ingress; the default fails closed rather than spawning a
@@ -129,19 +112,6 @@ pub trait CoordinationRuntime: Send + Sync {
         &self,
         command: crate::CoordinatedRunCommand,
     ) -> Result<crate::SessionAgentMessageReceipt, RunError>;
-
-    /// Rebuild the Session's coordinated child-Thread links from existing
-    /// committed ToolBatch/transcript/dispatch facts. This is a query, not a
-    /// relationship repository.
-    /// `observed_root` may borrow an atomic prefix already read for this Session
-    /// during a larger read-only projection. Implementations must reject a
-    /// different root identity and fence enrichment to that prefix. `None`
-    /// reads the current prefix; command admission and final validation use it.
-    async fn coordinated_threads(
-        &self,
-        session_id: &crate::SessionId,
-        observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-    ) -> Result<Vec<crate::CoordinatedThreadLink>, RunError>;
 
     /// Subscribe to neutral live observations for one already-admitted root or
     /// child logical Thread. `None` is the fail-closed default: committed events
@@ -170,16 +140,6 @@ pub trait CoordinationRuntime: Send + Sync {
         child_thread_id: &awaken_agent_contract::agent::thread::Id,
     ) -> Result<(), RunError>;
 
-    /// Read and validate the exact committed Awaiting coordinate that a Primary
-    /// or child Thread tool reply intends to answer. The command already carries
-    /// its admission-time Run/correlation identity; this returns only the current
-    /// dispatch activity coordinate. Implementations revalidate the command when
-    /// applying the reply so a concurrent resume or later Run fails closed.
-    async fn session_thread_tool_reply_fence(
-        &self,
-        command: &crate::SessionThreadToolReplyCommand,
-    ) -> Result<crate::SessionThreadToolReplyFence, RunError>;
-
     /// Reply to the exact pending tool of a Primary or logical child Thread
     /// through the Session-affine claim-fenced resume/commit boundary.
     async fn reply_session_thread_tool(
@@ -203,6 +163,55 @@ pub trait CoordinationRuntime: Send + Sync {
         &self,
         thread: &str,
     ) -> Result<DelegatedRunSnapshot, RunError>;
+}
+
+/// Read-only coordination facts used by Session projection, admission and tool replies.
+/// This role grants no Run execution, claim or mutation authority.
+///
+/// ```compile_fail,E0599
+/// use awaken_session_execution_contract::{AdmitSessionRun, SessionCoordinationReads};
+/// async fn cannot_reserve(reads: &dyn SessionCoordinationReads, command: AdmitSessionRun) {
+///     let _ = reads.reserve_session_run(command).await;
+/// }
+/// ```
+#[async_trait]
+pub trait SessionCoordinationReads: Send + Sync {
+    /// Read the exact Run lifecycle from existing committed Thread truth. This
+    /// is the recovery observation for batch advancement, not a completion
+    /// registry or protocol event cache.
+    async fn session_run_state(
+        &self,
+        session_id: &crate::SessionId,
+        run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, RunError>;
+
+    /// Read the runtime-owned, durable child-Run relationships for `thread`.
+    /// Protocol adapters use this only to rebuild disposable projections after a
+    /// restart; the runtime relationship registry remains the sole authority.
+    async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, RunError>;
+
+    /// Rebuild the Session's coordinated child-Thread links from existing
+    /// committed ToolBatch/transcript/dispatch facts. This is a query, not a
+    /// relationship repository.
+    /// `observed_root` may borrow an atomic prefix already read for this Session
+    /// during a larger read-only projection. Implementations must reject a
+    /// different root identity and fence enrichment to that prefix. `None`
+    /// reads the current prefix; command admission and final validation use it.
+    async fn coordinated_threads(
+        &self,
+        session_id: &crate::SessionId,
+        observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+    ) -> Result<Vec<crate::CoordinatedThreadLink>, RunError>;
+
+    /// Read and validate the exact committed Awaiting coordinate that a Primary
+    /// or child Thread tool reply intends to answer. The command already carries
+    /// its admission-time Run/correlation identity; this returns only the current
+    /// dispatch activity coordinate. Implementations revalidate the command when
+    /// applying the reply so a concurrent resume or later Run fails closed.
+    async fn session_thread_tool_reply_fence(
+        &self,
+        command: &crate::SessionThreadToolReplyCommand,
+    ) -> Result<crate::SessionThreadToolReplyFence, RunError>;
 
     /// Validate one model-facing Agent command against the source Run's exact
     /// committed `ActiveToolBatch`. Implementations must use the same atomic
@@ -221,9 +230,7 @@ pub trait CoordinationRuntime: Send + Sync {
 
 /// Budget and usage accounting for a Session and its threads.
 ///
-/// A role of [`SessionRuntime`]; every method is required, so a runtime that
-/// owns the role owns all of it, and one that does not answers `None` from
-/// [`SessionRuntime::budget`].
+/// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
 pub trait BudgetRuntime: Send + Sync {
     /// Resume an exact `BudgetReached` ticket without injecting transcript
@@ -259,9 +266,7 @@ pub trait BudgetRuntime: Send + Sync {
 
 /// Streaming and attributed Run execution, interruption, model rebinding and pending-tool readback.
 ///
-/// A role of [`SessionRuntime`]; every method is required, so a runtime that
-/// owns the role owns all of it, and one that does not answers `None` from
-/// [`SessionRuntime::streaming_runs`].
+/// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
 pub trait StreamingRunRuntime: Send + Sync {
     /// Run one request with its protocol-projected, backend-neutral content
@@ -323,9 +328,7 @@ pub trait StreamingRunRuntime: Send + Sync {
 
 /// Session environment lifecycle: adoption, checkpoints, restore, tool and skill resolution, input application.
 ///
-/// A role of [`SessionRuntime`]; every method is required, so a runtime that
-/// owns the role owns all of it, and one that does not answers `None` from
-/// [`SessionRuntime::environment`].
+/// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
 pub trait EnvironmentRuntime: Send + Sync {
     /// Replace the complete Session-local tool configuration after an
@@ -424,9 +427,7 @@ pub trait EnvironmentRuntime: Send + Sync {
 
 /// Committed thread readback: messages, recovery snapshots, run lifecycle, disposition and outcome projections.
 ///
-/// A role of [`SessionRuntime`]; every method is required, so a runtime that
-/// owns the role owns all of it, and one that does not answers `None` from
-/// [`SessionRuntime::thread_reads`].
+/// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
 pub trait ThreadReadRuntime: Send + Sync {
     /// True when durable truth already exists for `thread`. Session-id minting
@@ -502,9 +503,7 @@ pub trait ThreadReadRuntime: Send + Sync {
 
 /// Terminal cleanup effects a Worker performs under a realization lease.
 ///
-/// A role of [`SessionRuntime`]; every method is required, so a runtime that
-/// owns the role owns all of it, and one that does not answers `None` from
-/// [`SessionRuntime::terminal_cleanup`].
+/// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
 pub trait TerminalCleanupRuntime: Send + Sync {
     /// Execute terminal Repository publication under the same realization
@@ -575,9 +574,7 @@ pub trait TerminalCleanupRuntime: Send + Sync {
 
 /// Outcome preparation, definition and continuation.
 ///
-/// A role of [`SessionRuntime`]; every method is required, so a runtime that
-/// owns the role owns all of it, and one that does not answers `None` from
-/// [`SessionRuntime::outcomes`].
+/// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
 pub trait OutcomeRuntime: Send + Sync {
     /// Persist one Outcome aggregate without executing a Worker or Grader Run.
@@ -609,9 +606,7 @@ pub trait OutcomeRuntime: Send + Sync {
 
 /// Live inbox mutation and snapshot for a running thread.
 ///
-/// A role of [`SessionRuntime`]; every method is required, so a runtime that
-/// owns the role owns all of it, and one that does not answers `None` from
-/// [`SessionRuntime::live_inbox`].
+/// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
 pub trait LiveInboxRuntime: Send + Sync {
     /// The live-inbox queue on `thread`'s in-flight Run. The default reports
@@ -645,9 +640,7 @@ pub trait LiveInboxRuntime: Send + Sync {
 
 /// Capability advertisement for the runtime and for one Session.
 ///
-/// A role of [`SessionRuntime`]; every method is required, so a runtime that
-/// owns the role owns all of it, and one that does not answers `None` from
-/// [`SessionRuntime::capability`].
+/// Every method is required. Composition supplies this role before its caller runs.
 #[async_trait]
 pub trait CapabilityRuntime: Send + Sync {
     /// The advertised capability surface echoed in the session's agent object. The

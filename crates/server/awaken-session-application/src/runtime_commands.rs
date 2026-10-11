@@ -296,6 +296,8 @@ impl SessionApplication {
         workspace_id: &str,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<SessionExecutionObservation, crate::SessionProjectionRecoveryError> {
+        let thread_reads = self.runtime().thread_reads();
+
         use awaken_runtime_contract::llm::ModelRequestObservation as RuntimeModelRequestObservation;
 
         let recovered = self
@@ -307,8 +309,7 @@ impl SessionApplication {
                 "Session creation finalization is incomplete".into(),
             )
         })?;
-        let snapshot = self
-            .runtime
+        let snapshot = thread_reads
             .session_thread_recovery_snapshot(session_id, session_id.as_str())
             .await
             .map_err(crate::SessionProjectionRecoveryError::Rejected)?;
@@ -841,11 +842,15 @@ impl SessionApplication {
     }
 
     pub async fn runtime_owns_thread(&self, thread: &str) -> Result<bool, RunError> {
-        self.runtime.owns_thread(thread).await
+        let thread_reads = self.runtime().thread_reads();
+
+        thread_reads.owns_thread(thread).await
     }
 
     pub async fn committed_messages(&self, thread: &str) -> Result<Vec<Message>, RunError> {
-        self.runtime.committed_messages(thread).await
+        let thread_reads = self.runtime().thread_reads();
+
+        thread_reads.committed_messages(thread).await
     }
 
     /// Derived Managed child links; the Runtime reconstructs these from the
@@ -857,7 +862,9 @@ impl SessionApplication {
         session_id: &awaken_session_types::SessionId,
         observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<awaken_session_execution_contract::CoordinatedThreadLink>, RunError> {
-        self.runtime
+        let coordination_reads = self.runtime().coordination_reads();
+
+        coordination_reads
             .coordinated_threads(session_id, observed_root)
             .await
     }
@@ -870,7 +877,9 @@ impl SessionApplication {
         session_id: &awaken_session_types::SessionId,
         thread_id: &str,
     ) -> Result<SessionUsage, RunError> {
-        self.runtime
+        let budget_runtime = self.runtime().budget();
+
+        budget_runtime
             .session_thread_usage(session_id, thread_id)
             .await
     }
@@ -886,7 +895,9 @@ impl SessionApplication {
         Option<Box<dyn awaken_session_execution_contract::SessionThreadLiveSubscription>>,
         RunError,
     > {
-        self.runtime
+        let coordination_runtime = self.runtime().coordination();
+
+        coordination_runtime
             .subscribe_session_thread_live(session_id, thread_id)
             .await
     }
@@ -900,7 +911,9 @@ impl SessionApplication {
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
-        self.runtime
+        let thread_reads = self.runtime().thread_reads();
+
+        thread_reads
             .session_thread_recovery_snapshot(session_id, thread_id)
             .await
     }
@@ -910,7 +923,9 @@ impl SessionApplication {
         session_id: &awaken_session_types::SessionId,
         thread_id: &str,
     ) -> Result<awaken_agent_contract::ThreadDisposition, RunError> {
-        self.runtime
+        let thread_reads = self.runtime().thread_reads();
+
+        thread_reads
             .session_thread_disposition(session_id, thread_id)
             .await
     }
@@ -920,8 +935,13 @@ impl SessionApplication {
         session_id: &awaken_session_types::SessionId,
         thread_id: &str,
     ) -> Result<(), RunError> {
+        let coordination_reads = self.runtime().coordination_reads();
+        let thread_reads = self.runtime().thread_reads();
+
         let child = awaken_agent_contract::agent::thread::Id(thread_id.to_string());
-        let links = self.runtime.coordinated_threads(session_id, None).await?;
+        let links = coordination_reads
+            .coordinated_threads(session_id, None)
+            .await?;
         if !links
             .iter()
             .any(|link| link.session_id == session_id && link.thread_id == child)
@@ -930,17 +950,21 @@ impl SessionApplication {
                 "Agent Thread was not found in this Session",
             ));
         }
-        self.runtime
+        thread_reads
             .archive_session_thread(session_id, thread_id)
             .await
     }
 
     pub async fn pending_tool(&self, thread: &str) -> Result<Option<Pending>, RunError> {
-        self.runtime.pending_tool(thread).await
+        let streaming_runtime = self.runtime().streaming_runs();
+
+        streaming_runtime.pending_tool(thread).await
     }
 
     pub async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
-        self.runtime.delegated_runs(thread).await
+        let coordination_reads = self.runtime().coordination_reads();
+
+        coordination_reads.delegated_runs(thread).await
     }
 
     pub async fn resolve_session_skills(
@@ -948,13 +972,17 @@ impl SessionApplication {
         workspace_id: &str,
         skills: &[awaken_agent_contract::AgentSkillBinding],
     ) -> Result<Vec<ResolvedSkillBinding>, RunError> {
-        self.runtime
+        let environment_runtime = self.runtime().environment();
+
+        environment_runtime
             .resolve_session_skills(workspace_id, skills)
             .await
     }
 
     pub async fn rebind_model(&self, thread: &str, model: &str) -> Result<(), RunError> {
-        self.runtime.rebind_model(thread, model).await
+        let streaming_runtime = self.runtime().streaming_runs();
+
+        streaming_runtime.rebind_model(thread, model).await
     }
 
     pub async fn run_streaming_attributed(
@@ -965,7 +993,9 @@ impl SessionApplication {
         data_subject_id: Option<String>,
         sink: Arc<dyn Sink>,
     ) -> Result<StepOutcome, RunError> {
-        self.runtime
+        let streaming_runtime = self.runtime().streaming_runs();
+
+        streaming_runtime
             .run_streaming_attributed(agent, thread, content, data_subject_id, sink)
             .await
     }
@@ -976,7 +1006,9 @@ impl SessionApplication {
         tool_use_id: &str,
         decision: ToolPermissionDecision,
     ) -> Result<StepOutcome, RunError> {
-        self.runtime.resume(thread, tool_use_id, decision).await
+        let execution = self.runtime().core();
+
+        execution.resume(thread, tool_use_id, decision).await
     }
 
     pub async fn resume_custom(
@@ -986,13 +1018,17 @@ impl SessionApplication {
         content: Vec<ContentBlock>,
         is_error: bool,
     ) -> Result<StepOutcome, RunError> {
-        self.runtime
+        let execution = self.runtime().core();
+
+        execution
             .resume_custom(thread, tool_use_id, content, is_error)
             .await
     }
 
     pub async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
-        self.runtime.interrupt(thread).await
+        let streaming_runtime = self.runtime().streaming_runs();
+
+        streaming_runtime.interrupt(thread).await
     }
 
     pub async fn define_outcome(
@@ -1002,7 +1038,9 @@ impl SessionApplication {
         rubric: &str,
         max_iterations: u32,
     ) -> Result<OutcomeDrive, RunError> {
-        self.runtime
+        let outcome_runtime = self.runtime().outcomes();
+
+        outcome_runtime
             .define_outcome(thread, description, rubric, max_iterations)
             .await
     }
@@ -1015,13 +1053,17 @@ impl SessionApplication {
         rubric: &str,
         max_iterations: u32,
     ) -> Result<u64, RunError> {
-        self.runtime
+        let outcome_runtime = self.runtime().outcomes();
+
+        outcome_runtime
             .prepare_outcome(thread, outcome_id, description, rubric, max_iterations)
             .await
     }
 
     pub async fn continue_outcome(&self, thread: &str) -> Result<Option<OutcomeDrive>, RunError> {
-        self.runtime.continue_outcome(thread).await
+        let outcome_runtime = self.runtime().outcomes();
+
+        outcome_runtime.continue_outcome(thread).await
     }
 
     /// Project an exact terminal Outcome through the sole Runtime query port.
@@ -1031,13 +1073,19 @@ impl SessionApplication {
         thread: &str,
         outcome_id: &str,
     ) -> Result<Option<CommittedOutcomeProjection>, RunError> {
-        self.runtime
+        let thread_reads = self.runtime().thread_reads();
+
+        thread_reads
             .committed_outcome_projection(thread, outcome_id)
             .await
     }
 
     pub async fn supports_mid_conversation_system(&self, thread: &str) -> bool {
-        self.runtime.supports_mid_conversation_system(thread).await
+        let streaming_runtime = self.runtime().streaming_runs();
+
+        streaming_runtime
+            .supports_mid_conversation_system(thread)
+            .await
     }
 
     /// Aggregate current counters through an already observed relationship set
@@ -1071,12 +1119,16 @@ impl SessionApplication {
         additional_thread: Option<&str>,
         observed_links: Option<&[awaken_session_execution_contract::CoordinatedThreadLink]>,
     ) -> Result<SessionUsage, RunError> {
-        let usage = self.runtime.session_usage(thread).await?;
+        let coordination_reads = self.runtime().coordination_reads();
+
+        let budget_runtime = self.runtime().budget();
+
+        let usage = budget_runtime.session_usage(thread).await?;
         let mut thread_usages = vec![usage];
         let links = match observed_links {
             Some(links) => std::borrow::Cow::Borrowed(links),
             None => std::borrow::Cow::Owned(
-                self.runtime
+                coordination_reads
                     .coordinated_threads(&awaken_session_types::SessionId::from(thread), None)
                     .await?,
             ),
@@ -1091,8 +1143,7 @@ impl SessionApplication {
             if !included.insert(link.thread_id.0.clone()) {
                 continue;
             }
-            let child = self
-                .runtime
+            let child = budget_runtime
                 .session_thread_usage(
                     &awaken_session_types::SessionId::from(thread),
                     &link.thread_id.0,
@@ -1103,8 +1154,7 @@ impl SessionApplication {
         if let Some(additional_thread) = additional_thread
             && included.insert(additional_thread.to_string())
         {
-            let current = self
-                .runtime
+            let current = budget_runtime
                 .session_thread_usage(
                     &awaken_session_types::SessionId::from(thread),
                     additional_thread,
@@ -1145,12 +1195,16 @@ impl SessionApplication {
 
     #[must_use]
     pub fn model(&self) -> String {
-        self.runtime.model()
+        let execution = self.runtime().core();
+
+        execution.model()
     }
 
     #[must_use]
     pub fn capabilities_for(&self, thread: &str) -> AgentCapabilities {
-        self.runtime.capabilities_for(thread)
+        let capabilities = self.runtime().capability();
+
+        capabilities.capabilities_for(thread)
     }
 }
 

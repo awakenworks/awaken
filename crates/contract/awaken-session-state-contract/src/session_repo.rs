@@ -26,6 +26,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod activity_state;
 mod disposition;
+#[cfg(test)]
+mod event_history_tests;
 mod mutation;
 mod persisted_session;
 mod placement;

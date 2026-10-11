@@ -5,6 +5,10 @@
 // @formal evidence session_execution.initial_event_path_reaches_idle_only_after_full_settlement
 // @formal evidence tool_result.one_pending_occurrence_has_one_admitted_reply
 // awaken-allow(file-limit-ceiling): 6600 (legacy oversized test file: split, never grow)
+use awaken_session_execution_contract::{
+    CoordinationRuntime as _, SessionCoordinationReads as _, StreamingRunRuntime as _,
+    ThreadReadRuntime as _,
+};
 use awaken_session_types::SessionId;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::atomic::AtomicU64;
@@ -172,48 +176,6 @@ impl SessionRuntime for EventBatchRuntime {
 
     fn model(&self) -> String {
         "event-batch-test-model".into()
-    }
-
-    fn realization(&self) -> Option<&dyn awaken_session_execution_contract::RealizationRuntime> {
-        Some(self)
-    }
-
-    fn coordination(&self) -> Option<&dyn awaken_session_execution_contract::CoordinationRuntime> {
-        Some(self)
-    }
-
-    fn streaming_runs(&self) -> Option<&dyn awaken_session_execution_contract::StreamingRunRuntime> {
-        Some(self)
-    }
-
-    fn thread_reads(&self) -> Option<&dyn awaken_session_execution_contract::ThreadReadRuntime> {
-        Some(self)
-    }
-
-    fn outcomes(&self) -> Option<&dyn awaken_session_execution_contract::OutcomeRuntime> {
-        Some(self)
-    }
-
-    fn budget(&self) -> Option<&dyn awaken_session_execution_contract::BudgetRuntime> {
-        Some(self)
-    }
-
-    fn environment(&self) -> Option<&dyn awaken_session_execution_contract::EnvironmentRuntime> {
-        Some(self)
-    }
-
-    fn terminal_cleanup(
-        &self,
-    ) -> Option<&dyn awaken_session_execution_contract::TerminalCleanupRuntime> {
-        Some(self)
-    }
-
-    fn live_inbox(&self) -> Option<&dyn awaken_session_execution_contract::LiveInboxRuntime> {
-        Some(self)
-    }
-
-    fn capability(&self) -> Option<&dyn awaken_session_execution_contract::CapabilityRuntime> {
-        Some(self)
     }
 }
 
@@ -445,31 +407,8 @@ impl awaken_session_execution_contract::CoordinationRuntime for EventBatchRuntim
             .await
     }
 
-    async fn session_run_state(
-        &self,
-        _session_id: &SessionId,
-        run_id: &RunId,
-    ) -> Result<Option<RunState>, RunError> {
-        self.run_state_reads.fetch_add(1, Ordering::SeqCst);
-        Ok(self.states.lock().unwrap().get(&run_id.0).cloned())
-    }
-
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
-    /// Read the runtime-owned, durable child-Run relationships for `thread`.
-    /// Protocol adapters use this only to rebuild disposable projections after a
-    /// restart; the runtime relationship registry remains the sole authority.
-    async fn delegated_runs(
-        &self,
-        thread: &str,
-    ) -> Result<
-        Vec<awaken_session_application_contract::DelegatedRun>,
-        awaken_session_types::RunError,
-    > {
-        awaken_session_execution_contract::NeutralRuntime
-            .delegated_runs(thread)
-            .await
-    }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
@@ -487,22 +426,6 @@ impl awaken_session_execution_contract::CoordinationRuntime for EventBatchRuntim
         awaken_session_execution_contract::NeutralRuntime
             .admit_coordinated_run(command)
             .await
-    }
-
-    async fn coordinated_threads(
-        &self,
-        session_id: &SessionId,
-        _observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-    ) -> Result<Vec<CoordinatedThreadLink>, RunError> {
-        Ok(vec![CoordinatedThreadLink {
-            session_id: session_id.clone(),
-            thread_id: ThreadId("event-child".into()),
-            target: CoordinatedThreadTarget::Agent {
-                agent_id: "event-child-agent".into(),
-            },
-            created_by_operation_id: "event-child-create".into(),
-            latest_run_id: Some(RunId("event-child-run".into())),
-        }])
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
@@ -559,51 +482,6 @@ impl awaken_session_execution_contract::CoordinationRuntime for EventBatchRuntim
             .unwrap()
             .insert((session_id.to_string(), child_thread_id.0.clone()));
         Ok(())
-    }
-
-    async fn session_thread_tool_reply_fence(
-        &self,
-        command: &SessionThreadToolReplyCommand,
-    ) -> Result<SessionThreadToolReplyFence, RunError> {
-        if command.expected_run_id.0.trim().is_empty()
-            || command.expected_correlation_id.trim().is_empty()
-            || command.tool_use_id.trim().is_empty()
-        {
-            return Err(RunError::bad_request("incomplete scripted reply"));
-        }
-        let operation = command.activity_operation_id();
-        let staged = self.staged_tool_replies.lock().unwrap();
-        if staged.get(&operation) == Some(command) {
-            return Ok(SessionThreadToolReplyFence {
-                activity:
-                    awaken_session_execution_contract::SessionThreadToolReplyActivity::Session {
-                        prior_epoch: None,
-                    },
-                already_applied: true,
-            });
-        }
-        if staged.values().any(|existing| {
-            existing.session_id == command.session_id
-                && existing.expected_run_id == command.expected_run_id
-                && existing.expected_correlation_id == command.expected_correlation_id
-        }) {
-            return Err(RunError::bad_request(
-                "scripted awaiting correlation was answered by another operation",
-            ));
-        }
-        drop(staged);
-        let prior_session_activity_epoch = self.tool_reply_prior_epoch.load(Ordering::SeqCst);
-        if prior_session_activity_epoch == 0 {
-            return Err(RunError::internal(
-                "scripted reply has no prior Session activity epoch",
-            ));
-        }
-        Ok(SessionThreadToolReplyFence {
-            activity: awaken_session_execution_contract::SessionThreadToolReplyActivity::Session {
-                prior_epoch: Some(prior_session_activity_epoch),
-            },
-            already_applied: false,
-        })
     }
 
     async fn reply_session_thread_tool(
@@ -666,25 +544,12 @@ impl awaken_session_execution_contract::CoordinationRuntime for EventBatchRuntim
         awaken_session_application_contract::DelegatedRunSnapshot,
         awaken_session_types::RunError,
     > {
-        self.streaming_runs()
-            .ok_or_else(|| {
-                awaken_session_types::RunError::unavailable(
-                    "StreamingRunRuntime is unsupported by this runtime",
-                )
-            })?
-            .interrupt(thread)
-            .await?;
+        self.interrupt(thread).await?;
         Ok(awaken_session_application_contract::DelegatedRunSnapshot {
             delegated_runs: self.delegated_runs(thread).await?,
             coordinated_thread_ids: Vec::new(),
             watermark: 0,
             runtime_commit_cursor: self
-                .thread_reads()
-                .ok_or_else(|| {
-                    awaken_session_types::RunError::unavailable(
-                        "ThreadReadRuntime is unsupported by this runtime",
-                    )
-                })?
                 .session_thread_recovery_snapshot(
                     &awaken_session_types::SessionId::from(thread),
                     thread,
@@ -697,6 +562,95 @@ impl awaken_session_execution_contract::CoordinationRuntime for EventBatchRuntim
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never
     // answered this role method with anything but the refusal below.
+}
+
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::SessionCoordinationReads for EventBatchRuntime {
+    async fn session_run_state(
+        &self,
+        _session_id: &SessionId,
+        run_id: &RunId,
+    ) -> Result<Option<RunState>, RunError> {
+        self.run_state_reads.fetch_add(1, Ordering::SeqCst);
+        Ok(self.states.lock().unwrap().get(&run_id.0).cloned())
+    }
+
+    /// Read the runtime-owned, durable child-Run relationships for `thread`.
+    /// Protocol adapters use this only to rebuild disposable projections after a
+    /// restart; the runtime relationship registry remains the sole authority.
+    async fn delegated_runs(
+        &self,
+        thread: &str,
+    ) -> Result<
+        Vec<awaken_session_application_contract::DelegatedRun>,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .delegated_runs(thread)
+            .await
+    }
+
+    async fn coordinated_threads(
+        &self,
+        session_id: &SessionId,
+        _observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+    ) -> Result<Vec<CoordinatedThreadLink>, RunError> {
+        Ok(vec![CoordinatedThreadLink {
+            session_id: session_id.clone(),
+            thread_id: ThreadId("event-child".into()),
+            target: CoordinatedThreadTarget::Agent {
+                agent_id: "event-child-agent".into(),
+            },
+            created_by_operation_id: "event-child-create".into(),
+            latest_run_id: Some(RunId("event-child-run".into())),
+        }])
+    }
+
+    async fn session_thread_tool_reply_fence(
+        &self,
+        command: &SessionThreadToolReplyCommand,
+    ) -> Result<SessionThreadToolReplyFence, RunError> {
+        if command.expected_run_id.0.trim().is_empty()
+            || command.expected_correlation_id.trim().is_empty()
+            || command.tool_use_id.trim().is_empty()
+        {
+            return Err(RunError::bad_request("incomplete scripted reply"));
+        }
+        let operation = command.activity_operation_id();
+        let staged = self.staged_tool_replies.lock().unwrap();
+        if staged.get(&operation) == Some(command) {
+            return Ok(SessionThreadToolReplyFence {
+                activity:
+                    awaken_session_execution_contract::SessionThreadToolReplyActivity::Session {
+                        prior_epoch: None,
+                    },
+                already_applied: true,
+            });
+        }
+        if staged.values().any(|existing| {
+            existing.session_id == command.session_id
+                && existing.expected_run_id == command.expected_run_id
+                && existing.expected_correlation_id == command.expected_correlation_id
+        }) {
+            return Err(RunError::bad_request(
+                "scripted awaiting correlation was answered by another operation",
+            ));
+        }
+        drop(staged);
+        let prior_session_activity_epoch = self.tool_reply_prior_epoch.load(Ordering::SeqCst);
+        if prior_session_activity_epoch == 0 {
+            return Err(RunError::internal(
+                "scripted reply has no prior Session activity epoch",
+            ));
+        }
+        Ok(SessionThreadToolReplyFence {
+            activity: awaken_session_execution_contract::SessionThreadToolReplyActivity::Session {
+                prior_epoch: Some(prior_session_activity_epoch),
+            },
+            already_applied: false,
+        })
+    }
+
     /// Validate one model-facing Agent command against the source Run's exact
     /// committed `ActiveToolBatch`. Implementations must use the same atomic
     /// Thread recovery prefix as ordinary crash recovery; a process-local tool
@@ -4967,11 +4921,6 @@ async fn reserved_run_without_activity_recovers_through_the_same_operation_recei
         .expect("C1 canonical projection");
     assert_eq!(
         runtime
-            .coordination()
-            .ok_or_else(|| awaken_session_types::RunError::unavailable(
-                "CoordinationRuntime is unsupported by this runtime"
-            ))
-            .expect("runtime role")
             .reserve_session_run(AdmitSessionRun {
                 session_id: command.session_id.clone(),
                 agent_id: command.agent_id.clone(),

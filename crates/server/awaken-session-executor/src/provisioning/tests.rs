@@ -7,6 +7,7 @@ use awaken_sandbox_container::{
     SandboxControlServiceKind, SandboxControlServicePublisher,
 };
 use awaken_sandbox_local::LocalProvider;
+use awaken_session_execution_contract::TerminalCleanupRuntime as _;
 
 /// The logical path a staged resource realizes under, recovered from a projected
 /// pc mount (`.mnt/<logical>`) so the registry assertions stay resource-oriented.
@@ -1604,7 +1605,6 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
     // documented here remain the only decision source; no parallel path is admitted.
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
-    use awaken_session_execution_contract::SessionRuntime;
     // Cause/effect decision table:
     // R1 output under the canonical layout root + live Sandbox => harvest
     // creates one scoped File with the exact root-relative logical path.
@@ -1692,13 +1692,6 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .expect("R4 frozen aggregate Repository inputs");
     let authorization = root_terminal_preparation_authorization(&session, &effect, &workspace_id);
     let preparation = managed
-        .terminal_cleanup()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "TerminalCleanupRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .prepare_terminal_cleanup_for_effect(effect.clone(), authorization)
         .await
         .unwrap();
@@ -1738,13 +1731,6 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         effect.lease,
     );
     managed
-        .terminal_cleanup()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "TerminalCleanupRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .dispose_terminal_cleanup_for_effect(disposal)
         .await
         .unwrap();
@@ -2315,8 +2301,6 @@ impl FileCatalog for FailingFileCatalog {
 
 #[tokio::test]
 async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
-    use awaken_session_execution_contract::SessionRuntime;
-
     // Test design. Causes: R4 has terminal output present while its durable
     // catalog write fails. Effects: terminal preparation fails and preserves
     // both the exact hidden Retiring Environment and output for retry.
@@ -2398,13 +2382,6 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
         .expect("harvest failure retains the frozen Workspace");
     let authorization = root_terminal_preparation_authorization(&cleanup, &effect, &workspace_id);
     let error = crate::ManagedHost::new(host.clone())
-        .terminal_cleanup()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "TerminalCleanupRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .prepare_terminal_cleanup_for_effect(effect, authorization)
         .await
         .unwrap_err();

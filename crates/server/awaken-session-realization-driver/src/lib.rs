@@ -9,6 +9,11 @@
 
 mod session_realization_driver;
 mod terminal_cleanup_driver;
+mod terminal_cleanup_lease;
+pub use terminal_cleanup_lease::{
+    LOCAL_SESSION_REALIZATION_LEASE_MS, LOCAL_TERMINAL_CLEANUP_RENEW_INTERVAL_MS,
+    supervise_session_terminal_cleanup_lease,
+};
 
 pub use session_realization_driver::drive_session_realization;
 pub use terminal_cleanup_driver::{

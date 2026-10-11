@@ -3,6 +3,9 @@
 //! Worker runtime projection: frozen baselines, reservations, and coordination contexts.
 
 use super::*;
+use awaken_session_execution_contract::{
+    CoordinationRuntime as _, SessionCoordinationReads as _, ThreadReadRuntime as _,
+};
 
 #[tokio::test]
 async fn missing_projection_admits_only_the_direct_empty_revision_zero_noop() {
@@ -962,11 +965,6 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         }
         assert!(
             managed
-                .thread_reads()
-                .ok_or_else(|| awaken_session_types::RunError::unavailable(
-                    "ThreadReadRuntime is unsupported by this runtime"
-                ))
-                .expect("runtime role")
                 .committed_messages("prompt-thread")
                 .await
                 .expect("prompt Thread truth")
@@ -1021,11 +1019,6 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         );
         assert!(
             managed
-                .thread_reads()
-                .ok_or_else(|| awaken_session_types::RunError::unavailable(
-                    "ThreadReadRuntime is unsupported by this runtime"
-                ))
-                .expect("runtime role")
                 .committed_messages("context-thread")
                 .await
                 .expect("C4 committed truth")
@@ -1161,11 +1154,6 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
 
     assert_eq!(
         managed
-            .coordination()
-            .ok_or_else(|| awaken_session_types::RunError::unavailable(
-                "CoordinationRuntime is unsupported by this runtime"
-            ))
-            .expect("runtime role")
             .reserve_session_run(command.clone())
             .await
             .expect("R1 reservation"),
@@ -1174,11 +1162,6 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     );
     assert_eq!(
         managed
-            .coordination()
-            .ok_or_else(|| awaken_session_types::RunError::unavailable(
-                "CoordinationRuntime is unsupported by this runtime"
-            ))
-            .expect("runtime role")
             .reserve_session_run(command.clone())
             .await
             .expect("R1 exact Reserved replay"),
@@ -1189,11 +1172,6 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     retraced.traceparent = Some("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01".into());
     assert_eq!(
         managed
-            .coordination()
-            .ok_or_else(|| awaken_session_types::RunError::unavailable(
-                "CoordinationRuntime is unsupported by this runtime"
-            ))
-            .expect("runtime role")
             .reserve_session_run(retraced)
             .await
             .expect("R4 trace-only replay"),
@@ -1204,11 +1182,6 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     changed_operation.operation_id = "cold-session-reservation-other-op".into();
     assert!(
         managed
-            .coordination()
-            .ok_or_else(|| awaken_session_types::RunError::unavailable(
-                "CoordinationRuntime is unsupported by this runtime"
-            ))
-            .expect("runtime role")
             .reserve_session_run(changed_operation)
             .await
             .is_err(),
@@ -1216,11 +1189,6 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     );
     assert_eq!(
         managed
-            .coordination()
-            .ok_or_else(|| awaken_session_types::RunError::unavailable(
-                "CoordinationRuntime is unsupported by this runtime"
-            ))
-            .expect("runtime role")
             .session_run_state(
                 &SessionId::from(thread),
                 &RunId("cold-session-reservation-run".into())
@@ -1266,11 +1234,6 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         .clear();
     assert_eq!(
         managed
-            .coordination()
-            .ok_or_else(|| awaken_session_types::RunError::unavailable(
-                "CoordinationRuntime is unsupported by this runtime"
-            ))
-            .expect("runtime role")
             .reserve_session_run(empty_capabilities.clone())
             .await
             .expect("R3 reserve empty capabilities"),
@@ -1283,15 +1246,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         .required_worker_capabilities
         .insert("application:added-after-reservation/v1".into());
     assert!(
-        managed
-            .coordination()
-            .ok_or_else(|| awaken_session_types::RunError::unavailable(
-                "CoordinationRuntime is unsupported by this runtime"
-            ))
-            .expect("runtime role")
-            .reserve_session_run(added_capability)
-            .await
-            .is_err(),
+        managed.reserve_session_run(added_capability).await.is_err(),
         "R3/E6 empty-to-present capability change conflicts"
     );
     let mut recovery_command = command.clone();
@@ -1304,11 +1259,6 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     )];
     assert_eq!(
         managed
-            .coordination()
-            .ok_or_else(|| awaken_session_types::RunError::unavailable(
-                "CoordinationRuntime is unsupported by this runtime"
-            ))
-            .expect("runtime role")
             .reserve_session_run(recovery_command.clone())
             .await
             .expect("R1 reserve recovery probe"),
@@ -1332,11 +1282,6 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     );
     assert_eq!(
         managed
-            .coordination()
-            .ok_or_else(|| awaken_session_types::RunError::unavailable(
-                "CoordinationRuntime is unsupported by this runtime"
-            ))
-            .expect("runtime role")
             .reserve_session_run(recovery_command)
             .await
             .expect("R1 exact Recovery replay"),
@@ -1369,11 +1314,6 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     );
     assert_eq!(
         managed
-            .coordination()
-            .ok_or_else(|| awaken_session_types::RunError::unavailable(
-                "CoordinationRuntime is unsupported by this runtime"
-            ))
-            .expect("runtime role")
             .reserve_session_run(command.clone())
             .await
             .expect("R1 exact Activated replay"),
@@ -1455,11 +1395,6 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     );
     assert_eq!(
         managed
-            .coordination()
-            .ok_or_else(|| awaken_session_types::RunError::unavailable(
-                "CoordinationRuntime is unsupported by this runtime"
-            ))
-            .expect("runtime role")
             .reserve_session_run(command)
             .await
             .expect("R1 exact Completed replay"),
@@ -1517,11 +1452,6 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     );
     assert_eq!(
         managed
-            .coordination()
-            .ok_or_else(|| awaken_session_types::RunError::unavailable(
-                "CoordinationRuntime is unsupported by this runtime"
-            ))
-            .expect("runtime role")
             .reserve_session_run(empty_capabilities.clone())
             .await
             .expect("R3 exact empty-capability Completed replay"),
@@ -1532,13 +1462,6 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     completed_changed_operation.operation_id =
         "cold-session-empty-capabilities-completed-other-op".into();
     let completed_operation_error = managed
-        .coordination()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "CoordinationRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .reserve_session_run(completed_changed_operation)
         .await
         .expect_err("R2 completed operation change conflicts");
@@ -1553,13 +1476,6 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         .required_worker_capabilities
         .insert("application:added-after-completion/v1".into());
     let completed_capability_error = managed
-        .coordination()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "CoordinationRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .reserve_session_run(completed_added_capability)
         .await
         .expect_err("R3 completed empty-to-present capability change conflicts");

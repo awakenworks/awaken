@@ -16,16 +16,6 @@
     "Sandbox::checkpointing": 1,
     "SandboxProvider::restorable": 1,
     "SandboxProvider::restore_targets": 1,
-    "SessionRuntime::budget": 1,
-    "SessionRuntime::capability": 1,
-    "SessionRuntime::coordination": 1,
-    "SessionRuntime::environment": 1,
-    "SessionRuntime::live_inbox": 1,
-    "SessionRuntime::outcomes": 1,
-    "SessionRuntime::realization": 1,
-    "SessionRuntime::streaming_runs": 1,
-    "SessionRuntime::terminal_cleanup": 1,
-    "SessionRuntime::thread_reads": 1,
     "ToolExecutor::durable_tasks": 1
   },
   "bundle-trait": {
@@ -69,13 +59,11 @@
   "fat-trait": {
     "ContainerEnvironmentProvider": 16,
     "ControlDispatchQueue": 16,
-    "CoordinationRuntime": 15,
     "DispatchQueue": 37,
     "DurableRunOperations": 15,
     "EnvRegistry": 13,
     "MemoryRepository": 20,
     "Sandbox": 15,
-    "SessionRuntime": 14,
     "WorkQueue": 24
   },
   "duplicate-type": {

@@ -748,8 +748,6 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         .thread_resource_manifest("deferred-managed-filesystem-skill")
         .unwrap();
     managed
-        .environment()
-        .unwrap()
         .apply_session_inputs(
             "deferred-managed-filesystem-skill",
             &resource_transition(

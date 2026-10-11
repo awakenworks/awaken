@@ -161,7 +161,7 @@ impl SessionPersistence {
 pub struct SessionApplication {
     clock: Arc<dyn awaken_time::WallClock>,
     configuration: SessionApplicationConfiguration,
-    runtime: Arc<dyn CompleteSessionRuntime>,
+    runtime: crate::SessionExecutor,
     mcp_realizer: Arc<dyn McpAttachmentRealizer>,
     credential_source: Option<Arc<dyn SessionCredentialSource>>,
     credential_material_ingress: Option<Arc<dyn CredentialMaterialIngress>>,
@@ -248,7 +248,7 @@ impl SessionApplication {
     /// builds this application.
     #[must_use]
     pub fn new(
-        runtime: Arc<dyn CompleteSessionRuntime>,
+        runtime: impl Into<crate::SessionExecutor>,
         mcp_realizer: Arc<dyn McpAttachmentRealizer>,
         persistence: SessionPersistence,
         environments: Arc<dyn SessionEnvironmentSource>,
@@ -266,7 +266,7 @@ impl SessionApplication {
     /// every lease it holds; the composition passes the process's one clock.
     #[must_use]
     pub fn new_with_configuration(
-        runtime: Arc<dyn CompleteSessionRuntime>,
+        runtime: impl Into<crate::SessionExecutor>,
         mcp_realizer: Arc<dyn McpAttachmentRealizer>,
         persistence: SessionPersistence,
         environments: Arc<dyn SessionEnvironmentSource>,
@@ -290,7 +290,7 @@ impl SessionApplication {
         Self {
             clock,
             configuration,
-            runtime,
+            runtime: runtime.into(),
             mcp_realizer,
             credential_source: None,
             credential_material_ingress: None,
@@ -356,8 +356,8 @@ impl SessionApplication {
     }
 
     #[must_use]
-    pub(crate) fn runtime(&self) -> &dyn CompleteSessionRuntime {
-        self.runtime.as_ref()
+    pub(crate) fn runtime(&self) -> &crate::SessionExecutor {
+        &self.runtime
     }
 
     /// Invoke the Runtime's pure provider-effective Sandbox-layout gate. This
@@ -369,6 +369,8 @@ impl SessionApplication {
         session_id: &str,
         layout: &awaken_session_configuration_contract::SessionSandboxLayout,
     ) -> Result<(), RunError> {
+        let realization_runtime = self.runtime().realization();
+
         validate_environment_continuation_topology(
             awaken_session_state_contract::SessionPlacementClass::new(
                 layout.runtime_placement,
@@ -376,8 +378,7 @@ impl SessionApplication {
             ),
             &layout.environment.idle_retention,
         )?;
-        self.runtime
-            .validate_session_sandbox_layout(session_id, layout)
+        realization_runtime.validate_session_sandbox_layout(session_id, layout)
     }
 
     /// Revalidate a proposed complete Resource manifest against the immutable

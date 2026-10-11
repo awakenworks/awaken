@@ -9,6 +9,7 @@
 // @formal evidence session_time.root_observations_are_revision_bound_and_replay_stable
 // @formal evidence session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
 // awaken-allow(file-limit-ceiling): 8501 (legacy oversized test file: split, never grow)
+use awaken_session_execution_contract::SessionCoordinationReads as _;
 use super::*;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -4083,7 +4084,7 @@ async fn recovered_child_settlement_uses_the_claimed_dispatch_agent_without_a_pa
             format!("recovered report {rule}"),
         );
         assert!(
-            awaken_session_execution_contract::CoordinationRuntime::coordinated_threads(
+            awaken_session_execution_contract::SessionCoordinationReads::coordinated_threads(
                 runtime.as_ref(),
                 &SessionId::from(&session_id),
                 None,
@@ -5654,11 +5655,6 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
     );
     assert_eq!(
         runtime
-            .coordination()
-            .ok_or_else(|| awaken_session_types::RunError::unavailable(
-                "CoordinationRuntime is unsupported by this runtime"
-            ))
-            .expect("runtime role")
             .coordinated_threads(&SessionId::from("advisor-usage"), None)
             .await
             .unwrap()
@@ -5690,13 +5686,6 @@ async fn advisor_thread_usage_is_folded_once_into_session_usage() {
     // A7 a foreign Session link fails before any child query; the primary may
     // already have been read. A8 a root entry cannot charge the primary twice.
     let observed = runtime
-        .coordination()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "CoordinationRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .coordinated_threads(&SessionId::from("advisor-usage"), None)
         .await
         .unwrap();

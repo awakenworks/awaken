@@ -2051,27 +2051,14 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
     );
 }
 
-// Session runtime role ladder (ADR-0081 §3): C1 the production host. R1 it owns
-// every role, so a Coordinator composed over `ManagedHost` never meets a
-// `None` rung; the ladder exists for narrower runtimes and fakes, and this law
-// is what lets protocol adapters select roles without a fallback path.
+// The production Host must supply every required role at construction. A
+// missing role is a type error before a Coordinator can accept this executor.
 #[tokio::test]
 async fn managed_host_owns_every_session_runtime_role() {
-    fn assert_all(host: &dyn awaken_session_execution_contract::SessionRuntime) {
-        assert!(host.realization().is_some(), "R1 realization");
-        assert!(host.coordination().is_some(), "R1 coordination");
-        assert!(host.budget().is_some(), "R1 budget");
-        assert!(host.streaming_runs().is_some(), "R1 streaming runs");
-        assert!(host.environment().is_some(), "R1 environment");
-        assert!(host.thread_reads().is_some(), "R1 thread reads");
-        assert!(host.terminal_cleanup().is_some(), "R1 terminal cleanup");
-        assert!(host.outcomes().is_some(), "R1 outcomes");
-        assert!(host.live_inbox().is_some(), "R1 live inbox");
-        assert!(host.capability().is_some(), "R1 capability");
-    }
     let shared = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
-    let host = crate::ManagedHost::new(shared);
-    assert_all(&host);
+    let host = Arc::new(crate::ManagedHost::new(shared));
+    let bindings = awaken_session_execution_contract::SessionExecutor::from(host.clone());
+    assert_eq!(bindings.core().model(), host.model());
 }

@@ -753,13 +753,6 @@ async fn complete_projection_preserves_the_canonical_repository_path_without_rel
         .await
         .expect("canonical Repository path stages through the complete projection");
     managed
-        .environment()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "EnvironmentRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .apply_session_inputs(
             "canonical-repository-path",
             &resource_transition(host.local_workspace(), 0, Default::default(), 0, resources),
@@ -1156,8 +1149,6 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         assert_eq!(sources.len(), 1, "S1 one fixture-owned realization");
         std::fs::remove_dir_all(&sources[0]).expect("S1 remove owned fixture source");
         let outcome = managed
-            .terminal_cleanup()
-            .unwrap()
             .execute_terminal_repository_publication_for_lease(command, &lease)
             .await
             .expect("S1 exact closed source must return a negative outcome");
@@ -1246,8 +1237,6 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             })
             .unwrap();
         managed
-            .terminal_cleanup()
-            .unwrap()
             .execute_terminal_repository_publication_for_lease(command.clone(), &lease)
             .await
             .expect("P7 fresh wrapper resumes exact terminal publication");
@@ -1287,24 +1276,10 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         );
     }
     let first = managed
-        .terminal_cleanup()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "TerminalCleanupRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .execute_terminal_repository_publication_for_lease(command.clone(), &lease)
         .await
         .expect("P1 publish");
     let replay = managed
-        .terminal_cleanup()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "TerminalCleanupRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .execute_terminal_repository_publication_for_lease(command.clone(), &lease)
         .await
         .expect("P2 replay");

@@ -73,20 +73,17 @@ async fn next_work<R: awaken_session_execution_contract::RealizationRuntime + ?S
 /// asserted lease identifies an already-admitted terminal assignment;
 /// every action is re-read through `control` after the preceding receipt is
 /// durable.
-pub async fn drive_session_terminal_cleanup<R>(
+pub async fn drive_session_terminal_cleanup(
     session_id: &awaken_session_types::SessionId,
     asserted_lease: &awaken_session_resource_contract::SessionRealizationLease,
     control: &dyn SessionTerminalCleanupControl,
-    runtime: &R,
-) -> Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError>
-where
-    R: awaken_session_execution_contract::RealizationRuntime
-        + awaken_session_execution_contract::TerminalCleanupRuntime
-        + ?Sized,
-{
+    realization: &dyn awaken_session_execution_contract::RealizationRuntime,
+    runtime: &dyn awaken_session_execution_contract::TerminalCleanupRuntime,
+) -> Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError> {
     let mut lease = asserted_lease.clone();
     'drive: for _ in 0..8 {
-        let Some((work, started)) = next_work(control, runtime, session_id, &lease).await? else {
+        let Some((work, started)) = next_work(control, realization, session_id, &lease).await?
+        else {
             runtime
                 .acknowledge_completed_terminal_cleanup(session_id, &lease)
                 .await;
@@ -283,7 +280,7 @@ where
             }
         }
     }
-    match next_work(control, runtime, session_id, &lease).await? {
+    match next_work(control, realization, session_id, &lease).await? {
         None => {
             runtime
                 .acknowledge_completed_terminal_cleanup(session_id, &lease)
@@ -620,55 +617,11 @@ mod tests {
         ) -> Result<StepOutcome, RunError> {
             unreachable!("terminal-only fixture")
         }
-
-        fn realization(&self) -> Option<&dyn awaken_session_execution_contract::RealizationRuntime> {
-            Some(self)
-        }
-
-        fn terminal_cleanup(
-            &self,
-        ) -> Option<&dyn awaken_session_execution_contract::TerminalCleanupRuntime> {
-            Some(self)
-        }
-
-        fn coordination(
-            &self,
-        ) -> Option<&dyn awaken_session_execution_contract::CoordinationRuntime> {
-            Some(self)
-        }
-
-        fn budget(&self) -> Option<&dyn awaken_session_execution_contract::BudgetRuntime> {
-            Some(self)
-        }
-
-        fn streaming_runs(
-            &self,
-        ) -> Option<&dyn awaken_session_execution_contract::StreamingRunRuntime> {
-            Some(self)
-        }
-
-        fn environment(&self) -> Option<&dyn awaken_session_execution_contract::EnvironmentRuntime> {
-            Some(self)
-        }
-
-        fn thread_reads(&self) -> Option<&dyn awaken_session_execution_contract::ThreadReadRuntime> {
-            Some(self)
-        }
-
-        fn outcomes(&self) -> Option<&dyn awaken_session_execution_contract::OutcomeRuntime> {
-            Some(self)
-        }
-
-        fn live_inbox(&self) -> Option<&dyn awaken_session_execution_contract::LiveInboxRuntime> {
-            Some(self)
-        }
-
-        fn capability(&self) -> Option<&dyn awaken_session_execution_contract::CapabilityRuntime> {
-            Some(self)
-        }
     }
 
     awaken_session_execution_contract::neutral_role!(CoordinationRuntime for RecordingRuntime);
+
+    awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for RecordingRuntime);
 
     awaken_session_execution_contract::neutral_role!(BudgetRuntime for RecordingRuntime);
 
@@ -950,6 +903,7 @@ mod tests {
                 &awaken_session_types::SessionId::from("session"),
                 &lease,
                 &control,
+                &runtime,
                 &runtime
             )
             .await
@@ -1035,6 +989,7 @@ mod tests {
                 &awaken_session_types::SessionId::from("session"),
                 &lease,
                 &control,
+                &runtime,
                 &runtime
             )
             .await
@@ -1101,6 +1056,7 @@ mod tests {
                 &awaken_session_types::SessionId::from("session"),
                 &lease,
                 &control,
+                &runtime,
                 &runtime
             )
             .await,
@@ -1185,6 +1141,7 @@ mod tests {
                     &assigned_lease,
                     &control,
                     &runtime,
+                    &runtime,
                 )
                 .await
                 .unwrap(),
@@ -1268,6 +1225,7 @@ mod tests {
                         &awaken_session_types::SessionId::from("session"),
                         &assigned_lease,
                         &control,
+                        &runtime,
                         &runtime,
                     )
                     .await,
