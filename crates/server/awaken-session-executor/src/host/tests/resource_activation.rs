@@ -1115,6 +1115,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     awaken_session_execution_contract::TerminalCleanupRuntime::install_terminal_cleanup_assignment(
         &managed,
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            environment_creation_not_attempted: false,
             session_id: session_id.into(),
             projection: terminal_projection.clone(),
             authority: crate::installed_session::test_lease_receipt(lease.clone()),
@@ -1367,6 +1368,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     );
     control.assignments.lock().unwrap().push_back(
         awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            environment_creation_not_attempted: false,
             session_id: session_id.into(),
             projection: terminal_projection,
             authority: crate::installed_session::test_lease_receipt(lease.clone()),

@@ -25,8 +25,74 @@ use super::{FrozenSessionProjection, SessionRealizationControlFailure};
 pub struct SessionTerminalCleanupAssignment {
     pub session_id: crate::SessionId,
     pub projection: FrozenSessionProjection,
+    /// Derived only from the exact committed unattempted-profiled archive
+    /// receipt. Historical assignments remain Unknown; empty handles are not
+    /// evidence that no Create was admitted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub environment_creation_not_attempted: bool,
     #[serde(flatten)]
     pub authority: super::SessionRealizationLeaseReceipt,
+}
+
+/// Verify consistency of Control's no-Create witness with the frozen state
+/// and Runtime's local owner observation. Absence of a witness remains Unknown.
+pub fn validate_terminal_no_create_witness(
+    creation_not_attempted: bool,
+    environment: &awaken_session_state_contract::SessionEnvironmentState,
+    owner_vacant: bool,
+) -> Result<(), crate::RunError> {
+    if creation_not_attempted
+        && (!matches!(
+            environment,
+            awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
+        ) || !owner_vacant)
+    {
+        return Err(crate::RunError::classified(
+            "session_terminal_unattempted_environment_conflict",
+            "archive no-Create witness conflicts with the frozen state or retained owner",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod no_create_witness_tests {
+    #[test]
+    fn terminal_no_create_consistency_retains_unknown_and_rejects_contradictions() {
+        // Causes C1 witness, C2 Unmaterialized frozen state, C3 Vacant local
+        // owner. W1 absent witness -> retain ordinary provider requirements;
+        // W2 witness + C2/C3 -> allow the known-absence branch; W3 witness with
+        // either contradiction -> classified rejection. Eight rows cover both
+        // frozen-state partitions and every independent local-owner condition.
+        use awaken_session_state_contract::SessionEnvironmentState;
+        for (witness, unmaterialized, vacant, allowed) in [
+            (false, false, false, true),
+            (false, false, true, true),
+            (false, true, false, true),
+            (false, true, true, true),
+            (true, false, false, false),
+            (true, false, true, false),
+            (true, true, false, false),
+            (true, true, true, true),
+        ] {
+            let state = if unmaterialized {
+                SessionEnvironmentState::Unmaterialized
+            } else {
+                SessionEnvironmentState::Resident {
+                    binding: "binding".into(),
+                    effect_id: None,
+                    generation: None,
+                    idle_since_unix_ms: None,
+                }
+            };
+            let result = super::validate_terminal_no_create_witness(witness, &state, vacant);
+            assert_eq!(
+                result.is_ok(),
+                allowed,
+                "witness={witness}, unmaterialized={unmaterialized}, vacant={vacant}"
+            );
+        }
+    }
 }
 
 /// One read-only projection of terminal work from a single Session-root

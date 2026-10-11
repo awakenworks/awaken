@@ -571,6 +571,7 @@ impl SharedHost {
             checkpoint_policy,
             realization_lease,
             environment_fingerprint,
+            creation_not_attempted,
         ) = self
             .installed_sessions
             .read(thread, |slot| {
@@ -584,6 +585,7 @@ impl SharedHost {
                     baseline.map(|baseline| baseline.environment.idle_retention.clone()),
                     r.authority.lease().cloned(),
                     baseline.map(|baseline| baseline.environment.config_fingerprint.0.clone()),
+                    r.terminal_environment_creation_not_attempted,
                 )
             })
             .ok_or_else(|| {
@@ -634,9 +636,14 @@ impl SharedHost {
         } else {
             None
         };
-        // An Adoption Candidate already knows a durable binding even when its
-        // new effect response is absent. Only unknown Create commitment can
-        // coexist with Unmaterialized; reuse the owner's provenance decision.
+        awaken_session_realization_contract::validate_terminal_no_create_witness(
+            creation_not_attempted,
+            &state,
+            matches!(owner, SessionEnvironmentOwner::Vacant),
+        )
+        .map_err(crate::managed_adapter_error::from_run_error)?;
+        // An Adoption Candidate knows a durable binding even when the new effect
+        // response is absent. Unknown Create commitment remains protected.
         let unacknowledged = owner.durable_binding().is_none()
             && matches!(
                 &owner,
@@ -646,25 +653,14 @@ impl SharedHost {
                         ..
                     })
             );
-        let binding = match &state {
-            awaken_session_state_contract::SessionEnvironmentState::Resident {
-                binding, ..
-            } => Some(binding.as_str()),
-            awaken_session_state_contract::SessionEnvironmentState::Suspending {
-                source_binding,
-                ..
-            } => Some(source_binding.as_str()),
-            // The frozen terminal assignment, not a fabricated Create/Adopt
-            // receipt, may take over a locally retained pre-commit root.
-            awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
-                if unacknowledged =>
-            {
-                owner.physical_binding()
-            }
-            awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
-            | awaken_session_state_contract::SessionEnvironmentState::Hibernated { .. } => None,
-            awaken_session_state_contract::SessionEnvironmentState::Restoring { .. } => None,
-        };
+        let binding = state.binding().or_else(|| {
+            (matches!(
+                state,
+                awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
+            ) && unacknowledged)
+                .then(|| owner.physical_binding())
+                .flatten()
+        });
         if matches!(
             &state,
             awaken_session_state_contract::SessionEnvironmentState::Restoring { .. }
@@ -714,10 +710,12 @@ impl SharedHost {
                     "terminal aggregate has no binding but Runtime retains an Environment",
                 ));
             }
-            if matches!(
-                &state,
-                awaken_session_state_contract::SessionEnvironmentState::Hibernated { .. }
-            ) {
+            if creation_not_attempted
+                || matches!(
+                    &state,
+                    awaken_session_state_contract::SessionEnvironmentState::Hibernated { .. }
+                )
+            {
                 return Ok(TerminalEnvironmentPreparation {
                     state,
                     environment: PreparedBoundEnvironment::new(

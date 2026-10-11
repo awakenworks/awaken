@@ -4,6 +4,15 @@
 //! The notifier carries no fact payload: the transactional outbox is the only
 //! source of event data. Delivery machinery lives outside this contract.
 
+/// Canonical archived-Session fact shared by command lowering and exact
+/// idempotency-receipt observation; wire adapters do not own another spelling.
+pub const SESSION_TERMINATED: &str = "session.status_terminated";
+
+#[must_use]
+pub fn session_terminated_fact_id(session_id: &str) -> String {
+    format!("session:{session_id}:terminated")
+}
+
 /// Durable start marker retained inside the Session aggregate while one
 /// customer-visible Running interval is open. Overlapping driving events share
 /// this marker; only the transition back out of Running closes it.

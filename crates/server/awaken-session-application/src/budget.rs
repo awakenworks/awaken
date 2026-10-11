@@ -23,8 +23,7 @@ impl SessionApplication {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self.owner(session_id).await?;
             let mut session = self
-                .session_repository()
-                .get(session_id)
+                .session_aggregate(session_id)
                 .await
                 .map_err(repository_failure)?;
             let fallback_model = session
@@ -39,11 +38,7 @@ impl SessionApplication {
             // Historical rows recorded the unconditional cursor only inside a
             // configured budget. Seed the new neutral root projection from that
             // same fact without inventing a migration ledger.
-            if let Some(legacy) = session.budget.usage_cursor()
-                && session.usage_cursor == ManagedBudgetUsageCursor::default()
-            {
-                session.usage_cursor = legacy.clone();
-            }
+            session.budget().seed_legacy_usage();
             let active_seconds = session
                 .usage_cursor
                 .active_seconds
@@ -58,16 +53,15 @@ impl SessionApplication {
                 ));
             }
             let usage_changed = usage_cursor != session.usage_cursor;
-            session.usage_cursor = usage_cursor.clone();
             let budget_usage_changed = session
-                .budget
+                .budget()
                 .reconcile_cumulative_usage(usage_cursor)
                 .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?;
             let reached_now = was_admissible && !session.budget.can_admit_model_request();
             let reach_transition = if reached_now {
                 Some(
                     session
-                        .budget
+                        .budget()
                         .record_reach_transition()
                         .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?
                         .ok_or_else(|| {
@@ -82,7 +76,7 @@ impl SessionApplication {
             };
             if !usage_changed && !budget_usage_changed && !reached_now {
                 return Ok(BudgetSettlementOutcome {
-                    session,
+                    session: session.into_snapshot(),
                     reached_now: false,
                 });
             }

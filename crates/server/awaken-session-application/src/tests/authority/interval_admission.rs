@@ -17,7 +17,8 @@ async fn late_boundary_settles_activity_without_claiming_a_pre_admission_commit(
                 .await
                 .unwrap(),
         );
-        let mut session = persisted(&id, false, "idle");
+        let session = persisted(&id, false, "idle");
+        let mut session = SessionAggregate::try_from(session).expect("valid admission fixture");
         let epoch = SessionApplication::open_activity_on_snapshot(
             &mut session,
             None,
@@ -36,7 +37,7 @@ async fn late_boundary_settles_activity_without_claiming_a_pre_admission_commit(
             Some(7),
             "A1 durable admission fence"
         );
-        create(repo.as_ref(), session).await;
+        create(repo.as_ref(), session.into_snapshot()).await;
         let app = application(repo, Arc::new(RecordingEnvironmentSource::default()));
         let observation = awaken_session_state_contract::SessionRuntimeIntervalObservation {
             activity_epoch: epoch,
@@ -95,7 +96,8 @@ async fn user_event_boundary_before_admission_refuses_without_settlement() {
                 .await
                 .unwrap(),
         );
-        let mut session = persisted(&id, false, "idle");
+        let session = persisted(&id, false, "idle");
+        let mut session = SessionAggregate::try_from(session).expect("valid admission fixture");
         let epoch = SessionApplication::open_activity_on_snapshot(
             &mut session,
             None,
@@ -105,7 +107,7 @@ async fn user_event_boundary_before_admission_refuses_without_settlement() {
             7,
         )
         .unwrap();
-        create(repo.as_ref(), session).await;
+        create(repo.as_ref(), session.into_snapshot()).await;
         let app = application(
             repo.clone(),
             Arc::new(RecordingEnvironmentSource::default()),

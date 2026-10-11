@@ -25,6 +25,17 @@ SESSION_MUTATION_ROOTS = (
 )
 
 DIRECT_STATE_WRITE = re.compile(r"\.(?:execution|disposition)\s*=(?!=)")
+# Application candidates may be read as compatible DTOs, but may not regain
+# mutable DTO references or directly overwrite aggregate-owned coordinates.
+APPLICATION_ROOT = SESSION_MUTATION_ROOTS[0]
+MUTABLE_DTO_ESCAPE = re.compile(r"&\s*(?:'\w+\s+)?mut\s+(?:[\w:]+::)?PersistedSession\b")
+DIRECT_AGGREGATE_WRITE = re.compile(
+    r"\b(?:session|persisted|current|root)\s*\.\s*(?:execution|disposition|baseline|"
+    r"resources|mcp|environment|realization|realization_progress|activity_epoch|"
+    r"active_activity_epochs|running_interval|closed_runtime_intervals|event_batches|"
+    r"budget|budget_cursor|title|metadata|tools|revision|created_at_unix_ms|"
+    r"updated_at_unix_ms|terminal_cleanup)\s*=(?!=)"
+)
 RETIRED_SESSION_STATE = re.compile(
     r"\bSessionLifecycleState\b|\bSessionExecutionState::Deleted\b"
 )
@@ -116,6 +127,13 @@ def session_state_ownership_violations(sources: dict[str, str]) -> list[str]:
             SESSION_EXECUTION_STATE_CONTRACT,
         ):
             continue
+        if relative.startswith(APPLICATION_ROOT) and (
+            MUTABLE_DTO_ESCAPE.search(_crate_boundary_workspace.rust_syntax(production))
+            or DIRECT_AGGREGATE_WRITE.search(_crate_boundary_workspace.rust_syntax(production))
+        ):
+            errors.append(
+                f"{relative}: writable Session DTO bypasses SessionAggregate; use a controlled command"
+            )
         if relative.startswith(SESSION_MUTATION_ROOTS) and DIRECT_STATE_WRITE.search(production):
             errors.append(
                 f"{relative}: direct Session state write outside the aggregate; use "
@@ -203,3 +221,26 @@ impl PersistedSession {
     assert session_state_ownership_violations(split_tests) == [], (
         "cfg(test) source modules remain fixture-only after responsibility splits"
     )
+
+    # C1 raw DTO borrowed mutably; C2 a non-lifecycle root field overwritten;
+    # C3 controlled command/read; C4 test-only fixture. E1 only C1/C2 rejected.
+    for text in (
+        "fn bypass(s: &mut PersistedSession) { s.title = None; }",
+        "fn bypass(s: &mut awaken_session_state_contract::PersistedSession) {}",
+        "session.resources = Default::default();",
+        "root.realization_progress = Default::default();",
+        "current.budget = Default::default();",
+        "persisted.created_at_unix_ms = Some(42);",
+    ):
+        bypass = dict(sources)
+        bypass[f"{APPLICATION_ROOT}/mutation.rs"] = text
+        assert session_state_ownership_violations(bypass), text
+    for text in (
+        "root.configuration().set_title(None); project(root.title);",
+        "fn inspect(s: &PersistedSession) {}",
+        "#[cfg(test)] mod tests { fn fixture(s: &mut PersistedSession) {} }",
+        'let message = "session.resources = Default::default();";',
+    ):
+        allowed = dict(sources)
+        allowed[f"{APPLICATION_ROOT}/mutation.rs"] = text
+        assert session_state_ownership_violations(allowed) == [], text

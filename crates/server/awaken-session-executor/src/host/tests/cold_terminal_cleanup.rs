@@ -112,6 +112,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         )
         .expect("R1 publish the exact Worker-local Environment owner");
     let assignment = awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+        environment_creation_not_attempted: false,
         session_id: "remote-terminal-worker".into(),
         projection: projection.clone(),
         authority: crate::installed_session::test_lease_receipt(lease.clone()),
@@ -265,6 +266,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
     };
     control.assignments.lock().unwrap().push_back(
         awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            environment_creation_not_attempted: false,
             session_id: terminal_id.into(),
             projection: terminal_projection.clone(),
             authority: crate::installed_session::test_lease_receipt(terminal_lease.clone()),
@@ -370,6 +372,7 @@ fn enqueue_completed_terminal_assignments(
         let session_id = format!("{prefix}-{index:03}");
         control.assignments.lock().unwrap().push_back(
             awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                environment_creation_not_attempted: false,
                 session_id: session_id.clone().into(),
                 projection: remote_terminal_cleanup_projection(),
                 authority: crate::installed_session::test_lease_receipt(lease.clone()),
@@ -743,6 +746,7 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
     );
     control.assignments.lock().unwrap().push_back(
         awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            environment_creation_not_attempted: false,
             session_id: session_id.into(),
             projection: projection.clone(),
             authority: crate::installed_session::test_lease_receipt(lease.clone()),

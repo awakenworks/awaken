@@ -19,7 +19,8 @@ use awaken_session_types::SessionId;
 mod coordinated_resources;
 mod interval_admission;
 mod lost_root_cas_replay;
-mod unattempted_profiled_release;
+mod unattempted_archive_witness;
+pub(super) mod unattempted_profiled_release;
 
 fn coordinated_session(id: &str) -> PersistedSession {
     let mut session = persisted(id, false, "idle");
@@ -104,7 +105,8 @@ async fn anchor_unsettled_event(
     let _fixture = app
         .commit_session_snapshot_with_outcome(
             "workspace",
-            session,
+            awaken_session_state_contract::SessionAggregate::try_from(session)
+                .expect("valid test snapshot"),
             &format!("test-anchor-event:{session_id}"),
             Vec::new(),
         )
@@ -1451,7 +1453,8 @@ async fn root_mutation_cause_effect_decision_table() {
     let commit = app
         .commit_session_snapshot_with_record(
             "workspace",
-            candidate.clone(),
+            awaken_session_state_contract::SessionAggregate::try_from(candidate.clone())
+                .expect("valid test snapshot"),
             record.clone(),
             Vec::new(),
         )
@@ -1464,7 +1467,8 @@ async fn root_mutation_cause_effect_decision_table() {
     let commit = app
         .commit_session_snapshot_with_record(
             "workspace",
-            candidate.clone(),
+            awaken_session_state_contract::SessionAggregate::try_from(candidate.clone())
+                .expect("valid test snapshot"),
             record.clone(),
             Vec::new(),
         )
@@ -1478,7 +1482,13 @@ async fn root_mutation_cause_effect_decision_table() {
     later.metadata.insert("later".into(), "authority".into());
     later.updated_at_unix_ms = Some(u64::MAX);
     let later = app
-        .commit_session_snapshot_with_outcome("workspace", later, "later", Vec::new())
+        .commit_session_snapshot_with_outcome(
+            "workspace",
+            awaken_session_state_contract::SessionAggregate::try_from(later)
+                .expect("valid test snapshot"),
+            "later",
+            Vec::new(),
+        )
         .await
         .expect("M5 advance durable root")
         .into_session();
@@ -1495,7 +1505,8 @@ async fn root_mutation_cause_effect_decision_table() {
     let commit = app
         .commit_session_snapshot_with_record(
             "workspace",
-            candidate.clone(),
+            awaken_session_state_contract::SessionAggregate::try_from(candidate.clone())
+                .expect("valid test snapshot"),
             record.clone(),
             vec![replay_fact.clone()],
         )
@@ -1528,7 +1539,8 @@ async fn root_mutation_cause_effect_decision_table() {
         replay_app
             .commit_session_snapshot_with_record(
                 "workspace",
-                candidate.clone(),
+                awaken_session_state_contract::SessionAggregate::try_from(candidate.clone())
+                    .expect("valid test snapshot"),
                 record.clone(),
                 vec![replay_fact],
             )
@@ -1552,14 +1564,21 @@ async fn root_mutation_cause_effect_decision_table() {
     );
 
     let stale = app
-        .commit_session_snapshot_with_outcome("workspace", candidate.clone(), "stale", Vec::new())
+        .commit_session_snapshot_with_outcome(
+            "workspace",
+            awaken_session_state_contract::SessionAggregate::try_from(candidate.clone())
+                .expect("valid test snapshot"),
+            "stale",
+            Vec::new(),
+        )
         .await;
     assert_eq!(stale, Err(SessionMutationError::Conflict), "M3");
 
     let mismatch = app
         .commit_session_snapshot_with_record(
             "workspace",
-            candidate,
+            awaken_session_state_contract::SessionAggregate::try_from(candidate)
+                .expect("valid test snapshot"),
             awaken_session_state_contract::IdempotencyRecord {
                 key: record.key,
                 payload_hash: "another-payload".into(),
@@ -1627,7 +1646,8 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
     let durable = app
         .commit_session_snapshot_with_outcome(
             "workspace",
-            durable,
+            awaken_session_state_contract::SessionAggregate::try_from(durable)
+                .expect("valid test snapshot"),
             "test-create-replay",
             Vec::new(),
         )
@@ -3015,7 +3035,8 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
                     let _fixture = app
                         .commit_session_snapshot_with_outcome(
                             "workspace",
-                            predecessor,
+                            awaken_session_state_contract::SessionAggregate::try_from(predecessor)
+                                .expect("valid test snapshot"),
                             "delete-race-predecessor",
                             Vec::new(),
                         )
@@ -3566,7 +3587,8 @@ async fn run_activity_fence_decision_table() {
         let failed = app
             .commit_session_snapshot_with_outcome(
                 "workspace",
-                failed,
+                awaken_session_state_contract::SessionAggregate::try_from(failed)
+                    .expect("valid test snapshot"),
                 "activity-test-realization-failed",
                 Vec::new(),
             )
@@ -6313,7 +6335,8 @@ async fn cancellation_before_external_realization_settles_without_a_runtime_inte
             .await
             .expect("pre-realization cancellation repository"),
     );
-    let mut session = persisted(session_id, false, "preparing");
+    let session = persisted(session_id, false, "preparing");
+    let mut session = SessionAggregate::try_from(session).expect("valid admission fixture");
     let epoch = SessionApplication::open_activity_on_snapshot(
         &mut session,
         None,
@@ -6327,7 +6350,7 @@ async fn cancellation_before_external_realization_settles_without_a_runtime_inte
         session.running_interval.is_none(),
         "P1/C1 no Running interval"
     );
-    create(repo.as_ref(), session).await;
+    create(repo.as_ref(), session.into_snapshot()).await;
     let app = application(
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),

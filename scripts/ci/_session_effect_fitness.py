@@ -254,7 +254,7 @@ REQUIRED = {
         '"terminal-cleanup-disposal"',
         ".verified_terminal_cleanup()",
         "record_terminal_repository_publication_effect_from_root",
-        "session.record_repository_publication_rejection(rejection)",
+        ".record_repository_publication_rejection(rejection)",
         '"terminal-repository-publication-worker-outcome"',
     ),
     APPLICATION_TERMINAL: (
@@ -557,7 +557,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
         (
             "record_terminal_cleanup_preparation_from_root",
             (
-                ".get(&session_id)",
+                ".session_aggregate(&session_id)",
                 ".record_terminal_cleanup_preparation(",
                 '"terminal-cleanup-preparation"',
             ),
@@ -566,7 +566,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
         (
             "record_terminal_cleanup_disposal_from_root",
             (
-                ".get(&session_id)",
+                ".session_aggregate(&session_id)",
                 ".record_terminal_cleanup_disposal(",
                 '"terminal-cleanup-disposal"',
             ),
@@ -589,7 +589,7 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
             APPLICATION_RESOURCE_RECONCILIATION,
             "record_terminal_repository_publication_effect_from_root",
             (
-                "session.record_repository_publication_rejection(rejection)",
+                "session.lifecycle().record_repository_publication_rejection(rejection)",
                 '"terminal-repository-publication-worker-outcome"',
             ),
             "one root-CAS Repository publication outcome",
@@ -1134,12 +1134,12 @@ fn authorize_terminal_cleanup_disposal_from_root() {
     session.authorize_terminal_cleanup_disposal_effect(&owner_scope, effect);
 }
 fn record_terminal_cleanup_preparation_from_root() {
-    repository.get(&session_id);
+    repository.session_aggregate(&session_id);
     session.record_terminal_cleanup_preparation(lease, preparation);
     "terminal-cleanup-preparation";
 }
 fn record_terminal_cleanup_disposal_from_root() {
-    repository.get(&session_id);
+    repository.session_aggregate(&session_id);
     session.record_terminal_cleanup_disposal(lease, receipt);
     "terminal-cleanup-disposal";
 }
@@ -1148,7 +1148,7 @@ fn record_terminal_repository_publication_effect_from_root() {
     session.verified_terminal_cleanup();
     match effect {
         Published(receipt) => session.record_repository_publication_receipt(session_id, receipt),
-        Rejected(rejection) => session.record_repository_publication_rejection(rejection),
+        Rejected(rejection) => session.lifecycle().record_repository_publication_rejection(rejection),
     }
     "terminal-repository-publication-worker-outcome";
 }
@@ -1532,7 +1532,7 @@ fn recover_terminal_receipts() {
         (
             "root rejection before outcome CAS",
             APPLICATION_RESOURCE_RECONCILIATION,
-            "session.record_repository_publication_rejection(rejection)",
+            "session.lifecycle().record_repository_publication_rejection(rejection)",
             '"terminal-repository-publication-worker-outcome"',
         ),
         (
@@ -1569,7 +1569,7 @@ fn recover_terminal_receipts() {
     # the existing owner/order oracle instead of tolerating both paths.
     for owner, before, after in (
         (APPLICATION_RESOURCE_RECONCILIATION,
-         "session.record_repository_publication_rejection(rejection)",
+         "session.lifecycle().record_repository_publication_rejection(rejection)",
          "session.terminal_cleanup.record_repository_publication_rejection(rejection)"),
         (SESSION_REPOSITORY_PUBLICATION_AGGREGATE,
          "matches_source_binding(self.environment.terminal_repository_publication_binding())",

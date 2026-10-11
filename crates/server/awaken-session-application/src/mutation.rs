@@ -109,8 +109,9 @@ pub enum SessionMutationError {
 
 /// Update only the existing root observation. The caller compiles idempotency
 /// before invoking this kernel, and only the repository CAS can persist it.
+#[cfg(any(test, kani))]
 fn observe_root_update(previous: &mut Option<u64>, now: u64) {
-    *previous = Some(now.max(previous.unwrap_or(0)));
+    *previous = awaken_session_state_contract::session_root_update_observation(*previous, now);
 }
 
 /// Interpret the actual repository receipt once. Both successful variants keep
@@ -135,26 +136,38 @@ fn snapshot_commit_receipt(
 pub(crate) async fn commit_observed_snapshot(
     repository: &dyn SessionRepository,
     owner_scope: &str,
-    session: &mut PersistedSession,
+    session: &mut SessionAggregate,
     idempotency: IdempotencyRecord,
     lifecycle_facts: Vec<ManagedLifecycleFact>,
     now: u64,
 ) -> Result<SessionMutationResult, SessionRepositoryError> {
-    observe_root_update(&mut session.updated_at_unix_ms, now);
     repository
         .commit(
             owner_scope,
-            SessionMutation {
-                expected_revision: session.revision,
-                idempotency,
-                payload: SessionMutationPayload::Replace(session.clone()),
-                lifecycle_facts,
-            },
+            session.compile_mutation(owner_scope, idempotency, lifecycle_facts, now),
         )
         .await
 }
 
+pub(crate) fn aggregate_from_snapshot(
+    session: PersistedSession,
+) -> Result<SessionAggregate, SessionRepositoryError> {
+    SessionAggregate::try_from(session)
+        .map_err(|error| SessionRepositoryError::Corrupt(error.to_string()))
+}
+
 impl SessionApplication {
+    /// Import one authoritative read into the controlled working candidate.
+    pub(crate) async fn session_aggregate(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+    ) -> Result<SessionAggregate, SessionRepositoryError> {
+        self.sessions_repo
+            .get(session_id)
+            .await
+            .and_then(aggregate_from_snapshot)
+    }
+
     /// Allocate one process-call identity for a mutation that intentionally has
     /// no external idempotency key. The identity remains stable across this
     /// call's root-CAS retries, while two genuinely distinct concurrent calls
@@ -204,18 +217,7 @@ impl SessionApplication {
         // Receipt identity was compiled before this server-owned observation.
         // A repository replay returns the first committed times unchanged.
         let now = self.clock.now_ms();
-        {
-            let session = root.as_session_mut();
-            session.created_at_unix_ms = Some(now);
-            session
-                .resources
-                .active
-                .observe_input_times(&Default::default(), now);
-            if let Some(pending) = &mut session.resources.pending {
-                pending.observe_input_times(&Default::default(), now);
-            }
-            session.updated_at_unix_ms = Some(now);
-        }
+        root.observe_creation(now)?;
         let result = self
             .sessions_repo
             .create(
@@ -304,7 +306,7 @@ impl SessionApplication {
     pub async fn commit_session_snapshot_with_outcome(
         &self,
         owner_scope: &str,
-        session: PersistedSession,
+        session: SessionAggregate,
         operation: &str,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<SnapshotCommit, SessionMutationError> {
@@ -324,12 +326,12 @@ impl SessionApplication {
     async fn compile_session_snapshot_idempotency(
         &self,
         owner_scope: &str,
-        session: PersistedSession,
+        session: SessionAggregate,
         operation: &str,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<SnapshotCommit, SessionMutationError> {
         let expected_revision = session.revision;
-        let payload = SessionMutationPayload::Replace(session.clone());
+        let payload = SessionMutationPayload::Replace(session.snapshot().clone());
         let payload_hash = payload.stable_hash();
         let idempotency = IdempotencyRecord {
             key: format!(
@@ -345,7 +347,7 @@ impl SessionApplication {
     pub async fn commit_session_snapshot_with_record(
         &self,
         owner_scope: &str,
-        mut session: PersistedSession,
+        mut session: SessionAggregate,
         idempotency: IdempotencyRecord,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<SnapshotCommit, SessionMutationError> {
@@ -362,8 +364,9 @@ impl SessionApplication {
         .map_err(repository_failure)?;
         let (committed_revision, transitioned) = snapshot_commit_receipt(result)?;
         let session = if transitioned {
-            session.revision = committed_revision;
             session
+                .into_applied_snapshot(committed_revision)
+                .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?
         } else {
             self.sessions_repo
                 .get(&session_id)

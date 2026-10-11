@@ -37,13 +37,14 @@ pub use control_failure::{SessionRealizationControlDisposition, SessionRealizati
 mod effect_failure;
 pub use effect_failure::{
     ENVIRONMENT_CAPACITY_UNAVAILABLE_CODE, ENVIRONMENT_REJECTED_CODE, ENVIRONMENT_UNAVAILABLE_CODE,
-    effect_failure_disposition, environment_effect_error, is_environment_effect_code,
+    RealizationFailureOutcome, effect_failure_disposition, environment_effect_error,
+    is_environment_effect_code,
 };
 pub use lease_receipt::{ObservedSessionRealizationLease, SessionRealizationLeaseReceipt};
 mod terminal_cleanup_authorization;
 pub use terminal_cleanup_authorization::{
     SessionTerminalCleanupAssignment, SessionTerminalCleanupPreparationAuthorization,
-    SessionTerminalCleanupWork,
+    SessionTerminalCleanupWork, validate_terminal_no_create_witness,
 };
 
 pub use awaken_session_resource_contract::{

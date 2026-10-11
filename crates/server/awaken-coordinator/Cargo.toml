@@ -102,6 +102,7 @@ awaken-session-execution-contract.workspace = true
 awaken-session-state-contract.workspace = true
 awaken-session-budget-contract.workspace = true
 awaken-session-dream-contract.workspace = true
+awaken-session-event-contract.workspace = true
 awaken-session-mcp-contract.workspace = true
 awaken-session-resource-contract.workspace = true
 awaken-session-types.workspace = true

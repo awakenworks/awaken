@@ -521,10 +521,12 @@ impl DreamExecutor for BuiltInDreamAgent {
             let now_ms = awaken_time::WallClockExt::now_ms(self.sessions.clock().as_ref());
             let archived_at = awaken_session_application_contract::epoch_millis_to_rfc3339(now_ms);
             let fact = ManagedLifecycleFact {
-                id: format!("session:{}:terminated", preparation.session_id),
+                id: awaken_session_event_contract::session_terminated_fact_id(
+                    &preparation.session_id,
+                ),
                 object_id: preparation.session_id.clone(),
                 workspace_id: Some(request.workspace_id.clone()),
-                event_type: "session.status_terminated".into(),
+                event_type: awaken_session_event_contract::SESSION_TERMINATED.into(),
                 timestamp: i64::try_from(now_ms / 1_000).unwrap_or(i64::MAX),
                 runtime_interval: None,
             };

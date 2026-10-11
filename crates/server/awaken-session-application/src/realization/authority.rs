@@ -59,6 +59,44 @@ impl<'a> TerminalCleanupClaimScope<'a> {
     }
 }
 
+/// Physical affinity remains immutable unless an expired cleanup-only claim
+/// has the exact archive no-Create witness and no accepted source progress.
+/// The existing claim CAS still owns replacement, Registry fencing and replay.
+pub(super) async fn terminal_cleanup_worker_affinity_rejection(
+    repository: &dyn awaken_session_repository_contract::SessionRepository,
+    scope: TerminalCleanupClaimScope<'_>,
+    owner_scope: &str,
+    session: &PersistedSession,
+    target: &awaken_session_realization_contract::SessionRealizationTarget,
+    now_unix_ms: u64,
+) -> Option<TerminalCleanupRootClaim> {
+    let current = session.realization.as_ref()?;
+    if !scope.is_external() || current.owner == target.owner {
+        return None;
+    }
+    if awaken_session_realization_contract::realization_lease_is_live_at(
+        current.expires_at_unix_ms,
+        now_unix_ms,
+    ) || !matches!(session.environment, SessionEnvironmentState::Unmaterialized)
+        || !session
+            .terminal_cleanup
+            .has_unprepared_root_only_request(&session.session_id)
+    {
+        return Some(TerminalCleanupRootClaim::Skip);
+    }
+    match crate::archive_intent::unattempted_profiled_archive_witness(
+        repository,
+        owner_scope,
+        session,
+    )
+    .await
+    {
+        Ok(true) => None,
+        Ok(false) => Some(TerminalCleanupRootClaim::Skip),
+        Err(error) => Some(TerminalCleanupRootClaim::Failed(repository_control(error))),
+    }
+}
+
 /// Lower one frozen terminal root into the static capabilities needed by the
 /// current Worker for every remaining source-dependent phase. Model execution,
 /// ACP, tool recovery, and inference credentials are deliberately absent: the

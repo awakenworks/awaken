@@ -358,7 +358,7 @@ impl InstalledSessions {
     }
 
     /// The registry itself, for tests that hold or poison its lock.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn test_map(&self) -> &Arc<Mutex<HashMap<String, InstalledSession>>> {
         &self.slots
     }

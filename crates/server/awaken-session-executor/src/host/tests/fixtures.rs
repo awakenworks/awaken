@@ -515,6 +515,7 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue
         Ok(Some(
             awaken_session_realization_contract::SessionTerminalCleanupWork {
                 assignment: awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+                    environment_creation_not_attempted: false,
                     session_id: session_id.clone(),
                     projection,
                     authority: crate::installed_session::test_lease_receipt(current),

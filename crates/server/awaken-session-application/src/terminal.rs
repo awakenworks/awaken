@@ -15,10 +15,11 @@ use awaken_session_state_contract::{
 use awaken_session_types::RunError;
 use awaken_time::WallClockExt as _;
 
+use crate::archive_intent::{ArchiveAdmission, ArchiveBusinessIntent, archive_idempotency_record};
+
 use super::{
     SessionApplication, SessionMutationError, SessionPreparationError, SnapshotCommit,
-    activity::runtime_interval_fact, mutation::repository_failure,
-    resource_reconciliation::mutation_failure,
+    mutation::repository_failure, resource_reconciliation::mutation_failure,
 };
 
 /// One durable disposition transition and whether *this* call committed it.
@@ -180,120 +181,6 @@ mod publication_error_tests {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ArchiveAdmission {
-    IdleOnly,
-    TerminalOnly,
-    UnattemptedProfiledPreparation,
-    ForceTerminal,
-}
-
-impl ArchiveAdmission {
-    const fn as_identity_str(self) -> &'static str {
-        match self {
-            Self::IdleOnly => "idle_only",
-            Self::TerminalOnly => "terminal_only",
-            Self::UnattemptedProfiledPreparation => "unattempted_profiled_preparation",
-            Self::ForceTerminal => "force_terminal",
-        }
-    }
-}
-
-/// One Session Application command-identity law for every archive entrance.
-/// Route observation time belongs only to the candidate that wins the root
-/// CAS. It cannot distinguish two requests for the same business intent.
-#[derive(serde::Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum ArchiveBusinessIntent<'a> {
-    Ordinary {
-        admission: &'static str,
-    },
-    RepositoryPublication {
-        source_revision: awaken_session_types::SessionRevision,
-        binding_id: &'a BindingId,
-        expectation: &'a RepositoryPublicationExpectation,
-        resolved: &'a SessionRepositoryPublicationIntent,
-    },
-}
-
-fn archive_idempotency_record(
-    owner_scope: &str,
-    session_id: &awaken_session_types::SessionId,
-    fact: &ManagedLifecycleFact,
-    business: ArchiveBusinessIntent<'_>,
-) -> awaken_session_state_contract::IdempotencyRecord {
-    let key = match &business {
-        ArchiveBusinessIntent::Ordinary { .. } => {
-            format!("session:archive:{session_id}:{}", fact.id)
-        }
-        ArchiveBusinessIntent::RepositoryPublication {
-            source_revision, ..
-        } => format!(
-            "session:archive-with-repository-publication:{session_id}:{}:{}",
-            source_revision.0, fact.id
-        ),
-    };
-    let payload_hash = awaken_agent_contract::stable_fingerprint(&(
-        "session-archive-intent-v2",
-        owner_scope,
-        session_id,
-        &fact.id,
-        &fact.object_id,
-        &fact.workspace_id,
-        &fact.event_type,
-        &fact.runtime_interval,
-        &business,
-    ));
-    awaken_session_state_contract::IdempotencyRecord { key, payload_hash }
-}
-
-#[cfg(test)]
-mod archive_identity_tests {
-    use super::*;
-
-    #[test]
-    fn sampled_time_is_not_identity_but_interval_and_admission_are() {
-        // Causes: I1 same Session/owner/fact id/type/admission, different
-        // Route timestamps; I2 same id/type but a different Runtime interval;
-        // I3 same fact but a different admission business rule. Effects: I1
-        // exact key+hash replay; I2/I3 same key but different payload hashes,
-        // so the Repository refuses an accidental different-intent replay.
-        let id = awaken_session_types::SessionId::from("session");
-        let mut fact = ManagedLifecycleFact {
-            id: "session:session:terminated".into(),
-            object_id: id.to_string(),
-            workspace_id: Some("workspace".into()),
-            event_type: "session.terminated".into(),
-            timestamp: 1,
-            runtime_interval: None,
-        };
-        let record = |fact: &ManagedLifecycleFact, admission| {
-            archive_idempotency_record(
-                "workspace",
-                &id,
-                fact,
-                ArchiveBusinessIntent::Ordinary { admission },
-            )
-        };
-        let original = record(&fact, "idle_only");
-        fact.timestamp = 2;
-        assert_eq!(record(&fact, "idle_only"), original, "I1");
-        fact.runtime_interval = Some(
-            serde_json::from_value(serde_json::json!({
-                "interval_id": "interval", "activity_epoch": 1,
-                "started_at_unix_ms": 1, "ended_at_unix_ms": 2
-            }))
-            .unwrap(),
-        );
-        let interval = record(&fact, "idle_only");
-        assert_eq!(interval.key, original.key, "I2 same public fact id");
-        assert_ne!(interval.payload_hash, original.payload_hash, "I2 conflict");
-        let force = record(&fact, "force_terminal");
-        assert_eq!(force.key, original.key, "I3 same public fact id");
-        assert_ne!(force.payload_hash, interval.payload_hash, "I3 conflict");
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ArchiveCleanupCompletion {
     Recoverable,
     Required,
@@ -423,8 +310,7 @@ impl SessionApplication {
                 return Err(SessionArchiveWithRepositoryPublicationError::NotFound);
             }
             let mut session = self
-                .session_repository()
-                .get(&command.session_id)
+                .session_aggregate(&command.session_id)
                 .await
                 .map_err(repository_failure)?;
             if session.is_hidden() {
@@ -461,8 +347,7 @@ impl SessionApplication {
             // clock again. Only an Active transition receives a new sample.
             let archive_time = matches!(&session.disposition, SessionDisposition::Active)
                 .then(|| self.clock.now_ms());
-            let changed = session
-                .archive_with_repository_publication(&command.archived_at, archive_time, intent)
+            let changed = session.lifecycle().archive_with_repository_publication(&command.archived_at, archive_time, intent)
                 .map_err(|error| match error {
                     awaken_session_state_contract::SessionArchiveWithRepositoryPublicationError::Disposition(
                         awaken_session_state_contract::SessionDispositionTransitionError::ArchiveAfterDelete,
@@ -479,22 +364,13 @@ impl SessionApplication {
                     }
                 })?;
             if !changed {
-                transition = Some(SessionDispositionMutation::unchanged(owner_scope, session));
+                transition = Some(SessionDispositionMutation::unchanged(
+                    owner_scope,
+                    session.into_snapshot(),
+                ));
                 break;
             }
-            let archive_time = archive_time.ok_or_else(|| {
-                SessionArchiveWithRepositoryPublicationError::Unavailable(
-                    "committed archive has no Application time observation".into(),
-                )
-            })?;
-            let mut facts = session
-                .close_runtime_interval(archive_time)
-                .map(|interval| {
-                    runtime_interval_fact(&owner_scope, command.session_id.as_str(), interval)
-                })
-                .into_iter()
-                .collect::<Vec<_>>();
-            facts.push(command.lifecycle_fact.clone());
+            let facts = vec![command.lifecycle_fact.clone()];
             match self
                 .commit_session_snapshot_with_record(&owner_scope, session, idempotency, facts)
                 .await
@@ -521,11 +397,10 @@ impl SessionApplication {
             .err()
             .map(|error| error.to_string());
         let durable = self
-            .session_repository()
-            .get(&command.session_id)
+            .session_aggregate(&command.session_id)
             .await
             .map_err(repository_failure)?;
-        transition.session = durable.clone();
+        transition.session = durable.snapshot().clone();
         if let Some(rejection) = durable
             .terminal_cleanup
             .repository_publication_rejection(&command.session_id)
@@ -743,8 +618,7 @@ impl SessionApplication {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self.owner(session_id).await.map_err(mutation_failure)?;
             let mut session = self
-                .session_repository()
-                .get(session_id)
+                .session_aggregate(session_id)
                 .await
                 .map_err(repository_failure)
                 .map_err(mutation_failure)?;
@@ -752,7 +626,10 @@ impl SessionApplication {
             // payload validation. A later retry may carry a different display
             // timestamp, but it cannot reopen or rewrite the archived root.
             if matches!(session.disposition, SessionDisposition::Archived { .. }) {
-                return Ok(SessionDispositionMutation::unchanged(owner_scope, session));
+                return Ok(SessionDispositionMutation::unchanged(
+                    owner_scope,
+                    session.into_snapshot(),
+                ));
             }
             let command_record = archive_idempotency_record(
                 &owner_scope,
@@ -774,7 +651,10 @@ impl SessionApplication {
                         "Session archive command identity was reused with another payload".into(),
                     ));
                 }
-                return Ok(SessionDispositionMutation::unchanged(owner_scope, session));
+                return Ok(SessionDispositionMutation::unchanged(
+                    owner_scope,
+                    session.into_snapshot(),
+                ));
             }
             if session.is_hidden() {
                 return Err(SessionPreparationError::NotFound);
@@ -811,14 +691,10 @@ impl SessionApplication {
             }
             let archive_time = self.clock.now_ms();
             session
+                .lifecycle()
                 .archive(archived_at, archive_time)
                 .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?;
-            let mut facts = session
-                .close_runtime_interval(archive_time)
-                .map(|interval| runtime_interval_fact(&owner_scope, session_id.as_str(), interval))
-                .into_iter()
-                .collect::<Vec<_>>();
-            facts.push(fact.clone());
+            let facts = vec![fact.clone()];
             match self
                 .commit_session_snapshot_with_record(
                     &owner_scope,
@@ -852,8 +728,7 @@ impl SessionApplication {
                 .await
                 .map_err(mutation_failure)?;
             let mut session = self
-                .session_repository()
-                .get(&awaken_session_types::SessionId::from(session_id))
+                .session_aggregate(&awaken_session_types::SessionId::from(session_id))
                 .await
                 .map_err(repository_failure)
                 .map_err(mutation_failure)?;
@@ -862,27 +737,27 @@ impl SessionApplication {
             // absorbing without duplicating disposition interpretation here;
             // a rejected first request mutates only this detached candidate.
             let Some(delete_fact) = session
+                .lifecycle()
                 .request_delete(
                     &owner_scope,
                     command.requested_at_unix_s.unwrap_or_else(|| {
                         i64::try_from(self.clock.now().duration_since_epoch().as_secs())
                             .unwrap_or(i64::MAX)
                     }),
+                    self.clock.now_ms(),
                 )
                 .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?
             else {
-                return Ok(SessionDispositionMutation::unchanged(owner_scope, session));
+                return Ok(SessionDispositionMutation::unchanged(
+                    owner_scope,
+                    session.into_snapshot(),
+                ));
             };
             if session.has_incomplete_event_batches() {
                 self.wake_lifecycle_supervisor();
                 return Err(pending_event_batch_error());
             }
-            let mut facts = session
-                .close_runtime_interval(self.clock.now_ms())
-                .map(|interval| runtime_interval_fact(&owner_scope, session_id, interval))
-                .into_iter()
-                .collect::<Vec<_>>();
-            facts.push(delete_fact);
+            let facts = vec![delete_fact];
             match self
                 .commit_session_snapshot_with_outcome(&owner_scope, session, "delete-intent", facts)
                 .await

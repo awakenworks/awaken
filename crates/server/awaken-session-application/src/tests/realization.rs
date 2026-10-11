@@ -12,6 +12,7 @@ use super::*;
 mod capacity_budget;
 mod cleanup_timing;
 mod initial_preparation;
+mod unattempted_owner_recovery;
 mod worker_affinity;
 use awaken_session_realization_contract::{
     SessionRealizationControl, SessionResourceMaterializationControl, SessionTerminalCleanupQueue,
@@ -962,7 +963,13 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
     let mut idle = outcome.session;
     idle.execution = SessionExecutionState::Idle;
     let _fixture = app
-        .commit_session_snapshot_with_outcome("workspace", idle, "test-safe-boundary", Vec::new())
+        .commit_session_snapshot_with_outcome(
+            "workspace",
+            awaken_session_state_contract::SessionAggregate::try_from(idle)
+                .expect("valid test snapshot"),
+            "test-safe-boundary",
+            Vec::new(),
+        )
         .await
         .unwrap();
     let reconciliation = app.reconcile_resource_activations().await;
@@ -2058,7 +2065,13 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
     references.fail_replace.store(true, Ordering::SeqCst);
     assert!(
         application
-            .commit_resource_snapshot("workspace", rejected, "R1", Vec::new())
+            .commit_resource_snapshot(
+                "workspace",
+                awaken_session_state_contract::SessionAggregate::try_from(rejected)
+                    .expect("valid test snapshot"),
+                "R1",
+                Vec::new()
+            )
             .await
             .is_err(),
         "R1"
@@ -2077,7 +2090,13 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
     let mut winner = stale.clone();
     winner.title = Some("concurrent winner".into());
     let _fixture = application
-        .commit_session_snapshot_with_outcome("workspace", winner, "concurrent", Vec::new())
+        .commit_session_snapshot_with_outcome(
+            "workspace",
+            awaken_session_state_contract::SessionAggregate::try_from(winner)
+                .expect("valid test snapshot"),
+            "concurrent",
+            Vec::new(),
+        )
         .await
         .unwrap();
     stale
@@ -2089,7 +2108,13 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
         .unwrap();
     assert!(matches!(
         application
-            .commit_resource_snapshot("workspace", stale, "R2", Vec::new())
+            .commit_resource_snapshot(
+                "workspace",
+                awaken_session_state_contract::SessionAggregate::try_from(stale)
+                    .expect("valid test snapshot"),
+                "R2",
+                Vec::new()
+            )
             .await,
         Err(SessionMutationError::Conflict)
     ));
@@ -2113,7 +2138,13 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
         )
         .unwrap();
     application
-        .commit_resource_snapshot("workspace", accepted, "R3", Vec::new())
+        .commit_resource_snapshot(
+            "workspace",
+            awaken_session_state_contract::SessionAggregate::try_from(accepted)
+                .expect("valid test snapshot"),
+            "R3",
+            Vec::new(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -6302,7 +6333,8 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
     let later = application
         .commit_session_snapshot_with_outcome(
             &owner,
-            failed_truth.clone(),
+            awaken_session_state_contract::SessionAggregate::try_from(failed_truth.clone())
+                .expect("valid test snapshot"),
             "later-housekeeping",
             vec![],
         )
