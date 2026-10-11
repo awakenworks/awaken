@@ -4,9 +4,11 @@
 //! resumes an awaiting run on delivery, recovers a crashed lease on its own clock,
 //! and shuts down cleanly.
 
+use awaken_run_ingress::DispatchClaims;
+use awaken_run_ingress::DispatchControlReads;
+use awaken_run_ingress::DispatchEnqueue;
 mod harness;
 
-use awaken_run_ingress_contract::ControlDispatchQueue;
 use awaken_time::system_clock;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -17,8 +19,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_lease_testkit::ManualClock;
 use awaken_run_ingress::{
-    DispatchQueue, DispatchServiceConfig, DispatchTestHarness, MemoryDispatchStore, PendingInput,
-    RunDispatch,
+    DispatchServiceConfig, DispatchTestHarness, MemoryDispatchStore, PendingInput, RunDispatch,
 };
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_inmem::MemoryCommitCoordinator;

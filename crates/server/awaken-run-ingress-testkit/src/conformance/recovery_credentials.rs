@@ -17,7 +17,7 @@
 /// receives the unique newer epoch and one receives None; R6 the losing/stale
 /// epoch is fenced while the current claim settles Done.
 async fn retry_exhaustion_claim_is_atomic_and_policy_exact(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {
@@ -138,7 +138,7 @@ async fn retry_exhaustion_claim_is_atomic_and_policy_exact(
 /// I5=C1+C3(diff)+C6=>exactly one admission and one rejection.
 /// Both live and tombstone phases exercise every backend.
 async fn caller_owned_run_identity_is_exact(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {
@@ -253,7 +253,7 @@ async fn caller_owned_run_identity_is_exact(
 /// | D2 | yes | due | ordinary | E2 |
 /// | D3 | yes | due, B claimed | former owner | E3 |
 async fn deferred_pending_terminal_recovery_obeys_retry_deadline(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {
@@ -339,7 +339,7 @@ async fn deferred_pending_terminal_recovery_obeys_retry_deadline(
 /// | T7 | Running(repair) | Pending | expired | E2+E4 |
 /// | T8 | Running(repair) | Pending | current | E5 |
 async fn committed_terminal_recovery_reuses_fenced_settlement(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {
@@ -666,7 +666,7 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
 /// | Q8 | exact | malformed Session projection | - | - | typed admission error, no mutation |
 /// | Q9 | exact cancel | malformed Session projection | not used by cancel | - | claim without execution credentials |
 async fn incompatible_credentials_do_not_poison_broad_claims(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {
@@ -1039,7 +1039,7 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
 /// | R4 | current/live | exact candidate | return persisted binding |
 /// | R5 | expired/stale/foreign candidate | any | return no binding |
 async fn attempt_credentials_are_atomic_and_epoch_fenced(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     ns: &str,
     conformance: ConformanceCapabilities,
     clock: &dyn ConformanceClock,

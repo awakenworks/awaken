@@ -292,16 +292,14 @@ impl SharedHost {
         // durability leaves a claim-bound parent executing its child with the
         // parent's checkpoint/commit projection instead of a child claim.
         let scheduler = if self.runs_local_dispatch_pool() {
-            let recovery_projection = commit.recovery_projection();
-            let claimed_commit = self.authority.claimed_commit()?;
             Some(crate::agent_runner::RunScheduler {
                 clock: self.clock.clone(),
-                store: self.dispatch_store()?,
+                binding: self.authority.dispatch_binding().ok_or_else(|| {
+                    HostError::internal("child scheduling requires a dispatch binding")
+                })?,
                 commit: commit.clone(),
                 reader: commit,
                 owner: self.dispatch_owner().to_owned(),
-                claimed_commit,
-                recovery_projection,
                 session_resources: self.realizer.staging.thread_resource_manifest(thread),
                 publication_source: Some(publication_source.clone()),
                 claimed_model_request_gate: self.coordination_endpoint().map(|endpoint| {

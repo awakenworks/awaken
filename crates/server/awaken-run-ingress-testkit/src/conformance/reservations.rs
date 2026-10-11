@@ -55,7 +55,7 @@
 /// | SR9 | prior Awaiting/unsafe live phase | preserve/supersede/replay | reserve | preserve / E13 / reject / E3 |
 /// | SR10 | current/missing/unknown; exact/changed op or caps | live/completed | reserve/replay | E1/E14/E2 |
 async fn session_run_reservation_is_atomic_and_recoverable(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     ns: &str,
     capabilities: ConformanceCapabilities,
     clock: &dyn ConformanceClock,
@@ -1300,7 +1300,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
 }
 
 async fn current_claim_guard_is_exact(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     ns: &str,
     capabilities: ConformanceCapabilities,
     clock: &dyn ConformanceClock,
@@ -1472,7 +1472,7 @@ async fn current_claim_guard_is_exact(
 }
 
 async fn sandbox_binding_survives_recovery(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     ns: &str,
     capabilities: ConformanceCapabilities,
     clock: &dyn ConformanceClock,
@@ -1516,7 +1516,7 @@ async fn sandbox_binding_survives_recovery(
 }
 
 async fn completion_is_atomic_and_prevents_resurrection(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     ns: &str,
     capabilities: ConformanceCapabilities,
     clock: &dyn ConformanceClock,

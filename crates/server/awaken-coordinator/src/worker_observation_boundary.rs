@@ -210,7 +210,7 @@ async fn handle_domain(
         Ok(None) => return StatusCode::CONFLICT.into_response(),
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
-    let dispatch = match state.host.dispatch_store() {
+    let dispatch = match state.host.coordinator_dispatch() {
         Ok(store) => store,
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };

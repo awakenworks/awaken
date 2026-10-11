@@ -7,9 +7,6 @@
     "AcpToolExporter::attached_channels": 1,
     "ContainerEnvironmentProvider::restorable": 1,
     "ContainerEnvironmentProvider::restore_targets": 1,
-    "DispatchQueue::claimed_checkpoint_transport": 1,
-    "DispatchQueue::claimed_credential_delivery_transport": 1,
-    "DispatchQueue::control": 1,
     "RawTool::durable_tasks": 1,
     "ResolvedExecutionEnv::dynamic_tool": 1,
     "RunDelegationService::cancellation": 1,
@@ -58,8 +55,6 @@
   },
   "fat-trait": {
     "ContainerEnvironmentProvider": 16,
-    "ControlDispatchQueue": 16,
-    "DispatchQueue": 37,
     "DurableRunOperations": 15,
     "EnvRegistry": 13,
     "MemoryRepository": 20,

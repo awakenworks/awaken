@@ -15,7 +15,7 @@ impl ManagedHost {
         AgentCoordinationInstallError,
     > {
         self.host
-            .dispatch_store()
+            .coordinator_dispatch()
             .map(|source| source as Arc<dyn awaken_run_ingress_contract::DispatchOperationalFeed>)
             .map_err(|_| AgentCoordinationInstallError::DispatchObservationUnavailable)
     }

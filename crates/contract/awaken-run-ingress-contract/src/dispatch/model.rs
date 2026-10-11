@@ -87,7 +87,7 @@ pub enum DispatchOutcome {
     Awaiting,
 }
 
-/// Whether a [`settle`](DispatchQueue::settle) was applied or fenced off as stale.
+/// Whether a [`settle`](DispatchSettlement::settle) was applied or fenced off as stale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SettleOutcome {
     /// The caller still held the current lease (its epoch matched the row's); the
@@ -405,7 +405,7 @@ mod session_replacement_proofs {
 }
 
 /// An operational view of one dispatch row, for monitoring and maintenance — the
-/// `DispatchQueue` query role (ADR-0025). Carries no live handle, just committed
+/// `DispatchReads` query role (ADR-0025). Carries no live handle, just committed
 /// queue state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchSummary {

@@ -4,10 +4,9 @@
 //! The shared k3d harness owns the isolated cluster; no fake provider receipts.
 use super::*;
 use awaken_lease_testkit::ManualClock;
-use awaken_run_ingress::ControlDispatchQueue;
+
 use awaken_run_ingress::{
-    AttemptAdmission, DispatchQueue, RunClaim, RunDispatch, SqliteDispatchStore, WorkerDirectory,
-    WorkerHeartbeat,
+    AttemptAdmission, RunClaim, RunDispatch, SqliteDispatchStore, WorkerDirectory, WorkerHeartbeat,
 };
 use awaken_run_ingress_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_sandbox_container::k8s::{
@@ -1018,3 +1017,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         .await
         .unwrap();
 }
+
+use awaken_run_ingress::{
+    DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _, DispatchExecution as _,
+};

@@ -16,3 +16,5 @@ pub use worker_dispatch::{
     registered_dispatch_router, registered_worker_transport_router_with_services,
     worker_environment_warmup_router,
 };
+
+pub use worker_dispatch::WorkerDispatchAuthority;

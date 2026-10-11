@@ -1,5 +1,9 @@
 //! Repository binding boundary tests over real HTTP.
 
+use awaken_run_ingress::DispatchAdministration;
+use awaken_run_ingress::DispatchClaims;
+use awaken_run_ingress::DispatchEnqueue;
+use awaken_run_ingress::DispatchSettlement;
 use awaken_run_ingress_testkit::worker_http as support;
 
 use std::sync::{Arc, Mutex};
@@ -12,9 +16,7 @@ use awaken_resource_worker_http::{
     RepositoryTransportAuthority, RepositoryTransportAuthorization, RepositoryTransportAuthorizer,
     WorkerRepositoryBindingService, worker_repository_binding_router,
 };
-use awaken_run_ingress::{
-    DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
-};
+use awaken_run_ingress::{MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity};
 use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 

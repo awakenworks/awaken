@@ -11,7 +11,7 @@
 //! machine. It keeps process-local serialization and the persisted Dispatch
 //! attempt slot on the one canonical drive path.
 
-use crate::ControlDispatch;
+use awaken_dispatch_erasure::Dispatch;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -46,7 +46,7 @@ pub(super) struct PhysicalAttemptRequest<'a> {
     pub execution_capacity: Option<&'a ExecutionCapacity>,
 }
 
-impl<S: ControlDispatch + 'static> DispatchWorker<S> {
+impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// Cross exactly one physical model/tool/Sandbox attempt boundary.
     ///
     /// The durable claim remains the mutation fence. Its embedded physical slot

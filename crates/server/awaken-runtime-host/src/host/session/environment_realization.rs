@@ -1296,3 +1296,5 @@ impl crate::environment_holding::EnvironmentHolding {
         self.execution.provider_effect_authority(thread, initial)
     }
 }
+
+use awaken_run_ingress_contract::DispatchExecution as _;

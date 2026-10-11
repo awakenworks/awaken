@@ -1,6 +1,11 @@
 // @formal evidence remote_worker.stale_epoch_never_mutates_truth
 //! Session artifact publication over the real Worker HTTP boundary.
 
+use awaken_run_ingress::DispatchClaims;
+use awaken_run_ingress::DispatchCommitAuthority;
+use awaken_run_ingress::DispatchEnqueue;
+use awaken_run_ingress::DispatchExecution;
+use awaken_run_ingress::DispatchSettlement;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -15,8 +20,7 @@ use awaken_resource_worker_http::{
     HttpArtifactPublisher, WorkerArtifactPublicationService, worker_artifact_publication_router,
 };
 use awaken_run_ingress::{
-    DispatchQueue as _, LeaseRenewalOutcome, MemoryDispatchStore, RunClaim, RunDispatch,
-    WorkerIdentity,
+    LeaseRenewalOutcome, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
 };
 use awaken_run_ingress_testkit::worker_http as support;
 use awaken_session_realization_contract::ResourceOperationFence;

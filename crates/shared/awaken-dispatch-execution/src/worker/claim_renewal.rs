@@ -5,7 +5,7 @@
 //! process-local guard that keeps a current claim live and projects loss of
 //! provable ownership into Runtime's existing cooperative cancellation token.
 
-use crate::ControlDispatch;
+use awaken_dispatch_erasure::Dispatch;
 use std::sync::Arc;
 
 use awaken_lease_contract::authority::AuthorityLeaseTiming;
@@ -77,7 +77,7 @@ pub(crate) fn combine_attempt_cancellation(
 
 /// Keep an exact claim live across any owned work, including the potentially
 /// slow Worker/Session resolution that precedes the Runtime drive.
-pub(crate) fn renew_claim_while_active<S: ControlDispatch + 'static>(
+pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
     store: Arc<S>,
     claim: &RunClaim,
     lease_ms: u64,

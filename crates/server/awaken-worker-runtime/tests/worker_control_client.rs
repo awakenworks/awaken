@@ -78,15 +78,30 @@ async fn worker_control_rpc_continues_trace_without_exporting_payload() {
         Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"),
     );
     use tracing::Instrument as _;
-    WorkerControlClient::new(
+    let client = WorkerControlClient::new(
         WorkerUpstream::new(format!("http://{address}")).with_worker_id("worker-a"),
-    )
-    .register_classified("private-payload-marker", WorkerManifest::default())
-    .instrument(span)
-    .await
-    .unwrap();
+    );
+    client
+        .register_classified("private-payload-marker", WorkerManifest::default())
+        .instrument(span)
+        .await
+        .unwrap();
     let carrier = observed.await.unwrap();
+    drop(client);
     server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
+    if enabled {
+        // The HTTP connection can retain the RPC span until its background task
+        // observes client shutdown. Wait for the actual exporter witness before
+        // shutting down the provider; no empty file is fabricated as evidence.
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while !trace_file.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("closed RPC span reaches the configured trace exporter");
+    }
     awaken_observability::shutdown();
     if enabled {
         assert!(
@@ -96,6 +111,19 @@ async fn worker_control_rpc_continues_trace_without_exporting_payload() {
             "R1 missing RPC trace continuity"
         );
         let exported = std::fs::read_to_string(trace_file).unwrap();
+        let spans: Vec<Value> = exported
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("actual exported span"))
+            .collect();
+        assert!(
+            spans.iter().any(|span| {
+                span["name"] == "worker.control.rpc"
+                    && span["trace_id"] == "0af7651916cd43dd8448eb211c80319c"
+                    && span["attributes"]["rpc.path"] == "/v1/worker/register"
+                    && span["attributes"]["http.status_code"] == "200"
+            }),
+            "R1 actual RPC span and outcome must reach the exporter: {spans:?}"
+        );
         assert!(
             !exported.contains("private-payload-marker"),
             "request bodies never enter diagnostics"

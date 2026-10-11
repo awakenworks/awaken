@@ -55,7 +55,10 @@ mod tests {
         WorkerResolver as _,
     };
     use awaken_run_ingress_contract::ClaimedRunCommit;
-    use awaken_run_ingress_contract::DispatchQueue;
+    use awaken_run_ingress_contract::DispatchClaims;
+    use awaken_run_ingress_contract::DispatchEnqueue;
+    use awaken_run_ingress_contract::DispatchSettlement;
+
     use awaken_run_ingress_contract::{RunClaim, RunDispatch};
     use awaken_runtime_contract::RunActivation;
     use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ResolvedModelCandidate};
@@ -920,7 +923,19 @@ mod tests {
             "W1"
         );
         let selected = (dependencies().await.with_authority(
-            crate::UpstreamAuthority::default().with_claimed_commit(injected.clone()),
+            crate::UpstreamAuthority::default().with_dispatch_binding(
+                awaken_dispatch_erasure::DispatchBinding::remote(
+                    Arc::new(awaken_worker_runtime::HttpDispatchQueue::new(
+                        "http://127.0.0.1:9",
+                        awaken_run_ingress_contract::WorkerIdentity::new(
+                            "fixture",
+                            "fixture-boot",
+                            1,
+                        ),
+                    )),
+                    injected.clone(),
+                ),
+            ),
         ))
         .build()
         .expect("validated Host dependencies")

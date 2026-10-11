@@ -46,7 +46,10 @@ impl SharedHost {
         // arrive through the Coordinator-owned RuntimeAuthority (ADR-0019/0024).
         // Every session's worker shares this queue; the process-level `DispatchPool`
         // is its sole claimer and routes each run back to its owning session.
-        let store = self.dispatch_store()?;
+        let binding = self
+            .authority
+            .dispatch_binding()
+            .ok_or_else(|| HostError::internal("claimed Worker requires a dispatch binding"))?;
         // Carry the host's InferenceExecutorMaterializer into the worker as a neutral model→executor
         // closure, so a worker-driven run resolves its own configured model per attempt
         // (R1). `None` when no provider is installed — the worker stays on the host
@@ -61,9 +64,9 @@ impl SharedHost {
         // The recovered dispatch a crash left mid-flight is re-executed by this
         // worker; giving it the same checkpoint store lets that re-execution resume
         // the interrupted step from its flushed partial (Phase 3 cross-process).
-        let mut worker = awaken_dispatch_execution::DispatchWorker::new(
+        let mut worker = awaken_dispatch_execution::DispatchWorker::new_bound(
             runtime.clone(),
-            store,
+            binding,
             commit,
             self.dispatch_owner().to_owned(),
         );
@@ -91,11 +94,11 @@ impl SharedHost {
         if let Some(resolver) = &self.worker.worker_credential_resolver {
             worker = worker.with_worker_credential_resolver(resolver.clone());
         }
-        if let Some(claimed_commit) = self.authority.claimed_commit()? {
-            worker = worker.with_claimed_commit(claimed_commit);
-        }
+
         if let Some(projection) = recovery_projection {
-            worker = worker.with_recovery_projection(projection);
+            worker = worker
+                .with_recovery_projection(projection)
+                .map_err(|error| HostError::internal(error.to_string()))?;
         }
         let claimed_worker = Arc::new(worker);
         claimed_worker.install_attempt_executor(attempt_executor.clone());
@@ -103,7 +106,7 @@ impl SharedHost {
         // with every other, so a claim would grab foreign threads' runs. The
         // process-level `DispatchPool` owns recovery — it claims each crashed run and
         // routes it to the session (this one included) that owns its thread.
-        if self.durable_ingress() {
+        if self.dispatch.durable_ingress() {
             Ok((ForegroundRunDelivery::Durable, claimed_worker))
         } else {
             let direct = Arc::new(DirectAttemptDriver::with_attempt_executor(

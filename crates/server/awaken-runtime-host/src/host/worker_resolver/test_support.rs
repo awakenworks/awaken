@@ -53,7 +53,7 @@ pub(crate) async fn adoption_host() -> Arc<SharedHost> {
 
 /// A Host over [`adoption_dependencies`] whose dispatch transport is `store`.
 pub(crate) async fn adoption_host_over(
-    store: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
+    store: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
 ) -> Arc<SharedHost> {
     (adoption_dependencies().await.with_ephemeral_dispatch(store))
         .build()
@@ -547,14 +547,15 @@ impl awaken_session_runtime_contract::SessionEnvironmentBindingSink for Blocking
 }
 
 pub(crate) async fn claim(
-    store: &awaken_dispatch_erasure::AnyDispatchStore,
+    store: &Arc<
+        impl awaken_run_ingress_contract::DispatchEnqueue + awaken_run_ingress_contract::DispatchClaims,
+    >,
     thread: &str,
     run: &str,
     owner: &str,
     now: u64,
     clock: &awaken_lease_testkit::ManualClock,
 ) -> awaken_run_ingress_contract::Claimed {
-    use awaken_run_ingress_contract::DispatchQueue;
     store
         .enqueue(awaken_run_ingress_contract::RunDispatch::new(
             test_activation(thread, run),

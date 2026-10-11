@@ -66,7 +66,7 @@ impl SharedHost {
         thread: &str,
         agent: Option<&str>,
     ) -> Result<bool, HostError> {
-        if self.durable_ingress()
+        if self.dispatch.durable_ingress()
             || !self.authority.observes_terminal_memory_locally()
             || self
                 .installed_sessions

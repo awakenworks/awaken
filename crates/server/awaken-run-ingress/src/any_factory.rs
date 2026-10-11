@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
-use awaken_dispatch_erasure::AnyDispatchStore;
+use awaken_dispatch_execution::AnyCoordinatorDispatch;
 
 #[cfg(feature = "durable")]
 use crate::postgres::PostgresDispatchStore;
@@ -23,10 +23,10 @@ use crate::sqlite::SqliteDispatchStore;
 pub async fn open_sqlite(
     path: &str,
     clock: Arc<dyn awaken_time::WallClock>,
-) -> Result<AnyDispatchStore, String> {
+) -> Result<AnyCoordinatorDispatch, String> {
     SqliteDispatchStore::open(path, clock)
         .await
-        .map(|store| AnyDispatchStore::from_durable_store(store, None))
+        .map(|store| AnyCoordinatorDispatch::from_durable_store(store, None))
         .map_err(|e| e.to_string())
 }
 
@@ -37,17 +37,20 @@ pub async fn open_sqlite(
 #[cfg(any(test, feature = "test-support"))]
 pub async fn open_sqlite_in_memory(
     clock: Arc<dyn awaken_time::WallClock>,
-) -> Result<AnyDispatchStore, String> {
+) -> Result<AnyCoordinatorDispatch, String> {
     SqliteDispatchStore::open_in_memory(clock)
         .await
-        .map(|store| AnyDispatchStore::from_durable_store(store, None))
+        .map(|store| AnyCoordinatorDispatch::from_durable_store(store, None))
         .map_err(|e| e.to_string())
 }
 
 /// Connect the shared Postgres backend at `url`: one queue for a multi-node
 /// fleet, `FOR UPDATE SKIP LOCKED` gives distinct-claim across processes.
 #[cfg(feature = "durable")]
-pub async fn connect_postgres(url: &str, max_connections: u32) -> Result<AnyDispatchStore, String> {
+pub async fn connect_postgres(
+    url: &str,
+    max_connections: u32,
+) -> Result<AnyCoordinatorDispatch, String> {
     PostgresDispatchStore::connect(url, max_connections)
         .await
         .map(from_postgres_store)
@@ -60,7 +63,7 @@ pub async fn connect_postgres(url: &str, max_connections: u32) -> Result<AnyDisp
 pub async fn connect_postgres_existing(
     url: &str,
     max_connections: u32,
-) -> Result<AnyDispatchStore, String> {
+) -> Result<AnyCoordinatorDispatch, String> {
     PostgresDispatchStore::connect_existing(url, max_connections)
         .await
         .map(from_postgres_store)
@@ -71,7 +74,7 @@ pub async fn connect_postgres_existing(
 /// pool. Composition roots use this to share one reconnect/backpressure
 /// budget with commit and Worker-registry adapters for the same database.
 #[cfg(feature = "durable")]
-pub async fn with_postgres_pool(pool: sqlx::PgPool) -> Result<AnyDispatchStore, String> {
+pub async fn with_postgres_pool(pool: sqlx::PgPool) -> Result<AnyCoordinatorDispatch, String> {
     PostgresDispatchStore::with_pool(pool)
         .await
         .map(from_postgres_store)
@@ -80,7 +83,9 @@ pub async fn with_postgres_pool(pool: sqlx::PgPool) -> Result<AnyDispatchStore, 
 
 /// Verify an externally migrated dispatch schema over a process-owned pool.
 #[cfg(feature = "durable")]
-pub async fn with_existing_postgres_pool(pool: sqlx::PgPool) -> Result<AnyDispatchStore, String> {
+pub async fn with_existing_postgres_pool(
+    pool: sqlx::PgPool,
+) -> Result<AnyCoordinatorDispatch, String> {
     PostgresDispatchStore::with_existing_pool(pool)
         .await
         .map(from_postgres_store)
@@ -93,7 +98,7 @@ pub async fn with_existing_postgres_pool(pool: sqlx::PgPool) -> Result<AnyDispat
 pub async fn with_postgres_pool_and_wake(
     pool: sqlx::PgPool,
     channel: &str,
-) -> Result<(AnyDispatchStore, Arc<dyn crate::wake::WakeSignal>), String> {
+) -> Result<(AnyCoordinatorDispatch, Arc<dyn crate::wake::WakeSignal>), String> {
     with_postgres_pool_and_wake_access(pool, channel, false).await
 }
 
@@ -103,7 +108,7 @@ pub async fn with_postgres_pool_and_wake(
 pub async fn with_existing_postgres_pool_and_wake(
     pool: sqlx::PgPool,
     channel: &str,
-) -> Result<(AnyDispatchStore, Arc<dyn crate::wake::WakeSignal>), String> {
+) -> Result<(AnyCoordinatorDispatch, Arc<dyn crate::wake::WakeSignal>), String> {
     with_postgres_pool_and_wake_access(pool, channel, true).await
 }
 
@@ -112,7 +117,7 @@ async fn with_postgres_pool_and_wake_access(
     pool: sqlx::PgPool,
     channel: &str,
     verify_only: bool,
-) -> Result<(AnyDispatchStore, Arc<dyn crate::wake::WakeSignal>), String> {
+) -> Result<(AnyCoordinatorDispatch, Arc<dyn crate::wake::WakeSignal>), String> {
     let store = if verify_only {
         PostgresDispatchStore::with_existing_pool(pool).await
     } else {
@@ -135,7 +140,7 @@ pub async fn connect_postgres_with_wake(
     url: &str,
     channel: &str,
     max_connections: u32,
-) -> Result<(AnyDispatchStore, Arc<dyn crate::wake::WakeSignal>), String> {
+) -> Result<(AnyCoordinatorDispatch, Arc<dyn crate::wake::WakeSignal>), String> {
     let store = PostgresDispatchStore::connect(url, max_connections)
         .await
         .map_err(|e| e.to_string())?;
@@ -151,7 +156,7 @@ pub async fn connect_postgres_existing_with_wake(
     url: &str,
     channel: &str,
     max_connections: u32,
-) -> Result<(AnyDispatchStore, Arc<dyn crate::wake::WakeSignal>), String> {
+) -> Result<(AnyCoordinatorDispatch, Arc<dyn crate::wake::WakeSignal>), String> {
     let store = PostgresDispatchStore::connect_existing(url, max_connections)
         .await
         .map_err(|e| e.to_string())?;
@@ -174,7 +179,7 @@ pub async fn connect_postgres_with_nats_wake(
     nats_url: &str,
     subject: &str,
     max_connections: u32,
-) -> Result<(AnyDispatchStore, Arc<dyn crate::wake::WakeSignal>), String> {
+) -> Result<(AnyCoordinatorDispatch, Arc<dyn crate::wake::WakeSignal>), String> {
     let store = PostgresDispatchStore::connect(db_url, max_connections)
         .await
         .map_err(|e| e.to_string())?;
@@ -194,7 +199,7 @@ pub async fn connect_postgres_existing_with_nats_wake(
     nats_url: &str,
     subject: &str,
     max_connections: u32,
-) -> Result<(AnyDispatchStore, Arc<dyn crate::wake::WakeSignal>), String> {
+) -> Result<(AnyCoordinatorDispatch, Arc<dyn crate::wake::WakeSignal>), String> {
     let store = PostgresDispatchStore::connect_existing(db_url, max_connections)
         .await
         .map_err(|e| e.to_string())?;
@@ -207,7 +212,7 @@ pub async fn connect_postgres_existing_with_nats_wake(
 }
 
 #[cfg(feature = "durable")]
-fn from_postgres_store(store: PostgresDispatchStore) -> AnyDispatchStore {
+fn from_postgres_store(store: PostgresDispatchStore) -> AnyCoordinatorDispatch {
     let stream_checkpoint: Arc<dyn StreamCheckpointStore> = Arc::new(store.checkpoint_store());
-    AnyDispatchStore::from_durable_store(store, Some(stream_checkpoint))
+    AnyCoordinatorDispatch::from_durable_store(store, Some(stream_checkpoint))
 }

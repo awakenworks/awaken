@@ -269,7 +269,7 @@
     "awaken-coordinator::lib.rs::mount_with_managed_over_and_models": 393,
     "awaken-credential-store::postgres.rs::commit_managed_mutation": 275,
     "awaken-credential-store::sqlite/managed.rs::commit_managed_mutation": 244,
-    "awaken-dispatch-execution::worker.rs::drive_claimed_inner": 597,
+    "awaken-dispatch-execution::worker.rs::drive_claimed_inner": 594,
     "awaken-dispatch-execution::worker/physical_attempt.rs::run_physical_attempt": 202,
     "awaken-dream-application::lib.rs::run_job": 184,
     "awaken-execution-composition::sandbox_source.rs::open": 197,
@@ -387,7 +387,7 @@
     "awaken-session-store::postgres.rs::commit": 151,
     "awaken-session-store::sqlite.rs::commit": 155,
     "awaken-store-postgres::lib.rs::recovery_snapshot": 194,
-    "awaken-worker::lib.rs::run_until": 562,
+    "awaken-worker::lib.rs::run_until": 561,
     "awaken-worker::lifecycle.rs::renew_registry_authority": 176
   },
   "crate-budget": {

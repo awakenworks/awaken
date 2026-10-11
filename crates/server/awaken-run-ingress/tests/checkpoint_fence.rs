@@ -1,13 +1,14 @@
 // @formal evidence checkpoint.terminal_completion_clears_resume
+use awaken_run_ingress_contract::{DispatchClaims, DispatchEnqueue};
+#[path = "checkpoint_fence/authority_matrix.rs"]
+mod authority_matrix;
 mod harness;
 
 use std::sync::Arc;
 
 use awaken_agent_contract::observation::{Observed, UnknownCause};
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
-use awaken_run_ingress::{
-    DispatchQueue, FencedStreamCheckpointStore, MemoryDispatchStore, RunClaim, RunDispatch,
-};
+use awaken_run_ingress::{FencedStreamCheckpointStore, MemoryDispatchStore, RunClaim, RunDispatch};
 use awaken_store_inmem::MemoryStreamCheckpointStore;
 
 use awaken_run_ingress_testkit::ConformanceClock as _;
