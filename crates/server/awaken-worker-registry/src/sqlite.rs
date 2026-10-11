@@ -223,6 +223,25 @@ impl WorkerObservationSource for SqliteWorkerDirectory {
     }
 }
 
+#[async_trait::async_trait]
+impl awaken_worker_contract::WorkerCurrentSource for SqliteWorkerDirectory {
+    async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError> {
+        let mut tx = self.pool.begin().await.map_err(persist)?;
+        Self::read(&mut tx, worker_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_worker_contract::WorkerIncarnationSource for SqliteWorkerDirectory {
+    async fn incarnation(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> Result<Option<RegisteredWorker>, RegistryError> {
+        let mut tx = self.pool.begin().await.map_err(persist)?;
+        Self::read_incarnation(&mut tx, identity).await
+    }
+}
+
 #[async_trait]
 impl WorkerDirectory for SqliteWorkerDirectory {
     async fn lock_incarnation(
@@ -332,19 +351,6 @@ impl WorkerDirectory for SqliteWorkerDirectory {
             transition::deregister(current, identity)
         })
         .await
-    }
-
-    async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError> {
-        let mut tx = self.pool.begin().await.map_err(persist)?;
-        Self::read(&mut tx, worker_id).await
-    }
-
-    async fn incarnation(
-        &self,
-        identity: &WorkerIdentity,
-    ) -> Result<Option<RegisteredWorker>, RegistryError> {
-        let mut tx = self.pool.begin().await.map_err(persist)?;
-        Self::read_incarnation(&mut tx, identity).await
     }
 
     async fn expire_incarnation(

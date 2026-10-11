@@ -571,6 +571,93 @@ pub(super) async fn close_attempt(
     respond(result)
 }
 
+pub(super) async fn record_credential_realization(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<CredentialRealizationReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        let authority =
+            claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
+        if authority.owner != request.claim.owner {
+            return Err(HostError::bad_request(
+                "authenticated worker does not own the credential realization claim",
+            ));
+        }
+        let outcome = service
+            .dispatch
+            .record_credential_realization(&request.claim, request.receipt)
+            .await
+            .map_err(|error| HostError::bad_request(error.to_string()))?;
+        Ok(json!({ "applied": outcome.applied() }))
+    }
+    .await;
+    respond(result)
+}
+
+pub(super) async fn refresh_credential_delivery(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<CredentialDeliveryRefreshReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        let authority =
+            claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
+        if authority.owner != request.claim.owner {
+            return Err(HostError::bad_request(
+                "authenticated worker does not own the credential delivery claim",
+            ));
+        }
+        let delivery_request = request.delivery_request;
+        let fingerprint = delivery_request.candidate_fingerprint.clone();
+        let Some(binding) = service
+            .dispatch
+            .current_credential_binding(&request.claim, &fingerprint)
+            .await
+            .map_err(|error| HostError::unavailable(error.to_string()))?
+        else {
+            return Ok(json!({ "delivery": null }));
+        };
+        if binding.credential != delivery_request.published_access.credential
+            || binding.selected_plaintext_holder != delivery_request.selected_plaintext_holder
+            || binding.claim_epoch != delivery_request.claim_epoch
+        {
+            return Err(HostError::bad_request(
+                "credential delivery request differs from the persisted claim binding",
+            ));
+        }
+        let source = service.credential_deliveries.as_deref().ok_or_else(|| {
+            HostError::unavailable("claim credential delivery source is not installed")
+        })?;
+        let delivery = source
+            .deliver(delivery_request.clone())
+            .await
+            .map_err(HostError::unavailable)?;
+        awaken_credential_contract::verify_attempt_credential_delivery(
+            &binding,
+            &delivery_request.published_access,
+            &delivery,
+        )
+        .map_err(|error| HostError::internal(error.to_string()))?;
+        // The signer is external to the Dispatch transaction. Re-read the exact
+        // binding so a lease loss, cancellation or re-claim during issuance can
+        // never return a usable carrier to the stale Worker.
+        if service
+            .dispatch
+            .current_credential_binding(&request.claim, &fingerprint)
+            .await
+            .map_err(|error| HostError::unavailable(error.to_string()))?
+            .as_ref()
+            != Some(&binding)
+        {
+            return Ok(json!({ "delivery": null }));
+        }
+        Ok(json!({ "delivery": delivery }))
+    }
+    .await;
+    respond(result)
+}
+
 #[cfg(test)]
 mod admission_cancellation_tests {
     use super::complete_admission;

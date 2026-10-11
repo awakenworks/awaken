@@ -291,6 +291,31 @@ impl WorkerObservationSource for PostgresWorkerDirectory {
     }
 }
 
+#[async_trait::async_trait]
+impl awaken_worker_contract::WorkerCurrentSource for PostgresWorkerDirectory {
+    async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError> {
+        let row = sqlx::query(&format!(
+            "SELECT {WORKER_COLUMNS} FROM worker_registry_worker WHERE worker_id = $1 ORDER BY generation DESC LIMIT 1"
+        ))
+        .bind(worker_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(persist)?;
+        row.map(|row| decode(encoded_row(&row))).transpose()
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_worker_contract::WorkerIncarnationSource for PostgresWorkerDirectory {
+    async fn incarnation(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> Result<Option<RegisteredWorker>, RegistryError> {
+        let mut conn = self.pool.acquire().await.map_err(persist)?;
+        Self::read_incarnation(&mut conn, identity, false).await
+    }
+}
+
 #[async_trait]
 impl WorkerDirectory for PostgresWorkerDirectory {
     async fn lock_incarnation(
@@ -378,25 +403,6 @@ impl WorkerDirectory for PostgresWorkerDirectory {
         identity: &WorkerIdentity,
     ) -> Result<RegistryMutation, RegistryError> {
         self.mutate(identity, Mutation::Deregister).await
-    }
-
-    async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError> {
-        let row = sqlx::query(&format!(
-            "SELECT {WORKER_COLUMNS} FROM worker_registry_worker WHERE worker_id = $1 ORDER BY generation DESC LIMIT 1"
-        ))
-        .bind(worker_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(persist)?;
-        row.map(|row| decode(encoded_row(&row))).transpose()
-    }
-
-    async fn incarnation(
-        &self,
-        identity: &WorkerIdentity,
-    ) -> Result<Option<RegisteredWorker>, RegistryError> {
-        let mut conn = self.pool.acquire().await.map_err(persist)?;
-        Self::read_incarnation(&mut conn, identity, false).await
     }
 
     async fn expire_incarnation(

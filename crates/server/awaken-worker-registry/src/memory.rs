@@ -158,6 +158,38 @@ impl WorkerObservationSource for MemoryWorkerDirectory {
 }
 
 #[cfg(not(all(test, feature = "loom")))]
+#[async_trait::async_trait]
+impl awaken_worker_contract::WorkerCurrentSource for MemoryWorkerDirectory {
+    async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError> {
+        Ok(self
+            .workers
+            .lock()
+            .await
+            .get(worker_id)
+            .and_then(|rows| rows.last_key_value().map(|(_, record)| record))
+            .cloned())
+    }
+}
+
+#[cfg(not(all(test, feature = "loom")))]
+#[async_trait::async_trait]
+impl awaken_worker_contract::WorkerIncarnationSource for MemoryWorkerDirectory {
+    async fn incarnation(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> Result<Option<RegisteredWorker>, RegistryError> {
+        Ok(self
+            .workers
+            .lock()
+            .await
+            .get(&identity.worker_id)
+            .and_then(|rows| rows.get(&identity.generation))
+            .filter(|record| record.snapshot.identity == *identity)
+            .cloned())
+    }
+}
+
+#[cfg(not(all(test, feature = "loom")))]
 #[async_trait]
 impl WorkerDirectory for MemoryWorkerDirectory {
     async fn lock_incarnation(
@@ -223,30 +255,6 @@ impl WorkerDirectory for MemoryWorkerDirectory {
             transition::deregister(current, identity)
         })
         .await
-    }
-
-    async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError> {
-        Ok(self
-            .workers
-            .lock()
-            .await
-            .get(worker_id)
-            .and_then(|rows| rows.last_key_value().map(|(_, record)| record))
-            .cloned())
-    }
-
-    async fn incarnation(
-        &self,
-        identity: &WorkerIdentity,
-    ) -> Result<Option<RegisteredWorker>, RegistryError> {
-        Ok(self
-            .workers
-            .lock()
-            .await
-            .get(&identity.worker_id)
-            .and_then(|rows| rows.get(&identity.generation))
-            .filter(|record| record.snapshot.identity == *identity)
-            .cloned())
     }
 
     async fn expire_incarnation(

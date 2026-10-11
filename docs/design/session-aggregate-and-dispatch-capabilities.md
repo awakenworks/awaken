@@ -9,6 +9,8 @@ callback. Commands validate the whole candidate before replacing working state.
 `compile_mutation` feeds the existing repository CAS and replay identity; the
 aggregate adds no persistence store, revision source or transaction authority.
 
+## Role Catalog
+
 Session Runtime composition uses `SessionExecutor::from(Arc<T>)`, where `T`
 implements `CompleteSessionRuntime`. Its thirteen role handles come from that
 one owner and are immutable after construction. `SessionRuntime` retains four
@@ -67,3 +69,30 @@ real authenticated HTTP tests. The checkpoint matrix checks both outcomes and
 call counts: an unavailable local guard never falls back to remote RPC, and a
 remote operation never acquires a local guard. Genuine optional components,
 such as an installed local stream checkpoint store, remain optional.
+
+Worker observations retain one Registry authority and use explicit read roles.
+`WorkerObservationSource` supplies only the roster. The new `WorkerCurrentSource`
+and `WorkerIncarnationSource` supertraits require logical-current and exact-
+incarnation queries respectively. `WorkerDirectory` inherits both and defines
+only mutations and the incarnation guard. These are new query roles owned by the
+existing Worker contract; they add no registry, storage, state or HTTP route.
+
+| Read implementation | Required roles |
+| --- | --- |
+| Memory, SQLite and PostgreSQL Registry | Roster, current and exact incarnation |
+| Coordinator HTTP adapter | Roster and exact incarnation |
+| List-only consumers and fixtures | Roster |
+
+Current-only fixtures retain the original exact-identity fallback through one
+`read_current_incarnation` helper. It performs one current query and filters the
+complete identity; it does not reconstruct history from a roster. The HTTP
+adapter uses the original authenticated domain route and complete DTO. Only an
+exact successful domain response yields the old RegisteredWorker; missing history
+remains absent, query failure remains an error, and list data never supplies a
+missing capability. Compile-fail boundaries reject point queries on roster-only
+sources and logical-current queries on the HTTP adapter.
+
+The query roles project facts only. They do not prove physical execution or
+external requests closed, original-domain access, participant disposal or cleanup
+completion. Those facts and the full P0 safe-cleanup workflow remain pending until
+the existing owners supply exact evidence and the Session aggregate accepts it.

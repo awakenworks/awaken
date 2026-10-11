@@ -12,8 +12,9 @@
 //! contract.
 
 use awaken_worker_contract::{
-    RegistryError, RegistryMutation, WorkerCreateLedger, WorkerDirectory, WorkerHeartbeat,
-    WorkerManifest, WorkerProcessExit, WorkerRegistration, WorkerState,
+    RegistryError, RegistryMutation, WorkerCreateLedger, WorkerCurrentSource, WorkerDirectory,
+    WorkerHeartbeat, WorkerIncarnationSource, WorkerManifest, WorkerProcessExit,
+    WorkerRegistration, WorkerState,
 };
 use std::sync::Arc;
 
@@ -43,6 +44,12 @@ pub async fn assert_create_ledger_anchor(
     // L4=new generation=>E4, L5=two first registrations with different UIDs
     // => exactly one wins the database transaction. Independent stores must
     // see the same result.
+    // R1/R3/R11: mutation setup stays with Directory, while exact historical
+    // bytes are read through its actual erased observation role. A successor
+    // must not replace the old anchor; legacy absence remains absence.
+    let first_observations: Arc<dyn WorkerIncarnationSource> = first.clone();
+    let first_current: Arc<dyn WorkerCurrentSource> = first.clone();
+    let second_observations: Arc<dyn WorkerIncarnationSource> = second.clone();
     let worker = format!("ledger-{backend}");
     let ledger = |uid| {
         WorkerCreateLedger::new(
@@ -62,6 +69,25 @@ pub async fn assert_create_ledger_anchor(
         .await
         .unwrap();
     assert_eq!(old.create_ledger, Some(original.clone()), "L1/E1");
+    // R2: each full-identity axis is part of the actual backend point read;
+    // neither the current logical row nor another boot is a substitute.
+    for axis in ["worker", "generation", "boot"] {
+        let mut missing = old.snapshot.identity.clone();
+        match axis {
+            "worker" => missing.worker_id.push_str("-missing"),
+            "generation" => missing.generation += 1,
+            "boot" => missing.incarnation_id.push_str("-missing"),
+            _ => unreachable!(),
+        }
+        assert!(
+            first_observations
+                .incarnation(&missing)
+                .await
+                .unwrap()
+                .is_none(),
+            "R2/{axis}"
+        );
+    }
     assert_eq!(
         second
             .register(first_registration.clone(), 101, 50)
@@ -89,7 +115,7 @@ pub async fn assert_create_ledger_anchor(
         "L2/E3 missing ledger"
     );
     assert_eq!(
-        second
+        second_observations
             .incarnation(&old.snapshot.identity)
             .await
             .unwrap()
@@ -114,7 +140,7 @@ pub async fn assert_create_ledger_anchor(
         "L3/E3 historical unbound execution cannot gain proof"
     );
     assert!(
-        second
+        second_observations
             .incarnation(&legacy.snapshot.identity)
             .await
             .unwrap()
@@ -133,7 +159,7 @@ pub async fn assert_create_ledger_anchor(
     );
     assert_eq!(newer.create_ledger, Some(ledger("uid-successor")), "L4/E4");
     assert_eq!(
-        first
+        first_observations
             .incarnation(&old.snapshot.identity)
             .await
             .unwrap()
@@ -165,7 +191,7 @@ pub async fn assert_create_ledger_anchor(
             .is_some_and(|error| matches!(error, RegistryError::CreateLedgerChanged)),
         "L5 conflicting UID is rejected"
     );
-    let winner = first.current(&race_worker).await.unwrap().unwrap();
+    let winner = first_current.current(&race_worker).await.unwrap().unwrap();
     assert!(
         winner.create_ledger == Some(ledger("race-a"))
             || winner.create_ledger == Some(ledger("race-b")),
@@ -366,6 +392,9 @@ pub async fn assert_process_exit_receipt(
     // | P4 | yes | closed | equal | no | E3 Applied, unchanged |
     // | P5 | yes | closed | conflict | no | E4 InvalidTransition |
     // | P6 | yes | closed | equal | yes | E5 historical read |
+    // R1/R2/R3: the read-only role preserves the exact old exit after replacement;
+    // it cannot borrow the successor's record or backfill missing evidence.
+    let observations: Arc<dyn WorkerIncarnationSource> = directory.clone();
     let worker_id = format!("{prefix}-process-exit-{}", std::process::id());
     let missing = awaken_worker_contract::WorkerIdentity::new("missing", "boot", 1);
     let receipt = WorkerProcessExit::new("cluster", "pod-uid-a", "resource-version-7").unwrap();
@@ -426,7 +455,7 @@ pub async fn assert_process_exit_receipt(
     assert_eq!(replacement.snapshot.identity.generation, 2);
     assert_eq!(replacement.process_exit, None);
     assert_eq!(
-        directory
+        observations
             .incarnation(&identity)
             .await
             .unwrap()

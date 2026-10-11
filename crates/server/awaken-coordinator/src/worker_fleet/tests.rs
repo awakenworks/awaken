@@ -27,6 +27,26 @@ impl WorkerObservationSource for ScriptedDirectory {
     }
 }
 
+#[async_trait::async_trait]
+impl awaken_worker_contract::WorkerCurrentSource for ScriptedDirectory {
+    async fn current(&self, _worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError> {
+        unreachable!("a readiness read uses the whole directory")
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_worker_contract::WorkerIncarnationSource for ScriptedDirectory {
+    async fn incarnation(
+        &self,
+        identity: &awaken_worker_contract::WorkerIdentity,
+    ) -> Result<
+        Option<awaken_worker_contract::RegisteredWorker>,
+        awaken_worker_contract::RegistryError,
+    > {
+        awaken_worker_contract::read_current_incarnation(self, identity).await
+    }
+}
+
 #[async_trait]
 impl WorkerDirectory for ScriptedDirectory {
     async fn lock_incarnation(
@@ -77,10 +97,6 @@ impl WorkerDirectory for ScriptedDirectory {
         _identity: &WorkerIdentity,
     ) -> Result<RegistryMutation, RegistryError> {
         unreachable!("a readiness read never deregisters")
-    }
-
-    async fn current(&self, _worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError> {
-        unreachable!("a readiness read uses the whole directory")
     }
 
     async fn expire_incarnation(

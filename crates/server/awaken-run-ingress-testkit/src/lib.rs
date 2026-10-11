@@ -157,6 +157,29 @@ pub mod worker_http {
     }
 
     #[async_trait::async_trait]
+    impl awaken_worker_contract::WorkerCurrentSource for CurrentWorkerDirectory {
+        async fn current(
+            &self,
+            worker_id: &str,
+        ) -> Result<Option<RegisteredWorker>, RegistryError> {
+            Ok((worker_id == self.0.snapshot.identity.worker_id).then(|| self.0.clone()))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_worker_contract::WorkerIncarnationSource for CurrentWorkerDirectory {
+        async fn incarnation(
+            &self,
+            identity: &awaken_worker_contract::WorkerIdentity,
+        ) -> Result<
+            Option<awaken_worker_contract::RegisteredWorker>,
+            awaken_worker_contract::RegistryError,
+        > {
+            awaken_worker_contract::read_current_incarnation(self, identity).await
+        }
+    }
+
+    #[async_trait::async_trait]
     impl WorkerDirectory for CurrentWorkerDirectory {
         async fn lock_incarnation(
             &self,
@@ -207,13 +230,6 @@ pub mod worker_http {
             _identity: &WorkerIdentity,
         ) -> Result<RegistryMutation, RegistryError> {
             Ok(RegistryMutation::NotFound)
-        }
-
-        async fn current(
-            &self,
-            worker_id: &str,
-        ) -> Result<Option<RegisteredWorker>, RegistryError> {
-            Ok((worker_id == self.0.snapshot.identity.worker_id).then(|| self.0.clone()))
         }
 
         async fn expire_incarnation(

@@ -205,12 +205,11 @@ mod tests {
     use crate::host::worker_resolver::test_support::{AdoptionModel, claim, test_activation};
     use async_trait::async_trait;
     use awaken_agent_contract::agent::{run::EndCause, thread::Id as ThreadId};
-    use awaken_run_ingress_contract::DispatchClaims;
-    use awaken_run_ingress_contract::DispatchCommitAuthority;
-    use awaken_run_ingress_contract::DispatchControlReads;
-    use awaken_run_ingress_contract::DispatchExecution;
-    use awaken_run_ingress_contract::DispatchReads;
-    use awaken_run_ingress_contract::SessionRunReservations;
+    use awaken_run_ingress_contract::{
+        DispatchClaims, DispatchCommitAuthority, DispatchControlReads, DispatchExecution,
+        DispatchReads, SessionRunReservations,
+    };
+    use awaken_worker_contract::WorkerIncarnationSource;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct IdleEvidence {
