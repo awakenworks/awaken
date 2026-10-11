@@ -29,89 +29,6 @@ pub(super) fn rpc_fault(err: RunApplicationError) -> (i32, String) {
     (code, err.message)
 }
 
-#[cfg(test)]
-mod diagnostic_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn driver_error_facts_survive_version_and_binding_projection() {
-        // Cross product: fact × protocol version. Prose deliberately does not
-        // contain the old English prefixes, so translation cannot change routing.
-        for version in [ProtocolVersion::V03, ProtocolVersion::V1] {
-            for (kind, code, status, rpc_code) in [
-                (
-                    RunErrorKind::BadRequest,
-                    "not_found",
-                    StatusCode::NOT_FOUND,
-                    -32001,
-                ),
-                (
-                    RunErrorKind::BadRequest,
-                    "unsupported_output_modes",
-                    StatusCode::BAD_REQUEST,
-                    -32005,
-                ),
-                (
-                    RunErrorKind::BadRequest,
-                    "invalid_request",
-                    StatusCode::BAD_REQUEST,
-                    -32602,
-                ),
-                (
-                    RunErrorKind::Unavailable,
-                    "provider_offline",
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    -32603,
-                ),
-                (
-                    RunErrorKind::Internal,
-                    "internal",
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    -32603,
-                ),
-            ] {
-                let make_error = || RunApplicationError {
-                    kind,
-                    code: code.into(),
-                    message: "原因已本地化".into(),
-                };
-                assert_eq!(
-                    rest_driver_error_version(make_error(), version).status(),
-                    status
-                );
-                assert_eq!(rpc_fault(make_error()).0, rpc_code);
-                assert_eq!(cancel_driver_error(make_error()).0, status);
-            }
-        }
-    }
-
-    #[test]
-    fn prose_cannot_impersonate_a_classified_error() {
-        assert_eq!(
-            rpc_fault(RunApplicationError::bad_request(
-                "unsupported output modes: ordinary prose"
-            ))
-            .0,
-            -32602
-        );
-        assert_eq!(
-            driver_fault(&RunApplicationError::bad_request(
-                "task not found: ordinary prose"
-            ))
-            .0,
-            StatusCode::BAD_REQUEST
-        );
-        assert_eq!(
-            driver_fault(&RunApplicationError::unavailable_classified(
-                "not_found",
-                "unavailable"
-            ))
-            .0,
-            StatusCode::SERVICE_UNAVAILABLE
-        );
-    }
-}
-
 fn driver_fault(error: &RunApplicationError) -> (StatusCode, i32) {
     match error.classification() {
         RunErrorClassification::NotFound => (StatusCode::NOT_FOUND, -32001),
@@ -259,5 +176,88 @@ pub(super) fn version_fault(
     match version {
         ProtocolVersion::V03 => a2a_fault(status, code, message),
         ProtocolVersion::V1 => v1_fault(status, code, message),
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn driver_error_facts_survive_version_and_binding_projection() {
+        // Cross product: fact × protocol version. Prose deliberately does not
+        // contain the old English prefixes, so translation cannot change routing.
+        for version in [ProtocolVersion::V03, ProtocolVersion::V1] {
+            for (kind, code, status, rpc_code) in [
+                (
+                    RunErrorKind::BadRequest,
+                    "not_found",
+                    StatusCode::NOT_FOUND,
+                    -32001,
+                ),
+                (
+                    RunErrorKind::BadRequest,
+                    "unsupported_output_modes",
+                    StatusCode::BAD_REQUEST,
+                    -32005,
+                ),
+                (
+                    RunErrorKind::BadRequest,
+                    "invalid_request",
+                    StatusCode::BAD_REQUEST,
+                    -32602,
+                ),
+                (
+                    RunErrorKind::Unavailable,
+                    "provider_offline",
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    -32603,
+                ),
+                (
+                    RunErrorKind::Internal,
+                    "internal",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    -32603,
+                ),
+            ] {
+                let make_error = || RunApplicationError {
+                    kind,
+                    code: code.into(),
+                    message: "原因已本地化".into(),
+                };
+                assert_eq!(
+                    rest_driver_error_version(make_error(), version).status(),
+                    status
+                );
+                assert_eq!(rpc_fault(make_error()).0, rpc_code);
+                assert_eq!(cancel_driver_error(make_error()).0, status);
+            }
+        }
+    }
+
+    #[test]
+    fn prose_cannot_impersonate_a_classified_error() {
+        assert_eq!(
+            rpc_fault(RunApplicationError::bad_request(
+                "unsupported output modes: ordinary prose"
+            ))
+            .0,
+            -32602
+        );
+        assert_eq!(
+            driver_fault(&RunApplicationError::bad_request(
+                "task not found: ordinary prose"
+            ))
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            driver_fault(&RunApplicationError::unavailable_classified(
+                "not_found",
+                "unavailable"
+            ))
+            .0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 }
