@@ -1130,7 +1130,7 @@ async fn terminal_quiescence_still_waits_for_a_pre_cancel_live_physical_claim() 
         .unwrap()
         .unwrap();
     dispatch
-        .settle(&run, cancellation.lease.epoch, DispatchOutcome::Done, &[])
+        .settle(&run, cancellation.lease.epoch(), DispatchOutcome::Done, &[])
         .await
         .unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(2), terminal)
@@ -1162,7 +1162,12 @@ async fn settle_cancelled_dispatch_rows(
                     .unwrap()
                     .expect("cancelled dispatch remains claimable for exact settlement");
                 dispatch
-                    .settle(&row.run_id, claimed.lease.epoch, DispatchOutcome::Done, &[])
+                    .settle(
+                        &row.run_id,
+                        claimed.lease.epoch(),
+                        DispatchOutcome::Done,
+                        &[],
+                    )
                     .await
                     .unwrap();
                 settled.push(row.run_id);

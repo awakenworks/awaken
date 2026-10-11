@@ -158,7 +158,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     ) -> Result<Option<(RunId, RunState)>, Error> {
         use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
 
-        let run_id = claimed.lease.run_id.clone();
+        let run_id = claimed.lease.run_id().clone();
         let thread_id = claimed.request.thread_id().clone();
         let consumed = claimed
             .pending

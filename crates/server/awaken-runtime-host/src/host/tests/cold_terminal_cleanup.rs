@@ -939,7 +939,7 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
     dispatch
         .settle(
             &pending_run,
-            pending_cancel.lease.epoch,
+            pending_cancel.lease.epoch(),
             DispatchOutcome::Done,
             &[],
         )
@@ -979,7 +979,7 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
     dispatch
         .settle(
             &awaiting_run,
-            awaiting_claim.lease.epoch,
+            awaiting_claim.lease.epoch(),
             DispatchOutcome::Awaiting,
             &[],
         )
@@ -1048,7 +1048,7 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
     dispatch
         .settle(
             &awaiting_run,
-            awaiting_cancel.lease.epoch,
+            awaiting_cancel.lease.epoch(),
             DispatchOutcome::Done,
             &[],
         )
@@ -1108,7 +1108,7 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
     dispatch
         .settle(
             &raced_run,
-            raced_cancel.lease.epoch,
+            raced_cancel.lease.epoch(),
             DispatchOutcome::Done,
             &[],
         )

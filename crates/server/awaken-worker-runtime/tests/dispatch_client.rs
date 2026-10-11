@@ -857,8 +857,8 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
         &candidate,
         "the complete model candidate survives the worker HTTP boundary"
     );
-    assert_eq!(claimed.lease.owner, "worker-A");
-    assert_eq!(claimed.lease.epoch, 1);
+    assert_eq!(claimed.lease.owner(), "worker-A");
+    assert_eq!(claimed.lease.epoch(), 1);
     assert!(
         queue
             .bind_sandbox(&RunClaim::from(&claimed.lease), "sandbox-http")
@@ -912,7 +912,7 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
 
     assert_eq!(
         queue
-            .settle(&run, claimed.lease.epoch, DispatchOutcome::Done, &[])
+            .settle(&run, claimed.lease.epoch(), DispatchOutcome::Done, &[])
             .await
             .unwrap(),
         SettleOutcome::Fenced,
@@ -926,7 +926,7 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     // Only after quiescence does the current-epoch settle remove the dispatch.
     assert_eq!(
         queue
-            .settle(&run, claimed.lease.epoch, DispatchOutcome::Done, &[])
+            .settle(&run, claimed.lease.epoch(), DispatchOutcome::Done, &[])
             .await
             .unwrap(),
         SettleOutcome::Applied
@@ -1024,7 +1024,7 @@ async fn renew_lease_returns_typed_loss_over_the_wire_when_the_lease_was_stolen(
         .await
         .unwrap()
         .expect("A claims");
-    assert_eq!(a.lease.epoch, 1);
+    assert_eq!(a.lease.epoch(), 1);
     // While A still holds it, a renew succeeds — the TRUE path, as a control.
     clock.set(100);
     assert_eq!(
@@ -1043,7 +1043,7 @@ async fn renew_lease_returns_typed_loss_over_the_wire_when_the_lease_was_stolen(
         .await
         .unwrap()
         .expect("B recovers the lapsed lease");
-    assert_eq!(b.lease.epoch, 2, "recovery bumped the fence epoch");
+    assert_eq!(b.lease.epoch(), 2, "recovery bumped the fence epoch");
     assert_eq!(
         store.dispatch_count(),
         1,
@@ -1064,7 +1064,7 @@ async fn renew_lease_returns_typed_loss_over_the_wire_when_the_lease_was_stolen(
     // And A's settle at its old epoch is fenced, leaving B's in-flight run inviolate.
     assert_eq!(
         queue_a
-            .settle(&run, a.lease.epoch, DispatchOutcome::Done, &[])
+            .settle(&run, a.lease.epoch(), DispatchOutcome::Done, &[])
             .await
             .unwrap(),
         SettleOutcome::Fenced

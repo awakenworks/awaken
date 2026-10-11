@@ -824,8 +824,8 @@ async fn blocked_predecessor_does_not_consume_unrelated_execution_capacity() {
             .unwrap()
             .expect("BP1/E2 retry is due at the exact deadline")
             .lease
-            .run_id,
-        RunId("blocked-old".into()),
+            .run_id(),
+        &RunId("blocked-old".into()),
         "BP1/E2"
     );
 }

@@ -277,7 +277,7 @@ async fn sqlite_process_crash_before_settle_replays_and_consumes_exact_input_onc
             .expect("PCR1 fresh Run is claimable");
         assert_eq!(
             store
-                .settle(&run, initial.lease.epoch, DispatchOutcome::Awaiting, &[],)
+                .settle(&run, initial.lease.epoch(), DispatchOutcome::Awaiting, &[],)
                 .await
                 .expect("PCR1 establish Awaiting"),
             SettleOutcome::Applied
@@ -298,7 +298,7 @@ async fn sqlite_process_crash_before_settle_replays_and_consumes_exact_input_onc
         assert_eq!(crashed.pending, vec![input], "PCR1/E1 exact child handoff");
         std::fs::write(
             root.join("claimed.marker"),
-            crashed.lease.epoch.to_string().as_bytes(),
+            crashed.lease.epoch().to_string().as_bytes(),
         )
         .expect("PCR1 publish post-claim marker");
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -341,7 +341,7 @@ async fn sqlite_process_crash_before_settle_replays_and_consumes_exact_input_onc
             .await
             .expect("PCR1 recovery claim")
             .expect("PCR1 crashed lease is reclaimable");
-        assert_eq!(recovered.lease.epoch, crashed_epoch + 1, "PCR1/E2");
+        assert_eq!(recovered.lease.epoch(), crashed_epoch + 1, "PCR1/E2");
         assert_eq!(recovered.pending, vec![expected.clone()], "PCR1/E1+E2");
         assert_eq!(
             reopened
@@ -363,7 +363,7 @@ async fn sqlite_process_crash_before_settle_replays_and_consumes_exact_input_onc
             reopened
                 .settle(
                     &run,
-                    recovered.lease.epoch,
+                    recovered.lease.epoch(),
                     DispatchOutcome::Awaiting,
                     &["process-crash-input".to_string()],
                 )

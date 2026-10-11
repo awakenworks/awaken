@@ -35,8 +35,8 @@ impl MemoryDispatchStore {
         ) && row.state == DispatchState::Leased
             && row.lease_epoch == claim.epoch
             && row.lease.as_ref().is_some_and(|lease| {
-                lease.owner == claim.owner
-                    && !crate::clock::deadline_has_passed(Some(lease.expires_ms), now_ms)
+                lease.owner() == claim.owner
+                    && !crate::clock::deadline_has_passed(Some(lease.expires_ms()), now_ms)
             });
         let slot = match row.active_attempt.as_ref() {
             None => PhysicalAttemptSlot::Empty,

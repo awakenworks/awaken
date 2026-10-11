@@ -143,7 +143,7 @@ async fn compatible_claim_skips_ineligible_work_and_pins_the_incarnation() {
         .unwrap()
         .expect("the compatible lower-priority run is selected");
     assert_eq!(claimed.request.run_id().0, "cpu-run");
-    assert_eq!(claimed.lease.owner, worker.identity.lease_owner());
+    assert_eq!(claimed.lease.owner(), worker.identity.lease_owner());
     let assignment = claimed.assignment.expect("remote claim pins assignment");
     assert_eq!(assignment.identity, worker.identity);
     assert_eq!(assignment.capability_fingerprint, fingerprint);
@@ -211,7 +211,7 @@ async fn exact_backend_capability_claim_conformance(
             store
                 .settle(
                     run.request.run_id(),
-                    run.lease.epoch,
+                    run.lease.epoch(),
                     DispatchOutcome::Done,
                     &[],
                 )
@@ -494,7 +494,7 @@ async fn any_delegates_enqueue_claim_and_owner_scoped_lease() {
         .await
         .unwrap();
     assert_eq!(
-        claimed.map(|c| c.lease.owner),
+        claimed.map(|c| c.lease.owner().to_owned()),
         Some("owner-a".to_string()),
         "claim records the claiming owner on the lease"
     );
@@ -513,7 +513,7 @@ async fn any_delegates_enqueue_claim_and_owner_scoped_lease() {
         .await
         .unwrap();
     assert_eq!(
-        recovered.map(|c| c.lease.owner),
+        recovered.map(|c| c.lease.owner().to_owned()),
         Some("owner-b".to_string()),
         "an expired lease is reclaimed by the next owner"
     );
@@ -548,8 +548,8 @@ async fn any_lets_two_owners_claim_distinct_runs() {
         .await
         .unwrap()
         .expect("two");
-    assert_eq!(first.lease.owner, "worker-a");
-    assert_eq!(second.lease.owner, "worker-b");
+    assert_eq!(first.lease.owner(), "worker-a");
+    assert_eq!(second.lease.owner(), "worker-b");
     assert_ne!(
         first.request.run_id(),
         second.request.run_id(),
@@ -605,7 +605,7 @@ async fn any_serializes_one_thread_across_workers() {
     store
         .settle(
             first.request.run_id(),
-            first.lease.epoch,
+            first.lease.epoch(),
             DispatchOutcome::Done,
             &[],
         )
@@ -774,7 +774,7 @@ async fn postgres_factory_pairs_the_selected_store_with_its_wake() {
             .expect("W2 claim")
             .expect("W2 runnable row")
             .lease
-            .owner,
+            .owner(),
         "wake-owner",
         "W2/E1"
     );
@@ -818,7 +818,10 @@ async fn any_postgres_connect_and_claim() {
         .claim("pg-owner", 1_000, &Default::default())
         .await
         .expect("claim");
-    assert_eq!(claimed.map(|c| c.lease.owner), Some("pg-owner".to_string()));
+    assert_eq!(
+        claimed.map(|c| c.lease.owner().to_owned()),
+        Some("pg-owner".to_string())
+    );
 
     let checkpoint = store
         .stream_checkpoint_store()

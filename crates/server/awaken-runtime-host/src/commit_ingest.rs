@@ -879,8 +879,8 @@ mod tests {
         assert_eq!(
             queue
                 .settle(
-                    &claimed.lease.run_id,
-                    claimed.lease.epoch,
+                    claimed.lease.run_id(),
+                    claimed.lease.epoch(),
                     awaken_run_ingress_contract::DispatchOutcome::Done,
                     &[],
                 )

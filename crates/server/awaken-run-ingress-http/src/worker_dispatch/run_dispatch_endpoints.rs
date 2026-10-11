@@ -61,7 +61,7 @@ async fn attach_claim_credential_deliveries(
                         expected_provider:
                             awaken_credential_contract::candidate_provider_expectation(candidate)
                                 .map_err(HostError::internal)?,
-                        claim_epoch: claimed.lease.epoch,
+                        claim_epoch: claimed.lease.epoch(),
                     },
                 )
                 .await

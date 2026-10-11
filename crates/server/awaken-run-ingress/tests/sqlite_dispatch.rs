@@ -298,7 +298,10 @@ async fn enqueue_is_idempotent_and_expired_lease_is_reclaimed() {
     );
     clock.set(1_001);
     let recovered = store.claim("b", 1_000, &Default::default()).await.unwrap();
-    assert_eq!(recovered.map(|c| c.lease.owner), Some("b".to_string()));
+    assert_eq!(
+        recovered.map(|c| c.lease.owner().to_owned()),
+        Some("b".to_string())
+    );
 }
 
 #[tokio::test]
@@ -348,7 +351,7 @@ async fn sqlite_epoch_guard_blocks_reclaim_until_commit_returns() {
     inner.release.notify_one();
     committing.await.unwrap().expect("commit");
     let reclaimed = reclaiming.await.unwrap().unwrap().expect("reclaim");
-    assert_eq!(reclaimed.lease.epoch, lease.epoch + 1);
+    assert_eq!(reclaimed.lease.epoch(), lease.epoch() + 1);
 }
 
 #[tokio::test]

@@ -44,10 +44,10 @@ pub async fn assert_capacity_deferrals_hand_off_without_spending_budget<
             .unwrap_or_else(|| panic!("D2 round {round}: due Run is claimable by {owner}"));
         if let Some(previous) = &previous {
             assert!(
-                claimed.lease.epoch > previous.epoch,
+                claimed.lease.epoch() > previous.epoch,
                 "D2 round {round}: a new claim"
             );
-            assert_ne!(claimed.lease.owner, previous.owner, "D2 another Worker");
+            assert_ne!(claimed.lease.owner(), previous.owner, "D2 another Worker");
         }
         let claim = RunClaim::from(&claimed.lease);
         assert_eq!(
@@ -88,5 +88,5 @@ pub async fn assert_capacity_deferrals_hand_off_without_spending_budget<
         listed[0].attempt_count, attempts_before,
         "D3 after hand-off"
     );
-    assert_eq!(final_owner.lease.owner, "worker-ns-c", "D2");
+    assert_eq!(final_owner.lease.owner(), "worker-ns-c", "D2");
 }

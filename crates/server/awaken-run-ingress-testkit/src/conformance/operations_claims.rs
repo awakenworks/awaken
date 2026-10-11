@@ -93,18 +93,18 @@ pub async fn assert_occupied_slot_quarantine_conformance_with_clock<S>(
         AttemptAdmission::Applied,
         "R2 predecessor occupies the slot"
     );
-    clock.advance_past(retained_first.lease.expires_ms).await;
+    clock.advance_past(retained_first.lease.expires_ms()).await;
     let retained_recovered = store
         .claim_run(&retained, "occupied-a2", LEASE_MS, &Default::default())
         .await
         .expect("retained recovery")
         .expect("retained run is recoverable");
     clock
-        .advance_past(retained_recovered.lease.expires_ms)
+        .advance_past(retained_recovered.lease.expires_ms())
         .await;
     assert_eq!(
         store
-            .quarantine_retry_exhausted(1, retained_recovered.lease.expires_ms.saturating_add(1))
+            .quarantine_retry_exhausted(1, retained_recovered.lease.expires_ms().saturating_add(1))
             .await
             .expect("quarantine sweep without cancellation intent"),
         0,
@@ -139,14 +139,14 @@ pub async fn assert_occupied_slot_quarantine_conformance_with_clock<S>(
         AttemptAdmission::Applied,
         "R1 predecessor occupies the slot"
     );
-    clock.advance_past(stuck_first.lease.expires_ms).await;
+    clock.advance_past(stuck_first.lease.expires_ms()).await;
     let stuck_successor = store
         .claim_run(&stuck, "occupied-c", LEASE_MS, &Default::default())
         .await
         .expect("successor recovery")
         .expect("the stuck run is recoverable");
-    clock.advance_past(stuck_successor.lease.expires_ms).await;
-    let sweep_now = stuck_successor.lease.expires_ms.saturating_add(1);
+    clock.advance_past(stuck_successor.lease.expires_ms()).await;
+    let sweep_now = stuck_successor.lease.expires_ms().saturating_add(1);
 
     // R3/E4: the successor is still refused physical execution. Quarantine is
     // reachable precisely because it grants nobody the executor.
@@ -253,8 +253,8 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
         .await
         .expect("first operational claim")
         .expect("settled run is runnable");
-    clock.advance_past(first.lease.expires_ms).await;
-    clock.set(first.lease.expires_ms.saturating_add(1));
+    clock.advance_past(first.lease.expires_ms()).await;
+    clock.set(first.lease.expires_ms().saturating_add(1));
     let recovered = store
         .claim_run(&settled_run, "operations-b", LEASE_MS, &Default::default())
         .await
@@ -262,7 +262,12 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
         .expect("expired run is recoverable");
     assert_eq!(
         store
-            .settle(&settled_run, first.lease.epoch, DispatchOutcome::Done, &[],)
+            .settle(
+                &settled_run,
+                first.lease.epoch(),
+                DispatchOutcome::Done,
+                &[],
+            )
             .await
             .expect("fenced settle verdict"),
         SettleOutcome::Fenced
@@ -271,7 +276,7 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
         store
             .settle(
                 &settled_run,
-                recovered.lease.epoch,
+                recovered.lease.epoch(),
                 DispatchOutcome::Awaiting,
                 &[],
             )
@@ -295,17 +300,17 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
         .await
         .expect("dead-letter first claim")
         .expect("dead-letter run is runnable");
-    clock.advance_past(dead_first.lease.expires_ms).await;
-    clock.set(dead_first.lease.expires_ms.saturating_add(1));
+    clock.advance_past(dead_first.lease.expires_ms()).await;
+    clock.set(dead_first.lease.expires_ms().saturating_add(1));
     let dead_recovered = store
         .claim_run(&dead_run, "operations-d", LEASE_MS, &Default::default())
         .await
         .expect("dead-letter recovery")
         .expect("dead-letter run is recoverable");
-    clock.advance_past(dead_recovered.lease.expires_ms).await;
+    clock.advance_past(dead_recovered.lease.expires_ms()).await;
     assert_eq!(
         store
-            .quarantine_retry_exhausted(1, dead_recovered.lease.expires_ms.saturating_add(1),)
+            .quarantine_retry_exhausted(1, dead_recovered.lease.expires_ms().saturating_add(1),)
             .await
             .expect("manually quarantine exhausted run"),
         1
@@ -553,7 +558,7 @@ async fn local_claims_skip_remote_only_work(
     );
     assert_eq!(
         store
-            .settle(&local_id, local.lease.epoch, DispatchOutcome::Done, &[])
+            .settle(&local_id, local.lease.epoch(), DispatchOutcome::Done, &[])
             .await
             .expect("settle local fallback"),
         SettleOutcome::Applied
@@ -594,7 +599,7 @@ async fn local_claims_skip_remote_only_work(
     assert_eq!(remote.request.run_id(), &remote_id);
     assert_eq!(
         store
-            .settle(&remote_id, remote.lease.epoch, DispatchOutcome::Done, &[])
+            .settle(&remote_id, remote.lease.epoch(), DispatchOutcome::Done, &[])
             .await
             .expect("settle worker-private run"),
         SettleOutcome::Applied
@@ -691,9 +696,9 @@ async fn exact_claim_recovery_and_fencing(
         assert_eq!(depths.worker_demand(), 2, "D2 keeps the active Worker");
     }
     assert_eq!(first.request, frozen, "R1/E1 exact frozen request");
-    assert_eq!(first.lease.owner, "conformance-a");
+    assert_eq!(first.lease.owner(), "conformance-a");
     assert!(!first.recovered, "a fresh exact claim is not recovery");
-    assert!(first.lease.epoch > 0, "a claimed lease has a fence epoch");
+    assert!(first.lease.epoch() > 0, "a claimed lease has a fence epoch");
     assert_eq!(
         first.credential_bindings.len(),
         2,
@@ -703,7 +708,7 @@ async fn exact_claim_recovery_and_fencing(
         first
             .credential_bindings
             .iter()
-            .all(|binding| binding.claim_epoch == first.lease.epoch),
+            .all(|binding| binding.claim_epoch == first.lease.epoch()),
         "R1/E1 every attempt binding is fenced by the fresh claim"
     );
 
@@ -715,7 +720,7 @@ async fn exact_claim_recovery_and_fencing(
     assert_eq!(other.request.run_id(), &unrelated);
     assert_eq!(
         store
-            .settle(&unrelated, other.lease.epoch, DispatchOutcome::Done, &[],)
+            .settle(&unrelated, other.lease.epoch(), DispatchOutcome::Done, &[],)
             .await
             .expect("settle unrelated"),
         SettleOutcome::Applied
@@ -726,7 +731,7 @@ async fn exact_claim_recovery_and_fencing(
     // expiry instant it is expired and the next owner recovers it. A moving
     // authority clock is advanced past the deadline instead.
     if clock.exact_boundary_is_controllable() {
-        clock.set(first.lease.expires_ms - 1);
+        clock.set(first.lease.expires_ms() - 1);
         assert!(
             store
                 .claim_run(&target, "conformance-b", LEASE_MS, &capabilities,)
@@ -735,9 +740,9 @@ async fn exact_claim_recovery_and_fencing(
                 .is_none(),
             "B1 a lease is live one instant before its expiry"
         );
-        clock.set(first.lease.expires_ms);
+        clock.set(first.lease.expires_ms());
     } else {
-        clock.advance_past(first.lease.expires_ms).await;
+        clock.advance_past(first.lease.expires_ms()).await;
     }
     let recovered = store
         .claim_run(&target, "conformance-b", LEASE_MS, &capabilities)
@@ -746,7 +751,7 @@ async fn exact_claim_recovery_and_fencing(
         .expect("expired target is recoverable");
     assert!(recovered.recovered, "an expired running lease is recovery");
     assert_eq!(recovered.request, first.request, "R3/E3 frozen request");
-    assert_eq!(recovered.lease.epoch, first.lease.epoch + 1);
+    assert_eq!(recovered.lease.epoch(), first.lease.epoch() + 1);
     assert_eq!(
         recovered
             .credential_bindings
@@ -764,12 +769,12 @@ async fn exact_claim_recovery_and_fencing(
         recovered
             .credential_bindings
             .iter()
-            .all(|binding| binding.claim_epoch == recovered.lease.epoch),
+            .all(|binding| binding.claim_epoch == recovered.lease.epoch()),
         "R3/E4 reclaim re-fences every exact binding to the new epoch"
     );
     assert_eq!(
         store
-            .settle(&target, first.lease.epoch, DispatchOutcome::Done, &[])
+            .settle(&target, first.lease.epoch(), DispatchOutcome::Done, &[])
             .await
             .expect("stale settle returns a verdict"),
         SettleOutcome::Fenced,
@@ -777,7 +782,7 @@ async fn exact_claim_recovery_and_fencing(
     );
     assert_eq!(
         store
-            .settle(&target, recovered.lease.epoch, DispatchOutcome::Done, &[],)
+            .settle(&target, recovered.lease.epoch(), DispatchOutcome::Done, &[],)
             .await
             .expect("current settle"),
         SettleOutcome::Applied
@@ -832,7 +837,12 @@ async fn parent_mediated_commands_are_atomic(
     );
     assert_eq!(
         store
-            .settle(&child, claimed.lease.epoch, DispatchOutcome::Awaiting, &[],)
+            .settle(
+                &child,
+                claimed.lease.epoch(),
+                DispatchOutcome::Awaiting,
+                &[],
+            )
             .await
             .expect("child enters awaiting"),
         SettleOutcome::Applied
@@ -872,7 +882,7 @@ async fn parent_mediated_commands_are_atomic(
         store
             .settle(
                 &child,
-                resumed.lease.epoch,
+                resumed.lease.epoch(),
                 DispatchOutcome::Done,
                 &[message_id],
             )

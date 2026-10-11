@@ -46,7 +46,7 @@ async fn retry_exhaustion_claim_is_atomic_and_policy_exact(
     // before the expiry, expired at it. A moving clock is advanced past it.
     let exact = clock.exact_boundary_is_controllable();
     if exact {
-        clock.set(fresh.lease.expires_ms - 1);
+        clock.set(fresh.lease.expires_ms() - 1);
         assert!(
             store
                 .claim_retry_exhausted("terminal", LEASE_MS, 0)
@@ -55,9 +55,9 @@ async fn retry_exhaustion_claim_is_atomic_and_policy_exact(
                 .is_none(),
             "R2"
         );
-        clock.set(fresh.lease.expires_ms);
+        clock.set(fresh.lease.expires_ms());
     } else {
-        clock.advance_past(fresh.lease.expires_ms).await;
+        clock.advance_past(fresh.lease.expires_ms()).await;
     }
     assert!(
         store
@@ -73,7 +73,7 @@ async fn retry_exhaustion_claim_is_atomic_and_policy_exact(
         .expect("ordinary recovery")
         .expect("ordinary recovery is claimable");
     // R4 at the exact expiry of the recovered lease when the clock allows it.
-    let terminal_now = recovered.lease.expires_ms;
+    let terminal_now = recovered.lease.expires_ms();
     if exact {
         clock.set(terminal_now);
     } else {
@@ -89,10 +89,10 @@ async fn retry_exhaustion_claim_is_atomic_and_policy_exact(
     let terminal = left.or(right).expect("R4/R5 exhausted row claimable");
     assert!(terminal.recovered, "R4");
     assert!(terminal.credential_bindings.is_empty(), "R4");
-    assert_eq!(terminal.lease.run_id, run_id, "R5 unique row");
+    assert_eq!(terminal.lease.run_id(), &run_id, "R5 unique row");
     assert_eq!(
-        terminal.lease.epoch,
-        recovered.lease.epoch + 1,
+        terminal.lease.epoch(),
+        recovered.lease.epoch() + 1,
         "R5 unique newer epoch"
     );
     clock.set(terminal_now);
@@ -106,7 +106,7 @@ async fn retry_exhaustion_claim_is_atomic_and_policy_exact(
     );
     assert_eq!(
         store
-            .settle(&run_id, recovered.lease.epoch, DispatchOutcome::Done, &[])
+            .settle(&run_id, recovered.lease.epoch(), DispatchOutcome::Done, &[])
             .await
             .expect("R6 stale settle"),
         SettleOutcome::Fenced,
@@ -115,8 +115,8 @@ async fn retry_exhaustion_claim_is_atomic_and_policy_exact(
     assert_eq!(
         store
             .settle(
-                &terminal.lease.run_id,
-                terminal.lease.epoch,
+                terminal.lease.run_id(),
+                terminal.lease.epoch(),
                 DispatchOutcome::Done,
                 &[],
             )
@@ -203,7 +203,7 @@ async fn caller_owned_run_identity_is_exact(
 
     assert_eq!(
         store
-            .settle(&run_id, claim.lease.epoch, DispatchOutcome::Done, &[])
+            .settle(&run_id, claim.lease.epoch(), DispatchOutcome::Done, &[])
             .await
             .expect("settle caller-owned run"),
         SettleOutcome::Applied
@@ -229,7 +229,7 @@ async fn caller_owned_run_identity_is_exact(
         store
             .settle(
                 &winner_id,
-                winner_claim.lease.epoch,
+                winner_claim.lease.epoch(),
                 DispatchOutcome::Done,
                 &[],
             )
@@ -266,7 +266,7 @@ async fn deferred_pending_terminal_recovery_obeys_retry_deadline(
         .await
         .expect("D1 claim")
         .expect("D1 initial claim");
-    let old_epoch = first.lease.epoch;
+    let old_epoch = first.lease.epoch();
     assert_eq!(
         store
             .defer_claim(&RunClaim::from(&first.lease), 1_000)
@@ -291,14 +291,14 @@ async fn deferred_pending_terminal_recovery_obeys_retry_deadline(
         "D1/E1 Worker must honor retry deadline"
     );
     clock
-        .advance_past(first.lease.expires_ms.saturating_add(1_000))
+        .advance_past(first.lease.expires_ms().saturating_add(1_000))
         .await;
     let second = store
         .claim_run(&run_id, "deferred-second", LEASE_MS, &Default::default())
         .await
         .expect("D2 ordinary claim")
         .expect("D2 retry is due");
-    assert!(second.lease.epoch > old_epoch, "D2/E2 higher epoch");
+    assert!(second.lease.epoch() > old_epoch, "D2/E2 higher epoch");
     assert_eq!(
         store
             .settle(&run_id, old_epoch, DispatchOutcome::Done, &[])
@@ -309,7 +309,7 @@ async fn deferred_pending_terminal_recovery_obeys_retry_deadline(
     );
     assert_eq!(
         store
-            .settle(&run_id, second.lease.epoch, DispatchOutcome::Done, &[])
+            .settle(&run_id, second.lease.epoch(), DispatchOutcome::Done, &[])
             .await
             .expect("D2 current settlement"),
         SettleOutcome::Applied,
@@ -363,7 +363,7 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
     store
         .settle(
             &awaiting_id,
-            initial.lease.epoch,
+            initial.lease.epoch(),
             DispatchOutcome::Awaiting,
             &[],
         )
@@ -423,7 +423,7 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
         store
             .settle(
                 &control_id,
-                control_claim.lease.epoch,
+                control_claim.lease.epoch(),
                 DispatchOutcome::Done,
                 &[],
             )
@@ -462,7 +462,7 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
         store
             .settle(
                 &pending_id,
-                pending_repair.lease.epoch,
+                pending_repair.lease.epoch(),
                 DispatchOutcome::Done,
                 &[],
             )
@@ -528,7 +528,7 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
         store
             .settle(
                 &occupied_id,
-                after_ack.lease.epoch,
+                after_ack.lease.epoch(),
                 DispatchOutcome::Done,
                 &[],
             )
@@ -568,7 +568,7 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
         "T6: a currently claimed repair row cannot be claimed twice"
     );
     if clock.exact_boundary_is_controllable() {
-        clock.set(repair.lease.expires_ms - 1);
+        clock.set(repair.lease.expires_ms() - 1);
         assert!(
             store
                 .claim_for_terminal_recovery(&awaiting_id, "boundary", LEASE_MS,)
@@ -578,9 +578,9 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
             "T6: a lease is live one instant before its expiry"
         );
         // The Expiry law: from the exact expiry instant the lease has passed.
-        clock.set(repair.lease.expires_ms);
+        clock.set(repair.lease.expires_ms());
     } else {
-        clock.advance_past(repair.lease.expires_ms).await;
+        clock.advance_past(repair.lease.expires_ms()).await;
     }
     let repair_after_crash = store
         .claim_for_terminal_recovery(&awaiting_id, "repair-after-crash", LEASE_MS)
@@ -589,7 +589,12 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
         .expect("expired repair lease is recovery claimable");
     assert_eq!(
         store
-            .settle(&awaiting_id, repair.lease.epoch, DispatchOutcome::Done, &[])
+            .settle(
+                &awaiting_id,
+                repair.lease.epoch(),
+                DispatchOutcome::Done,
+                &[]
+            )
             .await
             .expect("stale repair settle"),
         SettleOutcome::Fenced,
@@ -605,7 +610,7 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
         store
             .settle(
                 &awaiting_id,
-                repair_after_crash.lease.epoch,
+                repair_after_crash.lease.epoch(),
                 DispatchOutcome::Done,
                 &[]
             )
@@ -629,7 +634,12 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
         .expect("terminal settlement releases the fresh peer");
     assert_eq!(
         store
-            .settle(&peer_id, peer_claim.lease.epoch, DispatchOutcome::Done, &[],)
+            .settle(
+                &peer_id,
+                peer_claim.lease.epoch(),
+                DispatchOutcome::Done,
+                &[],
+            )
             .await
             .expect("settle released peer"),
         SettleOutcome::Applied,
@@ -694,8 +704,8 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
     assert_eq!(claimed.request.run_id(), valid.run_id(), "Q1");
     store
         .settle(
-            &claimed.lease.run_id,
-            claimed.lease.epoch,
+            claimed.lease.run_id(),
+            claimed.lease.epoch(),
             DispatchOutcome::Done,
             &[],
         )
@@ -729,8 +739,8 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
     assert_eq!(claimed.request.run_id(), placed.run_id(), "Q3");
     store
         .settle(
-            &claimed.lease.run_id,
-            claimed.lease.epoch,
+            claimed.lease.run_id(),
+            claimed.lease.epoch(),
             DispatchOutcome::Done,
             &[],
         )
@@ -776,8 +786,8 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
     assert!(claimed.credential_bindings.is_empty(), "Q4");
     store
         .settle(
-            &claimed.lease.run_id,
-            claimed.lease.epoch,
+            claimed.lease.run_id(),
+            claimed.lease.epoch(),
             DispatchOutcome::Done,
             &[],
         )
@@ -840,8 +850,8 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
     assert!(claimed.credential_bindings.is_empty(), "Q5");
     store
         .settle(
-            &claimed.lease.run_id,
-            claimed.lease.epoch,
+            claimed.lease.run_id(),
+            claimed.lease.epoch(),
             DispatchOutcome::Done,
             &[],
         )
@@ -907,8 +917,8 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
     assert!(claimed.credential_bindings.is_empty(), "Q6");
     store
         .settle(
-            &claimed.lease.run_id,
-            claimed.lease.epoch,
+            claimed.lease.run_id(),
+            claimed.lease.epoch(),
             DispatchOutcome::Done,
             &[],
         )
@@ -950,7 +960,7 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
     store
         .settle(
             valid_runtime.run_id(),
-            claimed.lease.epoch,
+            claimed.lease.epoch(),
             DispatchOutcome::Done,
             &[],
         )
@@ -989,11 +999,11 @@ async fn incompatible_credentials_do_not_poison_broad_claims(
         .expect("Q9 canceled row is claimable");
     assert!(cancellation.cancellation_requested, "Q9");
     assert!(cancellation.credential_bindings.is_empty(), "Q9");
-    assert_eq!(cancellation.lease.epoch, 1, "Q8 did not mutate the row");
+    assert_eq!(cancellation.lease.epoch(), 1, "Q8 did not mutate the row");
     store
         .settle(
             invalid_runtime.run_id(),
-            cancellation.lease.epoch,
+            cancellation.lease.epoch(),
             DispatchOutcome::Done,
             &[],
         )
@@ -1083,11 +1093,12 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
         .expect("A2 credential run is runnable");
     assert_eq!(first.credential_bindings.len(), 1, "A2 one exact binding");
     assert_eq!(
-        first.lease.epoch, 1,
+        first.lease.epoch(),
+        1,
         "A3 rejected admission did not mutate the durable lease epoch"
     );
     let first_binding = &first.credential_bindings[0];
-    assert_eq!(first_binding.claim_epoch, first.lease.epoch);
+    assert_eq!(first_binding.claim_epoch, first.lease.epoch());
     assert_eq!(
         first_binding.selected_realization_kind,
         CredentialRealizationKind::WorkerProviderAdapter
@@ -1143,8 +1154,8 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
         "R2 a mechanism mismatch is rejected"
     );
 
-    clock.advance_past(first.lease.expires_ms).await;
-    clock.set(first.lease.expires_ms.saturating_add(1));
+    clock.advance_past(first.lease.expires_ms()).await;
+    clock.set(first.lease.expires_ms().saturating_add(1));
     assert!(
         store
             .current_credential_binding(
@@ -1166,10 +1177,11 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
         .await
         .expect("A6 recovery succeeds")
         .expect("A6 expired credential run is recoverable");
-    assert_eq!(recovered.lease.epoch, first.lease.epoch + 1);
+    assert_eq!(recovered.lease.epoch(), first.lease.epoch() + 1);
     assert_eq!(recovered.credential_bindings.len(), 1);
     assert_eq!(
-        recovered.credential_bindings[0].claim_epoch, recovered.lease.epoch,
+        recovered.credential_bindings[0].claim_epoch,
+        recovered.lease.epoch(),
         "A6 the binding set is replaced under the new claim epoch"
     );
     assert_eq!(
@@ -1191,7 +1203,12 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
         SettleOutcome::Fenced
     );
     store
-        .settle(&local_id, recovered.lease.epoch, DispatchOutcome::Done, &[])
+        .settle(
+            &local_id,
+            recovered.lease.epoch(),
+            DispatchOutcome::Done,
+            &[],
+        )
         .await
         .expect("settle recovered credential run");
 
@@ -1217,12 +1234,18 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
         .expect("A4 exact-capability claim succeeds")
         .expect("A4 failed admission did not consume the runnable row");
     assert_eq!(
-        admitted.lease.epoch, 1,
+        admitted.lease.epoch(),
+        1,
         "A4 failed admission did not advance the durable epoch"
     );
     assert_eq!(admitted.credential_bindings.len(), 1);
     store
-        .settle(&remote_id, admitted.lease.epoch, DispatchOutcome::Done, &[])
+        .settle(
+            &remote_id,
+            admitted.lease.epoch(),
+            DispatchOutcome::Done,
+            &[],
+        )
         .await
         .expect("settle exact-capability run");
 
@@ -1253,7 +1276,7 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
     store
         .settle(
             &cancellation_id,
-            cancellation_claim.lease.epoch,
+            cancellation_claim.lease.epoch(),
             DispatchOutcome::Done,
             &[],
         )
@@ -1291,7 +1314,7 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
         .await
         .expect("A8 exact remote cancellation claim")
         .expect("A8 failed admission retained the runnable row");
-    assert_eq!(remote_claim.lease.epoch, 1, "A7 no claim mutation");
+    assert_eq!(remote_claim.lease.epoch(), 1, "A7 no claim mutation");
     assert!(remote_claim.cancellation_requested, "A8");
     assert_eq!(remote_claim.credential_bindings.len(), 1, "A8");
     assert_eq!(
@@ -1305,13 +1328,14 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
         "A8 exact cancel mechanism"
     );
     assert_eq!(
-        remote_claim.credential_bindings[0].claim_epoch, remote_claim.lease.epoch,
+        remote_claim.credential_bindings[0].claim_epoch,
+        remote_claim.lease.epoch(),
         "A8 current epoch"
     );
     store
         .settle(
             &remote_cancel_id,
-            remote_claim.lease.epoch,
+            remote_claim.lease.epoch(),
             DispatchOutcome::Done,
             &[],
         )

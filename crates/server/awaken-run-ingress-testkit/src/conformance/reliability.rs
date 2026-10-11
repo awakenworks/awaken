@@ -53,7 +53,12 @@ async fn settlement_fence_and_pending_input_are_atomic<S: ControlDispatchQueue +
         .expect("SF1 initial Run is claimable");
     assert_eq!(
         store
-            .settle(&run_id, initial.lease.epoch, DispatchOutcome::Awaiting, &[],)
+            .settle(
+                &run_id,
+                initial.lease.epoch(),
+                DispatchOutcome::Awaiting,
+                &[],
+            )
             .await
             .expect("SF1 establish Awaiting"),
         SettleOutcome::Applied,
@@ -77,14 +82,14 @@ async fn settlement_fence_and_pending_input_are_atomic<S: ControlDispatchQueue +
         .expect("SF1 pending input wakes Awaiting Run");
     assert_eq!(crashed.pending, vec![input.clone()], "SF1/E1 exact handoff");
 
-    clock.advance_past(crashed.lease.expires_ms).await;
-    clock.set(crashed.lease.expires_ms.saturating_add(1));
+    clock.advance_past(crashed.lease.expires_ms()).await;
+    clock.set(crashed.lease.expires_ms().saturating_add(1));
     let recovered = store
         .claim_run(&run_id, "pending-recovered", LEASE_MS, &Default::default())
         .await
         .expect("SF1 recovery claim")
         .expect("SF1 expired claim is recoverable");
-    assert_eq!(recovered.lease.epoch, crashed.lease.epoch + 1, "SF1/E1");
+    assert_eq!(recovered.lease.epoch(), crashed.lease.epoch() + 1, "SF1/E1");
     assert_eq!(recovered.pending, vec![input.clone()], "SF1/E1");
     let arrived_during_attempt = PendingInput {
         message_id: format!("{ns}-pending-mid-attempt-input"),
@@ -121,7 +126,7 @@ async fn settlement_fence_and_pending_input_are_atomic<S: ControlDispatchQueue +
         store
             .settle(
                 &run_id,
-                crashed.lease.epoch,
+                crashed.lease.epoch(),
                 DispatchOutcome::Awaiting,
                 &[
                     input.message_id.clone(),
@@ -163,7 +168,7 @@ async fn settlement_fence_and_pending_input_are_atomic<S: ControlDispatchQueue +
         store
             .settle(
                 &run_id,
-                recovered.lease.epoch,
+                recovered.lease.epoch(),
                 DispatchOutcome::Awaiting,
                 std::slice::from_ref(&input.message_id),
             )
@@ -204,7 +209,7 @@ async fn settlement_fence_and_pending_input_are_atomic<S: ControlDispatchQueue +
             "SF3/E3 Awaiting publishes no completion"
         );
     }
-    clock.set(recovered.lease.expires_ms.saturating_add(1));
+    clock.set(recovered.lease.expires_ms().saturating_add(1));
     let next = store
         .claim_run(&run_id, "pending-next", LEASE_MS, &Default::default())
         .await
@@ -235,7 +240,7 @@ async fn settlement_fence_and_pending_input_are_atomic<S: ControlDispatchQueue +
         store
             .settle(
                 &run_id,
-                recovered.lease.epoch,
+                recovered.lease.epoch(),
                 DispatchOutcome::Done,
                 std::slice::from_ref(&arrived_during_attempt.message_id),
             )
@@ -272,7 +277,7 @@ async fn settlement_fence_and_pending_input_are_atomic<S: ControlDispatchQueue +
     }
     assert_eq!(
         store
-            .settle(&run_id, next.lease.epoch, DispatchOutcome::Done, &[])
+            .settle(&run_id, next.lease.epoch(), DispatchOutcome::Done, &[])
             .await
             .expect("SF4 current Done settlement"),
         SettleOutcome::Applied,
@@ -303,7 +308,7 @@ async fn settlement_fence_and_pending_input_are_atomic<S: ControlDispatchQueue +
         assert_eq!(completions.len(), 1, "SF4/E5 one completion tombstone");
         assert_eq!(completions[0].run_id, run_id, "SF4/E5 exact completion");
     }
-    clock.set(next.lease.expires_ms.saturating_add(1));
+    clock.set(next.lease.expires_ms().saturating_add(1));
     assert!(
         store
             .claim_run(&run_id, "pending-after-done", LEASE_MS, &Default::default(),)
@@ -352,7 +357,7 @@ async fn settlement_fence_and_pending_input_are_atomic<S: ControlDispatchQueue +
         store
             .settle(
                 omitted.run_id(),
-                omitted_claim.lease.epoch,
+                omitted_claim.lease.epoch(),
                 DispatchOutcome::Done,
                 &[],
             )
@@ -386,7 +391,7 @@ async fn settlement_fence_and_pending_input_are_atomic<S: ControlDispatchQueue +
         store
             .settle(
                 named.run_id(),
-                named_claim.lease.epoch,
+                named_claim.lease.epoch(),
                 DispatchOutcome::Done,
                 &[format!("{ns}-pending-unbound-input")],
             )
@@ -462,13 +467,13 @@ pub async fn record_dispatch_recovery_history(
         AttemptAdmission::AlreadyApplied,
         "R4 lost begin response retries admission, not execution"
     );
-    let recovery_now = first.lease.expires_ms.saturating_add(1);
+    let recovery_now = first.lease.expires_ms().saturating_add(1);
     // Deterministic adapters advance immediately; a live PostgreSQL adapter
     // waits for its authoritative database/wall clock to cross the persisted
     // deadline. Keeping that distinction behind ConformanceClock lets every
     // backend execute this one history without giving PostgreSQL a test-only
     // clock or duplicating the recovery oracle.
-    clock.advance_past(first.lease.expires_ms).await;
+    clock.advance_past(first.lease.expires_ms()).await;
     clock.set(recovery_now);
     let recovered = store
         .claim_run(&run_id, "history-b", LEASE_MS * 60, &Default::default())
@@ -492,13 +497,13 @@ pub async fn record_dispatch_recovery_history(
     guard.release().await.expect("R2b release");
     assert_eq!(
         store
-            .settle(&run_id, recovered.lease.epoch, DispatchOutcome::Done, &[])
+            .settle(&run_id, recovered.lease.epoch(), DispatchOutcome::Done, &[])
             .await
             .unwrap(),
         SettleOutcome::Fenced
     );
     let stale_settlement = store
-        .settle(&run_id, first.lease.epoch, DispatchOutcome::Done, &[])
+        .settle(&run_id, first.lease.epoch(), DispatchOutcome::Done, &[])
         .await
         .expect("R2 stale settlement");
     let predecessor_finish = store
@@ -541,7 +546,7 @@ pub async fn record_dispatch_recovery_history(
         .await
         .expect("R3 successor finish");
     let successor_settlement = store
-        .settle(&run_id, recovered.lease.epoch, DispatchOutcome::Done, &[])
+        .settle(&run_id, recovered.lease.epoch(), DispatchOutcome::Done, &[])
         .await
         .expect("R3 successor settlement");
     let live_rows_after_settlement = store
@@ -553,8 +558,8 @@ pub async fn record_dispatch_recovery_history(
         .count();
 
     let history = DispatchRecoveryHistory {
-        first_epoch: first.lease.epoch,
-        recovered_epoch: recovered.lease.epoch,
+        first_epoch: first.lease.epoch(),
+        recovered_epoch: recovered.lease.epoch(),
         first_attempt,
         blocked_successor,
         stale_settlement,
@@ -660,8 +665,8 @@ async fn occupied_recovery_does_not_starve_other_threads(
                 if cancelled {
                     store.cancel(old.run_id()).await.unwrap();
                 }
-                clock.advance_past(first.lease.expires_ms).await;
-                let now = first.lease.expires_ms.saturating_add(1);
+                clock.advance_past(first.lease.expires_ms()).await;
+                let now = first.lease.expires_ms().saturating_add(1);
                 if occupied {
                     // The real observer failure relinquishes a replacement
                     // mutation claim, preserving the predecessor's slot.

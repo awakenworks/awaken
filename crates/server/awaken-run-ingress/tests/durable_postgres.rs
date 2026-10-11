@@ -552,7 +552,9 @@ async fn postgres_epoch_guard_prevents_reclaim_until_commit_returns() {
     let fenced = ClaimedCommitCoordinator::new(service, RunClaim::from(&lease));
     let committing = tokio::spawn(async move { fenced.commit(running_commit("guarded")).await });
     inner.entered.notified().await;
-    AuthoritativeWallClock.advance_past(lease.expires_ms).await;
+    AuthoritativeWallClock
+        .advance_past(lease.expires_ms())
+        .await;
 
     let reclaim_store = store.clone();
     let mut reclaiming = tokio::spawn(async move {
@@ -590,7 +592,7 @@ async fn postgres_epoch_guard_prevents_reclaim_until_commit_returns() {
             .unwrap()
             .expect("reclaim after the guard releases"),
     };
-    assert_eq!(reclaimed.lease.epoch, lease.epoch + 1);
+    assert_eq!(reclaimed.lease.epoch(), lease.epoch() + 1);
 }
 
 fn pending(message_id: &str, correlation: &str, allow: bool) -> PendingInput {
@@ -736,7 +738,7 @@ async fn postgres_connect_applies_migrations_and_claim_recovers_a_lease() {
     );
     let recovered = store.claim("b", 1_000, &Default::default()).await.unwrap();
     assert_eq!(
-        recovered.map(|c| c.lease.owner),
+        recovered.map(|c| c.lease.owner().to_owned()),
         Some("b".to_string()),
         "the expired lease was reclaimed"
     );
@@ -1051,7 +1053,7 @@ async fn postgres_candidate_pages_reach_work_after_incompatible_front_page() {
             store.claim_compatible(&worker, 60_000).await.unwrap()
         }
         .expect("R2/R3/R4 later compatible Run is discovered");
-        assert_eq!(claimed.lease.run_id.0, run, "R2/R3/E1+E2");
+        assert_eq!(claimed.lease.run_id().0, run, "R2/R3/E1+E2");
     }
 
     for index in 0..2 {
@@ -1073,11 +1075,12 @@ async fn postgres_candidate_pages_reach_work_after_incompatible_front_page() {
     let first = first.unwrap().expect("R7 first deep claim");
     let second = second.unwrap().expect("R7 second deep claim");
     assert_ne!(
-        first.lease.run_id, second.lease.run_id,
+        first.lease.run_id(),
+        second.lease.run_id(),
         "R7 distinct winners"
     );
-    assert!(first.lease.run_id.0.starts_with("page-raced-"), "R7");
-    assert!(second.lease.run_id.0.starts_with("page-raced-"), "R7");
+    assert!(first.lease.run_id().0.starts_with("page-raced-"), "R7");
+    assert!(second.lease.run_id().0.starts_with("page-raced-"), "R7");
 
     harness::seed_exhausted_candidate_prefix(
         &pool,
@@ -1114,14 +1117,14 @@ async fn postgres_candidate_pages_reach_work_after_incompatible_front_page() {
         .await
         .unwrap()
         .expect("R5a final valid epoch remains discoverable");
-    assert_eq!(near_limit_claimed.lease.run_id.0, near_limit, "R5a/E2");
-    assert_eq!(near_limit_claimed.lease.epoch, i64::MAX as u64, "R5a");
+    assert_eq!(near_limit_claimed.lease.run_id().0, near_limit, "R5a/E2");
+    assert_eq!(near_limit_claimed.lease.epoch(), i64::MAX as u64, "R5a");
     let local_claimed = store
         .claim("local-owner", 60_000, &Default::default())
         .await
         .unwrap()
         .expect("R5 scans past exhausted epoch candidates");
-    assert_eq!(local_claimed.lease.run_id.0, local_run, "R5/E1+E2");
+    assert_eq!(local_claimed.lease.run_id().0, local_run, "R5/E1+E2");
 
     let blocker = "page-thread-blocker";
     store
@@ -1167,9 +1170,10 @@ async fn postgres_candidate_pages_reach_work_after_incompatible_front_page() {
         .await
         .unwrap()
         .expect("R6 skips blocked Thread pages");
-    assert_eq!(next.lease.run_id.0, independent, "R6/E1+E2");
+    assert_eq!(next.lease.run_id().0, independent, "R6/E1+E2");
     assert_eq!(
-        blocked.lease.run_id.0, blocker,
+        blocked.lease.run_id().0,
+        blocker,
         "R6 original owner retained"
     );
 }
@@ -1228,7 +1232,7 @@ async fn postgres_candidate_page_boundary_preserves_the_exact_tail_under_content
                 .await
                 .unwrap()
                 .expect("B2 tail remains discoverable");
-            assert_eq!(claimed.lease.run_id.0, tail, "B2/E2 count={count}");
+            assert_eq!(claimed.lease.run_id().0, tail, "B2/E2 count={count}");
         } else {
             let barrier = Arc::new(tokio::sync::Barrier::new(9));
             let mut claimers = tokio::task::JoinSet::new();
@@ -1254,7 +1258,7 @@ async fn postgres_candidate_page_boundary_preserves_the_exact_tail_under_content
                     .expect("B3 every contender terminates")
             {
                 if let Some(claimed) = result.unwrap().unwrap() {
-                    winners.push(claimed.lease.run_id.0);
+                    winners.push(claimed.lease.run_id().0.clone());
                 }
             }
             assert_eq!(winners, vec![tail], "B3/E2+E3 one exact owner");
@@ -1323,8 +1327,8 @@ async fn exhausted_epoch_deep_discovery_preserves_remote_audiences_and_expired_r
         .await
         .unwrap()
         .expect("A1 last valid remote epoch");
-    assert_eq!(first.lease.run_id.0, near_limit, "A1/E1");
-    assert_eq!(first.lease.epoch, i64::MAX as u64, "A1/E1");
+    assert_eq!(first.lease.run_id().0, near_limit, "A1/E1");
+    assert_eq!(first.lease.epoch(), i64::MAX as u64, "A1/E1");
     sqlx::query("UPDATE runtime_dispatch SET lease_until = 0 WHERE run_id = $1")
         .bind(near_limit)
         .execute(&pool)
@@ -1348,8 +1352,8 @@ async fn exhausted_epoch_deep_discovery_preserves_remote_audiences_and_expired_r
         .await
         .unwrap()
         .expect("A2 placed candidate remains discoverable");
-    assert_eq!(second.lease.run_id.0, fresh, "A2/E2");
-    assert_eq!(second.lease.epoch, 1, "A2/E2");
+    assert_eq!(second.lease.run_id().0, fresh, "A2/E2");
+    assert_eq!(second.lease.epoch(), 1, "A2/E2");
     assert!(
         store
             .claim_compatible(&worker, 60_000)
@@ -1423,7 +1427,7 @@ async fn deep_discovery_releases_its_stream_before_one_connection_exact_claim() 
     .expect("S1/E3 no self-deadlock")
     .unwrap()
     .expect("S1/E1 compatible row");
-    assert_eq!(claimed.lease.run_id.0, "single-connection-local", "S1/E2");
+    assert_eq!(claimed.lease.run_id().0, "single-connection-local", "S1/E2");
 }
 
 #[tokio::test]
@@ -1585,13 +1589,13 @@ async fn terminal_recovery_claim_rejects_caller_clock_skew() {
         .unwrap()
         .unwrap();
     assert!(
-        first.lease.expires_ms >= before as u64 + 60_000,
+        first.lease.expires_ms() >= before as u64 + 60_000,
         "T1 new lease must be DB-relative, got {:?}",
         first.lease
     );
     assert!(
         store
-            .claim_for_terminal_recovery(&first.lease.run_id, "skewed-successor", 60_000)
+            .claim_for_terminal_recovery(first.lease.run_id(), "skewed-successor", 60_000)
             .await
             .unwrap()
             .is_none(),
@@ -1715,7 +1719,7 @@ async fn exact_claim_mints_lease_after_waiting_for_thread_lock() {
         blocker.commit().await.unwrap();
         let claimed = task.await.unwrap().unwrap().unwrap();
         assert!(
-            claimed.lease.expires_ms >= released_at as u64 + 60_000,
+            claimed.lease.expires_ms() >= released_at as u64 + 60_000,
             "E1 mode={terminal}: {:?}",
             claimed.lease
         );
@@ -1853,7 +1857,7 @@ async fn postgres_reclaim_after_process_bound_attempt_quiesces_applies_never_rep
     AuthoritativeWallClock
         .advance_past(
             lease_a
-                .expires_ms
+                .expires_ms()
                 .max(renewal_stopped_at_ms.saturating_add(A_EXPIRY_LEASE)),
         )
         .await;
@@ -1939,7 +1943,7 @@ async fn discovery_skips_busy_thread_without_changing_exact_claim_or_epoch_autho
     .expect("D1/D2 discovery must not wait for this held Thread")
     .unwrap()
     .unwrap();
-    assert_eq!(peer.lease.run_id.0, "b-free", "D1/D2");
+    assert_eq!(peer.lease.run_id().0, "b-free", "D1/D2");
     assert!(
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -1963,7 +1967,7 @@ async fn discovery_skips_busy_thread_without_changing_exact_claim_or_epoch_autho
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(released.lease.run_id.0, "a-busy", "D3");
+    assert_eq!(released.lease.run_id().0, "a-busy", "D3");
     assert!(
         store
             .claim_is_current(&RunClaim::from(&released.lease))
@@ -2010,7 +2014,7 @@ async fn thread_locks_follow_the_resolved_dispatch_relation_not_a_search_path_pr
     .unwrap()
     .unwrap()
     .expect("N1 independent schema must progress");
-    assert_eq!(independent.lease.epoch, 1, "N1");
+    assert_eq!(independent.lease.epoch(), 1, "N1");
     assert!(
         store_a
             .claim("busy", 60_000, &Default::default())
@@ -2059,7 +2063,7 @@ async fn thread_locks_follow_the_resolved_dispatch_relation_not_a_search_path_pr
             .unwrap()
             .unwrap()
             .lease
-            .epoch,
+            .epoch(),
         1,
         "N3"
     );

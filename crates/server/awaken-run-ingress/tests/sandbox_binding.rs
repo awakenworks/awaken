@@ -82,7 +82,7 @@ async fn binding_survives_a_recovery_claim(
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(first.lease.run_id, run);
+    assert_eq!(first.lease.run_id(), &run);
     assert_eq!(first.sandbox, None, "unbound before placement");
 
     // The fleet places the run on a sandbox and records the opaque handle.
@@ -96,14 +96,14 @@ async fn binding_survives_a_recovery_claim(
 
     // The lease expires (worker-a crashed); a recovery claim re-adopts the SAME
     // sandbox — the binding is durable, so no sandbox is leaked.
-    clock.advance_past(first.lease.expires_ms).await;
-    clock.set(first.lease.expires_ms.saturating_add(1));
+    clock.advance_past(first.lease.expires_ms()).await;
+    clock.set(first.lease.expires_ms().saturating_add(1));
     let recovered = store
         .claim("worker-b", 1_000, &Default::default())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(recovered.lease.run_id, run);
+    assert_eq!(recovered.lease.run_id(), &run);
     assert_eq!(
         recovered.sandbox.as_deref(),
         Some("docker:abc123"),
@@ -120,7 +120,7 @@ async fn binding_survives_a_recovery_claim(
     // Clean up so a re-run on a shared schema starts fresh. The recovery re-claim
     // holds the current fence epoch, so settle under it.
     let _ = store
-        .settle(&run, recovered.lease.epoch, DispatchOutcome::Done, &[])
+        .settle(&run, recovered.lease.epoch(), DispatchOutcome::Done, &[])
         .await;
 }
 

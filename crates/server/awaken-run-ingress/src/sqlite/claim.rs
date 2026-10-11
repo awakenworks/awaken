@@ -329,12 +329,7 @@ pub(super) async fn claim_exact_transaction_with_mode(
     Ok(Some(Claimed {
         session_work_authority: None,
         request,
-        lease: Lease {
-            run_id: claim.run_id,
-            owner: claim.owner,
-            expires_ms: expires,
-            epoch: claim.epoch,
-        },
+        lease: DispatchLease::from_persisted(claim.run_id, claim.owner, expires, claim.epoch)?,
         credential_bindings,
         credential_deliveries: Vec::new(),
         cancellation_requested: cancellation_requested != 0,

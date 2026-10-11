@@ -20,8 +20,8 @@ pub(super) fn current(
     if row.state != DispatchState::Leased
         || row.lease_epoch != claim.epoch
         || row.lease.as_ref().is_none_or(|lease| {
-            lease.owner != claim.owner
-                || crate::clock::deadline_has_passed(Some(lease.expires_ms), now_ms)
+            lease.owner() != claim.owner
+                || crate::clock::deadline_has_passed(Some(lease.expires_ms()), now_ms)
         })
     {
         return None;

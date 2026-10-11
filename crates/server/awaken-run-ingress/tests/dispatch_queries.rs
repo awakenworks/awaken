@@ -74,7 +74,7 @@ async fn assert_bounded_query_conformance(
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(claimed.lease.run_id, id("query-c"));
+    assert_eq!(claimed.lease.run_id(), &id("query-c"));
     assert_eq!(
         store.dispatch_summary(&id("query-c")).await.unwrap(),
         store
@@ -88,8 +88,8 @@ async fn assert_bounded_query_conformance(
     assert!(
         store
             .settle(
-                &claimed.lease.run_id,
-                claimed.lease.epoch,
+                claimed.lease.run_id(),
+                claimed.lease.epoch(),
                 DispatchOutcome::Done,
                 &[]
             )

@@ -484,7 +484,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     );
     assert_eq!(
         store
-            .settle(&run, activated.lease.epoch, DispatchOutcome::Done, &[])
+            .settle(&run, activated.lease.epoch(), DispatchOutcome::Done, &[])
             .await
             .expect("SR6 complete"),
         SettleOutcome::Applied,
@@ -745,7 +745,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         store
             .settle(
                 prior.run_id(),
-                prior_claim.lease.epoch,
+                prior_claim.lease.epoch(),
                 DispatchOutcome::Awaiting,
                 &[],
             )
@@ -974,7 +974,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         .await
         .expect("SR4 repair claim")
         .expect("SR4 expired reservation");
-    assert_eq!(first_repair.lease.run_id, repair_run, "SR4/E3");
+    assert_eq!(first_repair.lease.run_id(), &repair_run, "SR4/E3");
     assert!(first_repair.session_activity_admission_required, "SR4/E4");
     assert!(first_repair.assignment.is_none(), "SR4/E4");
     assert!(first_repair.credential_bindings.is_empty(), "SR4/E4");
@@ -1007,7 +1007,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     // instant it is reclaimed through claim_new_run even though this request is
     // deliberately impossible for ordinary local execution.
     if clock.exact_boundary_is_controllable() {
-        clock.set(first_repair.lease.expires_ms - 1);
+        clock.set(first_repair.lease.expires_ms() - 1);
         assert!(
             store
                 .claim_new_run(
@@ -1022,9 +1022,9 @@ async fn session_run_reservation_is_atomic_and_recoverable(
             "SR8/E11 the repair lease is live one instant before its expiry"
         );
         // The Expiry law: from the exact expiry instant the lease has passed.
-        clock.set(first_repair.lease.expires_ms);
+        clock.set(first_repair.lease.expires_ms());
     } else {
-        clock.advance_past(first_repair.lease.expires_ms).await;
+        clock.advance_past(first_repair.lease.expires_ms()).await;
     }
     let mut repair = store
         .claim_new_run(
@@ -1039,7 +1039,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     assert!(repair.session_activity_admission_required, "SR8/E10");
     assert!(repair.assignment.is_none(), "SR8/E10");
     assert!(repair.credential_bindings.is_empty(), "SR8/E10");
-    assert!(repair.lease.epoch > first_repair.lease.epoch, "SR8/E11");
+    assert!(repair.lease.epoch() > first_repair.lease.epoch(), "SR8/E11");
     assert_eq!(
         store
             .resolve_claimed_session_run_reservation(
@@ -1161,7 +1161,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         }
         .unwrap_or_else(|error| panic!("SR8 {surface:?} claim failed: {error}"))
         .unwrap_or_else(|| panic!("SR8 {surface:?} skipped admission-only repair"));
-        assert_eq!(claimed.lease.run_id, repair_run, "SR8/E10 {surface:?}");
+        assert_eq!(claimed.lease.run_id(), &repair_run, "SR8/E10 {surface:?}");
         assert!(
             claimed.session_activity_admission_required,
             "SR8/E10 {surface:?}"
@@ -1215,7 +1215,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     store
         .settle(
             &repair_run,
-            repaired.lease.epoch,
+            repaired.lease.epoch(),
             DispatchOutcome::Done,
             &[],
         )
@@ -1240,7 +1240,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         .await
         .expect("SR5 rejection claim")
         .expect("SR5 rejection reservation");
-    assert_eq!(rejected.lease.run_id, rejected_run, "SR5/E7");
+    assert_eq!(rejected.lease.run_id(), &rejected_run, "SR5/E7");
     assert_eq!(
         store
             .resolve_claimed_session_run_reservation(
@@ -1347,7 +1347,7 @@ async fn current_claim_guard_is_exact(
             .expect("stale current-claim query"),
         "a stale epoch is never current"
     );
-    clock.set(claimed.lease.expires_ms - 1);
+    clock.set(claimed.lease.expires_ms() - 1);
     assert!(
         store
             .claim_is_current(&current)
@@ -1364,9 +1364,9 @@ async fn current_claim_guard_is_exact(
         Some(&current),
         "the exact Worker incarnation receives the live claim"
     );
-    clock.advance_past(claimed.lease.expires_ms).await;
+    clock.advance_past(claimed.lease.expires_ms()).await;
     // At its exact expiry instant (a controllable clock) the claim has expired.
-    clock.set(claimed.lease.expires_ms);
+    clock.set(claimed.lease.expires_ms());
     assert!(
         !store
             .claim_is_current(&current)
@@ -1497,8 +1497,8 @@ async fn sandbox_binding_survives_recovery(
         .await
         .expect("bind sandbox");
     assert_eq!(bound, SettleOutcome::Applied, "current claim binds sandbox");
-    clock.advance_past(first.lease.expires_ms).await;
-    clock.set(first.lease.expires_ms.saturating_add(1));
+    clock.advance_past(first.lease.expires_ms()).await;
+    clock.set(first.lease.expires_ms().saturating_add(1));
     let recovered = store
         .claim_run(&run, "conformance-sandbox-b", LEASE_MS, &Default::default())
         .await
@@ -1508,7 +1508,7 @@ async fn sandbox_binding_survives_recovery(
     assert!(recovered.recovered);
     assert_eq!(
         store
-            .settle(&run, recovered.lease.epoch, DispatchOutcome::Done, &[],)
+            .settle(&run, recovered.lease.epoch(), DispatchOutcome::Done, &[],)
             .await
             .expect("settle sandbox run"),
         SettleOutcome::Applied
@@ -1557,7 +1557,7 @@ async fn completion_is_atomic_and_prevents_resurrection(
         store
             .settle(
                 &awaiting,
-                awaiting_claim.lease.epoch,
+                awaiting_claim.lease.epoch(),
                 DispatchOutcome::Awaiting,
                 &[],
             )
@@ -1601,7 +1601,7 @@ async fn completion_is_atomic_and_prevents_resurrection(
         store
             .settle(
                 &done,
-                claim.lease.epoch.saturating_sub(1),
+                claim.lease.epoch().saturating_sub(1),
                 DispatchOutcome::Done,
                 &[],
             )
@@ -1620,7 +1620,7 @@ async fn completion_is_atomic_and_prevents_resurrection(
 
     assert_eq!(
         store
-            .settle(&done, claim.lease.epoch, DispatchOutcome::Done, &[])
+            .settle(&done, claim.lease.epoch(), DispatchOutcome::Done, &[])
             .await
             .expect("apply completion settle"),
         SettleOutcome::Applied
@@ -1636,7 +1636,7 @@ async fn completion_is_atomic_and_prevents_resurrection(
     // Done from a failed response. Retrying the same or an older claim must
     // observe a retired authority, retain the exact completion fact, and never
     // create another physical execution or duplicate completion.
-    for epoch in [claim.lease.epoch, claim.lease.epoch.saturating_sub(1)] {
+    for epoch in [claim.lease.epoch(), claim.lease.epoch().saturating_sub(1)] {
         assert_eq!(
             store
                 .settle(&done, epoch, DispatchOutcome::Done, &[])
