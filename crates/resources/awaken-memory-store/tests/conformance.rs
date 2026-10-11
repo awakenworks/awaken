@@ -235,28 +235,14 @@ mod postgres {
     use sqlx::Executor;
     use sqlx::postgres::{PgPool, PgPoolOptions};
 
-    fn database_url() -> String {
-        std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
-        })
-    }
-
     async fn schema_pool(schema: &'static str) -> Option<PgPool> {
-        let admin = match PgPoolOptions::new()
+        let url = awaken_reliability_testkit::postgres_fixture_url()?;
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
             .acquire_timeout(std::time::Duration::from_secs(3))
-            .connect(&database_url())
+            .connect(&url)
             .await
-        {
-            Ok(pool) => pool,
-            Err(err) => {
-                assert!(
-                    std::env::var_os("AWAKEN_TEST_DATABASE_URL").is_none(),
-                    "explicit Postgres test endpoint must be reachable: {err}"
-                );
-                println!("[skip] no Postgres reachable: {err}");
-                return None;
-            }
-        };
+            .expect("configured Memory PostgreSQL fixture must connect");
         // Harness rule PG-H: parallel/repeated runs must never drop another
         // test's schema. Allocate a fresh namespace; an explicit endpoint that
         // fails connection/setup is a failed gate, never a successful skip.
@@ -271,6 +257,7 @@ mod postgres {
             .expect("create schema");
         admin.close().await;
         PgPoolOptions::new()
+            .max_connections(4)
             .after_connect(move |conn, _meta| {
                 let schema = schema.clone();
                 Box::pin(async move {
@@ -279,10 +266,17 @@ mod postgres {
                     Ok(())
                 })
             })
-            .connect(&database_url())
+            .connect(&url)
             .await
             .map(Some)
             .expect("connect to the newly created Postgres test schema")
+    }
+
+    #[test]
+    fn fixture_absence_and_configured_failure_are_distinct() {
+        awaken_reliability_testkit::assert_postgres_fixture_child_contract(
+            "postgres::postgres_memory_repository_conforms",
+        );
     }
 
     #[tokio::test]

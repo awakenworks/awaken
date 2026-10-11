@@ -28,6 +28,7 @@ awaken-scoped-migration = { workspace = true, features = ["postgres", "sqlite"] 
 awaken-sqlite-pool.workspace = true
 
 [dev-dependencies]
+awaken-reliability-testkit.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 tempfile = "3"
 awaken-runtime-contract.workspace = true

@@ -449,6 +449,8 @@ async fn filesystem_processes_do_not_lose_a_concurrent_version() {
     let spawn = |name: &str| {
         let ready = directory.path().join(format!("ready-{name}"));
         let result = directory.path().join(format!("result-{name}"));
+        let output_path = directory.path().join(format!("output-{name}.log"));
+        let output = std::fs::File::create(&output_path).unwrap();
         let child = std::process::Command::new(&executable)
             .arg("--exact")
             .arg("filesystem_process_append_helper")
@@ -457,12 +459,17 @@ async fn filesystem_processes_do_not_lose_a_concurrent_version() {
             .env("AWAKEN_SKILL_PROCESS_MARKER", name)
             .env("AWAKEN_SKILL_PROCESS_READY", &ready)
             .env("AWAKEN_SKILL_PROCESS_RESULT", &result)
+            // The helper's libtest stream must not masquerade as the parent's
+            // named outcomes. File redirection avoids pipe capacity deadlocks
+            // and retains diagnostics for the actual child-status assertion.
+            .stdout(output.try_clone().unwrap())
+            .stderr(output)
             .spawn()
             .unwrap();
-        (child, ready, result)
+        (child, ready, result, output_path)
     };
-    let (mut left, left_ready, left_result) = spawn("left");
-    let (mut right, right_ready, right_result) = spawn("right");
+    let (mut left, left_ready, left_result, left_output) = spawn("left");
+    let (mut right, right_ready, right_result, right_output) = spawn("right");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while !(left_ready.exists() && right_ready.exists()) {
         assert!(
@@ -472,8 +479,16 @@ async fn filesystem_processes_do_not_lose_a_concurrent_version() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     std::fs::write(directory.path().join("go"), b"go").unwrap();
-    assert!(left.wait().unwrap().success());
-    assert!(right.wait().unwrap().success());
+    assert!(
+        left.wait().unwrap().success(),
+        "{}",
+        std::fs::read_to_string(left_output).unwrap()
+    );
+    assert!(
+        right.wait().unwrap().success(),
+        "{}",
+        std::fs::read_to_string(right_output).unwrap()
+    );
     let outcomes = [
         std::fs::read_to_string(left_result).unwrap(),
         std::fs::read_to_string(right_result).unwrap(),
@@ -570,21 +585,25 @@ mod postgres {
             .connect(&url)
             .await
             .expect("configured PostgreSQL must be reachable");
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let schema = format!("t_skill_{}_{nonce:x}", std::process::id());
         admin
-            .execute("DROP SCHEMA IF EXISTS t_skill CASCADE")
-            .await
-            .expect("reset owned test schema");
-        admin
-            .execute("CREATE SCHEMA t_skill")
+            .execute(format!("CREATE SCHEMA {schema}").as_str())
             .await
             .expect("create owned test schema");
         admin.close().await;
         Some(
             PgPoolOptions::new()
                 .max_connections(4)
-                .after_connect(|connection, _| {
+                .after_connect(move |connection, _| {
+                    let schema = schema.clone();
                     Box::pin(async move {
-                        connection.execute("SET search_path = t_skill").await?;
+                        connection
+                            .execute(format!("SET search_path = {schema}").as_str())
+                            .await?;
                         Ok(())
                     })
                 })
@@ -592,6 +611,13 @@ mod postgres {
                 .await
                 .expect("configured schema connection must succeed"),
         )
+    }
+
+    #[test]
+    fn fixture_absence_and_configured_failure_are_distinct() {
+        awaken_reliability_testkit::assert_postgres_fixture_child_contract(
+            "postgres::postgres_conforms",
+        );
     }
 
     #[tokio::test]
