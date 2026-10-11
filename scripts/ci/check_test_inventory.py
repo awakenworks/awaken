@@ -203,7 +203,99 @@ def selftest() -> None:
         assert current_inventory(root) == Counter(
             {"moved": 1, "unit_case": 1, "integration_case": 1}
         ), "T12/T13/T14"
+    _selftest_cli_snapshot()
     print("check_test_inventory selftest: the decision table holds")
+
+
+def _selftest_cli_snapshot() -> None:
+    """One held/current/ledger snapshot through the real CLI.
+
+    Current reachable tests -> held multiset -> ledger -> missing() -> report
+    or render. A second read must not replace the record already checked.
+
+    Rule | causes                                     | effects
+    I1   | equal held/current; later read would differ | one read; report the validated held count
+    I2   | extra current name; check / explicit write  | no write / record sorted current multiset
+    I3   | missing held occurrence, no ledger         | refuse both modes, original bytes intact
+    I4   | removed reason / rename target exists      | original name-based authorization retained
+    I5   | absent inventory, check / explicit write   | old empty-floor behavior / initialization
+    I6   | unknown or abbreviated argument            | usage before any record or source read
+    Original T1-T14 own scanner, multiplicity and ledger decisions.
+    """
+    import contextlib
+    import io
+    from unittest.mock import patch
+
+    collector, load, ledger_load = current_inventory, read_inventory, read_ledger
+    original_read = Path.read_text
+
+    def invoke(argv, held="retained\n", source="#[test] fn retained() {}\n", ledger=None):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            crate = root / "crates/fixture"
+            (crate / "src").mkdir(parents=True)
+            (crate / "Cargo.toml").write_text('[package]\nname="fixture"\n')
+            (crate / "src/lib.rs").write_text(source)
+            record, decision = root / "inventory.txt", root / "ledger.json"
+            if held is not None:
+                record.write_text(held)
+            decision.write_text(json.dumps(ledger or {"removed": {}, "renamed": {}}))
+            before = record.read_bytes() if record.exists() else None
+            reads, calls = [], []
+
+            def read(path, *args, **kwargs):
+                if path == record:
+                    reads.append(path)
+                    # I1 a second, unvalidated snapshot would falsely report
+                    # 100 preserved occurrences that the real source lacks.
+                    if len(reads) > 1:
+                        return "unvalidated\n" * 100
+                return original_read(path, *args, **kwargs)
+
+            def current():
+                calls.append("current")
+                return collector(root)
+
+            def recorded():
+                calls.append("recorded")
+                return load(record)
+
+            def decisions():
+                calls.append("ledger")
+                return ledger_load(decision)
+
+            output = io.StringIO()
+            with patch.dict(main.__globals__, {"INVENTORY": record, "ROOT": root,
+                    "current_inventory": current, "read_inventory": recorded, "read_ledger": decisions}), \
+                    patch.object(Path, "read_text", read), \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+                try:
+                    status = main(argv)
+                except SystemExit as error:
+                    status = error.code
+            after = record.read_bytes() if record.exists() else None
+            assert len(reads) <= 1 and calls in ([], ["current", "recorded", "ledger"]), "I1/I6 one input sequence"
+            return status, before, after, output.getvalue(), calls
+
+    status, before, after, output, _ = invoke([])
+    assert status == 0 and before == after and "all 1 recorded" in output, "I1 validated held report"
+    added = "#[test] fn retained() {}\n#[test] fn fresh() {}\n"
+    status, before, after, output, _ = invoke([], source=added)
+    assert status == 0 and before == after and "all 1 recorded" in output, "I2 new tests need no write"
+    status, _, after, _, _ = invoke(["--write"], source=added)
+    assert status == 0 and after == b"fresh\nretained\n", "I2 existing TXT renderer"
+    for argv in ([], ["--write"]):
+        status, before, after, _, _ = invoke(argv, held="lost\n")
+        assert status == 1 and before == after, "I3 unaccounted loss cannot write"
+        for ledger in ({"removed": {"lost": "covered by retained"}, "renamed": {}},
+                       {"removed": {}, "renamed": {"lost": "retained"}}):
+            status, _, after, _, _ = invoke(argv, held="lost\nlost\n", ledger=ledger)
+            assert status == 0 and after == (b"retained\n" if argv else b"lost\nlost\n"), "I4 original ledger name scope"
+        status, before, after, _, _ = invoke(argv, held=None)
+        assert status == 0 and before is None and after == (b"retained\n" if argv else None), "I5 original missing floor"
+    for argv in (["--unknown"], ["--w"]):
+        status, before, after, _, calls = invoke(argv)
+        assert status == 2 and before == after and not calls, "I6 parser before inputs"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -219,7 +311,8 @@ def main(argv: list[str] | None = None) -> int:
         selftest()
         return 0
     current = current_inventory()
-    errors = missing(read_inventory(), current, read_ledger())
+    recorded = read_inventory()
+    errors = missing(recorded, current, read_ledger())
     if errors:
         for error in errors:
             print(f"ERROR: {error}", file=sys.stderr)
@@ -228,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
         INVENTORY.write_text(render(current), encoding="utf-8")
         print(f"wrote {INVENTORY.relative_to(ROOT)}: {sum(current.values())} tests")
         return 0
-    print(f"OK - all {sum(read_inventory().values())} recorded Rust tests still exist.")
+    print(f"OK - all {sum(recorded.values())} recorded Rust tests still exist.")
     return 0
 
 
