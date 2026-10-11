@@ -44,6 +44,7 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct StdioTransport {
     peer: JsonRpcPeer,
     timeout: Duration,
+    tool_call_timeout: Duration,
     /// The child is kept alive here (its stdio is owned by the peer's tasks);
     /// `kill_on_drop` reaps it when this transport is dropped.
     child: Option<Mutex<Child>>,
@@ -177,6 +178,7 @@ impl StdioTransport {
         let transport = Self {
             peer,
             timeout,
+            tool_call_timeout: timeout,
             child: child.map(Mutex::new),
             sinks,
             next_progress_token: AtomicI64::new(1),
@@ -221,6 +223,13 @@ impl StdioTransport {
     /// Whether the connection is still open.
     pub fn is_alive(&self) -> bool {
         self.peer.is_alive()
+    }
+
+    /// Select an execution deadline without extending handshake/discovery or
+    /// task-observation deadlines. The caller remains the budget authority.
+    pub fn tool_call_timeout(mut self, timeout: Duration) -> Self {
+        self.tool_call_timeout = timeout;
+        self
     }
 
     /// Terminate the child process.
@@ -269,7 +278,11 @@ impl McpToolTransport for StdioTransport {
         };
         let result = self
             .peer
-            .request("tools/call", serde_json::to_value(&params)?, self.timeout)
+            .request(
+                "tools/call",
+                serde_json::to_value(&params)?,
+                self.tool_call_timeout,
+            )
             .await?;
         // Preserve the raw result — including `isError` — so the three-state
         // mapping in `McpRawTool` stays intact.
@@ -295,7 +308,11 @@ impl McpToolTransport for StdioTransport {
         };
         let result = self
             .peer
-            .request("tools/call", serde_json::to_value(&params)?, self.timeout)
+            .request(
+                "tools/call",
+                serde_json::to_value(&params)?,
+                self.tool_call_timeout,
+            )
             .await;
         self.sinks.progress.lock().await.remove(&token);
         let call_result: CallToolResult = serde_json::from_value(result?)?;
@@ -329,7 +346,11 @@ impl McpToolTransport for StdioTransport {
         };
         let result = self
             .peer
-            .request("tools/call", serde_json::to_value(&params)?, self.timeout)
+            .request(
+                "tools/call",
+                serde_json::to_value(&params)?,
+                self.tool_call_timeout,
+            )
             .await?;
         Ok(serde_json::from_value(result)?)
     }
@@ -423,6 +444,120 @@ impl McpToolTransport for StdioTransport {
 mod stream_tests {
     use super::*;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    struct GatedRequests {
+        gate: Arc<tokio::sync::Notify>,
+        seen: mpsc::UnboundedSender<String>,
+    }
+
+    #[async_trait]
+    impl ServerRequestHandler for GatedRequests {
+        async fn handle(
+            &self,
+            _id: &Value,
+            method: &str,
+            params: Value,
+        ) -> Result<Value, crate::jsonrpc::ServerRequestError> {
+            if method == "initialize" {
+                return Ok(serde_json::json!({
+                    "protocolVersion":"2025-06-18", "serverInfo":{"name":"budget","version":"1"},
+                    "capabilities":{"tasks":{"requests":{"tools":{"call":{}}},"cancel":{}}}
+                }));
+            }
+            self.seen.send(method.to_owned()).unwrap();
+            self.gate.notified().await;
+            Ok(match method {
+                "tools/call" if params.get("task").is_some() => serde_json::json!({
+                    "task":{"taskId":"task-1","status":"working","createdAt":"2026-01-01T00:00:00Z","lastUpdatedAt":"2026-01-01T00:00:00Z","ttl":null}
+                }),
+                "tools/call" => serde_json::json!({"content":[{"type":"text","text":"returned"}]}),
+                "tools/list" => serde_json::json!({"tools":[]}),
+                _ => return Err(crate::jsonrpc::ServerRequestError::method_not_found(method)),
+            })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn tool_budgets_apply_to_all_call_modes_without_extending_control() {
+        // Decision table: B1 no override => every request retains the supplied
+        // control deadline; B2 override + plain/progress/task tools/call =>
+        // survives the shorter control boundary, then returns exactly once;
+        // B3 override + tools/list => original control timeout. B4 tool budget
+        // expires => Timeout, never an invented return/termination receipt.
+        // Both ends use the canonical JsonRpcPeer over real duplex bytes;
+        // virtual time exposes policy selection without wall-clock sleeps.
+        for overridden in [false, true] {
+            for mode in ["plain", "progress", "task", "control", "expired"] {
+                let (client, server) = tokio::io::duplex(64 * 1024);
+                let gate = Arc::new(tokio::sync::Notify::new());
+                let (seen, mut received) = mpsc::unbounded_channel();
+                let (reader, writer) = tokio::io::split(server);
+                let (_server_peer, _notifications) = JsonRpcPeer::new(
+                    reader,
+                    writer,
+                    Some(Arc::new(GatedRequests {
+                        gate: gate.clone(),
+                        seen,
+                    })),
+                );
+                let transport =
+                    StdioTransport::connect_stream(client, None, Duration::from_millis(10), None)
+                        .await
+                        .unwrap();
+                let transport = if overridden {
+                    transport.tool_call_timeout(Duration::from_millis(100))
+                } else {
+                    transport
+                };
+                let mut call = Box::pin(async {
+                    match mode {
+                        "control" => transport.list_tools().await.map(|_| ()),
+                        "task" => transport
+                            .call_tool_as_task("echo", Value::Null, None)
+                            .await
+                            .map(|_| ()),
+                        "progress" => {
+                            let (tx, _rx) = mpsc::channel(1);
+                            transport
+                                .call_tool_with_progress("echo", Value::Null, tx)
+                                .await
+                                .map(|_| ())
+                        }
+                        _ => transport.call_tool("echo", Value::Null).await.map(|_| ()),
+                    }
+                });
+                tokio::select! {
+                    result = &mut call => panic!("request returned before its gated peer: {result:?}"),
+                    method = received.recv() => assert_eq!(method.unwrap(), if mode == "control" {"tools/list"} else {"tools/call"}),
+                }
+                tokio::time::advance(Duration::from_millis(if mode == "expired" {
+                    101
+                } else {
+                    20
+                }))
+                .await;
+                if overridden && mode != "control" && mode != "expired" {
+                    tokio::select! { biased;
+                        result = &mut call => panic!("tool call used the control deadline: {result:?}"),
+                        _ = tokio::task::yield_now() => {}
+                    }
+                    gate.notify_one();
+                    call.await
+                        .expect("B2 original request returns within its tool budget");
+                } else {
+                    assert!(
+                        matches!(call.await, Err(McpTransportError::Timeout(_))),
+                        "B1/B3/B4"
+                    );
+                    gate.notify_one();
+                }
+                assert!(
+                    received.try_recv().is_err(),
+                    "no duplicate request or implicit retry"
+                );
+            }
+        }
+    }
 
     #[tokio::test]
     async fn attached_duplex_stream_drives_the_same_mcp_client() {
