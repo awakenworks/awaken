@@ -167,14 +167,16 @@ _PUBLIC_TYPE = re.compile(r"\bpub\s+(?:unsafe\s+)?(?:struct|enum|trait|type)\s+(
 def target_map_errors(contracts: set[str], target_map=TARGET_MAP) -> list[str]:
     merging = {crate: target for target, (_boundary, pending) in target_map.items() for crate in pending}
     errors = [
-        f"target-map: {crate} is a contract crate that is not on the target map; a contract crate is one boundary "
-        f"(ADR-0091 D2): add the code to the target contract of its boundary, or record the new boundary in "
-        f"TARGET_MAP of {Path(__file__).name} with its plan section"
+        _architecture_ratchet.diagnostic(
+            "target-map", crate, "listed boundary", "unlisted contract",
+            f"add the code to the target contract of its boundary, or record the new boundary in "
+            f"{Path(__file__).name}::TARGET_MAP with its plan section (ADR-0091 D2)")
         for crate in sorted(contracts - set(target_map) - set(merging))
     ]
     errors += [
-        f"target-map: {crate} merged into {merging[crate]} and is no longer a crate; remove it from TARGET_MAP "
-        "in this commit"
+        _architecture_ratchet.diagnostic(
+            "target-map", crate, "pending merge", "absent crate",
+            f"remove its completed merge into {merging[crate]} from {Path(__file__).name}::TARGET_MAP in this commit")
         for crate in sorted(set(merging) - contracts)
     ]
     return errors
@@ -305,11 +307,12 @@ def fat_trait_errors(counts: Counts, baseline: dict) -> list[str]:
     recorded = baseline.get("fat-trait", {})
     grown = baseline.get("growth_reasons", {}).get("fat-trait", {})
     return [
-        f"fat-trait: {name} declares {methods} methods, above {FAT_TRAIT_METHODS}"
-        + (" and its count was raised with --reason" if name in grown else ", and no baseline records it")
-        + "; a trait serves one caller role (ADR-0091 D4): split it by caller -- --reason cannot admit it"
+        _architecture_ratchet.diagnostic(
+            "fat-trait", name, recorded.get(name, FAT_TRAIT_METHODS), methods,
+            "split it by caller (ADR-0091 D4); --reason cannot admit it",
+            details="growth reason recorded" if name in grown else "unrecorded" if name not in recorded else "recorded count grew")
         for name, methods in sorted(counts.get("fat-trait", {}).items())
-        if name not in recorded or name in grown
+        if name not in recorded or name in grown or methods > recorded[name]
     ]
 
 
@@ -447,16 +450,18 @@ def hard_errors(counts: Counts, contracts: set[str], baseline: dict) -> list[str
     return target_map_errors(contracts) + fat_trait_errors(counts, baseline)
 
 
-def _workspace_hard_errors() -> list[str]:
+def _workspace_hard_errors(previous: dict) -> list[str]:
     counts, _places, contracts = _workspace()
-    return hard_errors(counts, contracts, json.loads(BASELINE.read_text(encoding="utf-8")))
+    return hard_errors(counts, contracts, previous)
 
 
 def check_all(crates: Path, baseline_path: Path = BASELINE) -> list[str]:
     counts, places, contracts = _workspace(crates)
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
     errors = hard_errors(counts, contracts, baseline)
-    errors += _architecture_ratchet.compare(RULES, counts, places, baseline, baseline_path.name)
+    errors += _architecture_ratchet.compare(
+        RULES, counts, places, baseline, baseline_path.name,
+        lower_advice=f"python3 scripts/ci/{Path(__file__).name} --tighten to lower {baseline_path.name} in this commit")
     return [f"contract-map: {error}" for error in errors]
 
 
@@ -500,8 +505,8 @@ def selftest() -> None:
     """
     pending = {"t": ("b", ("old",))}
     assert target_map_errors({"t", "old"}, pending) == [], "T1"
-    assert "not on the target map" in target_map_errors({"t", "old", "new"}, pending)[0], "T2"
-    assert "remove it from TARGET_MAP" in target_map_errors({"t"}, pending)[0], "T3"
+    assert "listed boundary -> unlisted contract" in target_map_errors({"t", "old", "new"}, pending)[0], "T2"
+    assert "pending merge -> absent crate" in target_map_errors({"t"}, pending)[0], "T3"
     merging = [crate for _boundary, merged in TARGET_MAP.values() for crate in merged]
     # Plan 9.14 listed 12 pending merges; each landed merge removes its entry.
     assert len(TARGET_MAP) == 26 and len(merging) == len(set(merging)) <= 12, "T4"
@@ -547,6 +552,7 @@ def selftest() -> None:
     _selftest_duplicate_types()
     _selftest_reexports()
     _selftest_aggregate_fields()
+    _selftest_baseline_snapshot()
     print("_contract_map_fitness selftest: the decision tables hold")
 
 
@@ -556,6 +562,9 @@ def _crate(name: str, layer: str, context: str | None, code: str) -> _architectu
 
 
 def _selftest_fat_traits() -> None:
+    # D7: unheld trait / existing growth reason -> original hard admission
+    # failure, independently of its numeric relation. Explicit metadata state
+    # and the caller-role fix must never suggest --reason can authorize it.
     methods = "".join(f"    fn m{index}(&self);\n" for index in range(11))
     nested = "    fn last(&self) -> u8 { fn helper() -> u8 { 1 } let f: fn(u8) = drop; helper() }\n"
     code = (f"pub trait Wide {{\n{methods}{nested}    fn extra(&self);\n}}\n"
@@ -566,9 +575,24 @@ def _selftest_fat_traits() -> None:
     assert counts["fat-trait"] == {"Wide": 13} and places["fat-trait"]["Wide"] == ["c/src/lib.rs:1"], f"F1/F2 {counts}"
     assert fat_trait_errors(counts, {"fat-trait": {"Wide": 13}}) == [] and contracts == {"c"}, "F3"
     unrecorded = fat_trait_errors(counts, {"fat-trait": {}})
-    assert len(unrecorded) == 1 and "no baseline records it" in unrecorded[0] and "--reason" in unrecorded[0], "F4"
+    assert len(unrecorded) == 1 and "fat-trait: Wide 12 -> 13" in unrecorded[0] and "unrecorded" in unrecorded[0] \
+        and "--reason" in unrecorded[0], "F4"
     reasoned = fat_trait_errors(counts, {"fat-trait": {"Wide": 13}, "growth_reasons": {"fat-trait": {"Wide": "x"}}})
-    assert len(reasoned) == 1 and "raised with --reason" in reasoned[0], "F4 reason"
+    assert len(reasoned) == 1 and "growth reason recorded" in reasoned[0], "F4 reason"
+    assert "--reason cannot admit it" in reasoned[0], "D7 hard admission has no reasoned bypass"
+    # D10 admission table: unrecorded OR prior growth-reason key OR incoming
+    # count above held -> hard error. Equal/fall keep the original admission;
+    # numeric fall recording remains the shared CLI's separate decision.
+    for held, reasons, expected in (({}, {}, (True, True, True)),
+                                   ({"Wide": 14}, {}, (False, False, True)),
+                                   ({"Wide": 14}, {"Wide": "reviewed"}, (True, True, True)),
+                                   ({"Wide": 14}, {"Wide": ""}, (True, True, True))):
+        for methods, failed in zip((13, 14, 15), expected):
+            previous = {"fat-trait": held, "growth_reasons": {"fat-trait": reasons}}
+            errors = fat_trait_errors({"fat-trait": {"Wide": methods}}, previous)
+            assert bool(errors) == failed, "D10 original admission plus incoming growth"
+            if errors:
+                assert len(errors) == 1 and "--reason cannot admit it" in errors[0], "D10 intersecting hard causes stay one finding"
 
 
 def _selftest_duplicate_types() -> None:
@@ -632,7 +656,7 @@ def _selftest_aggregate_fields() -> None:
     assert _architecture_ratchet.compare(rules, counts, places, held, "b.json") == [], "A5 equal"
     grown = _architecture_ratchet.compare(rules, {"aggregate-pub-field": {"State": 4, "Pair": 1, "New": 1}}, places,
                                           held, "b.json")
-    assert len(grown) == 2 and all("baseline" in error and "make the field private" in error for error in grown), \
+    assert len(grown) == 2 and all(" -> " in error and "make the field private" in error for error in grown), \
         f"A5 growth {grown}"
     fell = _architecture_ratchet.compare(rules, {"aggregate-pub-field": {"State": 2}}, places, held, "b.json")
     assert len(fell) == 2 and all("lower b.json" in error for error in fell), f"A5 fall {fell}"
@@ -668,6 +692,105 @@ def _selftest_persistence_ports() -> None:
         "MemoryStore <- host": 1}, f"P1-P6 {counts['foreign-persistence-port']}"
     assert places["foreign-persistence-port"]["MemoryStore <- edge"] == ["edge/src/lib.rs:1"], "P1 where"
 
+
+
+def _selftest_baseline_snapshot() -> None:
+    """D10 graph: parsed mode -> one original record -> cached measurement.
+
+    Unrecorded / previous growth reason / incoming growth -> hard refusal
+    before rendering, independently of reason/first-record mode. A hypothetical
+    second record cannot change that authority. Existing equal/fall behavior
+    remains with the shared numeric check and writer.
+
+    Rule | cause                                       | effect
+    D10a | first hard, hypothetical second admits      | refuse, 1 read/1 measurement, exact bytes
+    D10b | first admits, hypothetical second hard      | accept, 1 read/1 measurement, exact bytes
+    D10c | unrecorded or held13 ->14; all modes/reason   | hard refusal, no candidate write
+    D10d | held13 equal / held14 falls to13            | equal unchanged / original tighten/write lower
+    D10e | missing record + explicit write zero / fat  | initialize zero / refuse fat, no reader
+    D10f | malformed argv or missing readonly record   | refuse before reads/measurement
+
+    Execute this module's actual __main__ block. The fixture controls source
+    measurements, while the real cached _workspace and Path.read_text run;
+    this distinguishes duplicate record IO from cached corpus acquisition.
+    """
+    import ast
+    import contextlib
+    import io
+    import tempfile
+    from unittest.mock import patch
+
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    entry = next(node for node in tree.body if isinstance(node, ast.If)
+                 and ast.unparse(node.test) == "__name__ == '__main__'")
+    entry_code = compile(ast.Module(body=[entry], type_ignores=[]), __file__, "exec")
+    held = {"owner": "baseline-owner", "foreign": {"keep": [1, 2]}, "fat-trait": {"Wide": 13}}
+    reasoned = {**held, "growth_reasons": {"fat-trait": {"Wide": "previous inadmissible growth"}}}
+    contracts = set(TARGET_MAP) | {name for _, pending in TARGET_MAP.values() for name in pending}
+    original_read = Path.read_text
+
+    def invoke(argv, previous=held, hypothetical=reasoned, count=13):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "baseline.json"
+            if previous is not None:
+                path.write_text(json.dumps(previous) + "\n")
+            before = path.read_bytes() if path.exists() else None
+            reads, measured = [], []
+            def read(target, *args, **kwargs):
+                if target == path:
+                    reads.append(target)
+                    return json.dumps(previous if len(reads) == 1 else hypothetical)
+                return original_read(target, *args, **kwargs)
+            def measure_fixture(_sources, _root):
+                measured.append(True)
+                return ({"fat-trait": {"Wide": count}} if count else {}), {}, contracts
+            output, errors = io.StringIO(), io.StringIO()
+            _workspace.cache_clear()
+            with patch.dict(globals(), {"__name__": "__main__", "BASELINE": path, "measure": measure_fixture}), \
+                    patch.object(_architecture_ratchet, "crate_sources", lambda _crates: ()), \
+                    patch.object(Path, "read_text", read), patch.object(sys, "argv", [__file__, *argv]), \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                try:
+                    exec(entry_code, globals())
+                except SystemExit as error:
+                    status = error.code
+            _workspace.cache_clear()
+            after = path.read_bytes() if path.exists() else None
+            assert len(reads) <= 1 and len(measured) <= 1, "D10 one record and cached workspace snapshot"
+            return status, before, after, reads, measured, errors.getvalue()
+
+    modes = ([], ["--check"], ["--tighten"], ["--write-baseline"], ["--write-baseline", "--reason", "reviewed"])
+    # Prepare a normalized, hard-valid record through the existing writer.
+    # Partial fixture records otherwise legitimately gain its empty rule slots
+    # and owning comment; that is not a change to the equal-count policy.
+    status, _, after, _, _, _ = invoke(["--write-baseline"])
+    assert status == 0
+    equal = json.loads(after)
+    assert equal["owner"] == held["owner"] and equal["foreign"] == held["foreign"]
+    for argv in modes:
+        for previous, count in ((reasoned, 13), ({**held, "fat-trait": {}}, 13),
+                                ({"owner": "baseline-owner"}, 13), (held, 14)):
+            status, before, after, reads, measured, errors = invoke(argv, previous, held, count)
+            assert status == 1 and before == after and len(reads) == len(measured) == 1 \
+                and "--reason cannot admit it" in errors, "D10a/c previous hard authority cannot be replaced by a candidate"
+        status, before, after, reads, measured, _ = invoke(argv, equal)
+        assert status == 0 and before == after and len(reads) == len(measured) == 1, "D10b/d equal authority, no second record"
+    fallen = {**equal, "fat-trait": {"Wide": 14}}
+    for argv in modes:
+        status, before, after, reads, measured, _ = invoke(argv, fallen)
+        assert len(reads) == len(measured) == 1
+        if argv in ([], ["--check"]):
+            assert status == 1 and before == after, "D10d original shared fall requires recording"
+        else:
+            assert status == 0 and json.loads(after)["fat-trait"] == {"Wide": 13}, "D10d original fall records"
+    for argv in (["--write-baseline"], ["--write-baseline", "--reason", "first record"]):
+        for count, expected in ((0, 0), (13, 1)):
+            status, before, after, reads, measured, _ = invoke(argv, None, held, count)
+            assert status == expected and before is None and not reads and measured, "D10e absent record hard authority"
+            assert (after is not None) == (expected == 0), "D10e only a hard-valid first record is written"
+    for argv, previous in ((["--unknown"], held), ([], None), (["--tighten"], None)):
+        status, before, after, reads, measured, _ = invoke(argv, previous)
+        assert status in (1, 2) and before == after and not reads and not measured, "D10f admission before IO"
 
 
 if __name__ == "__main__":

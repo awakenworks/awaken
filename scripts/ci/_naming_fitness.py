@@ -136,7 +136,9 @@ def check_all(crates: Path, baseline_path: Path = BASELINE) -> list[str]:
     counts, places = _measure_workspace(crates)
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
     return [f"naming: {error}"
-            for error in _architecture_ratchet.compare(RULES, counts, places, baseline, baseline_path.name)]
+            for error in _architecture_ratchet.compare(
+                RULES, counts, places, baseline, baseline_path.name,
+                lower_advice=f"python3 scripts/ci/{Path(__file__).name} --tighten to lower {baseline_path.name} in this commit")]
 
 
 def selftest() -> None:

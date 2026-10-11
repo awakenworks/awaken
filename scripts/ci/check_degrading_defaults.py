@@ -404,18 +404,23 @@ def fail_open_read_violations(sources: dict[str, str]) -> dict[str, list[str]]:
 
 
 def fail_open_read_errors(sources: dict[str, str]) -> list[str]:
-    """Keep the original per-file limit and independent stale-file rule."""
+    """Keep the original per-file limit and independent stale-file rule.
+
+    D2/D8: B1-B3 cross hard stale/equal/grow/fall and per-file cancellation;
+    formatting the explicit stale state cannot add it to actual debt.
+    """
     findings = fail_open_read_violations(sources)
     rule = RULES[1]
-    hard = [f"{rule.name}: {path} registered -> missing; FAIL_OPEN_READ_EXEMPTIONS names {path}, "
-            "which no longer defaults a fallible read; fix: remove its stale decision from FAIL_OPEN_READ_EXEMPTIONS"
+    hard = [_architecture_ratchet.diagnostic(
+                rule.name, path, "registered", "missing", "remove its stale decision from FAIL_OPEN_READ_EXEMPTIONS",
+                details=f"FAIL_OPEN_READ_EXEMPTIONS names {path}, which no longer defaults a fallible read")
             for path in sorted(FAIL_OPEN_READ_EXEMPTIONS)
             if path not in sources or not FAIL_OPEN_READ.search(sources[path])]
     return hard + _architecture_ratchet.compare(
         (rule,), {rule.name: {path: len(hits) for path, hits in findings.items()}},
         {rule.name: findings}, {rule.name: FAIL_OPEN_READ_BASELINE},
         f"{__file__}::FAIL_OPEN_READ_BASELINE",
-        lower_advice=f"fix: lower the exact file allowance in {__file__}::FAIL_OPEN_READ_BASELINE",
+        lower_advice=f"lower the exact file allowance in {__file__}::FAIL_OPEN_READ_BASELINE",
         full_details=True,
     )
 
