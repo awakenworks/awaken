@@ -16,6 +16,7 @@ pub(crate) use isolation::release_original_guard;
 pub(crate) use isolation::verify_reservation as verify_pod_isolation;
 pub use isolation::{
     ISOLATION_ID_ANNOTATION, ISOLATION_LABEL, ORIGINAL_GUARD_FINALIZER, REQUEST_DIGEST_ANNOTATION,
+    original_request_metadata_matches,
 };
 pub use state::{
     CreateTicket, CreateTicketRequest, RequestJoin, TicketAdmission, TicketOrigin, TicketResult,

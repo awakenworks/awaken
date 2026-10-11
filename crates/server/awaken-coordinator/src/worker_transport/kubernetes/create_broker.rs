@@ -23,6 +23,7 @@ use awaken_sandbox_container::k8s::{
     CreateTicketRequest, ISOLATION_ID_ANNOTATION, ISOLATION_LABEL, K8sCreateRequest,
     K8sCreateResponse, K8sLedgerBinding, K8sWorkerCreateLedger, ORIGINAL_GUARD_FINALIZER,
     PodProcessBinding, REQUEST_DIGEST_ANNOTATION, RequestJoin, TicketAdmission, TicketResult,
+    original_request_metadata_matches,
 };
 use awaken_time::{WallClock, WallClockExt};
 use awaken_worker_transport_security::kubernetes::KubernetesPodIdentity;
@@ -112,13 +113,16 @@ fn original_readback_matches(
     !uid.trim().is_empty()
         && uid.trim() == uid
         && !nonce.is_empty()
-        && metadata["name"].as_str() == Some(ticket.name.as_str())
-        && metadata["namespace"].as_str() == Some(ticket.namespace.as_str())
         && metadata["uid"].as_str() == Some(uid)
-        && metadata["deletionTimestamp"].is_null()
-        && metadata["annotations"][ISOLATION_ID_ANNOTATION].as_str() == Some(nonce)
-        && metadata["annotations"][REQUEST_DIGEST_ANNOTATION].as_str()
-            == Some(ticket.digest.as_str())
+        && original_request_metadata_matches(
+            ticket,
+            nonce,
+            metadata["name"].as_str(),
+            metadata["namespace"].as_str(),
+            metadata["annotations"][ISOLATION_ID_ANNOTATION].as_str(),
+            metadata["annotations"][REQUEST_DIGEST_ANNOTATION].as_str(),
+            metadata["deletionTimestamp"].is_null(),
+        )
 }
 
 /// Only these exact collection POSTs can cross the broker. Neither an exec
@@ -870,6 +874,102 @@ mod tests {
                     "M2-M4 {path} {axis}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn original_readback_field_view_keeps_exact_uid_and_json_compatibility() {
+        // C1 shared original name/namespace/nonce/request-digest/undeleted law;
+        // C2 exact retained Created UID and nonempty provider nonce; C3 unrelated
+        // JSON fields malformed or isolation marker present. B1 C1+C2 -> match;
+        // B2 missing/wrong/blank C1 or C2 -> refuse; B3 C3 leaves this raw reader
+        // unchanged (no whole ObjectMeta decode or borrowed isolation purpose).
+        // Fresh201 and Finished(Created) use this matcher; an Isolated UID
+        // cannot replace the original UID. Response-loss replay's one-POST
+        // end-to-end case remains in worker_response_loss below.
+        let ticket =
+            CreateTicketRequest::new("group", "pods", "sandbox-ns", "sandbox-pod", "a".repeat(64))
+                .unwrap();
+        let nonce = "0123456789abcdef0123456789abcdef";
+        let original = json!({"metadata":{
+            "name":"sandbox-pod", "namespace":"sandbox-ns", "uid":"original-uid",
+            "annotations":{(ISOLATION_ID_ANNOTATION):nonce,(REQUEST_DIGEST_ANNOTATION):ticket.digest}
+        }});
+        for row in [
+            "exact",
+            "name",
+            "namespace",
+            "nonce",
+            "digest",
+            "deleting",
+            "delete-malformed",
+            "uid-missing",
+            "uid-empty",
+            "uid-blank",
+            "uid-wrong",
+            "uid-spaced",
+            "expected-spaced",
+            "nonce-empty",
+            "name-malformed",
+            "annotations-malformed",
+            "unrelated-malformed",
+            "isolation-marker",
+            "delete-null",
+        ] {
+            let mut object = original.clone();
+            let mut uid = "original-uid";
+            let mut expected_nonce = nonce;
+            match row {
+                "name" => object["metadata"]["name"] = "other".into(),
+                "namespace" => object["metadata"]["namespace"] = "other".into(),
+                "nonce" => {
+                    object["metadata"]["annotations"][ISOLATION_ID_ANNOTATION] = "other".into()
+                }
+                "digest" => {
+                    object["metadata"]["annotations"][REQUEST_DIGEST_ANNOTATION] =
+                        "b".repeat(64).into()
+                }
+                "deleting" => {
+                    object["metadata"]["deletionTimestamp"] = "2026-10-12T00:00:00Z".into()
+                }
+                "delete-malformed" => object["metadata"]["deletionTimestamp"] = json!(false),
+                "delete-null" => object["metadata"]["deletionTimestamp"] = Value::Null,
+                "uid-missing" => {
+                    object["metadata"].as_object_mut().unwrap().remove("uid");
+                }
+                "uid-empty" => object["metadata"]["uid"] = "".into(),
+                "uid-blank" => object["metadata"]["uid"] = " \t ".into(),
+                "uid-wrong" => object["metadata"]["uid"] = "reserved-uid".into(),
+                "uid-spaced" => object["metadata"]["uid"] = " original-uid ".into(),
+                "expected-spaced" => {
+                    uid = " original-uid ";
+                    object["metadata"]["uid"] = uid.into();
+                }
+                "nonce-empty" => {
+                    expected_nonce = "";
+                    object["metadata"]["annotations"][ISOLATION_ID_ANNOTATION] = "".into();
+                }
+                "name-malformed" => object["metadata"]["name"] = json!(5),
+                "annotations-malformed" => object["metadata"]["annotations"] = json!([]),
+                "unrelated-malformed" => {
+                    object["metadata"]["resourceVersion"] = json!([false]);
+                    object["metadata"]["creationTimestamp"] = json!(5);
+                    object["metadata"]["ownerReferences"] = "unparsed".into();
+                    object["metadata"]["labels"] = json!(false);
+                }
+                "isolation-marker" => {
+                    object["metadata"]["labels"] = json!({(ISOLATION_LABEL):"true"})
+                }
+                _ => {}
+            }
+            assert_eq!(
+                original_readback_matches(&object, &ticket, uid, expected_nonce),
+                matches!(
+                    row,
+                    "exact" | "unrelated-malformed" | "isolation-marker" | "delete-null"
+                ),
+                "B1-B3/{row}"
+            );
         }
     }
 
