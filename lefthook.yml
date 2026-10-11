@@ -139,10 +139,10 @@ pre-commit:
       run: python3 scripts/ci/check_test_inventory.py
 
     affected-rust-plan:
-      # >>> generated glob from benchmark_rust_build.py, rust_test_plan.py INPUT_GLOBS — do not edit
+      # >>> generated glob from benchmark_rust_build.py, check_rust_test_execution.py, rust_test_plan.py INPUT_GLOBS — do not edit
       glob: "{.cargo/**,.config/**,.config/rust-tests.toml,Cargo.lock,Cargo.toml,apps/**,crates/**,fuzz/**,lefthook.yml,rust-toolchain.toml,scripts/ci/**,scripts/ci/benchmark_rust_build.py,scripts/ci/crate_test.py,scripts/ci/deadline.py,scripts/ci/formal_sources.py,scripts/ci/nextest_execution.py,scripts/ci/test.sh,tests/**,xtask/**}"
       # <<< generated glob
-      run: python3 scripts/ci/rust_test_plan.py --self-test && python3 scripts/ci/benchmark_rust_build.py --self-test
+      run: python3 scripts/ci/rust_test_plan.py --self-test && python3 scripts/ci/benchmark_rust_build.py --self-test && python3 scripts/ci/check_rust_test_execution.py --self-test
 
     # 3b. A failed read of durable state may never become an absence. The
     #     recovery path is derived -- every production module that names a
