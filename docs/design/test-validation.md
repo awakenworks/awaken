@@ -213,7 +213,39 @@ If distributing full-suite work in the future, every shard must identify the
 same candidate SHA, feature/tool/substrate configuration and expected cases.
 The aggregator must reject missing/duplicate shards and partial/skipped
 results. A scheduler or cache hit alone cannot produce a green full receipt.
-The current implementation keeps full-suite composition unchanged.
+The full-suite composition stays in the same entrypoint. Rust partitions are
+available inside `check-rust.sh`, with one build, captured Cargo/binary metadata
+and one full JSON inventory. Before execution, independently listed `hash:i/N`
+partitions must cover every nonignored `(binary,test)` exactly once. The final
+aggregator repeats that check against actual outcomes and rejects missing,
+duplicate, failed or foreign-source/build/configuration shards. All workers
+share one process-tree budget and split the existing total test-thread budget;
+they do not each receive the full CPU count. Doctests remain a separate stage.
+Ordinary Rust outcomes retain their existing fixture scope; required backend
+and OS groups still supply the live-behavior qualification.
+
+```sh
+AWAKEN_RUST_SHARDS=2 NEXTEST_TEST_THREADS=8 bash scripts/ci/check-rust.sh --full
+```
+
+The default stays one partition until representative measurements establish a
+benefit: Nextest already schedules tests concurrently, and repeated inventory
+discovery has a cost. The quality workflow's manual `rust_shards` input enables
+the comparison without weakening PR/main/release requirements.
+
+The quality workflow retains cache-hit observations and bounded local Cargo
+directory footprints. Its post-job performance observer reads the exact run
+attempt's completed jobs, including the Rust cache action's post-save step,
+so restore/save overhead is measured rather than inferred from compilation.
+Listed cache archive sizes are separate from local directory sizes; pre-existing
+self-hosted files cannot be attributed to a restore. Incomplete footprint scans
+report unavailable sizes. Workspace-crate caching remains disabled.
+`ci_performance.py` preserves failed/incomplete job outcomes and source/run
+identities, ranks canonical stage costs and Cargo units, and reports test p50/p95
+and slow cases. Performance telemetry always carries `full_gate: false`.
+Missing CI data remains unavailable rather than borrowing another commit's
+results. A manual `build_benchmark` input runs the representative Resource HTTP
+workload at jobs 1/2 for two rounds with fresh target directories.
 
 ### Ordinary build benchmarks
 
@@ -244,6 +276,16 @@ heavier workload. Do not turn up global Cargo concurrency or change the system
 page file as part of a benchmark. Local development keeps incremental caches;
 compiler-cache experiments that disable incremental compilation belong to a
 separate measured CI configuration.
+
+On Windows, `--linker rust-lld` is an explicit alternative-linker experiment
+using the active toolchain's `rust-lld.exe` with the `lld-link` flavor. It keeps
+the MSVC target and records the linker condition; it does not alter the default
+or qualify Microsoft's `link.exe`. Ambient Rust flags are refused for this
+comparison. Preserve a failed default-linker observation independently instead
+of retrying it into a successful timing sample. The native 2026-10-11 Resource
+HTTP cold-build probe stopped at `ref-cast-impl` with LNK1105/error 1224 even at
+jobs 1; available commit memory was about 18.6 GiB before execution. This is a
+mapped-output failure, not evidence that increasing concurrency is safe.
 
 The 2026-10-11 native MSVC probe used the two leaf packages above, 56 compiled
 units and 11 executed tests per successful observation. The first round took

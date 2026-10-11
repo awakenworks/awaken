@@ -31,6 +31,7 @@ jobs:
     if: github.repository == 'awakenworks/awaken' && github.ref_protected == true
     permissions:
       contents: read
+      actions: read
     uses: ./.github/workflows/quality.yml
 
   binary_packages:

@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -254,7 +255,7 @@ def write_record(repo: Path, gates: list[str], path: Path, expected_commit: str 
         "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "gates": sorted(set(gates)),
         "runner": "scripts/ci/check-all.sh --full-gate --record",
-        "host": os.uname().nodename,
+        "host": platform.node(),
         "tools": tool_versions(),
     }
     if not source_matches_candidate(repo, expected_commit):

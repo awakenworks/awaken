@@ -1819,7 +1819,7 @@ def self_test() -> None:
         quality.replace('test "$(git rev-parse HEAD)" = "$source_revision"', "true", 1),
         quality.replace("run: scripts/ci/check-all.sh", "run: scripts/ci/check-all.sh --group rust", 1),
         quality.replace("pull_request:", "pull_request_removed:", 1),
-        prefix + "  full_quality:\n" + full_quality.replace("if: always()", "if: success()", 1),
+        quality.replace("      - name: Retain exact-SHA quality evidence\n        if: always()", "      - name: Retain exact-SHA quality evidence\n        if: success()", 1),
         quality.replace("awaken-full-gate", "generic-runner", 1),
         quality.replace("run: scripts/ci/check-all.sh", "run: scripts/ci/check-all.sh || true", 1),
         quality.replace("run: scripts/ci/check-all.sh", "if: false\n        run: scripts/ci/check-all.sh", 1),
