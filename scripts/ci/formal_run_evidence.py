@@ -19,13 +19,13 @@ import os
 import platform
 from pathlib import Path
 import re
-import subprocess
 import tempfile
 import time
 import tomllib
 import uuid
 
 import formal_plan
+import formal_sources
 
 ROOT = Path(__file__).resolve().parents[2]
 # Schema 2 adds the plan selection and its digest to schema 1.
@@ -73,17 +73,24 @@ def proof_toolchain(repository: Path) -> dict:
 
 
 def source_snapshot(repository: Path) -> dict:
-    def git(*args: str) -> bytes:
-        return subprocess.check_output(["git", *args], cwd=repository)
     # Git normalizes platform line endings. The full tree binds transitive
     # modules, models/configs, dependency locks, generator and runner sources.
     # Dirty runs are useful diagnostics, but cannot qualify a release.
-    status = git("status", "--porcelain=v1", "--untracked-files=all")
+    facts = formal_sources.source_facts(repository)
+    status = facts["status"]
+    # Clean Git-byte results retain the old schema2/1 release identity, including
+    # LF/CRLF equivalence. Dirty diagnostics now bind index/conflict stages,
+    # both tracked deltas and untracked bytes using the one framing owner.
+    # Old weak dirty artifacts fail closed; there is no alternate digest basis.
+    working = digest_bytes(facts["patch"]) if not status else "sha256:" + formal_sources.framed_digest((
+        b"formal-dirty-working-diff-v1", facts["index_entries"], facts["staged"], facts["working"], facts["patch"],
+        *formal_sources.untracked_parts(facts["untracked"]),
+    ))
     return {
-        "commit": git("rev-parse", "HEAD").decode().strip(),
-        "tree": git("rev-parse", "HEAD^{tree}").decode().strip(),
+        "commit": facts["revision"].decode().strip(),
+        "tree": facts["tree"].decode().strip(),
         "clean": not status,
-        "working_diff_digest": digest_bytes(git("diff", "--binary", "HEAD")),
+        "working_diff_digest": working,
         "status_digest": digest_bytes(status),
     }
 
@@ -92,7 +99,7 @@ def committed_file_digest(repository: Path, relative: str, revision: str = "HEAD
     # One Git-byte authority for runner, ledger and proof-input identities.
     # Callers qualifying a release must first validate the clean source receipt;
     # this function by itself does not reject dirty or unauthenticated checkouts.
-    blob = subprocess.check_output(["git", "show", revision + ":" + relative], cwd=repository)
+    blob = formal_sources.git_output(repository, "show", revision + ":" + relative)
     return digest_bytes(blob)
 
 

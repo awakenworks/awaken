@@ -8,14 +8,17 @@ once it is staged. Outside a repository -- a checker's fixture tree -- the files
 on disk are read.
 
 Consumers: ``formal_ledger`` (TOML storage), ``formal_anchors`` (Rust anchors)
-and the fixtures of their self-tests.
+and the fixtures of their self-tests. The working-plan and formal/release
+views also share Git environment selection and raw source facts here; their
+different receipt shapes and qualification rules remain with those consumers.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 # Git exports these to a hook. They name the repository being committed, not
@@ -63,9 +66,89 @@ def repository_environment(root: Path) -> dict[str, str] | None:
     if found.returncode != 0 or len(lines) != 2 or Path(lines[0]).resolve() != root.resolve():
         return None
     exported = os.environ.get("GIT_DIR")
-    if exported is not None and Path(exported).resolve() == Path(lines[1]).resolve():
+    work_tree = os.environ.get("GIT_WORK_TREE")
+    matching_tree = work_tree is None or (root / work_tree).resolve() == root.resolve()
+    if exported is not None and (root / exported).resolve() == Path(lines[1]).resolve() and matching_tree:
         return dict(os.environ)
     return clean
+
+
+def _source_environment(root: Path) -> dict[str, str]:
+    values = repository_environment(root)
+    if values is None:
+        # Preserve Git's real 128/OSError for an absent repository/tool. If Git
+        # succeeds through a parent repository, this root is still invalid.
+        subprocess.check_output(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+                                env=detached_git_environment())
+        raise SourceError(f"Source root is not an admitted repository top: {root}")
+    return values
+
+
+def _git_output(root: Path, environment: dict[str, str], *arguments: str) -> bytes:
+    return subprocess.check_output(
+        ["git", "-c", "core.fsmonitor=false", "-C", str(root), *arguments], env=environment,
+    )
+
+
+def git_output(root: Path, *arguments: str) -> bytes:
+    """Git bytes for an exact root, preserving only its own hook's index."""
+    return _git_output(root, _source_environment(root), *arguments)
+
+
+def framed_digest(parts: Iterable[bytes]) -> str:
+    """The existing working digest's length framing, shared by dirty diagnostics."""
+    digest = hashlib.sha256()
+    for value in parts:
+        digest.update(len(value).to_bytes(8, "big"))
+        digest.update(value)
+    return digest.hexdigest()
+
+
+def _untracked_sources(root: Path, read: Callable[..., bytes]) -> dict[str, bytes]:
+    paths = os.fsdecode(read("ls-files", "--others", "--exclude-standard", "-z")).split("\0")
+    return {name: (root / name).read_bytes() for name in paths if name}
+
+
+def untracked_sources(root: Path) -> dict[str, bytes]:
+    return _untracked_sources(root, lambda *arguments: git_output(root, *arguments))
+
+
+def untracked_parts(files: dict[str, bytes]) -> Iterable[bytes]:
+    for name, data in sorted(files.items()):
+        yield os.fsencode(name)
+        yield data
+
+
+def _source_facts(root: Path, read: Callable[..., bytes]) -> dict:
+    revision = read("rev-parse", "HEAD")
+    revision_name = revision.decode().strip()
+    return {
+        "revision": revision,
+        "tree": read("rev-parse", revision_name + "^{tree}"),
+        # Entries bind mode/object/stage/path even when the index is unmerged.
+        # Formal dirty diagnostics cannot require write-tree to succeed.
+        "index_entries": read("ls-files", "--stage", "-z"),
+        "staged": read("diff", "--cached", "--binary", revision_name, "--"),
+        "working": read("diff", "--binary", "--"),
+        "patch": read("diff", "--binary", revision_name, "--"),
+        "untracked": _untracked_sources(root, read),
+        "status": read("status", "--porcelain=v1", "--untracked-files=all"),
+    }
+
+
+def source_facts(root: Path) -> dict:
+    """Shared raw facts, not a receipt/schema or an atomic/ABA-proof snapshot.
+
+    Repeat the same reader to refuse a changed axis during capture. The two
+    consumer views still own working identity versus clean-release policy.
+    """
+    environment = _source_environment(root)
+    def read(*arguments: str) -> bytes:
+        return _git_output(root, environment, *arguments)
+    facts = _source_facts(root, read)
+    if facts != _source_facts(root, read):
+        raise SourceError("Source changed while capturing Git source facts")
+    return facts
 
 
 def _git_grep(root: Path, environment: dict[str, str], arguments: list[str]) -> bytes:

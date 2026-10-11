@@ -18,6 +18,7 @@ import time
 import tomllib
 import unittest
 from unittest import mock
+import formal_sources
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILE = ROOT / ".config/rust-tests.toml"
@@ -74,21 +75,16 @@ def affected_packages(metadata: dict, changed: list[str], root: Path = ROOT) -> 
 
 
 def git_output(*arguments: str) -> bytes:
-    return subprocess.check_output(["git", "-c", "core.fsmonitor=false", "-C", str(ROOT), *arguments])
+    return formal_sources.git_output(ROOT, *arguments)
 
 
 def source_digest(revision: bytes, index: bytes, staged: bytes, working: bytes, untracked: dict[str, bytes]) -> str:
-    digest = hashlib.sha256()
-    for value in (revision, index, staged, working, *(part for name, data in sorted(untracked.items()) for part in (os.fsencode(name), data))):
-        digest.update(len(value).to_bytes(8, "big"))
-        digest.update(value)
-    return digest.hexdigest()
+    return formal_sources.framed_digest((revision, index, staged, working, *formal_sources.untracked_parts(untracked)))
 
 
 def untracked_sources() -> dict[str, bytes]:
     """The one byte reader used by subject identity and ordinary diagnostics."""
-    paths = os.fsdecode(git_output("ls-files", "--others", "--exclude-standard", "-z")).split("\0")
-    return {name: (ROOT / name).read_bytes() for name in paths if name}
+    return formal_sources.untracked_sources(ROOT)
 
 
 def source_snapshot() -> tuple[str, bytes]:
@@ -98,15 +94,11 @@ def source_snapshot() -> tuple[str, bytes]:
     returned diagnostic patch remains HEAD->WT; its digest also binds the index,
     both deltas and untracked bytes. A local run never qualifies a staged commit.
     """
-    revision = git_output("rev-parse", "HEAD")
+    facts = formal_sources.source_facts(ROOT)
     index = git_output("write-tree")
-    staged = git_output("diff", "--cached", "--binary", "HEAD", "--")
-    working = git_output("diff", "--binary", "--")
-    patch = git_output("diff", "--binary", "HEAD", "--")
-    untracked = untracked_sources()
-    if revision != git_output("rev-parse", "HEAD") or index != git_output("write-tree"):
+    if facts != formal_sources.source_facts(ROOT):
         raise ValueError("Source changed while capturing the working subject and index")
-    return source_digest(revision, index, staged, working, untracked), patch
+    return source_digest(facts["revision"], index, facts["staged"], facts["working"], facts["untracked"]), facts["patch"]
 
 
 def changed_sources(base: str) -> list[str]:
@@ -137,9 +129,11 @@ class PlanTests(unittest.TestCase):
         self.git(root, "config", "user.email", "planner@example.invalid", environment=environment)
         self.git(root, "config", "commit.gpgsign", "false", environment=environment)
         self.git(root, "config", "core.hooksPath", str(Path(directory) / "no-hooks"), environment=environment)
-        script = root / "scripts/ci/rust_test_plan.py"
-        script.parent.mkdir(parents=True)
-        shutil.copyfile(__file__, script)
+        from formal_plan import script_closure
+        for relative in script_closure(ROOT, ("scripts/ci/rust_test_plan.py",)):
+            script = root / relative
+            script.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / relative, script)
         profile = root / ".config/rust-tests.toml"
         profile.parent.mkdir()
         profile.write_text('workspace_features = ["kernel/input"]\n', encoding="utf-8")
@@ -213,7 +207,7 @@ else:
                            W41_FIXTURE_METADATA=str(metadata_path), W41_FIXTURE_CALLS=str(calls_path),
                            W41_FIXTURE_METADATA_STATUS=str(metadata_status), W41_FIXTURE_EXECUTION_STATUS=str(execution_status),
                            W41_FIXTURE_MUTATE=mutate, W41_FIXTURE_BROKEN=str(int(broken_metadata)))
-        result = subprocess.run([sys.executable, str(root / "scripts/ci/rust_test_plan.py"), "--base", "HEAD", *(["--run"] if run else [])],
+        result = subprocess.run([sys.executable, "-B", str(root / "scripts/ci/rust_test_plan.py"), "--base", "HEAD", *(["--run"] if run else [])],
                                 cwd=root, env=environment, capture_output=True, text=True)
         calls = [json.loads(line) for line in calls_path.read_text().splitlines()] if calls_path.exists() else []
         receipts = [json.loads(path.read_text()) for path in (target / "test-timings").glob("affected-*.json") if path.is_file()]
@@ -464,7 +458,8 @@ else:
 
     def test_plan_only_cannot_mix_late_index_or_revision_with_the_old_digest(self) -> None:
         # Q10/Q11: --base without --run still owns a source-bound plan. Initial
-        # capture reads each axis twice; its third read is the diagnostic fact.
+        # capture now delegates raw facts to the shared owner. The planner's
+        # first HEAD read / second write-tree read is its diagnostic fact.
         # Cross late index/HEAD amendment there and require refusal before any
         # plan is printed, not just the later execution-entrance refusal.
         for axis in ("write-tree", "rev-parse"):
@@ -473,13 +468,14 @@ else:
                 (root / "crates/kernel/src/lib.rs").write_text("pub const VALUE: u8 = 2;\n")
                 original_git, original_output = git_output, subprocess.check_output
                 axis_reads = 0
+                diagnostic_read = 2 if axis == "write-tree" else 1
                 calls = []
                 def git_read(*arguments):
                     nonlocal axis_reads
                     result = original_git(*arguments)
                     if arguments == (axis,) or arguments == (axis, "HEAD"):
                         axis_reads += 1
-                        if axis_reads == 3:
+                        if axis_reads == diagnostic_read:
                             source = root / "crates/other/src/lib.rs"
                             source.write_text("pub const VALUE: u8 = 3;\n")
                             self.git(root, "add", str(source))
@@ -500,7 +496,7 @@ else:
                     self.assertNotEqual(main(), 0)
                 self.assertEqual(calls, ["metadata"])
                 self.assertEqual(printed.getvalue(), "")
-                self.assertGreaterEqual(axis_reads, 3)
+                self.assertGreaterEqual(axis_reads, diagnostic_read)
                 self.assertIn("Source changed during affected planning", errors.getvalue())
 
     def test_receipt_identity_includes_untracked_bytes_and_boundaries(self) -> None:
@@ -508,6 +504,8 @@ else:
         # and the two deltas even when their combined working patch is empty.
         parts = [b"revision", b"index", b"staged", b"working"]
         expected = source_digest(*parts, {"a": b"bc"})
+        # S1 golden from the original A framing, before moving its one owner.
+        self.assertEqual(expected, "dbb6396b4173947748c9a8d811481cbc8fd6efc450fb52a3d4d6f9549e2bcc59")
         for axis in range(4):
             changed = [*parts]
             changed[axis] = b"other"
@@ -515,6 +513,30 @@ else:
         for files in ({"a": b"different"}, {"ab": b"c"}):
             self.assertNotEqual(expected, source_digest(*parts, files))
         self.assertEqual(source_digest(*parts, {"b": b"2", "a": b"1"}), source_digest(*parts, {"a": b"1", "b": b"2"}))
+
+    def test_shared_reader_refusal_preserves_its_status_before_metadata(self) -> None:
+        # S10: the canonical root is real, but its shared Git-read boundary
+        # refuses with23/75. Main preserves that original status and executes
+        # zero metadata/nextest calls, never interpreting missing facts as empty.
+        for status in (23, 75):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                root, _ = self.fixture_repository(directory)
+                calls = []
+                original = subprocess.check_output
+                def output(command, **kwargs):
+                    if command[0] == "cargo":
+                        calls.append(command[1])
+                        raise AssertionError("Cargo must not run after source refusal")
+                    return original(command, **kwargs)
+                errors = io.StringIO()
+                with mock.patch.dict(globals(), ROOT=root), \
+                        mock.patch.object(sys, "argv", [__file__, "--base", "HEAD", "--run"]), \
+                        mock.patch.object(subprocess, "check_output", side_effect=output), \
+                        mock.patch.object(formal_sources, "_git_output", side_effect=subprocess.CalledProcessError(status, ["git", "source-read"])), \
+                        contextlib.redirect_stderr(errors):
+                    self.assertEqual(main(), status)
+                self.assertEqual(calls, [])
+                self.assertIn(f"status {status}", errors.getvalue())
     def test_shared_profile_names_declared_workspace_features(self) -> None:
         manifests = {tomllib.loads(path.read_text(encoding="utf-8"))["package"]["name"]: path for path in ROOT.glob("crates/*/*/Cargo.toml")}
         for feature in workspace_features().split(","):
