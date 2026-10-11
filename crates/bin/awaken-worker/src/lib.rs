@@ -1305,6 +1305,7 @@ fn configured_container_acp_capability_source(
     let clock = host.clock();
     let negotiator = Arc::new(awaken_session_executor::SessionAcpCapabilityNegotiator::new(
         host,
+        deployment.dispatch_owner.clone(),
         // Some native adapters perform image-local plugin discovery before
         // opening their first prompt-free Session. Keep the probe bounded while
         // allowing that deterministic cold start to complete.

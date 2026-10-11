@@ -29,6 +29,8 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
     // H3 witness + resident projection -> conflict without effect. H4 a new
     // Host with only the reissued assignment can finish canonical Disposal.
     // H5 historical wire omission -> false; explicit true survives transport.
+    // H6 the rebased assignment uses the installed-Session receipt fixture;
+    // the existing H1-H5 effects must compile and run without a legacy alias.
     for witness in [false, true] {
         let thread = if witness {
             "no-create-known"
@@ -50,7 +52,7 @@ async fn cold_terminal_cleanup_consumes_only_control_no_create_evidence() {
             session_id: thread.into(),
             projection: projection.clone(),
             environment_creation_not_attempted: witness,
-            authority: crate::session_slot::test_lease_receipt(lease.clone()),
+            authority: crate::installed_session::test_lease_receipt(lease.clone()),
         };
         let wire = serde_json::to_value(&assignment).unwrap();
         assert_eq!(

@@ -28,6 +28,7 @@ pub(crate) struct Request {
     root_identity: (u64, u64),
     plan: pc::RepositoryRealizationPlan,
     publication: Option<pc::RepositoryPublicationExpectation>,
+    intent: pc::RepositoryRealizationIntent,
     credential: CredentialKind,
 }
 
@@ -155,12 +156,14 @@ impl Request {
         plan: &pc::RepositoryRealizationPlan,
         publication: Option<&pc::RepositoryPublicationExpectation>,
         credential: Option<&pc::RepositoryHttpBasicCredential>,
+        intent: pc::RepositoryRealizationIntent,
     ) -> Self {
         Self {
             root: root.into(),
             root_identity: (identity.device, identity.inode),
             plan: plan.clone(),
             publication: publication.cloned(),
+            intent,
             credential: match credential {
                 None => CredentialKind::None,
                 Some(credential) if credential.is_gateway_capability() => CredentialKind::Gateway,
@@ -215,14 +218,16 @@ impl Request {
         })?;
         let credential = self.credential.read_environment()?;
         let root = IsolatedRoot::new(&self.root);
+        let (branch, commit) = self.intent.checkout_constraints(&self.plan);
         match &self.publication {
             None => git_transport::provision_repo_at(
                 &root,
                 &self.plan.mount_path,
                 &self.plan.transport_url,
-                self.plan.initial_branch.as_deref(),
-                self.plan.initial_commit.as_deref(),
+                branch,
+                commit,
                 credential.as_ref(),
+                self.intent,
             )
             .map(|_| Outcome::Realized),
             Some(expectation) => Ok(
@@ -345,6 +350,7 @@ mod tests {
             },
             None,
             credential,
+            pc::RepositoryRealizationIntent::Initialize,
         )
     }
 

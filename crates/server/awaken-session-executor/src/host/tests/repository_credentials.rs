@@ -73,6 +73,8 @@ impl awaken_provisioning_contract::RepositoryRealizer for RecordingRepositoryRea
         &self,
         _plan: &awaken_provisioning_contract::RepositoryRealizationPlan,
         credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
+
+        _intent: awaken_provisioning_contract::RepositoryRealizationIntent,
     ) -> Result<(), awaken_provisioning_contract::SandboxError> {
         self.0.lock().unwrap().push(
             credential
@@ -301,6 +303,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
             &wrong_target,
             &resources.binding_checks,
             &invalid_realizer,
+            awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
         )
         .await
         .expect_err("P5 target mismatch rejects before Gateway refresh");
@@ -322,6 +325,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
             &wrong_source,
             &resources.binding_checks,
             &invalid_realizer,
+            awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
         )
         .await
         .expect_err("P5 source mismatch rejects against the authored binding");

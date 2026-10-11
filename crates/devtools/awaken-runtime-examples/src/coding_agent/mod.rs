@@ -119,8 +119,12 @@ pub struct CodingSession {
 }
 
 impl CodingSession {
-    pub fn new(runtime: Runtime, config: ExecutableAgentSnapshot) -> Self {
-        Self::new_with_hand_context(runtime, config, HandToolContext::default())
+    pub fn new(
+        runtime: Runtime,
+        config: ExecutableAgentSnapshot,
+        clock: Arc<dyn awaken_time::WallClock>,
+    ) -> Self {
+        Self::new_with_hand_context(runtime, config, HandToolContext::default(), clock)
     }
 
     /// Build a coding Session whose Hand is confined to one trusted workdir.
@@ -131,6 +135,7 @@ impl CodingSession {
         mut runtime: Runtime,
         config: ExecutableAgentSnapshot,
         hand_context: HandToolContext,
+        clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         // This publish=false, opt-in example deliberately supplies a
         // single-process Hand. Production Sessions obtain the same ToolExecutor
@@ -141,9 +146,9 @@ impl CodingSession {
             runtime = runtime.with_tool(tool);
         }
         Self {
-            runtime,
+            runtime: runtime.with_clock(clock.clone()),
             config,
-            commit: Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock())),
+            commit: Arc::new(MemoryCommitCoordinator::new(clock)),
             tool_executor,
             thread_id: ThreadId("coding".to_string()),
         }

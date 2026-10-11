@@ -271,6 +271,9 @@ pub(crate) async fn run_configured_agent_until_boundary(
         &config,
         context.inherited_toolsets.as_ref(),
     )?;
+    let clock = adapters.clock.clone().ok_or_else(|| {
+        AgentRunError::Runtime(awaken_runtime::ConfigurationError::MissingClock.into())
+    })?;
     let created = match &sandbox {
         AgentRunSandbox::Fresh(provider) => Some(
             provider
@@ -303,6 +306,7 @@ pub(crate) async fn run_configured_agent_until_boundary(
     );
     let runtime = build_runtime_with_authorization(
         llm,
+        clock,
         env,
         &authorization,
         adapters.background_supervisor.clone(),
@@ -553,6 +557,51 @@ mod tests {
     };
     use crate::config::server_config;
 
+    #[tokio::test]
+    async fn child_without_host_clock_refuses_before_fresh_provider_effect() {
+        // Clock composition table C1: configured child + commit/history but no
+        // existing Host clock -> typed MissingClock and zero provider/model I/O.
+        // C2 a supplied clock uses the ordinary current-executor cases below;
+        // their store, scheduler and Runtime all share that same fixture Arc.
+        struct MustNotInfer;
+        #[async_trait::async_trait]
+        impl LlmExecutor for MustNotInfer {
+            async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
+                panic!("C1 missing clock must reject before model I/O");
+            }
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("must-not-materialize");
+        let provider = LocalProvider::new(&root);
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(123));
+        let commit = Arc::new(MemoryCommitCoordinator::new(clock));
+        let config = crate::agent_runner::fixtures::agent("child-clock", "clock");
+        let result = run_configured_agent_until_boundary(
+            &config,
+            AgentRunSandbox::Fresh(&provider),
+            Arc::new(MustNotInfer),
+            RunId("child-clock".into()),
+            DelegationOrigin::root_for_agent(RunId("parent".into()), "call", "parent"),
+            Some(vec![user("go")].into()),
+            None,
+            RuntimeRunContext::new()
+                .with_commit(commit.clone())
+                .with_reader(commit),
+            None,
+            ThreadId("parent".into()),
+            None,
+            ChildExecutionAdapters::default(),
+        )
+        .await;
+        match result {
+            Err(crate::agent_runner::AgentRunError::Runtime(error)) => {
+                assert_eq!(error.code(), "missing_clock", "C1 typed refusal");
+            }
+            _ => panic!("C1 must preserve the existing typed configuration failure"),
+        }
+        assert!(!root.exists(), "C1 zero Fresh provider effect");
+    }
+
     struct EventuallySettledReader {
         reads: AtomicUsize,
     }
@@ -776,8 +825,9 @@ mod tests {
         let parent_path = parent.workspace_path().to_path_buf();
         let parent_executor: Arc<dyn ToolExecutor> =
             Arc::new(RawToolRegistry::new(parent.rooted_tools()));
+        let clock = awaken_time::system_clock();
         let context = || {
-            let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+            let commit = Arc::new(MemoryCommitCoordinator::new(clock.clone()));
             RuntimeRunContext::new()
                 .with_commit(commit.clone())
                 .with_reader(commit)
@@ -796,6 +846,7 @@ mod tests {
             }) as Arc<dyn LlmExecutor>
         };
         let web_adapters = || ChildExecutionAdapters {
+            clock: Some(clock.clone()),
             web_fetch: Some(Arc::new(awaken_ext_builtin_tools::WebFetchPlugin::new(
                 awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
                 None,
@@ -829,7 +880,10 @@ mod tests {
             None,
             ThreadId("parent-thread".into()),
             None,
-            ChildExecutionAdapters::default(),
+            ChildExecutionAdapters {
+                clock: Some(clock.clone()),
+                ..Default::default()
+            },
         )
         .await
         .expect("R1 child reaches a terminal boundary");
@@ -879,6 +933,7 @@ mod tests {
             &plain_catalog,
             AgentRunSandbox::Fresh(&fresh_provider),
             model("fresh.txt", fresh_inferences.clone()),
+            clock.clone(),
             "assistant",
             "fresh-current",
             vec![user("write")],
@@ -914,6 +969,7 @@ mod tests {
             ThreadId("parent-thread".into()),
             None,
             ChildExecutionAdapters {
+                clock: Some(clock.clone()),
                 web_fetch: Some(Arc::new(awaken_ext_builtin_tools::WebFetchPlugin::new(
                     awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
                     None,
@@ -947,7 +1003,10 @@ mod tests {
             None,
             ThreadId("parent-thread".into()),
             None,
-            ChildExecutionAdapters::default(),
+            ChildExecutionAdapters {
+                clock: Some(clock.clone()),
+                ..Default::default()
+            },
         )
         .await
         {
@@ -992,6 +1051,7 @@ mod tests {
             ThreadId("parent-thread".into()),
             None,
             ChildExecutionAdapters {
+                clock: Some(clock.clone()),
                 web_fetch: Some(Arc::new(awaken_ext_builtin_tools::WebFetchPlugin::new(
                     awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
                     None,
@@ -1112,16 +1172,15 @@ mod tests {
                 ))
                 .await
                 .unwrap();
-            let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+            let clock = awaken_time::system_clock();
+            let commit = Arc::new(MemoryCommitCoordinator::new(clock.clone()));
             let scheduler = if durable {
                 Some(RunScheduler {
-                    clock: awaken_time::system_clock(),
+                    clock: clock.clone(),
                     store: Arc::new(
-                        awaken_dispatch::open_sqlite_dispatch_store_in_memory(
-                            awaken_time::system_clock(),
-                        )
-                        .await
-                        .unwrap(),
+                        awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+                            .await
+                            .unwrap(),
                     ),
                     commit: commit.clone(),
                     reader: commit.clone(),
@@ -1157,6 +1216,7 @@ mod tests {
             let run_id = RunId("cancel-child".into());
             let mut parent = Box::pin(run_agent_until_boundary(
                 model.clone(),
+                clock.clone(),
                 execution,
                 AgentRunSandbox::SharedLocal(&sandbox),
                 ChildRunRequest {
@@ -1239,18 +1299,16 @@ mod tests {
             .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("parent"))
             .await
             .unwrap();
-        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+        let clock = awaken_time::system_clock();
+        let commit = Arc::new(MemoryCommitCoordinator::new(clock.clone()));
         let dispatch_path = tmp.path().join("child-dispatch.db");
         let dispatch_path = dispatch_path.to_string_lossy().to_string();
         let scheduler = RunScheduler {
-            clock: awaken_time::system_clock(),
+            clock: clock.clone(),
             store: Arc::new(
-                awaken_dispatch::open_sqlite_dispatch_store(
-                    &dispatch_path,
-                    awaken_time::system_clock(),
-                )
-                .await
-                .expect("child dispatch store"),
+                awaken_dispatch::open_sqlite_dispatch_store(&dispatch_path, clock.clone())
+                    .await
+                    .expect("child dispatch store"),
             ),
             commit: commit.clone(),
             reader: commit.clone(),
@@ -1262,7 +1320,7 @@ mod tests {
             claimed_model_request_gate: None,
         };
         let parent_reader: Arc<dyn CommittedThreadView> =
-            Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+            Arc::new(MemoryCommitCoordinator::new(clock.clone()));
         let context = || {
             RuntimeRunContext::new()
                 .with_commit(commit.clone())
@@ -1291,6 +1349,7 @@ mod tests {
 
         let first = run_agent_until_boundary(
             Arc::new(PermissionModel),
+            clock.clone(),
             execution(scheduler),
             AgentRunSandbox::SharedLocal(&sandbox),
             ChildRunRequest {
@@ -1315,14 +1374,11 @@ mod tests {
         // A replacement process reopens the durable queue and rebuilds every live
         // runtime object from committed truth; no child handle crosses this seam.
         let replacement = RunScheduler {
-            clock: awaken_time::system_clock(),
+            clock: clock.clone(),
             store: Arc::new(
-                awaken_dispatch::open_sqlite_dispatch_store(
-                    &dispatch_path,
-                    awaken_time::system_clock(),
-                )
-                .await
-                .expect("reopen child dispatch"),
+                awaken_dispatch::open_sqlite_dispatch_store(&dispatch_path, clock.clone())
+                    .await
+                    .expect("reopen child dispatch"),
             ),
             commit: commit.clone(),
             reader: commit.clone(),
@@ -1336,6 +1392,7 @@ mod tests {
 
         let recovered_boundary = run_agent_until_boundary(
             Arc::new(PermissionModel),
+            clock.clone(),
             execution(replacement.clone()),
             AgentRunSandbox::SharedLocal(&sandbox),
             ChildRunRequest {
@@ -1362,6 +1419,7 @@ mod tests {
 
         let second = run_agent_until_boundary(
             Arc::new(PermissionModel),
+            clock.clone(),
             execution(replacement),
             AgentRunSandbox::SharedLocal(&sandbox),
             ChildRunRequest {
@@ -1385,15 +1443,13 @@ mod tests {
         // entering the model or appending a duplicate assistant message.
         let replay = run_agent_until_boundary(
             Arc::new(PermissionModel),
+            clock.clone(),
             execution(RunScheduler {
-                clock: awaken_time::system_clock(),
+                clock: clock.clone(),
                 store: Arc::new(
-                    awaken_dispatch::open_sqlite_dispatch_store(
-                        &dispatch_path,
-                        awaken_time::system_clock(),
-                    )
-                    .await
-                    .expect("reopen terminal child dispatch"),
+                    awaken_dispatch::open_sqlite_dispatch_store(&dispatch_path, clock.clone())
+                        .await
+                        .expect("reopen terminal child dispatch"),
                 ),
                 commit: commit.clone(),
                 reader: commit.clone(),

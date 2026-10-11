@@ -627,6 +627,7 @@ impl CancellableRunDelegationService for HostRunDelegationService {
         let runtime = Arc::new(
             crate::config::build_runtime(
                 self.llm.clone(),
+                scheduler.clock.clone(),
                 self.sandbox.as_ref(),
                 self.adapters.background_supervisor.clone(),
             )
@@ -1199,15 +1200,18 @@ mod durable_cancel_tests {
         // | A3   | agent_run | n/a         | n/a         | n/a    | E3 reserve target  |
         // | A4   | advisor   | no reader   | absent      | n/a    | E4 fail closed      |
         let (_root, sandbox) = local_test_sandbox().await;
+        // This fixture composes one clock for the store, scheduler and child
+        // Runtime; approval must use the same handle as the original boundary.
+        let clock = awaken_time::system_clock();
         let llm = Arc::new(CaptureAdvisorRequests::default());
         let store = Arc::new(
-            awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                 .await
                 .expect("durable advisor dispatch store"),
         );
-        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+        let commit = Arc::new(MemoryCommitCoordinator::new(clock.clone()));
         let scheduler = RunScheduler {
-            clock: awaken_time::system_clock(),
+            clock: clock.clone(),
             store: store.clone(),
             commit: commit.clone(),
             reader: commit.clone(),
@@ -1245,7 +1249,10 @@ mod durable_cancel_tests {
             llm.clone(),
             sandbox.clone(),
             &plain_snapshot,
-            crate::agent_runner::ChildExecutionAdapters::default(),
+            crate::agent_runner::ChildExecutionAdapters {
+                clock: Some(clock.clone()),
+                ..Default::default()
+            },
             None,
             "default".into(),
         )
@@ -1258,7 +1265,10 @@ mod durable_cancel_tests {
             llm.clone(),
             sandbox,
             &parent_snapshot,
-            crate::agent_runner::ChildExecutionAdapters::default(),
+            crate::agent_runner::ChildExecutionAdapters {
+                clock: Some(clock.clone()),
+                ..Default::default()
+            },
             None,
             "default".into(),
         )
@@ -1454,14 +1464,17 @@ mod durable_cancel_tests {
     async fn replacement_process_cancels_an_awaiting_native_child_idempotently() {
         // Decision rule: execute durable cancellation D1, then exact replay D2.
         let (_root, sandbox) = local_test_sandbox().await;
+        // This fixture composes one clock for the store, scheduler and child
+        // Runtime; approval must use the same handle as the original boundary.
+        let clock = awaken_time::system_clock();
         let store = Arc::new(
-            awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                 .await
                 .expect("durable child dispatch store"),
         );
-        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+        let commit = Arc::new(MemoryCommitCoordinator::new(clock.clone()));
         let scheduler = RunScheduler {
-            clock: awaken_time::system_clock(),
+            clock: clock.clone(),
             store: store.clone(),
             commit: commit.clone(),
             reader: commit.clone(),
@@ -1503,7 +1516,10 @@ mod durable_cancel_tests {
             Arc::new(AwaitPermission),
             sandbox,
             &parent_snapshot,
-            crate::agent_runner::ChildExecutionAdapters::default(),
+            crate::agent_runner::ChildExecutionAdapters {
+                clock: Some(clock.clone()),
+                ..Default::default()
+            },
             Some(Arc::new(TestPublications(child_snapshot))),
             "default".into(),
         )

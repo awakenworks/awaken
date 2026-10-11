@@ -37,6 +37,7 @@ async fn agent_reads_then_edits_a_file_after_approval() {
         runtime,
         coding_config("scripted-model").expect("model reference is an executable binding"),
         HandToolContext::new(&dir),
+        awaken_time::system_clock(),
     );
 
     // Count approval prompts: `read` is allowed (no prompt); `edit` is asked.
@@ -110,6 +111,7 @@ async fn a_denied_edit_does_not_mutate_the_file() {
         runtime,
         coding_config("scripted-model").expect("model reference is an executable binding"),
         HandToolContext::new(&dir),
+        awaken_time::system_clock(),
     );
 
     let asked = Arc::new(AtomicUsize::new(0));

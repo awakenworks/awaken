@@ -32,6 +32,7 @@ pub fn clone_repo_bundle(
         initial_branch,
         initial_commit,
         credential,
+        pc::RepositoryRealizationIntent::Initialize,
     )?;
     git_bytes(
         Some(&temp.path().join("repo")),

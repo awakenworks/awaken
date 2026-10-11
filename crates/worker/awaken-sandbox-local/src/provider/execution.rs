@@ -124,6 +124,7 @@ impl LocalSandbox {
         plan: &pc::RepositoryRealizationPlan,
         publication: Option<&pc::RepositoryPublicationExpectation>,
         credential: Option<&pc::RepositoryHttpBasicCredential>,
+        intent: pc::RepositoryRealizationIntent,
     ) -> Result<Option<crate::repository_effect::Outcome>, pc::SandboxError> {
         use crate::repository_effect::{self, MAX_FRAME, Request};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -139,6 +140,7 @@ impl LocalSandbox {
             plan,
             publication,
             credential,
+            intent,
         )
         .encode()?;
         let mut command = pc::MaterializedCommand::new([

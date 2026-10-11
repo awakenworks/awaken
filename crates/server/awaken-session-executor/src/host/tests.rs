@@ -226,6 +226,8 @@ mod outcome_query;
 mod pinned_skill_read;
 mod projection_convergence;
 mod realization_renewal;
+#[cfg(target_os = "linux")]
+mod repository_continuity;
 mod repository_credentials;
 mod resource_activation;
 mod resource_manifest;

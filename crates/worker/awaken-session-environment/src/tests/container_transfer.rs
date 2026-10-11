@@ -79,6 +79,7 @@ async fn docker_anonymous_repository_and_artifact_readback_use_one_sandbox() {
         environment.repositories().as_ref(),
         &repository_plan,
         None,
+        awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
     )
     .await
     .unwrap();

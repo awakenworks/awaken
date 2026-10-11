@@ -53,6 +53,104 @@ struct BlockingCommit {
     release: tokio::sync::Notify,
 }
 
+#[tokio::test]
+async fn postgres_operational_feed_waits_for_the_complete_committed_prefix() {
+    // C1 lower sequence A was inserted but its transaction is unresolved;
+    // C2 later B committed; C3 A commits/rolls back. R1 C1+C2 -> a page must
+    // not let B advance a durable cursor past A; R2 C3 commit -> [A,B];
+    // R3 C3 rollback -> [B], preserving the real sparse sequence identity.
+    // Fault injection uses actual independent PostgreSQL transactions in an
+    // isolated schema; the observation is the production events_after port.
+    use awaken_dispatch_contract::{DispatchCursor, DispatchOperation, DispatchOperationalFeed};
+    for (commit_lower, filtered, schema) in [
+        (true, false, "t_dispatch_prefix_commit"),
+        (false, false, "t_dispatch_prefix_rollback"),
+        (true, true, "t_dispatch_prefix_filtered_commit"),
+        (false, true, "t_dispatch_prefix_filtered_rollback"),
+    ] {
+        let Some(pool) = harness::schema_pool(schema).await else {
+            return;
+        };
+        let reader_pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&harness::database_url_in_schema(schema))
+            .await
+            .unwrap();
+        let reader_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&reader_pool)
+            .await
+            .unwrap();
+        let store = PostgresDispatchStore::with_pool(reader_pool.clone())
+            .await
+            .unwrap();
+        let operation = |run: &str| {
+            serde_json::to_value(DispatchOperation::Claimed {
+                claim: RunClaim {
+                    run_id: RunId(run.into()),
+                    owner: "fixture".into(),
+                    epoch: 1,
+                },
+            })
+            .unwrap()
+        };
+        let mut lower = pool.begin().await.unwrap();
+        let a: i64 = sqlx::query_scalar("INSERT INTO runtime_dispatch_operation (run_id,operation,recorded_at_ms) VALUES ('a',$1,10) RETURNING sequence")
+            .bind(sqlx::types::Json(operation("a"))).fetch_one(&mut *lower).await.unwrap();
+        let b: i64 = sqlx::query_scalar("INSERT INTO runtime_dispatch_operation (run_id,operation,recorded_at_ms) VALUES ('b',$1,20) RETURNING sequence")
+            .bind(sqlx::types::Json(operation("b"))).fetch_one(&pool).await.unwrap();
+        assert!(b > a);
+        // R0 the empty-limit view never waits; R1-R3 apply to the whole feed
+        // and to a selected Run while retaining global cursor identities.
+        let empty = store
+            .events_after(DispatchCursor(0), 0, None)
+            .await
+            .unwrap();
+        assert!(empty.events.is_empty());
+        assert_eq!(empty.next_cursor, DispatchCursor(0));
+        let observation = tokio::spawn(async move {
+            let selected = RunId("b".into());
+            store
+                .events_after(DispatchCursor(0), 10, filtered.then_some(&selected))
+                .await
+        });
+        // The independent backend must actually enter PostgreSQL Lock wait;
+        // slow connection establishment cannot stand in for prefix protection.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                assert!(!observation.is_finished(), "R1 a later committed cursor escaped the unresolved prefix");
+                let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock')")
+                    .bind(reader_pid).fetch_one(&pool).await.unwrap();
+                if waiting { break; }
+                tokio::task::yield_now().await;
+            }
+        }).await.expect("R1 exact reader backend reached Lock wait");
+        if commit_lower {
+            lower.commit().await.unwrap();
+        } else {
+            lower.rollback().await.unwrap();
+        }
+        let page = tokio::time::timeout(std::time::Duration::from_secs(5), observation)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            page.events
+                .iter()
+                .map(|event| event.cursor.0)
+                .collect::<Vec<_>>(),
+            if commit_lower && !filtered {
+                vec![a as u64, b as u64]
+            } else {
+                vec![b as u64]
+            }
+        );
+        assert_eq!(page.next_cursor, DispatchCursor(b as u64));
+        pool.close().await;
+        reader_pool.close().await;
+    }
+}
+
 async fn hold_dispatch_thread(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, thread: &str) {
     // One physical contention injector for exact/discovery/namespace rules.
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array('runtime_dispatch'::regclass::oid, $1::text)::text, 0))")

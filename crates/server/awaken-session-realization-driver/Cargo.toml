@@ -16,7 +16,7 @@ separation = "sole-in-layer"
 [dependencies]
 async-trait.workspace = true
 awaken-time.workspace = true
-tokio = { workspace = true, features = ["sync", "time", "macros"] }
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
 awaken-agent-contract.workspace = true
 awaken-lease-contract.workspace = true
 awaken-session-mcp-contract.workspace = true
@@ -26,6 +26,7 @@ awaken-session-execution-contract.workspace = true
 awaken-session-state-contract.workspace = true
 awaken-session-types.workspace = true
 serde_json.workspace = true
+tracing = "0.1"
 
 [features]
 # The realization observation checkpoints scenario tests read.

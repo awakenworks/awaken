@@ -14,8 +14,8 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::terminal::{
     CommittedTerminalProjection, committed_terminal_projection, deliver_committed_terminal,
 };
-use awaken_time::{WallClock, WallClockExt};
-use std::{future::Future, sync::Arc, time::Duration};
+use awaken_time::WallClockExt;
+use std::{future::Future, time::Duration};
 
 /// A failed approval wait leaves the committed ticket available for recovery.
 #[derive(Debug, thiserror::Error)]
@@ -63,30 +63,15 @@ impl From<ApprovalError> for Error {
 }
 
 /// Timeout applies to each callback wait, not the Run or ticket lifetime.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ApprovalOptions {
     timeout: Option<Duration>,
-    clock: Arc<dyn WallClock>,
-}
-
-impl Default for ApprovalOptions {
-    fn default() -> Self {
-        Self {
-            timeout: None,
-            clock: awaken_time::system_clock(),
-        }
-    }
 }
 
 impl ApprovalOptions {
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
-        self
-    }
-    #[must_use]
-    pub fn with_clock(mut self, clock: Arc<dyn WallClock>) -> Self {
-        self.clock = clock;
         self
     }
 }
@@ -160,6 +145,13 @@ where
             )
             .await;
         }
+        // A replay/ordinary terminal run never asks for time. An actual await
+        // must have its owner's clock before a callback can cause an effect;
+        // sample only after the wait so an elapsed ticket cannot borrow entry time.
+        let clock = runtime
+            .clock
+            .as_deref()
+            .ok_or(ConfigurationError::MissingClock)?;
         let callback = decide(ticket.clone());
         let wait = async {
             match options.timeout {
@@ -180,7 +172,7 @@ where
             _ = cancel => return crate::engine::run_commands::cancel_run(runtime, run_id, thread_id, context.clone()).await,
             answer = wait => answer?,
         };
-        let command = ResumeCommand::from_ticket(&ticket, answer, options.clock.now_ms());
+        let command = ResumeCommand::from_ticket(&ticket, answer, clock.now_ms());
         state = runtime.resume(command, reader, context.clone()).await?;
     }
     Ok(state)

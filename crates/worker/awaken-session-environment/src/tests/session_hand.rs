@@ -1129,6 +1129,7 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
         &unsupported_plan,
         None,
         &awaken_time::system_clock(),
+        awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
     )
     .await
     .expect_err("C1/E1 unsupported path");
@@ -1158,6 +1159,7 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
         &import_plan,
         None,
         &awaken_time::system_clock(),
+        awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
     )
     .await
     .expect_err("a failed container import is not reported as provisioned");

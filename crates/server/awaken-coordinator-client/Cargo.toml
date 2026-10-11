@@ -28,6 +28,7 @@ awaken-session-resource-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-worker-contract.workspace = true
 awaken-outbound-http = { workspace = true }
+awaken-observability.workspace = true
 awaken-worker-transport-security.workspace = true
 async-trait.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -39,6 +40,7 @@ tokio-util.workspace = true
 tracing = "0.1"
 
 [dev-dependencies]
+tempfile = "3"
 awaken-store-inmem.workspace = true
 awaken-dispatch = { workspace = true, features = ["test-support"] }
 awaken-worker-transport-security.workspace = true

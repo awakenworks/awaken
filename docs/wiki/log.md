@@ -914,3 +914,19 @@
   build and runtime host projections to the existing Environment contract.
   Package preparation cannot grant runtime registry access, and an unsupported
   build policy must fail at the existing provisioner boundary.
+
+## 2026-10-11 — Preserve owned Repository continuity and probe cleanup
+
+- [ADR-0063](../adr/0063-resource-input-identity-configuration-pinning-and-lifecycle.md)
+  distinguishes first initialization from verified writable Repository retention.
+- [ADR-0069](../adr/0069-acp-capability-configuration-lifecycle.md)
+  keeps probe cleanup owned through caller cancellation and peer failure.
+- [Observability boundary](../design/observability-eval-dataset-boundary.md)
+  records queue/request deadline stages and RPC correlation without changing authority.
+
+## 2026-10-11 — Observe complete dispatch prefixes and retain exact Create requests
+
+- [Operational feed contract](../../crates/contract/awaken-dispatch-contract/src/operational.rs)
+  keeps store identities sparse and forbids advancing past unresolved lower inserts.
+- [ADR-0069](../adr/0069-acp-capability-configuration-lifecycle.md)
+  reuses the original Create ticket through transient control response loss.
