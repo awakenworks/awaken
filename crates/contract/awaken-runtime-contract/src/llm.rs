@@ -80,6 +80,13 @@ pub struct ChatMessage {
     pub content: Vec<ContentBlock>,
 }
 
+impl ChatMessage {
+    /// Text projection of the same content blocks used by committed Messages.
+    pub fn text_content(&self) -> String {
+        extract_text(&self.content)
+    }
+}
+
 // The tool-call vocabulary is owned by `awaken-tool-contract`; the model port
 // still names it here so `llm::ToolCall` keeps resolving.
 pub use awaken_tool_contract::tool::ToolCall;

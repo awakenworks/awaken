@@ -39,6 +39,7 @@ tracing = "0.1"
 tempfile = "3"
 
 [dev-dependencies]
+schemars = "1"
 awaken-ext-background-task.workspace = true
 awaken-ext-compact.workspace = true
 awaken-store-fs.workspace = true

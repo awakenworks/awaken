@@ -16,6 +16,7 @@ impl RunExecutor for Runtime {
         activation: RunActivation,
         context: RuntimeRunContext,
     ) -> Result<RunState> {
+        crate::configuration::validate_configuration(self)?;
         let context = activation.narrow_context(context);
         // Execution is the single ingress for fresh activations, including durable
         // dispatch. Retain the exact immutable snapshot before the run can await so
@@ -341,8 +342,8 @@ async fn resume_with_continuation(
 ) -> Result<RunState> {
     let ticket = reader
         .resume_ticket(&command.run_id)
-        .ok_or_else(|| Error::Execution("run is not awaiting".to_string()))?;
-    validate_resume(&ticket, &command).map_err(|err| Error::Execution(err.to_string()))?;
+        .ok_or(awaken_runtime_contract::resume::ResumeError::NotWaiting)?;
+    validate_resume(&ticket, &command)?;
     if context.inherited_toolsets.is_some()
         && context.inherited_toolsets != ticket.inherited_toolsets
     {

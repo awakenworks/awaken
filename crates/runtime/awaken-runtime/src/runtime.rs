@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Weak};
 
+use crate::ConfigurationError;
 use awaken_agent_contract::agent::delegation::{ChildRunCancellation, DelegationId};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -207,7 +208,6 @@ impl Drop for ThreadExecutionGuard {
 /// The model provider, executable tools, and the
 /// permission gate are all ports, so the core never names a model SDK or a
 /// concrete tool id (G2).
-#[derive(Default)]
 pub struct Runtime {
     /// Executable snapshots resolvable by id. In a hosted deployment a config
     /// surface implements `AgentSnapshotResolver`; in-process this registry is
@@ -216,7 +216,7 @@ pub struct Runtime {
     /// Model provider, built from the catalog at the composition root.
     llm: Option<Arc<dyn LlmExecutor>>,
     /// Executable tools keyed by id; concrete ids come from extensions.
-    tools: RawToolRegistry,
+    pub(crate) tools: RawToolRegistry,
     /// The authorization gate; absent means tools run ungated (test-only).
     gate: Option<Arc<dyn ToolGateHook>>,
     /// The delegation executor, if any. The engine routes the tool whose id is
@@ -271,13 +271,30 @@ pub struct Runtime {
 static NOOP_METRICS: awaken_runtime_contract::metrics::NoopRecorder =
     awaken_runtime_contract::metrics::NoopRecorder;
 
+impl Default for Runtime {
+    fn default() -> Self {
+        Self {
+            snapshots: Default::default(),
+            llm: None,
+            tools: Default::default(),
+            gate: None,
+            run_delegation: None,
+            delivered_child_cancellations: Default::default(),
+            plugins: Vec::new(),
+            active_attempt_controls: Default::default(),
+            thread_execution: Default::default(),
+            retry_policy: Default::default(),
+            max_continuation_retries: 2,
+            max_consecutive_inference_failures: Default::default(),
+            circuit_breaker: Default::default(),
+            metrics: None,
+        }
+    }
+}
+
 impl Runtime {
     pub fn new() -> Self {
-        Self {
-            max_continuation_retries: 2,
-            // `FailureCeiling::default()` is already 1.
-            ..Self::default()
-        }
+        Self::default()
     }
 
     /// Acquire the sole process-local execution slot for `thread_id`.
@@ -461,6 +478,16 @@ impl Runtime {
     pub fn with_tool(mut self, tool: Arc<dyn RawTool>) -> Self {
         self.tools.insert(tool);
         self
+    }
+
+    /// Fallible tool registration reports a duplicate immediately.
+    pub fn try_with_tool(mut self, tool: Arc<dyn RawTool>) -> Result<Self, ConfigurationError> {
+        let id = tool.id().to_owned();
+        if !self.tools.insert(tool) {
+            return Err(ConfigurationError::DuplicateTool { id });
+        }
+        crate::configuration::validate_configuration(&self)?;
+        Ok(self)
     }
 
     /// Inject the permission gate consulted before every tool call.

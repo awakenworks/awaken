@@ -6,7 +6,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 pub mod error;
-pub use error::{RunError, RunErrorKind};
+pub use error::{RunError, RunErrorClassification, RunErrorKind};
 
 mod monotone;
 pub use monotone::{MonotoneAdmission, SourceOrder, monotone_admission};

@@ -398,6 +398,18 @@ pub fn awaken_runtime_contract::delegation::RunDelegationService::supports_paral
 pub fn awaken_runtime_contract::delegation::RunDelegationService::target_agent_id(&self, &serde_json::value::Value) -> core::result::Result<awaken_runtime_contract::snapshot::AgentId, awaken_runtime_contract::delegation::DelegationExecutionError>
 pub fn awaken_runtime_contract::delegation::RunDelegationService::target_agent_id_for(&self, &str, &serde_json::value::Value) -> core::result::Result<awaken_runtime_contract::snapshot::AgentId, awaken_runtime_contract::delegation::DelegationExecutionError>
 pub fn awaken_runtime_contract::delegation::RunDelegationService::tool_id(&self) -> &str
+pub mod awaken_runtime_contract::diagnostic
+#[non_exhaustive] pub enum awaken_runtime_contract::diagnostic::RuntimeErrorKind
+pub awaken_runtime_contract::diagnostic::RuntimeErrorKind::Conflict
+pub awaken_runtime_contract::diagnostic::RuntimeErrorKind::Internal
+pub awaken_runtime_contract::diagnostic::RuntimeErrorKind::InvalidConfiguration
+pub awaken_runtime_contract::diagnostic::RuntimeErrorKind::InvalidRequest
+pub awaken_runtime_contract::diagnostic::RuntimeErrorKind::Unavailable
+pub struct awaken_runtime_contract::diagnostic::RuntimeDiagnostic
+impl awaken_runtime_contract::diagnostic::RuntimeDiagnostic
+pub fn awaken_runtime_contract::diagnostic::RuntimeDiagnostic::code(&self) -> &'static str
+pub fn awaken_runtime_contract::diagnostic::RuntimeDiagnostic::kind(&self) -> awaken_runtime_contract::diagnostic::RuntimeErrorKind
+pub fn awaken_runtime_contract::diagnostic::RuntimeDiagnostic::new(awaken_runtime_contract::diagnostic::RuntimeErrorKind, &'static str, impl core::error::Error + core::marker::Send + core::marker::Sync + 'static) -> Self
 pub mod awaken_runtime_contract::execution
 pub enum awaken_runtime_contract::execution::AttemptExecutorRegistryError
 pub awaken_runtime_contract::execution::AttemptExecutorRegistryError::DuplicateBackend(alloc::string::String)
@@ -411,10 +423,18 @@ pub awaken_runtime_contract::execution::Cancellation::None
 pub awaken_runtime_contract::execution::Cancellation::RemoteAbort
 pub enum awaken_runtime_contract::execution::Error
 pub awaken_runtime_contract::execution::Error::Commit(alloc::string::String)
+pub awaken_runtime_contract::execution::Error::Diagnostic(awaken_runtime_contract::diagnostic::RuntimeDiagnostic)
 pub awaken_runtime_contract::execution::Error::Execution(alloc::string::String)
 pub awaken_runtime_contract::execution::Error::Indeterminate
 pub awaken_runtime_contract::execution::Error::Resolution(alloc::string::String)
 pub awaken_runtime_contract::execution::Error::StateConflict
+impl awaken_runtime_contract::execution::Error
+pub fn awaken_runtime_contract::execution::Error::code(&self) -> &'static str
+pub fn awaken_runtime_contract::execution::Error::kind(&self) -> awaken_runtime_contract::diagnostic::RuntimeErrorKind
+impl core::convert::From<awaken_agent_contract::thread::commit::coordinator::Error> for awaken_runtime_contract::execution::Error
+pub fn awaken_runtime_contract::execution::Error::from(awaken_agent_contract::thread::commit::coordinator::Error) -> Self
+impl core::convert::From<awaken_runtime_contract::resume::ResumeError> for awaken_runtime_contract::execution::Error
+pub fn awaken_runtime_contract::execution::Error::from(awaken_runtime_contract::resume::ResumeError) -> Self
 pub enum awaken_runtime_contract::execution::LiveInput
 pub awaken_runtime_contract::execution::LiveInput::None
 pub awaken_runtime_contract::execution::LiveInput::SafeBoundary
@@ -560,6 +580,8 @@ pub fn awaken_runtime_contract::llm::AssistantOutput::tool_calls(&self) -> alloc
 pub struct awaken_runtime_contract::llm::ChatMessage
 pub awaken_runtime_contract::llm::ChatMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_runtime_contract::llm::ChatMessage::role: awaken_agent_contract::agent::message::Role
+impl awaken_runtime_contract::llm::ChatMessage
+pub fn awaken_runtime_contract::llm::ChatMessage::text_content(&self) -> alloc::string::String
 pub struct awaken_runtime_contract::llm::ChatRequest
 pub awaken_runtime_contract::llm::ChatRequest::inference: awaken_runtime_contract::agent_bindings::InferenceOptions
 pub awaken_runtime_contract::llm::ChatRequest::messages: alloc::vec::Vec<awaken_runtime_contract::llm::ChatMessage>
@@ -1416,6 +1438,7 @@ pub fn awaken_runtime_contract::resolved::ToolDescriptor::for_args<A: schemars::
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::for_tool<T: awaken_tool_contract::tool::Tool>(&str) -> Self
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::model_parameters(&self) -> serde_json::value::Value
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::pinned(&str, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> Self
+pub fn awaken_runtime_contract::resolved::ToolDescriptor::try_for_tool<T: awaken_tool_contract::tool::Tool>(&str) -> core::result::Result<Self, awaken_runtime_contract::resolved::ToolSchemaError>
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::try_pinned(&str, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> core::result::Result<Self, awaken_runtime_contract::resolved::ToolSchemaError>
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::with_detached_targets(self, impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::with_kind(self, awaken_runtime_contract::resolved::ToolKind) -> Self
@@ -1514,6 +1537,10 @@ pub awaken_runtime_contract::resume::ResumeError::RunMismatch
 pub awaken_runtime_contract::resume::ResumeError::SnapshotMismatch
 pub awaken_runtime_contract::resume::ResumeError::ThreadMismatch
 pub awaken_runtime_contract::resume::ResumeError::ToolCallMismatch
+impl awaken_runtime_contract::resume::ResumeError
+pub fn awaken_runtime_contract::resume::ResumeError::code(&self) -> &'static str
+impl core::convert::From<awaken_runtime_contract::resume::ResumeError> for awaken_runtime_contract::execution::Error
+pub fn awaken_runtime_contract::execution::Error::from(awaken_runtime_contract::resume::ResumeError) -> Self
 pub enum awaken_runtime_contract::resume::ResumeResult
 pub awaken_runtime_contract::resume::ResumeResult::Continue
 pub awaken_runtime_contract::resume::ResumeResult::Input(alloc::string::String)
@@ -1642,6 +1669,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_pause(s
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_provider_server_tools(self, alloc::vec::Vec<awaken_runtime_contract::resolved::ProviderServerTool>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_session_plugin(self, alloc::sync::Arc<dyn awaken_runtime_contract::Plugin>) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_store<T>(self, alloc::sync::Arc<T>) -> Self where T: awaken_agent_contract::thread::commit::coordinator::Coordinator + awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView + 'static
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_checkpoint(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_sink(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_terminal_observer(self, alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>) -> Self
@@ -1813,6 +1841,10 @@ pub awaken_runtime_contract::ResumeError::RunMismatch
 pub awaken_runtime_contract::ResumeError::SnapshotMismatch
 pub awaken_runtime_contract::ResumeError::ThreadMismatch
 pub awaken_runtime_contract::ResumeError::ToolCallMismatch
+impl awaken_runtime_contract::resume::ResumeError
+pub fn awaken_runtime_contract::resume::ResumeError::code(&self) -> &'static str
+impl core::convert::From<awaken_runtime_contract::resume::ResumeError> for awaken_runtime_contract::execution::Error
+pub fn awaken_runtime_contract::execution::Error::from(awaken_runtime_contract::resume::ResumeError) -> Self
 pub enum awaken_runtime_contract::ResumeResult
 pub awaken_runtime_contract::ResumeResult::Continue
 pub awaken_runtime_contract::ResumeResult::Input(alloc::string::String)
@@ -2241,6 +2273,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_pause(s
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_provider_server_tools(self, alloc::vec::Vec<awaken_runtime_contract::resolved::ProviderServerTool>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_session_plugin(self, alloc::sync::Arc<dyn awaken_runtime_contract::Plugin>) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_store<T>(self, alloc::sync::Arc<T>) -> Self where T: awaken_agent_contract::thread::commit::coordinator::Coordinator + awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView + 'static
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_checkpoint(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_sink(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_terminal_observer(self, alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>) -> Self

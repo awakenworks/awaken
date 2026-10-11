@@ -339,7 +339,7 @@
     "awaken-runtime::engine/inference.rs::infer_with_retry_inner": 297,
     "awaken-runtime::engine/inference.rs::infer_with_retry_observed": 152,
     "awaken-runtime::engine/resume.rs::drive_resumed": 380,
-    "awaken-runtime::engine/run_loop.rs::drive": 523,
+    "awaken-runtime::engine/run_loop.rs::drive": 521,
     "awaken-runtime::engine/run_loop.rs::infer_step": 240,
     "awaken-runtime::engine/run_loop.rs::run_agent_loop": 212,
     "awaken-sandbox-container::k8s.rs::build_pod_with_continuation": 309,

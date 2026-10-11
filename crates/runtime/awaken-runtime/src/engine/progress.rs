@@ -341,7 +341,7 @@ async fn commit_step_delta(
             resume,
         )?)
         .await
-        .map_err(|err| Error::Commit(err.to_string()))?;
+        .map_err(Error::from)?;
     Ok(())
 }
 

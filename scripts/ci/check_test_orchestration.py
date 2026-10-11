@@ -20,6 +20,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import generate_hooks
+from check_sdk_consumer import admission_errors as sdk_admission_errors
 from _k8s_container_gate_fitness import (
     k8s_container_gate_errors,
     self_test as k8s_container_gate_self_test,
@@ -747,6 +748,7 @@ def rust_hook_errors(hooks: str, gate: str) -> list[str]:
     owner_text = owner.group(1) if owner else ""
     if owner_text.count("run: scripts/ci/check-rust.sh --quick") != 1:
         errors.append("Rust pre-commit must delegate to the canonical gate once")
+    errors.extend(sdk_admission_errors(owner_text, gate))
     if hooks.count("run: python3 scripts/ci/check_crate_boundaries.py") != 1:
         errors.append("crate boundaries must have one universal pre-commit owner")
     push_owner = re.search(r"(?m)^    rust-quick:\n((?:      .*\n)+)", pre_push)

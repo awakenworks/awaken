@@ -75,6 +75,9 @@ jobs:
         # keep their native portability gates without requesting Linux support.
         shell: bash
         run: scripts/ci/check-trusted-host-portability.sh ${{ runner.os == 'Linux' && '--linux-supervision' || '' }}
+      - name: Verify the independent SDK consumer on the native platform
+        shell: bash
+        run: python3 scripts/ci/check_sdk_consumer.py
       # Same exact candidate SHA must exercise the Session/MCP crash matrix on
       # native Linux/macOS before merge, independently of tag publication.
       - name: Verify native Session observations and MCP recovery

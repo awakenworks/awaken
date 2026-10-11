@@ -306,10 +306,19 @@ def _implements_trait(content: str, trait: str) -> bool:
 
 
 def _forbidden_neutral_impl_errors(rel: Path, content: str) -> list[str]:
+    syntax = _crate_boundary_workspace.rust_syntax(content)
+    # This one port-owned adapter translates T::Args/Output without defining a
+    # concrete Tool or tool ID. Extensions and the SDK share it through their
+    # contract dependency; admitting it must not admit a second/concrete impl.
+    typed_adapter = (
+        rel.as_posix() == "crates/contract/awaken-tool-contract/src/typed.rs"
+        and len(re.findall(r"\bRawTool\s+for\b", syntax)) == 1
+        and re.search(r"\bimpl\s*<\s*T\s*:\s*Tool\s*>\s*RawTool\s+for\s+Erased\s*<\s*T\s*>\s*\{", syntax) is not None
+    )
     return [
         f"{rel}: concrete {trait} implementation in neutral code; {reason}"
         for trait, reason in FORBIDDEN_NEUTRAL_IMPL_TRAITS.items()
-        if _implements_trait(content, trait)
+        if _implements_trait(content, trait) and not (trait == "RawTool" and typed_adapter)
     ]
 
 
@@ -504,6 +513,12 @@ use crate::{
         'const EXAMPLE: &str = "impl Tool for Fake {}";\n'
         'const RAW: &str = r#"impl RawTool for Fake {}"#;',
     ), "S3/C10 impl-like string literals are inert"
+    typed_rel = Path("crates/contract/awaken-tool-contract/src/typed.rs")
+    generic_adapter = "impl<T: Tool> RawTool for Erased<T> {}"
+    assert not _forbidden_neutral_impl_errors(typed_rel, generic_adapter), "generic port-owned adaptation is neutral"
+    assert _forbidden_neutral_impl_errors(neutral_rel, generic_adapter), "the engine cannot own tool implementations"
+    assert _forbidden_neutral_impl_errors(typed_rel, "impl RawTool for Concrete {}"), "contract location cannot admit a concrete tool"
+    assert _forbidden_neutral_impl_errors(typed_rel, generic_adapter + " impl RawTool for Concrete {}"), "generic allowance cannot hide an additional concrete impl"
     resource_modes = Path("crates/contract/awaken-tool-contract/src/tool.rs")
     assert not _forbidden_neutral_symbol_errors(
         resource_modes,

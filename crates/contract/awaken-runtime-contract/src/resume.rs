@@ -140,6 +140,35 @@ pub enum ResumeError {
     InvalidContextMessage,
 }
 
+impl ResumeError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::NotWaiting => "run_not_awaiting",
+            Self::CorrelationMismatch => "resume_correlation_mismatch",
+            Self::RunMismatch => "resume_run_mismatch",
+            Self::ThreadMismatch => "resume_thread_mismatch",
+            Self::SnapshotMismatch => "resume_snapshot_mismatch",
+            Self::FingerprintMismatch => "resume_fingerprint_mismatch",
+            Self::Expired => "resume_expired",
+            Self::ResultKindMismatch => "resume_result_kind_mismatch",
+            Self::ToolCallMismatch => "resume_tool_call_mismatch",
+            Self::InvalidContextRole => "resume_invalid_context_role",
+            Self::InvalidContextMessage => "resume_invalid_context_message",
+        }
+    }
+}
+
+impl From<ResumeError> for crate::execution::Error {
+    fn from(error: ResumeError) -> Self {
+        use crate::diagnostic::{RuntimeDiagnostic, RuntimeErrorKind};
+        let kind = match &error {
+            ResumeError::NotWaiting | ResumeError::Expired => RuntimeErrorKind::Conflict,
+            _ => RuntimeErrorKind::InvalidRequest,
+        };
+        RuntimeDiagnostic::new(kind, error.code(), error).into()
+    }
+}
+
 /// Validate a resume against the committed ticket. Every identity must match and
 /// the deadline (if any) must not have passed, or the resume fails closed.
 pub fn validate_resume(ticket: &ResumeTicket, command: &ResumeCommand) -> Result<(), ResumeError> {
