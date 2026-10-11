@@ -27,33 +27,14 @@ INPUT_GLOBS = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "crates/**", "
 
 
 def workspace_features() -> str:
-    features = tomllib.loads(PROFILE.read_text(encoding="utf-8"))["workspace_features"]
-    if not isinstance(features, list) or not features or any(not isinstance(f, str) or not f for f in features) or len(set(features)) != len(features):
-        raise ValueError("workspace_features must be a nonempty unique string list")
+    features, _ = crate_test.load_profile(PROFILE)
     return ",".join(features)
 
 
 def affected_packages(metadata: dict, changed: list[str], root: Path = ROOT) -> tuple[list[str], str]:
-    member_ids = metadata["workspace_members"]
-    members = set(member_ids)
-    packages = {p["id"]: p for p in metadata["packages"] if p["id"] in members}
-    local_records = [p for p in metadata["packages"] if p["id"] in members]
-    if not members or len(members) != len(member_ids) or set(packages) != members or len(local_records) != len(members):
-        raise ValueError("Cargo metadata must contain every unique workspace member")
-    if metadata.get("resolve") is None:
-        raise ValueError("Cargo's resolved feature/dependency graph is required")
+    packages = {p["id"]: p for p in crate_test._members(metadata).values()}
+    members = set(packages)
     nodes = metadata["resolve"]["nodes"]
-    node_ids = [node["id"] for node in nodes]
-    if len(set(node_ids)) != len(node_ids) or not members <= set(node_ids):
-        raise ValueError("Cargo's resolved graph omits or duplicates a workspace member")
-    package_ids = [package["id"] for package in metadata["packages"]]
-    if len(set(package_ids)) != len(package_ids) or not set(node_ids) <= set(package_ids):
-        raise ValueError("Cargo's resolved graph contains unknown or duplicate package identities")
-    resolved_ids = set(node_ids)
-    if any(dependency["pkg"] not in resolved_ids for node in nodes for dependency in node["deps"]):
-        raise ValueError("Cargo's resolved graph omits a dependency node")
-    if len({package["name"] for package in packages.values()}) != len(packages):
-        raise ValueError("Cargo's workspace package names must be unique selectors")
     owners = sorted(((Path(p["manifest_path"]).parent.relative_to(root).as_posix(), identity) for identity, p in packages.items()), reverse=True)
     selected: set[str] = set()
     for path in changed:
@@ -151,15 +132,7 @@ def compile_scope(metadata: dict, changed: list[str], original: list[str], root:
             index += 2
         else:
             return original, sorted(packages), "whole: unsupported target/profile/config flag"
-    retained = {packages[name]["id"] for name in {*selected, *feature_owners}}
-    closures = {p["id"]: crate_test._closure(metadata, p["id"]) for p in packages.values()}
-    while True:
-        dependencies = set().union(*(closures[identity] for identity in retained))
-        peers = {identity for identity, closure in closures.items() if closure & dependencies}
-        if peers <= retained:
-            break
-        retained |= peers
-    names = sorted(p["name"] for p in packages.values() if p["id"] in retained)
+    names = crate_test.peer_packages(metadata, {*selected, *feature_owners})
     if len(names) == len(packages):
         return original, names, "whole: shared-unit peer closure reaches the workspace"
     return ["cargo", "check", *(part for name in names for part in ("-p", name)), "--all-targets", *flags], names, "affected owners and all potentially shared-unit contributing peers"
@@ -787,27 +760,30 @@ def main() -> int:
             parser.error("--check-command requires the original cargo check argv")
         original = args.check_command
         if original is None:
-            features = workspace_features()
+            feature_names, companions = crate_test.load_profile(PROFILE)
+            features = ",".join(feature_names)
         else:
             features = ",".join(original[i + 1] for i, value in enumerate(original[:-1]) if value == "--features")
-        environment = dict(os.environ)
-        environment.setdefault("CARGO_TARGET_DIR", str(ROOT / "target"))
-        environment["CARGO_BUILD_BUILD_DIR"] = environment["CARGO_TARGET_DIR"]
+        environment = crate_test.environment(ROOT)
         target_reason = crate_test.native_graph_reason(ROOT, environment) if original is not None else ""
         metadata = crate_test.full_graph_metadata(features.split(",") if features else [], root=ROOT,
                                                   environment=environment, host_only=original is not None and not target_reason)
         if original is not None:
             command, selected, reason = compile_scope(metadata, changed, original, ROOT, target_reason)
+            commands = [command]
         else:
             selected, reason = affected_packages(metadata, changed, ROOT)
-            command = ["cargo", "nextest", "run", "--workspace", "--locked", "--features", features]
-            if selected:
-                command += ["-E", " | ".join(f"package(={name})" for name in selected)]
+            errors = crate_test.companion_errors(metadata, companions, ROOT)
+            if errors:
+                raise crate_test.PlanError("; ".join(errors))
+            commands = crate_test.plan_packages(metadata, feature_names, companions, selected, []) if selected else []
+            command = commands[-1] if commands else []
         plan = {"schema_version": 1, "kind": "local-affected", "revision": git_output("rev-parse", "HEAD").decode().strip(), "base": base, "changed": changed, "selected_packages": selected, "reason": reason, "command": command if selected else [], "full_gate": False,
                 "source_kind": "working-tree", "source_digest": fingerprint, "index_tree": git_output("write-tree").decode().strip(),
                 "untracked_files": {name: hashlib.sha256(data).hexdigest() for name, data in untracked_sources().items()}}
         if original is not None:
             plan.update(kind="local-affected-check", original_command=original)
+        plan["commands"] = commands
         # Every diagnostic fact above is read before this final planning fence,
         # including no-run/no-work plans; none may mix a later axis with digest.
         if source_snapshot()[0] != fingerprint:
@@ -826,9 +802,15 @@ def main() -> int:
         if original is not None and crate_test.native_graph_reason(ROOT, environment) != target_reason:
             raise ValueError("Compile target admission changed before execution; no execution started")
         started = time.monotonic()
-        status = subprocess.run(command, cwd=ROOT, env=environment).returncode
-        if status < 0:
-            status = 128 - status
+        def verify():
+            if source_snapshot()[0] != fingerprint:
+                raise ValueError("Source changed before or during affected execution")
+            if original is not None and crate_test.native_graph_reason(ROOT, environment) != target_reason:
+                raise ValueError("Compile target admission changed during execution")
+        def record(rows):
+            plan.update(status="running", rows=rows)
+            receipt.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+        status, rows = crate_test.execute_commands(commands, environment, root=ROOT, verify=verify, record=record)
         try:
             unchanged = source_snapshot()[0] == fingerprint
         except (OSError, ValueError, subprocess.CalledProcessError) as error:
@@ -840,7 +822,8 @@ def main() -> int:
         if original is not None and crate_test.native_graph_reason(ROOT, environment) != target_reason:
             print("Compile target admission changed during execution; result cannot qualify this context", file=sys.stderr)
             status = status or 1
-        plan.update(exit_code=status, source_unchanged=unchanged, duration_seconds=time.monotonic() - started)
+        plan.update(status="passed" if status == 0 else "failed", rows=rows, exit_code=status,
+                    source_unchanged=unchanged, duration_seconds=time.monotonic() - started)
         try:
             receipt.write_text(json.dumps(plan, indent=2), encoding="utf-8")
         except OSError as error:
@@ -856,7 +839,7 @@ def main() -> int:
             print(os.fsdecode(error.output), file=sys.stderr, end="")
         print(f"Affected planning command failed (status {status}); no execution started: {error.cmd}", file=sys.stderr)
         return status
-    except (OSError, ValueError, KeyError, TypeError) as error:
+    except (OSError, ValueError, KeyError, TypeError, crate_test.PlanError) as error:
         print(f"Cannot establish affected working subject or plan: {error}", file=sys.stderr)
         return 1
 

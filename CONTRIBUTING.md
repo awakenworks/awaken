@@ -24,7 +24,7 @@ commands and their flags by `check_gate_arguments.py`).
 
 | Scope | Command | Notes |
 | --- | --- | --- |
-| One crate | `scripts/ci/test.sh -p awaken-cli` | Adds the features and companion build the full gate supplies; `--dry-run` prints the exact commands. Extra arguments go to `cargo nextest run`. |
+| One crate | `scripts/ci/test.sh -p awaken-cli` | Compiles the authored whole test graph, filters execution to the requested package, and builds its companion once; `--dry-run` prints exact commands. Supported runner/profile arguments retain their meaning; graph-changing requests fail explicitly before tests. |
 | Everything Rust | `scripts/ci/check-rust.sh --full` | Clippy over all features, then the workspace tests. A clippy failure skips the tests. |
 | End to end | `scripts/ci/check-all.sh --group e2e` | Real binaries and processes. `scripts/ci/check-all.sh --list-groups` lists the other groups (postgres, k3d, sandbox, ...). |
 | Formal | `scripts/ci/check_formal.sh --tier pr` | `--affected <base>` narrows a pr run; the default full tier runs every harness. Read [`formal/README.md`](formal/README.md) first. |
@@ -45,9 +45,9 @@ Kani needs; `scripts/ci/bootstrap_kani.sh` installs the qualified Kani.
 - **Required test features** live in one place,
   [`.config/rust-tests.toml`](.config/rust-tests.toml): `workspace_features`
   (today `awaken-cli/container-k8s,awaken-sandbox/hand`) and the `[[companion]]`
-  binary some tests launch (`awaken-sandbox`). `scripts/ci/test.sh` derives a
-  crate's features from it and Cargo's resolve; a bare `cargo nextest run -p`
-  does not.
+  binary some tests launch (`awaken-sandbox`). `scripts/ci/test.sh` retains the authored whole graph and filters package
+  execution; copying a root's resolved features cannot preserve a peer's
+  requests on shared dependencies.
 - **`CARGO_BUILD_BUILD_DIR` must equal `CARGO_TARGET_DIR`** for tests: they find
   the companion beside their own executable. `scripts/ci/test.sh` and
   `scripts/ci/check-rust.sh --full` set it.
