@@ -1,5 +1,15 @@
 # Wiki Update Log
 
+## 2026-10-12 — Bound diagnostic trace storage and move export off requests
+
+- [Observability boundary](../design/observability-eval-dataset-boundary.md)
+  keeps JSON-line export on the existing bounded SDK batch processor and limits
+  the current/previous files to 8 MiB each. Diagnostics cannot fill a workload's
+  scratch volume indefinitely or synchronously block its request span.
+- Causal unit tests cover capacity boundaries, rollover, concurrent writers,
+  legacy excess, oversized records, I/O failure and a blocked exporter. Registry
+  heartbeat and withdrawal stage spans retain the existing request trace.
+
 ## 2026-10-10 — Release never-attempted frozen WorkUnit preparation
 
 - [ADR-0078](../adr/0078-terminal-recovery-retains-the-existing-session-authority.md)
