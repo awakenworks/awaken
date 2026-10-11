@@ -1,4 +1,158 @@
 use super::*;
+use crate::kubernetes_handle::{KubernetesProjectedKind, KubernetesProjectedObject};
+
+#[test]
+fn original_projected_set_cutover_preserves_history_and_rejects_partial_evidence() {
+    // Feature closure F1/F2: with K8s off the common codec/values still compile;
+    // only the physical adapter's attempt accessor is gated. With K8s on the
+    // same decoder and physical membership checks compile. The canonical
+    // process-assembly-production and all-feature Clippy graphs cover these
+    // causes; the wire decision table below keeps one codec in both graphs.
+    // Causes: C1 complete empty/nonempty original set; C2 missing/blank UID,
+    // duplicate key, foreign namespace/Pod, partial origin or missing list;
+    // C3 wire schema 3 versus historical schema 1/2. Effects: E1 C1+schema3
+    // roundtrips and retains ordinary fingerprints; E2 any C2 refuses decoding
+    // before an effect; E3 C1 cannot be relabelled schema1/2. Rows H1=complete
+    // empty, H2=complete nonempty -> E1; H3-H10=each independent bad axis ->E2;
+    // H11=old schema+new carrier ->E3. Historical golden bytes below remain
+    // unchanged; missing historical evidence stays None, never complete empty.
+    for objects in [
+        Vec::new(),
+        vec![KubernetesProjectedObject {
+            kind: KubernetesProjectedKind::Secret,
+            name: "credential-0".into(),
+            uid: "secret-uid".into(),
+            owner_references_fingerprint: "owner-digest".into(),
+        }],
+    ] {
+        let participants = KubernetesProjectedParticipants::new(
+            "default".into(),
+            "pod-uid".into(),
+            objects,
+            Some("original-attempt".into()),
+            None,
+        )
+        .unwrap();
+        let current = pc::SandboxHandle::container_v2(
+            "scope",
+            container_v2(
+                Some(ContainerContinuationHandle::KubernetesContinuationV3 {
+                    pod_uid: "pod-uid".into(),
+                    claim_uid: None,
+                    participants: Box::new(participants),
+                }),
+                Vec::new(),
+            ),
+        );
+        let encoded = serde_json::to_value(&current).unwrap();
+        assert_eq!(
+            encoded["payload"]["schema"], "container_v3",
+            "H1/H2 atomic writer cutover"
+        );
+        let decoded: pc::SandboxHandle = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(
+            decoded.container_payload().unwrap(),
+            current.container_payload().unwrap()
+        );
+        assert_eq!(decoded.container_physical_incarnation().unwrap(), "pod-uid");
+        for axis in [
+            "missing-list",
+            "missing-pod",
+            "blank-uid",
+            "duplicate",
+            "partial-origin",
+            "foreign-pod",
+            "partial-fingerprint",
+            "invalid-name",
+            "old-schema",
+            "outer-restore",
+        ] {
+            let mut changed = encoded.clone();
+            let projection = &mut changed["payload"]["previous"]["runtime_handle"]["participants"];
+            match axis {
+                "missing-list" => {
+                    projection.as_object_mut().unwrap().remove("objects");
+                }
+                "missing-pod" => {
+                    projection.as_object_mut().unwrap().remove("pod_uid");
+                }
+                "blank-uid" => {
+                    projection["objects"] = serde_json::json!([{"kind":"secret","name":"credential-0","uid":" ","owner_references_fingerprint":"owner-digest"}])
+                }
+                "duplicate" => {
+                    projection["objects"] = serde_json::json!([{"kind":"secret","name":"credential-0","uid":"a","owner_references_fingerprint":"owner-digest"},{"kind":"secret","name":"credential-0","uid":"b","owner_references_fingerprint":"owner-digest"}])
+                }
+                "partial-origin" => {
+                    projection["origin"] =
+                        serde_json::json!({"kind":"restoration","plan_fingerprint":"plan"})
+                }
+                "foreign-pod" => projection["pod_uid"] = "another-pod".into(),
+                "invalid-name" => {
+                    projection["objects"] = serde_json::json!([{"kind":"secret","name":"credential?query=1","uid":"a","owner_references_fingerprint":"owner-digest"}])
+                }
+                "partial-fingerprint" => {
+                    changed["payload"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("adoption_fingerprint");
+                }
+                "old-schema" => changed["payload"]["schema"] = "container_v2".into(),
+                "outer-restore" => changed["restoration"] = future_evidence(),
+                _ => unreachable!(),
+            }
+            let refused = serde_json::from_value::<pc::SandboxHandle>(changed)
+                .and_then(|handle| handle.container_payload().map_err(serde::de::Error::custom));
+            assert!(refused.is_err(), "H3-H11/{axis}");
+        }
+    }
+}
+
+#[test]
+fn restored_original_set_never_creates_ordinary_realization_authority() {
+    // H12 causes: exact restore tuple+plan+original complete set, with no normal
+    // Create attempt/fingerprints. Effects: schema3 roundtrip keeps the restore
+    // origin, adoption fingerprint remains None, ordinary incarnation authority
+    // is refused. H13 inserting a normal attempt alongside restore -> reject.
+    let evidence: pc::SandboxRestorationEvidence =
+        serde_json::from_value(future_evidence()).unwrap();
+    let participants = KubernetesProjectedParticipants::new(
+        "default".into(),
+        "pod-uid".into(),
+        Vec::new(),
+        None,
+        Some((evidence.clone(), "plan".into())),
+    )
+    .unwrap();
+    let handle = pc::SandboxHandle::container(
+        "scope",
+        container_v1(Some(
+            ContainerContinuationHandle::KubernetesContinuationV3 {
+                pod_uid: "pod-uid".into(),
+                claim_uid: None,
+                participants: Box::new(participants),
+            },
+        )),
+    );
+    let mut value = serde_json::to_value(&handle).unwrap();
+    value["restoration"] = serde_json::to_value(&evidence).unwrap();
+    assert_eq!(value["payload"]["schema"], "container_v3");
+    let decoded: pc::SandboxHandle = serde_json::from_value(value.clone()).unwrap();
+    assert!(decoded.container_payload().is_ok(), "H12");
+    assert!(decoded.container_adoption_fingerprint().unwrap().is_none());
+    assert!(decoded.container_physical_incarnation().is_err());
+    let mut wrong_outer = value.clone();
+    wrong_outer["restoration"]["effect_id"] = "foreign-effect".into();
+    let decoded: pc::SandboxHandle = serde_json::from_value(wrong_outer).unwrap();
+    assert!(
+        decoded.container_payload().is_err(),
+        "H14 inner/outer origin mismatch"
+    );
+    let mut changed = value;
+    changed["payload"]["previous"]["runtime_handle"]["participants"]["origin"]["attempt"] =
+        "fabricated-normal".into();
+    let decoded: pc::SandboxHandle = serde_json::from_value(changed).unwrap();
+    assert!(decoded.container_payload().is_err(), "H13");
+}
 
 /// Wire written by the closed payload enum that previously lived in the
 /// neutral contract, generated from that implementation (never hand-edited).
@@ -429,6 +583,7 @@ fn future_host_bind_is_reader_only_and_legacy_nested_enum_rejects_it() {
             assert_eq!(claim_uid.as_deref(), Some("claim-uid-a"), "R9/E2 claim");
         }
         ContainerContinuationHandle::KubernetesContinuation { .. }
+        | ContainerContinuationHandle::KubernetesContinuationV3 { .. }
         | ContainerContinuationHandle::HostBindRestoration(_) => panic!("R9/E2 wrong kind"),
         #[cfg(feature = "k8s")]
         ContainerContinuationHandle::KubernetesGuardedClaim(_) => panic!("R9/E2 wrong kind"),
@@ -455,7 +610,8 @@ fn future_host_bind_is_reader_only_and_legacy_nested_enum_rejects_it() {
             assert_eq!(locator.staging_root(), "/provider/staging/a", "R10/E3")
         }
         ContainerContinuationHandle::KubernetesContinuation { .. }
-        | ContainerContinuationHandle::KubernetesContinuationV2 { .. } => {
+        | ContainerContinuationHandle::KubernetesContinuationV2 { .. }
+        | ContainerContinuationHandle::KubernetesContinuationV3 { .. } => {
             panic!("R10/E3 wrong kind")
         }
         #[cfg(feature = "k8s")]

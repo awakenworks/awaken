@@ -3,6 +3,10 @@
 // @formal entrypoint sandbox_continuation.ephemeral_never_allocates_or_references_a_claim
 //! Kubernetes realization of one retained active-filesystem volume.
 
+use super::{
+    SANDBOX_ADOPTION_ANNOTATION, SANDBOX_ATTEMPT_ANNOTATION, SANDBOX_REALIZATION_ANNOTATION,
+    participants, realization,
+};
 use crate::ContainerContinuationHandle;
 use awaken_provisioning_contract as pc;
 use k8s_openapi::api::core::v1::{
@@ -109,16 +113,21 @@ pub(super) fn rebuild_continuation_expectation(
     else {
         return Ok(None);
     };
-    let Some(ContainerContinuationHandle::KubernetesContinuationV2 {
-        pod_uid,
-        claim_uid: Some(claim_uid),
-    }) = source_runtime_handle.as_ref()
+    if source_runtime_handle
+        .as_ref()
+        .is_some_and(ContainerContinuationHandle::terminal_only)
+    {
+        return Err(backend("joined-empty evidence cannot authorize rebuild"));
+    }
+    let Some((pod_uid, Some(claim_uid))) = source_runtime_handle
+        .as_ref()
+        .and_then(ContainerContinuationHandle::kubernetes_incarnation)
     else {
         return Err(backend(
             "Kubernetes rebuild requires current Pod and continuation PVC incarnation evidence",
         ));
     };
-    if pod_uid != source_incarnation {
+    if pod_uid != source_incarnation.as_str() {
         return Err(backend(
             "Kubernetes rebuild source Pod differs from its authorized incarnation",
         ));
@@ -130,7 +139,7 @@ pub(super) fn rebuild_continuation_expectation(
     };
     Ok(Some(K8sRebuildContinuation {
         claim_name,
-        claim_uid: claim_uid.clone(),
+        claim_uid: claim_uid.to_owned(),
     }))
 }
 
@@ -436,6 +445,42 @@ pub(super) fn pod_cleanup_gate_held(pod: &Pod) -> bool {
 /// point: if Rebuild's DELETE wins first, the Pod becomes terminating and this
 /// operation has no PVC side effect; if this patch wins, the stable Pod name
 /// cannot be released until [`release_pod_cleanup_gate`] removes the finalizer.
+/// Begin the existing retained Pod/PVC disposal in its fixed order. The
+/// retained Pod gate stays installed on a lost PVC response; re-entry observes
+/// that same deletion intent. This is the original protocol, not another state.
+pub(super) async fn begin_bound_disposal(
+    runtime: &K8sRuntime,
+    container_id: &str,
+    pod: &Pod,
+    pod_uid: Option<&str>,
+    claim_uid: Option<&str>,
+    authorization: Option<&PodCleanupAuthorization>,
+    admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
+) -> Result<(Option<PendingPodCleanup>, Option<PendingClaimDeletion>), RuntimeError> {
+    let Some(claim_uid) = claim_uid else {
+        return Ok((None, None));
+    };
+    let authorization = authorization.ok_or_else(|| {
+        backend(
+            "Kubernetes retained continuation disposal requires aggregate authorization authority",
+        )
+    })?;
+    let uid = pod_uid.ok_or_else(|| backend("retained bound Pod has no persisted UID"))?;
+    let pods = runtime.pods();
+    let claims = runtime.persistent_volume_claims();
+    let _gate =
+        acquire_pod_cleanup_gate_with_authorization(&pods, pod, uid, authorization, admit).await?;
+    // Keep the gate on every API ambiguity; only the same successor can resume.
+    let claim = initiate_claim_deletion(&claims, container_id, claim_uid, admit).await?;
+    let current = pods.get(container_id).await;
+    admit()?;
+    let current = current.map_err(backend)?;
+    let gate =
+        acquire_pod_cleanup_gate_with_authorization(&pods, &current, uid, authorization, admit)
+            .await?;
+    Ok((Some(gate), claim))
+}
+
 pub(super) async fn acquire_pod_cleanup_gate_with_authorization(
     pods: &Api<Pod>,
     observed: &Pod,
@@ -928,26 +973,46 @@ pub(super) fn handle_extra(
         .clone()
         .ok_or_else(|| backend("Kubernetes Sandbox Pod has no UID"))?;
     let binds_continuation_claim = bound_claim_name(pod)?.is_some();
-    match (binds_continuation_claim, bound_claim_uid(pod)) {
-        (false, None) => Ok(Some(
-            ContainerContinuationHandle::KubernetesContinuationV2 {
+    let claim_uid = match (binds_continuation_claim, bound_claim_uid(pod)) {
+        (false, None) => None,
+        (true, Some(uid)) => Some(uid.to_owned()),
+        (true, None) => {
+            return Err(backend(
+                "Kubernetes Sandbox Pod has no continuation PVC incarnation evidence",
+            ));
+        }
+        (false, Some(_)) => {
+            return Err(backend(
+                "Kubernetes Sandbox Pod has continuation PVC incarnation evidence without a bound claim",
+            ));
+        }
+    };
+    if let Some(participants) = participants::retained(pod)? {
+        let normal = pod.metadata.annotations.as_ref().is_some_and(|values| {
+            values
+                .get(SANDBOX_ATTEMPT_ANNOTATION)
+                .is_some_and(|value| !value.trim().is_empty())
+                && values.contains_key(SANDBOX_REALIZATION_ANNOTATION)
+                && values.contains_key(SANDBOX_ADOPTION_ANNOTATION)
+        });
+        let restored = realization::restoration_evidence(pod)?.is_some()
+            && realization::restoration_plan_fingerprint(pod).is_some();
+        if !normal && !restored {
+            return Err(backend(
+                "original projected-object handoff lacks its creation or restore identity",
+            ));
+        }
+        return Ok(Some(
+            ContainerContinuationHandle::KubernetesContinuationV3 {
                 pod_uid,
-                claim_uid: None,
+                claim_uid,
+                participants: Box::new(participants),
             },
-        )),
-        (true, Some(uid)) => Ok(Some(
-            ContainerContinuationHandle::KubernetesContinuationV2 {
-                pod_uid,
-                claim_uid: Some(uid.to_owned()),
-            },
-        )),
-        (true, None) => Err(backend(
-            "Kubernetes Sandbox Pod has no continuation PVC incarnation evidence",
-        )),
-        (false, Some(_)) => Err(backend(
-            "Kubernetes Sandbox Pod has continuation PVC incarnation evidence without a bound claim",
-        )),
+        ));
     }
+    Ok(Some(
+        ContainerContinuationHandle::KubernetesContinuationV2 { pod_uid, claim_uid },
+    ))
 }
 
 impl K8sRuntime {

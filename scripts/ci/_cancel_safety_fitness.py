@@ -146,7 +146,7 @@ CANCEL_SAFETY_EXEMPTIONS: dict[str, str] = {
 # the Session provider -- previously reached through a method named plain
 # `restore` that no registry entry could match -- is now visible beside the
 # container one it always mirrored.
-CANCEL_SAFETY_BASELINE = 55
+CANCEL_SAFETY_BASELINE = 52
 
 FN_HEAD = re.compile(r"\bfn\s+([A-Za-z_]\w*)\s*")
 IMPL_HEAD = re.compile(r"\bimpl\b")

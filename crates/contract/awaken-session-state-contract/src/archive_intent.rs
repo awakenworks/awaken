@@ -1,11 +1,12 @@
 // @formal evidence session_execution.terminal_state_never_reopens
-// @formal surface requirement=session.lifecycle.session_state
-// @formal reason: Pure archive identity, execution admission and cleanup-affinity queries moved
-// @formal reason: to the existing aggregate's state owner. The application still obtains receipts
-// @formal reason: and rechecks its root CAS; the queries grant no command or physical absence.
-// @formal reason: Identity and receipt decision tables remain executable evidence, not a new
-// @formal reason: proof of repository delivery or Sandbox termination.
 //! Pure identity of the existing Session archive command and its recovery observation.
+//!
+//! Archive identity, execution admission and cleanup-affinity queries belong to
+//! the aggregate's state owner. The application still obtains receipts and
+//! rechecks its root CAS; these queries grant no command or physical absence.
+//! Identity and receipt decision tables are executable evidence, not a new
+//! proof of repository delivery or Sandbox termination. The original evidence
+//! link above is this file's sole formal surface classification.
 
 use crate::{
     ManagedLifecycleFact, PersistedSession, SessionDisposition, SessionRepositoryPublicationIntent,

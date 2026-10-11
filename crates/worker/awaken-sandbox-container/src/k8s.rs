@@ -32,10 +32,10 @@ use k8s_openapi::api::core::v1::{
 #[cfg(test)]
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Status;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
+use kube::Api;
 #[cfg(test)]
 use kube::Client;
-use kube::api::{AttachParams, DeleteParams, ListParams, PostParams};
-use kube::{Api, Resource};
+use kube::api::{AttachParams, PostParams};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::runtime::{
@@ -67,6 +67,7 @@ mod live_inputs;
 mod memory;
 mod names;
 mod network_policy;
+mod participants;
 mod pod_projection;
 mod pod_security;
 mod process;
@@ -90,9 +91,11 @@ pub(crate) use names::{k8s_runtime_id, pod_name};
 use pod_projection::build_pod;
 pub use pod_projection::pod_for_plan;
 use pod_projection::{
-    CONFIGMAP_KEY, append_writable_and_cache_volumes, build_configmap, build_credential_secret,
-    content_binds, credential_binds, credential_key,
+    CONFIGMAP_KEY, append_writable_and_cache_volumes, content_binds, credential_binds,
+    credential_key,
 };
+#[cfg(test)]
+use pod_projection::{build_configmap, build_credential_secret};
 use pod_security::{
     admit_network, egress_label, hardened_security_context, pod_resources, unenforceable_k8s_limit,
 };
@@ -1099,6 +1102,10 @@ impl K8sRuntime {
             Some(crate::ContainerContinuationHandle::KubernetesContinuationV2 {
                 claim_uid,
                 ..
+            })
+            | Some(crate::ContainerContinuationHandle::KubernetesContinuationV3 {
+                claim_uid,
+                ..
             }) => claim_uid.as_deref(),
             Some(crate::ContainerContinuationHandle::KubernetesGuardedClaim(_)) => {
                 return Err(backend(
@@ -1214,67 +1221,6 @@ impl K8sRuntime {
         .await
     }
 
-    async fn cleanup_projected_kind<K>(
-        &self,
-        api: &Api<K>,
-        pod_name: &str,
-        pod_uid: &str,
-        attempt_id: &str,
-        admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
-    ) -> Result<(), RuntimeError>
-    where
-        K: Clone + std::fmt::Debug + serde::de::DeserializeOwned + Resource<DynamicType = ()>,
-    {
-        let selector = format!(
-            "awaken-cfg-owner={pod_name},{}={}",
-            crate::SANDBOX_ATTEMPT_LABEL,
-            k8s_attempt_label(attempt_id),
-        );
-        let params = ListParams::default().labels(&selector);
-        admit()?;
-        for object in api.list(&params).await.map_err(backend)? {
-            admit()?;
-            let Some(preconditions) = projected_content_delete_preconditions(
-                object.meta(),
-                pod_name,
-                pod_uid,
-                attempt_id,
-            )?
-            else {
-                continue;
-            };
-            let name = object
-                .meta()
-                .name
-                .as_deref()
-                .ok_or_else(|| backend("Kubernetes projected content has no name"))?;
-            match api
-                .delete(name, &DeleteParams::default().preconditions(preconditions))
-                .await
-            {
-                Ok(_) => {}
-                Err(error) if api_not_found(&error) => {}
-                Err(error) => return Err(backend(error)),
-            }
-        }
-        admit()
-    }
-
-    async fn cleanup_projected_content(
-        &self,
-        pod_name: &str,
-        pod_uid: &str,
-        attempt_id: &str,
-        admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
-    ) -> Result<(), RuntimeError> {
-        let configmaps = self.configmaps();
-        self.cleanup_projected_kind(&configmaps, pod_name, pod_uid, attempt_id, admit)
-            .await?;
-        let secrets = self.secrets();
-        self.cleanup_projected_kind(&secrets, pod_name, pod_uid, attempt_id, admit)
-            .await
-    }
-
     async fn await_exact_pod_deleted(
         &self,
         pod_name: &str,
@@ -1298,7 +1244,7 @@ impl K8sRuntime {
         pod: &Pod,
         expected_uid: &str,
         expected_resource_version: &str,
-        attempt_id: Option<&str>,
+        _attempt_id: Option<&str>,
         admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
     ) -> Result<(), RuntimeError> {
         let pod_name = pod
@@ -1332,23 +1278,6 @@ impl K8sRuntime {
             Err(error) => return Err(backend(error)),
         }
 
-        // Explicit cleanup is authorized only while the exact owner Pod still
-        // exists and only for participants stamped by the same attempt. Once
-        // that Pod is absent (or its stable name points at a new UID), native
-        // ownerReference GC is the sole deletion authority.
-        let observed = self.pods().get(pod_name).await;
-        admit()?;
-        match observed {
-            Ok(observed) if observed.metadata.uid.as_deref() == Some(expected_uid) => {
-                if let Some(attempt_id) = attempt_id {
-                    self.cleanup_projected_content(pod_name, expected_uid, attempt_id, admit)
-                        .await?;
-                }
-            }
-            Ok(_) => {}
-            Err(error) if api_not_found(&error) => {}
-            Err(error) => return Err(backend(error)),
-        }
         Ok(())
     }
 
@@ -1381,6 +1310,7 @@ impl K8sRuntime {
         container_id: &str,
         persisted_pod_uid: Option<&str>,
         persisted_claim_uid: Option<&str>,
+        projected: Option<&crate::kubernetes_handle::KubernetesProjectedParticipants>,
         release_original_guard: bool,
         authorization: Option<(
             &pc::SandboxDisposalAuthorization,
@@ -1403,6 +1333,13 @@ impl K8sRuntime {
             Ok(())
         };
         admit()?;
+        participants::validate_bound(
+            self,
+            projected,
+            persisted_pod_uid,
+            None,
+            authorization.is_some(),
+        )?;
         let cleanup_authorization = authorization.map(|(authorization, _)| {
             continuation::PodCleanupAuthorization::Aggregate(authorization.clone())
         });
@@ -1415,6 +1352,13 @@ impl K8sRuntime {
             Err(error) => return Err(backend(error)),
         };
         admit()?;
+        participants::validate_bound(
+            self,
+            projected,
+            persisted_pod_uid,
+            observed_pod.as_ref(),
+            effect_fenced,
+        )?;
         let guarded_original = create_ledger::original_guard_release_required(
             observed_pod.as_ref(),
             release_original_guard,
@@ -1455,16 +1399,15 @@ impl K8sRuntime {
             ));
         }
 
-        let claims = self.persistent_volume_claims();
         let Some(observed_pod) = observed_pod else {
-            if let Some(uid) = expected_claim_uid {
-                let pending =
-                    continuation::absent_pod_claim_deletion(&claims, container_id, uid).await?;
-                if let Some(pending) = pending.as_ref() {
-                    continuation::await_claim_deletion(&claims, pending, &admit).await?;
-                }
-            }
-            return admit();
+            return participants::finish_after_absent_pod(
+                self,
+                container_id,
+                expected_claim_uid,
+                projected,
+                &admit,
+            )
+            .await;
         };
 
         if continuation == ContinuationObservationDisposition::Disposing
@@ -1483,14 +1426,14 @@ impl K8sRuntime {
             }
             self.await_exact_pod_deleted(container_id, pod_uid, &admit)
                 .await?;
-            if let Some(uid) = expected_claim_uid {
-                let pending =
-                    continuation::absent_pod_claim_deletion(&claims, container_id, uid).await?;
-                if let Some(pending) = pending.as_ref() {
-                    continuation::await_claim_deletion(&claims, pending, &admit).await?;
-                }
-            }
-            return admit();
+            return participants::finish_after_absent_pod(
+                self,
+                container_id,
+                expected_claim_uid,
+                projected,
+                &admit,
+            )
+            .await;
         }
 
         // Cause/effect order for a retained source is fixed: exact Pod A first
@@ -1498,46 +1441,16 @@ impl K8sRuntime {
         // only that winner may establish P's deletion intent. Rebuild DELETE
         // winning the CAS leaves P untouched. Once P is terminating, begin A's
         // exact deletion, remove only our finalizer, then await both objects.
-        let mut pending_pod_cleanup = if expected_claim_uid.is_some() {
-            let authorization = authorization.ok_or_else(|| {
-                backend(
-                    "Kubernetes retained continuation disposal requires aggregate authorization authority",
-                )
-            })?;
-            Some(
-                continuation::acquire_pod_cleanup_gate_with_authorization(
-                    &pods,
-                    &observed_pod,
-                    persisted_pod_uid.expect("retained bound Pod has persisted UID"),
-                    authorization,
-                    &admit,
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
-        let pending_claim_deletion = if let Some(uid) = expected_claim_uid {
-            // Any API error may be response loss after PVC DELETE acceptance.
-            // Retain the Pod finalizer and fail so a root retry can classify P's
-            // deletionTimestamp; releasing the gate here would reopen the
-            // stable name while claim disposal may already be irreversible.
-            continuation::initiate_claim_deletion(&claims, container_id, uid, &admit).await?
-        } else {
-            None
-        };
-
-        if let Some(pending) = pending_pod_cleanup.as_mut() {
-            let current = pods.get(container_id).await.map_err(backend)?;
-            *pending = continuation::acquire_pod_cleanup_gate_with_authorization(
-                &pods,
-                &current,
-                persisted_pod_uid.expect("retained bound Pod has persisted UID"),
-                authorization.expect("retained cleanup has authorization authority"),
-                &admit,
-            )
-            .await?;
-        }
+        let (pending_pod_cleanup, pending_claim_deletion) = continuation::begin_bound_disposal(
+            self,
+            container_id,
+            &observed_pod,
+            persisted_pod_uid,
+            expected_claim_uid,
+            authorization,
+            &admit,
+        )
+        .await?;
         let pod = pending_pod_cleanup
             .as_ref()
             .map_or(&observed_pod, |pending| &pending.pod);
@@ -1552,11 +1465,18 @@ impl K8sRuntime {
             .as_ref()
             .and_then(|annotations| annotations.get(SANDBOX_ATTEMPT_ANNOTATION))
             .map(String::as_str);
+        if let Some(projected) = projected {
+            participants::finish_projected(self, projected, container_id, true, &admit).await?;
+        }
         self.begin_exact_pod_delete(
             pod,
             &incarnation.identity,
             resource_version,
-            attempt_id,
+            if projected.is_some() {
+                None
+            } else {
+                attempt_id
+            },
             &admit,
         )
         .await?;
@@ -1576,9 +1496,10 @@ impl K8sRuntime {
             .await?;
         if let Some(pending) = pending_claim_deletion.as_ref() {
             admit()?;
-            continuation::await_claim_deletion(&claims, pending, &admit).await?;
+            continuation::await_claim_deletion(&self.persistent_volume_claims(), pending, &admit)
+                .await?;
         }
-        admit()
+        participants::finish_cleanup(self, projected, container_id, &admit).await
     }
 
     fn pod_for_effect(
