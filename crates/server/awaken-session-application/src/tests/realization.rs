@@ -473,51 +473,11 @@ impl SessionRuntime for RecordingResourceRuntime {
     fn model(&self) -> String {
         "resource-generation-test".into()
     }
-
-    fn realization(&self) -> Option<&dyn awaken_session_execution_contract::RealizationRuntime> {
-        Some(self)
-    }
-
-    fn environment(&self) -> Option<&dyn awaken_session_execution_contract::EnvironmentRuntime> {
-        Some(self)
-    }
-
-    fn outcomes(&self) -> Option<&dyn awaken_session_execution_contract::OutcomeRuntime> {
-        Some(self)
-    }
-
-    fn coordination(&self) -> Option<&dyn awaken_session_execution_contract::CoordinationRuntime> {
-        Some(self)
-    }
-
-    fn budget(&self) -> Option<&dyn awaken_session_execution_contract::BudgetRuntime> {
-        Some(self)
-    }
-
-    fn streaming_runs(&self) -> Option<&dyn awaken_session_execution_contract::StreamingRunRuntime> {
-        Some(self)
-    }
-
-    fn thread_reads(&self) -> Option<&dyn awaken_session_execution_contract::ThreadReadRuntime> {
-        Some(self)
-    }
-
-    fn terminal_cleanup(
-        &self,
-    ) -> Option<&dyn awaken_session_execution_contract::TerminalCleanupRuntime> {
-        Some(self)
-    }
-
-    fn live_inbox(&self) -> Option<&dyn awaken_session_execution_contract::LiveInboxRuntime> {
-        Some(self)
-    }
-
-    fn capability(&self) -> Option<&dyn awaken_session_execution_contract::CapabilityRuntime> {
-        Some(self)
-    }
 }
 
 awaken_session_execution_contract::neutral_role!(CoordinationRuntime for RecordingResourceRuntime);
+
+awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for RecordingResourceRuntime);
 
 awaken_session_execution_contract::neutral_role!(BudgetRuntime for RecordingResourceRuntime);
 
@@ -2373,6 +2333,7 @@ async fn worker_placement_defers_live_effects_but_not_terminal_cleanup_case() {
         &asserted_terminal_lease,
         &application,
         &NoopRuntime,
+        &NoopRuntime,
     )
     .await
     .expect("W3 canonical Worker driver");
@@ -2510,6 +2471,7 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
         &asserted_lease,
         &application,
         &worker_runtime,
+        &worker_runtime,
     )
     .await
     .expect("W3 canonical Worker driver");
@@ -2555,6 +2517,7 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
         &SessionId::from("remote-cleanup"),
         &asserted_lease,
         &application,
+        &worker_runtime,
         &worker_runtime,
     )
     .await
@@ -2695,6 +2658,7 @@ async fn restoring_terminal_cleanup_binds_the_exact_target_only_to_the_root() {
         &SessionId::from(session_id),
         &lease,
         &application,
+        &worker_runtime,
         &worker_runtime,
     )
     .await
@@ -2924,6 +2888,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         &exact_lease,
         &application,
         &child_worker,
+        &child_worker,
     )
     .await
     .expect_err("P2 injected publication failure stops after child preparation");
@@ -3127,6 +3092,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         &assignment.authority.lease,
         &application,
         &root_worker,
+        &root_worker,
     )
     .await
     .expect("P5 root preparation and aggregate disposal");
@@ -3210,6 +3176,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         &rejected_assignment.session_id,
         &rejected_assignment.authority.lease,
         &application,
+        &rejected_worker,
         &rejected_worker,
     )
     .await

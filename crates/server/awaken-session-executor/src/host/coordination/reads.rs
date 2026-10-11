@@ -190,7 +190,9 @@ mod tests {
     use awaken_agent_contract::agent::state::{Command as StateCommand, MergePolicy};
     use awaken_agent_contract::thread::commit::RunDisposition;
     use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
-    use awaken_session_execution_contract::{BudgetRuntime, CoordinationRuntime, ThreadReadRuntime};
+    use awaken_session_execution_contract::{
+        BudgetRuntime, SessionCoordinationReads, ThreadReadRuntime,
+    };
 
     #[tokio::test]
     async fn coordination_query_reuses_only_the_supplied_root_prefix() {

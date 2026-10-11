@@ -107,51 +107,11 @@ impl SessionRuntime for PreparingFake {
     fn model(&self) -> String {
         "test-model".into()
     }
-
-    fn realization(&self) -> Option<&dyn awaken_session_execution_contract::RealizationRuntime> {
-        Some(self)
-    }
-
-    fn thread_reads(&self) -> Option<&dyn awaken_session_execution_contract::ThreadReadRuntime> {
-        Some(self)
-    }
-
-    fn terminal_cleanup(
-        &self,
-    ) -> Option<&dyn awaken_session_execution_contract::TerminalCleanupRuntime> {
-        Some(self)
-    }
-
-    fn outcomes(&self) -> Option<&dyn awaken_session_execution_contract::OutcomeRuntime> {
-        Some(self)
-    }
-
-    fn coordination(&self) -> Option<&dyn awaken_session_execution_contract::CoordinationRuntime> {
-        Some(self)
-    }
-
-    fn budget(&self) -> Option<&dyn awaken_session_execution_contract::BudgetRuntime> {
-        Some(self)
-    }
-
-    fn streaming_runs(&self) -> Option<&dyn awaken_session_execution_contract::StreamingRunRuntime> {
-        Some(self)
-    }
-
-    fn environment(&self) -> Option<&dyn awaken_session_execution_contract::EnvironmentRuntime> {
-        Some(self)
-    }
-
-    fn live_inbox(&self) -> Option<&dyn awaken_session_execution_contract::LiveInboxRuntime> {
-        Some(self)
-    }
-
-    fn capability(&self) -> Option<&dyn awaken_session_execution_contract::CapabilityRuntime> {
-        Some(self)
-    }
 }
 
 awaken_session_execution_contract::neutral_role!(CoordinationRuntime for PreparingFake);
+
+awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for PreparingFake);
 
 awaken_session_execution_contract::neutral_role!(BudgetRuntime for PreparingFake);
 
@@ -634,51 +594,11 @@ impl SessionRuntime for HotRuntime {
     fn model(&self) -> String {
         "hot-model".into()
     }
-
-    fn realization(&self) -> Option<&dyn awaken_session_execution_contract::RealizationRuntime> {
-        Some(self)
-    }
-
-    fn environment(&self) -> Option<&dyn awaken_session_execution_contract::EnvironmentRuntime> {
-        Some(self)
-    }
-
-    fn thread_reads(&self) -> Option<&dyn awaken_session_execution_contract::ThreadReadRuntime> {
-        Some(self)
-    }
-
-    fn outcomes(&self) -> Option<&dyn awaken_session_execution_contract::OutcomeRuntime> {
-        Some(self)
-    }
-
-    fn coordination(&self) -> Option<&dyn awaken_session_execution_contract::CoordinationRuntime> {
-        Some(self)
-    }
-
-    fn budget(&self) -> Option<&dyn awaken_session_execution_contract::BudgetRuntime> {
-        Some(self)
-    }
-
-    fn streaming_runs(&self) -> Option<&dyn awaken_session_execution_contract::StreamingRunRuntime> {
-        Some(self)
-    }
-
-    fn terminal_cleanup(
-        &self,
-    ) -> Option<&dyn awaken_session_execution_contract::TerminalCleanupRuntime> {
-        Some(self)
-    }
-
-    fn live_inbox(&self) -> Option<&dyn awaken_session_execution_contract::LiveInboxRuntime> {
-        Some(self)
-    }
-
-    fn capability(&self) -> Option<&dyn awaken_session_execution_contract::CapabilityRuntime> {
-        Some(self)
-    }
 }
 
 awaken_session_execution_contract::neutral_role!(CoordinationRuntime for HotRuntime);
+
+awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for HotRuntime);
 
 awaken_session_execution_contract::neutral_role!(BudgetRuntime for HotRuntime);
 
@@ -3407,55 +3327,11 @@ async fn minting_namespace_cannot_alias_committed_truth() {
         fn model(&self) -> String {
             "haunted".into()
         }
-
-        fn realization(&self) -> Option<&dyn awaken_session_execution_contract::RealizationRuntime> {
-            Some(self)
-        }
-
-        fn thread_reads(&self) -> Option<&dyn awaken_session_execution_contract::ThreadReadRuntime> {
-            Some(self)
-        }
-
-        fn outcomes(&self) -> Option<&dyn awaken_session_execution_contract::OutcomeRuntime> {
-            Some(self)
-        }
-
-        fn coordination(
-            &self,
-        ) -> Option<&dyn awaken_session_execution_contract::CoordinationRuntime> {
-            Some(self)
-        }
-
-        fn budget(&self) -> Option<&dyn awaken_session_execution_contract::BudgetRuntime> {
-            Some(self)
-        }
-
-        fn streaming_runs(
-            &self,
-        ) -> Option<&dyn awaken_session_execution_contract::StreamingRunRuntime> {
-            Some(self)
-        }
-
-        fn environment(&self) -> Option<&dyn awaken_session_execution_contract::EnvironmentRuntime> {
-            Some(self)
-        }
-
-        fn terminal_cleanup(
-            &self,
-        ) -> Option<&dyn awaken_session_execution_contract::TerminalCleanupRuntime> {
-            Some(self)
-        }
-
-        fn live_inbox(&self) -> Option<&dyn awaken_session_execution_contract::LiveInboxRuntime> {
-            Some(self)
-        }
-
-        fn capability(&self) -> Option<&dyn awaken_session_execution_contract::CapabilityRuntime> {
-            Some(self)
-        }
     }
 
     awaken_session_execution_contract::neutral_role!(CoordinationRuntime for HauntedRuntime);
+
+    awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for HauntedRuntime);
 
     awaken_session_execution_contract::neutral_role!(BudgetRuntime for HauntedRuntime);
 

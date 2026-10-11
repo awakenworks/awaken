@@ -33,12 +33,11 @@ impl LiveInboxApplication for SessionApplication {
         workspace_id: &str,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<LiveInboxSnapshot, LiveInboxApplicationError> {
+        let inbox_runtime = self.runtime().live_inbox();
+
         self.require_live_inbox_owner(workspace_id, session_id)
             .await?;
-        Ok(self
-            .runtime()
-            .live_inbox_snapshot(session_id.as_str())
-            .await)
+        Ok(inbox_runtime.live_inbox_snapshot(session_id.as_str()).await)
     }
 
     async fn queue(
@@ -47,9 +46,11 @@ impl LiveInboxApplication for SessionApplication {
         session_id: &awaken_session_types::SessionId,
         content: Vec<ContentBlock>,
     ) -> Result<u64, LiveInboxApplicationError> {
+        let inbox_runtime = self.runtime().live_inbox();
+
         self.require_live_inbox_owner(workspace_id, session_id)
             .await?;
-        self.runtime()
+        inbox_runtime
             .live_inbox_queue(session_id.as_str(), content)
             .await
             .map_err(Into::into)
@@ -61,9 +62,11 @@ impl LiveInboxApplication for SessionApplication {
         session_id: &awaken_session_types::SessionId,
         message_id: u64,
     ) -> Result<(), LiveInboxApplicationError> {
+        let inbox_runtime = self.runtime().live_inbox();
+
         self.require_live_inbox_owner(workspace_id, session_id)
             .await?;
-        self.runtime()
+        inbox_runtime
             .live_inbox_remove(session_id.as_str(), message_id)
             .await
             .map_err(Into::into)
@@ -76,9 +79,11 @@ impl LiveInboxApplication for SessionApplication {
         message_id: u64,
         content: Vec<ContentBlock>,
     ) -> Result<(), LiveInboxApplicationError> {
+        let inbox_runtime = self.runtime().live_inbox();
+
         self.require_live_inbox_owner(workspace_id, session_id)
             .await?;
-        self.runtime()
+        inbox_runtime
             .live_inbox_replace(session_id.as_str(), message_id, content)
             .await
             .map_err(Into::into)
@@ -90,9 +95,11 @@ impl LiveInboxApplication for SessionApplication {
         session_id: &awaken_session_types::SessionId,
         order: Vec<u64>,
     ) -> Result<(), LiveInboxApplicationError> {
+        let inbox_runtime = self.runtime().live_inbox();
+
         self.require_live_inbox_owner(workspace_id, session_id)
             .await?;
-        self.runtime()
+        inbox_runtime
             .live_inbox_reorder(session_id.as_str(), order)
             .await
             .map_err(Into::into)

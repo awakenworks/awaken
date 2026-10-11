@@ -6,7 +6,7 @@ use awaken_time::WallClockExt as _;
 use std::{future::Future, pin::Pin};
 
 use awaken_session_realization_contract::{
-    RenewSessionRealization, SessionRealizationControlFailure, SessionRealizationDriveError,
+    SessionRealizationControlFailure, SessionRealizationDriveError,
     SessionTerminalCleanupAssignment,
 };
 use awaken_session_state_contract::{
@@ -16,6 +16,29 @@ use awaken_session_types::RunError;
 
 use super::{internal, mutation_failure, repository_preparation};
 use crate::{SessionApplication, SessionPreparationError, SessionTerminalCleanupDriveOutcome};
+
+/// Compile all target identities and both durable fences from one atomic
+/// Runtime observation before the aggregate freezes its terminal target set.
+fn freeze_cleanup_delegations(
+    session: &mut PersistedSession,
+    snapshot: awaken_session_application_contract::DelegatedRunSnapshot,
+) -> Result<bool, awaken_session_state_contract::SessionCleanupError> {
+    let thread_ids = snapshot
+        .delegated_runs
+        .into_iter()
+        .map(|run| run.run_id.0)
+        .chain(
+            snapshot
+                .coordinated_thread_ids
+                .into_iter()
+                .map(|thread| thread.0),
+        );
+    session.freeze_terminal_cleanup_targets(
+        thread_ids,
+        snapshot.watermark,
+        snapshot.runtime_commit_cursor,
+    )
+}
 
 pub(super) fn terminal_restore_target_for_thread(
     workspace_id: &str,
@@ -139,126 +162,28 @@ pub(super) fn terminal_cleanup_authorization_failure(
     }
 }
 
-async fn supervise_local_terminal_cleanup_lease<Drive, Renew, RenewFuture, Clock, R>(
-    session_id: &awaken_session_types::SessionId,
-    initial_assignment: &SessionTerminalCleanupAssignment,
-    runtime: &R,
-    drive: Drive,
-    mut renew: Renew,
-    now_unix_ms: Clock,
-) -> Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError>
-where
-    R: awaken_session_execution_contract::RealizationRuntime
-        + awaken_session_execution_contract::TerminalCleanupRuntime
-        + ?Sized,
-    Drive:
-        Future<Output = Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError>>,
-    Renew: FnMut(RenewSessionRealization) -> RenewFuture,
-    RenewFuture: Future<
-        Output = Result<
-            awaken_session_realization_contract::SessionRealizationLeaseReceipt,
-            SessionRealizationControlFailure,
-        >,
-    >,
-    Clock: Fn() -> u64,
-{
-    if initial_assignment.session_id != session_id {
-        return Err(SessionRealizationDriveError::Control(
-            SessionRealizationControlFailure::Invalid(
-                "local terminal cleanup assignment names another Session".into(),
-            ),
-        ));
-    }
-    let mut asserted_lease = initial_assignment.authority.lease.clone();
-    let mut interval = tokio::time::interval(std::time::Duration::from_millis(
-        crate::realization::LOCAL_TERMINAL_CLEANUP_RENEW_INTERVAL_MS,
-    ));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    // Tokio intervals have one immediately-ready first tick. Consume it before
-    // entering the biased race so a short cleanup never writes a needless root
-    // renewal merely because its drive and the synthetic first tick are ready
-    // together.
-    interval.tick().await;
-    let mut drive = std::pin::pin!(drive);
-
-    loop {
-        tokio::select! {
-            biased;
-            outcome = &mut drive => return outcome,
-            _ = interval.tick() => {
-                // This companion owns no effect or retry state. While renewal
-                // is in flight the canonical drive is deliberately not polled;
-                // only a verified same-generation CAS readback lets it resume.
-                let requested_expiry_unix_ms = now_unix_ms()
-                    .checked_add(crate::realization::LOCAL_SESSION_REALIZATION_LEASE_MS)
-                    .map(|requested| requested.max(asserted_lease.expires_at_unix_ms))
-                    .ok_or_else(|| {
-                        SessionRealizationDriveError::Control(
-                            SessionRealizationControlFailure::Unavailable(
-                                "local terminal cleanup renewal expiry overflow".into(),
-                            ),
-                        )
-                    })?;
-                let command = RenewSessionRealization {
-                    session_id: session_id.clone(),
-                    asserted_lease: asserted_lease.clone(),
-                    requested_expires_at_unix_ms: requested_expiry_unix_ms,
-                };
-                let request_started = runtime.observe_realization_request()?;
-                let receipt = renew(command)
-                    .await
-                    .map_err(SessionRealizationDriveError::Control)?;
-                let observed = receipt.clone().observed(request_started);
-                if observed.remaining_at(runtime.observe_realization_request()?).is_none() {
-                    return Err(SessionRealizationDriveError::Control(SessionRealizationControlFailure::StaleOwnership));
-                }
-                let renewed_lease = observed.lease.clone();
-                if !awaken_session_realization_contract::realization_lease_generation_authorizes(
-                        &renewed_lease,
-                        &asserted_lease,
-                    )
-                    || renewed_lease.expires_at_unix_ms < requested_expiry_unix_ms
-                {
-                    return Err(SessionRealizationDriveError::Control(
-                        SessionRealizationControlFailure::Invalid(
-                            "local terminal cleanup renewal returned another or regressed generation"
-                                .into(),
-                        ),
-                    ));
-                }
-                // Renewal is deliberately lease-only. Reinstall the original
-                // aggregate-frozen terminal projection under that monotonic
-                // successor; neither Control nor this companion rebuilds a
-                // second projection or terminal-specific renewal read model.
-                let renewed_assignment = SessionTerminalCleanupAssignment {
-                    session_id: initial_assignment.session_id.clone(),
-                    projection: initial_assignment.projection.clone(),
-                    authority: receipt,
-                };
-                runtime.install_terminal_cleanup_assignment(&renewed_assignment, observed)
-                    .await
-                    .map_err(SessionRealizationDriveError::Effect)?;
-                asserted_lease = renewed_lease;
-            }
-        }
-    }
-}
+use awaken_session_realization_driver::supervise_session_terminal_cleanup_lease as supervise_local_terminal_cleanup_lease;
 
 impl SessionApplication {
     async fn drive_local_terminal_cleanup(
         &self,
         assignment: &SessionTerminalCleanupAssignment,
     ) -> Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError> {
+        let realization_runtime = self.runtime().realization();
+        let cleanup_runtime = self.runtime().terminal_cleanup();
+
         let session_id = assignment.session_id.as_str();
         supervise_local_terminal_cleanup_lease(
             &awaken_session_types::SessionId::from(session_id),
             assignment,
-            self.runtime(),
+            realization_runtime,
+            cleanup_runtime,
             crate::drive_session_terminal_cleanup(
                 &awaken_session_types::SessionId::from(session_id),
                 &assignment.authority.lease,
                 self,
-                self.runtime(),
+            realization_runtime,
+            cleanup_runtime,
             ),
             |command| async move {
                 let lease =
@@ -325,6 +250,9 @@ impl SessionApplication {
                 + 'a,
         >,
     > {
+        let coordination_runtime = self.runtime().coordination();
+        let cleanup_runtime = self.runtime().terminal_cleanup();
+
         Box::pin(async move {
             let mut session = match self
                 .session_repository()
@@ -367,28 +295,12 @@ impl SessionApplication {
                 // after this commit reuses exactly these targets.
                 let mut intent_changed = false;
                 if session.terminal_cleanup.is_fenced() {
-                    let snapshot = self
-                        .runtime()
+                    let snapshot = coordination_runtime
                         .quiesce_terminal_delegations(session_id)
                         .await
                         .map_err(SessionPreparationError::Rejected)?;
-                    let thread_ids = snapshot
-                        .delegated_runs
-                        .into_iter()
-                        .map(|delegated| delegated.run_id.0)
-                        .chain(
-                            snapshot
-                                .coordinated_thread_ids
-                                .into_iter()
-                                .map(|thread| thread.0),
-                        );
-                    intent_changed = session
-                        .freeze_terminal_cleanup_targets(
-                            thread_ids,
-                            snapshot.watermark,
-                            snapshot.runtime_commit_cursor,
-                        )
-                        .map_err(internal)?;
+                    intent_changed =
+                        freeze_cleanup_delegations(&mut session, snapshot).map_err(internal)?;
                 }
                 if intent_changed {
                     session = self
@@ -483,7 +395,7 @@ impl SessionApplication {
                 // aggregate-level acknowledgement drains the retained local
                 // projection without reconstructing the deleted one-stage
                 // per-thread effect registry.
-                self.runtime()
+                cleanup_runtime
                     .acknowledge_completed_terminal_cleanup(
                         &awaken_session_types::SessionId::from(session_id),
                         lease,
@@ -518,7 +430,7 @@ impl SessionApplication {
 mod tests {
     use super::*;
     use awaken_session_resource_contract::SessionRealizationLease;
-    use awaken_session_execution_contract::SessionRuntime;
+    use awaken_session_execution_contract::RealizationRuntime as _;
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -610,55 +522,11 @@ mod tests {
         fn model(&self) -> String {
             "terminal-renewal-fixture".into()
         }
-
-        fn realization(&self) -> Option<&dyn awaken_session_execution_contract::RealizationRuntime> {
-            Some(self)
-        }
-
-        fn terminal_cleanup(
-            &self,
-        ) -> Option<&dyn awaken_session_execution_contract::TerminalCleanupRuntime> {
-            Some(self)
-        }
-
-        fn coordination(
-            &self,
-        ) -> Option<&dyn awaken_session_execution_contract::CoordinationRuntime> {
-            Some(self)
-        }
-
-        fn budget(&self) -> Option<&dyn awaken_session_execution_contract::BudgetRuntime> {
-            Some(self)
-        }
-
-        fn streaming_runs(
-            &self,
-        ) -> Option<&dyn awaken_session_execution_contract::StreamingRunRuntime> {
-            Some(self)
-        }
-
-        fn environment(&self) -> Option<&dyn awaken_session_execution_contract::EnvironmentRuntime> {
-            Some(self)
-        }
-
-        fn thread_reads(&self) -> Option<&dyn awaken_session_execution_contract::ThreadReadRuntime> {
-            Some(self)
-        }
-
-        fn outcomes(&self) -> Option<&dyn awaken_session_execution_contract::OutcomeRuntime> {
-            Some(self)
-        }
-
-        fn live_inbox(&self) -> Option<&dyn awaken_session_execution_contract::LiveInboxRuntime> {
-            Some(self)
-        }
-
-        fn capability(&self) -> Option<&dyn awaken_session_execution_contract::CapabilityRuntime> {
-            Some(self)
-        }
     }
 
     awaken_session_execution_contract::neutral_role!(CoordinationRuntime for RecordingTerminalProjectionRuntime);
+
+    awaken_session_execution_contract::neutral_role!(SessionCoordinationReads for RecordingTerminalProjectionRuntime);
 
     awaken_session_execution_contract::neutral_role!(BudgetRuntime for RecordingTerminalProjectionRuntime);
 
@@ -883,15 +751,7 @@ mod tests {
             }
             assert_eq!(proof.lease, assignment.authority.lease);
             let remaining = proof
-                .remaining_at(
-                    self.realization()
-                        .ok_or_else(|| {
-                            awaken_session_types::RunError::unavailable(
-                                "RealizationRuntime is unsupported by this runtime",
-                            )
-                        })?
-                        .observe_realization_request()?,
-                )
+                .remaining_at(self.observe_realization_request()?)
                 .ok_or_else(|| RunError::unavailable("expired test projection proof"))?;
             self.installed_remaining_us.store(
                 u64::try_from(remaining.as_micros()).unwrap(),
@@ -1037,7 +897,7 @@ mod tests {
                     supervise_local_terminal_cleanup_lease(
                         &awaken_session_types::SessionId::from("session"),
                         &local_assignment(10_000_000),
-                        runtime.as_ref(),
+                        runtime.as_ref(), runtime.as_ref(),
                         async move {
                             let _drop = DriveDropGuard(dropped);
                             started.notify_one();
@@ -1068,7 +928,7 @@ mod tests {
             });
             started.notified().await;
             tokio::time::advance(std::time::Duration::from_millis(
-                crate::realization::LOCAL_TERMINAL_CLEANUP_RENEW_INTERVAL_MS,
+                awaken_session_realization_driver::LOCAL_TERMINAL_CLEANUP_RENEW_INTERVAL_MS,
             ))
             .await;
             tokio::task::yield_now().await;
@@ -1146,7 +1006,7 @@ mod tests {
                 supervise_local_terminal_cleanup_lease(
                     &awaken_session_types::SessionId::from("session"),
                     &initial,
-                    runtime.as_ref(),
+                    runtime.as_ref(), runtime.as_ref(),
                     async move {
                         effect_started.notify_one();
                         effect_release.notified().await;
@@ -1172,7 +1032,8 @@ mod tests {
         });
         effect_started.notified().await;
 
-        let interval_ms = crate::realization::LOCAL_TERMINAL_CLEANUP_RENEW_INTERVAL_MS;
+        let interval_ms =
+            awaken_session_realization_driver::LOCAL_TERMINAL_CLEANUP_RENEW_INTERVAL_MS;
         for _ in 0..=crate::realization::LOCAL_SESSION_REALIZATION_LEASE_MS / interval_ms {
             clock.fetch_add(interval_ms, Ordering::SeqCst);
             tokio::time::advance(std::time::Duration::from_millis(interval_ms)).await;
@@ -1291,6 +1152,7 @@ mod tests {
             &awaken_session_types::SessionId::from("session"),
             &mismatched,
             &mismatch_runtime,
+            &mismatch_runtime,
             async { Ok(SessionTerminalCleanupDriveOutcome::Completed) },
             {
                 let mismatch_calls = Arc::clone(&mismatch_calls);
@@ -1349,7 +1211,7 @@ mod tests {
                     supervise_local_terminal_cleanup_lease(
                         &awaken_session_types::SessionId::from("session"),
                         &initial,
-                        runtime.as_ref(),
+                        runtime.as_ref(), runtime.as_ref(),
                         async move {
                             let _guard = DriveDropGuard(drive_dropped);
                             drive_started.notify_one();
@@ -1418,7 +1280,8 @@ mod tests {
                 }
             });
             drive_started.notified().await;
-            let interval_ms = crate::realization::LOCAL_TERMINAL_CLEANUP_RENEW_INTERVAL_MS;
+            let interval_ms =
+                awaken_session_realization_driver::LOCAL_TERMINAL_CLEANUP_RENEW_INTERVAL_MS;
             clock.fetch_add(interval_ms, Ordering::SeqCst);
             tokio::time::advance(std::time::Duration::from_millis(interval_ms)).await;
             tokio::task::yield_now().await;
@@ -1451,6 +1314,7 @@ mod tests {
             &awaken_session_types::SessionId::from("session"),
             &local_assignment(30_000_000),
             &completed_runtime,
+            &completed_runtime,
             async { Ok(SessionTerminalCleanupDriveOutcome::Completed) },
             {
                 let calls = Arc::clone(&calls);
@@ -1472,7 +1336,8 @@ mod tests {
             "F7 completed"
         );
         tokio::time::advance(std::time::Duration::from_millis(
-            crate::realization::LOCAL_TERMINAL_CLEANUP_RENEW_INTERVAL_MS.saturating_mul(2),
+            awaken_session_realization_driver::LOCAL_TERMINAL_CLEANUP_RENEW_INTERVAL_MS
+                .saturating_mul(2),
         ))
         .await;
         assert_eq!(calls.load(Ordering::SeqCst), 0, "F7/E4");
@@ -1486,6 +1351,7 @@ mod tests {
         let failed = supervise_local_terminal_cleanup_lease(
             &awaken_session_types::SessionId::from("session"),
             &local_assignment(40_000_000),
+            &failed_runtime,
             &failed_runtime,
             async {
                 Err(SessionRealizationDriveError::Effect(RunError::internal(
@@ -1511,7 +1377,8 @@ mod tests {
             "F7"
         );
         tokio::time::advance(std::time::Duration::from_millis(
-            crate::realization::LOCAL_TERMINAL_CLEANUP_RENEW_INTERVAL_MS.saturating_mul(2),
+            awaken_session_realization_driver::LOCAL_TERMINAL_CLEANUP_RENEW_INTERVAL_MS
+                .saturating_mul(2),
         ))
         .await;
         assert_eq!(failed_calls.load(Ordering::SeqCst), 0, "F7/E4");

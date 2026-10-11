@@ -26,8 +26,8 @@ use awaken_session_types::RunError;
 use super::SessionApplication;
 
 impl SessionApplication {
-    fn projection_source(&self) -> &(impl SessionProjectionSource + ?Sized) {
-        self.runtime()
+    fn projection_source(&self) -> &dyn SessionProjectionSource {
+        self.runtime().projection()
     }
 
     /// Read one logical Thread prefix through the parent Session partition.

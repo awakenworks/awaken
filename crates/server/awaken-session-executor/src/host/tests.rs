@@ -476,8 +476,6 @@ async fn install_pinned_managed_skill_session_with_tools(
     init.tools = tools;
     install_complete_test_session_for_realization(managed, thread, init).await?;
     managed
-        .environment()
-        .expect("Managed Environment runtime")
         .apply_session_inputs(
             thread,
             &resource_transition(&workspace, 0, Default::default(), 0, resources),

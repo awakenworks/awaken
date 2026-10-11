@@ -14,13 +14,13 @@ use awaken_session_application_contract::LifecycleFactNotifier;
 use awaken_session_configuration_contract::{SandboxProvisioning, SessionRuntimePlacement};
 use awaken_session_mcp_contract::McpTarget;
 use awaken_session_repository_contract::SessionRepository;
-use awaken_session_execution_contract::{
-    CompleteSessionRuntime, McpAttachmentRealizer, SessionEnvironmentBindingSink,
-};
+use awaken_session_execution_contract::{McpAttachmentRealizer, SessionEnvironmentBindingSink};
 #[cfg(test)]
 use awaken_session_state_contract::SessionExecutionState;
 use awaken_session_state_contract::{PersistedSession, SessionRecoveryQuarantine, SessionScan};
 use awaken_session_types::RunError;
+
+pub use awaken_session_execution_contract::SessionExecutor;
 
 mod recovery_scan;
 use recovery_scan::scan_recovery_candidates;

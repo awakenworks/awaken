@@ -48,6 +48,8 @@ impl SessionApplication {
         &self,
         candidates: &SessionRecoveryCandidates,
     ) -> OutcomeReconciliation {
+        let outcome_runtime = self.runtime().outcomes();
+
         let mut report = OutcomeReconciliation {
             quarantined: candidates.quarantined.len(),
             ..Default::default()
@@ -89,7 +91,7 @@ impl SessionApplication {
                     .push((String::from(session_id), error.to_string()));
                 continue;
             }
-            match self.runtime().continue_outcome(session_id.as_str()).await {
+            match outcome_runtime.continue_outcome(session_id.as_str()).await {
                 Ok(Some(OutcomeDrive::Completed(_))) => report.settled += 1,
                 Ok(Some(OutcomeDrive::Awaiting)) => report.pending += 1,
                 Ok(None) => {}

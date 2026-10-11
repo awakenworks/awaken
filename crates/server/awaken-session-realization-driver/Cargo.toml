@@ -23,6 +23,7 @@ awaken-session-execution-contract.workspace = true
 awaken-session-state-contract.workspace = true
 awaken-session-types.workspace = true
 serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "time"] }
 
 [features]
 # The realization observation checkpoints scenario tests read.

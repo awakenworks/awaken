@@ -1,5 +1,6 @@
 // @formal evidence session_realization.concurrent_phase_drivers_are_serialized_per_session
 use super::*;
+use awaken_session_execution_contract::RealizationRuntime as _;
 
 // B1-B4: after the synchronous close, remove/recreate the SAME Session id with
 // the SAME closed lease (or Closed(None)); its new owner lock may even be held.
@@ -785,11 +786,6 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
     let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(30_000);
     assert_eq!(
         runtime
-            .realization()
-            .ok_or_else(|| awaken_session_types::RunError::unavailable(
-                "RealizationRuntime is unsupported by this runtime"
-            ))
-            .expect("runtime role")
             .renew_session_realization_projections(control.as_ref(), "local", "boot", timing)
             .await
             .unwrap(),
@@ -1125,11 +1121,6 @@ async fn worker_root_denies_renewal_even_before_cohort_close() {
     renewed.expires_at_unix_ms += 10_000;
     assert!(
         managed
-            .realization()
-            .ok_or_else(|| awaken_session_types::RunError::unavailable(
-                "RealizationRuntime is unsupported by this runtime"
-            ))
-            .expect("runtime role")
             .renew_session_realization_lease(
                 SESSION,
                 crate::installed_session::test_observed_lease(renewed)

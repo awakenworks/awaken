@@ -44,7 +44,7 @@ pub trait SessionProjectionSource: Send + Sync {
 #[async_trait]
 impl<T> SessionProjectionSource for T
 where
-    T: ThreadReadRuntime + CoordinationRuntime + ?Sized,
+    T: ThreadReadRuntime + SessionCoordinationReads + ?Sized,
 {
     async fn projection_thread_snapshot(
         &self,
@@ -60,7 +60,7 @@ where
         session_id: &crate::SessionId,
         observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<crate::CoordinatedThreadLink>, RunError> {
-        CoordinationRuntime::coordinated_threads(self, session_id, observed_root).await
+        SessionCoordinationReads::coordinated_threads(self, session_id, observed_root).await
     }
 
     async fn projection_outcome(

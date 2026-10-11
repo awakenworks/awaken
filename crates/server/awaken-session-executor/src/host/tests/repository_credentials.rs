@@ -807,13 +807,6 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
         .await
         .unwrap();
     managed
-        .environment()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "EnvironmentRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .apply_session_inputs(
             "t-rot",
             &resource_transition(
@@ -871,13 +864,6 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
     // The Managed adapter stores the supplied credential in the Vault and publishes a
     // new Repository config before invoking this complete-manifest runtime port.
     managed
-        .environment()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "EnvironmentRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .apply_session_inputs(
             "t-rot",
             &resource_transition(

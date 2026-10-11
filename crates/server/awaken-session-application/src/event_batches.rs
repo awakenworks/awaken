@@ -24,7 +24,7 @@ use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, SessionAgentCoordination, SessionRunActivation,
     SessionThreadTarget,
 };
-use awaken_session_state_contract::PersistedSession;
+use awaken_session_state_contract::{PersistedSession, SessionEventHistory as EventHistory};
 use awaken_session_types::RunError;
 use awaken_session_types::SessionRevision;
 use awaken_time::WallClockExt as _;
@@ -260,8 +260,9 @@ impl SessionApplication {
         run_id: &awaken_agent_contract::agent::run::Id,
         message_id: &MessageId,
     ) -> Result<SessionEventProjectionAnchor, RunError> {
-        let snapshot = self
-            .runtime()
+        let thread_reads = self.runtime().thread_reads();
+
+        let snapshot = thread_reads
             .session_thread_run_recovery_snapshot(session_id, thread_id, run_id)
             .await?
             .ok_or_else(|| {
@@ -283,7 +284,9 @@ impl SessionApplication {
         thread_id: &str,
         run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<SessionEventProjectionAnchor, RunError> {
-        self.runtime()
+        let thread_reads = self.runtime().thread_reads();
+
+        thread_reads
             .session_thread_run_recovery_snapshot(session_id, thread_id, run_id)
             .await?
             .filter(|snapshot| snapshot.runs.iter().any(|run| &run.id == run_id))
@@ -508,6 +511,8 @@ impl SessionApplication {
         admission: EventBatchAdmission,
         wake_after_accept: bool,
     ) -> Result<SessionEventBatch, RunError> {
+        let thread_reads = self.runtime().thread_reads();
+
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner = self.owner(session_id).await.map_err(mutation_run_error)?;
             let mut session = self
@@ -548,8 +553,7 @@ impl SessionApplication {
             }
             let admission_projection_anchor =
                 if plan == SessionEventBatchAdmissionPlan::AppendAccepted {
-                    let source_commit_cursor = self
-                        .runtime()
+                    let source_commit_cursor = thread_reads
                         .session_thread_recovery_snapshot(session_id, session_id.as_str())
                         .await?
                         .map_or(0, |snapshot| snapshot.store_cursor);
@@ -889,6 +893,10 @@ impl SessionApplication {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<EventBatchProgress, RunError>> + Send + 'a>,
     > {
+        let coordination_runtime = self.runtime().coordination();
+
+        let thread_reads = self.runtime().thread_reads();
+
         // This reconciliation is polled by the lifecycle supervisor, whose
         // recovery future is already deep. Select the exact Event kind before
         // constructing its boxed future: one async block spanning every Event
@@ -979,7 +987,7 @@ impl SessionApplication {
                             .unwrap_or(EventBatchProgress::Pending));
                     }
                 };
-                match self.runtime().activate_session_run(delivery).await? {
+                match coordination_runtime.activate_session_run(delivery).await? {
                     SessionRunActivation::Activated
                     | SessionRunActivation::AlreadyActivated {
                         session_activity_epoch: _,
@@ -997,8 +1005,7 @@ impl SessionApplication {
             } => Box::pin(async move {
                 let message_id =
                     MessageId::session_system(session.session_id.as_str(), &operation_id);
-                let committed = self
-                    .runtime()
+                let committed = thread_reads
                     .committed_messages(session.session_id.as_str())
                     .await?;
                 let Some(message) = committed.iter().find(|message| message.id == message_id)
@@ -1151,18 +1158,10 @@ impl SessionApplication {
                 // sole reconciler now; Notify retains the permit until the
                 // currently blocked drive yields.
                 self.wake_lifecycle_supervisor();
-                let mut source_commit_cursor = session
-                    .event_batches
-                    .iter()
-                    .flat_map(|batch| &batch.events)
-                    .filter_map(|entry| entry.projection_anchor)
-                    .map(|anchor| anchor.source_commit_cursor)
-                    .max()
-                    .unwrap_or_default();
+                let mut source_commit_cursor = EventHistory::from(session).projection_cursor();
                 for target in &targets {
                     let thread_id = target.thread_id(&session.session_id);
-                    if let Some(snapshot) = self
-                        .runtime()
+                    if let Some(snapshot) = thread_reads
                         .session_thread_recovery_snapshot(&session.session_id, &thread_id.0)
                         .await?
                     {
@@ -1225,8 +1224,10 @@ impl SessionApplication {
         run_id: &awaken_agent_contract::agent::run::Id,
         content: &[awaken_agent_contract::agent::content::ContentBlock],
     ) -> Result<Option<EventBatchProgress>, RunError> {
-        let Some(state) = self
-            .runtime()
+        let coordination_reads = self.runtime().coordination_reads();
+        let thread_reads = self.runtime().thread_reads();
+
+        let Some(state) = coordination_reads
             .session_run_state(&session.session_id, run_id)
             .await?
         else {
@@ -1247,8 +1248,7 @@ impl SessionApplication {
                 self.settle_event_batch_wake(session, batch_id).await?;
                 return Ok(Some(EventBatchProgress::Pending));
             }
-            let snapshot = self
-                .runtime()
+            let snapshot = thread_reads
                 .session_thread_run_recovery_snapshot(
                     &session.session_id,
                     session.session_id.as_str(),
@@ -1450,8 +1450,9 @@ impl SessionApplication {
         session_id: &awaken_session_types::SessionId,
         target_run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<bool, RunError> {
-        let Some(snapshot) = self
-            .runtime()
+        let thread_reads = self.runtime().thread_reads();
+
+        let Some(snapshot) = thread_reads
             .session_thread_recovery_snapshot(session_id, session_id.as_str())
             .await?
         else {

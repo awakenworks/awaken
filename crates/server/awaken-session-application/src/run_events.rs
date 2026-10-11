@@ -77,6 +77,8 @@ impl SessionApplication {
         lifecycle_after: RunLifecycleCursor,
         limit: usize,
     ) -> Result<SessionRunEventPage, SessionProjectionRecoveryError> {
+        let thread_reads = self.runtime().thread_reads();
+
         self.require_profiled_run_owner(owner_scope, session_id)
             .await?;
         if run_id.0.trim().is_empty() || limit > 1_024 {
@@ -103,8 +105,7 @@ impl SessionApplication {
                 .await
                 .map_err(|error| SessionProjectionRecoveryError::Unavailable(error.to_string()))?
         };
-        let snapshot = self
-            .runtime()
+        let snapshot = thread_reads
             .session_thread_run_recovery_snapshot(session_id, session_id.as_str(), run_id)
             .await
             .map_err(SessionProjectionRecoveryError::Rejected)?;

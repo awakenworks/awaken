@@ -1,6 +1,8 @@
 //! Durable Session aggregate state and pure transition laws.
 
 mod environment;
+mod event_history;
+pub use event_history::SessionEventHistory;
 mod realization_progress;
 mod resource_activation;
 mod session_repo;

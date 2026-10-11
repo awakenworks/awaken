@@ -94,6 +94,7 @@ mod terminal_cleanup;
 mod terminal_repository_publication;
 #[cfg(test)]
 use awaken_session_mcp::test_mcp;
+use awaken_session_execution_contract::EnvironmentRuntime as _;
 mod tool_output_spill;
 mod unavailable_worker;
 mod uninstalled_environment;
@@ -241,48 +242,6 @@ impl SessionRuntime for ManagedHost {
     fn model(&self) -> String {
         self.host.model()
     }
-
-    fn realization(&self) -> Option<&dyn awaken_session_execution_contract::RealizationRuntime> {
-        Some(self)
-    }
-
-    fn coordination(&self) -> Option<&dyn awaken_session_execution_contract::CoordinationRuntime> {
-        Some(self)
-    }
-
-    fn budget(&self) -> Option<&dyn awaken_session_execution_contract::BudgetRuntime> {
-        Some(self)
-    }
-
-    fn streaming_runs(&self) -> Option<&dyn awaken_session_execution_contract::StreamingRunRuntime> {
-        Some(self)
-    }
-
-    fn environment(&self) -> Option<&dyn awaken_session_execution_contract::EnvironmentRuntime> {
-        Some(self)
-    }
-
-    fn thread_reads(&self) -> Option<&dyn awaken_session_execution_contract::ThreadReadRuntime> {
-        Some(self)
-    }
-
-    fn terminal_cleanup(
-        &self,
-    ) -> Option<&dyn awaken_session_execution_contract::TerminalCleanupRuntime> {
-        Some(self)
-    }
-
-    fn outcomes(&self) -> Option<&dyn awaken_session_execution_contract::OutcomeRuntime> {
-        Some(self)
-    }
-
-    fn live_inbox(&self) -> Option<&dyn awaken_session_execution_contract::LiveInboxRuntime> {
-        Some(self)
-    }
-
-    fn capability(&self) -> Option<&dyn awaken_session_execution_contract::CapabilityRuntime> {
-        Some(self)
-    }
 }
 
 #[async_trait::async_trait]
@@ -347,13 +306,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
         if mode.adopts_resident_environment()
             && let Some(binding) = projection.environment.binding()
         {
-            self.environment()
-                .ok_or_else(|| {
-                    awaken_session_types::RunError::unavailable(
-                        "EnvironmentRuntime is unsupported by this runtime",
-                    )
-                })?
-                .adopt_session_environment(&projection.baseline.agent_id, thread, binding)
+            self.adopt_session_environment(&projection.baseline.agent_id, thread, binding)
                 .await?;
         }
         Ok(())
@@ -554,44 +507,12 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
         crate::step_projection::settled_step(receipt)
     }
 
-    async fn session_run_state(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        run_id: &awaken_agent_contract::agent::run::Id,
-    ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, RunError> {
-        let commit = self
-            .host
-            .commit_for_read(session_id.as_str())
-            .await
-            .map_err(to_run_error)?;
-        commit
-            .authoritative_run(run_id)
-            .await
-            .map(|record| record.map(|record| record.state))
-            .map_err(|error| RunError::unavailable(error.to_string()))
-    }
-
-    async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
-        self.host.delegated_runs(thread).await.map_err(to_run_error)
-    }
-
     async fn admit_coordinated_run(
         &self,
         command: awaken_session_execution_contract::CoordinatedRunCommand,
     ) -> Result<awaken_session_execution_contract::SessionAgentMessageReceipt, RunError> {
         self.host
             .admit_coordinated_run(command)
-            .await
-            .map_err(to_run_error)
-    }
-
-    async fn coordinated_threads(
-        &self,
-        session_id: &awaken_session_types::SessionId,
-        observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-    ) -> Result<Vec<awaken_session_execution_contract::CoordinatedThreadLink>, RunError> {
-        self.host
-            .coordinated_threads(session_id.as_str(), observed_root)
             .await
             .map_err(to_run_error)
     }
@@ -644,16 +565,6 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
             .map_err(to_run_error)
     }
 
-    async fn session_thread_tool_reply_fence(
-        &self,
-        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
-    ) -> Result<awaken_session_execution_contract::SessionThreadToolReplyFence, RunError> {
-        self.host
-            .session_thread_tool_reply_fence(command)
-            .await
-            .map_err(to_run_error)
-    }
-
     async fn reply_session_thread_tool(
         &self,
         delivery: awaken_session_execution_contract::SessionThreadToolReplyDelivery,
@@ -683,6 +594,51 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
     ) -> Result<awaken_session_application_contract::DelegatedRunSnapshot, RunError> {
         self.host
             .quiesce_terminal_delegations(thread)
+            .await
+            .map_err(to_run_error)
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_execution_contract::SessionCoordinationReads for ManagedHost {
+    async fn session_run_state(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, RunError> {
+        let commit = self
+            .host
+            .commit_for_read(session_id.as_str())
+            .await
+            .map_err(to_run_error)?;
+        commit
+            .authoritative_run(run_id)
+            .await
+            .map(|record| record.map(|record| record.state))
+            .map_err(|error| RunError::unavailable(error.to_string()))
+    }
+
+    async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
+        self.host.delegated_runs(thread).await.map_err(to_run_error)
+    }
+
+    async fn coordinated_threads(
+        &self,
+        session_id: &awaken_session_types::SessionId,
+        observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+    ) -> Result<Vec<awaken_session_execution_contract::CoordinatedThreadLink>, RunError> {
+        self.host
+            .coordinated_threads(session_id.as_str(), observed_root)
+            .await
+            .map_err(to_run_error)
+    }
+
+    async fn session_thread_tool_reply_fence(
+        &self,
+        command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
+    ) -> Result<awaken_session_execution_contract::SessionThreadToolReplyFence, RunError> {
+        self.host
+            .session_thread_tool_reply_fence(command)
             .await
             .map_err(to_run_error)
     }
