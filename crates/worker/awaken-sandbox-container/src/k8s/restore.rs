@@ -288,6 +288,14 @@ async fn observe(
     }
     realization::stamp_restoration(&mut desired, evidence);
     realization::stamp_restoration_plan(&mut desired, plan_fingerprint);
+    if pod
+        .metadata
+        .annotations
+        .as_ref()
+        .is_some_and(|values| values.contains_key(participants::DECLARATION))
+    {
+        participants::declare(&mut desired, &runtime_id, &desired_plan)?;
+    }
     realization::stamp_pod_realization(&mut desired)?;
     verify_pod_projection(&desired, &pod, disposal)?;
     Ok(Some(Observation { pod }))
@@ -311,8 +319,31 @@ pub(super) async fn recover(
         .uid
         .clone()
         .ok_or_else(|| backend("Kubernetes restore target has no Pod UID"))?;
-    realization::transfer_runtime_owner(&runtime.pods(), observation.pod, &uid, &runtime.owner_id)
+    let mut pod = observation.pod;
+    if pod
+        .metadata
+        .annotations
+        .as_ref()
+        .is_some_and(|values| values.contains_key(participants::DECLARATION))
+    {
+        participants::realize(
+            runtime,
+            pod,
+            &k8s_runtime_id(id)?,
+            plan,
+            None,
+            Some((evidence, plan_fingerprint)),
+        )
         .await?;
+        pod = runtime.pods().get(&name).await.map_err(backend)?;
+        realization::verify_restoration(&pod, evidence)?;
+        if realization::restoration_plan_fingerprint(&pod) != Some(plan_fingerprint) {
+            return Err(backend(
+                "restored projection handoff changed its original plan",
+            ));
+        }
+    }
+    realization::transfer_runtime_owner(&runtime.pods(), pod, &uid, &runtime.owner_id).await?;
     let wait = runtime.unschedulable_wait;
     realization::await_pod_ready(&runtime.pods(), &name, wait, runtime.clock.as_ref()).await?;
     Ok(Some(crate::RuntimeRestoreTarget {
@@ -391,43 +422,9 @@ pub(super) async fn dispose(
         return admit();
     }
     admit()?;
-    if continuation::claim_required(plan, runtime.continuation_volume.is_some()) {
-        let claim_name = continuation_claim_name(&runtime_id);
-        let claim = match runtime.persistent_volume_claims().get(&claim_name).await {
-            Ok(claim) => claim,
-            Err(error) if api_not_found(&error) => return admit(),
-            Err(error) => return Err(backend(error)),
-        };
-        admit()?;
-        realization::verify_restoration(&claim, evidence)?;
-        if realization::restoration_plan_fingerprint(&claim) != Some(plan_fingerprint) {
-            return Err(backend(
-                "Kubernetes orphan continuation PVC belongs to a different immutable plan",
-            ));
-        }
-        let mut desired = continuation::build_claim(
-            &runtime_id,
-            runtime
-                .continuation_volume
-                .as_ref()
-                .expect("claim requirement proves continuation policy"),
-        )?;
-        realization::stamp_restoration(&mut desired, evidence);
-        realization::stamp_restoration_plan(&mut desired, plan_fingerprint);
-        realization::stamp_realization(&mut desired)?;
-        verify_claim_projection(&desired, &claim, Some(authorization))?;
-        let uid = continuation::claim_uid(&claim)?;
-        let claims = runtime.persistent_volume_claims();
-        // A restore tuple does not bypass the shared absent-Pod rule: without
-        // the Pod cleanup gate a live claim can race exact target acquisition.
-        // Only already-terminating/absent claims can finish this response-loss cut.
-        if let Some(pending) = continuation::absent_pod_claim_deletion(&claims, &name, &uid).await?
-        {
-            admit()?;
-            continuation::await_claim_deletion(&claims, &pending, &admit).await?;
-        }
-    }
-    admit()
+    Err(backend(
+        "restored Kubernetes target lost its original participant carrier; terminal absence remains unknown",
+    ))
 }
 
 #[cfg(test)]

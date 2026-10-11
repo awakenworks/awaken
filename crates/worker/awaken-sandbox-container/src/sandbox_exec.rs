@@ -103,6 +103,15 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
     /// that sweep would still be running — and still writing — when Secret
     /// write-back and the Memory harvest read the workspace.
     fn admit_exec_attempt(&self) -> Result<crate::AdmittedExec, pc::SandboxError> {
+        if self
+            .runtime_handle
+            .as_ref()
+            .is_some_and(crate::ContainerContinuationHandle::terminal_only)
+        {
+            return Err(pc::SandboxError::unsupported(
+                "joined-empty evidence cannot authorize Session execution",
+            ));
+        }
         self.execs.admit(&self.container_id).ok_or_else(|| {
             pc::SandboxError::Gone(format!(
                 "Sandbox `{}` is being disposed and cannot start another exec",

@@ -443,9 +443,10 @@ async fn k8s_exact_restore_survives_provider_replacement_with_the_same_pvc_fence
     let payload = handle.container_payload().expect("KR1 container payload");
     let pod_name = payload.container_id.clone();
     let (pod_uid, claim_uid) = match payload.runtime_handle.as_ref() {
-        Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
+        Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV3 {
             pod_uid,
             claim_uid: Some(claim_uid),
+            ..
         }) => (pod_uid.clone(), claim_uid.clone()),
         other => panic!("KR1/E1 missing current Pod/PVC incarnation fences: {other:?}"),
     };
@@ -682,7 +683,7 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
     /* Terminal-recovery decision table KTR1. Causes: C1 one frozen product
      * spec and Create fence produce running Pod UID A plus retained claim UID P;
      * C2 an attached process writes P and terminates the provider-owned PID 1;
-     * C3 the durable V2 handle supplies A+P; C4 an authorized Rebuild uses the
+     * C3 the durable V3 original-set handle supplies A+P; C4 an authorized Rebuild uses the
      * exact same frozen spec, A+P, and a later realization fence; C5 terminal
      * cleanup has a later fence. Effects: E1 only terminal A is replaced; E2 the
      * stable locator now names UID B; E3 B reuses P and an attached validation
@@ -718,7 +719,7 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
     let first = container_id(&first_handle);
     let source_incarnation = first_handle
         .container_physical_incarnation()
-        .expect("KTR1 V2 handle carries Pod UID")
+        .expect("KTR1 V3 original-set handle carries Pod UID")
         .to_owned();
     let source_runtime_handle = first_handle
         .container_payload()
@@ -729,13 +730,13 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
         matches!(
             source_runtime_handle.as_ref(),
             Some(
-                awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
+                awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV3 {
                     claim_uid: Some(_),
                     ..
                 }
             )
         ),
-        "KTR1 V2 handle carries retained claim UID"
+        "KTR1 V3 original-set handle carries retained claim UID"
     );
     let client = kube::Client::try_default()
         .await
@@ -1012,7 +1013,7 @@ async fn stale_disposal_cannot_delete_a_recreated_claim_incarnation() {
         .unwrap()
         .runtime_handle
         .clone()
-        .expect("KPV1 first V2 handle");
+        .expect("KPV1 first V3 original-set handle");
     let first_terminal = effect_fence(&scope, "dispose-a", "claim-owner", 2);
     first_environment
         .prepare_disposal_for_effect(
@@ -1048,7 +1049,7 @@ async fn stale_disposal_cannot_delete_a_recreated_claim_incarnation() {
         .unwrap()
         .runtime_handle
         .clone()
-        .expect("KPV1 current V2 handle");
+        .expect("KPV1 current V3 original-set handle");
     assert_ne!(old, current, "KPV1 distinct PVC incarnations");
     assert!(
         runtime
@@ -1088,7 +1089,7 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
      * Kubernetes UID/resourceVersion preconditions while preserving P; C3 the
      * next caller presents foreign effect B or exact replay A; C4 terminal
      * cleanup is authorized after recovery. Effects: E1 B rejects before Pod or
-     * PVC mutation and P remains; E2 A creates Pod UID A2, persists a V2 handle,
+     * PVC mutation and P remains; E2 A creates Pod UID A2, persists a V3 original-set handle,
      * and reuses exactly P; E3 terminal cleanup removes A2 and P. Rules: KPV3a
      * C1+C2+B=>E1; KPV3b C1+C2+A=>E2; KPV3c E2+C4=>E3. This live backend cut is
      * equivalent to response loss after PVC creation but before a Pod UID can be
@@ -1122,11 +1123,12 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
         .runtime_handle
         .as_ref()
     {
-        Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
+        Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV3 {
             pod_uid,
             claim_uid: Some(claim_uid),
+            ..
         }) => (pod_uid.clone(), claim_uid.clone()),
-        other => panic!("KPV3 C1 expected Pod+claim V2 handle, got {other:?}"),
+        other => panic!("KPV3 C1 expected Pod+claim V3 original-set handle, got {other:?}"),
     };
 
     let client = kube::Client::try_default().await.unwrap();
@@ -1203,12 +1205,13 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
     let (recovered_pod_uid, recovered_claim_uid) =
         match recovered_handle.container_payload().unwrap().runtime_handle {
             Some(
-                awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
+                awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV3 {
                     pod_uid,
                     claim_uid: Some(claim_uid),
+                    ..
                 },
             ) => (pod_uid, claim_uid),
-            other => panic!("KPV3b expected Pod+claim V2 handle, got {other:?}"),
+            other => panic!("KPV3b expected Pod+claim V3 original-set handle, got {other:?}"),
         };
     assert_ne!(recovered_pod_uid, first_pod_uid, "KPV3b new Pod UID");
     assert_eq!(recovered_claim_uid, claim_uid, "KPV3b exact claim UID");
@@ -1395,9 +1398,10 @@ async fn missing_handle_reconstructs_a_live_original_pod_and_claim_for_terminal_
         .runtime_handle
         .as_ref()
     {
-        Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
+        Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV3 {
             pod_uid,
             claim_uid: Some(claim_uid),
+            ..
         }) => (pod_uid.clone(), claim_uid.clone()),
         other => panic!("KPV4 C1 expected typed original pair: {other:?}"),
     };
@@ -1470,7 +1474,7 @@ async fn missing_handle_reconstructs_a_live_original_pod_and_claim_for_terminal_
 
 #[tokio::test]
 async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes_cleanup() {
-    /* Absent-primary terminal table KPV5. Causes: C1 the durable V2 handle
+    /* Absent-primary terminal table KPV5. Causes: C1 the durable V3 original-set handle
      * identifies Pod UID A plus retained claim UID P; C2 an exact API fault cut
      * removes A while P remains live; C3 terminal preparation carries the same
      * frozen spec and a later aggregate-authorized effect; C4 authorized
@@ -1520,11 +1524,12 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         .runtime_handle
         .as_ref()
     {
-        Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
+        Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV3 {
             pod_uid,
             claim_uid: Some(claim_uid),
+            ..
         }) => (pod_uid.clone(), claim_uid.clone()),
-        other => panic!("KPV5 C1 expected Pod+claim V2 handle, got {other:?}"),
+        other => panic!("KPV5 C1 expected Pod+claim V3 original-set handle, got {other:?}"),
     };
 
     let client = kube::Client::try_default().await.unwrap();
@@ -1690,9 +1695,10 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
             .runtime_handle
             .as_ref()
             .and_then(|handle| match handle {
-                awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 { claim_uid, .. } =>
+                awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV3 { claim_uid, .. } =>
                     claim_uid.as_deref(),
-                awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuation { .. } => None,
+                awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuation { .. }
+                | awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 { .. } => None,
                 // KPV5b cause: authorized Rebuild has a runnable replacement
                 // Pod. Effect: a terminal-only guarded claim is inadmissible;
                 // it can authorize cleanup but cannot serve this Rebuild.
@@ -1731,7 +1737,7 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         "KPV5c"
     );
 
-    // Response-loss row: the persisted current V2 handle and same live effect
+    // Response-loss row: the persisted current V3 original-set handle and same live effect
     // authorize only the zero-mutation total-absence result.
     let replay = ContainerEnvironmentProvider::prepare_terminal_environment_for_effect(
         &provider,
@@ -1800,11 +1806,12 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
         .runtime_handle
         .as_ref()
     {
-        Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
+        Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV3 {
             pod_uid,
             claim_uid: Some(claim_uid),
+            ..
         }) => (pod_uid.clone(), claim_uid.clone()),
-        other => panic!("KPV6 C1 expected Pod+claim V2 handle, got {other:?}"),
+        other => panic!("KPV6 C1 expected Pod+claim V3 original-set handle, got {other:?}"),
     };
 
     let client = kube::Client::try_default().await.unwrap();
@@ -2060,11 +2067,12 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
         .runtime_handle
         .as_ref()
     {
-        Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
+        Some(awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV3 {
             pod_uid,
             claim_uid: Some(claim_uid),
+            ..
         }) => (pod_uid.clone(), claim_uid.clone()),
-        other => panic!("KPV4 C1 expected Pod+claim V2 handle, got {other:?}"),
+        other => panic!("KPV4 C1 expected Pod+claim V3 original-set handle, got {other:?}"),
     };
 
     let client = kube::Client::try_default().await.unwrap();
@@ -2267,13 +2275,13 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
                 .runtime_handle
                 .as_ref(),
             Some(
-                awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV2 {
+                awaken_sandbox_container::ContainerContinuationHandle::KubernetesContinuationV3 {
                     claim_uid: None,
                     ..
                 }
             )
         ),
-        "KPV2 C1 Pod-only V2 handle"
+        "KPV2 C1 Pod-only V3 original-set handle"
     );
     let Some(retained) = live_runtime().await else {
         let terminal_fence = effect_fence(&scope, "terminal-a", "preflight-owner-a", 2);

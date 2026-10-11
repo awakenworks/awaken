@@ -41,6 +41,7 @@ mod image_warmup;
 pub use image_warmup::K8sImagePrewarm;
 mod handle;
 mod host_evidence;
+mod kubernetes_handle;
 mod live_inputs;
 mod packages;
 mod podman_plan;

@@ -15,7 +15,8 @@ use awaken_agent_contract::{
     collision_resistant_fingerprint, collision_resistant_fingerprint_digest,
 };
 use awaken_dispatch::{
-    ApplicationError, WorkerCreateLedger, WorkerDirectory, WorkerIdentity, WorkerState,
+    ApplicationError, RegisteredWorker, WorkerCreateLedger, WorkerDirectory, WorkerIdentity,
+    WorkerState,
 };
 use awaken_sandbox_container::ContainerEffectFence;
 use awaken_sandbox_container::k8s::{
@@ -87,6 +88,37 @@ fn status_response(code: u16, reason: &str) -> K8sCreateResponse {
             "reason": reason, "message": "brokered Create has no new API effect", "code": code
         }),
     }
+}
+
+fn current_create_worker(
+    record: &RegisteredWorker,
+    identity: &WorkerIdentity,
+    anchor: Option<&WorkerCreateLedger>,
+    now_ms: u64,
+) -> bool {
+    record.snapshot.identity == *identity
+        && record.snapshot.state == WorkerState::Ready
+        && record.snapshot.expires_at_ms > now_ms
+        && anchor.is_none_or(|anchor| record.create_ledger.as_ref() == Some(anchor))
+}
+
+fn original_readback_matches(
+    object: &Value,
+    ticket: &CreateTicketRequest,
+    uid: &str,
+    nonce: &str,
+) -> bool {
+    let metadata = &object["metadata"];
+    !uid.trim().is_empty()
+        && uid.trim() == uid
+        && !nonce.is_empty()
+        && metadata["name"].as_str() == Some(ticket.name.as_str())
+        && metadata["namespace"].as_str() == Some(ticket.namespace.as_str())
+        && metadata["uid"].as_str() == Some(uid)
+        && metadata["deletionTimestamp"].is_null()
+        && metadata["annotations"][ISOLATION_ID_ANNOTATION].as_str() == Some(nonce)
+        && metadata["annotations"][REQUEST_DIGEST_ANNOTATION].as_str()
+            == Some(ticket.digest.as_str())
 }
 
 /// Only these exact collection POSTs can cross the broker. Neither an exec
@@ -403,10 +435,7 @@ impl K8sCreateBroker {
             .ok_or_else(|| {
                 ApplicationError::unavailable("Worker Create Registry record missing")
             })?;
-        if record.snapshot.identity != identity
-            || record.snapshot.state != WorkerState::Ready
-            || record.snapshot.expires_at_ms <= clock.now_ms()
-        {
+        if !current_create_worker(&record, &identity, None, clock.now_ms()) {
             return Err(ApplicationError::invalid(
                 "Worker Create incarnation is not current and Ready",
             ));
@@ -442,12 +471,80 @@ impl K8sCreateBroker {
             TicketAdmission::InFlight => Err(ApplicationError::unavailable(
                 "Worker Create request remains InFlight",
             )),
-            TicketAdmission::Finished(TicketResult::Created { .. }) => {
-                Ok(status_response(409, "AlreadyExists"))
+            TicketAdmission::Finished(TicketResult::Created { uid }) => {
+                let ticket = self
+                    .ledger
+                    .ticket_for(ledger_binding, &validated.ticket)
+                    .await
+                    .map_err(|_| {
+                        ApplicationError::unavailable("original Create ticket readback unavailable")
+                    })?
+                    .ok_or_else(|| {
+                        ApplicationError::unavailable("original Create ticket missing")
+                    })?;
+                if ticket.isolation_id.is_empty()
+                    || ticket.isolation_pending
+                    || ticket.status
+                        != awaken_sandbox_container::k8s::TicketStatus::Finished(
+                            TicketResult::Created { uid: uid.clone() },
+                        )
+                {
+                    return Err(ApplicationError::unavailable(
+                        "original Create result is not joined",
+                    ));
+                }
+                let request = Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("{}/{}", validated.path, validated.ticket.name))
+                    .body(Body::empty())
+                    .map_err(|_| {
+                        ApplicationError::internal("original Create readback path invalid")
+                    })?;
+                let response = self.api_client.send(request).await.map_err(|_| {
+                    ApplicationError::unavailable("original Create API readback unavailable")
+                })?;
+                if response.status() != StatusCode::OK {
+                    return Err(ApplicationError::unavailable(
+                        "original Create object is no longer observable",
+                    ));
+                }
+                let bytes = response.into_body().collect_bytes().await.map_err(|_| {
+                    ApplicationError::unavailable("original Create API readback incomplete")
+                })?;
+                let object: Value = serde_json::from_slice(&bytes).map_err(|_| {
+                    ApplicationError::unavailable("original Create API readback undecodable")
+                })?;
+                if !original_readback_matches(
+                    &object,
+                    &validated.ticket,
+                    &uid,
+                    &ticket.isolation_id,
+                ) {
+                    return Err(ApplicationError::unavailable(
+                        "original Create API readback differs from its retained ticket",
+                    ));
+                }
+                let current = directory.current(&identity.worker_id).await.map_err(|_| {
+                    ApplicationError::unavailable("original Create Registry readback unavailable")
+                })?;
+                if !current.as_ref().is_some_and(|record| {
+                    current_create_worker(record, &identity, Some(&anchor), clock.now_ms())
+                }) {
+                    return Err(ApplicationError::unavailable(
+                        "original Create Worker authority changed during readback",
+                    ));
+                }
+                // Same endpoint, original object, no second POST and no new UID
+                // claim. The typed API caller can now retain the original result
+                // instead of treating a later generic 409+GET as that receipt.
+                Ok(K8sCreateResponse {
+                    status: 200,
+                    object,
+                })
             }
-            TicketAdmission::Finished(TicketResult::Isolated { .. }) => {
-                Ok(status_response(409, "AlreadyExists"))
-            }
+            TicketAdmission::Finished(TicketResult::Isolated { .. }) => Err(
+                ApplicationError::unavailable("isolated Create cannot replay an original object"),
+            ),
             TicketAdmission::Finished(TicketResult::RejectedNoEffect { code }) => {
                 Ok(status_response(code, "Rejected"))
             }
@@ -538,11 +635,8 @@ impl K8sCreateBroker {
         let current = directory.current(&identity.worker_id).await.map_err(|_| {
             ApplicationError::unavailable("Worker Create Registry recheck unavailable")
         })?;
-        if !current.is_some_and(|record| {
-            record.snapshot.identity == identity
-                && record.snapshot.state == WorkerState::Ready
-                && record.snapshot.expires_at_ms > clock.now_ms()
-                && record.create_ledger.as_ref() == Some(&anchor)
+        if !current.as_ref().is_some_and(|record| {
+            current_create_worker(record, &identity, Some(&anchor), clock.now_ms())
         }) {
             let result = TicketResult::RejectedNoEffect { code: 403 };
             self.ledger
@@ -611,6 +705,11 @@ impl K8sCreateBroker {
                 .ok_or_else(|| {
                     ApplicationError::unavailable("Worker Create API result lacks UID")
                 })?;
+            if !original_readback_matches(&object, &create.ticket, uid, &admitted.isolation_id) {
+                return Err(ApplicationError::unavailable(
+                    "Worker Create API result changed its admitted identity",
+                ));
+            }
             TicketResult::Created { uid: uid.into() }
         } else if matches!(status, 400 | 401 | 403 | 409 | 422) {
             TicketResult::RejectedNoEffect { code: status }
@@ -839,7 +938,7 @@ mod tests {
         // Worker HTTP future disappears; C4 a retry arrives before/after the
         // independent executor durably records API UID. Effects: E1 one API
         // Create only, E2 early retry stays InFlight, E3 detached completion
-        // survives C3, E4 late retry returns conflict for typed GET/verify.
+        // survives C3, E4 late retry reads back the original ticket UID/nonce/digest; no new POST.
         // Rules R1=C1+C2=>E1, R2=R1+C4(before)=>E2,
         // R3=R1+C3+API success=>E3, R4=R3+C4(after)=>E4. C5 a
         // Registry-persisted exact Pod exit arrives; E5 only C5 plus settled
@@ -849,20 +948,23 @@ mod tests {
         // finalizer is installed before Kubernetes can publish the Pod.
         let stored = Arc::new(Mutex::new(None::<Value>));
         let pod_posts = Arc::new(AtomicUsize::new(0));
+        let created_pod = Arc::new(Mutex::new(None::<Value>));
         let started = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
         let completed = Arc::new(Notify::new());
         let service = tower::service_fn({
-            let (stored, pod_posts, started, release, completed) = (
+            let (stored, created_pod, pod_posts, started, release, completed) = (
                 stored.clone(),
+                created_pod.clone(),
                 pod_posts.clone(),
                 started.clone(),
                 release.clone(),
                 completed.clone(),
             );
             move |request: Request<Body>| {
-                let (stored, pod_posts, started, release, completed) = (
+                let (stored, created_pod, pod_posts, started, release, completed) = (
                     stored.clone(),
+                    created_pod.clone(),
                     pod_posts.clone(),
                     started.clone(),
                     release.clone(),
@@ -960,12 +1062,15 @@ mod tests {
                             pod_posts.fetch_add(1, Ordering::SeqCst);
                             started.notify_one();
                             release.notified().await;
-                            (
-                                201,
-                                json!({"apiVersion":"v1","kind":"Pod","metadata":{
-                                    "name":"sandbox-pod", "namespace":"sandbox-ns", "uid":"pod-uid"
-                                }}),
-                            )
+                            let mut object = body;
+                            object["apiVersion"] = "v1".into();
+                            object["kind"] = "Pod".into();
+                            object["metadata"]["uid"] = "pod-uid".into();
+                            *created_pod.lock().unwrap() = Some(object.clone());
+                            (201, object)
+                        }
+                        ("GET", "/api/v1/namespaces/sandbox-ns/pods/sandbox-pod") => {
+                            (200, created_pod.lock().unwrap().clone().unwrap())
                         }
                         _ => panic!("unexpected test Kubernetes request {method} {path}"),
                     };
@@ -1071,18 +1176,57 @@ mod tests {
             .await
             .unwrap();
         let replay = broker
-            .create(directory.clone(), clock, identity.clone(), create)
+            .create(
+                directory.clone(),
+                clock.clone(),
+                identity.clone(),
+                create.clone(),
+            )
             .await
             .unwrap();
         assert_eq!(
-            replay.status, 409,
-            "R4 typed verifier must GET the existing Pod"
+            replay.status, 200,
+            "R4 only the original ticket-bound Pod can be replayed"
         );
         assert_eq!(
             pod_posts.load(Ordering::SeqCst),
             1,
             "R3 independent executor made exactly one API call"
         );
+        // R5 causes: retained Created ticket + a same-name readback with one
+        // changed original UID/nonce/digest/ns/name or deleting state. Effect:
+        // reject with no next POST and no object receipt. R4 is its exact row.
+        let original = created_pod.lock().unwrap().clone().unwrap();
+        for axis in ["uid", "nonce", "digest", "namespace", "name", "deleting"] {
+            let mut changed = original.clone();
+            match axis {
+                "nonce" => {
+                    changed["metadata"]["annotations"][ISOLATION_ID_ANNOTATION] = "foreign".into()
+                }
+                "digest" => {
+                    changed["metadata"]["annotations"][REQUEST_DIGEST_ANNOTATION] = "foreign".into()
+                }
+                "deleting" => {
+                    changed["metadata"]["deletionTimestamp"] = "2026-10-12T00:00:00Z".into()
+                }
+                field => changed["metadata"][field] = "foreign".into(),
+            }
+            *created_pod.lock().unwrap() = Some(changed);
+            assert!(
+                broker
+                    .create(
+                        directory.clone(),
+                        clock.clone(),
+                        identity.clone(),
+                        create.clone()
+                    )
+                    .await
+                    .is_err(),
+                "R5/{axis}"
+            );
+            assert_eq!(pod_posts.load(Ordering::SeqCst), 1, "R5 no new API Create");
+        }
+        *created_pod.lock().unwrap() = Some(original);
         let predecessor = ContainerEffectFence::new(
             "effect-a",
             &identity.worker_id,
