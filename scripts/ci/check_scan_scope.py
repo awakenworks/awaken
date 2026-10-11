@@ -57,6 +57,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import _architecture_ratchet
+
 # This checker reads every `scripts/ci` module, its own registry, and the shell
 # gates a registration may name.
 INPUT_GLOBS: tuple[str, ...] = (
@@ -250,15 +252,12 @@ def validation_errors(
     baseline = registry.get("baseline", {}).get("scope_lists")
     if baseline is None:
         errors.append("the registry must carry a baseline count for scope_lists")
-    elif len(live) > baseline:
-        errors.append(
-            f"{len(live)} hand-written scope lists, baseline {baseline}: a new one "
-            "was added. The baseline only goes down."
-        )
-    elif len(live) < baseline:
-        errors.append(
-            f"{len(live)} hand-written scope lists, baseline {baseline}: lower the "
-            "baseline to hold the ground gained."
+    else:
+        errors += _architecture_ratchet.compare(
+            (_architecture_ratchet.Rule("W1", "derive the list from its subject; the baseline only goes down"),),
+            {"W1": {"scope_lists": len(live)}}, {}, {"W1": {"scope_lists": baseline}}, REGISTRY.name,
+            lower_advice="lower scripts/ci/scan_scope_registry.json baseline.scope_lists in this commit "
+                         "to hold the ground gained",
         )
 
     # ---- W2: entry points that scan without declaring their inputs -------
@@ -305,15 +304,13 @@ def validation_errors(
     scanner_baseline = registry.get("baseline", {}).get("scanners_without_input_globs")
     if scanner_baseline is None:
         errors.append("the registry must carry a baseline count for scanners_without_input_globs")
-    elif len(undeclared) > scanner_baseline:
-        errors.append(
-            f"{len(undeclared)} entry points scan without declaring {DECLARATION}, "
-            f"baseline {scanner_baseline}: a new one was added. The baseline only goes down."
-        )
-    elif len(undeclared) < scanner_baseline:
-        errors.append(
-            f"{len(undeclared)} entry points scan without declaring {DECLARATION}, "
-            f"baseline {scanner_baseline}: lower the baseline to hold the ground gained."
+    else:
+        errors += _architecture_ratchet.compare(
+            (_architecture_ratchet.Rule("W2", "declare INPUT_GLOBS; the baseline only goes down"),),
+            {"W2": {"scanners_without_input_globs": len(undeclared)}}, {},
+            {"W2": {"scanners_without_input_globs": scanner_baseline}}, REGISTRY.name,
+            lower_advice="lower scripts/ci/scan_scope_registry.json baseline.scanners_without_input_globs "
+                         "in this commit to hold the ground gained",
         )
 
     return errors, live, undeclared
@@ -625,6 +622,49 @@ def _selftest_acquisition() -> None:
         assert reads[primary] == 1, "M25b success does not reacquire"
 
         primary.write_text(list_source + delegated, encoding="utf-8")
+        # M31-M33: original scalar facts -> the existing canonical comparison
+        # at each original error phase. Missing/None is an independent hard
+        # precondition, never the comparator's implicit zero allowance.
+        #
+        # | Row | held/count                          | effect |
+        # | M31 | 0/1, 1/1, 2/1, 1.5/1              | grow, equal, fall, strict fractional fall |
+        # | M32 | missing/None × other field valid   | hard missing, compare only valid field |
+        # | M33 | NoWriter growth/fall               | real rule:key old->new and registry/source fix |
+        # The original M26 hard-rule matrix remains below; no diagnostic grants
+        # a writer, raises a budget, consumes a stale error or rereads a source.
+        for value in (0, 1, 2, 1.5):
+            record = json.loads(json.dumps(registered))
+            record["baseline"] = {"scope_lists": value, "scanners_without_input_globs": value}
+            status, _, errors, _, _, _ = invoke(record)
+            assert (status == 0) is (value == 1), "M31 original strict scalar relation"
+            if value != 1:
+                assert f"W1: scope_lists {value} -> 1; fix: " in errors, "M33 W1 diagnostic"
+                assert f"W2: scanners_without_input_globs {value} -> 1; fix: " in errors, "M33 W2 diagnostic"
+                assert errors.index("W1:") < errors.index("W2:"), "M33 original phase order"
+                assert "--tighten" not in errors and "--write-baseline" not in errors, "M33 truthful NoWriter"
+                if value > 1:
+                    assert "baseline.scope_lists" in errors and "baseline.scanners_without_input_globs" in errors, \
+                        "M33 real lower registry coordinates"
+        original_compare = _architecture_ratchet.compare
+        calls = []
+
+        def compared(*args, **kwargs):
+            calls.append(args[0][0].name)
+            return original_compare(*args, **kwargs)
+
+        with patch.object(_architecture_ratchet, "compare", compared):
+            assert invoke(registered)[0] == 0 and calls == ["W1", "W2"], "M31 both actual callbacks canonical"
+            for field, other_rule in (("scope_lists", "W2"), ("scanners_without_input_globs", "W1")):
+                for missing in (True, False):
+                    record = json.loads(json.dumps(registered))
+                    if missing:
+                        record["baseline"].pop(field)
+                    else:
+                        record["baseline"][field] = None
+                    calls.clear()
+                    status, _, errors, _, _, _ = invoke(record)
+                    assert status == 1 and f"must carry a baseline count for {field}" in errors, "M32 missing hard"
+                    assert calls == [other_rule], "M32 absent allowance not passed as zero"
         # M26 crosses both independent count contracts with short/valid/space
         # reasons and stale members. Missing count records are hard too; an
         # equal or lower numeric value cannot consume either metadata error.
