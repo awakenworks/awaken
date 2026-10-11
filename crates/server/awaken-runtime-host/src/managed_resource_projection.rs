@@ -4,6 +4,7 @@
 //! Pure projection from frozen Managed resource inputs to Agent-visible paths and
 //! prompt fragments. Keeping this boundary separate prevents protocol path rules
 //! from being reimplemented by individual Sandbox adapters.
+use awaken_provisioning_contract as pc;
 use awaken_session_realization_contract::ResourceOperationFence;
 use std::sync::Arc;
 
@@ -886,26 +887,23 @@ impl crate::ManagedHost {
                     }
                 }
                 for input in desired_manifest.resources.inputs() {
-                    if installed_manifest.is_some()
+                    if (installed_manifest.is_some()
                         && matches!(
                             input.source,
                             awaken_session_resource_contract::ResolvedInputSource::MemoryStore { .. }
-                        )
+                        ))
+                        || (reconciliation
+                            == crate::staged_resources::EnvironmentResourceReconciliation::None
+                            && previous_manifest
+                                .resources
+                                .inputs()
+                                .iter()
+                                .any(|candidate| candidate == input))
                     {
-                        // Admission above proved exact installed Memory. Never
-                        // rematerialize its editable Copy or original heads on
-                        // an unacknowledged A→B replay. Adoption separately
-                        // reconciles provider-owned participants above.
-                        continue;
-                    }
-                    if reconciliation
-                        == crate::staged_resources::EnvironmentResourceReconciliation::None
-                        && previous_manifest
-                            .resources
-                            .inputs()
-                            .iter()
-                            .any(|candidate| candidate == input)
-                    {
+                        // Both proved rows skip physical replay: installed
+                        // editable Memory retains its bytes/heads; unchanged
+                        // inputs with no adoption/freshness cause remain active.
+                        // Adoption separately reconciles provider participants.
                         continue;
                     }
                     let path = crate::managed_input_layout::resolved_input_effect_path(input);
@@ -940,21 +938,22 @@ impl crate::ManagedHost {
                         awaken_session_resource_contract::ResolvedInputSource::Repository {
                             ..
                         } => {
+                            let retain = reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::Adopted
+                                && previous_manifest.resources.inputs().iter().any(|previous| previous == input);
                             let repository = new
-                                .repositories
-                                .iter()
-                                .find(|repository| repository.plan.mount_path == path)
-                                .ok_or_else(|| {
-                                    RunError::internal(format!(
-                                        "compiled Repository activation `{path}` is missing"
-                                    ))
-                                })?;
+                                .repository_at_path(&path)
+                                .map_err(|error| RunError::internal(error.to_string()))?;
                             self.host
                                 .realize_repository_activation(
                                     thread,
                                     repository,
                                     &new.binding_checks,
                                     environment.repositories().as_ref(),
+                                    if retain {
+                                        pc::RepositoryRealizationIntent::Retain
+                                    } else {
+                                        pc::RepositoryRealizationIntent::Initialize
+                                    },
                                 )
                                 .await
                                 .map_err(|error| RunError::internal(error.to_string()))?;

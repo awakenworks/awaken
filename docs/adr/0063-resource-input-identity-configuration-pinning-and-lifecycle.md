@@ -578,6 +578,19 @@ product mode nor maintain another mutable policy.
 
 ### Session-scoped Repository adoption and mutation fencing
 
+An activated writable Repository is a retained working tree, not an instruction
+to repeat its initial checkout. The canonical Resource projection selects
+retention only for an unchanged previously active input and a provider handle
+that owns its exact path. The existing Repository realizer verifies that the
+directory and Git metadata still exist, are not symlinks, and name the frozen
+transport. Retention never clones, resets, checks out, or contacts the remote;
+it preserves the Agent's branch, commits, dirty files and untracked files.
+Read-only inputs retain their configured checkout constraints. Initial creation
+and its response-loss retry continue to enforce the initial branch/commit.
+Missing, foreign or unowned working trees are refused before any mutation.
+Both topology adapters consume the same intent through the existing port;
+there is no independent adoption writer, marker or lifecycle store.
+
 A Repository definition created while lowering one Managed or profiled Session
 is a participant in the Session root command, not an independently successful
 aggregate. Registry creation and optional Vault credential creation each return

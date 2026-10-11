@@ -114,8 +114,23 @@ impl ConfiguredAcpCapabilityObservationSource {
             });
         }
         let mut observations = Vec::with_capacity(self.targets.len());
+        let mut failure = None;
         while let Some(result) = probes.join_next().await {
-            observations.push(result.map_err(|error| error.to_string())??);
+            // Returning here drops JoinSet and aborts peer create/dispose
+            // futures. Drain the existing batch before returning its first
+            // error; partial observations never initialize the success cell.
+            match result
+                .map_err(|error| error.to_string())
+                .and_then(|result| result)
+            {
+                Ok(observation) => observations.push(observation),
+                Err(error) => {
+                    failure.get_or_insert(error);
+                }
+            }
+        }
+        if let Some(error) = failure {
+            return Err(error);
         }
         observations.sort_by_key(|(index, _)| *index);
         Ok(observations
@@ -242,6 +257,71 @@ mod tests {
 
     struct ConcurrentProbe {
         barrier: Arc<tokio::sync::Barrier>,
+    }
+
+    struct FailingPeerProbe {
+        started: tokio::sync::Barrier,
+        release: tokio::sync::Notify,
+        disposed: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl AcpCapabilityNegotiator for FailingPeerProbe {
+        async fn negotiate(
+            &self,
+            argv: &[String],
+            _cwd: &Path,
+            _auth_method_id: Option<&str>,
+        ) -> Result<NegotiatedAcpCapabilities, String> {
+            self.started.wait().await;
+            if argv[0] == "fail" {
+                return Err("injected peer failure".into());
+            }
+            self.release.notified().await;
+            self.disposed.fetch_add(1, Ordering::SeqCst);
+            Ok(negotiated_capabilities())
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_batch_waits_for_other_probe_cleanup_before_returning() {
+        // C1 two probes started; C2 one fails; C3 the other's disposal has
+        // not returned. R1 C1+C2+C3 -> no batch result and no cache grant;
+        // R2 disposal returns -> the original error, with every peer settled.
+        // A barrier establishes C1; the disposal witness, not a delay, owns E2.
+        let probe = Arc::new(FailingPeerProbe {
+            started: tokio::sync::Barrier::new(2),
+            release: tokio::sync::Notify::new(),
+            disposed: AtomicUsize::new(0),
+        });
+        let source = ConfiguredAcpCapabilityObservationSource::new(
+            vec![
+                configured_target("failure", "fail"),
+                configured_target("peer", "wait"),
+            ],
+            probe.clone(),
+            PathBuf::from("/workspace"),
+            awaken_time::system_clock(),
+        );
+        let operation = source.capability_observations();
+        tokio::pin!(operation);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut operation)
+                .await
+                .is_err(),
+            "R1 peer cleanup remains owned"
+        );
+        probe.release.notify_one();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), operation)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(error.contains("injected peer failure"), "R2 original error");
+        assert_eq!(
+            probe.disposed.load(Ordering::SeqCst),
+            1,
+            "R2 disposal completed"
+        );
     }
 
     #[async_trait]

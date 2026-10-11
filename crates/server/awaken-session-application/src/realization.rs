@@ -980,28 +980,22 @@ impl SessionApplication {
             .await
     }
 
-    async fn session_for_realization_without_credential_migration(
+    async fn load_realization_root(
         &self,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<(String, PersistedSession), SessionRealizationControlFailure> {
-        let owner_scope = self.owner(session_id).await.map_err(mutation_control)?;
+        use tracing::Instrument as _;
+        let owner_scope = self
+            .owner(session_id)
+            .instrument(tracing::info_span!("session.realization.owner_lookup"))
+            .await
+            .map_err(mutation_control)?;
         let session = self
             .session_repository()
             .get(session_id)
+            .instrument(tracing::info_span!("session.realization.root_load"))
             .await
             .map_err(repository_control)?;
-        // A failed initial realization is terminal. Treating its now-empty
-        // Stage/Publish sets as `Complete` would allow a retried Run claim to
-        // execute after silently dropping the failed MCP/Resource projection.
-        if session.is_terminal() {
-            return Err(SessionRealizationControlFailure::Terminal);
-        }
-        if session.frozen_baseline().is_none() {
-            return Err(SessionRealizationControlFailure::NotReady);
-        }
-        if !environment_admits_realization_effects(&session.environment) {
-            return Err(SessionRealizationControlFailure::NotReady);
-        }
         Ok((owner_scope, session))
     }
 
@@ -1009,9 +1003,19 @@ impl SessionApplication {
         &self,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<(String, crate::SessionAggregate), SessionRealizationControlFailure> {
-        let (owner_scope, session) = self
-            .session_for_realization_without_credential_migration(session_id)
-            .await?;
+        let (owner_scope, session) = self.load_realization_root(session_id).await?;
+        // A failed initial realization is terminal. Treating its now-empty
+        // Stage/Publish sets as `Complete` would allow a retried Run claim to
+        // execute after silently dropping the failed MCP/Resource projection.
+        if session.is_terminal() {
+            return Err(SessionRealizationControlFailure::Terminal);
+        }
+        if session.frozen_baseline().is_none()
+            || !environment_admits_realization_effects(&session.environment)
+        {
+            return Err(SessionRealizationControlFailure::NotReady);
+        }
+
         let session = self
             .ensure_repository_credentials_pinned(&owner_scope, session)
             .await

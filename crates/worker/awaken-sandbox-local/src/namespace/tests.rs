@@ -225,7 +225,11 @@ async fn repository_realization_rejects_non_workspace_paths_without_relocation()
     };
 
     let error = sandbox
-        .provision_repo(&plan, None)
+        .provision_repo(
+            &plan,
+            None,
+            awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
+        )
         .expect_err("C1/E1 unsupported path");
     assert!(error.to_string().contains("current providers require"));
     assert!(!sandbox.root.root().join("repo").exists(), "E2 exact");
@@ -262,7 +266,11 @@ async fn repository_realization_preserves_an_incomplete_namespace_destination() 
     };
 
     sandbox
-        .provision_repo(&plan, None)
+        .provision_repo(
+            &plan,
+            None,
+            awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
+        )
         .expect_err("N1 incomplete destination fails closed");
     assert_eq!(
         std::fs::read_to_string(occupied.join("PRESERVED")).unwrap(),

@@ -206,6 +206,7 @@ fn single_header<'a>(parts: &'a Parts, name: &str) -> Result<Option<&'a str>, Wo
 
 #[async_trait]
 impl WorkerRequestAuthenticator for KubernetesWorkerAuthenticator {
+    #[tracing::instrument(name = "worker.authentication.token_review", skip_all)]
     async fn authenticate(&self, parts: &Parts) -> Result<VerifiedWorkerContext, WorkerAuthError> {
         let worker_id = single_header(parts, WORKER_ID_HEADER)?.ok_or(WorkerAuthError::Missing)?;
         let requested_pod = KubernetesPodIdentity::from_worker_id(worker_id)

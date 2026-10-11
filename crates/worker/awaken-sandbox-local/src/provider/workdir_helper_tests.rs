@@ -746,9 +746,14 @@ async fn provision_clones_then_the_host_pushes_the_agents_own_commit() {
         access: pc::MountAccess::ReadWrite,
     };
 
-    pc::RepositoryRealizer::realize_repository(&sandbox, &plan, None)
-        .await
-        .unwrap();
+    pc::RepositoryRealizer::realize_repository(
+        &sandbox,
+        &plan,
+        None,
+        awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
+    )
+    .await
+    .unwrap();
     let repo_dir = root.join("workspace/repo");
     assert_eq!(
         std::fs::read_to_string(repo_dir.join("README.md")).unwrap(),
@@ -766,9 +771,14 @@ async fn provision_clones_then_the_host_pushes_the_agents_own_commit() {
         "R1 successful publish leaves no stage name"
     );
     std::fs::write(repo_dir.join("PRESERVED"), "agent state").unwrap();
-    pc::RepositoryRealizer::realize_repository(&sandbox, &plan, None)
-        .await
-        .expect("R2 exact replay is idempotent");
+    pc::RepositoryRealizer::realize_repository(
+        &sandbox,
+        &plan,
+        None,
+        awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
+    )
+    .await
+    .expect("R2 exact replay is idempotent");
     assert_eq!(
         std::fs::read_to_string(repo_dir.join("PRESERVED")).unwrap(),
         "agent state",
@@ -780,9 +790,14 @@ async fn provision_clones_then_the_host_pushes_the_agents_own_commit() {
         ..plan.clone()
     };
     assert!(
-        pc::RepositoryRealizer::realize_repository(&sandbox, &conflicting, None)
-            .await
-            .is_err(),
+        pc::RepositoryRealizer::realize_repository(
+            &sandbox,
+            &conflicting,
+            None,
+            awaken_provisioning_contract::RepositoryRealizationIntent::Initialize
+        )
+        .await
+        .is_err(),
         "R3 conflicting realization fails closed"
     );
     assert_eq!(
@@ -797,9 +812,14 @@ async fn provision_clones_then_the_host_pushes_the_agents_own_commit() {
         mount_path: "/workspace/incomplete".into(),
         ..plan.clone()
     };
-    pc::RepositoryRealizer::realize_repository(&sandbox, &incomplete, None)
-        .await
-        .expect_err("R3b incomplete destination fails closed");
+    pc::RepositoryRealizer::realize_repository(
+        &sandbox,
+        &incomplete,
+        None,
+        awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
+    )
+    .await
+    .expect_err("R3b incomplete destination fails closed");
     assert_eq!(
         std::fs::read_to_string(incomplete_dir.join("PRESERVED")).unwrap(),
         "user bytes",
@@ -943,9 +963,14 @@ async fn repository_realizer_checks_out_the_exact_commit_pin() {
         initial_commit: Some(first.clone()),
         access: pc::MountAccess::ReadOnly,
     };
-    pc::RepositoryRealizer::realize_repository(&sandbox, &plan, None)
-        .await
-        .unwrap();
+    pc::RepositoryRealizer::realize_repository(
+        &sandbox,
+        &plan,
+        None,
+        awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
+    )
+    .await
+    .unwrap();
     let realized = sandbox.root.root().join("workspace/repo");
     assert_eq!(
         std::fs::read_to_string(realized.join("VERSION")).unwrap(),
@@ -964,9 +989,14 @@ async fn repository_realizer_checks_out_the_exact_commit_pin() {
         ..plan
     };
     assert!(
-        pc::RepositoryRealizer::realize_repository(&sandbox, &invalid, None)
-            .await
-            .is_err(),
+        pc::RepositoryRealizer::realize_repository(
+            &sandbox,
+            &invalid,
+            None,
+            awaken_provisioning_contract::RepositoryRealizationIntent::Initialize
+        )
+        .await
+        .is_err(),
         "G2 invalid commit fails instead of using the remote default HEAD"
     );
 }
@@ -989,9 +1019,14 @@ async fn repository_realizer_rejects_a_jail_escape() {
         access: pc::MountAccess::ReadOnly,
     };
     assert!(
-        pc::RepositoryRealizer::realize_repository(&sandbox, &plan, None)
-            .await
-            .is_err()
+        pc::RepositoryRealizer::realize_repository(
+            &sandbox,
+            &plan,
+            None,
+            awaken_provisioning_contract::RepositoryRealizationIntent::Initialize
+        )
+        .await
+        .is_err()
     );
 }
 

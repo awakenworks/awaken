@@ -154,10 +154,16 @@ pub(super) async fn provision(
     plan: &pc::RepositoryRealizationPlan,
     credential: Option<&pc::RepositoryHttpBasicCredential>,
     clock: &Arc<dyn awaken_time::WallClock>,
+    intent: pc::RepositoryRealizationIntent,
 ) -> Result<(), pc::SandboxError> {
     plan.validate_mount_path()?;
-    let publication = publish_credential(sandbox, &plan.transport_url, credential, clock).await?;
-    let mut command = repository_clone_command(plan, publisher_bin, uuid::Uuid::new_v4())?;
+    intent.validate_owned_path(plan, sandbox.handle().owned_paths())?;
+    let publication = if intent == pc::RepositoryRealizationIntent::Initialize {
+        publish_credential(sandbox, &plan.transport_url, credential, clock).await?
+    } else {
+        None
+    };
+    let mut command = repository_clone_command(plan, publisher_bin, uuid::Uuid::new_v4(), intent)?;
     command
         .env
         .extend(repository_git_tls_env(&plan.transport_url, credential));
@@ -184,6 +190,7 @@ fn repository_clone_command(
     plan: &pc::RepositoryRealizationPlan,
     publisher_bin: &str,
     stage_identity: uuid::Uuid,
+    intent: pc::RepositoryRealizationIntent,
 ) -> Result<pc::Command, pc::SandboxError> {
     let parent = plan
         .mount_path
@@ -200,7 +207,7 @@ fn repository_clone_command(
             "sh".into(),
             "-c".into(),
             concat!(
-                "set -eu; export GIT_TERMINAL_PROMPT=0; destination=$1; parent=$2; stage=$3; remote=$4; branch=$5; commit=$6; publisher=$7; helper=$8; socket=$9; ",
+                "set -eu; export GIT_TERMINAL_PROMPT=0; destination=$1; parent=$2; stage=$3; remote=$4; branch=$5; commit=$6; publisher=$7; helper=$8; socket=$9; intent=${10}; ",
                 "credential_helper=\"!$helper git-credential --socket $socket\"; stage_owned=0; ",
                 "cleanup() { if test \"$stage_owned\" = 1; then rm -rf -- \"$stage\"; fi; }; trap cleanup EXIT; ",
                 "is_occupied() { test -e \"$1\" || test -L \"$1\"; }; ",
@@ -211,6 +218,7 @@ fn repository_clone_command(
                 "if test -n \"$branch\"; then test \"$(git -C \"$candidate\" symbolic-ref --short HEAD)\" = \"$branch\" || return 1; fi; ",
                 "if test -n \"$commit\"; then test \"$(git -C \"$candidate\" rev-parse HEAD)\" = \"$(git -C \"$candidate\" rev-parse \"$commit\")\" || return 1; fi; }; ",
                 "if is_occupied \"$destination\"; then is_exact \"$destination\" && exit 0; echo 'Repository destination is occupied by a non-exact realization' >&2; exit 1; fi; ",
+                "if test \"$intent\" = retain; then echo 'Retained Repository working tree is absent' >&2; exit 1; fi; ",
                 "mkdir -p -- \"$parent\"; mkdir -m 700 -- \"$stage\"; stage_owned=1; ",
                 "git -c credential.useHttpPath=true -c \"credential.helper=$credential_helper\" clone --no-checkout -- \"$remote\" \"$stage\"; ",
                 "if test -n \"$branch\"; then git -C \"$stage\" checkout \"$branch\"; fi; ",
@@ -225,11 +233,12 @@ fn repository_clone_command(
             parent.into(),
             stage,
             plan.transport_url.clone(),
-            plan.initial_branch.clone().unwrap_or_default(),
-            plan.initial_commit.clone().unwrap_or_default(),
+            intent.checkout_constraints(plan).0.unwrap_or_default().to_owned(),
+            intent.checkout_constraints(plan).1.unwrap_or_default().to_owned(),
             publisher_bin.into(),
             publisher_bin.into(),
             REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH.into(),
+            if intent == pc::RepositoryRealizationIntent::Retain { "retain" } else { "initialize" }.into(),
         ],
         cwd: pc::WorkspaceLayout::ROOT.into(),
         env: Vec::new(),
@@ -449,9 +458,13 @@ mod tests {
 
     #[test]
     fn clone_command_executes_network_git_in_sandbox_and_never_embeds_credentials() {
-        let command =
-            repository_clone_command(&plan(), "/opt/custom/awaken-sandbox", uuid::Uuid::nil())
-                .expect("valid clone command");
+        let command = repository_clone_command(
+            &plan(),
+            "/opt/custom/awaken-sandbox",
+            uuid::Uuid::nil(),
+            pc::RepositoryRealizationIntent::Initialize,
+        )
+        .expect("valid clone command");
         let script = &command.argv[2];
         assert!(script.contains("clone --no-checkout -- \"$remote\" \"$stage\""));
         assert!(script.contains("credential.helper=$credential_helper"));
@@ -463,6 +476,130 @@ mod tests {
         assert_eq!(script.matches("rm -rf --").count(), 1);
         assert!(!script.contains("rm -rf -- \"$destination\""));
         assert!(script.contains("repository-publish-noreplace"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retained_container_git_program_preserves_wip_and_refuses_invalid_continuity() {
+        // Production-program matrix: C1 initialize/retain; C2 writable/readonly;
+        // C3 exact/foreign origin; C4 directory/missing/symlink. R1 initialized
+        // writable retention permits changed branch/HEAD/WIP; R2 Initialize or
+        // readonly keeps checkout constraints; R3 foreign/missing/symlink
+        // refuses with no clone, reset, staging directory or content loss.
+        // Only coordinates point at an isolated fixture; execute the actual
+        // emitted container program, never a copy of its decision logic.
+        let temporary = tempfile::tempdir().unwrap();
+        let repo = temporary.path().join("repository");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "--initial-branch=main", repo.to_str().unwrap()]);
+        git(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "config",
+            "user.name",
+            "fixture",
+        ]);
+        git(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "config",
+            "user.email",
+            "fixture@example.invalid",
+        ]);
+        std::fs::write(repo.join("README"), "checkpoint").unwrap();
+        git(&["-C", repo.to_str().unwrap(), "add", "README"]);
+        git(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "checkpoint",
+        ]);
+        git(&[
+            "-C",
+            repo.to_str().unwrap(),
+            "remote",
+            "add",
+            "origin",
+            &plan().transport_url,
+        ]);
+        git(&["-C", repo.to_str().unwrap(), "checkout", "-b", "awf/work"]);
+        std::fs::write(repo.join("README"), "dirty").unwrap();
+        std::fs::write(repo.join("new.txt"), "untracked").unwrap();
+        let execute = |plan: pc::RepositoryRealizationPlan, intent| {
+            let mut command =
+                repository_clone_command(&plan, "unused-helper", uuid::Uuid::nil(), intent)
+                    .unwrap();
+            command.argv[4] = repo.to_string_lossy().into_owned();
+            command.argv[5] = temporary.path().to_string_lossy().into_owned();
+            command.argv[6] = temporary
+                .path()
+                .join("must-not-create-stage")
+                .to_string_lossy()
+                .into_owned();
+            let output = std::process::Command::new(&command.argv[0])
+                .args(&command.argv[1..])
+                .output()
+                .unwrap();
+            assert!(!temporary.path().join("must-not-create-stage").exists());
+            output.status.success()
+        };
+        assert!(
+            execute(plan(), pc::RepositoryRealizationIntent::Retain),
+            "R1"
+        );
+        assert!(
+            !execute(plan(), pc::RepositoryRealizationIntent::Initialize),
+            "R2 initial ref remains strict"
+        );
+        let mut readonly = plan();
+        readonly.access = pc::MountAccess::ReadOnly;
+        assert!(
+            !execute(readonly, pc::RepositoryRealizationIntent::Retain),
+            "R2 readonly"
+        );
+        let mut foreign = plan();
+        foreign.transport_url = "https://foreign.example.invalid/repository".into();
+        assert!(
+            !execute(foreign, pc::RepositoryRealizationIntent::Retain),
+            "R3 foreign"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.join("README")).unwrap(),
+            "dirty"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.join("new.txt")).unwrap(),
+            "untracked"
+        );
+        let backup = temporary.path().join("backup");
+        std::fs::rename(&repo, &backup).unwrap();
+        assert!(
+            !execute(plan(), pc::RepositoryRealizationIntent::Retain),
+            "R3 missing"
+        );
+        assert!(!repo.exists(), "no hidden clone");
+        std::os::unix::fs::symlink(&backup, &repo).unwrap();
+        assert!(
+            !execute(plan(), pc::RepositoryRealizationIntent::Retain),
+            "R3 symlink"
+        );
+        assert_eq!(
+            std::fs::read_to_string(backup.join("README")).unwrap(),
+            "dirty"
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 // @formal surface obligation=worker.acp_capability_is_detected_only_after_a_verified_handshake
 // @formal reason: Session-Environment adapter for one bounded ACP capability probe. Its scope is derived
 // @formal reason: from the runtime owner plus the probe inputs rather than generated, so a cancelled probe
-// @formal reason: leaves an environment every tier reconciles by the exact stamp it carries, and the probe
+// @formal reason: names the exact resource without granting cleanup authority, and the probe
 // @formal reason: is wrapped in one responsibility claim minted before the first poll. It observes
 // @formal reason: capability only through a completed handshake and never publishes evidence of its own;
 // @formal reason: this is not a direct formal-proof claim.
@@ -11,24 +11,10 @@
 //! opens a prompt-free process/channel in the same Namespace/Container provider
 //! that later realizes published Runs, then tears the probe environment down.
 //!
-//! # Why the probe scope is derived rather than generated
-//!
-//! The probe creates a real environment and a real agent process, and a
-//! cancelled probe strands both. Whether that is recoverable comes down to one
-//! thing: can anything else *name* what was left behind. Every tier reconciles
-//! by the exact scope the provider stamped on the resource — the
-//! `SANDBOX_SCOPE_LABEL` a container backend selects on, the deterministic
-//! object name the Kubernetes backend discovers by, the sandbox root and its
-//! creation record on the filesystem tiers — so a scope drawn from a fresh
-//! random UUID is a name that dies with the cancelled task. Nothing on any tier
-//! can ever select on it again.
-//!
-//! So the scope is a pure function of who is probing and what is being probed.
-//! A repeat probe of the same CLI under the same runtime owner computes the
-//! same scope, which makes a stranded environment both *findable* (a scan has a
-//! selector) and *reclaimable* (the next probe lands on the same environment
-//! rather than beside it). Two different CLIs, or two runtime owners sharing a
-//! provider, still never collide.
+//! A scope derived from owner/argv/auth makes interrupted resources discoverable.
+//! It does not confer adoption or deletion authority after process loss.
+//! The Host task registry retains each live handle through caller cancellation;
+//! a later process still needs the provider’s durable effect and physical proof.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -104,8 +90,10 @@ impl StrandedProbeEnvironments {
     }
 }
 
+#[derive(Clone)]
 pub struct SessionAcpCapabilityNegotiator {
     host: Arc<SharedHost>,
+    scope_owner: String,
     timeout: Duration,
     handshake: Arc<dyn AcpCapabilityHandshake>,
     stranded: Arc<StrandedProbeEnvironments>,
@@ -115,11 +103,13 @@ impl SessionAcpCapabilityNegotiator {
     #[must_use]
     pub fn new(
         host: Arc<SharedHost>,
+        scope_owner: String,
         timeout: Duration,
         handshake: Arc<dyn AcpCapabilityHandshake>,
     ) -> Self {
         Self {
             host,
+            scope_owner,
             timeout,
             handshake,
             stranded: Arc::default(),
@@ -129,7 +119,7 @@ impl SessionAcpCapabilityNegotiator {
     /// The one scope a probe of `argv` under `owner` uses, on every tier and in
     /// every process.
     ///
-    /// `owner` is the runtime owner's persisted workspace coordinate, so two
+    /// `owner` is the injected runtime incarnation coordinate, so two
     /// runtimes sharing a container daemon or a Kubernetes namespace cannot
     /// adopt each other's probe. The rest is exactly the probe's inputs: argv
     /// decides which CLI is launched and the auth method decides which
@@ -162,6 +152,9 @@ impl SessionAcpCapabilityNegotiator {
         argv: &[String],
         cwd: &Path,
         auth_method_id: Option<&str>,
+        response: &mut tokio::sync::oneshot::Sender<
+            Result<NegotiatedAcpCapabilities, pc::SandboxError>,
+        >,
     ) -> Result<NegotiatedAcpCapabilities, pc::SandboxError> {
         let spec = crate::provisioning::agent_run_sandbox_spec(scope);
         let environment = self
@@ -189,6 +182,9 @@ impl SessionAcpCapabilityNegotiator {
                 })
             })?;
         let result = async {
+            if response.is_closed() {
+                return Err(pc::SandboxError::timeout("ACP capability probe caller cancelled"));
+            }
             let (process, mut channel) = environment
                 .agent_process()
                 .spawn_agent(pc::Command {
@@ -205,16 +201,20 @@ impl SessionAcpCapabilityNegotiator {
                 session_cwd: Some(cwd.to_string_lossy().into_owned()),
                 auth_method_id: auth_method_id.map(str::to_string),
             };
-            let negotiated = tokio::time::timeout(
+            let handshake = tokio::time::timeout(
                 self.timeout,
                 self.handshake.negotiate(channel.as_mut(), &config),
-            )
-            .await
+            );
+            let negotiated = tokio::select! {
+                biased;
+                () = response.closed() => Err(pc::SandboxError::timeout("ACP capability probe caller cancelled")),
+                result = handshake => result
             .map_err(|_| pc::SandboxError::timeout("ACP capability probe timed out"))
             .and_then(|result| {
                 result
                     .map_err(|error| pc::SandboxError::backend("negotiate ACP capabilities", error))
-            });
+            })
+            };
             drop(channel);
             // A runtime signal is external I/O. If it stalls, proceeding to
             // environment disposal is the only path that can still reap the
@@ -264,7 +264,10 @@ impl AcpCapabilityNegotiator for SessionAcpCapabilityNegotiator {
         cwd: &Path,
         auth_method_id: Option<&str>,
     ) -> Result<NegotiatedAcpCapabilities, String> {
-        let scope = Self::probe_scope(self.host.local_workspace(), argv, auth_method_id);
+        if self.scope_owner.trim().is_empty() {
+            return Err("ACP probe requires its runtime incarnation discovery coordinate".into());
+        }
+        let scope = Self::probe_scope(&self.scope_owner, argv, auth_method_id);
         // The claim is minted from the scope and the ledger before the probe
         // future is built, so nothing can be polled — and therefore no
         // environment or process can exist — before a record names it. The
@@ -272,8 +275,39 @@ impl AcpCapabilityNegotiator for SessionAcpCapabilityNegotiator {
         // resource; the retention covers the window before that stamp lands,
         // which the stamp itself cannot.
         let claim = pc::EffectClaim::durable(PROBE_RECONCILER, self.stranded.retain(scope.clone()));
-        pc::ClaimedEffect::new(claim, self.probe(&scope, argv, cwd, auth_method_id))
+        let (mut response, result) = tokio::sync::oneshot::channel();
+        let owner = self.clone();
+        let argv = argv.to_vec();
+        let cwd = cwd.to_owned();
+        let auth_method_id = auth_method_id.map(str::to_owned);
+        // This is the Host's existing drainable task registry, shared with
+        // auxiliary execution. Receiver cancellation may interrupt handshake,
+        // but cannot drop a create response or the exact-handle cleanup tail.
+        self.host
+            .resources
+            .memory
+            .background()
+            .spawn(
+                crate::background::BackgroundWorkClass::UnattachedEnvironment,
+                async move {
+                    let outcome = pc::ClaimedEffect::new(
+                        claim,
+                        owner.probe(
+                            &scope,
+                            &argv,
+                            &cwd,
+                            auth_method_id.as_deref(),
+                            &mut response,
+                        ),
+                    )
+                    .await;
+                    let _ = response.send(outcome);
+                },
+            )
+            .await;
+        result
             .await
+            .map_err(|_| "ACP capability probe owner ended before cleanup completed".to_string())?
             .map_err(|error| error.to_string())
     }
 }

@@ -161,6 +161,9 @@ pub enum BackgroundWorkClass {
         durable_intent_id: String,
     },
     EphemeralCache,
+    /// A prompt-free, unattached environment whose exact live handle remains
+    /// owned until cleanup. It owns no user Session generation or Run.
+    UnattachedEnvironment,
 }
 
 impl BackgroundRuns {

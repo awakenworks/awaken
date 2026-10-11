@@ -82,16 +82,12 @@ impl<'a> ResourcePreparation<'a> {
     }
 
     pub(super) fn validate(&self) -> Result<(), crate::HostError> {
-        if self
-            .host
+        self.host
             .installed_sessions
             .read(self.session, |slot| self.authorized(slot))
-            .unwrap_or(false)
-        {
-            Ok(())
-        } else {
-            Err(Self::ended())
-        }
+            .filter(|authorized| *authorized)
+            .map(|_| ())
+            .ok_or_else(Self::ended)
     }
 
     pub(super) fn finish(
@@ -165,6 +161,7 @@ impl Drop for ResourcePreparation<'_> {
 }
 
 impl crate::SharedHost {
+    #[tracing::instrument(name = "session.realization.renew", skip_all, fields(session_id, epoch = lease.epoch, owner = %lease.owner, incarnation = %lease.runtime_incarnation))]
     async fn reconcile_one_session_realization(
         &self,
         control: &DeadlineSessionRealizationControl<'_>,

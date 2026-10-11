@@ -161,6 +161,7 @@ impl<'a> DeadlineSessionRealizationControl<'a> {
         })
     }
 
+    #[tracing::instrument(name = "session.realization.control", skip_all, fields(operation, phase = "queue", queue_wait_ms = tracing::field::Empty, request_ms = tracing::field::Empty, outcome = tracing::field::Empty))]
     async fn call<T>(
         &self,
         operation: &'static str,
@@ -172,10 +173,16 @@ impl<'a> DeadlineSessionRealizationControl<'a> {
         >,
     ) -> Result<T, awaken_session_realization_contract::SessionRealizationControlFailure> {
         let deadline = awaken_time::mono::MonoDeadline::after(self.request_timeout);
-        let expired = || {
+        let queued_at = awaken_time::mono::now();
+        let mut request_started = None;
+        let expired = |phase: &str,
+                       queue_wait: std::time::Duration,
+                       request_time: std::time::Duration| {
             awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
                 format!(
-                    "Session realization Control `{operation}` exceeded its authority-derived request deadline"
+                    "Session realization Control `{operation}` exceeded its authority-derived request deadline (phase={phase}, queue_wait_ms={}, request_ms={})",
+                    queue_wait.as_millis(),
+                    request_time.as_millis(),
                 ),
             )
         };
@@ -183,11 +190,38 @@ impl<'a> DeadlineSessionRealizationControl<'a> {
         let response = tokio::time::timeout_at(deadline.instant(), async {
             permit = Some(self.acquire_completion_permit().await?);
             if deadline.has_passed() {
-                return Err(expired());
+                return Err(expired(
+                    "queue",
+                    queued_at.elapsed(),
+                    std::time::Duration::ZERO,
+                ));
             }
+            request_started = Some(awaken_time::mono::now());
+            tracing::Span::current().record("phase", "request");
             future.await
         })
         .await;
+        let (phase, queue_wait, request_time) = request_started.map_or(
+            ("queue", queued_at.elapsed(), std::time::Duration::ZERO),
+            |started| {
+                (
+                    "request",
+                    started.duration_since(queued_at),
+                    started.elapsed(),
+                )
+            },
+        );
+        let span = tracing::Span::current();
+        span.record("queue_wait_ms", queue_wait.as_millis() as u64);
+        span.record("request_ms", request_time.as_millis() as u64);
+        span.record(
+            "outcome",
+            match &response {
+                Ok(Ok(_)) => "success",
+                Ok(Err(_)) => "rejected",
+                Err(_) => "deadline",
+            },
+        );
         if let Some(permit) = permit {
             permit.settle(if response.is_ok() {
                 ControlPermitEvent::Returned
@@ -197,7 +231,14 @@ impl<'a> DeadlineSessionRealizationControl<'a> {
         }
         match response {
             Ok(result) => result,
-            Err(_) => Err(expired()),
+            Err(_) => {
+                tracing::warn!(
+                    operation,
+                    phase,
+                    "Session realization Control deadline elapsed"
+                );
+                Err(expired(phase, queue_wait, request_time))
+            }
         }
     }
 }

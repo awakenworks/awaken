@@ -30,6 +30,19 @@ explain, score, or compare runs, but they do not rewrite run truth.
 
 ## Eval Rules
 
+Session renewal diagnostics reuse the existing observability SDK, HTTP root
+span and W3C propagation. The Worker control client must propagate its current
+trace without exporting request bodies or authorization headers. The existing
+deadline decorator reports admission-queue versus admitted-request expiry,
+using the same absolute monotonic budget and semaphore; diagnostics cannot
+extend a lease, change retry classification or release a physical attempt.
+The server's existing renewal handler owns authentication, Worker/Session
+ownership checks and the Session root CAS. Stage spans belong at those existing
+call boundaries, not in another renewal service. Session/Worker ids are trace
+correlation fields, never unbounded metric labels. Missing traces preserve the
+same result and authority behavior. A historical total-deadline error alone
+cannot identify the failing server or database stage.
+
 Eval execution uses the same runtime ports as production execution:
 
 ```text

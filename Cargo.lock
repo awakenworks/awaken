@@ -3145,6 +3145,7 @@ dependencies = [
  "futures-util",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3647,6 +3648,7 @@ dependencies = [
  "awaken-dispatch-erasure",
  "awaken-dispatch-execution",
  "awaken-lease-testkit",
+ "awaken-observability",
  "awaken-outbound-http",
  "awaken-run-ingress",
  "awaken-run-ingress-contract",
@@ -3665,6 +3667,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -3693,6 +3696,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
