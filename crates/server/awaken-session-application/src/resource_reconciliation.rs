@@ -1368,6 +1368,8 @@ impl SessionApplication {
         owner_scope: &str,
         mut session: PersistedSession,
     ) -> Result<PersistedSession, SessionPreparationError> {
+        let environment_runtime = self.runtime().environment();
+
         if !session.is_terminal() && self.requires_external_realization(&session) {
             return if session.resources.pending.is_none()
                 && session.resources.has_repository_retirements()
@@ -1406,13 +1408,11 @@ impl SessionApplication {
                 session = self
                     .start_resource_reconciliation(owner_scope, session, &desired)
                     .await?;
-                if let Err(error) = self
-                    .runtime()
+                if let Err(error) = environment_runtime
                     .apply_session_inputs(session_id.as_str(), &transition)
                     .await
                 {
-                    let settlement = match self
-                        .runtime()
+                    let settlement = match environment_runtime
                         .apply_session_inputs(session_id.as_str(), &transition.reversed())
                         .await
                     {
@@ -1487,7 +1487,7 @@ impl SessionApplication {
                 active,
             )
             .map_err(internal)?;
-            self.runtime()
+            environment_runtime
                 .apply_session_inputs(session_id.as_str(), &transition)
                 .await
                 .map_err(SessionPreparationError::Rejected)?;

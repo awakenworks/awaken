@@ -448,10 +448,12 @@ impl SessionApplication {
         &self,
         session: &PersistedSession,
     ) -> Result<u64, SessionActivityError> {
+        let thread_reads = self.runtime().thread_reads();
+
         if session.running_interval.is_some() {
             return Ok(0);
         }
-        self.runtime()
+        thread_reads
             .session_thread_recovery_snapshot(&session.session_id, session.session_id.as_str())
             .await
             .map(|snapshot| snapshot.map_or(0, |snapshot| snapshot.store_cursor))

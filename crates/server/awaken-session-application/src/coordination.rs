@@ -91,8 +91,9 @@ impl SessionApplication {
         ),
         RunError,
     > {
-        let snapshot = self
-            .runtime()
+        let thread_reads = self.runtime().thread_reads();
+
+        let snapshot = thread_reads
             .session_thread_run_recovery_snapshot(
                 &command.session_id,
                 &command.source_thread_id.0,
@@ -126,12 +127,16 @@ impl SessionApplication {
         session_id: &awaken_session_types::SessionId,
         child_thread_id: &ThreadId,
     ) -> Result<(), RunError> {
+        let coordination_reads = self.runtime().coordination_reads();
+
         if child_thread_id.0 == session_id {
             return Err(RunError::bad_request(
                 "a coordinated child Thread must differ from its primary Session",
             ));
         }
-        let links = self.runtime().coordinated_threads(session_id, None).await?;
+        let links = coordination_reads
+            .coordinated_threads(session_id, None)
+            .await?;
         if !links
             .iter()
             .any(|link| link.session_id == session_id && link.thread_id == *child_thread_id)
@@ -263,13 +268,15 @@ impl SessionApplication {
         &self,
         command: SessionThreadToolReplyCommand,
     ) -> Result<(String, Option<u64>, SessionThreadToolReplyDelivery), RunError> {
+        let coordination_reads = self.runtime().coordination_reads();
+        let thread_reads = self.runtime().thread_reads();
+
         if !command.has_complete_coordinates() {
             return Err(RunError::bad_request(
                 "Session Thread reply requires exact Run, correlation, and tool identities",
             ));
         }
-        let fence = self
-            .runtime()
+        let fence = coordination_reads
             .session_thread_tool_reply_fence(&command)
             .await?;
         if !fence.already_applied
@@ -277,8 +284,7 @@ impl SessionApplication {
         {
             self.validate_coordinated_thread(&command.session_id, child_thread_id)
                 .await?;
-            if self
-                .runtime()
+            if thread_reads
                 .session_thread_disposition(&command.session_id, &child_thread_id.0)
                 .await?
                 == awaken_agent_contract::ThreadDisposition::Archived
@@ -393,6 +399,9 @@ impl SessionApplication {
         resume: RunResume,
         stream_sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
     ) -> Result<StepOutcome, RunError> {
+        let coordination_runtime = self.runtime().coordination();
+        let thread_reads = self.runtime().thread_reads();
+
         if operation_id.trim().is_empty() {
             return Err(RunError::bad_request(
                 "Session Run resume requires a stable operation identity",
@@ -409,8 +418,7 @@ impl SessionApplication {
                 return Err(RunError::bad_request("Session was not found"));
             }
         }
-        let snapshot = self
-            .runtime()
+        let snapshot = thread_reads
             .session_thread_recovery_snapshot(session_id, session_id.as_str())
             .await?
             .ok_or_else(|| RunError::bad_request("Session Thread has no committed Run"))?;
@@ -462,8 +470,7 @@ impl SessionApplication {
         };
         let (session_id, session_activity_epoch, delivery) =
             self.prepare_session_thread_tool_reply(command).await?;
-        let result = self
-            .runtime()
+        let result = coordination_runtime
             .reply_and_observe_session_thread_tool(delivery, stream_sink)
             .await;
         if let Some(epoch) = session_activity_epoch {
@@ -515,6 +522,8 @@ impl SessionAgentCoordination for SessionApplication {
         thread_id: &ThreadId,
         run_id: &RunId,
     ) -> Result<bool, RunError> {
+        let thread_reads = self.runtime().thread_reads();
+
         let session = self
             .session(session_id)
             .await
@@ -524,8 +533,7 @@ impl SessionAgentCoordination for SessionApplication {
                 "a terminal Session cannot admit model requests",
             ));
         }
-        let snapshot = self
-            .runtime()
+        let snapshot = thread_reads
             .session_thread_recovery_snapshot(session_id, &thread_id.0)
             .await?
             .ok_or_else(|| {
@@ -586,6 +594,11 @@ impl SessionAgentCoordination for SessionApplication {
         &self,
         command: SessionAgentMessageCommand,
     ) -> Result<SessionAgentMessageReceipt, RunError> {
+        let coordination_runtime = self.runtime().coordination();
+
+        let coordination_reads = self.runtime().coordination_reads();
+        let thread_reads = self.runtime().thread_reads();
+
         if command.source_thread_id.0 != command.session_id {
             return Err(RunError::bad_request(
                 "only the primary Session Thread may coordinate Agents",
@@ -599,14 +612,12 @@ impl SessionAgentCoordination for SessionApplication {
                 "Agent coordination requires a message and Runtime operation identity",
             ));
         }
-        let command = self
-            .runtime()
+        let command = coordination_reads
             .validate_session_agent_message_source(&command)
             .await?;
         let (owner, session) = self.coordination_session(&command.session_id).await?;
         let roster = self.coordination_roster(&owner, &session)?;
-        let existing_links = self
-            .runtime()
+        let existing_links = coordination_reads
             .coordinated_threads(&command.session_id, None)
             .await?;
 
@@ -631,8 +642,7 @@ impl SessionAgentCoordination for SessionApplication {
                 )
             }
             SessionAgentTarget::ExistingThread { thread_id } => {
-                if self
-                    .runtime()
+                if thread_reads
                     .session_thread_disposition(&command.session_id, &thread_id.0)
                     .await?
                     == awaken_agent_contract::ThreadDisposition::Archived
@@ -659,8 +669,7 @@ impl SessionAgentCoordination for SessionApplication {
                             "only ordinary Agent Threads accept send_message follow-ups",
                         )
                     })?;
-                if let Some(snapshot) = self
-                    .runtime()
+                if let Some(snapshot) = thread_reads
                     .session_thread_recovery_snapshot(&command.session_id, &thread_id.0)
                     .await?
                 {
@@ -705,8 +714,7 @@ impl SessionAgentCoordination for SessionApplication {
             .await
             .map_err(crate::SessionActivityError::run_error)?;
         let session_id = command.session_id.clone();
-        let admitted = self
-            .runtime()
+        let admitted = coordination_runtime
             .admit_coordinated_run(CoordinatedRunCommand {
                 intent,
                 session_id: command.session_id,
@@ -743,6 +751,8 @@ impl SessionAgentCoordination for SessionApplication {
         &self,
         command: SessionAgentBoundaryCommand,
     ) -> Result<(), RunError> {
+        let coordination_runtime = self.runtime().coordination();
+
         if command.session_activity_epoch == 0 {
             return Err(RunError::bad_request(
                 "Agent settlement does not identify a committed Session activity",
@@ -803,7 +813,7 @@ impl SessionAgentCoordination for SessionApplication {
             SessionAgentBoundaryAction::InterruptThenSettle => {
                 // Failure is absorbing for an ordinary coordinated Thread. The
                 // existing Dispatch interrupt precedes direct settlement.
-                self.runtime()
+                coordination_runtime
                     .interrupt_session_thread(&command.session_id, &command.source_thread_id)
                     .await?;
             }
@@ -811,15 +821,10 @@ impl SessionAgentCoordination for SessionApplication {
             SessionAgentBoundaryAction::ContinueReport => {}
         }
         let observation = observation.expect("visible action requires a lifecycle observation");
-        let mut retained_user_event = false;
-        if role == SessionAgentBoundaryRole::PrimaryContinuation {
-            for batch in &current.event_batches {
-                retained_user_event |= batch
-                    .user_run_operation_id(&command.source_run_id)
-                    .map_err(|error| RunError::internal(error.to_string()))?
-                    .is_some();
-            }
-        }
+        let retained_user_event = role == SessionAgentBoundaryRole::PrimaryContinuation
+            && awaken_session_state_contract::SessionEventHistory::from(&current)
+                .retains_user_run(&command.source_run_id)
+                .map_err(|error| RunError::internal(error.to_string()))?;
         if action != SessionAgentBoundaryAction::ContinueReport {
             // Keep the activity fence active until usage/budget reconciliation
             // has also committed. If that dependency is unavailable the queue
@@ -876,8 +881,7 @@ impl SessionAgentCoordination for SessionApplication {
                     "Agent report Resource projection is unavailable: {error}"
                 ))
             })?;
-        let continued = self
-            .runtime()
+        let continued = coordination_runtime
             .continue_session_agent_report(SessionAgentReportContinuation {
                 session_id: command.session_id.clone(),
                 source_thread_id: command.source_thread_id,
@@ -918,14 +922,10 @@ impl SessionAgentCoordination for SessionApplication {
         if current.is_terminal() {
             return Ok(());
         }
-        let mut retained = false;
-        for batch in &current.event_batches {
-            retained |= batch
-                .user_run_operation_id(&command.source_run_id)
-                .map_err(|error| RunError::internal(error.to_string()))?
-                .is_some();
-        }
-        if !retained {
+        if !awaken_session_state_contract::SessionEventHistory::from(&current)
+            .retains_user_run(&command.source_run_id)
+            .map_err(|error| RunError::internal(error.to_string()))?
+        {
             return Ok(());
         }
         let (_, state, observation) = self.committed_agent_boundary(&command).await?;
@@ -954,9 +954,11 @@ impl SessionAgentCoordination for SessionApplication {
         session_id: &awaken_session_types::SessionId,
         child_thread_id: &ThreadId,
     ) -> Result<(), RunError> {
+        let coordination_runtime = self.runtime().coordination();
+
         self.validate_coordinated_thread(session_id, child_thread_id)
             .await?;
-        self.runtime()
+        coordination_runtime
             .interrupt_session_thread(session_id, child_thread_id)
             .await
     }
@@ -965,9 +967,13 @@ impl SessionAgentCoordination for SessionApplication {
         &self,
         command: SessionThreadToolReplyCommand,
     ) -> Result<(), RunError> {
+        let coordination_runtime = self.runtime().coordination();
+
         let (session_id, session_activity_epoch, delivery) =
             self.prepare_session_thread_tool_reply(command).await?;
-        let result = self.runtime().reply_session_thread_tool(delivery).await;
+        let result = coordination_runtime
+            .reply_session_thread_tool(delivery)
+            .await;
         if let Some(epoch) = session_activity_epoch {
             self.settle_definitive_coordination_rejection(&session_id, epoch, &result)
                 .await?;

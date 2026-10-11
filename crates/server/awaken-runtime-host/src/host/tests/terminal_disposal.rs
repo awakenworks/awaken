@@ -239,26 +239,14 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         terminal_preparation_authorization(&effect, &terminal_projection);
     let before = host.prepared_session_environment("t-end");
     let (archive, recovery) = tokio::join!(
-            managed
-                .terminal_cleanup()
-                .ok_or_else(|| awaken_session_types::RunError::unavailable(
-                    "TerminalCleanupRuntime is unsupported by this runtime"
-                ))
-                .expect("runtime role")
-                .prepare_terminal_cleanup_for_effect(
-                    effect.clone(),
-                    preparation_authorization.clone(),
-                ),
-            managed
-                .terminal_cleanup()
-                .ok_or_else(|| awaken_session_types::RunError::unavailable(
-                    "TerminalCleanupRuntime is unsupported by this runtime"
-                ))
-                .expect("runtime role")
-                .prepare_terminal_cleanup_for_effect(
-                    effect.clone(),
-                    preparation_authorization.clone(),
-                )
+            managed.prepare_terminal_cleanup_for_effect(
+                effect.clone(),
+                preparation_authorization.clone(),
+            ),
+            managed.prepare_terminal_cleanup_for_effect(
+                effect.clone(),
+                preparation_authorization.clone(),
+            )
         );
     if conflicting {
         for outcome in [archive, recovery] {
@@ -321,13 +309,6 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         )).unwrap(), "U retains missing ordinary commit evidence");
     }
     managed
-        .terminal_cleanup()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "TerminalCleanupRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .acknowledge_terminal_cleanup_preparation(&effect)
         .await;
     assert!(
@@ -368,13 +349,6 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         "T2/E4 retains the exact terminal projection until durable acknowledgement"
     );
     managed
-        .terminal_cleanup()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "TerminalCleanupRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .acknowledge_terminal_cleanup_disposal(&disposal_effect)
         .await;
     assert!(host.registered_thread_workspace("t-end").is_none(), "T3/E5");
@@ -385,13 +359,6 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     );
 
     let replay_error = managed
-        .terminal_cleanup()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "TerminalCleanupRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .prepare_terminal_cleanup_for_effect(effect, preparation_authorization)
         .await
         .expect_err("T4 retired generation fails closed");
@@ -432,13 +399,6 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         )
         .expect("T4 close the foreign Host preparation input");
     let missing_error = managed
-        .terminal_cleanup()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "TerminalCleanupRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .prepare_terminal_cleanup_for_effect(missing_effect, missing_authorization)
         .await
         .expect_err("T4 unknown generation fails closed");
@@ -567,13 +527,6 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
                 .await;
 
         let preparation = managed
-            .terminal_cleanup()
-            .ok_or_else(|| {
-                awaken_session_types::RunError::unavailable(
-                    "TerminalCleanupRuntime is unsupported by this runtime",
-                )
-            })
-            .expect("runtime role")
             .prepare_terminal_cleanup_for_effect(
                 effect.clone(),
                 terminal_preparation_authorization(&effect, &projection),
@@ -603,11 +556,6 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         *worker.current.lock().unwrap() = None;
         assert!(
             managed
-                .terminal_cleanup()
-                .ok_or_else(|| awaken_session_types::RunError::unavailable(
-                    "TerminalCleanupRuntime is unsupported by this runtime"
-                ))
-                .expect("runtime role")
                 .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
                 .await
                 .is_err(),
@@ -685,25 +633,11 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         });
         probe.restored_release.notify_one();
         let first = managed
-            .terminal_cleanup()
-            .ok_or_else(|| {
-                awaken_session_types::RunError::unavailable(
-                    "TerminalCleanupRuntime is unsupported by this runtime",
-                )
-            })
-            .expect("runtime role")
             .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
             .await
             .expect("TR2 dispose exact restore target");
         probe.restored_release.notify_one();
         let replay = managed
-            .terminal_cleanup()
-            .ok_or_else(|| {
-                awaken_session_types::RunError::unavailable(
-                    "TerminalCleanupRuntime is unsupported by this runtime",
-                )
-            })
-            .expect("runtime role")
             .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
             .await
             .expect("TR2 replay after disposal receipt loss");
@@ -732,13 +666,6 @@ async fn restoring_terminal_disposal_replays_until_aggregate_acknowledgement() {
         );
 
         managed
-            .terminal_cleanup()
-            .ok_or_else(|| {
-                awaken_session_types::RunError::unavailable(
-                    "TerminalCleanupRuntime is unsupported by this runtime",
-                )
-            })
-            .expect("runtime role")
             .acknowledge_terminal_cleanup_disposal(&disposal_effect)
             .await;
         assert!(!host.installed_sessions.contains(thread), "TR3/E4");

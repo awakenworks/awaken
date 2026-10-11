@@ -185,6 +185,8 @@ impl SessionApplication {
         session_id: &awaken_session_types::SessionId,
         now_unix_ms: u64,
     ) -> Result<bool, SessionContinuationError> {
+        let environment_runtime = self.runtime().environment();
+
         let owner_scope = self
             .owner(session_id)
             .await
@@ -247,8 +249,7 @@ impl SessionApplication {
                 ..
             } => {
                 let expected_mcp_generations = expected_mcp_generations(&session)?;
-                let receipt = self
-                    .runtime()
+                let receipt = environment_runtime
                     .quiesce_session_environment(
                         session_id.as_str(),
                         &operation,
@@ -293,7 +294,7 @@ impl SessionApplication {
                     .ok_or(SessionEnvironmentTransitionError::WrongPhase)?;
                 let receipt = tokio::time::timeout(
                     std::time::Duration::from_secs(policy.max_checkpoint_duration_secs),
-                    self.runtime()
+                    environment_runtime
                         .checkpoint_session_environment(session_id.as_str(), request),
                 )
                 .await
@@ -324,8 +325,7 @@ impl SessionApplication {
                             error.to_string(),
                         ))
                     })?;
-                let receipt = self
-                    .runtime()
+                let receipt = environment_runtime
                     .prepare_checkpoint_source_disposal(
                         session_id.as_str(),
                         &preparation,
@@ -361,8 +361,7 @@ impl SessionApplication {
                         error.to_string(),
                     ))
                 })?;
-                let receipt = self
-                    .runtime()
+                let receipt = environment_runtime
                     .dispose_prepared_checkpoint_source(session_id.as_str(), &disposal)
                     .await?;
                 session.environment.complete_suspend(&receipt)?;
@@ -400,6 +399,8 @@ impl SessionApplication {
         session_id: &awaken_session_types::SessionId,
         now_unix_ms: u64,
     ) -> Result<PersistedSession, SessionContinuationError> {
+        let environment_runtime = self.runtime().environment();
+
         for _ in 0..12 {
             let owner_scope = self
                 .owner(session_id)
@@ -443,7 +444,7 @@ impl SessionApplication {
                     // Environment. Delete is idempotent and happens first so a
                     // failed delete retains the reference for retry; a crash after
                     // delete replays the same delete before the CAS.
-                    self.runtime()
+                    environment_runtime
                         .delete_session_checkpoint(session_id.as_str(), &checkpoint)
                         .await?;
                     session.environment = SessionEnvironmentState::Unmaterialized;
@@ -473,8 +474,7 @@ impl SessionApplication {
                         .environment
                         .restoring_request(&owner_scope, session_id)
                         .ok_or(SessionEnvironmentTransitionError::NotRestoring)?;
-                    let receipt = self
-                        .runtime()
+                    let receipt = environment_runtime
                         .restore_checkpointed_session_environment(request)
                         .await?;
                     session.environment.complete_restore(&receipt)?;

@@ -160,28 +160,9 @@ macro_rules! neutral_role {
                 ))
             }
 
-            /// Read the exact Run lifecycle from existing committed Thread truth. This
-            /// is the recovery observation for batch advancement, not a completion
-            /// registry or protocol event cache.
-            async fn session_run_state(
-                &self,
-                _session_id: &$crate::__macro_support::SessionId,
-                _run_id: &awaken_agent_contract::agent::run::Id,
-            ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
-                    "runtime does not implement Session Run recovery",
-                ))
-            }
 
-            /// Read the runtime-owned, durable child-Run relationships for `thread`.
-            /// Protocol adapters use this only to rebuild disposable projections after a
-            /// restart; the runtime relationship registry remains the sole authority.
-            async fn delegated_runs(
-                &self,
-                _thread: &str,
-            ) -> Result<Vec<$crate::__macro_support::DelegatedRun>, $crate::__macro_support::RunError> {
-                Ok(Vec::new())
-            }
+
+
 
             /// Admit one ordinary child Run after the Session application has validated
             /// the frozen roster and lifecycle. Implementations must use their canonical
@@ -196,28 +177,7 @@ macro_rules! neutral_role {
                 ))
             }
 
-            /// Rebuild the Session's coordinated child-Thread links from existing
-            /// committed ToolBatch/transcript/dispatch facts. This is a query, not a
-            /// relationship repository.
-            /// `observed_root` may borrow an atomic prefix already read for this Session
-            /// during a larger read-only projection. Implementations must reject a
-            /// different root identity and fence enrichment to that prefix. `None`
-            /// reads the current prefix; command admission and final validation use it.
-            async fn coordinated_threads(
-                &self,
-                session_id: &$crate::__macro_support::SessionId,
-                observed_root: Option<
-                    &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
-                >,
-            ) -> Result<Vec<$crate::CoordinatedThreadLink>, $crate::__macro_support::RunError> {
-                if observed_root.is_some_and(|snapshot| snapshot.thread_id.0 != session_id.as_str())
-                {
-                    return Err($crate::__macro_support::RunError::internal(
-                        "coordination query received a snapshot for a different Session root",
-                    ));
-                }
-                Ok(Vec::new())
-            }
+
 
             /// Subscribe to neutral live observations for one already-admitted root or
             /// child logical Thread. `None` is the fail-closed default: committed events
@@ -257,19 +217,7 @@ macro_rules! neutral_role {
                 ))
             }
 
-            /// Read and validate the exact committed Awaiting coordinate that a Primary
-            /// or child Thread tool reply intends to answer. The command already carries
-            /// its admission-time Run/correlation identity; this returns only the current
-            /// dispatch activity coordinate. Implementations revalidate the command when
-            /// applying the reply so a concurrent resume or later Run fails closed.
-            async fn session_thread_tool_reply_fence(
-                &self,
-                _command: &$crate::SessionThreadToolReplyCommand,
-            ) -> Result<$crate::SessionThreadToolReplyFence, $crate::__macro_support::RunError> {
-                Err($crate::__macro_support::RunError::unavailable(
-                    "Session Thread tool reply fencing is unsupported",
-                ))
-            }
+
 
             /// Reply to the exact pending tool of a Primary or logical child Thread
             /// through the Session-affine claim-fenced resume/commit boundary.
@@ -304,7 +252,7 @@ macro_rules! neutral_role {
             ) -> Result<$crate::__macro_support::DelegatedRunSnapshot, $crate::__macro_support::RunError> {
                 $crate::StreamingRunRuntime::interrupt(self, thread).await?;
                 Ok($crate::__macro_support::DelegatedRunSnapshot {
-                    delegated_runs: $crate::CoordinationRuntime::delegated_runs(self, thread)
+                    delegated_runs: $crate::SessionCoordinationReads::delegated_runs(self, thread)
                         .await?,
                     coordinated_thread_ids: Vec::new(),
                     watermark: 0,
@@ -318,6 +266,73 @@ macro_rules! neutral_role {
                         .map(|snapshot| snapshot.store_cursor)
                         .unwrap_or_default(),
                 })
+            }
+
+
+        }
+
+    };
+    (SessionCoordinationReads for $ty:ty) => {
+        #[$crate::__macro_support::async_trait::async_trait]
+impl $crate::SessionCoordinationReads for $ty {
+            /// Read the exact Run lifecycle from existing committed Thread truth. This
+            /// is the recovery observation for batch advancement, not a completion
+            /// registry or protocol event cache.
+            async fn session_run_state(
+                &self,
+                _session_id: &$crate::__macro_support::SessionId,
+                _run_id: &awaken_agent_contract::agent::run::Id,
+            ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, $crate::__macro_support::RunError> {
+                Err($crate::__macro_support::RunError::unavailable(
+                    "runtime does not implement Session Run recovery",
+                ))
+            }
+
+            /// Read the runtime-owned, durable child-Run relationships for `thread`.
+            /// Protocol adapters use this only to rebuild disposable projections after a
+            /// restart; the runtime relationship registry remains the sole authority.
+            async fn delegated_runs(
+                &self,
+                _thread: &str,
+            ) -> Result<Vec<$crate::__macro_support::DelegatedRun>, $crate::__macro_support::RunError> {
+                Ok(Vec::new())
+            }
+
+            /// Rebuild the Session's coordinated child-Thread links from existing
+            /// committed ToolBatch/transcript/dispatch facts. This is a query, not a
+            /// relationship repository.
+            /// `observed_root` may borrow an atomic prefix already read for this Session
+            /// during a larger read-only projection. Implementations must reject a
+            /// different root identity and fence enrichment to that prefix. `None`
+            /// reads the current prefix; command admission and final validation use it.
+            async fn coordinated_threads(
+                &self,
+                session_id: &$crate::__macro_support::SessionId,
+                observed_root: Option<
+                    &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+                >,
+            ) -> Result<Vec<$crate::CoordinatedThreadLink>, $crate::__macro_support::RunError> {
+                if observed_root.is_some_and(|snapshot| snapshot.thread_id.0 != session_id.as_str())
+                {
+                    return Err($crate::__macro_support::RunError::internal(
+                        "coordination query received a snapshot for a different Session root",
+                    ));
+                }
+                Ok(Vec::new())
+            }
+
+            /// Read and validate the exact committed Awaiting coordinate that a Primary
+            /// or child Thread tool reply intends to answer. The command already carries
+            /// its admission-time Run/correlation identity; this returns only the current
+            /// dispatch activity coordinate. Implementations revalidate the command when
+            /// applying the reply so a concurrent resume or later Run fails closed.
+            async fn session_thread_tool_reply_fence(
+                &self,
+                _command: &$crate::SessionThreadToolReplyCommand,
+            ) -> Result<$crate::SessionThreadToolReplyFence, $crate::__macro_support::RunError> {
+                Err($crate::__macro_support::RunError::unavailable(
+                    "Session Thread tool reply fencing is unsupported",
+                ))
             }
 
             /// Validate one model-facing Agent command against the source Run's exact
@@ -337,7 +352,7 @@ macro_rules! neutral_role {
                     "durable Agent message source validation is unsupported",
                 ))
             }
-        }
+}
     };
     (BudgetRuntime for $ty:ty) => {
         #[$crate::__macro_support::async_trait::async_trait]
@@ -990,40 +1005,11 @@ impl SessionRuntime for NeutralRuntime {
     fn model(&self) -> String {
         String::new()
     }
-    fn realization(&self) -> Option<&dyn RealizationRuntime> {
-        Some(self)
-    }
-    fn coordination(&self) -> Option<&dyn CoordinationRuntime> {
-        Some(self)
-    }
-    fn budget(&self) -> Option<&dyn BudgetRuntime> {
-        Some(self)
-    }
-    fn streaming_runs(&self) -> Option<&dyn StreamingRunRuntime> {
-        Some(self)
-    }
-    fn environment(&self) -> Option<&dyn EnvironmentRuntime> {
-        Some(self)
-    }
-    fn thread_reads(&self) -> Option<&dyn ThreadReadRuntime> {
-        Some(self)
-    }
-    fn terminal_cleanup(&self) -> Option<&dyn TerminalCleanupRuntime> {
-        Some(self)
-    }
-    fn outcomes(&self) -> Option<&dyn OutcomeRuntime> {
-        Some(self)
-    }
-    fn live_inbox(&self) -> Option<&dyn LiveInboxRuntime> {
-        Some(self)
-    }
-    fn capability(&self) -> Option<&dyn CapabilityRuntime> {
-        Some(self)
-    }
 }
 
 crate::neutral_role!(RealizationRuntime for NeutralRuntime);
 crate::neutral_role!(CoordinationRuntime for NeutralRuntime);
+crate::neutral_role!(SessionCoordinationReads for NeutralRuntime);
 crate::neutral_role!(BudgetRuntime for NeutralRuntime);
 crate::neutral_role!(StreamingRunRuntime for NeutralRuntime);
 crate::neutral_role!(EnvironmentRuntime for NeutralRuntime);

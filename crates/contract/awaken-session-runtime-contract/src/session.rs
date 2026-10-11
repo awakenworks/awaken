@@ -5,6 +5,9 @@
 //! Neutral value types and the [`SessionRuntime`] interface the adapter drives:
 //! pending tools, Run outcomes, capabilities, Session initialization, and Run errors.
 
+mod executor;
+pub use executor::{SessionExecutionRoles, SessionExecutor};
+
 mod neutral;
 mod projection_evidence;
 mod projection_source;
@@ -187,76 +190,6 @@ pub trait SessionRuntime: Send + Sync {
 
     /// The model id to echo in the session's agent object.
     fn model(&self) -> String;
-
-    /// Session realization: projections, leases and binding sinks a Coordinator installs on a Worker-side runtime. `None` means this runtime does not own that role; callers
-    /// select a [`RealizationRuntime`] at composition instead of discovering the gap at the effect
-    /// (ADR-0081 capability ladder).
-    fn realization(&self) -> Option<&dyn RealizationRuntime> {
-        None
-    }
-
-    /// Session Run coordination: reservations, activation, child threads, tool replies and delegation quiescence. `None` means this runtime does not own that role; callers
-    /// select a [`CoordinationRuntime`] at composition instead of discovering the gap at the effect
-    /// (ADR-0081 capability ladder).
-    fn coordination(&self) -> Option<&dyn CoordinationRuntime> {
-        None
-    }
-
-    /// Budget and usage accounting for a Session and its threads. `None` means this runtime does not own that role; callers
-    /// select a [`BudgetRuntime`] at composition instead of discovering the gap at the effect
-    /// (ADR-0081 capability ladder).
-    fn budget(&self) -> Option<&dyn BudgetRuntime> {
-        None
-    }
-
-    /// Streaming and attributed Run execution, interruption, model rebinding and pending-tool readback. `None` means this runtime does not own that role; callers
-    /// select a [`StreamingRunRuntime`] at composition instead of discovering the gap at the effect
-    /// (ADR-0081 capability ladder).
-    fn streaming_runs(&self) -> Option<&dyn StreamingRunRuntime> {
-        None
-    }
-
-    /// Session environment lifecycle: adoption, checkpoints, restore, tool and skill resolution, input application. `None` means this runtime does not own that role; callers
-    /// select a [`EnvironmentRuntime`] at composition instead of discovering the gap at the effect
-    /// (ADR-0081 capability ladder).
-    fn environment(&self) -> Option<&dyn EnvironmentRuntime> {
-        None
-    }
-
-    /// Committed thread readback: messages, recovery snapshots, run lifecycle, disposition and outcome projections. `None` means this runtime does not own that role; callers
-    /// select a [`ThreadReadRuntime`] at composition instead of discovering the gap at the effect
-    /// (ADR-0081 capability ladder).
-    fn thread_reads(&self) -> Option<&dyn ThreadReadRuntime> {
-        None
-    }
-
-    /// Terminal cleanup effects a Worker performs under a realization lease. `None` means this runtime does not own that role; callers
-    /// select a [`TerminalCleanupRuntime`] at composition instead of discovering the gap at the effect
-    /// (ADR-0081 capability ladder).
-    fn terminal_cleanup(&self) -> Option<&dyn TerminalCleanupRuntime> {
-        None
-    }
-
-    /// Outcome preparation, definition and continuation. `None` means this runtime does not own that role; callers
-    /// select a [`OutcomeRuntime`] at composition instead of discovering the gap at the effect
-    /// (ADR-0081 capability ladder).
-    fn outcomes(&self) -> Option<&dyn OutcomeRuntime> {
-        None
-    }
-
-    /// Live inbox mutation and snapshot for a running thread. `None` means this runtime does not own that role; callers
-    /// select a [`LiveInboxRuntime`] at composition instead of discovering the gap at the effect
-    /// (ADR-0081 capability ladder).
-    fn live_inbox(&self) -> Option<&dyn LiveInboxRuntime> {
-        None
-    }
-
-    /// Capability advertisement for the runtime and for one Session. `None` means this runtime does not own that role; callers
-    /// select a [`CapabilityRuntime`] at composition instead of discovering the gap at the effect
-    /// (ADR-0081 capability ladder).
-    fn capability(&self) -> Option<&dyn CapabilityRuntime> {
-        None
-    }
 }
 
 /// Complete runtime required by the canonical Session application. Partial
@@ -267,10 +200,12 @@ pub trait CompleteSessionRuntime:
     SessionRuntime
     + RealizationRuntime
     + CoordinationRuntime
+    + SessionCoordinationReads
     + BudgetRuntime
     + StreamingRunRuntime
     + EnvironmentRuntime
     + ThreadReadRuntime
+    + SessionProjectionSource
     + TerminalCleanupRuntime
     + OutcomeRuntime
     + LiveInboxRuntime
@@ -282,10 +217,12 @@ impl<T> CompleteSessionRuntime for T where
     T: SessionRuntime
         + RealizationRuntime
         + CoordinationRuntime
+        + SessionCoordinationReads
         + BudgetRuntime
         + StreamingRunRuntime
         + EnvironmentRuntime
         + ThreadReadRuntime
+        + SessionProjectionSource
         + TerminalCleanupRuntime
         + OutcomeRuntime
         + LiveInboxRuntime
@@ -320,6 +257,26 @@ mod tests {
     use super::*;
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+
+    #[tokio::test]
+    async fn read_only_coordination_needs_no_execution_roles() {
+        struct ReadOnly;
+        crate::neutral_role!(SessionCoordinationReads for ReadOnly);
+        let reads: &dyn SessionCoordinationReads = &ReadOnly;
+        assert!(reads.delegated_runs("session").await.unwrap().is_empty());
+        assert!(
+            reads
+                .coordinated_threads(&crate::SessionId::from("session"), None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let error = reads
+            .session_run_state(&crate::SessionId::from("session"), &RunId("run".into()))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind, RunErrorKind::Unavailable);
+    }
 
     #[test]
     fn thread_usage_has_one_lossless_session_projection() {
@@ -437,51 +394,13 @@ mod tests {
         fn model(&self) -> String {
             "test-model".into()
         }
-
-        fn outcomes(&self) -> Option<&dyn crate::OutcomeRuntime> {
-            Some(self)
-        }
-
-        fn realization(&self) -> Option<&dyn crate::RealizationRuntime> {
-            Some(self)
-        }
-
-        fn coordination(&self) -> Option<&dyn crate::CoordinationRuntime> {
-            Some(self)
-        }
-
-        fn budget(&self) -> Option<&dyn crate::BudgetRuntime> {
-            Some(self)
-        }
-
-        fn streaming_runs(&self) -> Option<&dyn crate::StreamingRunRuntime> {
-            Some(self)
-        }
-
-        fn environment(&self) -> Option<&dyn crate::EnvironmentRuntime> {
-            Some(self)
-        }
-
-        fn thread_reads(&self) -> Option<&dyn crate::ThreadReadRuntime> {
-            Some(self)
-        }
-
-        fn terminal_cleanup(&self) -> Option<&dyn crate::TerminalCleanupRuntime> {
-            Some(self)
-        }
-
-        fn live_inbox(&self) -> Option<&dyn crate::LiveInboxRuntime> {
-            Some(self)
-        }
-
-        fn capability(&self) -> Option<&dyn crate::CapabilityRuntime> {
-            Some(self)
-        }
     }
 
     crate::neutral_role!(RealizationRuntime for MinimalRuntime);
 
     crate::neutral_role!(CoordinationRuntime for MinimalRuntime);
+
+    crate::neutral_role!(SessionCoordinationReads for MinimalRuntime);
 
     crate::neutral_role!(BudgetRuntime for MinimalRuntime);
 
@@ -547,7 +466,7 @@ mod tests {
     #[test]
     fn core_only_runtime_owns_no_role() {
         // Capability ladder (ADR-0081 §3): C1 a runtime that implements only the
-        // four core operations. R1 every role accessor answers `None`, so
+        // four core operations. R1 role accessors are absent from the core, so
         // coordination queries, terminal publication, live-inbox edits,
         // thread probes and streaming runs are unreachable at the type level
         // instead of answered by a refusing default; R2 the core surface is
@@ -587,17 +506,8 @@ mod tests {
             }
         }
         let rt = CoreOnlyRuntime;
-        assert!(rt.realization().is_none(), "R1 realization");
-        assert!(rt.coordination().is_none(), "R1 coordination");
-        assert!(rt.budget().is_none(), "R1 budget");
-        assert!(rt.streaming_runs().is_none(), "R1 streaming runs");
-        assert!(rt.environment().is_none(), "R1 environment");
-        assert!(rt.thread_reads().is_none(), "R1 thread reads");
-        assert!(rt.terminal_cleanup().is_none(), "R1 terminal cleanup");
-        assert!(rt.outcomes().is_none(), "R1 outcomes");
-        assert!(rt.live_inbox().is_none(), "R1 live inbox");
-        assert!(rt.capability().is_none(), "R1 capability");
-        let _: &dyn SessionRuntime = &rt;
+        let core: &dyn SessionRuntime = &rt;
+        assert_eq!(core.model(), "test-model");
     }
 
     #[tokio::test]

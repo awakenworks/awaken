@@ -1025,13 +1025,6 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         resources.clone(),
     );
     managed
-        .environment()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "EnvironmentRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .apply_session_inputs("memory-replay", &replay)
         .await
         .expect("cold durable generation installs beside the adopted Environment");
@@ -1114,13 +1107,6 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         // Memory pin; compare the completed projection, not command equality.
         for previous in [resources.clone(), changed.clone()] {
             let error = managed
-                .environment()
-                .ok_or_else(|| {
-                    awaken_session_types::RunError::unavailable(
-                        "EnvironmentRuntime is unsupported by this runtime",
-                    )
-                })
-                .expect("runtime role")
                 .apply_session_inputs(
                     "memory-replay",
                     &resource_transition(host.local_workspace(), 1, previous, 2, changed.clone()),
@@ -1147,13 +1133,6 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         );
     }
     let error = managed
-        .environment()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "EnvironmentRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .apply_session_inputs(
             "memory-replay",
             &resource_transition(

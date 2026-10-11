@@ -59,9 +59,7 @@ use recovery_backoff::{
 /// One timing policy for every realization owned by the co-located Runtime.
 /// Terminal cleanup uses the same lease horizon but renews at one third of it
 /// while its canonical drive is still pending.
-pub(crate) const LOCAL_SESSION_REALIZATION_LEASE_MS: u64 = 300_000;
-pub(crate) const LOCAL_TERMINAL_CLEANUP_RENEW_INTERVAL_MS: u64 =
-    LOCAL_SESSION_REALIZATION_LEASE_MS / 3;
+pub(crate) use awaken_session_realization_driver::LOCAL_SESSION_REALIZATION_LEASE_MS;
 
 fn initial_idle_fact(owner_scope: &str, session_id: &str, now_ms: u64) -> ManagedLifecycleFact {
     ManagedLifecycleFact {
@@ -205,6 +203,8 @@ impl SessionApplication {
         owner_scope: &str,
         session: &PersistedSession,
     ) -> Result<(), RunError> {
+        let realization_runtime = self.runtime().realization();
+
         if !matches!(
             session.environment,
             SessionEnvironmentState::Resident { .. }
@@ -224,13 +224,13 @@ impl SessionApplication {
                 "Resident Environment has no exact realization lease",
             )
         })?;
-        let request_started = self.runtime().observe_realization_request()?;
+        let request_started = realization_runtime.observe_realization_request()?;
         let projection = self
             .frozen_session_projection(owner_scope.to_string(), session, true)
             .await?;
         awaken_session_realization_contract::SessionProjectionSynchronizer::synchronize_session_projection(
             &LocalProjectionSynchronizer {
-                runtime: self.runtime(),
+                runtime: realization_runtime,
             },
             &session.session_id,
             &projection,
@@ -578,13 +578,15 @@ impl SessionApplication {
         owner_scope: &str,
         session: &PersistedSession,
     ) -> Result<(), SessionRealizationError> {
+        let realization_runtime = self.runtime().realization();
+
         let projection = self
             .frozen_session_projection(owner_scope.to_string(), session, true)
             .await
             .map_err(|error| {
                 SessionRealizationError::Effect(RunError::internal(error.to_string()))
             })?;
-        self.runtime()
+        realization_runtime
             .install_session_projection(
                 session.session_id.as_str(),
                 projection,
@@ -616,6 +618,8 @@ impl SessionApplication {
         &self,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<PersistedSession, SessionRealizationError> {
+        let realization_runtime = self.runtime().realization();
+
         // One co-located phase driver per Session. The request path and the
         // recovery sweep share this process; letting both drive interleaves
         // their phases and repeats the same external MCP effect. The permit is
@@ -624,8 +628,7 @@ impl SessionApplication {
             .local_realization_locks()
             .acquire(session_id.as_str())
             .await;
-        let request_started = self
-            .runtime()
+        let request_started = realization_runtime
             .observe_realization_request()
             .map_err(SessionRealizationError::Effect)?;
         let lease_expires_at_unix_ms = self
@@ -669,7 +672,7 @@ impl SessionApplication {
             None,
             &control,
             &LocalProjectionSynchronizer {
-                runtime: self.runtime(),
+                runtime: self.runtime().realization(),
             },
             self.mcp_realizer(),
             directive,
@@ -691,7 +694,9 @@ impl SessionApplication {
 
     /// Renew due local projections through the lease-only root-CAS command.
     pub async fn renew_due_session_realizations(&self) -> Result<usize, SessionRealizationError> {
-        self.runtime()
+        let realization_runtime = self.runtime().realization();
+
+        realization_runtime
             .renew_session_realization_projections(
                 &RefreshedSessionRealizationControl(self),
                 self.local_realization_owner(),

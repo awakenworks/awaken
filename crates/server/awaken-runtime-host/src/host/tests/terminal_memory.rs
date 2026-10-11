@@ -1078,12 +1078,6 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
     let asserted_effect = effect.clone();
     let mut preparation = tokio::spawn(async move {
         managed
-            .terminal_cleanup()
-            .ok_or_else(|| {
-                awaken_session_types::RunError::unavailable(
-                    "TerminalCleanupRuntime is unsupported by this runtime",
-                )
-            })?
             .prepare_terminal_cleanup_for_effect(effect, authorization)
             .await
     });
@@ -1241,13 +1235,6 @@ async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
     let preparation_authorization =
         terminal_preparation_authorization(&effect, &terminal_projection);
     let preparation = managed
-        .terminal_cleanup()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "TerminalCleanupRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .prepare_terminal_cleanup_for_effect(effect.clone(), preparation_authorization)
         .await
         .expect("HS2 total-absence terminal preparation");
@@ -1274,13 +1261,6 @@ async fn total_absence_recovers_artifacts_before_separate_terminal_disposal() {
     events.lock().unwrap().clear();
     let disposal_effect = terminal_disposal_effect(preparation, lease, &terminal_projection);
     let disposal = managed
-        .terminal_cleanup()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "TerminalCleanupRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
         .await
         .expect("HS2 total-absence physical-disposal proof");
@@ -1364,13 +1344,6 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
     let preparation_authorization =
         terminal_preparation_authorization(&effect, &terminal_projection);
     let preparation = managed
-        .terminal_cleanup()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "TerminalCleanupRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .prepare_terminal_cleanup_for_effect(effect.clone(), preparation_authorization)
         .await
         .expect("HS3 prepare exact disposing cleanup");
@@ -1416,13 +1389,6 @@ async fn disposing_cleanup_prepares_durability_before_resuming_physical_disposal
         "HS3/E1 physical disposal inherits continuation fpA exactly",
     );
     let disposal = managed
-        .terminal_cleanup()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "TerminalCleanupRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
         .await
         .expect("HS3 resume exact physical disposal");
@@ -1537,13 +1503,6 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
         "A1/E1 closed authorization carries exact continuation A/fpA",
     );
     let preparation = managed
-        .terminal_cleanup()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "TerminalCleanupRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .prepare_terminal_cleanup_for_effect(effect, authorization)
         .await
         .expect("A1 exact inherited preparation closes physical response loss");
@@ -1571,13 +1530,6 @@ async fn inherited_preparation_closes_absent_writable_memory_response_loss() {
         "A1/E3 aggregate disposal keeps exact A/fpA",
     );
     managed
-        .terminal_cleanup()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "TerminalCleanupRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .dispose_terminal_cleanup_for_effect(disposal_effect)
         .await
         .expect("A1/E3 total absence is exact physical response-loss success");
@@ -1702,13 +1654,6 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
             let preparation_authorization =
                 terminal_preparation_authorization(&effect, &projection);
             let error = managed
-                .terminal_cleanup()
-                .ok_or_else(|| {
-                    awaken_session_types::RunError::unavailable(
-                        "TerminalCleanupRuntime is unsupported by this runtime",
-                    )
-                })
-                .expect("runtime role")
                 .prepare_terminal_cleanup_for_effect(effect.clone(), preparation_authorization)
                 .await
                 .expect_err("M0 unavailable writable Memory must fail before source effects");
@@ -1809,13 +1754,6 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
 
     let preparation_authorization = terminal_preparation_authorization(&effect, &projection);
     let preparation = managed
-        .terminal_cleanup()
-        .ok_or_else(|| {
-            awaken_session_types::RunError::unavailable(
-                "TerminalCleanupRuntime is unsupported by this runtime",
-            )
-        })
-        .expect("runtime role")
         .prepare_terminal_cleanup_for_effect(effect, preparation_authorization)
         .await
         .expect("HM0b exact provider absence closes missing handle evidence");
@@ -2055,13 +1993,6 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             for _ in 0..2 {
                 let authorization = terminal_preparation_authorization(&effect, &projection);
                 let error = managed
-                    .terminal_cleanup()
-                    .ok_or_else(|| {
-                        awaken_session_types::RunError::unavailable(
-                            "TerminalCleanupRuntime is unsupported by this runtime",
-                        )
-                    })
-                    .expect("runtime role")
                     .prepare_terminal_cleanup_for_effect(effect.clone(), authorization)
                     .await
                     .expect_err("H5/H6 rejected Memory cannot prepare disposal");
@@ -2093,13 +2024,6 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
 
         let preparation_authorization = terminal_preparation_authorization(&effect, &projection);
         let preparation = managed
-            .terminal_cleanup()
-            .ok_or_else(|| {
-                awaken_session_types::RunError::unavailable(
-                    "TerminalCleanupRuntime is unsupported by this runtime",
-                )
-            })
-            .expect("runtime role")
             .prepare_terminal_cleanup_for_effect(effect.clone(), preparation_authorization)
             .await
             .unwrap_or_else(|error| panic!("{} terminal Memory cleanup: {error}", rule.name));
@@ -2197,13 +2121,6 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
 
         let disposal_effect = terminal_disposal_effect(preparation, lease, &projection);
         let disposal = managed
-            .terminal_cleanup()
-            .ok_or_else(|| {
-                awaken_session_types::RunError::unavailable(
-                    "TerminalCleanupRuntime is unsupported by this runtime",
-                )
-            })
-            .expect("runtime role")
             .dispose_terminal_cleanup_for_effect(disposal_effect.clone())
             .await
             .unwrap_or_else(|error| panic!("{} terminal physical disposal: {error}", rule.name));

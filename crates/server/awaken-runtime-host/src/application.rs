@@ -342,7 +342,7 @@ impl crate::SharedHost {
                     .managed()
                     .map_err(crate::managed_adapter_error::from_run_error)?;
                 awaken_session_realization_driver::drive_session_terminal_cleanup(
-                    session_id, lease, control, &runtime,
+                    session_id, lease, control, &runtime, &runtime,
                 )
                 .await
                 .map_err(|error| terminal_cleanup_drive_error(session_id.as_str(), error))?;
