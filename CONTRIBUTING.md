@@ -90,6 +90,10 @@ Use each owning script:
   Default/`--check` is read-only. `--write-baseline` also refuses new unexempted
   waits, even with `--reason`; convert them to a durable wait or document the
   existing timing exemption first. Short source/allow reasons are hard errors.
+- Managed wire naming: `python3 scripts/ci/check_managed_wire_naming.py --tighten`
+  removes annotated or deleted debt. Default/`--check` is read-only; write modes,
+  including reasoned writes, refuse new unannotated types and inline hard errors.
+  Retained decisions keep their metadata. A first write permits zero debt only.
 - test inventory: `python3 scripts/ci/check_test_inventory.py --write`; a
   removed or renamed test is also recorded in
   [`test_inventory_ledger.json`](scripts/ci/test_inventory_ledger.json).
@@ -99,7 +103,9 @@ Use each owning script:
 - file limits: an oversized legacy file carries an
   `awaken-file-limit-ceiling: N` marker that may only fall.
 
-Never edit a baseline JSON by hand; rerun the guard's own flag.
+For a guard with a writer, use its owning flag instead of hand-editing its JSON.
+The context/SPI/expiry/registry helpers have no writer: their source or metadata
+decision remains the owning interface. A CLI reason cannot replace that decision.
 
 ## Commits
 
