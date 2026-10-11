@@ -18,8 +18,9 @@
   capability ladder); [ADR-0090](0090-session-state-model.md) (one Session state
   machine).
 - Amends: [ADR-0088](0088-bounded-context-map-and-sdk-platform-contract.md) decision 2
-  (the neutral `awaken-session-realization-driver` leaves the Session context and merges
-  into Execution's `awaken-session-realization`).
+  (realization effects belong to Execution's future `awaken-session-realization`;
+  the independent `awaken-session-realization-driver` stays in Session and is
+  shared by both topologies).
 - Preserves: [ADR-0056](0056-sandbox-reuse-two-orthogonal-volumes.md) amendment item 3
   (provisioning-contract slimming keeps the `lease` pure functions and the
   `select_provider*` kernels).
@@ -74,7 +75,10 @@ crates.
    reports observations (lease receipts, realized, failed, released, cleaned up). It
    keeps no durable state of its own, only process-local handles, and runs in both
    topologies. runtime-host's realization modules (the module-layer guard's set, still
-   named `realizer` until the code rename) move into it, and `awaken-session-realization-driver` merges into it.
+   named `realizer` until the code rename) move into it. The topology-neutral
+   `awaken-session-realization-driver` remains independent in Session. The
+   Coordinator-local Session application and Worker-side executor call its same
+   stateless realization and terminal-cleanup drivers over contract ports.
 
 3. **The boundary is ports: commands in, observations out.** The Session application
    calls the realization contract's ports; the realization executor implements them; the
@@ -118,8 +122,9 @@ crates.
 - One function answers what an environment may do next, and one crate executes it;
   lease and cleanup fixes become one decision-table row and, if needed, one effect.
 - runtime-host loses its largest cluster (about 13,000 lines of realization);
-  session-application loses its realization decision code to the aggregate; the driver
-  crate disappears.
+  session-application loses its realization decision code to the aggregate. The
+  topology-neutral driver remains independent and shared; moving physical effect
+  adapters does not change its Control deadline or receipt protocol.
 - The Session ↔ realization executor ports are also the remote protocol a Worker uses, through the
   claimed roles.
 - Persisted data and wire shapes are unchanged: commands, receipts, the lease and
