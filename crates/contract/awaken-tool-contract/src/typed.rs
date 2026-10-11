@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use awaken_tool_contract::tool::{
+use crate::tool::{
     RawTool, Tool, ToolCall, ToolConcurrency, ToolError, ToolExecutionTarget, ToolOutput,
     ToolRecoveryCapability, parse_tool_args, render_tool_output,
 };
+use async_trait::async_trait;
 
 /// The sole adapter from a typed [`Tool`] to the dynamic [`RawTool`] registry.
 pub struct Erased<T> {

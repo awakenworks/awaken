@@ -38,6 +38,7 @@ use crate::response::{
     cancel_driver_error, error_response, rest_driver_error_version, rpc_fault, rpc_ok, sse_event,
     stream_binding_error, stream_response, version_fault,
 };
+use crate::send_configuration::validate_send_configuration;
 use crate::state::{A2aState, PushProtocolVersion};
 use crate::state_error::{
     rpc_error, state_cancel_error, state_failure_update, state_fault_response, state_rpc_response,
@@ -942,29 +943,6 @@ async fn drive_processed_runtime(
             }
         },
     }
-}
-
-fn validate_send_configuration(req: &SendMessageRequest) -> Result<(), RunApplicationError> {
-    let Some(configuration) = &req.configuration else {
-        return Ok(());
-    };
-    if !configuration.accepted_output_modes.is_empty()
-        && !configuration.accepted_output_modes.iter().any(|mode| {
-            matches!(
-                mode.as_str(),
-                "text/plain" | "text/markdown" | "application/json"
-            )
-        })
-    {
-        return Err(RunApplicationError::bad_request_classified(
-            "unsupported_output_modes",
-            format!(
-                "unsupported output modes: {}",
-                configuration.accepted_output_modes.join(", ")
-            ),
-        ));
-    }
-    Ok(())
 }
 
 fn truncate_history(task: &mut Task, history_length: Option<usize>) {

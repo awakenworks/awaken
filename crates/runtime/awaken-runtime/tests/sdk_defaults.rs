@@ -7,7 +7,9 @@ use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, StopReason,
 };
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
-use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
+use awaken_runtime_contract::tool::{
+    RawTool, ToolCall, ToolError, ToolExecutionTarget, ToolOutput,
+};
 use awaken_runtime_contract::{ExecutableAgentSnapshot, RuntimeRunContext};
 use awaken_store_inmem::MemoryCommitCoordinator;
 use std::sync::{
@@ -38,7 +40,7 @@ impl LlmExecutor for TruncatedModel {
 
 fn snapshot() -> ExecutableAgentSnapshot {
     ExecutableAgentSnapshot::builder("defaults")
-        .model(ModelBinding::new("demo", "stub", "stub"))
+        .model(ModelBinding::parse("demo", "stub", "stub").unwrap())
         .max_steps(8)
         .build()
 }
@@ -134,7 +136,7 @@ async fn duplicate_registration_is_reported_before_inference_or_commit() {
 #[tokio::test]
 async fn missing_tool_and_reader_are_actionable_before_effects() {
     let config = ExecutableAgentSnapshot::builder("missing-tool")
-        .model(ModelBinding::new("demo", "stub", "stub"))
+        .model(ModelBinding::parse("demo", "stub", "stub").unwrap())
         .tool(ToolDescriptor::pinned(
             "demo",
             "missing",
@@ -145,7 +147,8 @@ async fn missing_tool_and_reader_are_actionable_before_effects() {
     let runtime = Runtime::new();
     assert_eq!(
         runtime
-            .validate_for(&config, &RuntimeRunContext::new())
+            .run(&config, "hello", RuntimeRunContext::new())
+            .await
             .unwrap_err()
             .code(),
         "missing_tool"
@@ -163,4 +166,118 @@ async fn missing_tool_and_reader_are_actionable_before_effects() {
         .unwrap_err();
     assert_eq!(error.code(), "missing_history_reader");
     assert!(store.committed().messages.is_empty());
+}
+
+struct SandboxTool;
+#[async_trait::async_trait]
+impl RawTool for SandboxTool {
+    fn id(&self) -> &str {
+        "sandbox"
+    }
+    fn execution_target(&self) -> ToolExecutionTarget {
+        ToolExecutionTarget::Sandbox
+    }
+    async fn invoke(&self, _: ToolCall) -> Result<ToolOutput, ToolError> {
+        panic!("a missing sandbox executor must fail before effects")
+    }
+}
+
+#[tokio::test]
+async fn missing_provider_sandbox_and_writer_fail_before_admission() {
+    let store = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+    let runtime = Runtime::new();
+    let error = runtime
+        .run_with_outcome(
+            &snapshot(),
+            "hello",
+            RuntimeRunContext::new().with_store(store.clone()),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "missing_model_provider");
+    let error = runtime
+        .session(
+            &snapshot(),
+            "writer",
+            RuntimeRunContext::new().with_reader(store.clone()),
+        )
+        .err()
+        .unwrap();
+    assert_eq!(error.code(), "missing_commit_coordinator");
+
+    let model = Arc::new(TruncatedModel {
+        calls: AtomicUsize::new(0),
+        always_truncated: false,
+    });
+    let runtime = Runtime::new()
+        .with_llm(model.clone())
+        .with_tool(Arc::new(SandboxTool));
+    let agent = ExecutableAgentSnapshot::builder("sandbox")
+        .model(ModelBinding::parse("demo", "stub", "stub").unwrap())
+        .tool(ToolDescriptor::pinned(
+            "demo",
+            "sandbox",
+            "Sandbox",
+            serde_json::json!({"type":"object"}),
+        ))
+        .build();
+    let error = runtime
+        .run_with_outcome(
+            &agent,
+            "hello",
+            RuntimeRunContext::new().with_store(store.clone()),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "missing_sandbox_executor");
+    assert_eq!(model.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(store.commit_count(), 0);
+}
+
+struct UnavailableWriter;
+#[async_trait::async_trait]
+impl awaken_agent_contract::thread::commit::coordinator::Coordinator for UnavailableWriter {
+    async fn commit(
+        &self,
+        _: awaken_agent_contract::thread::commit::staged::ThreadCommit,
+    ) -> Result<
+        awaken_agent_contract::thread::commit::staged::CommitRecord,
+        awaken_agent_contract::thread::commit::coordinator::Error,
+    > {
+        Err(
+            awaken_agent_contract::thread::commit::coordinator::Error::Rejected(
+                "storage offline".into(),
+            ),
+        )
+    }
+}
+
+#[tokio::test]
+async fn commit_failure_retains_the_typed_source_without_claiming_an_outcome() {
+    let model = Arc::new(TruncatedModel {
+        calls: AtomicUsize::new(0),
+        always_truncated: false,
+    });
+    let error = Runtime::new()
+        .with_llm(model.clone())
+        .run(
+            &snapshot(),
+            "hello",
+            RuntimeRunContext::new().with_commit(Arc::new(UnavailableWriter)),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), "commit_failed");
+    assert_eq!(error.kind(), RuntimeErrorKind::Internal);
+    let mut source: &(dyn std::error::Error + 'static) = &error;
+    loop {
+        if source.is::<awaken_agent_contract::thread::commit::coordinator::Error>() {
+            break;
+        }
+        source = source
+            .source()
+            .expect("the coordinator's typed rejection must be retained");
+    }
+    assert!(source.to_string().contains("storage offline"));
+    assert_eq!(model.calls.load(Ordering::SeqCst), 0);
 }

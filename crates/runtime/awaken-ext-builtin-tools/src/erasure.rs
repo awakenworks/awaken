@@ -1,5 +1,5 @@
 //! Compatibility path; the sole typed adapter is owned by the Runtime SDK.
-pub use awaken_runtime::tools::{Erased, erase, erase_for};
+pub use awaken_tool_contract::typed::{Erased, erase, erase_for};
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;

@@ -64,6 +64,7 @@ impl awaken_tool_contract::tool::RawToolRegistry
 pub fn awaken_tool_contract::tool::RawToolRegistry::get(&self, &str) -> core::option::Option<&alloc::sync::Arc<dyn awaken_tool_contract::tool::RawTool>>
 pub fn awaken_tool_contract::tool::RawToolRegistry::insert(&mut self, alloc::sync::Arc<dyn awaken_tool_contract::tool::RawTool>) -> bool
 pub fn awaken_tool_contract::tool::RawToolRegistry::new(impl core::iter::traits::collect::IntoIterator<Item = alloc::sync::Arc<dyn awaken_tool_contract::tool::RawTool>>) -> Self
+pub fn awaken_tool_contract::tool::RawToolRegistry::validate(&self) -> core::result::Result<(), awaken_tool_contract::tool::ToolError>
 impl awaken_tool_contract::tool::DurableTaskExecutor for awaken_tool_contract::tool::RawToolRegistry
 pub fn awaken_tool_contract::tool::RawToolRegistry::cancel_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall, &'life2 awaken_tool_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolTaskPoll, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_tool_contract::tool::RawToolRegistry::poll_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall, &'life2 awaken_tool_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolTaskPoll, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
@@ -157,6 +158,14 @@ pub fn awaken_tool_contract::tool::RawTool::execution_target(&self) -> awaken_to
 pub fn awaken_tool_contract::tool::RawTool::id(&self) -> &str
 pub fn awaken_tool_contract::tool::RawTool::invoke<'life0, 'async_trait>(&'life0 self, awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_tool_contract::tool::RawTool::recovery_capability(&self) -> awaken_tool_contract::tool::ToolRecoveryCapability
+impl<T: awaken_tool_contract::tool::Tool> awaken_tool_contract::tool::RawTool for awaken_tool_contract::typed::Erased<T>
+pub fn awaken_tool_contract::typed::Erased<T>::concurrency(&self, &serde_json::value::Value) -> awaken_tool_contract::tool::ToolConcurrency
+pub fn awaken_tool_contract::typed::Erased<T>::durable_tasks(&self) -> core::option::Option<&dyn awaken_tool_contract::tool::DurableTaskTool>
+pub fn awaken_tool_contract::typed::Erased<T>::execution_domain(&self) -> awaken_tool_contract::tool_batch::ToolExecutionDomain
+pub fn awaken_tool_contract::typed::Erased<T>::execution_target(&self) -> awaken_tool_contract::tool::ToolExecutionTarget
+pub fn awaken_tool_contract::typed::Erased<T>::id(&self) -> &str
+pub fn awaken_tool_contract::typed::Erased<T>::invoke<'life0, 'async_trait>(&'life0 self, awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_tool_contract::typed::Erased<T>::recovery_capability(&self) -> awaken_tool_contract::tool::ToolRecoveryCapability
 pub trait awaken_tool_contract::tool::Tool: core::marker::Send + core::marker::Sync
 pub type awaken_tool_contract::tool::Tool::Args: serde_core::de::DeserializeOwned + schemars::JsonSchema + core::marker::Send
 pub type awaken_tool_contract::tool::Tool::Output: serde_core::ser::Serialize + core::marker::Send
@@ -341,6 +350,18 @@ pub fn awaken_tool_contract::tool_discovery::ToolSearchLimit::new(u8) -> core::r
 impl<'de> serde_core::de::Deserialize<'de> for awaken_tool_contract::tool_discovery::ToolSearchLimit
 pub fn awaken_tool_contract::tool_discovery::ToolSearchLimit::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub struct awaken_tool_contract::tool_discovery::ToolSearchLimitError(_)
+pub mod awaken_tool_contract::typed
+pub struct awaken_tool_contract::typed::Erased<T>
+impl<T: awaken_tool_contract::tool::Tool> awaken_tool_contract::tool::RawTool for awaken_tool_contract::typed::Erased<T>
+pub fn awaken_tool_contract::typed::Erased<T>::concurrency(&self, &serde_json::value::Value) -> awaken_tool_contract::tool::ToolConcurrency
+pub fn awaken_tool_contract::typed::Erased<T>::durable_tasks(&self) -> core::option::Option<&dyn awaken_tool_contract::tool::DurableTaskTool>
+pub fn awaken_tool_contract::typed::Erased<T>::execution_domain(&self) -> awaken_tool_contract::tool_batch::ToolExecutionDomain
+pub fn awaken_tool_contract::typed::Erased<T>::execution_target(&self) -> awaken_tool_contract::tool::ToolExecutionTarget
+pub fn awaken_tool_contract::typed::Erased<T>::id(&self) -> &str
+pub fn awaken_tool_contract::typed::Erased<T>::invoke<'life0, 'async_trait>(&'life0 self, awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_tool_contract::typed::Erased<T>::recovery_capability(&self) -> awaken_tool_contract::tool::ToolRecoveryCapability
+pub fn awaken_tool_contract::typed::erase<T: awaken_tool_contract::tool::Tool + 'static>(T) -> alloc::sync::Arc<dyn awaken_tool_contract::tool::RawTool>
+pub fn awaken_tool_contract::typed::erase_for<T: awaken_tool_contract::tool::Tool + 'static>(T, awaken_tool_contract::tool::ToolExecutionTarget) -> alloc::sync::Arc<dyn awaken_tool_contract::tool::RawTool>
 pub enum awaken_tool_contract::ToolBatchPhase
 pub awaken_tool_contract::ToolBatchPhase::Finalized
 pub awaken_tool_contract::ToolBatchPhase::Open
@@ -422,6 +443,7 @@ impl awaken_tool_contract::tool::RawToolRegistry
 pub fn awaken_tool_contract::tool::RawToolRegistry::get(&self, &str) -> core::option::Option<&alloc::sync::Arc<dyn awaken_tool_contract::tool::RawTool>>
 pub fn awaken_tool_contract::tool::RawToolRegistry::insert(&mut self, alloc::sync::Arc<dyn awaken_tool_contract::tool::RawTool>) -> bool
 pub fn awaken_tool_contract::tool::RawToolRegistry::new(impl core::iter::traits::collect::IntoIterator<Item = alloc::sync::Arc<dyn awaken_tool_contract::tool::RawTool>>) -> Self
+pub fn awaken_tool_contract::tool::RawToolRegistry::validate(&self) -> core::result::Result<(), awaken_tool_contract::tool::ToolError>
 impl awaken_tool_contract::tool::DurableTaskExecutor for awaken_tool_contract::tool::RawToolRegistry
 pub fn awaken_tool_contract::tool::RawToolRegistry::cancel_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall, &'life2 awaken_tool_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolTaskPoll, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_tool_contract::tool::RawToolRegistry::poll_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall, &'life2 awaken_tool_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolTaskPoll, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
@@ -550,6 +572,14 @@ pub fn awaken_tool_contract::RawTool::execution_target(&self) -> awaken_tool_con
 pub fn awaken_tool_contract::RawTool::id(&self) -> &str
 pub fn awaken_tool_contract::RawTool::invoke<'life0, 'async_trait>(&'life0 self, awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_tool_contract::RawTool::recovery_capability(&self) -> awaken_tool_contract::tool::ToolRecoveryCapability
+impl<T: awaken_tool_contract::tool::Tool> awaken_tool_contract::tool::RawTool for awaken_tool_contract::typed::Erased<T>
+pub fn awaken_tool_contract::typed::Erased<T>::concurrency(&self, &serde_json::value::Value) -> awaken_tool_contract::tool::ToolConcurrency
+pub fn awaken_tool_contract::typed::Erased<T>::durable_tasks(&self) -> core::option::Option<&dyn awaken_tool_contract::tool::DurableTaskTool>
+pub fn awaken_tool_contract::typed::Erased<T>::execution_domain(&self) -> awaken_tool_contract::tool_batch::ToolExecutionDomain
+pub fn awaken_tool_contract::typed::Erased<T>::execution_target(&self) -> awaken_tool_contract::tool::ToolExecutionTarget
+pub fn awaken_tool_contract::typed::Erased<T>::id(&self) -> &str
+pub fn awaken_tool_contract::typed::Erased<T>::invoke<'life0, 'async_trait>(&'life0 self, awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_tool_contract::typed::Erased<T>::recovery_capability(&self) -> awaken_tool_contract::tool::ToolRecoveryCapability
 pub trait awaken_tool_contract::Tool: core::marker::Send + core::marker::Sync
 pub type awaken_tool_contract::Tool::Args: serde_core::de::DeserializeOwned + schemars::JsonSchema + core::marker::Send
 pub type awaken_tool_contract::Tool::Output: serde_core::ser::Serialize + core::marker::Send

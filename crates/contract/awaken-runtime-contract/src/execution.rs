@@ -79,6 +79,17 @@ impl Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+impl From<awaken_agent_contract::thread::commit::coordinator::Error> for Error {
+    fn from(source: awaken_agent_contract::thread::commit::coordinator::Error) -> Self {
+        crate::diagnostic::RuntimeDiagnostic::new(
+            crate::diagnostic::RuntimeErrorKind::Internal,
+            "commit_failed",
+            source,
+        )
+        .into()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AttemptOwnershipAdmission {
     Unbound,

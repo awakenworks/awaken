@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Weak};
 
+use crate::ConfigurationError;
 use awaken_agent_contract::agent::delegation::{ChildRunCancellation, DelegationId};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -477,6 +478,16 @@ impl Runtime {
     pub fn with_tool(mut self, tool: Arc<dyn RawTool>) -> Self {
         self.tools.insert(tool);
         self
+    }
+
+    /// Fallible tool registration reports a duplicate immediately.
+    pub fn try_with_tool(mut self, tool: Arc<dyn RawTool>) -> Result<Self, ConfigurationError> {
+        let id = tool.id().to_owned();
+        if !self.tools.insert(tool) {
+            return Err(ConfigurationError::DuplicateTool { id });
+        }
+        crate::configuration::validate_configuration(&self)?;
+        Ok(self)
     }
 
     /// Inject the permission gate consulted before every tool call.

@@ -1,6 +1,80 @@
 pub mod awaken_runtime
+pub use awaken_runtime::CancellationToken
+pub use awaken_runtime::EndCause
+pub use awaken_runtime::Error
+pub use awaken_runtime::ExecutableAgentSnapshot
+pub use awaken_runtime::ModelBinding
+pub use awaken_runtime::ResumeResult
 pub use awaken_runtime::RetryPolicy
+pub use awaken_runtime::RunState
+pub use awaken_runtime::RuntimeErrorKind
+pub use awaken_runtime::RuntimeRunContext
 pub use awaken_runtime::fresh_process_id
+pub mod awaken_runtime::model
+pub use awaken_runtime::model::AssistantOutput
+pub use awaken_runtime::model::ChatRequest
+pub use awaken_runtime::model::ChatResponse
+pub use awaken_runtime::model::DeltaSink
+pub use awaken_runtime::model::Error
+pub use awaken_runtime::model::LlmExecutor
+pub use awaken_runtime::model::Result
+pub use awaken_runtime::model::StopReason
+pub use awaken_runtime::model::ToolCall
+pub mod awaken_runtime::permission
+pub use awaken_runtime::permission::GateDecision
+pub use awaken_runtime::permission::GateOutcome
+pub use awaken_runtime::permission::Store
+pub use awaken_runtime::permission::ToolCall
+pub use awaken_runtime::permission::ToolGateHook
+pub use awaken_runtime::permission::ToolPermissionPolicy
+pub struct awaken_runtime::permission::PermissionGate
+impl awaken_runtime::permission::PermissionGate
+pub fn awaken_runtime::permission::PermissionGate::new(alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>) -> Self
+impl awaken_runtime_contract::permission::ToolGateHook for awaken_runtime::permission::PermissionGate
+pub fn awaken_runtime::permission::PermissionGate::gate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall, &'life2 awaken_agent_contract::agent::state::Store) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateDecision> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_runtime::permission::PermissionGate::id(&self) -> &str
+pub fn awaken_runtime::permission::PermissionGate::process_bound(&self) -> bool
+pub mod awaken_runtime::tools
+pub use awaken_runtime::tools::Erased
+pub use awaken_runtime::tools::RawTool
+pub use awaken_runtime::tools::Tool
+pub use awaken_runtime::tools::ToolConcurrency
+pub use awaken_runtime::tools::ToolError
+pub use awaken_runtime::tools::ToolOutput
+pub use awaken_runtime::tools::erase
+pub use awaken_runtime::tools::erase_for
+pub struct awaken_runtime::tools::ToolRegistration
+impl awaken_runtime::tools::ToolRegistration
+pub fn awaken_runtime::tools::ToolRegistration::descriptor(&self) -> &awaken_runtime_contract::resolved::ToolDescriptor
+pub fn awaken_runtime::tools::ToolRegistration::executable(&self) -> alloc::sync::Arc<dyn awaken_tool_contract::tool::RawTool>
+pub fn awaken_runtime::tools::ToolRegistration::new<T: awaken_tool_contract::tool::Tool + 'static>(&str, T) -> core::result::Result<Self, awaken_runtime_contract::resolved::ToolSchemaError>
+impl awaken_runtime::tools::ToolRegistration
+pub fn awaken_runtime::tools::ToolRegistration::install(&self, awaken_runtime::Runtime) -> core::result::Result<awaken_runtime::Runtime, awaken_runtime::ConfigurationError>
+#[non_exhaustive] pub enum awaken_runtime::ApprovalError
+pub awaken_runtime::ApprovalError::Failed(alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>)
+pub awaken_runtime::ApprovalError::IdentityConflict
+pub awaken_runtime::ApprovalError::InconsistentRecord
+pub awaken_runtime::ApprovalError::MissingTicket
+pub awaken_runtime::ApprovalError::TimedOut
+impl awaken_runtime::ApprovalError
+pub fn awaken_runtime::ApprovalError::code(&self) -> &'static str
+pub fn awaken_runtime::ApprovalError::failed(impl core::error::Error + core::marker::Send + core::marker::Sync + 'static) -> Self
+impl core::convert::From<awaken_runtime::ApprovalError> for awaken_runtime_contract::execution::Error
+pub fn awaken_runtime_contract::execution::Error::from(awaken_runtime::ApprovalError) -> Self
+#[non_exhaustive] pub enum awaken_runtime::ConfigurationError
+pub awaken_runtime::ConfigurationError::DuplicateTool
+pub awaken_runtime::ConfigurationError::DuplicateTool::id: alloc::string::String
+pub awaken_runtime::ConfigurationError::MissingCommitCoordinator
+pub awaken_runtime::ConfigurationError::MissingHistoryReader
+pub awaken_runtime::ConfigurationError::MissingModelProvider
+pub awaken_runtime::ConfigurationError::MissingSandboxExecutor
+pub awaken_runtime::ConfigurationError::MissingSandboxExecutor::id: alloc::string::String
+pub awaken_runtime::ConfigurationError::MissingTool
+pub awaken_runtime::ConfigurationError::MissingTool::id: alloc::string::String
+impl awaken_runtime::ConfigurationError
+pub fn awaken_runtime::ConfigurationError::code(&self) -> &'static str
+impl core::convert::From<awaken_runtime::ConfigurationError> for awaken_runtime_contract::execution::Error
+pub fn awaken_runtime_contract::execution::Error::from(awaken_runtime::ConfigurationError) -> Self
 pub enum awaken_runtime::DetachedToolError
 pub awaken_runtime::DetachedToolError::Execution(alloc::string::String)
 pub awaken_runtime::DetachedToolError::Indeterminate
@@ -10,11 +84,22 @@ pub awaken_runtime::DetachedToolError::NotAuthorized::tool_id: alloc::string::St
 pub awaken_runtime::DetachedToolError::NotExecutable(alloc::string::String)
 pub awaken_runtime::DetachedToolError::Resolve(alloc::string::String)
 pub awaken_runtime::DetachedToolError::StateInvalidated
+#[non_exhaustive] pub enum awaken_runtime::RunOutcomeError
+pub awaken_runtime::RunOutcomeError::IdentityConflict(alloc::string::String)
+pub awaken_runtime::RunOutcomeError::NotCommitted(alloc::string::String)
+impl core::convert::From<awaken_runtime::RunOutcomeError> for awaken_runtime_contract::execution::Error
+pub fn awaken_runtime_contract::execution::Error::from(awaken_runtime::RunOutcomeError) -> Self
 pub struct awaken_runtime::ActiveAttemptScope<'a>
 impl awaken_runtime::ActiveAttemptScope<'_>
 pub fn awaken_runtime::ActiveAttemptScope<'_>::context(&self) -> &awaken_runtime_contract::runtime_context::RuntimeRunContext
 impl core::ops::drop::Drop for awaken_runtime::ActiveAttemptScope<'_>
 pub fn awaken_runtime::ActiveAttemptScope<'_>::drop(&mut self)
+pub struct awaken_runtime::ApprovalOptions
+impl awaken_runtime::ApprovalOptions
+pub fn awaken_runtime::ApprovalOptions::with_clock(self, alloc::sync::Arc<dyn awaken_time::clock::WallClock>) -> Self
+pub fn awaken_runtime::ApprovalOptions::with_timeout(self, core::time::Duration) -> Self
+impl core::default::Default for awaken_runtime::ApprovalOptions
+pub fn awaken_runtime::ApprovalOptions::default() -> Self
 pub struct awaken_runtime::CircuitBreakerConfig
 pub awaken_runtime::CircuitBreakerConfig::cooldown: core::time::Duration
 pub awaken_runtime::CircuitBreakerConfig::failure_threshold: u32
@@ -28,13 +113,22 @@ pub fn awaken_runtime::DirectAttemptDriver::new(alloc::sync::Arc<awaken_runtime:
 pub async fn awaken_runtime::DirectAttemptDriver::resume(&self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>
 pub async fn awaken_runtime::DirectAttemptDriver::start(&self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>
 pub fn awaken_runtime::DirectAttemptDriver::with_attempt_executor(alloc::sync::Arc<awaken_runtime::Runtime>, alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>) -> Self
+pub struct awaken_runtime::EmbeddedSession<'a>
+impl<'a> awaken_runtime::EmbeddedSession<'a>
+pub fn awaken_runtime::EmbeddedSession<'a>::outcome(&self, &awaken_agent_contract::agent::run::Id) -> core::result::Result<awaken_runtime::RunOutcome, awaken_runtime_contract::execution::Error>
+pub async fn awaken_runtime::EmbeddedSession<'a>::resume_with_id_async<F, Fut>(&self, awaken_agent_contract::agent::run::Id, impl core::convert::Into<awaken_runtime::RunInput>, F) -> core::result::Result<awaken_runtime::RunOutcome, awaken_runtime_contract::execution::Error> where F: core::ops::function::FnMut(awaken_agent_contract::agent::awaiting::ResumeTicket) -> Fut, Fut: core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::resume::ResumeResult, awaken_runtime::ApprovalError>>
+pub async fn awaken_runtime::EmbeddedSession<'a>::resume_with_id_async_with_options<F, Fut>(&self, awaken_agent_contract::agent::run::Id, impl core::convert::Into<awaken_runtime::RunInput>, awaken_runtime::ApprovalOptions, F) -> core::result::Result<awaken_runtime::RunOutcome, awaken_runtime_contract::execution::Error> where F: core::ops::function::FnMut(awaken_agent_contract::agent::awaiting::ResumeTicket) -> Fut, Fut: core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::resume::ResumeResult, awaken_runtime::ApprovalError>>
+pub async fn awaken_runtime::EmbeddedSession<'a>::run(&self, impl core::convert::Into<awaken_runtime::RunInput>) -> core::result::Result<awaken_runtime::RunOutcome, awaken_runtime_contract::execution::Error>
+pub async fn awaken_runtime::EmbeddedSession<'a>::run_to_completion_async<F, Fut>(&self, impl core::convert::Into<awaken_runtime::RunInput>, F) -> core::result::Result<awaken_runtime::RunOutcome, awaken_runtime_contract::execution::Error> where F: core::ops::function::FnMut(awaken_agent_contract::agent::awaiting::ResumeTicket) -> Fut, Fut: core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::resume::ResumeResult, awaken_runtime::ApprovalError>>
+pub async fn awaken_runtime::EmbeddedSession<'a>::run_to_completion_async_with_options<F, Fut>(&self, impl core::convert::Into<awaken_runtime::RunInput>, awaken_runtime::ApprovalOptions, F) -> core::result::Result<awaken_runtime::RunOutcome, awaken_runtime_contract::execution::Error> where F: core::ops::function::FnMut(awaken_agent_contract::agent::awaiting::ResumeTicket) -> Fut, Fut: core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::resume::ResumeResult, awaken_runtime::ApprovalError>>
+pub fn awaken_runtime::EmbeddedSession<'a>::thread_id(&self) -> &awaken_agent_contract::agent::thread::Id
 pub struct awaken_runtime::PermissionGate
-impl awaken_runtime::PermissionGate
-pub fn awaken_runtime::PermissionGate::new(alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>) -> Self
-impl awaken_runtime_contract::permission::ToolGateHook for awaken_runtime::PermissionGate
-pub fn awaken_runtime::PermissionGate::gate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall, &'life2 awaken_agent_contract::agent::state::Store) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateDecision> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub fn awaken_runtime::PermissionGate::id(&self) -> &str
-pub fn awaken_runtime::PermissionGate::process_bound(&self) -> bool
+impl awaken_runtime::permission::PermissionGate
+pub fn awaken_runtime::permission::PermissionGate::new(alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>) -> Self
+impl awaken_runtime_contract::permission::ToolGateHook for awaken_runtime::permission::PermissionGate
+pub fn awaken_runtime::permission::PermissionGate::gate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall, &'life2 awaken_agent_contract::agent::state::Store) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::GateDecision> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_runtime::permission::PermissionGate::id(&self) -> &str
+pub fn awaken_runtime::permission::PermissionGate::process_bound(&self) -> bool
 pub struct awaken_runtime::PreparedToolExecutor
 impl awaken_runtime::PreparedToolExecutor
 pub async fn awaken_runtime::PreparedToolExecutor::cancel_task(&self, &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id, alloc::string::String, &awaken_tool_contract::tool::ToolCall, &awaken_tool_contract::tool::ToolTaskHandle, &awaken_agent_contract::agent::state::Store) -> core::result::Result<awaken_tool_contract::tool::ToolTaskPoll, awaken_runtime::DetachedToolError>
@@ -56,6 +150,15 @@ impl core::convert::From<alloc::vec::Vec<awaken_agent_contract::agent::message::
 pub fn awaken_runtime::RunInput::from(alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> Self
 impl core::convert::From<awaken_agent_contract::agent::message::Message> for awaken_runtime::RunInput
 pub fn awaken_runtime::RunInput::from(awaken_agent_contract::agent::message::Message) -> Self
+pub struct awaken_runtime::RunOutcome
+impl awaken_runtime::RunOutcome
+pub fn awaken_runtime::RunOutcome::end_cause(&self) -> core::option::Option<&awaken_agent_contract::agent::run::EndCause>
+pub fn awaken_runtime::RunOutcome::read(&dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView, &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id) -> core::result::Result<Self, awaken_runtime::RunOutcomeError>
+pub fn awaken_runtime::RunOutcome::resume_ticket(&self, &dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView) -> core::result::Result<core::option::Option<awaken_agent_contract::agent::awaiting::ResumeTicket>, awaken_runtime::RunOutcomeError>
+pub fn awaken_runtime::RunOutcome::run_id(&self) -> &awaken_agent_contract::agent::run::Id
+pub fn awaken_runtime::RunOutcome::state(&self) -> &awaken_agent_contract::agent::run::RunState
+pub fn awaken_runtime::RunOutcome::thread_id(&self) -> &awaken_agent_contract::agent::thread::Id
+pub fn awaken_runtime::RunOutcome::transcript(&self, &dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView) -> core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_runtime::RunOutcomeError>
 pub struct awaken_runtime::Runtime
 impl awaken_runtime::Runtime
 pub async fn awaken_runtime::Runtime::acquire_thread_execution(&self, &awaken_agent_contract::agent::thread::Id, core::option::Option<awaken_runtime_contract::runtime_context::attempt_quiescence::AttemptQuiescence>) -> awaken_runtime_contract::execution::Result<impl core::ops::drop::Drop + use<>>
@@ -75,6 +178,7 @@ pub fn awaken_runtime::Runtime::register_snapshot(&self, awaken_runtime_contract
 pub async fn awaken_runtime::Runtime::resume(&self, awaken_runtime_contract::resume::ResumeCommand, &dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::RunState, awaken_runtime_contract::execution::Error>
 pub async fn awaken_runtime::Runtime::resume_tool_batch(&self, awaken_runtime_contract::resume::ResumeCommand, &dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::RunState, awaken_runtime_contract::execution::Error>
 pub async fn awaken_runtime::Runtime::stop_run(&self, awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::thread::Id, alloc::string::String, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::RunState, awaken_runtime_contract::execution::Error>
+pub fn awaken_runtime::Runtime::try_with_tool(self, alloc::sync::Arc<dyn awaken_tool_contract::tool::RawTool>) -> core::result::Result<Self, awaken_runtime::ConfigurationError>
 pub fn awaken_runtime::Runtime::validate_plugins(&self, &awaken_runtime_contract::resolved::ResolvedSpec) -> core::result::Result<(), awaken_runtime_contract::plugin::env::MergeError>
 pub fn awaken_runtime::Runtime::with_circuit_breaker(self, awaken_runtime::CircuitBreakerConfig) -> Self
 pub fn awaken_runtime::Runtime::with_gate(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> Self
@@ -97,6 +201,8 @@ pub fn awaken_runtime::Runtime::prepare(&self, &awaken_runtime_contract::snapsho
 pub async fn awaken_runtime::Runtime::run(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, impl core::convert::Into<awaken_runtime::RunInput>, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::RunState, awaken_runtime_contract::execution::Error>
 pub async fn awaken_runtime::Runtime::run_to_completion<F>(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_runtime::RunInput>, awaken_runtime_contract::runtime_context::RuntimeRunContext, F) -> core::result::Result<awaken_agent_contract::agent::run::RunState, awaken_runtime_contract::execution::Error> where F: core::ops::function::FnMut(&awaken_agent_contract::agent::awaiting::ResumeTicket) -> awaken_runtime_contract::resume::ResumeResult
 pub async fn awaken_runtime::Runtime::run_to_completion_with_id<F>(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_agent_contract::agent::run::Id, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_runtime::RunInput>, awaken_runtime_contract::runtime_context::RuntimeRunContext, F) -> core::result::Result<awaken_agent_contract::agent::run::RunState, awaken_runtime_contract::execution::Error> where F: core::ops::function::FnMut(&awaken_agent_contract::agent::awaiting::ResumeTicket) -> awaken_runtime_contract::resume::ResumeResult
+pub async fn awaken_runtime::Runtime::run_with_outcome(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, impl core::convert::Into<awaken_runtime::RunInput>, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_runtime::RunOutcome, awaken_runtime_contract::execution::Error>
+pub fn awaken_runtime::Runtime::session<'a>(&'a self, &'a awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, impl core::convert::Into<alloc::string::String>, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_runtime::EmbeddedSession<'a>, awaken_runtime_contract::execution::Error>
 pub async fn awaken_runtime::Runtime::start_run(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_runtime::RunInput>, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState), awaken_runtime_contract::execution::Error>
 impl awaken_runtime_contract::control::LiveRunControl for awaken_runtime::Runtime
 pub fn awaken_runtime::Runtime::deliver(&self, awaken_runtime_contract::control::LiveCommand) -> core::result::Result<(), awaken_runtime_contract::control::Error>
@@ -110,3 +216,5 @@ impl awaken_runtime_contract::resolver::AgentSnapshotResolver for awaken_runtime
 pub fn awaken_runtime::Runtime::get_snapshot(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
 impl awaken_runtime_contract::resolver::RunResolver for awaken_runtime::Runtime
 pub fn awaken_runtime::Runtime::resolve(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot) -> core::result::Result<awaken_runtime_contract::resolved::ResolvedRun, awaken_runtime_contract::resolver::Error>
+impl core::default::Default for awaken_runtime::Runtime
+pub fn awaken_runtime::Runtime::default() -> Self

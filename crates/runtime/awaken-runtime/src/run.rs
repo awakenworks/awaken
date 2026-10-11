@@ -21,6 +21,28 @@ use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use crate::Runtime;
 
 impl Runtime {
+    /// Bind a Snapshot, Thread and store once for an embedded conversation.
+    pub fn session<'a>(
+        &'a self,
+        snapshot: &'a ExecutableAgentSnapshot,
+        thread: impl Into<String>,
+        context: RuntimeRunContext,
+    ) -> Result<crate::EmbeddedSession<'a>, Error> {
+        crate::EmbeddedSession::new(self, snapshot, ThreadId(thread.into()), context)
+    }
+
+    /// Single-shot entry returning a named projection of the committed record.
+    pub async fn run_with_outcome(
+        &self,
+        snapshot: &ExecutableAgentSnapshot,
+        input: impl Into<RunInput>,
+        context: RuntimeRunContext,
+    ) -> Result<crate::RunOutcome, Error> {
+        self.session(snapshot, fresh_process_id("thread"), context)?
+            .run(input)
+            .await
+    }
+
     /// Run `snapshot` once on a fresh thread, returning the resulting state.
     ///
     /// This is the single-shot entry: it registers the snapshot and executes once. If
@@ -33,7 +55,7 @@ impl Runtime {
         input: impl Into<RunInput>,
         context: RuntimeRunContext,
     ) -> Result<RunState, Error> {
-        self.validate_for(snapshot, &context)?;
+        crate::configuration::validate_for(self, snapshot, &context)?;
         let (_run_id, activation) =
             self.prepare_with_context(snapshot, fresh_process_id("thread"), input, &context);
         self.execute(activation, context).await
@@ -61,8 +83,15 @@ impl Runtime {
     {
         let (run_id, activation) =
             self.prepare_with_context(snapshot, thread.into(), input, &context);
-        self.drive_to_completion(run_id, activation, context, &mut decide)
-            .await
+        crate::approval::drive_to_completion(
+            self,
+            run_id,
+            activation,
+            context,
+            &mut |ticket| std::future::ready(Ok(decide(&ticket))),
+            &crate::ApprovalOptions::default(),
+        )
+        .await
     }
 
     /// Drive an embedded Run to completion under a caller-supplied durable
@@ -87,21 +116,8 @@ impl Runtime {
             input.into().0,
         )
         .with_inherited_toolsets(context.inherited_toolsets.clone());
-        self.drive_to_completion(run_id, activation, context, &mut decide)
-            .await
-    }
-
-    async fn drive_to_completion<F>(
-        &self,
-        run_id: RunId,
-        activation: RunActivation,
-        context: RuntimeRunContext,
-        decide: &mut F,
-    ) -> Result<RunState, Error>
-    where
-        F: FnMut(&ResumeTicket) -> ResumeResult,
-    {
-        self.drive_to_completion_async(
+        crate::approval::drive_to_completion(
+            self,
             run_id,
             activation,
             context,
@@ -124,7 +140,7 @@ impl Runtime {
         input: impl Into<RunInput>,
         context: RuntimeRunContext,
     ) -> Result<(RunId, RunState), Error> {
-        self.validate_for(snapshot, &context)?;
+        crate::configuration::validate_for(self, snapshot, &context)?;
         let (run_id, activation) =
             self.prepare_with_context(snapshot, thread.into(), input, &context);
         let state = self.execute(activation, context).await?;

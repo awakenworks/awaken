@@ -17,6 +17,10 @@ import unittest
 import urllib.error
 import urllib.request
 
+# The policy subcommand reads repository source. Report/cache subcommands read
+# caller-supplied build observations; those runtime artifacts are not hook inputs.
+INPUT_GLOBS = (".github/workflows/quality.yml",)
+
 
 def artifact_policy_errors(workflow):
     """Keep compiler payload out of observations without dropping gate evidence."""

@@ -253,12 +253,16 @@ step "managed-protocol-production" "use production Session roles rather than fix
 step "process-assembly-production" "keep fixture-only Coordinator and CLI helpers out of the production graph" \
   cargo clippy -p awaken-coordinator -p awaken-cli --lib "${locked[@]}" -- -D warnings
 
-# The fuzz crate is a separate workspace and the only Rust consumer of this
-# repository's crates outside it, so `cargo check --workspace` never compiles it.
+# The fuzz crate is a separate workspace, so `cargo check --workspace` never compiles it.
 # It is why three crates keep reviewed public API snapshots (ADR-0081, 2026-09-28);
 # compiling it is the check that its surface still builds.
 step "fuzz-consumer" "update the fuzz targets to the changed contract surface" \
   cargo check --manifest-path fuzz/Cargo.toml --bins "${locked[@]}"
+
+# SDK tasks are an independent, minimal-feature application graph. A green
+# workspace build or API snapshot cannot substitute for this consumer behavior.
+step "sdk-consumer" "keep the public SDK usable from an ordinary external application" \
+  python3 scripts/ci/check_sdk_consumer.py
 
 # Compile-surface decision table: CR2 a database-less Worker consumes Ingress
 # without durable/test support -> compile its production library warning-free;

@@ -182,6 +182,12 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/reclaim_build_space.py --self-test
 
+    ci-performance-policy:
+      # >>> generated glob from ci_performance.py INPUT_GLOBS — do not edit
+      glob: "{.github/workflows/quality.yml,scripts/ci/ci_performance.py}"
+      # <<< generated glob
+      run: python3 scripts/ci/ci_performance.py workflow
+
     # 3c-bis. A gate entry point that accepts an argument it does not implement
     #    runs something other than what the caller asked for and still exits
     #    zero. check-all.sh invoked `--selftest` for years against a script whose
@@ -230,7 +236,7 @@ pre-commit:
     # One Rust gate owns source and boundary checks. Trigger it for checker
     # edits too; separate hook invocations would execute the same scan twice.
     rust-quick:
-      glob: "{lefthook.yml,scripts/ci/check-rust.sh,scripts/ci/check_dependency_sources.py,scripts/ci/check_crate_boundaries.py,scripts/ci/_bounded_context_fitness.py,scripts/ci/bounded_context_baseline.json,scripts/ci/check_feature_matrix.py,Cargo.toml,Cargo.lock,crates/**/*.rs,crates/**/Cargo.toml,apps/**/*.rs,apps/**/Cargo.toml,tests/**/*.rs,xtask/**/*.rs,xtask/**/Cargo.toml}"
+      glob: "{lefthook.yml,scripts/ci/check-rust.sh,scripts/ci/check_sdk_consumer.py,scripts/ci/check_dependency_sources.py,scripts/ci/check_crate_boundaries.py,scripts/ci/_bounded_context_fitness.py,scripts/ci/bounded_context_baseline.json,scripts/ci/check_feature_matrix.py,Cargo.toml,Cargo.lock,crates/**/*.rs,crates/**/Cargo.toml,examples/sdk-consumer/**,apps/**/*.rs,apps/**/Cargo.toml,tests/**/*.rs,xtask/**/*.rs,xtask/**/Cargo.toml}"
       run: scripts/ci/check-rust.sh --quick
 
     # An observation time is a fact its owner observed, not a value the code

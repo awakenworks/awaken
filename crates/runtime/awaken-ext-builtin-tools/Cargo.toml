@@ -13,7 +13,6 @@ authority = "ext-builtin-tools"
 separation = "publish"
 
 [dependencies]
-awaken-runtime.workspace = true
 awaken-web-policy-contract.workspace = true
 awaken-tool-contract.workspace = true
 awaken-agent-contract.workspace = true

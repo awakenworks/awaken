@@ -160,7 +160,7 @@ pub(super) async fn finish_with_reader(
                 resume.as_ref(),
             )?)
             .await
-            .map_err(|error| Error::Commit(error.to_string()))?;
+            .map_err(Error::from)?;
         true
     } else {
         false

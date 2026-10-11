@@ -1,6 +1,5 @@
 //! Named, immutable projections of committed Run records.
 
-use crate::{ConfigurationError, RunInput, Runtime};
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Record, RunState};
@@ -8,8 +7,6 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime_contract::diagnostic::{RuntimeDiagnostic, RuntimeErrorKind};
 use awaken_runtime_contract::execution::Error;
-use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -90,45 +87,5 @@ impl RunOutcome {
             return Err(RunOutcomeError::IdentityConflict(self.run_id().0.clone()));
         }
         Ok(ticket)
-    }
-}
-
-impl Runtime {
-    /// Single-shot embedded entry with an identity-bearing committed receipt.
-    pub async fn run_with_outcome(
-        &self,
-        snapshot: &ExecutableAgentSnapshot,
-        input: impl Into<RunInput>,
-        context: RuntimeRunContext,
-    ) -> Result<RunOutcome, Error> {
-        self.start_run_with_outcome(
-            snapshot,
-            awaken_agent_contract::fresh_process_id("thread"),
-            input,
-            context,
-        )
-        .await
-    }
-
-    /// Start on a stable Thread, enabling multi-turn conversations and recovery.
-    pub async fn start_run_with_outcome(
-        &self,
-        snapshot: &ExecutableAgentSnapshot,
-        thread: impl Into<String>,
-        input: impl Into<RunInput>,
-        context: RuntimeRunContext,
-    ) -> Result<RunOutcome, Error> {
-        let reader = context
-            .reader
-            .clone()
-            .ok_or(ConfigurationError::MissingHistoryReader)?;
-        if context.commit.is_none() {
-            return Err(ConfigurationError::MissingCommitCoordinator.into());
-        }
-        let thread_id = ThreadId(thread.into());
-        let (run_id, _) = self
-            .start_run(snapshot, thread_id.0.clone(), input, context)
-            .await?;
-        Ok(RunOutcome::read(reader.as_ref(), &run_id, &thread_id)?)
     }
 }

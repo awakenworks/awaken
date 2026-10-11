@@ -7,6 +7,7 @@
 pub mod tool;
 pub mod tool_batch;
 pub mod tool_discovery;
+pub mod typed;
 
 pub use tool::{
     DurableTaskExecutor, DurableTaskTool, RawTool, RawToolRegistry, Tool, ToolConcurrency,

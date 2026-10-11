@@ -1,12 +1,10 @@
 //! Application-defined typed tools, independent of the builtin extensions.
 
-mod erasure;
-pub use awaken_tool_contract::tool::{Tool, ToolError, ToolOutput};
-pub use erasure::{Erased, erase, erase_for};
+pub use awaken_tool_contract::tool::{RawTool, Tool, ToolConcurrency, ToolError, ToolOutput};
+pub use awaken_tool_contract::typed::{Erased, erase, erase_for};
 
 use crate::{ConfigurationError, Runtime};
 use awaken_runtime_contract::resolved::{ToolDescriptor, ToolSchemaError};
-use awaken_tool_contract::tool::RawTool;
 use std::sync::Arc;
 
 /// One tool definition supplies both advertised schema and executable behavior.
@@ -34,37 +32,9 @@ impl ToolRegistration {
     }
 }
 
-impl Runtime {
-    /// Register one typed tool and return its generated Snapshot descriptor.
-    /// Schema failure is reported before mutating the executable registry.
-    pub fn register_tool<T: Tool + 'static>(
-        &mut self,
-        namespace: &str,
-        tool: T,
-    ) -> Result<ToolDescriptor, awaken_runtime_contract::execution::Error> {
-        use awaken_runtime_contract::diagnostic::{RuntimeDiagnostic, RuntimeErrorKind};
-        self.validate_configuration()?;
-        let registration = ToolRegistration::new(namespace, tool).map_err(|error| {
-            RuntimeDiagnostic::new(
-                RuntimeErrorKind::InvalidConfiguration,
-                "invalid_tool_schema",
-                error,
-            )
-        })?;
-        if !self.tools.insert(registration.executable()) {
-            return Err(ConfigurationError::DuplicateTool {
-                id: registration.descriptor.id.clone(),
-            }
-            .into());
-        }
-        Ok(registration.descriptor)
-    }
-
-    /// Register the executable paired with the descriptor added to the Snapshot.
-    pub fn with_registered_tool(
-        self,
-        registration: &ToolRegistration,
-    ) -> Result<Self, ConfigurationError> {
-        self.try_with_tool(registration.executable())
+impl ToolRegistration {
+    /// Install the paired implementation, retaining duplicate-ID diagnostics.
+    pub fn install(&self, runtime: Runtime) -> Result<Runtime, ConfigurationError> {
+        runtime.try_with_tool(self.executable())
     }
 }

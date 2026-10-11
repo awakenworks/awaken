@@ -204,7 +204,7 @@ pub(super) async fn drive_resumed(
                     resume_commit.as_ref(),
                 )?)
                 .await
-                .map_err(|error| Error::Commit(error.to_string()))?;
+                .map_err(Error::from)?;
             resume_commit = None;
         }
         store.apply(&command);
