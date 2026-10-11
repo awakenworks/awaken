@@ -6,6 +6,7 @@
 //! Existing root-lease and terminal-claim admission helpers.
 
 use super::*;
+use crate::archive_intent::unattempted_profiled_archive_witness;
 
 /// Selector for the one terminal-assignment claim algorithm. External Workers
 /// scan only Worker-owned Sessions; the co-located recovery driver asks for one
@@ -76,21 +77,20 @@ pub(super) async fn terminal_cleanup_worker_affinity_rejection(
     if !scope.is_external() {
         return None;
     }
-    match session_terminal_cleanup_affinity_for(session, &target.owner, now_unix_ms) {
-        SessionTerminalCleanupAffinity::Unchanged => return None,
-        SessionTerminalCleanupAffinity::Retained => return Some(TerminalCleanupRootClaim::Skip),
-        SessionTerminalCleanupAffinity::RequiresUnattemptedArchiveReceipt => {}
-    }
-    match crate::archive_intent::unattempted_profiled_archive_witness(
-        repository,
-        owner_scope,
+    match session_terminal_cleanup_affinity_for(
         session,
-    )
-    .await
-    {
-        Ok(true) => None,
-        Ok(false) => Some(TerminalCleanupRootClaim::Skip),
-        Err(error) => Some(TerminalCleanupRootClaim::Failed(repository_control(error))),
+        &target.owner,
+        &target.runtime_incarnation,
+        now_unix_ms,
+    ) {
+        SessionTerminalCleanupAffinity::Unchanged => None,
+        SessionTerminalCleanupAffinity::Retained => Some(TerminalCleanupRootClaim::Skip),
+        SessionTerminalCleanupAffinity::RequiresUnattemptedArchiveReceipt => {
+            match unattempted_profiled_archive_witness(repository, owner_scope, session).await {
+                Ok(witness) => (!witness).then_some(TerminalCleanupRootClaim::Skip),
+                Err(error) => Some(TerminalCleanupRootClaim::Failed(repository_control(error))),
+            }
+        }
     }
 }
 
