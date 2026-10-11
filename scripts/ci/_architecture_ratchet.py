@@ -79,20 +79,52 @@ def line_of(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
 
 
-def compare(rules: tuple[Rule, ...], counts: Counts, places: Places, baseline: dict, baseline_name: str) -> list[str]:
+def compare(rules: tuple[Rule, ...], counts: Counts, places: Places, baseline: dict, baseline_name: str,
+            *, lower_advice: str | None = None, full_details: bool = False) -> list[str]:
     errors: list[str] = []
     for rule in rules:
         now, held = counts.get(rule.name, {}), baseline.get(rule.name, {})
         for key in sorted(set(now) | set(held)):
             current, was = now.get(key, 0), held.get(key, 0)
             if current > was:
-                where = ", ".join(places.get(rule.name, {}).get(key, [])[:5])
+                details = places.get(rule.name, {}).get(key, [])
+                if full_details:
+                    errors.extend(details)
+                where = ", ".join(details[:5]) if not full_details else ""
                 errors.append(f"{rule.name}: {key} is at {current}, baseline {was}" + (f" ({where})" if where else "")
                               + f"; {rule.advice}")
             elif current <= was - max(rule.slack, 1):
-                errors.append(f"{rule.name}: {key} is at {current}, below the baseline {was}; lower {baseline_name} "
-                              "in this commit with --write-baseline")
+                advice = lower_advice or f"lower {baseline_name} in this commit with --write-baseline"
+                errors.append(f"{rule.name}: {key} is at {current}, below the baseline {was}; {advice}")
     return errors
+
+
+def compare_registered(
+    found: list[tuple[str, str]],
+    exemptions: dict[str, str],
+    baseline: int,
+    registry: str,
+    *,
+    rule: Rule,
+    baseline_name: str,
+) -> list[str]:
+    """Adapt existing registered findings to the one count comparison.
+
+    A stale decision is a hard error, separate from the measured live debt.
+    Callers keep their scanner, exact exemption keys, inline budget and advice;
+    this adapter neither writes a record nor authorizes another exemption.
+    """
+    seen = {key for key, _ in found}
+    live = sorted(message for key, message in found if key not in exemptions)
+    hard = [f"{rule.name}: {key} registered -> missing; {registry} names {key}, which no longer holds; "
+            f"fix: remove its stale decision from {registry}"
+            for key in sorted(exemptions) if key not in seen]
+    return hard + compare(
+        (rule,), {rule.name: {"workspace": len(live)}}, {rule.name: {"workspace": live}},
+        {rule.name: {"workspace": baseline}}, baseline_name,
+        lower_advice=f"fix: lower {baseline_name} to {len(live)} in the commit that removed the debt",
+        full_details=True,
+    )
 
 
 def growth(rules: tuple[Rule, ...], counts: Counts, baseline: dict) -> list[str]:
@@ -364,6 +396,47 @@ def _selftest_cli() -> None:
     assert status == 0 and before == after and not observed, "C9 self-test only"
 
 
+def _selftest_registered() -> None:
+    """A1/A2 registered-count cause/effect graph and decision table.
+
+    Exact key present -> exempt all its occurrences; missing registered key ->
+    hard stale error. Independently, actual live debt < / = / > held -> fall
+    error / accept / growth error through compare(). Hard errors never consume
+    debt budget or cancel a decrease. Registry values are preserved decisions,
+    not a new reason/expiry policy. Effects: errors, complete original finding
+    details, exact-key scope and unchanged input data. No CLI or writer exists.
+    """
+    from unittest.mock import patch
+
+    rule = Rule("fixture", "fix: own the effect or review the exact decision")
+    found = [("A", "a.rs:1: original advice"), ("A", "a.rs:2: original advice"), ("B", "b.rs:3: original advice")]
+    before = list(found)
+    # A1 every count relation uses the canonical compare; A2 valid/stale/other
+    # keys are crossed with that relation, so a stale decision cannot be hidden
+    # at equality or absorbed into an allowance after a real debt disappears.
+    for exemptions in ({}, {"A": "why"}, {"missing": "why"}):
+        held_inputs = dict(exemptions)
+        actual = sum(key not in exemptions for key, _ in found)
+        for held in (actual - 1, actual, actual + 1):
+            if held < 0:
+                continue
+            errors = compare_registered(found, exemptions, held, "REG", rule=rule, baseline_name="fixture.py::HELD")
+            assert bool(errors) == (held != actual or "missing" in exemptions), "A1/A2 separate hard and debt"
+            if "missing" in exemptions:
+                assert any("registered -> missing" in error for error in errors), "A2 stale always hard"
+            assert found == before and exemptions == held_inputs, "A2 decisions/findings never modified"
+            assert not any("--write-baseline" in error for error in errors), "A1 inline owner has no writer"
+            if held < actual:
+                assert all(message in errors for key, message in found if key not in exemptions), "A1 full advice retained"
+            elif held > actual:
+                assert any("fixture.py::HELD" in error for error in errors), "A1 real inline source named"
+    # A1 prove delegation, not a second comparison hidden in the adapter.
+    with patch.dict(compare_registered.__globals__, {"compare": lambda *args, **kwargs: ["canonical compare called"]}):
+        assert compare_registered(found, {}, 3, "REG", rule=rule, baseline_name="fixture.py::HELD") == [
+            "canonical compare called"
+        ], "A1 canonical comparison owns the numeric decision"
+
+
 def selftest() -> None:
     """Decision table.
 
@@ -415,4 +488,5 @@ def selftest() -> None:
     assert "baseline 0" in compare(added, {"r": {"a": 2}, "lines": {"c": 100}, "new": {"k": 5}}, {}, held,
                                    "b.json")[0], "B6 check before the first write"
     _selftest_cli()
+    _selftest_registered()
     print("_architecture_ratchet selftest: the decision table holds")
