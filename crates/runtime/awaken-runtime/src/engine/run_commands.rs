@@ -16,6 +16,7 @@ impl RunExecutor for Runtime {
         activation: RunActivation,
         context: RuntimeRunContext,
     ) -> Result<RunState> {
+        self.validate_configuration()?;
         let context = activation.narrow_context(context);
         // Execution is the single ingress for fresh activations, including durable
         // dispatch. Retain the exact immutable snapshot before the run can await so

@@ -4,6 +4,7 @@
 //! depend on server routes, protocol DTOs, config CRUD, or durable ingress internals.
 
 mod circuit_breaker;
+mod configuration;
 mod detached_tool;
 mod engine;
 mod ingress;
@@ -20,6 +21,7 @@ pub use awaken_agent_contract::fresh_process_id;
 /// decision that reads it lives with the classification in the runtime contract.
 pub use awaken_runtime_contract::resilience::RetryPolicy;
 pub use circuit_breaker::CircuitBreakerConfig;
+pub use configuration::ConfigurationError;
 pub use detached_tool::{DetachedToolError, PreparedToolExecutor, ResolvedToolExecution};
 pub use ingress::DirectAttemptDriver;
 pub use permission::PermissionGate;

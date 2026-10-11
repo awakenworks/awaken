@@ -3,7 +3,7 @@
 use std::convert::Infallible;
 
 use awaken_session_application_contract::RunApplicationError;
-use awaken_session_types::RunErrorKind;
+use awaken_session_types::{RunErrorClassification, RunErrorKind};
 use axum::Json;
 use axum::body::Body;
 use axum::http::{StatusCode, header};
@@ -25,22 +25,106 @@ pub(super) fn rpc_ok(id: Value, result: impl serde::Serialize) -> Response {
 
 /// Map a driver error to a JSON-RPC `(code, message)` pair.
 pub(super) fn rpc_fault(err: RunApplicationError) -> (i32, String) {
-    match (err.kind, err.message) {
-        (RunErrorKind::BadRequest, message) if message.starts_with("unsupported output modes") => {
-            (-32005, message)
+    let (_, code) = driver_fault(&err);
+    (code, err.message)
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn driver_error_facts_survive_version_and_binding_projection() {
+        // Cross product: fact × protocol version. Prose deliberately does not
+        // contain the old English prefixes, so translation cannot change routing.
+        for version in [ProtocolVersion::V03, ProtocolVersion::V1] {
+            for (kind, code, status, rpc_code) in [
+                (
+                    RunErrorKind::BadRequest,
+                    "not_found",
+                    StatusCode::NOT_FOUND,
+                    -32001,
+                ),
+                (
+                    RunErrorKind::BadRequest,
+                    "unsupported_output_modes",
+                    StatusCode::BAD_REQUEST,
+                    -32005,
+                ),
+                (
+                    RunErrorKind::BadRequest,
+                    "invalid_request",
+                    StatusCode::BAD_REQUEST,
+                    -32602,
+                ),
+                (
+                    RunErrorKind::Unavailable,
+                    "provider_offline",
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    -32603,
+                ),
+                (
+                    RunErrorKind::Internal,
+                    "internal",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    -32603,
+                ),
+            ] {
+                let make_error = || RunApplicationError {
+                    kind,
+                    code: code.into(),
+                    message: "原因已本地化".into(),
+                };
+                assert_eq!(
+                    rest_driver_error_version(make_error(), version).status(),
+                    status
+                );
+                assert_eq!(rpc_fault(make_error()).0, rpc_code);
+                assert_eq!(cancel_driver_error(make_error()).0, status);
+            }
         }
-        (RunErrorKind::BadRequest, message) => (-32602, message),
-        (RunErrorKind::Internal | RunErrorKind::Unavailable, message) => (-32603, message),
+    }
+
+    #[test]
+    fn prose_cannot_impersonate_a_classified_error() {
+        assert_eq!(
+            rpc_fault(RunApplicationError::bad_request(
+                "unsupported output modes: ordinary prose"
+            ))
+            .0,
+            -32602
+        );
+        assert_eq!(
+            driver_fault(&RunApplicationError::bad_request(
+                "task not found: ordinary prose"
+            ))
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            driver_fault(&RunApplicationError::unavailable_classified(
+                "not_found",
+                "unavailable"
+            ))
+            .0,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+}
+
+fn driver_fault(error: &RunApplicationError) -> (StatusCode, i32) {
+    match error.classification() {
+        RunErrorClassification::NotFound => (StatusCode::NOT_FOUND, -32001),
+        RunErrorClassification::UnsupportedOutputModes => (StatusCode::BAD_REQUEST, -32005),
+        RunErrorClassification::InvalidRequest => (StatusCode::BAD_REQUEST, -32602),
+        RunErrorClassification::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, -32603),
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, -32603),
     }
 }
 
 pub(super) fn cancel_driver_error(error: RunApplicationError) -> (StatusCode, i32, String) {
-    let status = match error.kind {
-        RunErrorKind::BadRequest => StatusCode::BAD_REQUEST,
-        RunErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
-        RunErrorKind::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
-    };
-    (status, -32603, error.message)
+    let (status, code) = driver_fault(&error);
+    (status, code, error.message)
 }
 
 /// Map a driver error to `(status, A2A error envelope)`.
@@ -54,18 +138,12 @@ pub(super) fn error_response(err: RunApplicationError) -> Response {
 }
 
 fn rest_driver_error(err: RunApplicationError) -> Response {
-    let (status, code, message) = match (err.kind, err.message) {
-        (RunErrorKind::BadRequest, message) if message.starts_with("task not found") => {
-            (StatusCode::NOT_FOUND, -32001, message)
-        }
-        (RunErrorKind::BadRequest, message) if message.starts_with("unsupported output modes") => {
-            (StatusCode::BAD_REQUEST, -32005, message)
-        }
-        (RunErrorKind::BadRequest, message) => (StatusCode::BAD_REQUEST, -32602, message),
-        (RunErrorKind::Internal, message) => (StatusCode::INTERNAL_SERVER_ERROR, -32603, message),
-        (RunErrorKind::Unavailable, message) => (StatusCode::SERVICE_UNAVAILABLE, -32603, message),
-    };
-    (status, Json(json!({ "code": code, "message": message }))).into_response()
+    let (status, code) = driver_fault(&err);
+    (
+        status,
+        Json(json!({ "code": code, "message": err.message })),
+    )
+        .into_response()
 }
 
 pub(super) fn stream_binding_error(
@@ -91,13 +169,8 @@ pub(super) fn rest_driver_error_version(
     if version == ProtocolVersion::V03 {
         return rest_driver_error(error);
     }
-    let (code, message) = rpc_fault(error);
-    let status = match code {
-        -32001 => StatusCode::NOT_FOUND,
-        -32603 => StatusCode::INTERNAL_SERVER_ERROR,
-        _ => StatusCode::BAD_REQUEST,
-    };
-    v1_fault(status, code, message)
+    let (status, code) = driver_fault(&error);
+    v1_fault(status, code, error.message)
 }
 
 pub(super) fn sse_event(

@@ -36,6 +36,7 @@ impl Runtime {
         input: impl Into<RunInput>,
         context: RuntimeRunContext,
     ) -> Result<RunState, Error> {
+        self.validate_for(snapshot, &context)?;
         let (_run_id, activation) =
             self.prepare_with_context(snapshot, fresh_process_id("thread"), input, &context);
         self.execute(activation, context).await
@@ -103,6 +104,10 @@ impl Runtime {
     where
         F: FnMut(&ResumeTicket) -> ResumeResult,
     {
+        self.validate_configuration()?;
+        if context.reader.is_none() {
+            return Err(crate::ConfigurationError::MissingHistoryReader.into());
+        }
         // Stable-id entry is idempotent: an existing Ended run is returned, an
         // Awaiting run resumes through its committed ticket, and only a missing or
         // orphan Running run enters execution/recovery. No synthetic "continue"
@@ -128,7 +133,10 @@ impl Runtime {
                 .and_then(|reader| reader.run_state(&run_id))
             {
                 Some(RunState::Awaiting) => RunState::Awaiting,
-                Some(RunState::Running) | None => self.execute(activation, context.clone()).await?,
+                Some(RunState::Running) | None => {
+                    self.validate_for(&activation.snapshot, &context)?;
+                    self.execute(activation, context.clone()).await?
+                }
                 Some(RunState::Ended(_)) => {
                     return Err(Error::Execution(
                         "committed Run changed while projecting terminal identity".to_string(),
@@ -162,6 +170,7 @@ impl Runtime {
         input: impl Into<RunInput>,
         context: RuntimeRunContext,
     ) -> Result<(RunId, RunState), Error> {
+        self.validate_for(snapshot, &context)?;
         let (run_id, activation) =
             self.prepare_with_context(snapshot, thread.into(), input, &context);
         let state = self.execute(activation, context).await?;

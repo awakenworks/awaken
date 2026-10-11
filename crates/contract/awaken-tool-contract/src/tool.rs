@@ -1268,6 +1268,19 @@ enum RawToolSlot {
 }
 
 impl RawToolRegistry {
+    /// Reject ambiguous registrations before entering any executable tool.
+    pub fn validate(&self) -> Result<(), ToolError> {
+        let duplicate = self
+            .tools
+            .iter()
+            .filter_map(|(id, slot)| matches!(slot, RawToolSlot::Ambiguous).then_some(id))
+            .min();
+        match duplicate {
+            Some(id) => Err(ToolError::AmbiguousTool(id.clone())),
+            None => Ok(()),
+        }
+    }
+
     /// Build a registry from executable tools. An id appearing more than once is
     /// permanently ambiguous in this registry, even if the same object repeats.
     pub fn new(tools: impl IntoIterator<Item = Arc<dyn RawTool>>) -> Self {

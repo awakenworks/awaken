@@ -956,10 +956,13 @@ fn validate_send_configuration(req: &SendMessageRequest) -> Result<(), RunApplic
             )
         })
     {
-        return Err(RunApplicationError::bad_request(format!(
-            "unsupported output modes: {}",
-            configuration.accepted_output_modes.join(", ")
-        )));
+        return Err(RunApplicationError::bad_request_classified(
+            "unsupported_output_modes",
+            format!(
+                "unsupported output modes: {}",
+                configuration.accepted_output_modes.join(", ")
+            ),
+        ));
     }
     Ok(())
 }
@@ -990,9 +993,10 @@ async fn resolve_task_context(
     };
     let owner = path_agent.or(req.agent_id.as_deref());
     let Some(task) = rt.task(task_id, owner).await else {
-        return Err(RunApplicationError::bad_request(format!(
-            "task not found: {task_id}"
-        )));
+        return Err(RunApplicationError::bad_request_classified(
+            "not_found",
+            format!("task not found: {task_id}"),
+        ));
     };
     if task.status.state.is_terminal() {
         return Err(RunApplicationError::bad_request(format!(

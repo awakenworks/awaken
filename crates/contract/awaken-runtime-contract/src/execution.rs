@@ -32,6 +32,8 @@ pub fn execution_capability(backend_ref: &str) -> String {
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error(transparent)]
+    Diagnostic(#[from] crate::diagnostic::RuntimeDiagnostic),
     #[error("runtime resolution failed: {0}")]
     Resolution(String),
     #[error("runtime execution failed: {0}")]
@@ -46,6 +48,33 @@ pub enum Error {
     /// A logical terminal outcome is not evidence that an external effect stopped.
     #[error("runtime external execution indeterminate")]
     Indeterminate,
+}
+
+impl Error {
+    /// Legacy string variants have conservative fallback classifications.
+    pub fn kind(&self) -> crate::diagnostic::RuntimeErrorKind {
+        use crate::diagnostic::RuntimeErrorKind;
+        match self {
+            Self::Diagnostic(error) => error.kind(),
+            Self::Resolution(_) => RuntimeErrorKind::InvalidRequest,
+            Self::StateConflict => RuntimeErrorKind::Conflict,
+            Self::Execution(_) | Self::Commit(_) | Self::Indeterminate => {
+                RuntimeErrorKind::Internal
+            }
+        }
+    }
+
+    /// A stable code does not imply that an invocation is safe to retry.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Diagnostic(error) => error.code(),
+            Self::Resolution(_) => "resolution_failed",
+            Self::Execution(_) => "execution_failed",
+            Self::Commit(_) => "commit_failed",
+            Self::StateConflict => "state_conflict",
+            Self::Indeterminate => "execution_indeterminate",
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
