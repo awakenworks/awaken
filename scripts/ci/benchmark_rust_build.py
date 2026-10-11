@@ -14,15 +14,15 @@ import json
 import os
 from pathlib import Path
 from unittest import mock
-import re
 import subprocess
 import sys
 import unittest
 
 import crate_test
+import nextest_execution
 
 ROOT = Path(__file__).resolve().parents[2]
-INPUT_GLOBS = ("scripts/ci/benchmark_rust_build.py", "scripts/ci/crate_test.py", "scripts/ci/deadline.py",
+INPUT_GLOBS = ("scripts/ci/benchmark_rust_build.py", "scripts/ci/crate_test.py", "scripts/ci/nextest_execution.py", "scripts/ci/deadline.py",
                "scripts/ci/formal_sources.py", "scripts/ci/test.sh", ".config/rust-tests.toml")
 
 
@@ -54,14 +54,12 @@ def build_artifacts(text: str) -> tuple[int, dict[str, dict]]:
 
 
 def executed_cases(text: str) -> Counter[tuple[str, str]]:
-    cases = Counter(re.findall(r"^\s*PASS\s+\[[^]]+\]\s+\([^)]*\)\s+(\S+)\s+(\S+)",
-                               text, re.MULTILINE))
-    summaries = re.findall(r"Summary \[[^]]+\] (\d+) tests run: (\d+) passed(?: \([^\n]*\))?(?:, (\d+) skipped)?\s*$",
-                           text, re.MULTILINE)
+    cases = Counter(nextest_execution.PASS.findall(text))
+    summaries = nextest_execution.SUMMARY.findall(text)
     if len(summaries) != 1:
         raise ValueError("one complete Nextest summary is required")
     run, passed, skipped = (int(value or 0) for value in summaries[0])
-    if not run or run != passed or skipped or sum(cases.values()) != run or any(count != 1 for count in cases.values()):
+    if not run or run != passed or skipped or sum(cases.values()) != run or any(count != 1 for count in cases.values()) or nextest_execution.SKIP.search(text):
         raise ValueError("all nonempty selected tests must execute and pass without skips")
     return cases
 
@@ -99,6 +97,18 @@ class BenchmarkTests(unittest.TestCase):
                         good.replace("1 tests run", "0 tests run"), good.splitlines()[-1], good + good):
             with self.assertRaises(ValueError):
                 executed_cases(invalid)
+
+    def test_comparison_reuses_native_and_progress_output_and_refuses_fixture_skip(self):
+        # B1 progress counters or native singular output + exact successful
+        # summary -> same named case. B2 fixture skip, duplicate or empty
+        # outcomes -> reject even with summary0. Neither form proves Source.
+        for prefix in ("(1/1) ", ""):
+            output = f"PASS [ 0.1s] {prefix}pkg::test critical\nSummary [ 0.1s] 1 test run: 1 passed\n"
+            self.assertEqual(executed_cases(output), Counter({("pkg::test", "critical"): 1}))
+            for invalid in (output + "SKIPPED PostgreSQL fixture: absent\n",
+                            output + output.splitlines()[0] + "\n", output.replace("PASS", "FAIL")):
+                with self.subTest(prefix=prefix, invalid=invalid), self.assertRaises(ValueError):
+                    executed_cases(invalid)
 
     def test_ordinary_environment_uses_exact_owned_target_and_job_count(self) -> None:
         target = ROOT / "target/test-timings/probe"

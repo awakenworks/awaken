@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
-"""List, execute and reconcile a focused Nextest selection under one deadline."""
+"""Pure helpers for named Nextest inventory and outcome comparison."""
 from __future__ import annotations
 
 from collections import Counter
 import json
-from pathlib import Path
 import re
-import subprocess
 import sys
-import tempfile
-import time
 import unittest
 
-ROOT = Path(__file__).resolve().parents[2]
 PASS = re.compile(r"^\s*PASS\s+\[[^]]+\]\s+(?:\([^)]*\)\s+)?(\S+)\s+(\S+)", re.MULTILINE)
 SUMMARY = re.compile(r"Summary \[[^]]+\] (\d+) tests? run: (\d+) passed(?: \([^\n]*\))?(?:, (\d+) skipped)?\s*$", re.MULTILINE)
 SKIP = re.compile(r"^\s*(?:SKIPPED\b|\[skip\])", re.MULTILINE | re.IGNORECASE)
@@ -90,52 +85,6 @@ def listing_arguments(arguments: list[str]) -> list[str]:
     return result
 
 
-def execute(command: list[str], environment: dict[str, str], directory: Path,
-            timeout: float = 900, run=subprocess.run) -> tuple[int, list[dict]]:
-    """No retry. Failed listing stops execution; deadline.py owns descendants."""
-    if command[:3] != ["cargo", "nextest", "run"] or timeout <= 0:
-        raise ValueError("a Nextest run and positive shared deadline are required")
-    forbidden = ("--message-format", "--status-level", "--final-status-level", "--success-output",
-                 "--run-ignored", "--no-capture", "--color", "--no-run", "--hide-progress-bar", "--retries")
-    if any(arg.split("=", 1)[0] in forbidden for arg in command[3:]):
-        raise ValueError("verified execution owns listing, ignored policy and output options")
-    listing = [*command[:2], "list", *listing_arguments(command[3:]), "--message-format", "json"]
-    testing = [*command, "--status-level", "pass", "--final-status-level", "fail",
-               "--success-output", "immediate", "--color", "never", "--hide-progress-bar", "--retries", "0"]
-    rows = []
-    directory.mkdir(parents=True, exist_ok=True)
-    started = time.monotonic()
-    inventory = None
-    for phase, argv in (("list", listing), ("test", testing)):
-        log = directory / (phase + ".log")
-        errors = directory / (phase + ".stderr.log")
-        remaining = timeout - (time.monotonic() - started)
-        row = {"phase": phase, "command": argv, "log": str(log), "stderr": str(errors)}
-        rows.append(row)
-        if remaining <= 0:
-            row.update(exit_code=124, error="shared selection/execution deadline exhausted")
-            return 124, rows
-        stage_started = time.monotonic()
-        try:
-            with log.open("w", encoding="utf-8") as stdout, errors.open("w", encoding="utf-8") as stderr:
-                status = run([sys.executable, str(ROOT / "scripts/ci/deadline.py"), str(remaining),
-                              "--", *argv], cwd=ROOT, env=environment, stdout=stdout, stderr=stderr).returncode
-            row.update(exit_code=status, duration_seconds=time.monotonic()-stage_started)
-            row["command_exit_code"] = status
-            if status:
-                return status, rows
-            if phase == "list":
-                inventory = json.loads(log.read_text(encoding="utf-8"))
-                planned, excluded = selection(inventory)
-                row.update(selected_cases=sorted(planned.elements()), excluded_cases=excluded)
-            else:
-                row.update(reconcile(inventory, log.read_text(encoding="utf-8") + "\n" +
-                                     errors.read_text(encoding="utf-8"), status))
-        except (OSError, ValueError, KeyError, TypeError) as error:
-            row.update(error=str(error), exit_code=1)
-            return 1, rows
-    return 0, rows
-
 
 class ExecutionTests(unittest.TestCase):
     @staticmethod
@@ -148,6 +97,10 @@ class ExecutionTests(unittest.TestCase):
     output = "PASS [ 0.1s] (1/1) pkg::test critical\nSummary [ 0.1s] 1 tests run: 1 passed, 1 skipped\n"
 
     def test_identity_summary_and_fixture_negative_controls(self):
+        # Decision rules: exact named successes + one consistent summary + no
+        # fixture skip + status0 -> accept comparison. Any failed command,
+        # missing/renamed/duplicated success, wrong totals or fixture skip ->
+        # reject. This pure comparison owns no execution or source qualification.
         self.assertEqual(reconcile(self.inventory(), self.output, 0)["executed_count"], 1)
         for output, status in ((self.output, 23), (self.output.replace("critical", "renamed"), 0),
                                (self.output.replace("PASS", "FAIL"), 0),
@@ -202,39 +155,6 @@ class ExecutionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             listing_arguments(["--test-threads"])
 
-    def test_actual_runner_refuses_failed_empty_and_changed_selections(self):
-        # Run real child processes through the real deadline owner. The adapter
-        # substitutes a fixture executable for Cargo, leaving argv/log handling
-        # and the list/execute reconciliation unchanged on Windows and Unix.
-        for case in ("pass", "empty", "list-failed", "renamed", "fixture-skip"):
-            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
-                directory = Path(temporary)
-                fixture = directory / "cargo.py"
-                inventory = self.inventory()
-                output = self.output
-                if case == "empty":
-                    inventory["rust-suites"] = {}
-                    inventory["test-count"] = 0
-                if case == "renamed":
-                    output = output.replace("critical", "renamed")
-                if case == "fixture-skip":
-                    output += "SKIPPED PostgreSQL fixture: absent\n"
-                fixture.write_text("import sys\nif 'list' in sys.argv:\n print(" + repr(json.dumps(inventory)) +
-                                   ")\n sys.exit(" + ("47" if case == "list-failed" else "0") +
-                                   ")\nelse:\n print(" + repr(output) + ")\n", encoding="utf-8")
-                calls = []
-                def run(argv, **kwargs):
-                    calls.append(argv)
-                    separator = argv.index("--")
-                    actual = [*argv[:separator+1], sys.executable, str(fixture), *argv[separator+2:]]
-                    return subprocess.run(actual, **kwargs)
-                import os
-                status, rows = execute(["cargo", "nextest", "run", "--locked", "-p", "pkg"],
-                                       dict(os.environ), directory / "logs", 20, run)
-                self.assertEqual(status == 0, case == "pass", rows)
-                self.assertEqual(len(calls), 1 if case in ("empty", "list-failed") else 2)
-                if case == "list-failed":
-                    self.assertEqual(status, 47)
 
 
 if __name__ == "__main__":
