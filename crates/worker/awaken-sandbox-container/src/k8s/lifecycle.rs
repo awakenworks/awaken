@@ -1,6 +1,56 @@
 use awaken_provisioning_contract::FilesystemContinuity;
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{DeleteParams, Preconditions};
+use kube::{Api, Resource};
+
+use super::error::api_not_found;
+use super::{RuntimeError, backend};
+
+/// Observe disappearance of one previously authorized incarnation. A DELETE
+/// response only establishes intent; a valid replacement UID or 404 ends this
+/// wait without granting any effect on the replacement.
+pub(super) async fn await_exact_deletion<K>(
+    api: &Api<K>,
+    name: &str,
+    expected_uid: &str,
+    timeout: std::time::Duration,
+    description: &str,
+    admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
+) -> Result<(), RuntimeError>
+where
+    K: Clone + std::fmt::Debug + serde::de::DeserializeOwned + Resource<DynamicType = ()>,
+{
+    const DELETE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+    let deadline = awaken_time::mono::MonoDeadline::after(timeout);
+    loop {
+        admit()?;
+        let observed = api.get(name).await;
+        admit()?;
+        let observed = match observed {
+            Err(error) if api_not_found(&error) => return Ok(()),
+            Err(error) => return Err(backend(error)),
+            Ok(observed) => observed,
+        };
+        let uid = observed
+            .meta()
+            .uid
+            .as_deref()
+            .filter(|uid| !uid.trim().is_empty())
+            .ok_or_else(|| backend(format!("{description} `{name}` has no valid UID")))?;
+        if uid != expected_uid {
+            return Ok(());
+        }
+        if deadline.has_passed() {
+            return Err(backend(format!(
+                "{description} `{name}` incarnation `{expected_uid}` was not deleted within {}s",
+                timeout.as_secs()
+            )));
+        }
+        admit()?;
+        tokio::time::sleep(DELETE_POLL).await;
+        admit()?;
+    }
+}
 
 pub(super) fn termination_grace_period(continuity: FilesystemContinuity) -> Option<i64> {
     matches!(continuity, FilesystemContinuity::Ephemeral).then_some(0)

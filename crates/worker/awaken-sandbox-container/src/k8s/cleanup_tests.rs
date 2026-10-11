@@ -20,6 +20,7 @@ struct ApiState {
     writes: Vec<String>,
     projected: std::collections::HashSet<String>,
     release_conflict: bool,
+    read_failure: Option<u16>,
 }
 
 impl ApiState {
@@ -27,6 +28,15 @@ impl ApiState {
         let resource = path.split('/').nth(5).unwrap();
         let call = format!("{method} {resource}");
         self.calls.push(call.clone());
+        if method == "GET"
+            && matches!(resource, "pods" | "persistentvolumeclaims")
+            && let Some(code) = self.read_failure
+        {
+            return (
+                code,
+                json!({"kind":"Status", "apiVersion":"v1", "status":"Failure", "reason":"InjectedReadFailure", "message":"read unavailable", "code":code}),
+            );
+        }
         let missing = || {
             (
                 404,
@@ -483,6 +493,7 @@ async fn fixture_with_cut(
             .into_iter()
             .collect(),
         release_conflict: conflict,
+        read_failure: None,
     }));
     let reached = Arc::new(Notify::new());
     let release = Arc::new(Semaphore::new(0));
@@ -515,6 +526,308 @@ async fn fixture_with_cut(
         }
     });
     (runtime, state, reached, release, server)
+}
+
+async fn fixture_pending_claim(
+    runtime: &K8sRuntime,
+    state: &Mutex<ApiState>,
+    claim: bool,
+) -> Option<continuation::PendingClaimDeletion> {
+    if !claim {
+        return None;
+    }
+    state
+        .lock()
+        .unwrap()
+        .claim
+        .as_mut()
+        .unwrap()
+        .metadata
+        .deletion_timestamp = Some(serde_json::from_value(json!("2026-09-07T00:00:00Z")).unwrap());
+    continuation::absent_pod_claim_deletion(
+        &runtime.persistent_volume_claims(),
+        "awaken-cleanup",
+        "claim-uid",
+    )
+    .await
+    .unwrap()
+}
+
+async fn wait_fixture_incarnation(
+    runtime: &K8sRuntime,
+    pending: Option<&continuation::PendingClaimDeletion>,
+    admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
+) -> Result<(), RuntimeError> {
+    match pending {
+        Some(pending) => {
+            continuation::await_claim_deletion(&runtime.persistent_volume_claims(), pending, admit)
+                .await
+        }
+        None => {
+            runtime
+                .await_exact_pod_deleted("awaken-cleanup", "pod-uid", admit)
+                .await
+        }
+    }
+}
+
+#[tokio::test]
+async fn exact_deletion_wait_requires_absence_or_a_valid_replacement_uid() {
+    /* EW cause/effect graph: the original typed Pod/PVC wait -> actual GET ->
+     * 404 / present UID / API error -> success / uncertainty. UID validity and
+     * equality are independent causes: missing/empty/whitespace-only is never
+     * a replacement. Decision rules EW1=404=>Ok; EW2=valid different UID=>Ok
+     * without a write; EW3=missing|empty|blank=>Err; EW4=403|500=>Err.
+     * Cross every rule with BOTH callers using the existing HTTP fixture;
+     * the PVC's preceding read only establishes its already-terminating exact
+     * identity. Every wait sends exactly one GET and zero writes. Original
+     * same-UID continuation and authority cuts are covered by EW5/EW7 below.
+     * EW9 is owned by the existing test-waits scanner/CLI: removing the duplicate
+     * continuation-local loop reduces its held count 1->0. Tighten must lower
+     * only that recorded entry; no old loop or budget increase preserves growth. */
+    for claim in [false, true] {
+        for row in [
+            "absent",
+            "replacement",
+            "missing",
+            "empty",
+            "blank",
+            "403",
+            "500",
+        ] {
+            let (runtime, state, _, _, server) = fixture(0, false).await;
+            let pending = fixture_pending_claim(&runtime, &state, claim).await;
+            let before = state.lock().unwrap().calls.len();
+            {
+                let mut state = state.lock().unwrap();
+                if row == "absent" {
+                    if claim {
+                        state.claim = None;
+                    } else {
+                        state.pod = None;
+                    }
+                } else if let Ok(code) = row.parse::<u16>() {
+                    state.read_failure = Some(code);
+                } else {
+                    let metadata = if claim {
+                        &mut state.claim.as_mut().unwrap().metadata
+                    } else {
+                        &mut state.pod.as_mut().unwrap().metadata
+                    };
+                    metadata.uid = match row {
+                        "replacement" => Some("replacement-uid".into()),
+                        "missing" => None,
+                        "empty" => Some(String::new()),
+                        "blank" => Some(" \t\n".into()),
+                        _ => unreachable!(),
+                    };
+                }
+            }
+            let result = wait_fixture_incarnation(&runtime, pending.as_ref(), &|| Ok(())).await;
+            assert_eq!(
+                result.is_ok(),
+                matches!(row, "absent" | "replacement"),
+                "EW1-4 {claim}/{row}"
+            );
+            if matches!(row, "missing" | "empty" | "blank") {
+                assert!(
+                    result.unwrap_err().to_string().contains("no valid UID"),
+                    "EW3"
+                );
+            }
+            let state = state.lock().unwrap();
+            assert_eq!(state.calls.len(), before + 1, "one actual wait GET");
+            assert!(state.writes.is_empty(), "no replacement mutation");
+            assert_eq!(state.projected.len(), 4, "no participant policy change");
+            drop(state);
+            server.abort();
+            assert!(server.await.unwrap_err().is_cancelled());
+        }
+    }
+}
+
+#[tokio::test]
+async fn exact_deletion_wait_keeps_polling_the_same_uid_and_preserves_each_deadline() {
+    // EW5: same valid UID at the first real GET reply, then 404 -> no early Ok,
+    // next GET observes absence, no writes. EW6: hold that same-UID reply while
+    // advancing the existing monotonic clock by Pod60s/PVC30s -> each original
+    // caller returns its own timeout, not success or a shared replacement limit.
+    // The server's response cut separates API observation from delivery. No
+    // sleep is used as an absence witness, and no physical controller is tested.
+    for claim in [false, true] {
+        for expires in [false, true] {
+            let (runtime, state, reached, release, server) =
+                fixture(if claim { 2 } else { 1 }, false).await;
+            let pending = fixture_pending_claim(&runtime, &state, claim).await;
+            let mut task = tokio::spawn(async move {
+                wait_fixture_incarnation(&runtime, pending.as_ref(), &|| Ok(())).await
+            });
+            tokio::time::timeout(Duration::from_secs(5), reached.notified())
+                .await
+                .unwrap();
+            assert!(!task.is_finished(), "EW5 same UID cannot complete");
+            let timeout = if claim { 30 } else { 60 };
+            if expires {
+                tokio::time::pause();
+                tokio::time::advance(Duration::from_secs(timeout)).await;
+                tokio::time::resume();
+            } else {
+                let mut state = state.lock().unwrap();
+                if claim {
+                    state.claim = None;
+                } else {
+                    state.pod = None;
+                }
+            }
+            release.add_permits(1);
+            let result = tokio::time::timeout(Duration::from_secs(5), &mut task)
+                .await
+                .unwrap()
+                .unwrap();
+            if expires {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains(&format!("within {timeout}s")),
+                    "EW6"
+                );
+            } else {
+                result.unwrap();
+            }
+            let state = state.lock().unwrap();
+            let first_wait = if claim { 2 } else { 1 };
+            assert_eq!(
+                state.calls.len(),
+                first_wait + usize::from(!expires),
+                "EW5/6 actual GETs"
+            );
+            assert!(state.writes.is_empty());
+            drop(state);
+            server.abort();
+            assert!(server.await.unwrap_err().is_cancelled());
+        }
+    }
+}
+
+#[tokio::test]
+async fn exact_deletion_wait_rechecks_current_authority_before_accepting_absence() {
+    /* EW7 decision table: C1 Pod/PVC; C2 reply=404/valid replacement UID;
+     * C3 authority stable/renewed/revoked/reassigned/expired or cancellation.
+     * Stable/renewed+C2=>Ok; revoked/reassigned/expired=>Err; cancelled=>cancel.
+     * Each row preserves zero writes and sends no request after the held reply.
+     * This crosses the actual two typed callers and both success exits, so a
+     * generic helper's unit result cannot hide a missing post-await admission. */
+    for claim in [false, true] {
+        for absent in [false, true] {
+            for change in ['s', 'r', 'v', 'g', 'e', 'c'] {
+                let fence =
+                    pc::SandboxEffectFence::new("cleanup", "owner", "boot", 1, u64::MAX - 1)
+                        .unwrap();
+                let authority = Arc::new(EffectAuthority::new(&fence));
+                let (runtime, state, reached, release, server) =
+                    fixture(if claim { 2 } else { 1 }, false).await;
+                let pending = fixture_pending_claim(&runtime, &state, claim).await;
+                {
+                    let mut state = state.lock().unwrap();
+                    if absent {
+                        if claim {
+                            state.claim = None;
+                        } else {
+                            state.pod = None;
+                        }
+                    } else if claim {
+                        state.claim.as_mut().unwrap().metadata.uid = Some("replacement-uid".into());
+                    } else {
+                        state.pod.as_mut().unwrap().metadata.uid = Some("replacement-uid".into());
+                    }
+                }
+                let current = authority.clone();
+                let mut task = tokio::spawn(async move {
+                    let admit = || {
+                        pc::with_current_sandbox_effect(&fence, current.as_ref(), |_| Ok(()))
+                            .map_err(backend)
+                    };
+                    wait_fixture_incarnation(&runtime, pending.as_ref(), &admit).await
+                });
+                tokio::time::timeout(Duration::from_secs(5), reached.notified())
+                    .await
+                    .unwrap();
+                if change == 'c' {
+                    task.abort();
+                } else {
+                    let mut current = authority.current.lock().unwrap();
+                    match change {
+                        's' => {}
+                        'r' => current.as_mut().unwrap().0.renew(),
+                        'v' => *current = None,
+                        'g' => current.as_mut().unwrap().0.reassign(),
+                        'e' => current.as_mut().unwrap().1 = Duration::ZERO,
+                        _ => unreachable!(),
+                    }
+                }
+                release.add_permits(1);
+                let result = tokio::time::timeout(Duration::from_secs(5), &mut task)
+                    .await
+                    .unwrap();
+                if change == 'c' {
+                    assert!(result.unwrap_err().is_cancelled());
+                } else {
+                    assert_eq!(
+                        result.unwrap().is_ok(),
+                        matches!(change, 's' | 'r'),
+                        "EW7 {claim}/{absent}/{change}"
+                    );
+                }
+                assert_eq!(state.lock().unwrap().calls.len(), if claim { 2 } else { 1 });
+                assert!(state.lock().unwrap().writes.is_empty());
+                server.abort();
+                assert!(server.await.unwrap_err().is_cancelled());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn exact_deletion_wait_rechecks_current_authority_around_polling_sleep() {
+    // EW8 crosses both typed callers with loss at initial admission (1), before
+    // the polling sleep (3), and after it (4). Initial loss sends zero wait GETs;
+    // later loss preserves the one same-UID GET but sends no second GET/write.
+    // The original EffectAuthority is actually revoked at the selected callback,
+    // so these are current-authority effects rather than injected API outcomes.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    for claim in [false, true] {
+        for deny_at in [1, 3, 4] {
+            let fence =
+                pc::SandboxEffectFence::new("cleanup", "owner", "boot", 1, u64::MAX - 1).unwrap();
+            let authority = EffectAuthority::new(&fence);
+            let (runtime, state, _, _, server) = fixture(0, false).await;
+            let pending = fixture_pending_claim(&runtime, &state, claim).await;
+            let before = state.lock().unwrap().calls.len();
+            let admissions = AtomicUsize::new(0);
+            let admit = || {
+                if admissions.fetch_add(1, Ordering::SeqCst) + 1 == deny_at {
+                    *authority.current.lock().unwrap() = None;
+                }
+                pc::with_current_sandbox_effect(&fence, &authority, |_| Ok(())).map_err(backend)
+            };
+            assert!(
+                wait_fixture_incarnation(&runtime, pending.as_ref(), &admit)
+                    .await
+                    .is_err(),
+                "EW8"
+            );
+            assert_eq!(admissions.load(Ordering::SeqCst), deny_at);
+            assert_eq!(
+                state.lock().unwrap().calls.len(),
+                before + usize::from(deny_at > 1)
+            );
+            assert!(state.lock().unwrap().writes.is_empty());
+            server.abort();
+            assert!(server.await.unwrap_err().is_cancelled());
+        }
+    }
 }
 
 #[tokio::test]
