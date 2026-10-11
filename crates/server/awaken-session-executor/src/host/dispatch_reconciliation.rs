@@ -71,7 +71,7 @@ impl HostWorkerResolver {
             Arc::new(awaken_runtime::Runtime::new()),
             store,
             commit.clone(),
-            claimed.lease.owner.clone(),
+            claimed.lease.owner().to_owned(),
         );
         if let Some(observer) = host.dispatch_settlement_observer() {
             worker = worker.with_settlement_observer(observer);
@@ -188,8 +188,8 @@ pub(super) async fn reconcile_committed_terminals(
                     Err(error) => {
                         let _ = store
                             .settle(
-                                &claimed.lease.run_id,
-                                claimed.lease.epoch,
+                                claimed.lease.run_id(),
+                                claimed.lease.epoch(),
                                 awaken_dispatch_contract::DispatchOutcome::Awaiting,
                                 &[],
                             )
@@ -648,7 +648,7 @@ mod tests {
             awaken_dispatch_contract::AttemptAdmission::Applied
         );
         let before = dispatch
-            .load_physical_attempt(&claimed.lease.run_id)
+            .load_physical_attempt(claimed.lease.run_id())
             .await
             .unwrap()
             .unwrap();
@@ -692,7 +692,7 @@ mod tests {
         );
         assert!(live.process_exit.is_none(), "UE2/E3");
         let after = dispatch
-            .load_physical_attempt(&claimed.lease.run_id)
+            .load_physical_attempt(claimed.lease.run_id())
             .await
             .unwrap()
             .unwrap();
@@ -754,8 +754,8 @@ mod tests {
         .await;
         store
             .settle(
-                &control.lease.run_id,
-                control.lease.epoch,
+                control.lease.run_id(),
+                control.lease.epoch(),
                 awaken_dispatch_contract::DispatchOutcome::Awaiting,
                 &[],
             )
@@ -772,8 +772,8 @@ mod tests {
         .await;
         store
             .settle(
-                &terminal.lease.run_id,
-                terminal.lease.epoch,
+                terminal.lease.run_id(),
+                terminal.lease.epoch(),
                 awaken_dispatch_contract::DispatchOutcome::Awaiting,
                 &[],
             )
@@ -898,8 +898,8 @@ mod tests {
         assert_eq!(
             store
                 .settle(
-                    &parked.lease.run_id,
-                    parked.lease.epoch,
+                    parked.lease.run_id(),
+                    parked.lease.epoch(),
                     awaken_dispatch_contract::DispatchOutcome::Awaiting,
                     &[],
                 )
@@ -916,7 +916,7 @@ mod tests {
             &clock,
         )
         .await;
-        let recovery_now = leased.lease.expires_ms.saturating_add(1);
+        let recovery_now = leased.lease.expires_ms().saturating_add(1);
 
         assert!(
             reconcile_committed_terminals(&resolver, 8,)
@@ -928,19 +928,19 @@ mod tests {
 
         clock.set(recovery_now);
         let awaiting_probe = store
-            .claim_for_terminal_recovery(&parked.lease.run_id, "epoch-probe", DEFAULT_LEASE_MS)
+            .claim_for_terminal_recovery(parked.lease.run_id(), "epoch-probe", DEFAULT_LEASE_MS)
             .await
             .expect("probe Awaiting epoch")
             .expect("Awaiting row remains available to its canonical recovery verb");
         assert_eq!(
-            awaiting_probe.lease.epoch,
-            parked.lease.epoch + 1,
+            awaiting_probe.lease.epoch(),
+            parked.lease.epoch() + 1,
             "A1/E1: coordinator scan did not invisibly claim and restore Awaiting"
         );
         store
             .settle(
-                &awaiting_probe.lease.run_id,
-                awaiting_probe.lease.epoch,
+                awaiting_probe.lease.run_id(),
+                awaiting_probe.lease.epoch(),
                 awaken_dispatch_contract::DispatchOutcome::Awaiting,
                 &[],
             )
@@ -950,7 +950,7 @@ mod tests {
         clock.set(recovery_now);
         let replacement = store
             .claim_run(
-                &leased.lease.run_id,
+                leased.lease.run_id(),
                 "worker-b",
                 DEFAULT_LEASE_MS,
                 &Default::default(),
@@ -958,13 +958,13 @@ mod tests {
             .await
             .expect("Worker B reclaim")
             .expect("A3: expired lease remains reclaimable");
-        assert_eq!(replacement.lease.owner, "worker-b", "A3/E2");
-        assert_eq!(replacement.lease.epoch, leased.lease.epoch + 1, "A3/E2");
+        assert_eq!(replacement.lease.owner(), "worker-b", "A3/E2");
+        assert_eq!(replacement.lease.epoch(), leased.lease.epoch() + 1, "A3/E2");
         assert_eq!(
             store
                 .settle(
-                    &leased.lease.run_id,
-                    leased.lease.epoch,
+                    leased.lease.run_id(),
+                    leased.lease.epoch(),
                     awaken_dispatch_contract::DispatchOutcome::Done,
                     &[],
                 )
@@ -1022,9 +1022,9 @@ mod tests {
             &clock,
         )
         .await;
-        clock.set(fresh.lease.expires_ms + 1);
+        clock.set(fresh.lease.expires_ms() + 1);
         store
-            .claim_run(&fresh.lease.run_id, "crashed", 1_000, &Default::default())
+            .claim_run(fresh.lease.run_id(), "crashed", 1_000, &Default::default())
             .await
             .expect("recovery claim")
             .expect("expired row recovers");
@@ -1120,7 +1120,7 @@ mod tests {
         store
             .settle(
                 &run,
-                claimed.lease.epoch,
+                claimed.lease.epoch(),
                 awaken_dispatch_contract::DispatchOutcome::Awaiting,
                 &[],
             )

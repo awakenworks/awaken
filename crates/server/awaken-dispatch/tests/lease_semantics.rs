@@ -742,7 +742,7 @@ async fn assert_live_lease_fences_a_claim<S: ControlDispatch>(
         .await
         .unwrap();
     assert_eq!(
-        a.map(|c| c.lease.owner),
+        a.map(|c| c.lease.owner().to_owned()),
         Some("owner-a".to_string()),
         "the fresh run is claimable by A"
     );
@@ -1384,8 +1384,8 @@ async fn renewal_keeps_a_slow_owner_across_multiple_lease_periods() {
         .await
         .unwrap()
         .expect("once renewal stops, the expired lease is reclaimed");
-    assert_eq!(replacement.lease.owner, "owner-b");
-    assert!(replacement.lease.epoch > claim.epoch);
+    assert_eq!(replacement.lease.owner(), "owner-b");
+    assert!(replacement.lease.epoch() > claim.epoch);
     clock.set(282);
     assert_eq!(
         store.renew_lease(&claim, lease).await.unwrap(),

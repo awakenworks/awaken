@@ -638,7 +638,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         dispatch
             .settle(
                 &child_run,
-                claimed.lease.epoch,
+                claimed.lease.epoch(),
                 DispatchOutcome::Awaiting,
                 &[],
             )
@@ -1007,7 +1007,7 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         dispatch
             .settle(
                 &child_run,
-                resumed.lease.epoch,
+                resumed.lease.epoch(),
                 DispatchOutcome::Done,
                 &[resumed.pending[0].message_id.clone()],
             )
@@ -1424,7 +1424,12 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
             .expect("primary dispatch runnable");
         assert_eq!(
             dispatch
-                .settle(&run_id, claimed.lease.epoch, DispatchOutcome::Awaiting, &[],)
+                .settle(
+                    &run_id,
+                    claimed.lease.epoch(),
+                    DispatchOutcome::Awaiting,
+                    &[],
+                )
                 .await
                 .expect("settle primary Awaiting"),
             awaken_dispatch_contract::SettleOutcome::Applied
@@ -1748,7 +1753,7 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
     dispatch
         .settle(
             &child_run,
-            initial_child_claim.lease.epoch,
+            initial_child_claim.lease.epoch(),
             DispatchOutcome::Awaiting,
             &[],
         )
@@ -1826,7 +1831,7 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
     dispatch
         .settle(
             &child_run,
-            resumed.lease.epoch,
+            resumed.lease.epoch(),
             DispatchOutcome::Awaiting,
             std::slice::from_ref(&first_message_id),
         )
@@ -1960,7 +1965,7 @@ async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
     dispatch
         .settle(
             &action_run,
-            action_claim.lease.epoch,
+            action_claim.lease.epoch(),
             DispatchOutcome::Awaiting,
             &[],
         )

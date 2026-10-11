@@ -168,8 +168,11 @@ async fn broad_pending_queue_claim_latency() {
             .await
             .expect("claim succeeds")
             .expect("runnable row remains");
-        assert_eq!(claimed.lease.epoch, 1, "fresh exact claim");
-        assert!(winners.insert(claimed.lease.run_id), "R1/E1 distinct Run");
+        assert_eq!(claimed.lease.epoch(), 1, "fresh exact claim");
+        assert!(
+            winners.insert(claimed.lease.run_id().clone()),
+            "R1/E1 distinct Run"
+        );
         if iteration > 0 {
             samples.push(started.elapsed().as_secs_f64() * 1_000.0);
         }
@@ -247,8 +250,11 @@ async fn incompatible_front_queue_claim_latency() {
             .await
             .expect("claim succeeds")
             .expect("lower-priority runnable row remains");
-        assert!(claimed.lease.run_id.0.starts_with("valid-"), "I1/E1");
-        assert!(winners.insert(claimed.lease.run_id), "I1/E1 distinct Run");
+        assert!(claimed.lease.run_id().0.starts_with("valid-"), "I1/E1");
+        assert!(
+            winners.insert(claimed.lease.run_id().clone()),
+            "I1/E1 distinct Run"
+        );
         if iteration > 0 {
             samples.push(started.elapsed().as_secs_f64() * 1_000.0);
         }
@@ -333,9 +339,9 @@ async fn concurrent_incompatible_front_claim_throughput() {
                         .await
                         .expect("concurrent exact claim")
                         .expect("eligible Run remains");
-                    assert_eq!(claimed.lease.epoch, 1, "T1/E1 fresh current claim");
+                    assert_eq!(claimed.lease.epoch(), 1, "T1/E1 fresh current claim");
                     observations.push((
-                        claimed.lease.run_id.0,
+                        claimed.lease.run_id().0.clone(),
                         started.elapsed().as_secs_f64() * 1_000.0,
                     ));
                 }

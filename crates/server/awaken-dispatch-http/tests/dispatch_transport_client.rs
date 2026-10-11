@@ -311,7 +311,7 @@ async fn claim_loss_during_delivery_issuance_returns_no_carrier() {
     tokio::time::timeout(std::time::Duration::from_secs(2), source.entered.notified())
         .await
         .expect("R5 signer must reach its deterministic barrier");
-    dispatch_clock.set(claimed.lease.expires_ms);
+    dispatch_clock.set(claimed.lease.expires_ms());
     source.release.notify_one();
     let refreshed = tokio::time::timeout(std::time::Duration::from_secs(2), refresh)
         .await
@@ -382,7 +382,8 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
         assert_eq!(claimed.credential_bindings.len(), 1, "R1");
         assert_eq!(claimed.credential_deliveries.len(), 1, "R1");
         assert_eq!(
-            claimed.credential_deliveries[0].claim_epoch, claimed.lease.epoch,
+            claimed.credential_deliveries[0].claim_epoch,
+            claimed.lease.epoch(),
             "R1 exact epoch"
         );
         let awaken_runtime_contract::resolved::ModelProvisioning::Provider {
@@ -420,7 +421,7 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
             .await
             .expect("R3 transport")
             .expect("R3 current claim receives delivery");
-        assert_eq!(refreshed.claim_epoch, claimed.lease.epoch, "R3");
+        assert_eq!(refreshed.claim_epoch, claimed.lease.epoch(), "R3");
         assert!(
             awaken_credential_contract::credential_access_has_same_authority(
                 &refreshed.access,
@@ -428,7 +429,7 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
             ),
             "R3"
         );
-        dispatch_clock.set(claimed.lease.expires_ms);
+        dispatch_clock.set(claimed.lease.expires_ms());
         assert!(
             worker_dispatch
                 .claimed_credential_delivery_transport()
@@ -549,8 +550,8 @@ async fn remote_special_claim_uses_control_side_retry_policy_without_quarantinin
     assert_eq!(
         queue
             .settle(
-                &terminal_claim.lease.run_id,
-                terminal_claim.lease.epoch,
+                terminal_claim.lease.run_id(),
+                terminal_claim.lease.epoch(),
                 DispatchOutcome::Done,
                 &[],
             )
@@ -633,7 +634,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
         .expect("claim over http")
         .expect("a run is claimable");
     assert_eq!(claimed.request.activation.run_id.0, "run-A");
-    assert_eq!(claimed.lease.owner, "worker-1");
+    assert_eq!(claimed.lease.owner(), "worker-1");
     let original_claim = RunClaim::from(&claimed.lease);
     let snapshot = queue
         .load_recovery_snapshot(&original_claim, None)
@@ -724,7 +725,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
         .expect("reclaim over http")
         .expect("the lapsed lease is reclaimable");
     assert!(
-        reclaimed.lease.epoch > claimed.lease.epoch,
+        reclaimed.lease.epoch() > claimed.lease.epoch(),
         "the recovery re-claim bumped the fence epoch"
     );
     assert_eq!(
@@ -802,7 +803,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
         queue
             .settle(
                 &RunId("run-A".into()),
-                claimed.lease.epoch,
+                claimed.lease.epoch(),
                 DispatchOutcome::Done,
                 &[],
             )
@@ -816,7 +817,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
         recovery_queue
             .settle(
                 &RunId("run-A".into()),
-                reclaimed.lease.epoch,
+                reclaimed.lease.epoch(),
                 DispatchOutcome::Done,
                 &[],
             )
@@ -854,7 +855,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
     queue
         .settle(
             &RunId("run-B".into()),
-            child.lease.epoch,
+            child.lease.epoch(),
             DispatchOutcome::Awaiting,
             &[],
         )
@@ -885,7 +886,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
     queue
         .settle(
             &RunId("run-B".into()),
-            resumed.lease.epoch,
+            resumed.lease.epoch(),
             DispatchOutcome::Done,
             &["child-answer".to_string()],
         )
@@ -981,14 +982,14 @@ async fn credential_receipt_is_verified_and_fenced_over_real_http() {
         "R2 mechanism mismatch is rejected over HTTP"
     );
 
-    clock.set(first.lease.expires_ms + 1);
-    dispatch_clock.set(first.lease.expires_ms + 1);
+    clock.set(first.lease.expires_ms() + 1);
+    dispatch_clock.set(first.lease.expires_ms() + 1);
     let recovered = recovery_worker
         .claim("ignored", 30_000, &Default::default())
         .await
         .unwrap()
         .expect("recovery advances the fence");
-    assert_eq!(recovered.lease.epoch, first.lease.epoch + 1);
+    assert_eq!(recovered.lease.epoch(), first.lease.epoch() + 1);
     assert!(
         !first_worker
             .record_credential_realization(&first_claim, receipt)

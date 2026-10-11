@@ -1444,7 +1444,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         dispatch
             .settle(
                 &run_id,
-                claimed.lease.epoch,
+                claimed.lease.epoch(),
                 awaken_dispatch_contract::DispatchOutcome::Done,
                 &[],
             )
@@ -1506,7 +1506,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         dispatch
             .settle(
                 &empty_capabilities.run_id,
-                empty_capabilities_claim.lease.epoch,
+                empty_capabilities_claim.lease.epoch(),
                 awaken_dispatch_contract::DispatchOutcome::Done,
                 &[],
             )

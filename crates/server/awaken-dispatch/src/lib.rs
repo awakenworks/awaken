@@ -119,11 +119,11 @@ pub use dispatch::{
     AttemptAdmission, AttemptCredentialBinding, AttemptExecutionBinding, CandidateFingerprint,
     CasOutcome, Claimed, ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport,
     CommitEpochGuard, ContinuationAdmission, ControlDispatchQueue, CredentialRealizationReceipt,
-    DispatchCompletion, DispatchDepths, DispatchError, DispatchOutcome, DispatchQueue,
-    DispatchSettlementError, DispatchSettlementObserver, DispatchState, DispatchSummary, Inbox,
-    Lease, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, PhysicalAttempt, RunClaim,
-    SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
-    SessionRunReservationResolution, SettleOutcome, SubmitOptions,
+    DispatchCompletion, DispatchDepths, DispatchError, DispatchLease, DispatchOutcome,
+    DispatchQueue, DispatchSettlementError, DispatchSettlementObserver, DispatchState,
+    DispatchSummary, Inbox, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord,
+    PhysicalAttempt, RunClaim, SessionChildAdmission, SessionRunReservationActivation,
+    SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
 };
 pub use dispatch_schema::dispatch_bundle;
 #[cfg(feature = "test-support")]

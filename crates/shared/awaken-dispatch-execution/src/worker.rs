@@ -346,7 +346,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
             .commit(ThreadCommit::rescheduled(
                 claimed.request.thread_id().clone(),
                 disposition,
-                claimed.lease.epoch,
+                claimed.lease.epoch(),
             ))
             .await
             .map_err(|error| {
@@ -1058,7 +1058,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
             awaken_dispatch_contract::verify_claim_credential_bindings(
                 &claimed.request,
                 &self.local_credential_capabilities,
-                claimed.lease.epoch,
+                claimed.lease.epoch(),
                 now_ms,
                 awaken_dispatch_contract::ClaimCredentialOperation::Cancel,
                 &claimed.credential_bindings,
@@ -1161,7 +1161,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
         awaken_dispatch_contract::verify_attempt_credential_bindings(
             &claimed.request,
             &self.local_credential_capabilities,
-            claimed.lease.epoch,
+            claimed.lease.epoch(),
             now_ms,
             &claimed.credential_bindings,
         )
@@ -1567,7 +1567,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
             Ok(SettleOutcome::Fenced)
         } else {
             self.store
-                .settle(run_id, claimed.lease.epoch, outcome, consumed)
+                .settle(run_id, claimed.lease.epoch(), outcome, consumed)
                 .await
         };
         match settlement {

@@ -19,8 +19,8 @@ async fn settle_done(
     assert_eq!(
         store
             .settle(
-                &claim.lease.run_id,
-                claim.lease.epoch,
+                claim.lease.run_id(),
+                claim.lease.epoch(),
                 DispatchOutcome::Done,
                 &consumed,
             )
@@ -74,7 +74,7 @@ async fn open_run_single_writer_is_uniform(
             store
                 .settle(
                     request.run_id(),
-                    claim.lease.epoch,
+                    claim.lease.epoch(),
                     DispatchOutcome::Awaiting,
                     &[],
                 )
@@ -391,7 +391,7 @@ async fn open_run_single_writer_is_uniform(
         store
             .settle(
                 legacy_second.run_id(),
-                legacy_second_claim.lease.epoch,
+                legacy_second_claim.lease.epoch(),
                 DispatchOutcome::Awaiting,
                 &[],
             )
@@ -535,7 +535,7 @@ async fn session_child_admission_is_atomic_and_bounded(
         store
             .settle(
                 session_root.run_id(),
-                root_claim.lease.epoch,
+                root_claim.lease.epoch(),
                 DispatchOutcome::Done,
                 &[],
             )
@@ -566,7 +566,7 @@ async fn session_child_admission_is_atomic_and_bounded(
         store
             .settle(
                 advisor.run_id(),
-                advisor_claim.lease.epoch,
+                advisor_claim.lease.epoch(),
                 DispatchOutcome::Done,
                 &[],
             )
@@ -687,7 +687,7 @@ async fn session_child_admission_is_atomic_and_bounded(
         store
             .settle(
                 admitted[0].run_id(),
-                cancelled.lease.epoch,
+                cancelled.lease.epoch(),
                 DispatchOutcome::Done,
                 &[],
             )
@@ -712,7 +712,7 @@ async fn session_child_admission_is_atomic_and_bounded(
         store
             .settle(
                 admitted[1].run_id(),
-                completed.lease.epoch,
+                completed.lease.epoch(),
                 DispatchOutcome::Done,
                 &[],
             )

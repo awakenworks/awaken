@@ -44,8 +44,8 @@ use crate::dispatch::{
     AttemptAdmission, AttemptCredentialBinding, AttemptExecutionBinding, CasOutcome,
     ClaimCredentialOperation, Claimed, CommitEpochGuard, ContinuationAdmission,
     CredentialRealizationPersistenceDecision, CredentialRealizationReceipt, DispatchCompletion,
-    DispatchDepths, DispatchError, DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary,
-    ExactClaimMode, Inbox, Lease, LeaseRenewalOutcome, Outbox, PendingInput,
+    DispatchDepths, DispatchError, DispatchLease, DispatchOutcome, DispatchQueue, DispatchState,
+    DispatchSummary, ExactClaimMode, Inbox, LeaseRenewalOutcome, Outbox, PendingInput,
     PendingInputSettlementPlan, PendingRecord, PhysicalAttempt, RunClaim, RunIdentityDecision,
     SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
     SessionRunReservationResolution, SettleOutcome, StoredRunIdentity, SubmitOptions,
@@ -90,7 +90,7 @@ struct Row {
     /// Set before signalling a live attempt. It remains true across lease expiry
     /// and recovery until the worker commits Cancelled and settles Done.
     cancellation_requested: bool,
-    lease: Option<Lease>,
+    lease: Option<DispatchLease>,
     /// Absolute expiry of the caller-owned admission window. Present only while
     /// `state == Reserved`; a recovery claim carries its ordinary lease instead.
     reservation_deadline_ms: Option<u64>,
@@ -137,7 +137,7 @@ fn guarded_claim_row(
         row.state == required_state,
         lease.is_some(),
         lease.is_some(),
-        lease.is_some_and(|lease| lease.owner == claim.owner),
+        lease.is_some_and(|lease| lease.owner() == claim.owner),
         row.lease_epoch == claim.epoch,
     ) {
         CommitEpochAdmission::Fenced => Ok(None),
@@ -148,7 +148,7 @@ fn guarded_claim_row(
             let lease = lease.expect("guard admission requires a complete lease");
             Ok(Some((
                 row.request.clone(),
-                lease.expires_ms,
+                lease.expires_ms(),
                 row.cancellation_requested,
                 PhysicalAttemptSlot::from_facts(
                     row.active_attempt.is_some(),
@@ -196,7 +196,7 @@ impl Row {
     fn exact_claim_deadline(&self) -> Option<u64> {
         match self.state {
             DispatchState::Reserved => self.reservation_deadline_ms,
-            DispatchState::ReservationLeased => self.lease.as_ref().map(|lease| lease.expires_ms),
+            DispatchState::ReservationLeased => self.lease.as_ref().map(|lease| lease.expires_ms()),
             _ => None,
         }
     }
@@ -395,7 +395,7 @@ fn runnable(state: &State, run_id: &RunId, now_ms: u64) -> Option<bool> {
     }
     if row.state == DispatchState::Leased
         && crate::clock::deadline_has_passed(
-            row.lease.as_ref().map(|lease| lease.expires_ms),
+            row.lease.as_ref().map(|lease| lease.expires_ms()),
             now_ms,
         )
     {
@@ -492,7 +492,7 @@ fn claim_exact_with_mode(
             };
             let expired_running = row.state == DispatchState::Leased
                 && crate::clock::deadline_has_passed(
-                    row.lease.as_ref().map(|lease| lease.expires_ms),
+                    row.lease.as_ref().map(|lease| lease.expires_ms()),
                     now_ms,
                 );
             let thread_busy = thread_has_claim_blocking_peer(state, requested_run, false);
@@ -516,7 +516,7 @@ fn claim_exact_with_mode(
             };
             if !retry_exhaustion_eligible(
                 row.state,
-                row.lease.as_ref().map(|lease| lease.expires_ms),
+                row.lease.as_ref().map(|lease| lease.expires_ms()),
                 row.attempt_count,
                 max_attempts,
                 now_ms,
@@ -544,13 +544,12 @@ fn claim_exact_with_mode(
     let Some((claim_transition, request)) = claimed else {
         return Ok(None);
     };
-    let claim_epoch = claim_transition.lease_epoch;
     let credential_operation =
         claim_credential_operation(terminal_resolution, row.cancellation_requested);
     let credential_bindings = compile_claim_credential_bindings(
         &request,
         capabilities,
-        claim_epoch,
+        claim_transition.lease_epoch,
         now_ms,
         credential_operation,
     )
@@ -563,12 +562,12 @@ fn claim_exact_with_mode(
     let (sandbox, cancellation_requested, lease) = {
         let row = state.rows.get_mut(&run_id).expect("runnable row exists");
         row.apply_transition(claim_transition);
-        let lease = Lease {
-            run_id: run_id.clone(),
-            owner: owner.to_string(),
-            expires_ms: crate::clock::deadline_millis(now_ms, lease_ms),
-            epoch: row.lease_epoch,
-        };
+        let lease = DispatchLease::from_persisted(
+            run_id.clone(),
+            owner.to_string(),
+            crate::clock::deadline_millis(now_ms, lease_ms),
+            claim_transition.lease_epoch,
+        )?;
         row.lease = Some(lease.clone());
         row.assignment = assignment.clone();
         row.credential_bindings.clone_from(&credential_bindings);
@@ -820,7 +819,7 @@ fn release_claim(
                 claim.epoch,
                 row.lease
                     .as_ref()
-                    .is_some_and(|lease| lease.owner == claim.owner),
+                    .is_some_and(|lease| lease.owner() == claim.owner),
                 slot,
                 row.attempt_count,
             )
@@ -844,10 +843,11 @@ fn release_claim(
             if let Some(row) = state.rows.get_mut(&claim.run_id) {
                 row.apply_transition(next);
                 row.attempt_count = attempt_count;
-                row.lease
+                let lease = row
+                    .lease
                     .as_mut()
-                    .expect("an exact leased claim has a lease")
-                    .expires_ms = 0;
+                    .expect("an exact leased claim has a lease");
+                *lease = lease.with_deadline(0);
                 row.retry_not_before_ms = retry_not_before_ms;
             }
         }
@@ -887,8 +887,8 @@ impl DispatchQueue for MemoryDispatchStore {
                 .then_some(row.lease.as_ref())
                 .flatten()
                 .filter(|lease| {
-                    lease.owner == owner
-                        && !crate::clock::deadline_has_passed(Some(lease.expires_ms), now_ms)
+                    lease.owner() == owner
+                        && !crate::clock::deadline_has_passed(Some(lease.expires_ms()), now_ms)
                 })
                 .map(|_| RunClaim {
                     run_id: run_id.clone(),
@@ -926,7 +926,7 @@ impl DispatchQueue for MemoryDispatchStore {
         let owner_matches = row
             .lease
             .as_ref()
-            .is_some_and(|lease| lease.owner == claim.owner);
+            .is_some_and(|lease| lease.owner() == claim.owner);
         let transition_resolution = match resolution {
             SessionRunReservationResolution::Admitted { .. } => Some(true),
             SessionRunReservationResolution::Retry { .. } => Some(false),
@@ -1169,7 +1169,7 @@ impl DispatchQueue for MemoryDispatchStore {
             state.rows.get(run_id).and_then(|row| {
                 (retry_exhaustion_eligible(
                     row.state,
-                    row.lease.as_ref().map(|lease| lease.expires_ms),
+                    row.lease.as_ref().map(|lease| lease.expires_ms()),
                     row.attempt_count,
                     max_attempts,
                     now_ms,
@@ -1226,7 +1226,7 @@ impl DispatchQueue for MemoryDispatchStore {
             || row
                 .lease
                 .as_ref()
-                .is_none_or(|lease| lease.owner != claim.owner)
+                .is_none_or(|lease| lease.owner() != claim.owner)
         {
             return Ok(SettleOutcome::Fenced);
         }
@@ -1264,7 +1264,7 @@ impl DispatchQueue for MemoryDispatchStore {
             && row
                 .lease
                 .as_ref()
-                .is_some_and(|lease| lease.owner == claim.owner)
+                .is_some_and(|lease| lease.owner() == claim.owner)
         {
             row.sandbox = Some(sandbox_ref.to_string());
             return Ok(SettleOutcome::Applied);
@@ -1300,7 +1300,7 @@ impl DispatchQueue for MemoryDispatchStore {
         ) && row
             .lease
             .as_ref()
-            .is_some_and(|lease| lease.owner == claim.owner && lease.epoch == claim.epoch);
+            .is_some_and(|lease| lease.owner() == claim.owner && lease.epoch() == claim.epoch);
         let cancelled_physical_attempt = row.cancellation_requested
             && row
                 .active_attempt
@@ -1310,7 +1310,7 @@ impl DispatchQueue for MemoryDispatchStore {
         if outcome == LeaseRenewalOutcome::Current
             && let Some(lease) = row.lease.as_mut()
         {
-            lease.expires_ms = crate::clock::deadline_millis(now_ms, lease_ms);
+            *lease = lease.with_deadline(crate::clock::deadline_millis(now_ms, lease_ms));
         }
         Ok(outcome)
     }
@@ -1387,7 +1387,7 @@ impl DispatchQueue for MemoryDispatchStore {
         for row in state.rows.values_mut() {
             let expired = row.state == DispatchState::Leased
                 && crate::clock::deadline_has_passed(
-                    row.lease.as_ref().map(|l| l.expires_ms),
+                    row.lease.as_ref().map(|l| l.expires_ms()),
                     expired_before_ms,
                 );
             // An occupied physical slot no longer short-circuits the operator
@@ -1825,7 +1825,7 @@ impl ControlDispatchQueue for MemoryDispatchStore {
             ) && row
                 .lease
                 .as_ref()
-                .is_some_and(|lease| lease.expires_ms > now_ms)
+                .is_some_and(|lease| lease.expires_ms() > now_ms)
             {
                 depths.leased += 1;
             }

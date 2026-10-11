@@ -1036,7 +1036,7 @@ async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environmen
         .expect("C1 exact claim");
     assert_eq!(
         dispatch
-            .quarantine_retry_exhausted(0, claimed.lease.expires_ms.saturating_add(1))
+            .quarantine_retry_exhausted(0, claimed.lease.expires_ms().saturating_add(1))
             .await
             .expect("C1 quarantine retry exhaustion"),
         1,
@@ -1186,7 +1186,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
         .await
         .expect("M1 old Worker claim")
         .expect("M1 active dispatch");
-    assert_eq!(previous.lease.run_id, run_id, "M1/C1");
+    assert_eq!(previous.lease.run_id(), &run_id, "M1/C1");
 
     let remote = Arc::new(RecordingRemoteAttempt {
         cancelled: Mutex::new(Vec::new()),
@@ -1292,8 +1292,8 @@ async fn managed_primary_interrupt_cancels_every_exact_session_dispatch() {
                 .expect("A1 predecessor row");
             dispatch
                 .settle(
-                    &claimed.lease.run_id,
-                    claimed.lease.epoch,
+                    claimed.lease.run_id(),
+                    claimed.lease.epoch(),
                     DispatchOutcome::Awaiting,
                     &[],
                 )

@@ -1114,7 +1114,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .expect("signed dispatch claim")
         .expect("queued run is claimable");
     assert_eq!(
-        claimed.lease.owner,
+        claimed.lease.owner(),
         registered.snapshot.identity.lease_owner()
     );
     let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
@@ -2734,8 +2734,8 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         )
         .await
         .expect("registry lease remains live while the dispatch lease expires");
-    clock.set(claimed.lease.expires_ms + 1);
-    dispatch_clock.set(claimed.lease.expires_ms + 1);
+    clock.set(claimed.lease.expires_ms() + 1);
+    dispatch_clock.set(claimed.lease.expires_ms() + 1);
     assert!(
         !queue
             .claim_is_current(&claim)
@@ -2794,7 +2794,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .await
         .expect("reclaim relinquished Run")
         .expect("relinquished Run is pending without waiting for lease expiry");
-    assert_eq!(replacement.lease.epoch, claim.epoch + 1, "T22");
+    assert_eq!(replacement.lease.epoch(), claim.epoch + 1, "T22");
     assert!(
         !queue
             .relinquish_claim(&claim)

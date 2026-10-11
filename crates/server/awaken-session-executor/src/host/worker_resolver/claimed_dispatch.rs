@@ -303,7 +303,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         .map_err(|error| {
             Self::execution_error(format!(
                 "run {} has an invalid Agent publication closure: {error}",
-                claimed.lease.run_id.0
+                claimed.lease.run_id().0
             ))
         })?;
         let effective_model_ref = claimed.request.activation.effective_model_ref().to_string();
@@ -320,7 +320,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             crate::dispatch_session_runtime::decode_dispatched_resource_manifest(&claimed.request)
                 .map_err(Self::execution_error)?;
         let dispatched_mcp_stages = if let Some(envelope) = &claimed.request.session_runtime {
-            let projection = decode_dispatched_projection(envelope, &claimed.lease.run_id)?;
+            let projection = decode_dispatched_projection(envelope, claimed.lease.run_id())?;
             host.install_environment_projection(&thread_id.0, &projection.environment)
                 .map_err(Self::map_host_resolution_error)?;
             host.installed_sessions
@@ -364,7 +364,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             if !outcome.applied() {
                 return Err(Self::execution_error(format!(
                     "run {} lost ownership before Session Sandbox cache synchronization",
-                    claimed.lease.run_id.0
+                    claimed.lease.run_id().0
                 )));
             }
         }
@@ -429,7 +429,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                 &host,
                 claimed.sandbox.as_deref(),
                 &thread_id.0,
-                &claimed.lease.run_id,
+                claimed.lease.run_id(),
                 claimed
                     .request
                     .activation

@@ -1736,14 +1736,14 @@ pub async fn assert_scheduled_due<S: awaken_dispatch::ControlDispatch>(
         .unwrap()
         .expect("running owner");
     store
-        .settle(&run, claimed.lease.epoch, DispatchOutcome::Awaiting, &[])
+        .settle(&run, claimed.lease.epoch(), DispatchOutcome::Awaiting, &[])
         .await
         .unwrap();
 
     // The returned lease deadline is expressed in the backend's authority
     // clock, so the same schedule remains future-dated for logical and live
     // database clocks.
-    let delivery_at = claimed.lease.expires_ms;
+    let delivery_at = claimed.lease.expires_ms();
     store
         .append(PendingInput {
             message_id: "sched".to_string(),
@@ -1806,7 +1806,7 @@ pub async fn assert_millis_boundaries<S: awaken_dispatch::ControlDispatch>(
             .unwrap()
             .expect("fresh run");
         store
-            .settle(&run, claimed.lease.epoch, DispatchOutcome::Awaiting, &[])
+            .settle(&run, claimed.lease.epoch(), DispatchOutcome::Awaiting, &[])
             .await
             .unwrap();
         store
@@ -1842,7 +1842,7 @@ pub async fn assert_millis_boundaries<S: awaken_dispatch::ControlDispatch>(
             store
                 .settle(
                     &run,
-                    due.lease.epoch,
+                    due.lease.epoch(),
                     DispatchOutcome::Done,
                     &[format!("millis-message-{nth}")],
                 )
@@ -1863,7 +1863,7 @@ pub async fn assert_millis_boundaries<S: awaken_dispatch::ControlDispatch>(
             store
                 .settle(
                     &run,
-                    cancelled.lease.epoch,
+                    cancelled.lease.epoch(),
                     DispatchOutcome::Done,
                     &[format!("millis-message-{nth}")],
                 )
@@ -1884,7 +1884,7 @@ pub async fn assert_millis_boundaries<S: awaken_dispatch::ControlDispatch>(
         .unwrap()
         .expect("huge lease claim");
     assert_eq!(lease.request.run_id(), &lease_run);
-    assert_eq!(lease.lease.expires_ms, max_signed);
+    assert_eq!(lease.lease.expires_ms(), max_signed);
     clock.set(2_000);
     assert!(
         store
@@ -1937,41 +1937,41 @@ pub async fn assert_dead_letter<S: awaken_dispatch::ControlDispatch>(
         .await
         .unwrap()
         .expect("fresh poison claim");
-    clock.advance_past(first.lease.expires_ms).await;
+    clock.advance_past(first.lease.expires_ms()).await;
     assert_eq!(
         store
-            .quarantine_retry_exhausted(2, first.lease.expires_ms.saturating_add(1))
+            .quarantine_retry_exhausted(2, first.lease.expires_ms().saturating_add(1))
             .await
             .unwrap(),
         0,
         "still within budget"
     );
-    clock.set(first.lease.expires_ms.saturating_add(1));
+    clock.set(first.lease.expires_ms().saturating_add(1));
     let second = store
         .claim("w", 100, &Default::default())
         .await
         .unwrap()
         .expect("first poison recovery");
-    clock.advance_past(second.lease.expires_ms).await;
+    clock.advance_past(second.lease.expires_ms()).await;
     assert_eq!(
         store
-            .quarantine_retry_exhausted(2, second.lease.expires_ms.saturating_add(1))
+            .quarantine_retry_exhausted(2, second.lease.expires_ms().saturating_add(1))
             .await
             .unwrap(),
         0
     );
-    clock.set(second.lease.expires_ms.saturating_add(1));
+    clock.set(second.lease.expires_ms().saturating_add(1));
     let third = store
         .claim("w", 100, &Default::default())
         .await
         .unwrap()
         .expect("second poison recovery");
-    clock.advance_past(third.lease.expires_ms).await;
+    clock.advance_past(third.lease.expires_ms()).await;
 
     // Explicit quarantine moves the exhausted row to DeadLetter; it is no longer claimable.
     assert_eq!(
         store
-            .quarantine_retry_exhausted(2, third.lease.expires_ms.saturating_add(1))
+            .quarantine_retry_exhausted(2, third.lease.expires_ms().saturating_add(1))
             .await
             .unwrap(),
         1,
@@ -2006,24 +2006,24 @@ pub async fn assert_dead_letter<S: awaken_dispatch::ControlDispatch>(
     // | Rule | DeadLetter | cancel requested | Effect |
     // | D1 | yes | no | E1 |
     // | D2 | yes | yes | E2 |
-    clock.advance_past(requeued.lease.expires_ms).await;
-    clock.set(requeued.lease.expires_ms.saturating_add(1));
+    clock.advance_past(requeued.lease.expires_ms()).await;
+    clock.set(requeued.lease.expires_ms().saturating_add(1));
     let requeued_second = store
         .claim("w", 100, &Default::default())
         .await
         .unwrap()
         .expect("first sealed-cycle recovery");
-    clock.advance_past(requeued_second.lease.expires_ms).await;
-    clock.set(requeued_second.lease.expires_ms.saturating_add(1));
+    clock.advance_past(requeued_second.lease.expires_ms()).await;
+    clock.set(requeued_second.lease.expires_ms().saturating_add(1));
     let requeued_third = store
         .claim("w", 100, &Default::default())
         .await
         .unwrap()
         .expect("second sealed-cycle recovery");
-    clock.advance_past(requeued_third.lease.expires_ms).await;
+    clock.advance_past(requeued_third.lease.expires_ms()).await;
     assert_eq!(
         store
-            .quarantine_retry_exhausted(2, requeued_third.lease.expires_ms.saturating_add(1),)
+            .quarantine_retry_exhausted(2, requeued_third.lease.expires_ms().saturating_add(1),)
             .await
             .unwrap(),
         1
@@ -2118,7 +2118,7 @@ pub async fn assert_cancel<S: awaken_dispatch::ControlDispatch>(
     store
         .settle(
             &RunId("run-1".to_string()),
-            cancelled.lease.epoch,
+            cancelled.lease.epoch(),
             awaken_dispatch::DispatchOutcome::Done,
             &[],
         )
@@ -2177,7 +2177,7 @@ pub async fn assert_cancel<S: awaken_dispatch::ControlDispatch>(
     assert!(reclaimed_guard.cancellation_requested(), "C2/E1");
     drop(reclaimed_guard);
     assert!(
-        reclaimed.lease.epoch >= 3,
+        reclaimed.lease.epoch() >= 3,
         "revoke and re-claim both advance the fence"
     );
     assert_eq!(
@@ -2196,7 +2196,7 @@ pub async fn assert_cancel<S: awaken_dispatch::ControlDispatch>(
     store
         .settle(
             &RunId("run-2".to_string()),
-            reclaimed.lease.epoch,
+            reclaimed.lease.epoch(),
             awaken_dispatch::DispatchOutcome::Done,
             &[],
         )
@@ -2241,7 +2241,7 @@ pub async fn assert_cancel<S: awaken_dispatch::ControlDispatch>(
     store
         .settle(
             &RunId("run-3".to_string()),
-            awaiting_cancel.lease.epoch,
+            awaiting_cancel.lease.epoch(),
             awaken_dispatch::DispatchOutcome::Done,
             &[],
         )
@@ -2299,7 +2299,7 @@ pub async fn assert_cancel<S: awaken_dispatch::ControlDispatch>(
         store
             .settle(
                 &RunId(run.to_string()),
-                claimed.lease.epoch,
+                claimed.lease.epoch(),
                 awaken_dispatch::DispatchOutcome::Done,
                 &[],
             )
@@ -2411,10 +2411,10 @@ pub async fn assert_priority_dedupe_gc<S: awaken_dispatch::ControlDispatch>(
         .await
         .unwrap()
         .expect("poison claim");
-    clock.advance_past(poison.lease.expires_ms).await;
+    clock.advance_past(poison.lease.expires_ms()).await;
     assert_eq!(
         store
-            .quarantine_retry_exhausted(0, poison.lease.expires_ms.saturating_add(1))
+            .quarantine_retry_exhausted(0, poison.lease.expires_ms().saturating_add(1))
             .await
             .unwrap(),
         1
@@ -2508,7 +2508,7 @@ pub async fn assert_relinquish_claim<S: awaken_dispatch::ControlDispatch>(
         .await
         .unwrap()
         .expect("R1 released Run is immediately claimable");
-    assert_eq!(replacement.lease.epoch, first.lease.epoch + 1);
+    assert_eq!(replacement.lease.epoch(), first.lease.epoch() + 1);
     assert_eq!(
         store.relinquish_claim(&first_claim).await.unwrap(),
         SettleOutcome::Fenced,
@@ -2588,12 +2588,12 @@ pub async fn assert_defer_claim_is_request_local<
         .await
         .unwrap()
         .expect("unrelated lower-priority dispatch remains claimable");
-    assert_ne!(independent.lease.run_id, deferred_run);
+    assert_ne!(independent.lease.run_id(), &deferred_run);
     assert_eq!(
         store
             .settle(
-                &independent.lease.run_id,
-                independent.lease.epoch,
+                independent.lease.run_id(),
+                independent.lease.epoch(),
                 DispatchOutcome::Done,
                 &[],
             )
@@ -2614,7 +2614,7 @@ pub async fn assert_defer_claim_is_request_local<
         .await
         .unwrap()
         .expect("first cancellation is claimable immediately");
-    assert_eq!(cancelled.lease.run_id, deferred_run);
+    assert_eq!(cancelled.lease.run_id(), &deferred_run);
     assert!(cancelled.cancellation_requested);
 
     // Causes: C1 a first cancellation clears the old delay; C2 the resulting
@@ -2658,7 +2658,7 @@ pub async fn assert_defer_claim_is_request_local<
         .await
         .unwrap()
         .expect("D3 cancelled retry becomes due at the exact deadline");
-    assert_eq!(retry.lease.run_id, deferred_run, "D3");
+    assert_eq!(retry.lease.run_id(), &deferred_run, "D3");
     assert!(retry.cancellation_requested, "D3");
 
     // D4 cause/effect interaction: the cancelled high-priority row fails again
@@ -2684,7 +2684,8 @@ pub async fn assert_defer_claim_is_request_local<
         .unwrap()
         .expect("D4 cancelled backoff cannot hide independent runnable work");
     assert_eq!(
-        ready.lease.run_id, independent_retry_id,
+        ready.lease.run_id(),
+        &independent_retry_id,
         "D4 exact independent winner"
     );
     assert!(
@@ -2810,8 +2811,8 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::ControlDispat
         SettleOutcome::Fenced,
         "A3 outcome cannot erase the quiescence fact"
     );
-    clock.advance_past(first.lease.expires_ms).await;
-    let after_expiry = first.lease.expires_ms.saturating_add(1);
+    clock.advance_past(first.lease.expires_ms()).await;
+    let after_expiry = first.lease.expires_ms().saturating_add(1);
     assert_eq!(
         store
             .quarantine_retry_exhausted(0, after_expiry)
@@ -2943,9 +2944,9 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::ControlDispat
         AttemptAdmission::Applied,
         "A9 predecessor occupies the physical slot"
     );
-    let replacement_now = predecessor.lease.expires_ms.saturating_add(1);
+    let replacement_now = predecessor.lease.expires_ms().saturating_add(1);
     clock.set(replacement_now);
-    clock.advance_past(predecessor.lease.expires_ms).await;
+    clock.advance_past(predecessor.lease.expires_ms()).await;
     clock.set(replacement_now);
     let replacement = store
         .claim("owner-e", DEFAULT_LEASE_MS, &Default::default())
@@ -3118,10 +3119,10 @@ pub async fn assert_dead_letter_ttl_gc<S: awaken_dispatch::ControlDispatch>(
         .await
         .unwrap()
         .expect("dead-letter source claim");
-    clock.advance_past(claimed.lease.expires_ms).await;
+    clock.advance_past(claimed.lease.expires_ms()).await;
     assert_eq!(
         store
-            .quarantine_retry_exhausted(0, claimed.lease.expires_ms.saturating_add(1))
+            .quarantine_retry_exhausted(0, claimed.lease.expires_ms().saturating_add(1))
             .await
             .unwrap(),
         1
@@ -3196,7 +3197,7 @@ pub async fn assert_supersession<S: awaken_dispatch::ControlDispatch>(
     store
         .settle(
             &RunId("new".to_string()),
-            newest.lease.epoch,
+            newest.lease.epoch(),
             DispatchOutcome::Done,
             &[],
         )
@@ -3298,6 +3299,7 @@ pub async fn assert_idle_thread_inbox<S: awaken_dispatch::ControlDispatch>(
 /// | LR5 | exact active attempt | revoked by cancel | cancelled row | E3 |
 /// | LR6 | wrong owner or epoch | revoked by cancel | cancelled row | E2 |
 /// | LR7 | cancellation worker | current | cancelled row | E1 |
+/// | LR8 | match | current, expired but unreclaimed | original | E1, deadline may remain expired |
 ///
 /// Constraint: `lease_epoch` is the same fencing authority used by commit and
 /// settlement; renewal cannot infer exact ownership from a reusable owner name.
@@ -3334,7 +3336,7 @@ pub async fn assert_lease_renewal<S: awaken_dispatch::ControlDispatch>(
     // the host takes, so it keeps a deadline that is already in the past.
     const HELD_LEASE_MS: u64 = 30_000;
     const EXPIRING_LEASE_MS: u64 = 1;
-    let renew_at = first.lease.expires_ms.saturating_sub(40);
+    let renew_at = first.lease.expires_ms().saturating_sub(40);
     clock.advance_past(renew_at.saturating_sub(1)).await;
     clock.set(renew_at);
     assert_eq!(
@@ -3348,8 +3350,8 @@ pub async fn assert_lease_renewal<S: awaken_dispatch::ControlDispatch>(
         awaken_dispatch::LeaseRenewalOutcome::Current,
         "LR1/E1 exact current claim renews",
     );
-    clock.advance_past(first.lease.expires_ms).await;
-    clock.set(first.lease.expires_ms.saturating_add(1));
+    clock.advance_past(first.lease.expires_ms()).await;
+    clock.set(first.lease.expires_ms().saturating_add(1));
     assert!(
         store
             .claim("owner-b", 100, &Default::default(),)
@@ -3359,14 +3361,14 @@ pub async fn assert_lease_renewal<S: awaken_dispatch::ControlDispatch>(
         "a renewed lease is not yet expired"
     );
     // A non-owner cannot renew.
-    clock.set(first.lease.expires_ms.saturating_add(2));
+    clock.set(first.lease.expires_ms().saturating_add(2));
     assert_eq!(
         store
             .renew_lease(
                 &awaken_dispatch::RunClaim {
                     run_id: run.clone(),
                     owner: "owner-b".into(),
-                    epoch: first.lease.epoch,
+                    epoch: first.lease.epoch(),
                 },
                 100,
             )
@@ -3381,7 +3383,7 @@ pub async fn assert_lease_renewal<S: awaken_dispatch::ControlDispatch>(
     // it to the later of the two, on every backend, so the owner can shorten its
     // own lease; asserting that here is what lets the next arm hold without a
     // timing window.
-    clock.set(first.lease.expires_ms.saturating_add(3));
+    clock.set(first.lease.expires_ms().saturating_add(3));
     assert_eq!(
         store
             .renew_lease(
@@ -3396,20 +3398,36 @@ pub async fn assert_lease_renewal<S: awaken_dispatch::ControlDispatch>(
 
     // Once the renewed lease expires, recovery reclaims for the new owner.
     clock
-        .advance_past(first.lease.expires_ms.saturating_add(100))
+        .advance_past(first.lease.expires_ms().saturating_add(100))
         .await;
-    clock.set(first.lease.expires_ms.saturating_add(101));
+    clock.set(first.lease.expires_ms().saturating_add(101));
+    // LR8 causes: the short deadline has passed, but no successor claimed the
+    // row; the original Run/owner/epoch still matches. E1 renewal is Current
+    // under that row CAS even though claim_is_current is false. A zero TTL
+    // writes an already-expired deadline, preserving the next recovery arm.
+    // This shared case executes against Memory, SQLite and real PostgreSQL;
+    // Lease::is_live_at/renewed_to must not replace the store admission rule.
+    let expired_claim = awaken_dispatch::RunClaim::from(&first.lease);
+    assert!(
+        !store.claim_is_current(&expired_claim).await.unwrap(),
+        "LR8 expired observation"
+    );
+    assert_eq!(
+        store.renew_lease(&expired_claim, 0).await.unwrap(),
+        awaken_dispatch::LeaseRenewalOutcome::Current,
+        "LR8/E1 expired but unreclaimed exact claim still renews",
+    );
     let recovered = store
         .claim("owner-b", 100, &Default::default())
         .await
         .unwrap()
         .expect("LR2 a different owner recovers the expired lease");
-    assert_eq!(recovered.lease.owner, "owner-b");
+    assert_eq!(recovered.lease.owner(), "owner-b");
     assert_eq!(
         store
             .settle(
                 &run,
-                recovered.lease.epoch,
+                recovered.lease.epoch(),
                 awaken_dispatch::DispatchOutcome::Done,
                 &[],
             )
@@ -3423,7 +3441,7 @@ pub async fn assert_lease_renewal<S: awaken_dispatch::ControlDispatch>(
         .enqueue(RunDispatch::new(activation("run-same-owner-epoch")))
         .await
         .unwrap();
-    let same_owner_start = recovered.lease.expires_ms.saturating_add(1);
+    let same_owner_start = recovered.lease.expires_ms().saturating_add(1);
     clock.advance_past(same_owner_start).await;
     clock.set(same_owner_start);
     let old = store
@@ -3431,7 +3449,7 @@ pub async fn assert_lease_renewal<S: awaken_dispatch::ControlDispatch>(
         .await
         .unwrap()
         .expect("LR3 original same-owner claim");
-    let replacement_at = old.lease.expires_ms.saturating_add(1);
+    let replacement_at = old.lease.expires_ms().saturating_add(1);
     clock.advance_past(replacement_at).await;
     clock.set(replacement_at);
     let replacement = store
@@ -3440,7 +3458,7 @@ pub async fn assert_lease_renewal<S: awaken_dispatch::ControlDispatch>(
         .unwrap()
         .expect("LR3 same owner string recovers under a new epoch");
     assert!(
-        replacement.lease.epoch > old.lease.epoch,
+        replacement.lease.epoch() > old.lease.epoch(),
         "LR3 precondition"
     );
     clock.set(replacement_at);
@@ -3466,7 +3484,7 @@ pub async fn assert_lease_renewal<S: awaken_dispatch::ControlDispatch>(
         store
             .settle(
                 &same_owner_run,
-                replacement.lease.epoch,
+                replacement.lease.epoch(),
                 awaken_dispatch::DispatchOutcome::Done,
                 &[],
             )
@@ -3746,11 +3764,11 @@ pub async fn assert_concurrent_recovery_yields_one_winner<S>(
         .await
         .unwrap()
         .expect("A claims");
-    assert_eq!(a.lease.epoch, 1);
+    assert_eq!(a.lease.epoch(), 1);
 
     // Two workers race to recover the one expired lease at t=200.
-    clock.advance_past(a.lease.expires_ms).await;
-    let recovery_now = a.lease.expires_ms.saturating_add(1);
+    clock.advance_past(a.lease.expires_ms()).await;
+    let recovery_now = a.lease.expires_ms().saturating_add(1);
     clock.set(recovery_now);
     let s1 = store.clone();
     let s2 = store.clone();
@@ -3774,7 +3792,8 @@ pub async fn assert_concurrent_recovery_yields_one_winner<S>(
         "exactly one worker recovers the expired lease (no double ownership)"
     );
     assert_eq!(
-        winners[0].lease.epoch, 2,
+        winners[0].lease.epoch(),
+        2,
         "the recovery re-claim bumps the fence 1 -> 2"
     );
 }

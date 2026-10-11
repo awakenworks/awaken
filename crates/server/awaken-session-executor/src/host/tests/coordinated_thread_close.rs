@@ -123,7 +123,7 @@ async fn failed_child_boundary_cancels_raced_follow_up_without_fencing_its_own_s
     let settled = dispatch
         .settle(
             &failed_run,
-            current_claim.lease.epoch,
+            current_claim.lease.epoch(),
             DispatchOutcome::Done,
             &[],
         )
@@ -141,7 +141,7 @@ async fn failed_child_boundary_cancels_raced_follow_up_without_fencing_its_own_s
     dispatch
         .settle(
             &follow_up_run,
-            cancellation.lease.epoch,
+            cancellation.lease.epoch(),
             DispatchOutcome::Done,
             &[],
         )
