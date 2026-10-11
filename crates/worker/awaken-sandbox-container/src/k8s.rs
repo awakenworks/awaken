@@ -1282,25 +1282,15 @@ impl K8sRuntime {
         admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
     ) -> Result<(), RuntimeError> {
         const DELETE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
-        const DELETE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
-        let deadline = awaken_time::mono::MonoDeadline::after(DELETE_TIMEOUT);
-        loop {
-            admit()?;
-            let observed = self.pods().get(pod_name).await;
-            admit()?;
-            match observed {
-                Err(error) if api_not_found(&error) => return Ok(()),
-                Err(error) => return Err(backend(error)),
-                Ok(pod) if pod.metadata.uid.as_deref() != Some(pod_uid) => return Ok(()),
-                Ok(_) if deadline.has_passed() => {
-                    return Err(backend(format!(
-                        "Kubernetes Sandbox Pod `{pod_name}` incarnation `{pod_uid}` was not deleted within {}s",
-                        DELETE_TIMEOUT.as_secs()
-                    )));
-                }
-                Ok(_) => tokio::time::sleep(DELETE_POLL).await,
-            }
-        }
+        lifecycle::await_exact_deletion(
+            &self.pods(),
+            pod_name,
+            pod_uid,
+            DELETE_TIMEOUT,
+            "Kubernetes Sandbox Pod",
+            admit,
+        )
+        .await
     }
 
     async fn begin_exact_pod_delete(
