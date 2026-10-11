@@ -29,6 +29,7 @@ async fn live_session_usage_projects_the_same_clock_that_opened_its_root_interva
         generation: None,
         idle_since_unix_ms: None,
     };
+    let mut session = SessionAggregate::try_from(session).expect("valid admission fixture");
     SessionApplication::open_activity_on_snapshot(
         &mut session,
         None,
@@ -38,7 +39,7 @@ async fn live_session_usage_projects_the_same_clock_that_opened_its_root_interva
         0,
     )
     .unwrap();
-    create(repo.as_ref(), session).await;
+    create(repo.as_ref(), session.into_snapshot()).await;
     let app = application(
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),

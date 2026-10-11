@@ -191,6 +191,8 @@ fn check_observed_commit(old: Option<u64>, now: u64, has_fact: bool, pending_onc
         pending_once,
         result,
     };
+    let mut session = awaken_session_state_contract::SessionAggregate::try_from(session)
+        .expect("valid observed candidate");
     {
         let mut future = std::pin::pin!(commit_observed_snapshot(
             &port,
@@ -216,7 +218,7 @@ fn check_observed_commit(old: Option<u64>, now: u64, has_fact: bool, pending_onc
         );
     }
     assert_eq!(port.calls.load(Ordering::SeqCst), 1, "R2 after resume");
-    assert_eq!(session, expected, "R1 full local candidate");
+    assert_eq!(session.into_snapshot(), expected, "R1 full local candidate");
 }
 
 #[tokio::test]
@@ -317,7 +319,8 @@ async fn update_replay_keeps_the_original_atomic_receipt_after_a_later_root_writ
                 let advanced = app
                     .commit_session_snapshot_with_outcome(
                         "workspace",
-                        later,
+                        awaken_session_state_contract::SessionAggregate::try_from(later)
+                            .expect("valid test snapshot"),
                         "independent-after-update",
                         Vec::new(),
                     )

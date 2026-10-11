@@ -14,8 +14,7 @@ impl SessionApplication {
         intent: &SessionResourceMaterializationIntent,
     ) -> Result<String, SessionRealizationControlFailure> {
         let session = self
-            .session_repository()
-            .get(intent.session_id())
+            .session_aggregate(intent.session_id())
             .await
             .map_err(repository_control)?;
         if session.is_terminal() {

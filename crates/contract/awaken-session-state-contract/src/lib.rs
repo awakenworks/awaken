@@ -1,5 +1,13 @@
 //! Durable Session aggregate state and pure transition laws.
 
+mod aggregate;
+pub use aggregate::{
+    SessionActivityAdmissionPlan, SessionActivityOperations, SessionAggregate,
+    SessionAggregateCommandError, SessionAssignmentOperations, SessionBudgetOperations,
+    SessionCleanupOperations, SessionConfigurationOperations, SessionEnvironmentOperations,
+    SessionEventsOperations, SessionLifecycleOperations, SessionMcpOperations,
+    SessionResourcesOperations, session_activity_open_plan, session_root_update_observation,
+};
 mod environment;
 mod event_history;
 pub use event_history::SessionEventHistory;

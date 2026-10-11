@@ -10,7 +10,7 @@
 
 use awaken_session_configuration_contract::EnvironmentIdleRetentionMode;
 use awaken_session_state_contract::{
-    PersistedSession, SessionEnvironmentState, SessionEnvironmentTransitionError,
+    PersistedSession, SessionAggregate, SessionEnvironmentState, SessionEnvironmentTransitionError,
     SessionExecutionState, SuspendPhase,
 };
 use awaken_session_types::RunError;
@@ -112,8 +112,7 @@ impl SessionApplication {
         operation: &awaken_session_state_contract::SessionEnvironmentOperation,
     ) -> Result<String, awaken_session_realization_contract::SessionRealizationControlFailure> {
         let session = self
-            .session_repository()
-            .get(session_id)
+            .session_aggregate(session_id)
             .await
             .map_err(repository_control)?;
         session
@@ -169,7 +168,7 @@ impl SessionApplication {
     async fn commit_continuation(
         &self,
         owner_scope: &str,
-        session: PersistedSession,
+        session: SessionAggregate,
         reason: &str,
     ) -> Result<PersistedSession, SessionContinuationError> {
         self.commit_session_snapshot_with_outcome(owner_scope, session, reason, Vec::new())
@@ -192,8 +191,7 @@ impl SessionApplication {
             .await
             .map_err(SessionContinuationError::mutation)?;
         let mut session = self
-            .session_repository()
-            .get(session_id)
+            .session_aggregate(session_id)
             .await
             .map_err(|error| SessionContinuationError::Repository(error.to_string()))?;
         if session.is_terminal() {
@@ -229,13 +227,9 @@ impl SessionApplication {
                     ) =>
             {
                 validate_suspend_memory_preflight(&session)?;
-                session.environment.begin_suspend_at(
-                    &owner_scope,
-                    session_id,
-                    session.activity_epoch,
-                    session.realization.clone(),
-                    now_unix_ms,
-                )?;
+                session
+                    .environment()
+                    .begin_suspend_at(&owner_scope, now_unix_ms)?;
                 self.commit_continuation(&owner_scope, session, "environment-suspend-intent")
                     .await?;
                 Ok(true)
@@ -260,11 +254,11 @@ impl SessionApplication {
                     )
                     .await?;
                 session
-                    .environment
+                    .environment()
                     .record_quiescence(&receipt, &expected_mcp_generations)?;
                 session
-                    .mcp
-                    .require_reprojection_after_quiescence(session_id, &receipt.mcp_generations)
+                    .mcp()
+                    .require_reprojection_after_quiescence(&receipt.mcp_generations)
                     .map_err(|error| {
                         SessionContinuationError::Repository(format!(
                             "MCP quiescence transition failed: {error}"
@@ -304,7 +298,7 @@ impl SessionApplication {
                         "Session environment checkpoint exceeded its frozen duration bound",
                     ))
                 })??;
-                session.environment.record_checkpoint(&receipt)?;
+                session.environment().record_checkpoint(&receipt)?;
                 self.commit_continuation(&owner_scope, session, "environment-checkpointed")
                     .await?;
                 Ok(true)
@@ -334,6 +328,7 @@ impl SessionApplication {
                     )
                     .await?;
                 session
+                    .environment()
                     .record_source_release_prepared(&receipt)
                     .map_err(|error| {
                         SessionContinuationError::Runtime(RunError::unavailable_classified(
@@ -364,7 +359,7 @@ impl SessionApplication {
                 let receipt = environment_runtime
                     .dispose_prepared_checkpoint_source(session_id.as_str(), &disposal)
                     .await?;
-                session.environment.complete_suspend(&receipt)?;
+                session.environment().complete_suspend(&receipt)?;
                 self.commit_continuation(&owner_scope, session, "environment-hibernated")
                     .await?;
                 Ok(true)
@@ -407,8 +402,7 @@ impl SessionApplication {
                 .await
                 .map_err(SessionContinuationError::mutation)?;
             let mut session = self
-                .session_repository()
-                .get(session_id)
+                .session_aggregate(session_id)
                 .await
                 .map_err(|error| SessionContinuationError::Repository(error.to_string()))?;
             if session.is_terminal() {
@@ -424,13 +418,13 @@ impl SessionApplication {
                 )?;
             }
             match session.environment.clone() {
-                SessionEnvironmentState::Unmaterialized => return Ok(session),
+                SessionEnvironmentState::Unmaterialized => return Ok(session.into_snapshot()),
                 SessionEnvironmentState::Resident { .. } => {
                     if !self.requires_external_realization(&session) {
                         self.synchronize_resident_environment_projection(&owner_scope, &session)
                             .await?;
                     }
-                    return Ok(session);
+                    return Ok(session.into_snapshot());
                 }
                 SessionEnvironmentState::Suspending { .. } => {
                     self.reconcile_environment_continuation(session_id, now_unix_ms)
@@ -447,7 +441,9 @@ impl SessionApplication {
                     environment_runtime
                         .delete_session_checkpoint(session_id.as_str(), &checkpoint)
                         .await?;
-                    session.environment = SessionEnvironmentState::Unmaterialized;
+                    session
+                        .environment()
+                        .discard_expired_checkpoint(now_unix_ms)?;
                     self.commit_continuation(
                         &owner_scope,
                         session,
@@ -456,16 +452,9 @@ impl SessionApplication {
                     .await?;
                 }
                 SessionEnvironmentState::Hibernated { .. } => {
-                    let next_epoch = session.activity_epoch.checked_add(1).ok_or_else(|| {
-                        SessionContinuationError::Repository("activity epoch exhausted".into())
-                    })?;
-                    session.environment.begin_restore(
-                        &owner_scope,
-                        session_id,
-                        next_epoch,
-                        session.realization.clone(),
-                        now_unix_ms,
-                    )?;
+                    session
+                        .environment()
+                        .begin_restore(&owner_scope, now_unix_ms)?;
                     self.commit_continuation(&owner_scope, session, "environment-restore-intent")
                         .await?;
                 }
@@ -477,7 +466,7 @@ impl SessionApplication {
                     let receipt = environment_runtime
                         .restore_checkpointed_session_environment(request)
                         .await?;
-                    session.environment.complete_restore(&receipt)?;
+                    session.environment().complete_restore(&receipt)?;
                     let committed = self
                         .commit_continuation(&owner_scope, session, "environment-restored")
                         .await?;

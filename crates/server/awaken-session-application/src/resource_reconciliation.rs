@@ -15,7 +15,7 @@ use awaken_session_resource_contract::{
     ResolvedInput, ResolvedInputSource, ResolvedSessionResources, SessionRealizationLease,
 };
 use awaken_session_state_contract::{
-    ActivationState, IdempotencyRecord, ManagedLifecycleFact, PersistedSession,
+    ActivationState, IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionAggregate,
     SessionExecutionState, SessionMutation, SessionMutationPayload, SessionMutationResult,
     SessionTombstone,
 };
@@ -55,24 +55,6 @@ enum ResourceSettlement {
     Commit,
     Rollback(String),
     RetryableFailure(String),
-}
-
-/// Compose the aggregate's sole desired-slot selector and pending-amendment
-/// gate. Rotation never installs a pending manifest or alters an attempted one.
-fn replace_desired_repository_input(
-    resources: &mut awaken_session_state_contract::SessionResourceState,
-    session_id: &awaken_session_types::SessionId,
-    input: ResolvedInput,
-) -> Result<(), SessionPreparationError> {
-    let desired = resources.desired().replace(input).map_err(internal)?;
-    if resources.pending.is_some() {
-        resources
-            .revise_unattempted_pending(session_id, desired)
-            .map_err(|_| SessionPreparationError::Conflict)?;
-    } else {
-        resources.active = desired;
-    }
-    Ok(())
 }
 
 /// Root-CAS retries may advance only this command's credential pin/observation,
@@ -256,6 +238,32 @@ pub(crate) fn internal(error: impl std::fmt::Display) -> SessionPreparationError
     SessionPreparationError::Rejected(RunError::internal(error.to_string()))
 }
 
+fn preflight_repository_credential_rotation(
+    root: &SessionAggregate,
+    input: ResolvedInput,
+) -> Result<(), SessionPreparationError> {
+    root.clone()
+        .resources()
+        .replace_desired_repository_credential(input)
+        .map_err(|_| SessionPreparationError::Conflict)
+}
+
+async fn reconcile_terminal_resource_candidate(
+    application: &SessionApplication,
+    owner_scope: &str,
+    session: SessionAggregate,
+) -> Result<SessionAggregate, SessionPreparationError> {
+    match application
+        .release_terminal_resources(owner_scope, session.session_id.as_str())
+        .await?
+    {
+        Some(committed) => {
+            crate::mutation::aggregate_from_snapshot(committed).map_err(repository_preparation)
+        }
+        None => Ok(session),
+    }
+}
+
 impl SessionApplication {
     fn terminal_cleanup_lease_matches(
         session: &PersistedSession,
@@ -287,8 +295,7 @@ impl SessionApplication {
         SessionRealizationControlFailure,
     > {
         let session = self
-            .session_repository()
-            .get(session_id)
+            .session_aggregate(session_id)
             .await
             .map_err(repository_control)?;
         if !Self::terminal_cleanup_lease_matches(&session, lease) {
@@ -311,7 +318,7 @@ impl SessionApplication {
             .await
             .map_err(SessionRealizationControlFailure::Unavailable)?;
         let session = admission
-            .enter(|| self.session_repository().get(session_id))
+            .enter(|| self.session_aggregate(session_id))
             .await
             .map_err(repository_control)?;
         if !Self::terminal_cleanup_lease_matches(&session, lease) {
@@ -448,8 +455,7 @@ impl SessionApplication {
     > {
         let session_id = &intent.effect().command.session_id;
         let session = self
-            .session_repository()
-            .get(session_id)
+            .session_aggregate(session_id)
             .await
             .map_err(repository_control)?;
         self.require_current_live_terminal_generation(&session)?;
@@ -486,16 +492,15 @@ impl SessionApplication {
         Option<awaken_session_realization_contract::SessionRepositoryPublicationProjection>,
         SessionRealizationControlFailure,
     > {
-        let session =
-            self.session_repository()
-                .get(session_id)
-                .await
-                .map_err(|error| match error {
-                    awaken_session_state_contract::SessionRepositoryError::NotFound => {
-                        SessionRealizationControlFailure::NotFound
-                    }
-                    error => SessionRealizationControlFailure::Unavailable(error.to_string()),
-                })?;
+        let session = self
+            .session_aggregate(session_id)
+            .await
+            .map_err(|error| match error {
+                awaken_session_state_contract::SessionRepositoryError::NotFound => {
+                    SessionRealizationControlFailure::NotFound
+                }
+                error => SessionRealizationControlFailure::Unavailable(error.to_string()),
+            })?;
         // The asserted publication generation may predate a same-generation
         // renewal. Starting a new credential/source effect still requires the
         // current root lease to be live; its exact readback travels with the
@@ -576,16 +581,15 @@ impl SessionApplication {
             let owner_scope = self.owner(session_id).await.map_err(|error| {
                 SessionRealizationControlFailure::Unavailable(error.to_string())
             })?;
-            let mut session = self
-                .session_repository()
-                .get(session_id)
-                .await
-                .map_err(|error| match error {
-                    awaken_session_state_contract::SessionRepositoryError::NotFound => {
-                        SessionRealizationControlFailure::NotFound
-                    }
-                    error => SessionRealizationControlFailure::Unavailable(error.to_string()),
-                })?;
+            let mut session =
+                self.session_aggregate(session_id)
+                    .await
+                    .map_err(|error| match error {
+                        awaken_session_state_contract::SessionRepositoryError::NotFound => {
+                            SessionRealizationControlFailure::NotFound
+                        }
+                        error => SessionRealizationControlFailure::Unavailable(error.to_string()),
+                    })?;
             if !session.is_terminal() {
                 return Err(SessionRealizationControlFailure::Invalid(
                     "Session is not terminal".into(),
@@ -598,11 +602,13 @@ impl SessionApplication {
                 awaken_session_state_contract::SessionRepositoryPublicationEffect::Published(
                     receipt,
                 ) => session
-                    .terminal_cleanup
-                    .record_repository_publication_receipt(session_id, receipt),
+                    .cleanup()
+                    .record_repository_publication_receipt(receipt),
                 awaken_session_state_contract::SessionRepositoryPublicationEffect::Rejected(
                     rejection,
-                ) => session.record_repository_publication_rejection(rejection),
+                ) => session
+                    .lifecycle()
+                    .record_repository_publication_rejection(rejection),
             }
             .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?;
             if changed {
@@ -650,8 +656,7 @@ impl SessionApplication {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self.owner(&session_id).await.map_err(mutation_control)?;
             let mut session = self
-                .session_repository()
-                .get(&session_id)
+                .session_aggregate(&session_id)
                 .await
                 .map_err(repository_control)?;
             if !session.is_terminal() {
@@ -708,6 +713,7 @@ impl SessionApplication {
                 None
             };
             let changed = session
+                .cleanup()
                 .record_terminal_cleanup_preparation(
                     &owner_scope,
                     lease,
@@ -759,11 +765,11 @@ impl SessionApplication {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self.owner(&session_id).await.map_err(mutation_control)?;
             let mut session = self
-                .session_repository()
-                .get(&session_id)
+                .session_aggregate(&session_id)
                 .await
                 .map_err(repository_control)?;
             let changed = session
+                .cleanup()
                 .record_terminal_cleanup_disposal(
                     &owner_scope,
                     lease,
@@ -843,10 +849,10 @@ impl SessionApplication {
     pub(crate) async fn commit_resource_snapshot(
         &self,
         owner_scope: &str,
-        candidate: PersistedSession,
+        candidate: SessionAggregate,
         operation: &str,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
-    ) -> Result<PersistedSession, SessionMutationError> {
+    ) -> Result<SessionAggregate, SessionMutationError> {
         let session_id = candidate.session_id.clone();
         self.synchronize_resource_references(owner_scope, &candidate)
             .await
@@ -860,7 +866,8 @@ impl SessionApplication {
             )
             .await
         {
-            Ok(commit) => Ok(commit.into_session()),
+            Ok(commit) => crate::mutation::aggregate_from_snapshot(commit.into_session())
+                .map_err(repository_failure),
             Err(error) => {
                 self.repair_resource_references(owner_scope, &session_id)
                     .await;
@@ -872,7 +879,7 @@ impl SessionApplication {
     async fn commit_resource_snapshot_with_record(
         &self,
         owner_scope: &str,
-        candidate: PersistedSession,
+        candidate: SessionAggregate,
         idempotency: IdempotencyRecord,
     ) -> Result<crate::SnapshotCommit, SessionMutationError> {
         let session_id = candidate.session_id.clone();
@@ -897,7 +904,7 @@ impl SessionApplication {
         owner_scope: &str,
         session_id: &awaken_session_types::SessionId,
     ) {
-        let authoritative = self.session_repository().get(session_id).await;
+        let authoritative = self.session_aggregate(session_id).await;
         let repair = match authoritative {
             Ok(session) => {
                 self.synchronize_resource_references(owner_scope, &session)
@@ -938,8 +945,7 @@ impl SessionApplication {
         material: CredentialMaterialInput,
     ) -> Result<PersistedSession, SessionPreparationError> {
         let mut persisted = self
-            .session_repository()
-            .get(session_id)
+            .session_aggregate(session_id)
             .await
             .map_err(repository_preparation)?;
         if persisted.is_terminal() {
@@ -991,11 +997,7 @@ impl SessionApplication {
         })?;
         // Run the existing exact pending gate BEFORE the Vault effect. The
         // clone is a preflight only; the durable root remains the sole owner.
-        replace_desired_repository_input(
-            &mut persisted.resources.clone(),
-            session_id,
-            original_input.clone(),
-        )?;
+        preflight_repository_credential_rotation(&persisted, original_input.clone())?;
         self.resource_plaintext_holder(&persisted)?;
         let credential_target =
             awaken_session_resource_contract::repository_transport_credential_target(&remote_url)
@@ -1064,7 +1066,10 @@ impl SessionApplication {
                     .now_ms()
                     .max(input.updated_at_unix_ms.unwrap_or(0)),
             );
-            replace_desired_repository_input(&mut persisted.resources, session_id, input)?;
+            persisted
+                .resources()
+                .replace_desired_repository_credential(input)
+                .map_err(|_| SessionPreparationError::Conflict)?;
             match self
                 .commit_session_snapshot_with_outcome(
                     owner_scope,
@@ -1077,8 +1082,7 @@ impl SessionApplication {
                 Ok(commit) => return Ok(commit.into_session()),
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
                     persisted = self
-                        .session_repository()
-                        .get(session_id)
+                        .session_aggregate(session_id)
                         .await
                         .map_err(repository_preparation)?;
                 }
@@ -1098,11 +1102,10 @@ impl SessionApplication {
         resource_revision: u64,
         desired: &ResolvedSessionResources,
         settlement: ResourceSettlement,
-    ) -> Result<PersistedSession, SessionPreparationError> {
+    ) -> Result<SessionAggregate, SessionPreparationError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let mut current = self
-                .session_repository()
-                .get(session_id)
+                .session_aggregate(session_id)
                 .await
                 .map_err(repository_preparation)?;
             if current.resources.revision != resource_revision
@@ -1112,19 +1115,19 @@ impl SessionApplication {
             }
             let operation = match &settlement {
                 ResourceSettlement::Commit => {
-                    current.resources.commit().map_err(internal)?;
+                    current.resources().commit().map_err(internal)?;
                     "resource-reconcile-active"
                 }
                 ResourceSettlement::Rollback(error) => {
                     current
-                        .resources
+                        .resources()
                         .rollback(error.clone())
                         .map_err(internal)?;
                     "resource-reconcile-rollback"
                 }
                 ResourceSettlement::RetryableFailure(error) => {
                     current
-                        .resources
+                        .resources()
                         .note_retryable_failure(error.clone())
                         .map_err(internal)?;
                     "resource-reconcile-failed"
@@ -1146,9 +1149,9 @@ impl SessionApplication {
     async fn start_resource_reconciliation(
         &self,
         owner_scope: &str,
-        mut session: PersistedSession,
+        mut session: SessionAggregate,
         desired: &ResolvedSessionResources,
-    ) -> Result<PersistedSession, SessionPreparationError> {
+    ) -> Result<SessionAggregate, SessionPreparationError> {
         let resource_revision = session.resources.revision;
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             if session.resources.revision != resource_revision
@@ -1157,7 +1160,7 @@ impl SessionApplication {
                 return Err(SessionPreparationError::Conflict);
             }
             let mut candidate = session.clone();
-            candidate.resources.start_attempt().map_err(internal)?;
+            candidate.resources().start_attempt().map_err(internal)?;
             match self
                 .commit_resource_snapshot(
                     owner_scope,
@@ -1170,8 +1173,7 @@ impl SessionApplication {
                 Ok(committed) => return Ok(committed),
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
                     session = self
-                        .session_repository()
-                        .get(&session.session_id)
+                        .session_aggregate(&session.session_id)
                         .await
                         .map_err(repository_preparation)?;
                 }
@@ -1269,7 +1271,7 @@ impl SessionApplication {
             |candidate| async move {
                 let mut result = SessionReconciliation::default();
                 let owner_scope = &candidate.workspace_id;
-                let session = match self.session_repository().get(&candidate.session_id).await {
+                let session = match self.session_aggregate(&candidate.session_id).await {
                     Ok(session) => session,
                     Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
                         return result;
@@ -1301,7 +1303,7 @@ impl SessionApplication {
                     return result;
                 }
                 match self
-                    .reconcile_persisted_resources(owner_scope, session)
+                    .reconcile_persisted_resources(owner_scope, session.into_snapshot())
                     .await
                 {
                     Ok(session) => result.settled.push(session),
@@ -1356,8 +1358,12 @@ impl SessionApplication {
                 return Ok(session);
             }
         }
-        self.reconcile_prepared_resources(owner_scope, session)
-            .await
+        self.reconcile_prepared_resources(
+            owner_scope,
+            crate::mutation::aggregate_from_snapshot(session).map_err(repository_preparation)?,
+        )
+        .await
+        .map(SessionAggregate::into_snapshot)
     }
 
     /// Apply the Resource state machine only after credential migration has
@@ -1366,8 +1372,8 @@ impl SessionApplication {
     async fn reconcile_prepared_resources(
         &self,
         owner_scope: &str,
-        mut session: PersistedSession,
-    ) -> Result<PersistedSession, SessionPreparationError> {
+        mut session: SessionAggregate,
+    ) -> Result<SessionAggregate, SessionPreparationError> {
         let environment_runtime = self.runtime().environment();
 
         if !session.is_terminal() && self.requires_external_realization(&session) {
@@ -1492,7 +1498,7 @@ impl SessionApplication {
                 .await
                 .map_err(SessionPreparationError::Rejected)?;
             if session.resources.activations.is_empty() {
-                session.resources.adopt_legacy_active(&session_id);
+                session.resources().adopt_legacy_active();
                 session = self
                     .commit_resource_snapshot(
                         owner_scope,
@@ -1515,21 +1521,15 @@ impl SessionApplication {
             };
         }
 
-        match self
-            .release_terminal_resources(owner_scope, session_id.as_str())
-            .await?
-        {
-            Some(session) => Ok(session),
-            None => Ok(session),
-        }
+        reconcile_terminal_resource_candidate(self, owner_scope, session).await
     }
 
     async fn reconcile_repository_retirements(
         &self,
         owner_scope: &str,
-        mut session: PersistedSession,
+        mut session: SessionAggregate,
         cause: RepositoryRetirementCause,
-    ) -> Result<PersistedSession, SessionPreparationError> {
+    ) -> Result<SessionAggregate, SessionPreparationError> {
         let terminal_plan = (cause == RepositoryRetirementCause::TerminalPreparation)
             .then(|| session.resources.repository_retirements().to_vec());
         let mut terminal_index = 0;
@@ -1559,7 +1559,7 @@ impl SessionApplication {
             {
                 let mut candidate = session.clone();
                 candidate
-                    .resources
+                    .resources()
                     .complete_repository_retirement(&retirement);
                 session = self
                     .commit_resource_snapshot(
@@ -1605,7 +1605,7 @@ impl SessionApplication {
             }
             let mut candidate = session.clone();
             if !candidate
-                .resources
+                .resources()
                 .complete_repository_retirement(&retirement)
             {
                 return Err(internal(
@@ -1637,7 +1637,8 @@ impl SessionApplication {
                         // must re-enter with the cause derived from that root.
                         return Err(SessionPreparationError::Conflict);
                     }
-                    session = latest;
+                    session = crate::mutation::aggregate_from_snapshot(latest)
+                        .map_err(repository_preparation)?;
                 }
                 Err(error) => return Err(mutation_failure(error)),
             }
@@ -1652,15 +1653,15 @@ impl SessionApplication {
     async fn prepare_terminal_repository_participants(
         &self,
         owner_scope: &str,
-        mut session: PersistedSession,
+        mut session: SessionAggregate,
     ) -> Result<
         (
-            PersistedSession,
+            SessionAggregate,
             awaken_session_state_contract::SessionCleanupRepositoryPreparation,
         ),
         SessionPreparationError,
     > {
-        if session.resources.ensure_terminal_repository_retirements() {
+        if session.resources().ensure_terminal_repository_retirements() {
             session = self
                 .commit_resource_snapshot(
                     owner_scope,

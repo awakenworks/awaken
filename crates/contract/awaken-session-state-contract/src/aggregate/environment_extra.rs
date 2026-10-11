@@ -1,0 +1,66 @@
+use super::{
+    SandboxGeneration, SessionEnvironmentOperations, SessionEnvironmentReceiptError,
+    SessionEnvironmentState, SessionEnvironmentTransitionError,
+};
+
+impl SessionEnvironmentOperations<'_> {
+    /// Discard only an expired retained checkpoint after its external deletion
+    /// succeeded. The subsequent root CAS fences a concurrent newer generation.
+    pub fn discard_expired_checkpoint(
+        &mut self,
+        now: u64,
+    ) -> Result<bool, SessionEnvironmentTransitionError> {
+        match &self.aggregate.state.environment {
+            SessionEnvironmentState::Hibernated {
+                checkpoint,
+                generation,
+            } if checkpoint.expired_at(now) || generation.expired_at(now) => {
+                self.aggregate.state.environment = SessionEnvironmentState::Unmaterialized;
+                Ok(true)
+            }
+            SessionEnvironmentState::Hibernated { .. } => {
+                Err(SessionEnvironmentTransitionError::WrongPhase)
+            }
+            _ => Err(SessionEnvironmentTransitionError::NotHibernated),
+        }
+    }
+
+    /// Derive a missing binding generation from this root's immutable baseline,
+    /// never a caller-supplied environment or image fingerprint.
+    pub(super) fn install_binding_generation(
+        &mut self,
+        now: u64,
+    ) -> Result<(), SessionEnvironmentReceiptError> {
+        let state = &mut self.aggregate.state;
+        if state.environment.generation().is_some() {
+            return Ok(());
+        }
+        let baseline = state
+            .frozen_baseline()
+            .ok_or(SessionEnvironmentReceiptError::EnvironmentMismatch)?;
+        let retention_ms = baseline
+            .environment
+            .idle_retention
+            .retention_secs
+            .saturating_mul(1_000);
+        let expires = if retention_ms == 0 {
+            u64::MAX
+        } else {
+            now.saturating_add(retention_ms)
+        };
+        let environment = baseline.environment.config_fingerprint.0.clone();
+        let image = baseline
+            .environment
+            .prepared_image
+            .clone()
+            .unwrap_or_else(|| crate::stable_fingerprint(&baseline.environment.sandbox));
+        state.environment.assign_generation(SandboxGeneration::new(
+            &state.session_id,
+            now,
+            expires,
+            environment,
+            image,
+        ));
+        Ok(())
+    }
+}

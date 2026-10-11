@@ -1273,6 +1273,7 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
             .repo
             .get(session_id)
             .await
+                .and_then(crate::mutation::aggregate_from_snapshot)
             .map_err(session_repository_error)?;
         session
             .authorize_environment_effect(&owner, intent, self.clock.now_ms())
@@ -1295,57 +1296,23 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
                 .repo
                 .get(session_id)
                 .await
+                .and_then(crate::mutation::aggregate_from_snapshot)
                 .map_err(session_repository_error)?;
             let now_unix_ms = self.clock.now_ms();
             // The aggregate is the only receipt admission authority. It checks
             // phase, source binding, immutable Environment compatibility, and
             // the exact durable pending Resource transition before this adapter
             // may attempt the root CAS.
-            let changed = session
-                .try_apply_environment_receipt(&owner, &receipt, now_unix_ms)
+            let changed = session.environment().try_apply_environment_receipt(&owner, &receipt, now_unix_ms)
                 .map_err(Self::receipt_error)?;
             if !changed {
                 return Self::committed_authority(&session, &receipt);
             }
-            if session.environment.generation().is_none() {
-                let baseline = session.frozen_baseline().ok_or_else(|| {
-                    RunError::classified(
-                        "session_environment_receipt_rejected",
-                        "Environment binding requires a frozen Session baseline",
-                    )
-                })?;
-                let retention_ms = baseline
-                    .environment
-                    .idle_retention
-                    .retention_secs
-                    .saturating_mul(1_000);
-                let expires_at_unix_ms = if retention_ms == 0 {
-                    u64::MAX
-                } else {
-                    now_unix_ms.saturating_add(retention_ms)
-                };
-                let environment_fingerprint = baseline.environment.config_fingerprint.0.clone();
-                let base_image_fingerprint = baseline
-                    .environment
-                    .prepared_image
-                    .clone()
-                    .unwrap_or_else(|| {
-                        awaken_agent_contract::stable_fingerprint(&baseline.environment.sandbox)
-                    });
-                session.environment.assign_generation(
-                    awaken_session_state_contract::SandboxGeneration::new(
-                        session_id,
-                        now_unix_ms,
-                        expires_at_unix_ms,
-                        environment_fingerprint,
-                        base_image_fingerprint,
-                    ),
-                );
-            }
+
             Self::committed_authority(&session, &receipt)?;
             let expected_revision = session.revision;
             let payload_hash =
-                awaken_session_state_contract::SessionMutationPayload::Replace(session.clone())
+                awaken_session_state_contract::SessionMutationPayload::Replace(session.snapshot().clone())
                     .stable_hash();
             let idempotency = awaken_session_state_contract::IdempotencyRecord {
                 key: format!(

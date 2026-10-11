@@ -65,13 +65,12 @@ impl SessionApplication {
             return Err(SessionResourceManifestError::IdempotencyMismatch);
         }
         let session = self
-            .session_repository()
-            .get(session_id)
+            .session_aggregate(session_id)
             .await
             .map_err(repository_failure)
             .map_err(SessionResourceManifestError::mutation)?;
         self.converge_resource_manifest(SessionResourceManifestOutcome {
-            session,
+            session: session.into_snapshot(),
             command_revision: receipt.committed_revision,
             command_applied: false,
         })
@@ -136,8 +135,7 @@ impl SessionApplication {
             .await
             .map_err(SessionResourceManifestError::mutation)?;
         let mut session = self
-            .session_repository()
-            .get(session_id)
+            .session_aggregate(session_id)
             .await
             .map_err(repository_failure)
             .map_err(SessionResourceManifestError::mutation)?;
@@ -168,10 +166,10 @@ impl SessionApplication {
         if !unchanged {
             let result = if session.resources.pending.is_some() {
                 session
-                    .resources
-                    .revise_unattempted_pending(&session.session_id, desired.clone())
+                    .resources()
+                    .revise_unattempted_pending(desired.clone())
             } else {
-                session.resources.prepare(&session.session_id, desired)
+                session.resources().prepare(desired)
             };
             result.map_err(|error| match error {
                 awaken_session_state_contract::ResourceActivationError::Pending => {
@@ -196,7 +194,7 @@ impl SessionApplication {
             None if unchanged => {
                 let revision = session.revision;
                 return Ok(SessionResourceManifestOutcome {
-                    session,
+                    session: session.into_snapshot(),
                     command_revision: revision,
                     command_applied: false,
                 });
@@ -209,7 +207,8 @@ impl SessionApplication {
                     Vec::new(),
                 )
                 .await
-                .map_err(SessionResourceManifestError::mutation)?,
+                .map_err(SessionResourceManifestError::mutation)?
+                .into_snapshot(),
                 true,
             ),
         };
@@ -256,10 +255,13 @@ impl SessionApplication {
         let convergence = if outcome.session.resources.pending.is_none() {
             self.reconcile_repository_retirements(
                 &owner_scope,
-                outcome.session.clone(),
+                crate::mutation::aggregate_from_snapshot(outcome.session.clone())
+                    .map_err(repository_failure)
+                    .map_err(SessionResourceManifestError::mutation)?,
                 RepositoryRetirementCause::DetachedGeneration,
             )
             .await
+            .map(crate::SessionAggregate::into_snapshot)
         } else if self.requires_external_realization(&outcome.session) {
             self.dispatch_session_work(&outcome.session)
                 .await

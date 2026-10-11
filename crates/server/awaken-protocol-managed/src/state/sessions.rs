@@ -241,7 +241,13 @@ impl ManagedState {
     ) -> Result<PersistedSession, StateError> {
         let session = self
             .application
-            .commit_session_snapshot_with_outcome(owner_scope, session, operation, lifecycle_facts)
+            .commit_session_snapshot_with_outcome(
+                owner_scope,
+                awaken_session_state_contract::SessionAggregate::try_from(session)
+                    .expect("valid test snapshot"),
+                operation,
+                lifecycle_facts,
+            )
             .await
             .map_err(Self::map_application_mutation_error)?
             .into_session();

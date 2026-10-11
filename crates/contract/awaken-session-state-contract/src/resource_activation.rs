@@ -103,6 +103,10 @@ impl SessionResourceReferences {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ResourceActivationError {
+    #[error("terminal Session cannot activate Resources")]
+    Terminal,
+    #[error("Repository credential pin changed Resource topology or holder")]
+    CredentialPinMismatch,
     #[error("a Session resource activation or Repository retirement is already pending")]
     Pending,
     #[error("no Session resource activation is pending")]

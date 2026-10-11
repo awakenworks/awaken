@@ -2460,7 +2460,13 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
         payload_hash: "time-mutation".into(),
     };
     let commit = application
-        .commit_session_snapshot_with_record(&owner, changed.clone(), receipt.clone(), vec![])
+        .commit_session_snapshot_with_record(
+            &owner,
+            awaken_session_state_contract::SessionAggregate::try_from(changed.clone())
+                .expect("valid test snapshot"),
+            receipt.clone(),
+            vec![],
+        )
         .await
         .unwrap();
     assert!(commit.transitioned(), "T3");
@@ -2469,14 +2475,26 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
     assert_eq!(updated.updated_at_unix_ms, Some(1_800_000_010_123));
     clock.advance(10_000);
     let commit = application
-        .commit_session_snapshot_with_record(&owner, changed, receipt, vec![])
+        .commit_session_snapshot_with_record(
+            &owner,
+            awaken_session_state_contract::SessionAggregate::try_from(changed)
+                .expect("valid test snapshot"),
+            receipt,
+            vec![],
+        )
         .await
         .unwrap();
     assert!(!commit.transitioned(), "T4");
     assert_eq!(commit.into_session(), updated);
     clock.set(1);
     let rollback = application
-        .commit_session_snapshot_with_outcome(&owner, updated.clone(), "clock-rollback", vec![])
+        .commit_session_snapshot_with_outcome(
+            &owner,
+            awaken_session_state_contract::SessionAggregate::try_from(updated.clone())
+                .expect("valid test snapshot"),
+            "clock-rollback",
+            vec![],
+        )
         .await
         .unwrap()
         .into_session();

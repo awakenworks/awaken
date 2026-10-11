@@ -244,3 +244,5 @@ pub use terminal::{
 
 #[cfg(test)]
 mod tests;
+
+use awaken_session_state_contract::SessionAggregate;

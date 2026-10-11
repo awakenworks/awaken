@@ -321,6 +321,7 @@ async fn run_free_request_is_one_idempotent_session_root_transition() {
     )
     .await;
     let mut active = externally_placed("active", "running", false);
+    active.activity_epoch = 1;
     active.active_activity_epochs.insert(1);
     create(repo.as_ref(), active).await;
     create(

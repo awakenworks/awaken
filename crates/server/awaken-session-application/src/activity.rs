@@ -6,10 +6,14 @@
 // @formal entrypoint session_runtime_interval.one_nonoverlapping_interval_closes_with_exact_fact
 //! Durable activity fencing for overlapping Session Runs.
 
+use crate::SessionAggregate;
+
 use awaken_agent_contract::RunLifecycleCursor;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_session_event_contract::SessionEventProjectionAnchor;
+#[cfg(any(test, kani))]
+use awaken_session_state_contract::session_activity_open_plan;
 use awaken_session_state_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession,
     SessionEventDispatchSettlementEffect, SessionExecutionState, SessionRuntimeInterval,
@@ -55,15 +59,7 @@ pub enum SessionActivityError {
     Unavailable(String),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SessionActivityOpenPlan {
-    Open(u64),
-    Terminal,
-    NotReady,
-    BudgetReached,
-    EpochExhausted,
-    Conflict,
-}
+use awaken_session_state_contract::SessionActivityAdmissionPlan as SessionActivityOpenPlan;
 
 /// A fresh activity may consume only the root revision whose complete Runtime
 /// projection was recovered immediately before reservation. Exact activity
@@ -78,43 +74,8 @@ const fn activity_projection_revision_matches(
     }
 }
 
-/// The sole finite admission decision for the root activity mutation. Runtime
-/// interval and Environment projection remain effects of the accepted plan;
-/// they do not own another readiness or epoch policy.
+/// The logical effects after settling one exact activity epoch.
 #[must_use]
-const fn session_activity_open_plan(
-    execution: SessionExecutionState,
-    current_epoch: u64,
-    exact_epoch: Option<u64>,
-    allow_external_realization: bool,
-    continue_committed_await: bool,
-    budget_admits: bool,
-) -> SessionActivityOpenPlan {
-    if execution.is_terminal() {
-        return SessionActivityOpenPlan::Terminal;
-    }
-    let ready = execution.admits_activity()
-        || (allow_external_realization
-            && matches!(
-                execution,
-                SessionExecutionState::Preparing | SessionExecutionState::Activating
-            ));
-    if !ready {
-        return SessionActivityOpenPlan::NotReady;
-    }
-    if !continue_committed_await && !budget_admits {
-        return SessionActivityOpenPlan::BudgetReached;
-    }
-    match exact_epoch {
-        Some(epoch) if epoch != 0 && epoch > current_epoch => SessionActivityOpenPlan::Open(epoch),
-        Some(_) => SessionActivityOpenPlan::Conflict,
-        None => match current_epoch.checked_add(1) {
-            Some(epoch) => SessionActivityOpenPlan::Open(epoch),
-            None => SessionActivityOpenPlan::EpochExhausted,
-        },
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SessionActivitySettlementPlan {
     Stutter,
@@ -124,7 +85,6 @@ enum SessionActivitySettlementPlan {
 
 /// Decide the logical effect after the aggregate's exact epoch set has applied
 /// a removal. Only removal of the final current epoch may close Running.
-#[must_use]
 const fn session_activity_settlement_plan(
     exact_epoch_removed: bool,
     last_active: bool,
@@ -393,29 +353,27 @@ impl SessionApplication {
             return Ok(None);
         };
         let session = self
-            .session_repository()
-            .get(session_id)
+            .session_aggregate(session_id)
             .await
             .map_err(repository_failure)
             .map_err(SessionActivityError::mutation)?;
-        Ok(Some((session, epoch)))
+        Ok(Some((session.into_snapshot(), epoch)))
     }
 
     pub(crate) fn open_activity_on_snapshot(
-        session: &mut PersistedSession,
+        session: &mut SessionAggregate,
         exact_epoch: Option<u64>,
         allow_external_realization: bool,
         continue_committed_await: bool,
         now_ms: u64,
         admitted_after_commit_cursor: u64,
     ) -> Result<u64, SessionActivityError> {
-        let epoch = match session_activity_open_plan(
-            session.execution,
-            session.activity_epoch,
+        let epoch = match session.activity().open(
             exact_epoch,
             allow_external_realization,
             continue_committed_await,
-            session.budget.can_admit_model_request(),
+            now_ms,
+            admitted_after_commit_cursor,
         ) {
             SessionActivityOpenPlan::Open(epoch) => epoch,
             SessionActivityOpenPlan::Terminal => return Err(SessionActivityError::Terminal),
@@ -428,15 +386,6 @@ impl SessionApplication {
             }
             SessionActivityOpenPlan::Conflict => return Err(SessionActivityError::Conflict),
         };
-        let inserted = session.begin_activity_epoch_at(epoch);
-        debug_assert!(inserted, "activity plan selected a fresh exact epoch");
-        session.environment.mark_active();
-        if session.execution == SessionExecutionState::Idle {
-            session
-                .transition_execution(SessionExecutionState::Running)
-                .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?;
-        }
-        session.begin_runtime_interval(now_ms, admitted_after_commit_cursor);
         Ok(epoch)
     }
 
@@ -504,7 +453,7 @@ impl SessionApplication {
         &self,
         session_id: &awaken_session_types::SessionId,
     ) -> Result<PersistedSession, SessionActivityError> {
-        match self.session_repository().get(session_id).await {
+        match self.session_aggregate(session_id).await {
             Ok(session) if session.is_terminal() => return Err(SessionActivityError::Terminal),
             Ok(_) => {}
             Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
@@ -525,8 +474,7 @@ impl SessionApplication {
                 .await
                 .map_err(SessionActivityError::mutation)?;
             let mut session = self
-                .session_repository()
-                .get(session_id)
+                .session_aggregate(session_id)
                 .await
                 .map_err(repository_failure)
                 .map_err(SessionActivityError::mutation)?;
@@ -662,8 +610,7 @@ impl SessionApplication {
         let projected_revision = match projected_revision {
             Some(projected_revision) => {
                 let projected_root = self
-                    .session_repository()
-                    .get(session_id)
+                    .session_aggregate(session_id)
                     .await
                     .map_err(repository_failure)
                     .map_err(SessionActivityError::mutation)?;
@@ -712,8 +659,7 @@ impl SessionApplication {
                 .await
                 .map_err(SessionActivityError::mutation)?;
             let mut session = self
-                .session_repository()
-                .get(session_id)
+                .session_aggregate(session_id)
                 .await
                 .map_err(repository_failure)
                 .map_err(SessionActivityError::mutation)?;
@@ -750,7 +696,9 @@ impl SessionApplication {
             if let Some(prior_activity_epoch) = prior_activity_epoch {
                 // The new epoch was inserted first, so removing the old one can
                 // never make the aggregate falsely Idle inside this mutation.
-                let _ = session.settle_activity_epoch(prior_activity_epoch);
+                let _ = session
+                    .activity()
+                    .settle_activity_epoch(prior_activity_epoch);
             }
             match self
                 .commit_session_snapshot_with_record(
@@ -856,13 +804,12 @@ impl SessionApplication {
                 .await
                 .map_err(SessionActivityError::mutation)?;
             let mut session = self
-                .session_repository()
-                .get(session_id)
+                .session_aggregate(session_id)
                 .await
                 .map_err(repository_failure)
                 .map_err(SessionActivityError::mutation)?;
             if session.is_terminal() {
-                return Ok(session);
+                return Ok(session.into_snapshot());
             }
             if let Some(observation) = observation.clone() {
                 if session.closed_runtime_intervals.iter().any(|interval| {
@@ -871,7 +818,7 @@ impl SessionApplication {
                         .iter()
                         .any(|existing| existing == &observation)
                 }) {
-                    return Ok(session);
+                    return Ok(session.into_snapshot());
                 }
                 // A reply may transfer the activity while its predecessor's
                 // leased Worker is still closing. Fence that stale observation
@@ -883,7 +830,7 @@ impl SessionApplication {
                         && session.execution == SessionExecutionState::Running
                         && session.activity_epoch == expected_epoch))
                 {
-                    return Ok(session);
+                    return Ok(session.into_snapshot());
                 }
                 if session.closed_runtime_intervals.iter().any(|interval| {
                     interval.observations.iter().any(|existing| {
@@ -922,7 +869,7 @@ impl SessionApplication {
                 if !exact_replay
                     && !settles_before_runtime_interval
                     && !before_admission
-                    && !session.observe_runtime_interval(observation)
+                    && !session.activity().observe_runtime_interval(observation)
                 {
                     return Err(SessionActivityError::Unavailable(
                         "Runtime boundary does not belong to the active Session interval".into(),
@@ -937,6 +884,7 @@ impl SessionApplication {
                         )
                     })?;
                     match session
+                        .activity()
                         .settle_user_event_dispatch(
                             run_id,
                             boundary,
@@ -951,7 +899,7 @@ impl SessionApplication {
                         SessionEventDispatchSettlementEffect::NotEvent
                         | SessionEventDispatchSettlementEffect::Replayed {
                             fully_settled: false,
-                        } => return Ok(session),
+                        } => return Ok(session.into_snapshot()),
                         SessionEventDispatchSettlementEffect::Replayed {
                             fully_settled: true,
                         } => Some(true),
@@ -960,7 +908,7 @@ impl SessionApplication {
                         }
                     }
                 }
-                None => session.settle_activity_epoch(expected_epoch),
+                None => session.activity().settle_activity_epoch(expected_epoch),
             };
             let settlement_plan = session_activity_settlement_plan(
                 settlement.is_some(),
@@ -968,7 +916,7 @@ impl SessionApplication {
                 session.execution == SessionExecutionState::Running,
             );
             if settlement_plan == SessionActivitySettlementPlan::Stutter {
-                return Ok(session);
+                return Ok(session.into_snapshot());
             }
             // Completion order does not grant inverse-transition ownership.
             // Every admitted epoch is removed exactly once; only the removal of
@@ -979,12 +927,9 @@ impl SessionApplication {
             let lifecycle_facts =
                 if settlement_plan == SessionActivitySettlementPlan::CloseRunningInterval {
                     session
-                        .transition_execution(SessionExecutionState::Idle)
-                        .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?;
-                    let ended_at_unix_ms = self.clock.now_ms();
-                    session.environment.mark_idle(ended_at_unix_ms);
-                    session
-                        .close_runtime_interval(ended_at_unix_ms)
+                        .activity()
+                        .finish_running(self.clock.now_ms())
+                        .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?
                         .map(|interval| {
                             runtime_interval_fact(&owner_scope, session_id.as_str(), interval)
                         })
@@ -1036,8 +981,7 @@ impl SessionApplication {
                 .await
                 .map_err(SessionActivityError::mutation)?;
             let mut session = self
-                .session_repository()
-                .get(session_id)
+                .session_aggregate(session_id)
                 .await
                 .map_err(repository_failure)
                 .map_err(SessionActivityError::mutation)?;
@@ -1055,7 +999,7 @@ impl SessionApplication {
                         .any(|existing| existing == &observation)
                 })
             {
-                return Ok(session);
+                return Ok(session.into_snapshot());
             }
             if session.closed_runtime_intervals.iter().any(|interval| {
                 interval.observations.iter().any(|existing| {
@@ -1067,7 +1011,10 @@ impl SessionApplication {
                     "Session activity epoch was reused with another Runtime boundary".into(),
                 ));
             }
-            if !session.observe_runtime_interval(observation.clone()) {
+            if !session
+                .activity()
+                .observe_runtime_interval(observation.clone())
+            {
                 return Err(SessionActivityError::Unavailable(
                     "Runtime boundary does not belong to the active Session interval".into(),
                 ));

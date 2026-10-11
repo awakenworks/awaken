@@ -2008,3 +2008,8 @@ mod verification {
         }
     }
 }
+
+pub(crate) use mutation::validate_aggregate_state;
+
+#[cfg(test)]
+mod controlled_aggregate_tests;

@@ -287,7 +287,8 @@ async fn persist_batch_projection_anchors(
         .application
         .commit_session_snapshot_with_outcome(
             &owner,
-            session,
+            awaken_session_state_contract::SessionAggregate::try_from(session)
+                .expect("valid test snapshot"),
             &format!("test-projection-anchor-{batch_id}"),
             Vec::new(),
         )

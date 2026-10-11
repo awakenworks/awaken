@@ -17,8 +17,7 @@ use awaken_time::WallClockExt as _;
 
 use super::{
     SessionApplication, SessionMutationError, SessionPreparationError, SnapshotCommit,
-    activity::runtime_interval_fact, mutation::repository_failure,
-    resource_reconciliation::mutation_failure,
+    mutation::repository_failure, resource_reconciliation::mutation_failure,
 };
 
 /// One durable disposition transition and whether *this* call committed it.
@@ -423,8 +422,7 @@ impl SessionApplication {
                 return Err(SessionArchiveWithRepositoryPublicationError::NotFound);
             }
             let mut session = self
-                .session_repository()
-                .get(&command.session_id)
+                .session_aggregate(&command.session_id)
                 .await
                 .map_err(repository_failure)?;
             if session.is_hidden() {
@@ -461,8 +459,7 @@ impl SessionApplication {
             // clock again. Only an Active transition receives a new sample.
             let archive_time = matches!(&session.disposition, SessionDisposition::Active)
                 .then(|| self.clock.now_ms());
-            let changed = session
-                .archive_with_repository_publication(&command.archived_at, archive_time, intent)
+            let changed = session.lifecycle().archive_with_repository_publication(&command.archived_at, archive_time, intent)
                 .map_err(|error| match error {
                     awaken_session_state_contract::SessionArchiveWithRepositoryPublicationError::Disposition(
                         awaken_session_state_contract::SessionDispositionTransitionError::ArchiveAfterDelete,
@@ -479,22 +476,13 @@ impl SessionApplication {
                     }
                 })?;
             if !changed {
-                transition = Some(SessionDispositionMutation::unchanged(owner_scope, session));
+                transition = Some(SessionDispositionMutation::unchanged(
+                    owner_scope,
+                    session.into_snapshot(),
+                ));
                 break;
             }
-            let archive_time = archive_time.ok_or_else(|| {
-                SessionArchiveWithRepositoryPublicationError::Unavailable(
-                    "committed archive has no Application time observation".into(),
-                )
-            })?;
-            let mut facts = session
-                .close_runtime_interval(archive_time)
-                .map(|interval| {
-                    runtime_interval_fact(&owner_scope, command.session_id.as_str(), interval)
-                })
-                .into_iter()
-                .collect::<Vec<_>>();
-            facts.push(command.lifecycle_fact.clone());
+            let facts = vec![command.lifecycle_fact.clone()];
             match self
                 .commit_session_snapshot_with_record(&owner_scope, session, idempotency, facts)
                 .await
@@ -521,11 +509,10 @@ impl SessionApplication {
             .err()
             .map(|error| error.to_string());
         let durable = self
-            .session_repository()
-            .get(&command.session_id)
+            .session_aggregate(&command.session_id)
             .await
             .map_err(repository_failure)?;
-        transition.session = durable.clone();
+        transition.session = durable.snapshot().clone();
         if let Some(rejection) = durable
             .terminal_cleanup
             .repository_publication_rejection(&command.session_id)
@@ -743,8 +730,7 @@ impl SessionApplication {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self.owner(session_id).await.map_err(mutation_failure)?;
             let mut session = self
-                .session_repository()
-                .get(session_id)
+                .session_aggregate(session_id)
                 .await
                 .map_err(repository_failure)
                 .map_err(mutation_failure)?;
@@ -752,7 +738,10 @@ impl SessionApplication {
             // payload validation. A later retry may carry a different display
             // timestamp, but it cannot reopen or rewrite the archived root.
             if matches!(session.disposition, SessionDisposition::Archived { .. }) {
-                return Ok(SessionDispositionMutation::unchanged(owner_scope, session));
+                return Ok(SessionDispositionMutation::unchanged(
+                    owner_scope,
+                    session.into_snapshot(),
+                ));
             }
             let command_record = archive_idempotency_record(
                 &owner_scope,
@@ -774,7 +763,10 @@ impl SessionApplication {
                         "Session archive command identity was reused with another payload".into(),
                     ));
                 }
-                return Ok(SessionDispositionMutation::unchanged(owner_scope, session));
+                return Ok(SessionDispositionMutation::unchanged(
+                    owner_scope,
+                    session.into_snapshot(),
+                ));
             }
             if session.is_hidden() {
                 return Err(SessionPreparationError::NotFound);
@@ -811,14 +803,10 @@ impl SessionApplication {
             }
             let archive_time = self.clock.now_ms();
             session
+                .lifecycle()
                 .archive(archived_at, archive_time)
                 .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?;
-            let mut facts = session
-                .close_runtime_interval(archive_time)
-                .map(|interval| runtime_interval_fact(&owner_scope, session_id.as_str(), interval))
-                .into_iter()
-                .collect::<Vec<_>>();
-            facts.push(fact.clone());
+            let facts = vec![fact.clone()];
             match self
                 .commit_session_snapshot_with_record(
                     &owner_scope,
@@ -852,8 +840,7 @@ impl SessionApplication {
                 .await
                 .map_err(mutation_failure)?;
             let mut session = self
-                .session_repository()
-                .get(&awaken_session_types::SessionId::from(session_id))
+                .session_aggregate(&awaken_session_types::SessionId::from(session_id))
                 .await
                 .map_err(repository_failure)
                 .map_err(mutation_failure)?;
@@ -862,27 +849,27 @@ impl SessionApplication {
             // absorbing without duplicating disposition interpretation here;
             // a rejected first request mutates only this detached candidate.
             let Some(delete_fact) = session
+                .lifecycle()
                 .request_delete(
                     &owner_scope,
                     command.requested_at_unix_s.unwrap_or_else(|| {
                         i64::try_from(self.clock.now().duration_since_epoch().as_secs())
                             .unwrap_or(i64::MAX)
                     }),
+                    self.clock.now_ms(),
                 )
                 .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?
             else {
-                return Ok(SessionDispositionMutation::unchanged(owner_scope, session));
+                return Ok(SessionDispositionMutation::unchanged(
+                    owner_scope,
+                    session.into_snapshot(),
+                ));
             };
             if session.has_incomplete_event_batches() {
                 self.wake_lifecycle_supervisor();
                 return Err(pending_event_batch_error());
             }
-            let mut facts = session
-                .close_runtime_interval(self.clock.now_ms())
-                .map(|interval| runtime_interval_fact(&owner_scope, session_id, interval))
-                .into_iter()
-                .collect::<Vec<_>>();
-            facts.push(delete_fact);
+            let facts = vec![delete_fact];
             match self
                 .commit_session_snapshot_with_outcome(&owner_scope, session, "delete-intent", facts)
                 .await

@@ -1163,8 +1163,7 @@ impl SessionApplication {
             thread_usages.push(current);
         }
         let session = self
-            .session_repository()
-            .get(&awaken_session_types::SessionId::from(thread))
+            .session_aggregate(&awaken_session_types::SessionId::from(thread))
             .await
             .map_err(|error| RunError::unavailable(error.to_string()))?;
         Ok(Self::project_session_usage(

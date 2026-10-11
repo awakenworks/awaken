@@ -17,7 +17,8 @@ use awaken_session_configuration_contract::{
 use awaken_session_mcp_contract::SessionMcpAttachmentSet;
 use awaken_session_realization_contract::SessionRealizationControlDisposition;
 use awaken_session_state_contract::{
-    IdempotencyRecord, PersistedSession, SessionExecutionState, SessionMutationPayload,
+    IdempotencyRecord, PersistedSession, SessionAggregate, SessionExecutionState,
+    SessionMutationPayload,
 };
 use awaken_session_types::RunError;
 
@@ -29,7 +30,7 @@ use super::{SessionApplication, SessionMutationError, SessionRealizationError};
 /// fresh-root shape. Keeping the field private prevents protocol adapters and
 /// later mutation paths from persisting an unconsumed authoring intent through
 /// the application create path.
-pub(crate) struct CompleteSessionRoot(PersistedSession);
+pub(crate) struct CompleteSessionRoot(SessionAggregate);
 
 fn root_has_consumed_creation_intent(session: &PersistedSession) -> bool {
     session.frozen_baseline().is_some()
@@ -60,7 +61,7 @@ impl CompleteSessionRoot {
             .map_err(|error| SessionCreationError::Unavailable(error.to_string()))?;
         let mcp = SessionMcpAttachmentSet::from_initial(compiled.initial_mcp, Some(holder))
             .map_err(|error| SessionCreationError::Unavailable(error.to_string()))?;
-        let mut session = PersistedSession::frozen_with_budget(
+        let session = PersistedSession::frozen_with_budget(
             session_id,
             compiled.baseline,
             resources,
@@ -70,14 +71,16 @@ impl CompleteSessionRoot {
             tools,
             budget,
         );
+        let mut root = Self::from_fresh(session)?;
         if let Some(initial_events) = initial_events {
-            session
+            root.0
+                .activity()
                 .install_initial_event_plan(initial_events)
                 .map_err(|error| {
                     SessionCreationError::Rejected(RunError::bad_request(error.to_string()))
                 })?;
         }
-        Self::from_fresh(session)
+        Ok(root)
     }
 
     pub(super) fn from_fresh(session: PersistedSession) -> Result<Self, SessionCreationError> {
@@ -90,19 +93,23 @@ impl CompleteSessionRoot {
                 "compiled Session root is incomplete or not recoverable".into(),
             ));
         }
-        Ok(Self(session))
+        Ok(Self(SessionAggregate::try_from(session).map_err(
+            |error| SessionCreationError::Internal(error.to_string()),
+        )?))
     }
 
     pub(super) fn as_session(&self) -> &PersistedSession {
         &self.0
     }
 
-    pub(super) fn as_session_mut(&mut self) -> &mut PersistedSession {
-        &mut self.0
+    pub(super) fn observe_creation(&mut self, now: u64) -> Result<(), SessionCreationError> {
+        self.0
+            .observe_creation(now)
+            .map_err(|error| SessionCreationError::Internal(error.to_string()))
     }
 
     pub(super) fn into_session(self) -> PersistedSession {
-        self.0
+        self.0.into_snapshot()
     }
 }
 
@@ -449,27 +456,20 @@ impl SessionCreationError {
     }
 }
 
-impl SessionApplication {
-    fn compile_session_root(
-        session_id: String,
-        title: Option<String>,
-        metadata: std::collections::BTreeMap<String, String>,
-        tools: SessionToolConfiguration,
-        budget: SessionBudgetState,
-        compiled: CompiledSessionCreation,
-        initial_events: Option<awaken_session_event_contract::SessionInitialEventPlan>,
-    ) -> Result<CompleteSessionRoot, SessionCreationError> {
-        CompleteSessionRoot::compile(
-            session_id,
-            title,
-            metadata,
-            tools,
-            budget,
-            compiled,
-            initial_events,
-        )
-    }
+/// Join the realized DTO to the controlled activation commit boundary.
+async fn commit_creation_activation(
+    application: &SessionApplication,
+    owner: &str,
+    session: PersistedSession,
+) -> Result<crate::SnapshotCommit, SessionMutationError> {
+    let candidate = crate::mutation::aggregate_from_snapshot(session)
+        .map_err(crate::mutation::repository_failure)?;
+    application
+        .commit_session_snapshot_with_outcome(owner, candidate, "activate", Vec::new())
+        .await
+}
 
+impl SessionApplication {
     /// Create one Session through the only durable creation protocol.
     pub async fn create_session(
         &self,
@@ -561,7 +561,7 @@ impl SessionApplication {
             }
             return Err(first);
         }
-        let compiled_root = match Self::compile_session_root(
+        let compiled_root = match CompleteSessionRoot::compile(
             session_id.clone(),
             title,
             metadata,
@@ -720,10 +720,7 @@ impl SessionApplication {
             }
         };
 
-        persisted = match self
-            .commit_session_snapshot_with_outcome(&owner_scope, persisted, "activate", Vec::new())
-            .await
-        {
+        persisted = match commit_creation_activation(self, &owner_scope, persisted).await {
             Ok(commit) => commit.into_session(),
             Err(SessionMutationError::Conflict) => {
                 // The realization is complete, so a concurrent root writer (or

@@ -241,8 +241,7 @@ impl SessionApplication {
         request_fingerprint: &str,
     ) -> Result<SessionEventBatchIdempotency, RunError> {
         let session = self
-            .session_repository()
-            .get(session_id)
+            .session_aggregate(session_id)
             .await
             .map_err(repository_failure)
             .map_err(mutation_run_error)?;
@@ -516,8 +515,7 @@ impl SessionApplication {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner = self.owner(session_id).await.map_err(mutation_run_error)?;
             let mut session = self
-                .session_repository()
-                .get(session_id)
+                .session_aggregate(session_id)
                 .await
                 .map_err(repository_failure)
                 .map_err(mutation_run_error)?;
@@ -622,7 +620,10 @@ impl SessionApplication {
             batch
                 .validate_tool_reply_occupancy(&session.event_batches)
                 .map_err(|error| RunError::bad_request(error.to_string()))?;
-            session.event_batches.push(batch.clone());
+            session
+                .events()
+                .append_batch(batch.clone())
+                .map_err(|error| RunError::internal(error.to_string()))?;
             match self
                 .commit_session_snapshot_with_outcome(
                     &owner,
@@ -684,7 +685,7 @@ impl SessionApplication {
                 if !candidate.interests.event_batches {
                     return result;
                 }
-                let session = match self.session_repository().get(&candidate.session_id).await {
+                let session = match self.session_aggregate(&candidate.session_id).await {
                     Ok(session) => session,
                     Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
                         return result;
@@ -702,7 +703,11 @@ impl SessionApplication {
                 result.pending = 1;
                 let session_id = session.session_id.clone();
                 match self
-                    .reconcile_session_event_batches(&session_id, None, Some(session))
+                    .reconcile_session_event_batches(
+                        &session_id,
+                        None,
+                        Some(session.into_snapshot()),
+                    )
                     .await
                 {
                     Ok(true) => result.settled = 1,
@@ -836,8 +841,7 @@ impl SessionApplication {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self.owner(session_id).await.map_err(mutation_run_error)?;
             let mut session = self
-                .session_repository()
-                .get(session_id)
+                .session_aggregate(session_id)
                 .await
                 .map_err(repository_failure)
                 .map_err(mutation_run_error)?;
@@ -854,16 +858,10 @@ impl SessionApplication {
                 // terminal high-water.
                 return Ok(false);
             }
-            let runtime_commit_cursor = terminal_cleanup.runtime_commit_cursor();
-            let anchor =
-                runtime_commit_cursor.map(|source_commit_cursor| SessionEventProjectionAnchor {
-                    source_commit_cursor,
-                });
             let resolved = session
-                .event_batches
-                .iter_mut()
-                .map(|batch| batch.resolve_terminally(anchor, self.clock.now_ms()))
-                .sum::<usize>();
+                .events()
+                .resolve_terminally(self.clock.now_ms())
+                .map_err(|error| RunError::internal(error.to_string()))?;
             if resolved == 0 {
                 return Ok(true);
             }
@@ -1311,97 +1309,24 @@ impl SessionApplication {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner = self.owner(session_id).await.map_err(mutation_run_error)?;
             let mut session = self
-                .session_repository()
-                .get(session_id)
+                .session_aggregate(session_id)
                 .await
                 .map_err(repository_failure)
                 .map_err(mutation_run_error)?;
-            let mut changed = false;
-            {
-                let batch = session
-                    .event_batches
-                    .iter_mut()
-                    .find(|batch| batch.batch_id == batch_id)
-                    .ok_or_else(|| RunError::internal("Session Event batch disappeared"))?;
-                let entry = batch
-                    .events
-                    .iter()
-                    .find(|entry| entry.event.operation_id() == operation_id)
-                    .ok_or_else(|| RunError::internal("Session Event operation disappeared"))?;
-                if superseded_tool_reply.is_some()
-                    && !matches!(&entry.event, SessionEventCommand::Interrupt { .. })
-                {
-                    return Err(RunError::internal(
-                        "ToolReply supersession requires an exact Interrupt anchor",
-                    ));
-                }
-                if matches!(observation, EventObservation::InputCommitted(_)) {
-                    changed = batch
-                        .anchor_committed_input(operation_id, projection_anchor)
-                        .map_err(|error| RunError::internal(error.to_string()))?;
-                } else if entry.processed {
-                    if entry.projection_anchor != Some(projection_anchor) {
-                        return Err(RunError::internal(
-                            "Session Event replay changed its projection anchor",
-                        ));
-                    }
-                } else {
-                    changed = batch
-                        .mark_processed(operation_id, projection_anchor, self.clock.now_ms())
-                        .map_err(|error| RunError::internal(error.to_string()))?;
-                }
-            }
-            if let Some(failed) = superseded_tool_reply {
-                let batch = session
-                    .event_batches
-                    .iter_mut()
-                    .find(|batch| batch.batch_id == failed.batch_id)
-                    .ok_or_else(|| RunError::internal("superseded ToolReply batch disappeared"))?;
-                let ordinal = batch
-                    .events
-                    .iter()
-                    .position(|entry| entry.event.operation_id() == failed.operation_id)
-                    .ok_or_else(|| {
-                        RunError::internal("superseded ToolReply operation disappeared")
-                    })?;
-                if !matches!(
-                    &batch.events[ordinal].event,
-                    SessionEventCommand::ToolReply { .. }
-                ) {
-                    return Err(RunError::internal(
-                        "Interrupt supersession target is not a ToolReply",
-                    ));
-                }
-                if !batch.events[ordinal].processed {
-                    let adjacent_system = batch.events.get(ordinal + 1).and_then(|entry| {
-                        matches!(&entry.event, SessionEventCommand::SystemMessage { .. })
-                            .then(|| entry.event.operation_id().to_string())
-                    });
-                    changed |= batch
-                        .mark_processed(
-                            &failed.operation_id,
-                            projection_anchor,
-                            self.clock.now_ms(),
-                        )
-                        .map_err(|error| RunError::internal(error.to_string()))?;
-                    if let Some(system_operation_id) = adjacent_system
-                        && batch.events.iter().any(|entry| {
-                            entry.event.operation_id() == system_operation_id.as_str()
-                                && !entry.processed
-                        })
-                    {
-                        changed |= batch
-                            .mark_processed(
-                                &system_operation_id,
-                                projection_anchor,
-                                self.clock.now_ms(),
-                            )
-                            .map_err(|error| RunError::internal(error.to_string()))?;
-                    }
-                }
-            }
+            let changed = session
+                .events()
+                .observe(
+                    batch_id,
+                    operation_id,
+                    projection_anchor,
+                    matches!(observation, EventObservation::Processed(_)),
+                    self.clock.now_ms(),
+                    superseded_tool_reply
+                        .map(|failed| (failed.batch_id.as_str(), failed.operation_id.as_str())),
+                )
+                .map_err(|error| RunError::internal(error.to_string()))?;
             if !changed {
-                return Ok(session);
+                return Ok(session.into_snapshot());
             }
             match self
                 .commit_session_snapshot_with_outcome(

@@ -1616,7 +1616,8 @@ async fn disposal_failure_retries_without_recheckpointing() {
     let _fixture = app
         .commit_session_snapshot_with_outcome(
             "workspace",
-            failed_over,
+            awaken_session_state_contract::SessionAggregate::try_from(failed_over)
+                .expect("valid test snapshot"),
             "test-continuation-disposal-failover",
             Vec::new(),
         )
@@ -1690,7 +1691,8 @@ async fn preparation_response_loss_persists_the_exact_renewed_fence() {
     let _fixture = app
         .commit_session_snapshot_with_outcome(
             "workspace",
-            renewed,
+            awaken_session_state_contract::SessionAggregate::try_from(renewed)
+                .expect("valid test snapshot"),
             "test-renew-before-source-preparation",
             Vec::new(),
         )
@@ -1736,7 +1738,8 @@ async fn preparation_response_loss_persists_the_exact_renewed_fence() {
     let _fixture = app
         .commit_session_snapshot_with_outcome(
             "workspace",
-            disposing,
+            awaken_session_state_contract::SessionAggregate::try_from(disposing)
+                .expect("valid test snapshot"),
             "test-prepared-source-disposal-failover",
             Vec::new(),
         )

@@ -129,6 +129,8 @@ pub enum SessionMutationValidationError {
     ReplacementRevisionMismatch,
     #[error("tombstone deleted_revision is not the next root revision")]
     TombstoneRevisionMismatch,
+    #[error("Session lifecycle fact identity is duplicated")]
+    DuplicateLifecycleFact,
     #[error("lifecycle fact targets another Session")]
     LifecycleSessionMismatch,
     #[error("Session Running interval is inconsistent with execution state")]
@@ -163,6 +165,24 @@ pub enum SessionRepositoryError {
     InvalidMutation(String),
 }
 
+pub(crate) fn validate_aggregate_state(
+    session: &PersistedSession,
+) -> Result<(), SessionMutationValidationError> {
+    if session.running_interval.is_some() && session.execution != SessionExecutionState::Running {
+        return Err(SessionMutationValidationError::RuntimeIntervalStateMismatch);
+    }
+    if session
+        .active_activity_epochs
+        .iter()
+        .any(|epoch| *epoch == 0 || *epoch > session.activity_epoch)
+        || (!session.active_activity_epochs.is_empty()
+            && (session.execution == SessionExecutionState::Idle || session.is_terminal()))
+    {
+        return Err(SessionMutationValidationError::ActiveActivityStateMismatch);
+    }
+    Ok(())
+}
+
 impl SessionMutation {
     /// Validate all command-local causes before a repository reads or writes.
     /// A successful return is the only root revision the transaction may commit.
@@ -194,21 +214,8 @@ impl SessionMutation {
             }
             SessionMutationPayload::Replace(_) | SessionMutationPayload::Delete(_) => {}
         }
-        if let SessionMutationPayload::Replace(session) = &self.payload
-            && session.running_interval.is_some()
-            && session.execution != SessionExecutionState::Running
-        {
-            return Err(SessionMutationValidationError::RuntimeIntervalStateMismatch);
-        }
-        if let SessionMutationPayload::Replace(session) = &self.payload
-            && (session
-                .active_activity_epochs
-                .iter()
-                .any(|epoch| *epoch == 0 || *epoch > session.activity_epoch)
-                || (!session.active_activity_epochs.is_empty()
-                    && (session.execution == SessionExecutionState::Idle || session.is_terminal())))
-        {
-            return Err(SessionMutationValidationError::ActiveActivityStateMismatch);
+        if let SessionMutationPayload::Replace(session) = &self.payload {
+            validate_aggregate_state(session)?;
         }
         if self
             .lifecycle_facts
@@ -216,6 +223,14 @@ impl SessionMutation {
             .any(|fact| fact.object_id != session_id)
         {
             return Err(SessionMutationValidationError::LifecycleSessionMismatch);
+        }
+        let mut fact_ids = std::collections::BTreeSet::new();
+        if self
+            .lifecycle_facts
+            .iter()
+            .any(|fact| !fact_ids.insert(&fact.id))
+        {
+            return Err(SessionMutationValidationError::DuplicateLifecycleFact);
         }
         if self.lifecycle_facts.iter().any(|fact| {
             match (&fact.runtime_interval, fact.event_type.as_str()) {

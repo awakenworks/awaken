@@ -4,6 +4,8 @@
 // @formal entrypoint session_realization.recovery_backoff_is_bounded_and_dependency_wakes_never_postpone_the_existing_deadline
 //! Canonical durable Session realization phase commands.
 
+use crate::SessionAggregate;
+
 use awaken_time::WallClockExt as _;
 use std::collections::BTreeSet;
 
@@ -34,7 +36,7 @@ pub(super) fn environment_admits_realization_effects(
 }
 
 use super::{SessionApplication, SessionMutationError};
-use crate::{activity::runtime_interval_fact, creation::DurableSessionRoot, projection};
+use crate::{creation::DurableSessionRoot, projection};
 
 mod authority;
 mod control;
@@ -653,11 +655,11 @@ impl SessionApplication {
             .map_err(SessionRealizationError::Control)?;
         self.drive_local_realization(&permit, directive, request_started)
             .await?;
-        self.session_repository()
-            .get(session_id)
+        self.session_aggregate(session_id)
             .await
             .map_err(repository_control)
             .map_err(SessionRealizationError::Control)
+            .map(SessionAggregate::into_snapshot)
     }
 
     async fn drive_local_realization(
@@ -967,7 +969,7 @@ impl SessionApplication {
     async fn session_for_realization(
         &self,
         session_id: &awaken_session_types::SessionId,
-    ) -> Result<(String, PersistedSession), SessionRealizationControlFailure> {
+    ) -> Result<(String, crate::SessionAggregate), SessionRealizationControlFailure> {
         let (owner_scope, session) = self
             .session_for_realization_without_credential_migration(session_id)
             .await?;
@@ -975,7 +977,10 @@ impl SessionApplication {
             .ensure_repository_credentials_pinned(&owner_scope, session)
             .await
             .map_err(unavailable)?;
-        Ok((owner_scope, session))
+        Ok((
+            owner_scope,
+            crate::mutation::aggregate_from_snapshot(session).map_err(repository_control)?,
+        ))
     }
 }
 

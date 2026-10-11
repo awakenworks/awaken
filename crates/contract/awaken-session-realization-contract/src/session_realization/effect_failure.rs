@@ -78,7 +78,7 @@ pub fn effect_failure_disposition(error: &RunError) -> SessionRealizationControl
 /// The Session aggregate's decision for one exact, current realization
 /// failure of an initial (non-Idle) realization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RealizationFailureOutcome {
+pub enum RealizationFailureOutcome {
     /// Keep the execution state and expire the lease; `refund_attempt` returns
     /// the attempt the lease's assignment counted (no environment was made).
     Retry { refund_attempt: bool },
@@ -139,15 +139,13 @@ impl FailSessionRealization {
         }
     }
 
-    /// Whether this failure retries the Session's initial realization (Idle
-    /// Sessions answer `false` and keep their existing path). A capacity
-    /// refusal retries and refunds the attempt its lease's assignment counted
-    /// (Preparing or Activating), so it never spends the persisted budget.
-    pub fn retries_initial_realization(
+    /// Classify the current root without mutating its compatible DTO. The
+    /// controlled aggregate applies any counted-attempt refund separately.
+    pub fn initial_realization_failure_plan(
         &self,
-        session: &mut PersistedSession,
+        session: &PersistedSession,
         budget: u32,
-    ) -> Result<bool, crate::SessionRealizationControlFailure> {
+    ) -> Result<RealizationFailureOutcome, crate::SessionRealizationControlFailure> {
         let outcome = realization_failure_outcome(
             self.retryable,
             self.capacity_unavailable,
@@ -157,8 +155,21 @@ impl FailSessionRealization {
         )
         .map_err(|reason| crate::SessionRealizationControlFailure::Invalid(reason.into()))?;
         if session.execution == SessionExecutionState::Idle {
-            return Ok(false);
+            return Ok(RealizationFailureOutcome::Absorb);
         }
+        Ok(outcome)
+    }
+
+    /// Whether this failure retries the Session's initial realization (Idle
+    /// Sessions answer `false` and keep their existing path). A capacity
+    /// refusal retries and refunds the attempt its lease's assignment counted
+    /// (Preparing or Activating), so it never spends the persisted budget.
+    pub fn retries_initial_realization(
+        &self,
+        session: &mut PersistedSession,
+        budget: u32,
+    ) -> Result<bool, crate::SessionRealizationControlFailure> {
+        let outcome = self.initial_realization_failure_plan(session, budget)?;
         Ok(match outcome {
             RealizationFailureOutcome::Retry { refund_attempt } => {
                 if refund_attempt {
