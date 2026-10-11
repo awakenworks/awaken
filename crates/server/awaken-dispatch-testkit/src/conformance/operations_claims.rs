@@ -16,7 +16,7 @@
 /// initial cursor.
 pub async fn assert_dispatch_operational_feed_conformance<S>(store: &S, namespace: &str)
 where
-    S: ControlDispatchQueue + DispatchOperationalFeed + ?Sized,
+    S: ConformanceDispatch + DispatchOperationalFeed + ?Sized,
 {
     assert_dispatch_operational_feed_conformance_with_clock(
         store,
@@ -64,7 +64,7 @@ pub async fn assert_occupied_slot_quarantine_conformance_with_clock<S>(
     namespace: &str,
     clock: &dyn ConformanceClock,
 ) where
-    S: ControlDispatchQueue + ?Sized,
+    S: ConformanceDispatch + ?Sized,
 {
     // Both cases need a row that has actually burned its retry budget, so each
     // one claims, loses the lease, and is recovered by a successor. Only the
@@ -230,7 +230,7 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
     namespace: &str,
     clock: &dyn ConformanceClock,
 ) where
-    S: ControlDispatchQueue + DispatchOperationalFeed + ?Sized,
+    S: ConformanceDispatch + DispatchOperationalFeed + ?Sized,
 {
     let baseline = store
         .events_after(DispatchCursor(0), usize::MAX, None)
@@ -511,7 +511,7 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
 }
 
 async fn local_claims_skip_remote_only_work(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {
@@ -607,7 +607,7 @@ async fn local_claims_skip_remote_only_work(
 }
 
 async fn exact_claim_recovery_and_fencing(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {
@@ -790,7 +790,7 @@ async fn exact_claim_recovery_and_fencing(
 }
 
 async fn parent_mediated_commands_are_atomic(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {

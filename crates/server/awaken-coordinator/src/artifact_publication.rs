@@ -7,7 +7,7 @@ use awaken_resource_contract::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
     ArtifactRecovery,
 };
-use awaken_dispatch::{AnyDispatchStore, DispatchQueue};
+use awaken_dispatch::DispatchCommitAuthority;
 use awaken_session_realization_contract::ResourceOperationFence;
 
 use awaken_time::WallClockExt as _;
@@ -17,7 +17,7 @@ use awaken_time::WallClockExt as _;
 /// topology-independent publication contract.
 pub struct ClaimFencedArtifactPublisher {
     inner: Arc<dyn ArtifactPublisher<ResourceOperationFence>>,
-    dispatch: Arc<AnyDispatchStore>,
+    dispatch: Arc<dyn DispatchCommitAuthority>,
     terminal_preparation_control:
         OnceLock<Arc<dyn awaken_session_realization_contract::SessionTerminalPreparationControl>>,
     checkpoint_artifact_control:
@@ -31,7 +31,7 @@ impl ClaimFencedArtifactPublisher {
     #[must_use]
     pub fn new(
         inner: Arc<dyn ArtifactPublisher<ResourceOperationFence>>,
-        dispatch: Arc<AnyDispatchStore>,
+        dispatch: Arc<dyn DispatchCommitAuthority>,
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self {
@@ -312,6 +312,8 @@ fn control_publication_error(
 
 #[cfg(test)]
 mod tests {
+    use awaken_dispatch::DispatchClaims;
+    use awaken_dispatch::DispatchEnqueue;
     /// The tests' host-clock reading, the clock their publishers use.
     fn artifact_now_ms() -> u64 {
         awaken_time::WallClockExt::now_ms(awaken_time::system_clock().as_ref())
@@ -319,7 +321,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use awaken_dispatch::{Dispatch, MemoryDispatchStore};
+    use awaken_dispatch::MemoryDispatchStore;
     use awaken_session_realization_contract::SessionRealizationControlFailure;
 
     use super::*;
@@ -480,9 +482,12 @@ mod tests {
                 expires_at_unix_ms: now_unix_ms.saturating_sub(20_001),
             },
         );
-        let dispatch = Arc::new(AnyDispatchStore::from_dispatch(
-            Arc::new(MemoryDispatchStore::new(awaken_time::system_clock())) as Arc<dyn Dispatch>,
-        ));
+        let dispatch = Arc::new(
+            awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(
+                MemoryDispatchStore::new(awaken_time::system_clock()),
+            )
+                as Arc<dyn awaken_dispatch::DurableDispatch>),
+        );
         let publisher_for = |asserted_effect, current_lease| {
             let inner = Arc::new(RecordingPublisher::default());
             let publisher = ClaimFencedArtifactPublisher::new(
@@ -775,7 +780,11 @@ mod tests {
             let inner = Arc::new(RecordingPublisher::default());
             let peer = ClaimFencedArtifactPublisher::new(
                 inner.clone(),
-                Arc::new(AnyDispatchStore::from_dispatch(queue as Arc<dyn Dispatch>)),
+                Arc::new(
+                    awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(
+                        queue as Arc<dyn awaken_dispatch::DurableDispatch>,
+                    ),
+                ),
                 awaken_time::system_clock(),
             );
             let fence = ResourceOperationFence::Run(claim);
@@ -875,10 +884,12 @@ mod tests {
                 None,
             );
             let inner = Arc::new(RecordingPublisher::default());
-            let queue = Arc::new(AnyDispatchStore::from_dispatch(
-                Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()))
-                    as Arc<dyn Dispatch>,
-            ));
+            let queue = Arc::new(
+                awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(
+                    MemoryDispatchStore::new(awaken_time::system_clock()),
+                )
+                    as Arc<dyn awaken_dispatch::DurableDispatch>),
+            );
             let peer = ClaimFencedArtifactPublisher::new(
                 inner.clone(),
                 queue,

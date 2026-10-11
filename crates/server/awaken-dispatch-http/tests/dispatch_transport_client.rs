@@ -1,10 +1,10 @@
 // @formal evidence credential.attempt_delivery_is_exact_epoch_bound_and_authority_preserving
 //! End-to-end over real HTTP: a database-less worker's `HttpDispatchQueue` drives
 //! the Control Node's Worker routes — enqueue → claim → renew → settle —
-//! through the `DispatchQueue` trait, exactly as the pool would. Its own test binary
+//! through the `WorkerDispatchAuthority` trait, exactly as the pool would. Its own test binary
 //! (installs a one-shot injected dispatch store).
 
-use awaken_dispatch_contract::{ClaimedCheckpointTransport as _, ControlDispatchQueue};
+use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
@@ -22,9 +22,9 @@ use awaken_credential_contract::{
 use awaken_credential_contract::{CredentialRealizationCapabilities, CredentialRealizationKind};
 use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
-    AnyDispatchStore, CredentialRealizationReceipt, DispatchOutcome, DispatchQueue, DispatchState,
-    FencedStreamCheckpointStore, MemoryDispatchStore, PendingInput, RunClaim, RunDispatch,
-    WorkerIdentity,
+    CredentialRealizationReceipt, DispatchBinding, DispatchOutcome, DispatchState,
+    DispatchTopology, FencedStreamCheckpointStore, MemoryDispatchStore, PendingInput, RunClaim,
+    RunDispatch, WorkerIdentity,
 };
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_runtime_contract::activation::RunActivation;
@@ -303,8 +303,6 @@ async fn claim_loss_during_delivery_issuance_returns_no_carrier() {
     let refresh_queue = queue.clone();
     let refresh = tokio::spawn(async move {
         refresh_queue
-            .claimed_credential_delivery_transport()
-            .unwrap()
             .refresh_credential_delivery(&claim, delivery_request)
             .await
     });
@@ -413,10 +411,17 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
             .resolved_spec
             .model_binding;
         let delivery_request = refresh_request(&claimed.credential_bindings[0], candidate);
-        let worker_dispatch = AnyDispatchStore::from_dispatch(queue.clone());
-        let refreshed = worker_dispatch
-            .claimed_credential_delivery_transport()
-            .unwrap()
+        let worker_dispatch = DispatchBinding::remote(
+            queue.clone(),
+            Arc::new(awaken_coordinator_client::RemoteClaimedRunCommit::new(
+                format!("http://{addr}"),
+                WorkerIdentity::new("worker-1", "boot-1", 1),
+            )),
+        );
+        let DispatchTopology::Remote { credentials, .. } = worker_dispatch.placement() else {
+            panic!("R3 required remote credential authority");
+        };
+        let refreshed = credentials
             .refresh_credential_delivery(&RunClaim::from(&claimed.lease), delivery_request.clone())
             .await
             .expect("R3 transport")
@@ -431,9 +436,7 @@ async fn expired_publication_delivery_is_reissued_or_relinquished_for_the_exact_
         );
         dispatch_clock.set(claimed.lease.expires_ms());
         assert!(
-            worker_dispatch
-                .claimed_credential_delivery_transport()
-                .unwrap()
+            credentials
                 .refresh_credential_delivery(&RunClaim::from(&claimed.lease), delivery_request)
                 .await
                 .expect("R4 transport")
@@ -458,7 +461,7 @@ async fn remote_special_claim_uses_control_side_retry_policy_without_quarantinin
     let clock = Arc::new(ManualClock::new(0));
     let service = Arc::new(
         WorkerDispatchService::new(
-            mem.clone() as Arc<dyn ControlDispatchQueue>,
+            mem.clone() as Arc<dyn WorkerDispatchAuthority>,
             Arc::new(HeaderWorkerAuthenticator),
             clock.clone(),
             Arc::new(FixedWorkerLeasePolicy::new(1_000)),
@@ -595,7 +598,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
     let clock = Arc::new(ManualClock::new(0));
     let service = Arc::new(
         WorkerDispatchService::new(
-            mem.clone() as Arc<dyn ControlDispatchQueue>,
+            mem.clone() as Arc<dyn WorkerDispatchAuthority>,
             Arc::new(HeaderWorkerAuthenticator),
             clock.clone(),
             Arc::new(FixedWorkerLeasePolicy::new(1_000)),
@@ -676,7 +679,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
         "R1"
     );
     let remote_checkpoint =
-        FencedStreamCheckpointStore::new(None, queue.clone(), original_claim.clone());
+        FencedStreamCheckpointStore::remote(queue.clone(), original_claim.clone());
     assert_eq!(
         remote_checkpoint.get("run-A").await,
         Observed::Present(checkpoint("current")),
@@ -770,7 +773,7 @@ async fn db_less_worker_drives_runs_over_real_http() {
         "R3"
     );
     let replacement_checkpoint =
-        FencedStreamCheckpointStore::new(None, recovery_queue.clone(), replacement_claim.clone());
+        FencedStreamCheckpointStore::remote(recovery_queue.clone(), replacement_claim.clone());
     assert_eq!(
         replacement_checkpoint.get("run-A").await,
         Observed::Present(checkpoint("replacement")),
@@ -893,12 +896,10 @@ async fn db_less_worker_drives_runs_over_real_http() {
         .await
         .expect("finish child over http");
 
-    // A server-local write verb is refused on the worker transport (cancel is the
-    // server's to make — a worker never cancels a peer's run).
-    assert!(
-        queue.cancel(&RunId("no-such-run".into())).await.is_err(),
-        "cancel is not available on the worker dispatch transport"
-    );
+    // Cancel is absent from the Worker type; HttpDispatchQueue's compile-fail
+    // example owns that refusal. This real transport supplies all Remote roles.
+    fn remote_role<T: awaken_dispatch::RemoteDispatch>() {}
+    remote_role::<HttpDispatchQueue>();
 }
 
 /// Receipt transport cause graph:
@@ -999,3 +1000,12 @@ async fn credential_receipt_is_verified_and_fenced_over_real_http() {
         "R3 stale receipt is fenced over HTTP"
     );
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _, DispatchExecution as _,
+    DispatchReads as _, DispatchSettlement as _,
+};
+
+use awaken_dispatch_http::WorkerDispatchAuthority;
+
+use awaken_dispatch_contract::ClaimedCredentialDeliveryTransport as _;

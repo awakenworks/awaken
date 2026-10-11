@@ -12,7 +12,7 @@ use awaken_runtime_contract::resume::ResumeCommand;
 /// `RequirePredecessorQuiescence` recovery, so a replacement claim can take over
 /// only an acknowledged slot.
 struct BlockingManagedAttempt {
-    dispatch: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
+    dispatch: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
     executions: AtomicUsize,
     entered: tokio::sync::Notify,
     live_cancel_observed: tokio::sync::Notify,
@@ -68,7 +68,7 @@ impl RunAttemptExecutor for BlockingManagedAttempt {
 
 struct InterruptedManagedRun {
     host: Arc<SharedHost>,
-    dispatch: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
+    dispatch: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
     attempt: Arc<BlockingManagedAttempt>,
     thread: &'static str,
     run_id: RunId,
@@ -335,3 +335,5 @@ async fn managed_interrupt_signals_the_registered_attempt_only_after_durable_int
         "L2 a late ACK never rewrites committed truth"
     );
 }
+
+use awaken_dispatch_contract::{DispatchEnqueue as _, DispatchReads as _};

@@ -14,8 +14,8 @@ use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
-use awaken_dispatch_erasure::AnyDispatchStore;
-use awaken_dispatch_contract::{ClaimedRunCommit, PendingInput};
+use awaken_dispatch_erasure::DispatchBinding;
+use awaken_dispatch_contract::PendingInput;
 use awaken_runtime::RunInput;
 use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::activation::RunActivation;
@@ -117,7 +117,7 @@ pub(crate) struct RunScheduler {
     /// The Host's clock: the foreground child scheduler and every later
     /// ownership operation retain this one edge clock.
     pub(crate) clock: Arc<dyn WallClock>,
-    pub(crate) store: Arc<AnyDispatchStore>,
+    pub(crate) binding: DispatchBinding,
     /// Unfenced session commit authority. The child worker binds its own
     /// `RunClaim`; inheriting the parent's already-fenced coordinator would nest
     /// two claim guards and deadlock the shared dispatch authority.
@@ -127,8 +127,6 @@ pub(crate) struct RunScheduler {
     /// committed child state after a process restart.
     pub(crate) reader: Arc<dyn CommittedThreadView>,
     pub(crate) owner: String,
-    pub(crate) claimed_commit: Option<Arc<dyn ClaimedRunCommit>>,
-    pub(crate) recovery_projection: Option<Arc<awaken_dispatch_execution::RecoveryProjection>>,
     /// Parent Session resource authority inherited by a child dispatch. The child
     /// keeps its own Run/thread lifecycle while executing in the parent's Session
     /// environment, so a replacement worker must install the same frozen manifest.
@@ -151,9 +149,11 @@ impl RunScheduler {
     /// projection here. That projection cannot contain a child Thread, so remote
     /// children must continue through their own claim-installed projection.
     pub(crate) fn local_child_reader(&self) -> Option<Arc<dyn CommittedThreadView>> {
-        self.recovery_projection
-            .is_none()
-            .then(|| self.reader.clone())
+        matches!(
+            self.binding.placement(),
+            awaken_dispatch_erasure::DispatchTopology::Local(_)
+        )
+        .then(|| self.reader.clone())
     }
 }
 
@@ -1177,16 +1177,14 @@ mod tests {
             let scheduler = if durable {
                 Some(RunScheduler {
                     clock: clock.clone(),
-                    store: Arc::new(
+                    binding: awaken_dispatch_erasure::DispatchBinding::local(Arc::new(
                         awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
                             .await
                             .unwrap(),
-                    ),
+                    )),
                     commit: commit.clone(),
                     reader: commit.clone(),
                     owner: "child-worker".into(),
-                    claimed_commit: None,
-                    recovery_projection: None,
                     session_resources: None,
                     publication_source: None,
                     claimed_model_request_gate: None,
@@ -1305,16 +1303,14 @@ mod tests {
         let dispatch_path = dispatch_path.to_string_lossy().to_string();
         let scheduler = RunScheduler {
             clock: clock.clone(),
-            store: Arc::new(
+            binding: awaken_dispatch_erasure::DispatchBinding::local(Arc::new(
                 awaken_dispatch::open_sqlite_dispatch_store(&dispatch_path, clock.clone())
                     .await
                     .expect("child dispatch store"),
-            ),
+            )),
             commit: commit.clone(),
             reader: commit.clone(),
             owner: "replacement-worker".to_string(),
-            claimed_commit: None,
-            recovery_projection: None,
             session_resources: None,
             publication_source: None,
             claimed_model_request_gate: None,
@@ -1375,16 +1371,14 @@ mod tests {
         // runtime object from committed truth; no child handle crosses this seam.
         let replacement = RunScheduler {
             clock: clock.clone(),
-            store: Arc::new(
+            binding: awaken_dispatch_erasure::DispatchBinding::local(Arc::new(
                 awaken_dispatch::open_sqlite_dispatch_store(&dispatch_path, clock.clone())
                     .await
                     .expect("reopen child dispatch"),
-            ),
+            )),
             commit: commit.clone(),
             reader: commit.clone(),
             owner: "replacement-worker-2".to_string(),
-            claimed_commit: None,
-            recovery_projection: None,
             session_resources: None,
             publication_source: None,
             claimed_model_request_gate: None,
@@ -1446,16 +1440,14 @@ mod tests {
             clock.clone(),
             execution(RunScheduler {
                 clock: clock.clone(),
-                store: Arc::new(
+                binding: awaken_dispatch_erasure::DispatchBinding::local(Arc::new(
                     awaken_dispatch::open_sqlite_dispatch_store(&dispatch_path, clock.clone())
                         .await
                         .expect("reopen terminal child dispatch"),
-                ),
+                )),
                 commit: commit.clone(),
                 reader: commit.clone(),
                 owner: "replacement-worker-3".to_string(),
-                claimed_commit: None,
-                recovery_projection: None,
                 session_resources: None,
                 publication_source: None,
                 claimed_model_request_gate: None,

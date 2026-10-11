@@ -140,8 +140,9 @@ async fn select_claim_band(
 
 // SQLite realization of the one neutral DispatchQueue contract. Included by
 // `sqlite.rs` so the public adapter and trait implementation paths do not move.
+
 #[async_trait]
-impl DispatchQueue for SqliteDispatchStore {
+impl awaken_dispatch_contract::DispatchCommitAuthority for SqliteDispatchStore {
     async fn worker_owns_run(
         &self,
         identity: &crate::WorkerIdentity,
@@ -175,6 +176,16 @@ impl DispatchQueue for SqliteDispatchStore {
             .transpose()
     }
 
+    async fn lock_commit_epoch(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<CommitEpochGuard>, DispatchError> {
+        self.lock_claim_epoch_in_status(claim, "running").await
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::DispatchClaims for SqliteDispatchStore {
     async fn resolve_claimed_session_run_reservation(
         &self,
         claim: &RunClaim,
@@ -302,28 +313,6 @@ impl DispatchQueue for SqliteDispatchStore {
         }
         tx.commit().await.map_err(store_error)?;
         Ok(SettleOutcome::Applied)
-    }
-
-    async fn enqueue_with(
-        &self,
-        request: RunDispatch,
-        options: SubmitOptions,
-    ) -> Result<(), DispatchError> {
-        let (_authority, mut conn) = self.with_conn().await?;
-        let p = NS;
-        let mut tx = immediate(&mut conn).await?;
-
-        // A replayed completed run is a no-op before supersession, so it
-        // cannot mutate sibling rows on its thread (ADR-0060).
-        if exact_run_replay(&mut tx, p, &request).await? {
-            tx.commit().await.map_err(store_error)?;
-            return Ok(());
-        }
-
-        validate_executable_dispatch_admission(&request)?;
-        insert_new_dispatch(&mut tx, p, &request, &options).await?;
-        tx.commit().await.map_err(store_error)?;
-        Ok(())
     }
 
     async fn claim_new_run(
@@ -471,13 +460,6 @@ impl DispatchQueue for SqliteDispatchStore {
         .await?;
         tx.commit().await.map_err(store_error)?;
         Ok(claimed)
-    }
-
-    async fn lock_commit_epoch(
-        &self,
-        claim: &RunClaim,
-    ) -> Result<Option<CommitEpochGuard>, DispatchError> {
-        self.lock_claim_epoch_in_status(claim, "running").await
     }
 
     async fn claim(
@@ -661,7 +643,35 @@ impl DispatchQueue for SqliteDispatchStore {
         tx.commit().await.map_err(store_error)?;
         Ok(claimed)
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::DispatchEnqueue for SqliteDispatchStore {
+    async fn enqueue_with(
+        &self,
+        request: RunDispatch,
+        options: SubmitOptions,
+    ) -> Result<(), DispatchError> {
+        let (_authority, mut conn) = self.with_conn().await?;
+        let p = NS;
+        let mut tx = immediate(&mut conn).await?;
+
+        // A replayed completed run is a no-op before supersession, so it
+        // cannot mutate sibling rows on its thread (ADR-0060).
+        if exact_run_replay(&mut tx, p, &request).await? {
+            tx.commit().await.map_err(store_error)?;
+            return Ok(());
+        }
+
+        validate_executable_dispatch_admission(&request)?;
+        insert_new_dispatch(&mut tx, p, &request, &options).await?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::DispatchExecution for SqliteDispatchStore {
     async fn renew_lease(
         &self,
         claim: &RunClaim,
@@ -826,18 +836,6 @@ impl DispatchQueue for SqliteDispatchStore {
         Ok(SettleOutcome::Applied)
     }
 
-    /// The store's own clock decides liveness, exactly as it does for every
-    /// other deadline this backend judges. This used to ride the trait default
-    /// on a caller-supplied `now_ms`; the caller no longer has a say in when
-    /// "now" is for rows this store owns.
-    async fn claim_is_current(&self, claim: &RunClaim) -> Result<bool, DispatchError> {
-        let now_ms = self.clock.now_ms();
-        Ok(self
-            .lock_commit_epoch(claim)
-            .await?
-            .is_some_and(|guard| guard.is_live_at(now_ms)))
-    }
-
     async fn begin_attempt(
         &self,
         claim: &RunClaim,
@@ -886,7 +884,25 @@ impl DispatchQueue for SqliteDispatchStore {
         let (_authority, mut conn) = self.with_conn().await?;
         release_claim_transaction(&mut conn, NS, claim, Some(retry_not_before), now_ms).await
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::DispatchClaimOwnership for SqliteDispatchStore {
+    /// The store's own clock decides liveness, exactly as it does for every
+    /// other deadline this backend judges. This used to ride the trait default
+    /// on a caller-supplied `now_ms`; the caller no longer has a say in when
+    /// "now" is for rows this store owns.
+    async fn claim_is_current(&self, claim: &RunClaim) -> Result<bool, DispatchError> {
+        let now_ms = self.clock.now_ms();
+        Ok(self
+            .lock_commit_epoch(claim)
+            .await?
+            .is_some_and(|guard| guard.is_live_at(now_ms)))
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::DispatchSettlement for SqliteDispatchStore {
     async fn settle(
         &self,
         run_id: &RunId,
@@ -1052,7 +1068,10 @@ impl DispatchQueue for SqliteDispatchStore {
         tx.commit().await.map_err(store_error)?;
         Ok(SettleOutcome::Applied)
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::DispatchMaintenance for SqliteDispatchStore {
     async fn quarantine_retry_exhausted(
         &self,
         max_attempts: u64,
@@ -1175,6 +1194,57 @@ impl DispatchQueue for SqliteDispatchStore {
         Ok(quarantined)
     }
 
+    async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
+        let (_authority, mut conn) = self.with_conn().await?;
+        let p = NS;
+        let mut tx = immediate(&mut conn).await?;
+        sqlx::query(&format!(
+            "DELETE FROM {p}_pending WHERE run_id IN \
+             (SELECT run_id FROM {p}_dispatch WHERE status = 'dead_letter')"
+        ))
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let n = affected(
+            sqlx::query(&format!(
+                "DELETE FROM {p}_dispatch WHERE status = 'dead_letter'"
+            ))
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?,
+        );
+        tx.commit().await.map_err(store_error)?;
+        Ok(n)
+    }
+
+    async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, DispatchError> {
+        let (_authority, mut conn) = self.with_conn().await?;
+        let p = NS;
+        let cond = "status = 'dead_letter' AND dead_lettered_at IS NOT NULL \
+                    AND dead_lettered_at <= ?1";
+        let mut tx = immediate(&mut conn).await?;
+        sqlx::query(&format!(
+            "DELETE FROM {p}_pending WHERE run_id IN \
+             (SELECT run_id FROM {p}_dispatch WHERE {cond})"
+        ))
+        .bind(crate::clock::db_millis(cutoff_ms))
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let n = affected(
+            sqlx::query(&format!("DELETE FROM {p}_dispatch WHERE {cond}"))
+                .bind(crate::clock::db_millis(cutoff_ms))
+                .execute(&mut *tx)
+                .await
+                .map_err(store_error)?,
+        );
+        tx.commit().await.map_err(store_error)?;
+        Ok(n)
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::DispatchReads for SqliteDispatchStore {
     async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
         self.run_ids_by_status("dead_letter").await
     }
@@ -1186,7 +1256,10 @@ impl DispatchQueue for SqliteDispatchStore {
     async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
         self.read_dispatch_summaries(None).await
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::DispatchAdministration for SqliteDispatchStore {
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {
         let run_id = run_id.0.clone();
         let (_authority, mut conn) = self.with_conn().await?;
@@ -1302,56 +1375,6 @@ impl DispatchQueue for SqliteDispatchStore {
         tx.commit().await.map_err(store_error)?;
         Ok(current.map(|(thread, _, _, _, _)| ThreadId(thread)))
     }
-
-    async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
-        let (_authority, mut conn) = self.with_conn().await?;
-        let p = NS;
-        let mut tx = immediate(&mut conn).await?;
-        sqlx::query(&format!(
-            "DELETE FROM {p}_pending WHERE run_id IN \
-             (SELECT run_id FROM {p}_dispatch WHERE status = 'dead_letter')"
-        ))
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let n = affected(
-            sqlx::query(&format!(
-                "DELETE FROM {p}_dispatch WHERE status = 'dead_letter'"
-            ))
-            .execute(&mut *tx)
-            .await
-            .map_err(store_error)?,
-        );
-        tx.commit().await.map_err(store_error)?;
-        Ok(n)
-    }
-
-    async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, DispatchError> {
-        let (_authority, mut conn) = self.with_conn().await?;
-        let p = NS;
-        let cond = "status = 'dead_letter' AND dead_lettered_at IS NOT NULL \
-                    AND dead_lettered_at <= ?1";
-        let mut tx = immediate(&mut conn).await?;
-        sqlx::query(&format!(
-            "DELETE FROM {p}_pending WHERE run_id IN \
-             (SELECT run_id FROM {p}_dispatch WHERE {cond})"
-        ))
-        .bind(crate::clock::db_millis(cutoff_ms))
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let n = affected(
-            sqlx::query(&format!("DELETE FROM {p}_dispatch WHERE {cond}"))
-                .bind(crate::clock::db_millis(cutoff_ms))
-                .execute(&mut *tx)
-                .await
-                .map_err(store_error)?,
-        );
-        tx.commit().await.map_err(store_error)?;
-        Ok(n)
-    }
-
-    fn control(&self) -> Option<&dyn ControlDispatchQueue> {
-        Some(self)
-    }
 }
+
+use awaken_dispatch_contract::DispatchCommitAuthority as _;

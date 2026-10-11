@@ -12,6 +12,7 @@ layer = "infrastructure"
 authority = "dispatch-execution"
 
 [dependencies]
+awaken-dispatch-erasure.workspace = true
 awaken-credential-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-dispatch-contract.workspace = true
@@ -35,6 +36,7 @@ default = []
 test-support = []
 
 [dev-dependencies]
+awaken-coordinator-client.workspace = true
 awaken-dispatch = { workspace = true, features = ["test-support"] }
 awaken-lease-testkit.workspace = true
 awaken-store-inmem.workspace = true

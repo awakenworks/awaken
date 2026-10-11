@@ -9,9 +9,7 @@ mod harness;
 
 #[tokio::test]
 async fn closed_entry_survives_process_reopen_and_rejects_late_worker_ack() {
-    use awaken_dispatch::{
-        ControlDispatchQueue, DispatchQueue, SettleOutcome, SqliteDispatchStore,
-    };
+    use awaken_dispatch::{SettleOutcome, SqliteDispatchStore};
     // C1 close is committed before its caller loses the response; C2 all
     // process-local handles vanish; C3 an old ACK arrives after cold reopen;
     // C4 independent exact closure becomes available. S1=C1+C2 => closing
@@ -202,7 +200,6 @@ async fn sqlite_ack_retirement_survives_reopen_and_sql_bypass_is_rejected() {
     }
 }
 
-use awaken_dispatch_contract::ControlDispatchQueue;
 use awaken_time::system_clock;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -216,8 +213,8 @@ use awaken_agent_contract::thread::commit::staged::{CommitRecord, RunDisposition
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch::{
     ClaimedCommitCoordinator, ClaimedRunCommit, DispatchCursor, DispatchOperation,
-    DispatchOperationalFeed, DispatchQueue, DispatchTestHarness, GuardedRunCommit, Inbox,
-    PendingInput, RunClaim, RunDispatch, SqliteDispatchStore,
+    DispatchOperationalFeed, DispatchTestHarness, GuardedRunCommit, Inbox, PendingInput, RunClaim,
+    RunDispatch, SqliteDispatchStore,
 };
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_sqlite::SqliteCommitCoordinator;
@@ -803,3 +800,8 @@ async fn wake_suppressed_while_thread_running_on_sqlite() {
         .expect("open");
     harness::assert_wake_suppressed_while_thread_running(&store, &clock).await;
 }
+
+use awaken_dispatch_contract::{
+    DispatchAdministration as _, DispatchAttemptControl as _, DispatchClaims as _,
+    DispatchControlReads as _, DispatchEnqueue as _, DispatchExecution as _, DispatchReads as _,
+};

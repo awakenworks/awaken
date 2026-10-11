@@ -12,12 +12,11 @@
 
 mod harness;
 
-use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
-use awaken_dispatch::{DispatchQueue, DispatchWorker, Error, MemoryDispatchStore, RunDispatch};
+use awaken_dispatch::{DispatchWorker, Error, MemoryDispatchStore, RunDispatch};
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_store_inmem::MemoryCommitCoordinator;
@@ -329,3 +328,7 @@ async fn a_chain_of_scheduled_actions_is_performed_to_completion_in_one_drive() 
         );
     }
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _, DispatchReads as _,
+};

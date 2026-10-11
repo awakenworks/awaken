@@ -18,9 +18,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch::MemoryDispatchStore;
 use awaken_dispatch_contract::RunDispatch;
-use awaken_dispatch_contract::dispatch::{
-    DispatchOutcome, DispatchQueue, RunClaim, SettleOutcome,
-};
+use awaken_dispatch_contract::dispatch::{DispatchOutcome, RunClaim, SettleOutcome};
 use awaken_dispatch_testkit::{AuthoritativeWallClock, ConformanceClock, ManualStoreClock};
 use awaken_runtime_contract::activation::RunActivation;
 
@@ -69,7 +67,7 @@ fn req(run: &str, thread: &str) -> RunDispatch {
 /// enqueue → claim (unbound) → bind_sandbox → the lease expires and a recovery
 /// re-claim returns the SAME sandbox binding.
 async fn binding_survives_a_recovery_claim(
-    store: &dyn DispatchQueue,
+    store: &dyn ConformanceDispatch,
     clock: &dyn ConformanceClock,
 ) {
     let run = RunId("run-1".into());
@@ -153,3 +151,5 @@ async fn postgres_backend_binds_and_recovers() {
         .expect("migrate isolated schema (incl. V0011 sandbox column)");
     binding_survives_a_recovery_claim(&store, &AuthoritativeWallClock).await;
 }
+
+use awaken_dispatch_testkit::ConformanceDispatch;

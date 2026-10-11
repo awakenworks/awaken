@@ -20,7 +20,7 @@ type CompatibleCandidateRow = (
 );
 
 #[async_trait]
-impl ControlDispatchQueue for SqliteDispatchStore {
+impl awaken_dispatch_contract::DispatchAttemptControl for SqliteDispatchStore {
     async fn finish_attempt_closure(
         &self,
         claim: &RunClaim,
@@ -37,7 +37,10 @@ impl ControlDispatchQueue for SqliteDispatchStore {
     ) -> Result<AttemptAdmission, DispatchError> {
         crate::application::admit_with_incarnation_guard(self, claim, binding, guard, handoff).await
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::DispatchControlReads for SqliteDispatchStore {
     async fn current_credential_binding(
         &self,
         claim: &RunClaim,
@@ -72,6 +75,130 @@ impl ControlDispatchQueue for SqliteDispatchStore {
             .find(|binding| binding.candidate_fingerprint == candidate))
     }
 
+    async fn dispatch_depths(&self) -> Result<Option<DispatchDepths>, DispatchError> {
+        self.query_dispatch_depths().await
+    }
+
+    async fn load_physical_attempt(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<PhysicalAttempt>, DispatchError> {
+        let run_id = run_id.clone();
+        let (_authority, mut conn) = self.with_conn().await?;
+        let p = NS;
+        let row: Option<(Option<String>, Option<i64>, Option<String>, String, bool)> =
+            sqlx::query_as(&format!(
+                "SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, request, active_attempt_closing FROM {p}_dispatch WHERE run_id = ?1"
+            ))
+            .bind(&run_id.0)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(store_error)?;
+        let Some((owner, epoch, binding, request_json, closing)) = row else {
+            return Ok(None);
+        };
+        let request: RunDispatch = serde_json::from_str(&request_json).map_err(json_err)?;
+        crate::dispatch::decode_physical_attempt(
+            &run_id,
+            owner,
+            epoch
+                .map(|v| durable_u64("dispatch attempt epoch", v))
+                .transpose()?,
+            binding,
+        )
+        .map(|attempt| {
+            attempt.map(|mut attempt| {
+                attempt.closing = closing;
+                attempt.thread_id = Some(request.thread_id().clone());
+                attempt.session_thread_id = request.session_thread_id.clone();
+                attempt
+            })
+        })
+    }
+
+    async fn completion_events_after(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let after_sequence = i64::try_from(after_sequence).map_err(|_| {
+            DispatchError::Rejected("completion cursor exceeds INTEGER range".to_string())
+        })?;
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let (_authority, mut conn) = self.with_conn().await?;
+        let p = NS;
+        let rows =
+            sqlx::query_as::<_, (i64, String, Option<String>, Option<String>, Option<String>)>(
+                &format!(
+                    "SELECT sequence, run_id, request_fingerprint, thread_id, session_thread_id \
+                 FROM {p}_dispatch_completion \
+                 WHERE sequence > ?1 ORDER BY sequence LIMIT ?2"
+                ),
+            )
+            .bind(after_sequence)
+            .bind(limit)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(store_error)?;
+        let mut events = Vec::new();
+        for (sequence, run_id, request_fingerprint, thread_id, session_thread_id) in rows {
+            events.push(DispatchCompletion {
+                sequence: u64::try_from(sequence).map_err(|_| {
+                    DispatchError::Rejected("persisted completion sequence is negative".to_string())
+                })?,
+                run_id: RunId(run_id),
+                thread_id: thread_id.map(ThreadId),
+                session_thread_id: session_thread_id.map(ThreadId),
+                request_fingerprint,
+            });
+        }
+        Ok(events)
+    }
+
+    async fn scan_dispatch_ids(
+        &self,
+        after: Option<&RunId>,
+        limit: usize,
+    ) -> Result<Vec<RunId>, DispatchError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).map_err(|_| {
+            DispatchError::Rejected("dispatch scan limit exceeds database range".into())
+        })?;
+        let after = after.map(|id| id.0.clone());
+        let (_authority, mut conn) = self.with_conn().await?;
+        let p = NS;
+        let clause = if after.is_some() {
+            "WHERE run_id > ?2"
+        } else {
+            ""
+        };
+        let sql = format!("SELECT run_id FROM {p}_dispatch {clause} ORDER BY run_id LIMIT ?1");
+        let mut query = sqlx::query_scalar::<_, String>(&sql).bind(limit);
+        if let Some(after) = after {
+            query = query.bind(after);
+        }
+        let ids = query.fetch_all(&mut *conn).await.map_err(store_error)?;
+        Ok(ids.into_iter().map(RunId).collect())
+    }
+
+    async fn dispatch_summary(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<DispatchSummary>, DispatchError> {
+        Ok(self
+            .read_dispatch_summaries(Some(run_id.0.clone()))
+            .await?
+            .pop())
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::SessionRunReservations for SqliteDispatchStore {
     async fn reserve_session_run(
         &self,
         request: RunDispatch,
@@ -284,7 +411,10 @@ impl ControlDispatchQueue for SqliteDispatchStore {
         tx.commit().await.map_err(store_error)?;
         Ok(())
     }
+}
 
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::SessionReservationAuthority for SqliteDispatchStore {
     async fn lock_session_run_reservation_epoch(
         &self,
         claim: &RunClaim,
@@ -292,7 +422,10 @@ impl ControlDispatchQueue for SqliteDispatchStore {
         self.lock_claim_epoch_in_status(claim, "reservation_running")
             .await
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::DispatchControlClaims for SqliteDispatchStore {
     async fn claim_placed(
         &self,
         requester: &WorkerSnapshot,
@@ -412,126 +545,5 @@ impl ControlDispatchQueue for SqliteDispatchStore {
         .await?;
         tx.commit().await.map_err(store_error)?;
         Ok(claimed)
-    }
-
-    async fn dispatch_depths(&self) -> Result<Option<DispatchDepths>, DispatchError> {
-        self.query_dispatch_depths().await
-    }
-
-    async fn load_physical_attempt(
-        &self,
-        run_id: &RunId,
-    ) -> Result<Option<PhysicalAttempt>, DispatchError> {
-        let run_id = run_id.clone();
-        let (_authority, mut conn) = self.with_conn().await?;
-        let p = NS;
-        let row: Option<(Option<String>, Option<i64>, Option<String>, String, bool)> =
-            sqlx::query_as(&format!(
-                "SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, request, active_attempt_closing FROM {p}_dispatch WHERE run_id = ?1"
-            ))
-            .bind(&run_id.0)
-            .fetch_optional(&mut *conn)
-            .await
-            .map_err(store_error)?;
-        let Some((owner, epoch, binding, request_json, closing)) = row else {
-            return Ok(None);
-        };
-        let request: RunDispatch = serde_json::from_str(&request_json).map_err(json_err)?;
-        crate::dispatch::decode_physical_attempt(
-            &run_id,
-            owner,
-            epoch
-                .map(|v| durable_u64("dispatch attempt epoch", v))
-                .transpose()?,
-            binding,
-        )
-        .map(|attempt| {
-            attempt.map(|mut attempt| {
-                attempt.closing = closing;
-                attempt.thread_id = Some(request.thread_id().clone());
-                attempt.session_thread_id = request.session_thread_id.clone();
-                attempt
-            })
-        })
-    }
-
-    async fn completion_events_after(
-        &self,
-        after_sequence: u64,
-        limit: usize,
-    ) -> Result<Vec<DispatchCompletion>, DispatchError> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
-        let after_sequence = i64::try_from(after_sequence).map_err(|_| {
-            DispatchError::Rejected("completion cursor exceeds INTEGER range".to_string())
-        })?;
-        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let (_authority, mut conn) = self.with_conn().await?;
-        let p = NS;
-        let rows =
-            sqlx::query_as::<_, (i64, String, Option<String>, Option<String>, Option<String>)>(
-                &format!(
-                    "SELECT sequence, run_id, request_fingerprint, thread_id, session_thread_id \
-                 FROM {p}_dispatch_completion \
-                 WHERE sequence > ?1 ORDER BY sequence LIMIT ?2"
-                ),
-            )
-            .bind(after_sequence)
-            .bind(limit)
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(store_error)?;
-        let mut events = Vec::new();
-        for (sequence, run_id, request_fingerprint, thread_id, session_thread_id) in rows {
-            events.push(DispatchCompletion {
-                sequence: u64::try_from(sequence).map_err(|_| {
-                    DispatchError::Rejected("persisted completion sequence is negative".to_string())
-                })?,
-                run_id: RunId(run_id),
-                thread_id: thread_id.map(ThreadId),
-                session_thread_id: session_thread_id.map(ThreadId),
-                request_fingerprint,
-            });
-        }
-        Ok(events)
-    }
-
-    async fn scan_dispatch_ids(
-        &self,
-        after: Option<&RunId>,
-        limit: usize,
-    ) -> Result<Vec<RunId>, DispatchError> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
-        let limit = i64::try_from(limit).map_err(|_| {
-            DispatchError::Rejected("dispatch scan limit exceeds database range".into())
-        })?;
-        let after = after.map(|id| id.0.clone());
-        let (_authority, mut conn) = self.with_conn().await?;
-        let p = NS;
-        let clause = if after.is_some() {
-            "WHERE run_id > ?2"
-        } else {
-            ""
-        };
-        let sql = format!("SELECT run_id FROM {p}_dispatch {clause} ORDER BY run_id LIMIT ?1");
-        let mut query = sqlx::query_scalar::<_, String>(&sql).bind(limit);
-        if let Some(after) = after {
-            query = query.bind(after);
-        }
-        let ids = query.fetch_all(&mut *conn).await.map_err(store_error)?;
-        Ok(ids.into_iter().map(RunId).collect())
-    }
-
-    async fn dispatch_summary(
-        &self,
-        run_id: &RunId,
-    ) -> Result<Option<DispatchSummary>, DispatchError> {
-        Ok(self
-            .read_dispatch_summaries(Some(run_id.0.clone()))
-            .await?
-            .pop())
     }
 }

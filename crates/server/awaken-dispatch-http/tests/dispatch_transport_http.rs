@@ -6,7 +6,6 @@
 //! installs a one-shot injected dispatch store, so it must not share a process with
 //! other dispatch tests.
 
-use awaken_dispatch_contract::ControlDispatchQueue;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -23,8 +22,8 @@ use awaken_agent_contract::thread::read::recovery::{
 };
 use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
-    DispatchQueue, DispatchSettlementError, DispatchSettlementObserver, MemoryDispatchStore,
-    RunClaim, RunDispatch, StreamEventRequest, StreamObservationRequest, WorkerIdentity,
+    DispatchSettlementError, DispatchSettlementObserver, MemoryDispatchStore, RunClaim,
+    RunDispatch, StreamEventRequest, StreamObservationRequest, WorkerIdentity,
 };
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_runtime_contract::activation::RunActivation;
@@ -766,7 +765,7 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
     let mem = Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()));
     let clock = Arc::new(ManualClock::new(0));
     let router = dispatch_transport_router_with_service(Arc::new(WorkerDispatchService::new(
-        mem as Arc<dyn ControlDispatchQueue>,
+        mem as Arc<dyn WorkerDispatchAuthority>,
         Arc::new(HeaderWorkerAuthenticator),
         clock.clone(),
         Arc::new(FixedWorkerLeasePolicy::new(30_000)),
@@ -1473,7 +1472,7 @@ async fn worker_stream_transport_forwards_only_live_events_from_the_current_clai
     let stream = Arc::new(MemoryStreamSink::new());
     let router = dispatch_transport_router_with_service(Arc::new(
         WorkerDispatchService::new(
-            mem.clone() as Arc<dyn ControlDispatchQueue>,
+            mem.clone() as Arc<dyn WorkerDispatchAuthority>,
             Arc::new(HeaderWorkerAuthenticator),
             Arc::new(ManualClock::new(0)),
             Arc::new(FixedWorkerLeasePolicy::new(30_000)),
@@ -1624,3 +1623,9 @@ async fn worker_stream_transport_forwards_only_live_events_from_the_current_clai
         "R6/E4 legacy context stays absent"
     );
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaims as _, DispatchEnqueue as _, DispatchExecution as _, DispatchReads as _,
+};
+
+use awaken_dispatch_http::WorkerDispatchAuthority;

@@ -1102,7 +1102,7 @@ pub enum WorkerTransportBuildError {
 }
 
 fn worker_checkpoint_authority(
-    dispatch: &awaken_dispatch::AnyDispatchStore,
+    dispatch: &awaken_dispatch::AnyCoordinatorDispatch,
     store_dir: Option<&std::path::Path>,
 ) -> Result<
     Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>,
@@ -1138,7 +1138,7 @@ fn worker_checkpoint_authority(
 #[cfg(test)]
 mod worker_checkpoint_authority_tests {
     use super::*;
-    use awaken_dispatch::{AnyDispatchStore, Dispatch, MemoryDispatchStore};
+    use awaken_dispatch::{AnyCoordinatorDispatch, MemoryDispatchStore};
 
     #[test]
     fn checkpoint_authority_selection_is_fail_closed() {
@@ -1155,9 +1155,9 @@ mod worker_checkpoint_authority_tests {
         // | R4   | no        | no          | yes           | E4     |
         // | R5   | no        | no          | no            | E5     |
         // R1 is covered by the PostgreSQL active/active acceptance test.
-        let dispatch = AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(
-            awaken_time::system_clock(),
-        )) as Arc<dyn Dispatch>);
+        let dispatch = AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(
+            MemoryDispatchStore::new(awaken_time::system_clock()),
+        ));
         let root = tempfile::tempdir().expect("R2 root");
         assert!(
             worker_checkpoint_authority(&dispatch, Some(root.path())).is_ok(),
@@ -1584,14 +1584,14 @@ async fn mount_with_managed_over_and_models(
     // The Worker-facing cross-node seam: a dispatch-store-isolated Worker claims/settles runs
     // over the dispatch transport and pushes committed facts to the commit ingest.
     let dispatch = host
-        .dispatch_store()
+        .coordinator_dispatch()
         .map_err(|error| WorkerTransportBuildError::Dispatch(error.to_string()))?;
     let checkpoint = worker_checkpoint_authority(dispatch.as_ref(), host.storage_dir())?;
     let dispatch_router = awaken_dispatch_http::registered_dispatch_router(
         awaken_dispatch_http::RegisteredDispatchDependencies {
             execution_bindings: worker_execution_bindings,
             execution_stops: worker_execution_stops,
-            dispatch: dispatch.clone() as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
+            dispatch: dispatch.clone() as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
             checkpoint,
             directory: worker_directory.clone(),
             policy: worker_placement_policy
@@ -1613,7 +1613,7 @@ async fn mount_with_managed_over_and_models(
     let file_content = awaken_resource_worker_http::worker_file_content_router(Arc::new(
         awaken_resource_worker_http::WorkerFileContentService::new(
             host.worker_file_content_source(),
-            dispatch.clone() as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
+            dispatch.clone() as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
             worker_authenticator.clone(),
             worker_clock.clone(),
         )
@@ -1626,7 +1626,7 @@ async fn mount_with_managed_over_and_models(
         awaken_resource_worker_http::worker_artifact_publication_router(Arc::new(
             awaken_resource_worker_http::WorkerArtifactPublicationService::new(
                 worker_file_application,
-                dispatch.clone() as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
+                dispatch.clone() as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
                 worker_authenticator.clone(),
                 worker_directory.clone(),
                 worker_clock.clone(),
@@ -1637,7 +1637,7 @@ async fn mount_with_managed_over_and_models(
         awaken_resource_worker_http::WorkerMemoryService::new(
             host.memory_repository(),
             resource_registry.clone(),
-            dispatch.clone() as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
+            dispatch.clone() as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
             worker_authenticator.clone(),
             worker_directory.clone(),
             worker_clock.clone(),
@@ -1647,7 +1647,7 @@ async fn mount_with_managed_over_and_models(
     ));
     let repository_service = awaken_resource_worker_http::WorkerRepositoryBindingService::new(
         resource_registry,
-        dispatch.clone() as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
+        dispatch.clone() as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
         worker_authenticator.clone(),
         worker_clock.clone(),
     )
@@ -1667,7 +1667,7 @@ async fn mount_with_managed_over_and_models(
             Arc::new(
                 awaken_resource_worker_http::WorkerSkillBundleService::new(
                     worker_skill_bundles,
-                    dispatch.clone() as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
+                    dispatch.clone() as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
                     worker_authenticator.clone(),
                     worker_clock.clone(),
                 )
@@ -1678,7 +1678,7 @@ async fn mount_with_managed_over_and_models(
     let commit = Arc::new(awaken_dispatch_http::ClaimedCommitHttpService::new(
         Arc::new(
             awaken_dispatch::ClaimedCommitService::with_coordinator_resolver(
-                dispatch as Arc<dyn awaken_dispatch::ControlDispatchQueue>,
+                dispatch as Arc<dyn awaken_dispatch_http::WorkerDispatchAuthority>,
                 Arc::new(session_commit_owner::SessionCommitOwner::new(host.clone())),
             ),
         ),

@@ -23,9 +23,7 @@ use awaken_dispatch_contract::dispatch::{
 use awaken_dispatch_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalFeed, LeaseLossReason,
 };
-use awaken_dispatch_contract::{
-    ControlDispatchQueue, DispatchAdmissionShape, RunDispatch, SessionRuntimeEnvelope,
-};
+use awaken_dispatch_contract::{DispatchAdmissionShape, RunDispatch, SessionRuntimeEnvelope};
 use awaken_dispatch_contract::{
     LeastLoadedPolicy, PlacementRequirements, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
     WorkerCredentialObservation, WorkerCredentialRevision, WorkerIdentity, WorkerManifest,
@@ -380,7 +378,7 @@ impl ConformanceCapabilities {
 /// | Command replay after Done | no new runnable row | caller identity / reservation SR6 |
 /// | Terminal repair crash | repair epoch advances; one completion | terminal recovery T7/T8 |
 /// | Missing physical cleanup ACK | occupied slot retained | occupied recovery |
-pub async fn assert_dispatch_conformance<S: ControlDispatchQueue + Inbox + Outbox>(
+pub async fn assert_dispatch_conformance<S: ConformanceDispatch + Inbox + Outbox>(
     store: &S,
     namespace: &str,
     capabilities: ConformanceCapabilities,
@@ -389,7 +387,7 @@ pub async fn assert_dispatch_conformance<S: ControlDispatchQueue + Inbox + Outbo
         .await;
 }
 
-pub async fn assert_dispatch_conformance_with_clock<S: ControlDispatchQueue + Inbox + Outbox>(
+pub async fn assert_dispatch_conformance_with_clock<S: ConformanceDispatch + Inbox + Outbox>(
     store: &S,
     namespace: &str,
     capabilities: ConformanceCapabilities,
@@ -427,11 +425,11 @@ pub async fn assert_dispatch_conformance_with_clock<S: ControlDispatchQueue + In
 /// object: the Control queue, inbox and outbox roles plus the atomic Session
 /// continuation write. This conformance suite is its only consumer.
 pub trait DurableControlDispatch:
-    ControlDispatchQueue + Inbox + Outbox + SessionContinuationOutbox
+    ConformanceDispatch + Inbox + Outbox + SessionContinuationOutbox
 {
 }
 
-impl<T: ControlDispatchQueue + Inbox + Outbox + SessionContinuationOutbox> DurableControlDispatch
+impl<T: ConformanceDispatch + Inbox + Outbox + SessionContinuationOutbox> DurableControlDispatch
     for T
 {
 }
@@ -451,3 +449,43 @@ include!("conformance/fixtures.rs");
 include!("conformance/reliability.rs");
 
 include!("conformance/upgrade_window.rs");
+
+use awaken_dispatch_contract::{
+    DispatchAdministration, DispatchAttemptControl, DispatchClaimOwnership, DispatchClaims,
+    DispatchCommitAuthority, DispatchControlClaims, DispatchControlReads, DispatchEnqueue,
+    DispatchExecution, DispatchMaintenance, DispatchReads, DispatchSettlement,
+    SessionRunReservations,
+};
+pub trait ConformanceDispatch:
+    DispatchEnqueue
+    + DispatchAdministration
+    + DispatchClaims
+    + DispatchExecution
+    + DispatchClaimOwnership
+    + DispatchCommitAuthority
+    + DispatchSettlement
+    + DispatchReads
+    + DispatchMaintenance
+    + SessionRunReservations
+    + DispatchAttemptControl
+    + DispatchControlClaims
+    + DispatchControlReads
+{
+}
+impl<
+    T: DispatchEnqueue
+        + DispatchAdministration
+        + DispatchClaims
+        + DispatchExecution
+        + DispatchClaimOwnership
+        + DispatchCommitAuthority
+        + DispatchSettlement
+        + DispatchReads
+        + DispatchMaintenance
+        + SessionRunReservations
+        + DispatchAttemptControl
+        + DispatchControlClaims
+        + DispatchControlReads,
+> ConformanceDispatch for T
+{
+}

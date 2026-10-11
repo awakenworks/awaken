@@ -145,7 +145,7 @@ pub(super) async fn install_claimed_session_projection(
     // admitted Work/Run owner may advance its realization lease. Serializing
     // before the first Control mutation prevents a later entrant from fencing a
     // slow earlier effect between directive creation and installation.
-    let dispatch: Arc<dyn awaken_dispatch_contract::DispatchQueue> = host
+    let dispatch: Arc<dyn awaken_dispatch_contract::DispatchClaimOwnership> = host
         .dispatch_store()
         .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?;
     let ownership = awaken_dispatch_execution::claim_bound_ownership_verifier(

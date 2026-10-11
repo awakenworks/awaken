@@ -18,8 +18,9 @@
 pub mod attempt_binding;
 pub mod attempt_retirement;
 pub mod capacity_deferral;
+#[cfg(feature = "test-support")]
+mod flaky_capabilities;
 
-use awaken_dispatch_contract::DispatchQueue;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 
@@ -838,7 +839,6 @@ pub enum FinishFault {
 pub struct FlakyDispatchStore {
     maintenance_probe: Option<Arc<maintenance::MaintenanceProbe>>,
     inner: Arc<awaken_dispatch::MemoryDispatchStore>,
-    local_maintenance: bool,
     oversized_scan_page: bool,
     scan_limits: std::sync::Mutex<Vec<usize>>,
     maintenance_calls: [AtomicUsize; 2],
@@ -869,7 +869,6 @@ impl FlakyDispatchStore {
         Self {
             maintenance_probe: None,
             inner: Arc::new(awaken_dispatch::MemoryDispatchStore::new(clock)),
-            local_maintenance: true,
             oversized_scan_page: false,
             scan_limits: std::sync::Mutex::new(Vec::new()),
             maintenance_calls: [AtomicUsize::new(0), AtomicUsize::new(0)],
@@ -891,11 +890,6 @@ impl FlakyDispatchStore {
 
     pub fn with_finish_fault(mut self, fault: FinishFault) -> Self {
         self.finish_fault = std::sync::Mutex::new(Some(fault));
-        self
-    }
-
-    pub fn with_local_maintenance(mut self, owns: bool) -> Self {
-        self.local_maintenance = owns;
         self
     }
 
@@ -994,35 +988,14 @@ impl FlakyDispatchStore {
     }
 }
 
-#[async_trait::async_trait]
 #[cfg(feature = "test-support")]
-impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::DispatchExecution for FlakyDispatchStore {
     async fn close_attempt(
         &self,
         claim: &awaken_dispatch::RunClaim,
     ) -> Result<awaken_dispatch::SettleOutcome, awaken_dispatch::DispatchError> {
         self.inner.close_attempt(claim).await
-    }
-    fn owns_local_maintenance(&self) -> bool {
-        self.local_maintenance
-    }
-
-    async fn resolve_claimed_session_run_reservation(
-        &self,
-        claim: &awaken_dispatch::RunClaim,
-        resolution: awaken_dispatch::SessionRunReservationResolution,
-    ) -> Result<awaken_dispatch::SettleOutcome, awaken_dispatch::DispatchError> {
-        self.inner
-            .resolve_claimed_session_run_reservation(claim, resolution)
-            .await
-    }
-
-    async fn worker_owns_run(
-        &self,
-        identity: &awaken_dispatch::WorkerIdentity,
-        run_id: &RunId,
-    ) -> Result<Option<awaken_dispatch::RunClaim>, awaken_dispatch::DispatchError> {
-        self.inner.worker_owns_run(identity, run_id).await
     }
 
     async fn record_credential_realization(
@@ -1034,28 +1007,106 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
             .record_credential_realization(claim, receipt)
             .await
     }
-
-    async fn lock_commit_epoch(
+    async fn renew_lease(
         &self,
         claim: &awaken_dispatch::RunClaim,
-    ) -> Result<Option<awaken_dispatch::CommitEpochGuard>, awaken_dispatch::DispatchError>
-    {
-        self.inner.lock_commit_epoch(claim).await
+        lease_ms: u64,
+    ) -> Result<awaken_dispatch::LeaseRenewalOutcome, awaken_dispatch::DispatchError> {
+        self.renewal_attempts.fetch_add(1, Ordering::SeqCst);
+        if let Some(gate) = &self.renewal_gate {
+            gate.acquire()
+                .await
+                .map_err(|error| awaken_dispatch::DispatchError::Rejected(error.to_string()))?
+                .forget();
+        }
+        if self
+            .fail_renewals
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(awaken_dispatch::DispatchError::Rejected(
+                "injected transient renewal failure".to_string(),
+            ));
+        }
+        let result = self.inner.renew_lease(claim, lease_ms).await;
+        if let Some(gate) = &self.renewal_response_gate {
+            gate.acquire()
+                .await
+                .map_err(|error| awaken_dispatch::DispatchError::Rejected(error.to_string()))?
+                .forget();
+        }
+        result
     }
-
-    async fn claim_is_current(
+    async fn begin_attempt(
         &self,
         claim: &awaken_dispatch::RunClaim,
-    ) -> Result<bool, awaken_dispatch::DispatchError> {
-        self.inner.claim_is_current(claim).await
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
+    ) -> Result<awaken_dispatch::AttemptAdmission, awaken_dispatch::DispatchError> {
+        self.inner.begin_attempt(claim, _binding).await
     }
-
-    async fn enqueue_with(
+    async fn handoff_attempt(
         &self,
-        request: awaken_dispatch::RunDispatch,
-        options: awaken_dispatch::SubmitOptions,
-    ) -> Result<(), awaken_dispatch::DispatchError> {
-        self.inner.enqueue_with(request, options).await
+        claim: &awaken_dispatch::RunClaim,
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
+    ) -> Result<awaken_dispatch::AttemptAdmission, awaken_dispatch::DispatchError> {
+        self.inner.handoff_attempt(claim, _binding).await
+    }
+    async fn finish_attempt(
+        &self,
+        claim: &awaken_dispatch::RunClaim,
+    ) -> Result<awaken_dispatch::SettleOutcome, awaken_dispatch::DispatchError> {
+        self.finish_claims.lock().unwrap().push(claim.clone());
+        let fault = self.finish_fault.lock().unwrap().take();
+        match fault {
+            Some(FinishFault::BeforeWrite) => {
+                return Err(awaken_dispatch::DispatchError::Unavailable(
+                    "before write".into(),
+                ));
+            }
+            Some(FinishFault::LostResponse) => {
+                self.inner.finish_attempt(claim).await?;
+                return Err(awaken_dispatch::DispatchError::Unavailable(
+                    "lost response".into(),
+                ));
+            }
+            Some(FinishFault::Timeout) => return std::future::pending().await,
+            Some(FinishFault::Rejected) => {
+                return Err(awaken_dispatch::DispatchError::Rejected(
+                    "invalid request".into(),
+                ));
+            }
+            None => {}
+        }
+        self.inner.finish_attempt(claim).await
+    }
+    async fn relinquish_claim(
+        &self,
+        claim: &awaken_dispatch::RunClaim,
+    ) -> Result<awaken_dispatch::SettleOutcome, awaken_dispatch::DispatchError> {
+        self.inner.relinquish_claim(claim).await
+    }
+    async fn defer_claim(
+        &self,
+        claim: &awaken_dispatch::RunClaim,
+        retry_after_ms: u64,
+    ) -> Result<awaken_dispatch::SettleOutcome, awaken_dispatch::DispatchError> {
+        self.inner.defer_claim(claim, retry_after_ms).await
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::DispatchClaims for FlakyDispatchStore {
+    async fn resolve_claimed_session_run_reservation(
+        &self,
+        claim: &awaken_dispatch::RunClaim,
+        resolution: awaken_dispatch::SessionRunReservationResolution,
+    ) -> Result<awaken_dispatch::SettleOutcome, awaken_dispatch::DispatchError> {
+        self.inner
+            .resolve_claimed_session_run_reservation(claim, resolution)
+            .await
     }
     async fn claim_new_run(
         &self,
@@ -1172,93 +1223,54 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
             .claim_run_compatible(run_id, worker, lease_ms)
             .await
     }
-    async fn renew_lease(
+}
+
+#[cfg(feature = "test-support")]
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::DispatchCommitAuthority for FlakyDispatchStore {
+    async fn worker_owns_run(
+        &self,
+        identity: &awaken_dispatch::WorkerIdentity,
+        run_id: &RunId,
+    ) -> Result<Option<awaken_dispatch::RunClaim>, awaken_dispatch::DispatchError> {
+        self.inner.worker_owns_run(identity, run_id).await
+    }
+
+    async fn lock_commit_epoch(
         &self,
         claim: &awaken_dispatch::RunClaim,
-        lease_ms: u64,
-    ) -> Result<awaken_dispatch::LeaseRenewalOutcome, awaken_dispatch::DispatchError> {
-        self.renewal_attempts.fetch_add(1, Ordering::SeqCst);
-        if let Some(gate) = &self.renewal_gate {
-            gate.acquire()
-                .await
-                .map_err(|error| awaken_dispatch::DispatchError::Rejected(error.to_string()))?
-                .forget();
-        }
-        if self
-            .fail_renewals
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                remaining.checked_sub(1)
-            })
-            .is_ok()
-        {
-            return Err(awaken_dispatch::DispatchError::Rejected(
-                "injected transient renewal failure".to_string(),
-            ));
-        }
-        let result = self.inner.renew_lease(claim, lease_ms).await;
-        if let Some(gate) = &self.renewal_response_gate {
-            gate.acquire()
-                .await
-                .map_err(|error| awaken_dispatch::DispatchError::Rejected(error.to_string()))?
-                .forget();
-        }
-        result
+    ) -> Result<Option<awaken_dispatch::CommitEpochGuard>, awaken_dispatch::DispatchError>
+    {
+        self.inner.lock_commit_epoch(claim).await
     }
-    async fn begin_attempt(
+}
+
+#[cfg(feature = "test-support")]
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::DispatchClaimOwnership for FlakyDispatchStore {
+    async fn claim_is_current(
         &self,
         claim: &awaken_dispatch::RunClaim,
-        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
-    ) -> Result<awaken_dispatch::AttemptAdmission, awaken_dispatch::DispatchError> {
-        self.inner.begin_attempt(claim, _binding).await
+    ) -> Result<bool, awaken_dispatch::DispatchError> {
+        self.inner.claim_is_current(claim).await
     }
-    async fn handoff_attempt(
+}
+
+#[cfg(feature = "test-support")]
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::DispatchEnqueue for FlakyDispatchStore {
+    async fn enqueue_with(
         &self,
-        claim: &awaken_dispatch::RunClaim,
-        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
-    ) -> Result<awaken_dispatch::AttemptAdmission, awaken_dispatch::DispatchError> {
-        self.inner.handoff_attempt(claim, _binding).await
+        request: awaken_dispatch::RunDispatch,
+        options: awaken_dispatch::SubmitOptions,
+    ) -> Result<(), awaken_dispatch::DispatchError> {
+        self.inner.enqueue_with(request, options).await
     }
-    async fn finish_attempt(
-        &self,
-        claim: &awaken_dispatch::RunClaim,
-    ) -> Result<awaken_dispatch::SettleOutcome, awaken_dispatch::DispatchError> {
-        self.finish_claims.lock().unwrap().push(claim.clone());
-        let fault = self.finish_fault.lock().unwrap().take();
-        match fault {
-            Some(FinishFault::BeforeWrite) => {
-                return Err(awaken_dispatch::DispatchError::Unavailable(
-                    "before write".into(),
-                ));
-            }
-            Some(FinishFault::LostResponse) => {
-                self.inner.finish_attempt(claim).await?;
-                return Err(awaken_dispatch::DispatchError::Unavailable(
-                    "lost response".into(),
-                ));
-            }
-            Some(FinishFault::Timeout) => return std::future::pending().await,
-            Some(FinishFault::Rejected) => {
-                return Err(awaken_dispatch::DispatchError::Rejected(
-                    "invalid request".into(),
-                ));
-            }
-            None => {}
-        }
-        self.inner.finish_attempt(claim).await
-    }
-    async fn relinquish_claim(
-        &self,
-        claim: &awaken_dispatch::RunClaim,
-    ) -> Result<awaken_dispatch::SettleOutcome, awaken_dispatch::DispatchError> {
-        self.inner.relinquish_claim(claim).await
-    }
-    async fn defer_claim(
-        &self,
-        claim: &awaken_dispatch::RunClaim,
-        retry_after_ms: u64,
-    ) -> Result<awaken_dispatch::SettleOutcome, awaken_dispatch::DispatchError> {
-        self.inner.defer_claim(claim, retry_after_ms).await
-    }
+}
+
+#[cfg(feature = "test-support")]
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::DispatchSettlement for FlakyDispatchStore {
     async fn settle(
         &self,
         run_id: &RunId,
@@ -1268,6 +1280,11 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
     ) -> Result<awaken_dispatch::SettleOutcome, awaken_dispatch::DispatchError> {
         self.inner.settle(run_id, epoch, outcome, consumed).await
     }
+}
+
+#[cfg(feature = "test-support")]
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::DispatchMaintenance for FlakyDispatchStore {
     async fn quarantine_retry_exhausted(
         &self,
         max_attempts: u64,
@@ -1276,18 +1293,6 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
         self.inner
             .quarantine_retry_exhausted(max_attempts, expired_before_ms)
             .await
-    }
-    async fn dead_letters(&self) -> Result<Vec<RunId>, awaken_dispatch::DispatchError> {
-        self.inner.dead_letters().await
-    }
-    async fn requeue(&self, run_id: &RunId) -> Result<bool, awaken_dispatch::DispatchError> {
-        self.inner.requeue(run_id).await
-    }
-    async fn cancel(
-        &self,
-        run_id: &RunId,
-    ) -> Result<Option<ThreadId>, awaken_dispatch::DispatchError> {
-        self.inner.cancel(run_id).await
     }
     async fn purge_dead_letters(&self) -> Result<usize, awaken_dispatch::DispatchError> {
         self.inner.purge_dead_letters().await
@@ -1303,6 +1308,14 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
         )
         .await
     }
+}
+
+#[cfg(feature = "test-support")]
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::DispatchReads for FlakyDispatchStore {
+    async fn dead_letters(&self) -> Result<Vec<RunId>, awaken_dispatch::DispatchError> {
+        self.inner.dead_letters().await
+    }
     async fn superseded(&self) -> Result<Vec<RunId>, awaken_dispatch::DispatchError> {
         self.inner.superseded().await
     }
@@ -1311,9 +1324,19 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
     ) -> Result<Vec<awaken_dispatch::DispatchSummary>, awaken_dispatch::DispatchError> {
         self.inner.list_dispatches().await
     }
+}
 
-    fn control(&self) -> Option<&dyn awaken_dispatch::ControlDispatchQueue> {
-        Some(self)
+#[cfg(feature = "test-support")]
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::DispatchAdministration for FlakyDispatchStore {
+    async fn requeue(&self, run_id: &RunId) -> Result<bool, awaken_dispatch::DispatchError> {
+        self.inner.requeue(run_id).await
+    }
+    async fn cancel(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<ThreadId>, awaken_dispatch::DispatchError> {
+        self.inner.cancel(run_id).await
     }
 }
 
@@ -1329,12 +1352,6 @@ impl awaken_dispatch::Inbox for FlakyDispatchStore {
     ) -> Result<bool, awaken_dispatch::DispatchError> {
         self.inner.append(input).await
     }
-    async fn list(
-        &self,
-        thread_id: &ThreadId,
-    ) -> Result<Vec<awaken_dispatch::PendingRecord>, awaken_dispatch::DispatchError> {
-        self.inner.list(thread_id).await
-    }
     async fn retract(
         &self,
         message_id: &str,
@@ -1349,6 +1366,17 @@ impl awaken_dispatch::Inbox for FlakyDispatchStore {
         result: ResumeResult,
     ) -> Result<awaken_dispatch::CasOutcome, awaken_dispatch::DispatchError> {
         self.inner.edit(message_id, expected_revision, result).await
+    }
+}
+
+#[cfg(feature = "test-support")]
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::InboxRead for FlakyDispatchStore {
+    async fn list(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<awaken_dispatch::PendingRecord>, awaken_dispatch::DispatchError> {
+        self.inner.list(thread_id).await
     }
 }
 
@@ -1918,7 +1946,9 @@ pub async fn assert_millis_boundaries<S: awaken_dispatch::ControlDispatch>(
 /// past its budget is dead-lettered and no longer claimed, `requeue` brings an
 /// ordinary row back, and a terminal cancellation fence makes it non-runnable.
 /// Every backend must match.
-pub async fn assert_dead_letter<S: awaken_dispatch::ControlDispatch>(
+pub async fn assert_dead_letter<
+    S: awaken_dispatch::ControlDispatch + awaken_dispatch::DispatchReads,
+>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -2055,7 +2085,9 @@ pub async fn assert_dead_letter<S: awaken_dispatch::ControlDispatch>(
 /// Shared spec for durable cancel: intent is retained and claimable until a
 /// fenced Done settlement, including across a running lease's expiry. Every
 /// backend must match.
-pub async fn assert_cancel<S: awaken_dispatch::ControlDispatch>(
+pub async fn assert_cancel<
+    S: awaken_dispatch::ControlDispatch + awaken_dispatch::DispatchReads,
+>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -2309,7 +2341,9 @@ pub async fn assert_cancel<S: awaken_dispatch::ControlDispatch>(
 }
 
 /// Shared spec for priority, dedupe, and dead-letter GC. Every backend matches.
-pub async fn assert_priority_dedupe_gc<S: awaken_dispatch::ControlDispatch>(
+pub async fn assert_priority_dedupe_gc<
+    S: awaken_dispatch::ControlDispatch + awaken_dispatch::DispatchReads,
+>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -2429,7 +2463,9 @@ pub async fn assert_priority_dedupe_gc<S: awaken_dispatch::ControlDispatch>(
 
 /// Shared spec for the dispatch query surface (ADR-0025): list_dispatches reports
 /// each row's status and attempts. Every backend matches.
-pub async fn assert_list_dispatches<S: awaken_dispatch::ControlDispatch>(
+pub async fn assert_list_dispatches<
+    S: awaken_dispatch::ControlDispatch + awaken_dispatch::DispatchReads,
+>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -2476,7 +2512,9 @@ pub async fn assert_list_dispatches<S: awaken_dispatch::ControlDispatch>(
 /// |---|---|---|
 /// | current owner/epoch | temporarily unavailable | return to pending without crash budget |
 /// | stale owner/epoch | replacement already claimed | fence without changing replacement |
-pub async fn assert_relinquish_claim<S: awaken_dispatch::ControlDispatch>(
+pub async fn assert_relinquish_claim<
+    S: awaken_dispatch::ControlDispatch + awaken_dispatch::DispatchReads,
+>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -2522,7 +2560,9 @@ pub async fn assert_relinquish_claim<S: awaken_dispatch::ControlDispatch>(
 /// Request-local resolution retry must preserve scheduling policy without
 /// turning one bad request into a pool-wide outage.
 pub async fn assert_defer_claim_is_request_local<
-    S: awaken_dispatch::Dispatch + awaken_dispatch::DispatchOperationalFeed,
+    S: awaken_dispatch::Dispatch
+        + awaken_dispatch::DispatchOperationalFeed
+        + awaken_dispatch::DispatchAdministration,
 >(
     store: &S,
     clock: &dyn ConformanceClock,
@@ -2760,7 +2800,9 @@ pub async fn assert_defer_claim_deadline_edge<S: awaken_dispatch::ControlDispatc
 /// short cross-backend lease; replacement claims that must remain current use
 /// the production Worker lease. This separates the expiry cause from scheduler
 /// latency instead of weakening any owner, epoch, or physical-slot assertion.
-pub async fn assert_physical_attempt_admission<S: awaken_dispatch::ControlDispatch>(
+pub async fn assert_physical_attempt_admission<
+    S: awaken_dispatch::ControlDispatch + awaken_dispatch::DispatchReads,
+>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -3101,7 +3143,9 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::ControlDispat
 
 /// Shared spec for time-windowed dead-letter GC (ADR-0023): GC removes only
 /// dead-letters older than the cutoff; younger ones stay. Every backend matches.
-pub async fn assert_dead_letter_ttl_gc<S: awaken_dispatch::ControlDispatch>(
+pub async fn assert_dead_letter_ttl_gc<
+    S: awaken_dispatch::ControlDispatch + awaken_dispatch::DispatchReads,
+>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -3146,7 +3190,9 @@ pub async fn assert_dead_letter_ttl_gc<S: awaken_dispatch::ControlDispatch>(
 /// Shared spec for epoch supersession (ADR-0022): a superseding submit abandons
 /// the thread's prior awaiting work; only the newest run stays claimable. Every
 /// backend matches.
-pub async fn assert_supersession<S: awaken_dispatch::ControlDispatch>(
+pub async fn assert_supersession<
+    S: awaken_dispatch::ControlDispatch + awaken_dispatch::DispatchReads,
+>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {
@@ -3568,7 +3614,9 @@ pub async fn assert_lease_renewal<S: awaken_dispatch::ControlDispatch>(
 /// same key (`status <> 'dead_letter'` in the SQL backends, `status !=
 /// Status::DeadLetter` in memory). Without this a poison run's key would wedge the
 /// work forever: the retry could never be enqueued. Every backend must match.
-pub async fn assert_dedupe_ignores_dead_lettered<S: awaken_dispatch::ControlDispatch>(
+pub async fn assert_dedupe_ignores_dead_lettered<
+    S: awaken_dispatch::ControlDispatch + awaken_dispatch::DispatchReads,
+>(
     store: &S,
     clock: &dyn ConformanceClock,
 ) {

@@ -11,6 +11,7 @@
 //! for one process, or a cross-node signal for a fleet (ADR-0011, ADR-0019).
 
 use crate::ControlDispatch;
+use awaken_dispatch_erasure::{AnyDispatchStore, Dispatch, DispatchBinding, DispatchTopology};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -33,7 +34,9 @@ use awaken_time::WallClockExt;
 /// request an exact `runnable_depth` observation explicitly.
 pub(crate) const QUEUE_DEPTH_SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
 
-pub(crate) fn spawn_dispatch_depth_sampler<S: ControlDispatch + 'static>(
+pub(crate) fn spawn_dispatch_depth_sampler<
+    S: awaken_dispatch_contract::DispatchControlReads + ?Sized + 'static,
+>(
     store: Arc<S>,
     report: Arc<dyn Fn(u64) + Send + Sync>,
     shutdown: CancellationToken,
@@ -41,7 +44,7 @@ pub(crate) fn spawn_dispatch_depth_sampler<S: ControlDispatch + 'static>(
 ) -> Option<JoinHandle<()>> {
     // Database-less Workers do not poll upstream operations. The Coordinator
     // samples its own queue; no second remote maintenance loop is installed.
-    if !enabled || !store.owns_local_maintenance() {
+    if !enabled {
         return None;
     }
     Some(tokio::spawn(async move {
@@ -183,13 +186,16 @@ pub struct DispatchService<S> {
     depth_sampler: Option<JoinHandle<()>>,
 }
 
-impl<S: ControlDispatch + 'static> DispatchService<S> {
+impl<S: Dispatch + 'static> DispatchService<S> {
     /// Start the daemon with the single-process wake signal.
     pub fn spawn(
         worker: Arc<DispatchWorker<S>>,
         clock: Arc<dyn WallClock>,
         config: DispatchServiceConfig,
-    ) -> Self {
+    ) -> Self
+    where
+        S: ControlDispatch,
+    {
         Self::spawn_with_wake(worker, clock, config, Arc::new(LocalWakeSignal::new()))
     }
 
@@ -200,6 +206,19 @@ impl<S: ControlDispatch + 'static> DispatchService<S> {
         clock: Arc<dyn WallClock>,
         config: DispatchServiceConfig,
         wake: Arc<dyn WakeSignal>,
+    ) -> Self
+    where
+        S: ControlDispatch,
+    {
+        let local: Arc<dyn ControlDispatch> = worker.store().clone();
+        Self::spawn_required(worker, clock, config, wake, Some(local))
+    }
+    fn spawn_required(
+        worker: Arc<DispatchWorker<S>>,
+        clock: Arc<dyn WallClock>,
+        config: DispatchServiceConfig,
+        wake: Arc<dyn WakeSignal>,
+        local: Option<Arc<dyn ControlDispatch>>,
     ) -> Self {
         let shutdown = CancellationToken::new();
         // The standalone service drives Runs on its main loop. Counting a large
@@ -212,18 +231,21 @@ impl<S: ControlDispatch + 'static> DispatchService<S> {
                 .metrics()
                 .record_dispatch_queue_depth(depth);
         });
-        let depth_sampler = spawn_dispatch_depth_sampler(
-            worker.store().clone(),
-            report,
-            shutdown.clone(),
-            config.sample_dispatch_queue_depth,
-        );
+        let depth_sampler = local.as_ref().and_then(|local| {
+            spawn_dispatch_depth_sampler(
+                local.clone(),
+                report,
+                shutdown.clone(),
+                config.sample_dispatch_queue_depth,
+            )
+        });
         let handle = tokio::spawn(run_loop(
             worker.clone(),
             clock.clone(),
             wake.clone(),
             shutdown.clone(),
             config,
+            local,
         ));
         Self {
             worker,
@@ -248,14 +270,20 @@ impl<S: ControlDispatch + 'static> DispatchService<S> {
     }
 
     /// Durably deliver pending input and nudge the daemon to resume the run.
-    pub async fn deliver(&self, input: PendingInput) -> Result<(), Error> {
+    pub async fn deliver(&self, input: PendingInput) -> Result<(), Error>
+    where
+        S: awaken_dispatch_contract::Inbox,
+    {
         self.worker.store().append(input).await?;
         publish_dispatch_hint(self.wake.as_ref(), &self.shutdown).await;
         Ok(())
     }
 
     /// Stage a cross-thread delivery and nudge the daemon to relay it (M3b).
-    pub async fn send(&self, input: PendingInput) -> Result<(), Error> {
+    pub async fn send(&self, input: PendingInput) -> Result<(), Error>
+    where
+        S: awaken_dispatch_contract::Outbox,
+    {
         self.worker.store().stage(input).await?;
         publish_dispatch_hint(self.wake.as_ref(), &self.shutdown).await;
         Ok(())
@@ -276,15 +304,16 @@ impl<S: ControlDispatch + 'static> DispatchService<S> {
     }
 }
 
-async fn run_loop<S: ControlDispatch + 'static>(
+async fn run_loop<S: Dispatch + 'static>(
     worker: Arc<DispatchWorker<S>>,
     clock: Arc<dyn WallClock>,
     wake: Arc<dyn WakeSignal>,
     shutdown: CancellationToken,
     config: DispatchServiceConfig,
+    local: Option<Arc<dyn ControlDispatch>>,
 ) {
     let maintenance = LocalMaintenanceSchedule::for_adapter(
-        worker.store().owns_local_maintenance(),
+        local.is_some(),
         config.dead_letter_ttl.is_some(),
         config.terminal_reconciliation_interval.is_some(),
     );
@@ -331,23 +360,28 @@ async fn run_loop<S: ControlDispatch + 'static>(
         if shutdown.is_cancelled() {
             break;
         }
-        if let Some(maintenance) = maintenance {
+        if let Some(maintenance) = maintenance
+            && let Some(local) = &local
+        {
             if maintenance.purges_dead_letters() {
                 let ttl = config
                     .dead_letter_ttl
                     .expect("the maintenance schedule retained its GC interval");
                 let cutoff = now.saturating_sub(ttl.as_millis() as u64);
-                if let Err(error) = worker.store().purge_dead_letters_before(cutoff).await {
+                if let Err(error) = local.purge_dead_letters_before(cutoff).await {
                     tracing::warn!(%error, "dispatch dead-letter purge failed; retrying");
                 }
             }
-            if let Err(error) = worker.store().relay().await {
+            if let Err(error) = local.relay().await {
                 tracing::warn!(%error, "dispatch relay failed; retrying");
             }
             if let Some(deadline) = next_terminal_reconciliation
                 && awaken_time::mono::now() >= deadline
             {
-                if let Err(error) = worker.reconcile_committed_terminals(256).await {
+                if let Err(error) = worker
+                    .reconcile_committed_terminals(256, local.as_ref())
+                    .await
+                {
                     tracing::warn!(%error, "terminal dispatch reconciliation failed; retrying");
                 }
                 let interval = config
@@ -391,6 +425,27 @@ async fn run_loop<S: ControlDispatch + 'static>(
             _ = wait_for_terminal_reconciliation(next_terminal_reconciliation) => {}
             _ = tokio::time::sleep(config.poll_interval) => {}
         }
+    }
+}
+
+impl DispatchService<AnyDispatchStore> {
+    pub fn spawn_bound(
+        worker: Arc<DispatchWorker<AnyDispatchStore>>,
+        binding: DispatchBinding,
+        clock: Arc<dyn WallClock>,
+        config: DispatchServiceConfig,
+        wake: Arc<dyn WakeSignal>,
+    ) -> Result<Self, crate::Error> {
+        if !Arc::ptr_eq(worker.store(), &binding.queue()) {
+            return Err(crate::Error::Dispatch(crate::DispatchError::Rejected(
+                "service must retain the Worker's exact binding".into(),
+            )));
+        }
+        let local = match binding.placement() {
+            DispatchTopology::Local(local) => Some(local.clone() as Arc<dyn ControlDispatch>),
+            DispatchTopology::Remote { .. } => None,
+        };
+        Ok(Self::spawn_required(worker, clock, config, wake, local))
     }
 }
 

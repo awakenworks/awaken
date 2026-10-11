@@ -24,10 +24,10 @@ use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
-    AttemptAdmission, ClaimedStreamPublisher as _, DispatchQueue, MemoryDispatchStore,
-    RegisteredWorker, RegistryError, RegistryMutation, RunDispatch, SettleOutcome, WorkerDirectory,
-    WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerRegistration,
-    WorkerSnapshot, WorkerState,
+    AttemptAdmission, ClaimedStreamPublisher as _, MemoryDispatchStore, RegisteredWorker,
+    RegistryError, RegistryMutation, RunDispatch, SettleOutcome, WorkerDirectory, WorkerHeartbeat,
+    WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerRegistration, WorkerSnapshot,
+    WorkerState,
 };
 use awaken_dispatch_http::{
     WorkerDispatchService, dispatch_transport_router_with_service, worker_environment_warmup_router,
@@ -3223,3 +3223,8 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
         "V1/E1"
     );
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaimOwnership as _, DispatchClaims as _, DispatchEnqueue as _, DispatchExecution as _,
+    DispatchReads as _, DispatchSettlement as _,
+};

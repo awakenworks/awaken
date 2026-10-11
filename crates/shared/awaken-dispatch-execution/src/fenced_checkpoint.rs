@@ -19,129 +19,139 @@ use awaken_agent_contract::stream::checkpoint::{
     StreamCheckpoint, StreamCheckpointError, StreamCheckpointStore,
 };
 
-use crate::{DispatchQueue, RunClaim, SettleOutcome};
+use awaken_dispatch_contract::{
+    ClaimedCheckpointTransport, DispatchCommitAuthority, RunClaim, SettleOutcome,
+};
 
 pub struct FencedStreamCheckpointStore {
-    inner: Option<Arc<dyn StreamCheckpointStore>>,
-    dispatch: Arc<dyn DispatchQueue>,
+    authority: CheckpointAuthority,
     claim: RunClaim,
 }
-
+enum CheckpointAuthority {
+    Local {
+        inner: Option<Arc<dyn StreamCheckpointStore>>,
+        dispatch: Arc<dyn DispatchCommitAuthority>,
+    },
+    Remote(Arc<dyn ClaimedCheckpointTransport>),
+}
 impl FencedStreamCheckpointStore {
     #[must_use]
     pub fn new(
         inner: Option<Arc<dyn StreamCheckpointStore>>,
-        dispatch: Arc<dyn DispatchQueue>,
+        dispatch: Arc<dyn DispatchCommitAuthority>,
         claim: RunClaim,
     ) -> Self {
         Self {
-            inner,
-            dispatch,
+            authority: CheckpointAuthority::Local { inner, dispatch },
             claim,
         }
     }
+    #[must_use]
+    pub fn remote(transport: Arc<dyn ClaimedCheckpointTransport>, claim: RunClaim) -> Self {
+        Self {
+            authority: CheckpointAuthority::Remote(transport),
+            claim,
+        }
+    }
+    fn verify_run(&self, run: &str) -> Result<(), StreamCheckpointError> {
+        if run != self.claim.run_id.0 {
+            Err(StreamCheckpointError::Fenced(
+                "checkpoint run does not match claim".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
 }
-
 #[async_trait]
 impl StreamCheckpointStore for FencedStreamCheckpointStore {
     async fn get(&self, run_id: &str) -> Observed<StreamCheckpoint> {
-        if run_id != self.claim.run_id.0 {
-            return Observed::Unknown(UnknownCause::Fenced(
-                "checkpoint run does not match claim".into(),
-            ));
+        if let Err(error) = self.verify_run(run_id) {
+            return Observed::Unknown(UnknownCause::Fenced(error.to_string()));
         }
-        match self.dispatch.lock_commit_epoch(&self.claim).await {
-            Ok(Some(_guard)) => match &self.inner {
-                Some(inner) => inner.get(run_id).await,
-                // No local store was ever wired behind this guard, so nothing
-                // was written here to find. This is a finding, not ignorance.
-                None => Observed::Absent,
-            },
-            Ok(None) => Observed::Unknown(UnknownCause::Fenced(
-                "checkpoint claim is no longer current".into(),
-            )),
-            // Fall back to the authority over the transport. Its Result is
-            // translated here, once and explicitly: a transport failure is
-            // ignorance about the remote checkpoint, never its absence.
-            Err(_) => match self.dispatch.claimed_checkpoint_transport() {
-                Some(remote) => match remote.load_stream_checkpoint(&self.claim).await {
+        match &self.authority {
+            CheckpointAuthority::Local { inner, dispatch } => {
+                match dispatch.lock_commit_epoch(&self.claim).await {
+                    Ok(Some(_guard)) => match inner {
+                        Some(inner) => inner.get(run_id).await,
+                        None => Observed::Absent,
+                    },
+                    Ok(None) => Observed::Unknown(UnknownCause::Fenced(
+                        "checkpoint claim is no longer current".into(),
+                    )),
+                    Err(error) => Observed::Unknown(UnknownCause::Storage(error.to_string())),
+                }
+            }
+            CheckpointAuthority::Remote(remote) => {
+                match remote.load_stream_checkpoint(&self.claim).await {
                     Ok(Some(checkpoint)) => Observed::Present(checkpoint),
                     Ok(None) => Observed::Absent,
                     Err(error) => Observed::Unknown(UnknownCause::Storage(error.to_string())),
-                },
-                None => Observed::Unknown(UnknownCause::Storage(
-                    "checkpoint composition has neither a local epoch guard nor a remote transport"
-                        .into(),
-                )),
-            },
+                }
+            }
         }
     }
-
     async fn put(&self, checkpoint: StreamCheckpoint) -> Result<(), StreamCheckpointError> {
-        if checkpoint.run_id != self.claim.run_id.0 {
-            return Err(StreamCheckpointError::Fenced(
-                "checkpoint run does not match claim".into(),
-            ));
-        }
-        match self.dispatch.lock_commit_epoch(&self.claim).await {
-            Ok(Some(_guard)) => {
-                if let Some(inner) = &self.inner {
-                    inner.put(checkpoint).await
-                } else {
-                    Ok(())
-                }
+        self.verify_run(&checkpoint.run_id)?;
+        match &self.authority {
+            CheckpointAuthority::Local { inner, dispatch } => {
+                let guard = dispatch
+                    .lock_commit_epoch(&self.claim)
+                    .await
+                    .map_err(|e| StreamCheckpointError::Storage(e.to_string()))?
+                    .ok_or_else(|| {
+                        StreamCheckpointError::Fenced(
+                            "checkpoint claim is no longer current".into(),
+                        )
+                    })?;
+                let result = match inner {
+                    Some(inner) => inner.put(checkpoint).await,
+                    None => Ok(()),
+                };
+                guard
+                    .release_after(result)
+                    .await
+                    .map_err(|e| StreamCheckpointError::Storage(e.to_string()))?
             }
-            Ok(None) => Err(StreamCheckpointError::Fenced(
-                "checkpoint claim is no longer current".into(),
-            )),
-            Err(_) => self
-                .dispatch
-                .claimed_checkpoint_transport()
-                .ok_or_else(|| {
-                    StreamCheckpointError::Storage(
-                        "checkpoint composition has no remote transport".into(),
-                    )
-                })?
-                .put_stream_checkpoint(&self.claim, checkpoint)
-                .await
-                .map_err(|error| StreamCheckpointError::Storage(error.to_string()))
-                .and_then(settle_result),
+            CheckpointAuthority::Remote(remote) => settle_result(
+                remote
+                    .put_stream_checkpoint(&self.claim, checkpoint)
+                    .await
+                    .map_err(|e| StreamCheckpointError::Storage(e.to_string()))?,
+            ),
         }
     }
-
     async fn delete(&self, run_id: &str) -> Result<(), StreamCheckpointError> {
-        if run_id != self.claim.run_id.0 {
-            return Err(StreamCheckpointError::Fenced(
-                "checkpoint run does not match claim".into(),
-            ));
-        }
-        match self.dispatch.lock_commit_epoch(&self.claim).await {
-            Ok(Some(_guard)) => {
-                if let Some(inner) = &self.inner {
-                    inner.delete(run_id).await
-                } else {
-                    Ok(())
-                }
+        self.verify_run(run_id)?;
+        match &self.authority {
+            CheckpointAuthority::Local { inner, dispatch } => {
+                let guard = dispatch
+                    .lock_commit_epoch(&self.claim)
+                    .await
+                    .map_err(|e| StreamCheckpointError::Storage(e.to_string()))?
+                    .ok_or_else(|| {
+                        StreamCheckpointError::Fenced(
+                            "checkpoint claim is no longer current".into(),
+                        )
+                    })?;
+                let result = match inner {
+                    Some(inner) => inner.delete(run_id).await,
+                    None => Ok(()),
+                };
+                guard
+                    .release_after(result)
+                    .await
+                    .map_err(|e| StreamCheckpointError::Storage(e.to_string()))?
             }
-            Ok(None) => Err(StreamCheckpointError::Fenced(
-                "checkpoint claim is no longer current".into(),
-            )),
-            Err(_) => self
-                .dispatch
-                .claimed_checkpoint_transport()
-                .ok_or_else(|| {
-                    StreamCheckpointError::Storage(
-                        "checkpoint composition has no remote transport".into(),
-                    )
-                })?
-                .delete_stream_checkpoint(&self.claim)
-                .await
-                .map_err(|error| StreamCheckpointError::Storage(error.to_string()))
-                .and_then(settle_result),
+            CheckpointAuthority::Remote(remote) => settle_result(
+                remote
+                    .delete_stream_checkpoint(&self.claim)
+                    .await
+                    .map_err(|e| StreamCheckpointError::Storage(e.to_string()))?,
+            ),
         }
     }
 }
-
 fn settle_result(outcome: SettleOutcome) -> Result<(), StreamCheckpointError> {
     match outcome {
         SettleOutcome::Applied => Ok(()),

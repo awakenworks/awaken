@@ -13,7 +13,7 @@ use awaken_resource_contract::{
     MemoryMaterializationReferenceEncoder, MemoryMaterializationReferenceError, MemoryRepository,
     ResourceAccess,
 };
-use awaken_dispatch_contract::{DispatchQueue, RunClaim};
+use awaken_dispatch_contract::{DispatchCommitAuthority, RunClaim};
 use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_session_realization_contract::SessionResourceMaterializationIntent;
 use awaken_session_state_contract::{SessionTerminalMemoryIntent, SessionTerminalMemoryTarget};
@@ -427,7 +427,7 @@ impl From<MemoryWireError> for MemErr {
 pub struct WorkerMemoryService {
     repository: Arc<dyn MemoryRepository>,
     validator: Arc<dyn LiveResourceBindingVerifier>,
-    dispatch: Arc<dyn DispatchQueue>,
+    dispatch: Arc<dyn DispatchCommitAuthority>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Arc<dyn WorkerDirectory>,
     materialization_control:
@@ -443,7 +443,7 @@ impl WorkerMemoryService {
     pub fn new(
         repository: Arc<dyn MemoryRepository>,
         validator: Arc<dyn LiveResourceBindingVerifier>,
-        dispatch: Arc<dyn DispatchQueue>,
+        dispatch: Arc<dyn DispatchCommitAuthority>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
         directory: Arc<dyn WorkerDirectory>,
         clock: Arc<dyn awaken_time::WallClock>,

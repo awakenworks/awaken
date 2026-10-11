@@ -3,10 +3,8 @@
 mod harness;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
-use awaken_dispatch::{
-    DispatchQueue, Error, MemoryDispatchStore, RunDispatch, TerminalReconciliationScan,
-};
-use awaken_dispatch_contract::ControlDispatchQueue;
+use awaken_dispatch::{Error, MemoryDispatchStore, RunDispatch, TerminalReconciliationScan};
+
 use std::sync::{Arc, Mutex};
 
 #[tokio::test]
@@ -164,7 +162,7 @@ async fn full_page_end_and_new_process_cursor_never_strand_rows() {
     assert_eq!(store.dispatch_count(), 1);
 }
 
-async fn assert_corrupt_summary_scan_isolation(store: &dyn ControlDispatchQueue) {
+async fn assert_corrupt_summary_scan_isolation(store: &dyn ConformanceDispatch) {
     // SQL scan decision table. C1 first persisted payload cannot decode; C2
     // following payload is healthy; C3 page budget is one versus two. E1 C1
     // consumes a slot without calling the observer or pretending completion.
@@ -320,3 +318,7 @@ async fn oversized_adapter_page_cannot_exceed_observation_budget() {
         assert_eq!(store.dispatch_count(), 300, "no settlement authority");
     }
 }
+
+use awaken_dispatch_contract::DispatchEnqueue as _;
+
+use awaken_dispatch_testkit::ConformanceDispatch;

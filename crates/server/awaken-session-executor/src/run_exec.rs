@@ -621,7 +621,10 @@ pub(crate) mod tests {
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
     use awaken_agent_contract::agent::thread::Id as ThreadId;
-    use awaken_dispatch_contract::DispatchQueue as _;
+    use awaken_dispatch_contract::DispatchClaims;
+    use awaken_dispatch_contract::DispatchEnqueue;
+    use awaken_dispatch_contract::DispatchSettlement;
+
     use awaken_runtime_contract::llm::{ChatRequest, ChatResponse};
     use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
     use awaken_runtime_contract::resume::ResumeResult;
@@ -703,7 +706,7 @@ pub(crate) mod tests {
     struct RecordingArtifactPublisher {
         inner: Arc<dyn awaken_resource_contract::ArtifactPublisher<crate::ResourceOperationFence>>,
         claims: Arc<std::sync::Mutex<Vec<Option<awaken_dispatch_contract::RunClaim>>>>,
-        dispatch: Arc<awaken_dispatch_erasure::AnyDispatchStore>,
+        dispatch: Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>,
     }
 
     impl RecordingArtifactPublisher {
@@ -725,7 +728,7 @@ pub(crate) mod tests {
             });
             let guard = if let Some(claim) = claim {
                 Some(
-                    awaken_dispatch_contract::DispatchQueue::lock_commit_epoch(
+                    awaken_dispatch_contract::DispatchCommitAuthority::lock_commit_epoch(
                         self.dispatch.as_ref(),
                         claim,
                     )

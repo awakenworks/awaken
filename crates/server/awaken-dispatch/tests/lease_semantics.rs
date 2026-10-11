@@ -25,7 +25,7 @@
 mod harness;
 
 use awaken_dispatch::ControlDispatch;
-use awaken_dispatch_contract::ControlDispatchQueue;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -34,8 +34,8 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch::{
-    AttemptAdmission, DispatchOutcome, DispatchQueue, DispatchWorker, MemoryDispatchStore,
-    RunClaim, RunDispatch, SqliteDispatchStore,
+    AttemptAdmission, DispatchOutcome, DispatchWorker, MemoryDispatchStore, RunClaim, RunDispatch,
+    SqliteDispatchStore,
 };
 use awaken_runtime_contract::execution::{AttemptRecoveryMode, RunAttemptExecutor, RunExecutor};
 use awaken_runtime_contract::resume::ResumeCommand;
@@ -193,7 +193,9 @@ impl RunAttemptExecutor for ParentReturnsBeforeChild {
     }
 }
 
-async fn assert_parent_return_waits_for_all_participants<S: ControlDispatch + 'static>(
+async fn assert_parent_return_waits_for_all_participants<
+    S: ControlDispatch + awaken_dispatch::DispatchReads + 'static,
+>(
     store: Arc<S>,
     dropped: bool,
 ) {
@@ -602,7 +604,7 @@ async fn assert_native_cancel_observes_history_before_physical_ack<S>(
     unknown: bool,
     clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) where
-    S: awaken_dispatch::ControlDispatch + 'static,
+    S: awaken_dispatch::ControlDispatch + awaken_dispatch::DispatchReads + 'static,
 {
     use awaken_agent_contract::agent::state::StateKey;
     use awaken_runtime_contract::model_operation::{
@@ -1016,7 +1018,7 @@ struct RecoverySettlementObserver<S> {
 }
 
 #[async_trait::async_trait]
-impl<S: awaken_dispatch::ControlDispatch + 'static>
+impl<S: awaken_dispatch::ControlDispatch + awaken_dispatch::DispatchReads + 'static>
     awaken_dispatch::DispatchSettlementObserver for RecoverySettlementObserver<S>
 {
     async fn before_settle(
@@ -1042,7 +1044,7 @@ impl<S: awaken_dispatch::ControlDispatch + 'static>
 // exact predecessor ACK permits a later terminal reconciliation. Native ordinary
 // recovery remains the adjacent wait-for-quiescence test's responsibility.
 async fn assert_occupied_attempt_terminal_recovery<
-    S: awaken_dispatch::ControlDispatch + 'static,
+    S: awaken_dispatch::ControlDispatch + awaken_dispatch::DispatchReads + 'static,
 >(
     store: Arc<S>,
     acp_backend: bool,
@@ -1806,3 +1808,8 @@ async fn native_cancelled_external_future_does_not_acknowledge_physical_return()
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _, DispatchExecution as _,
+    DispatchReads as _, DispatchSettlement as _,
+};

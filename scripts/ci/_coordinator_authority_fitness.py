@@ -15,16 +15,11 @@ import _crate_boundary_workspace
 
 AUTHORITY_IMPLS: dict[str, tuple[str, ...]] = {
     # Durable implementations remain in run-ingress. The one Worker-side HTTP
-    # adapter implements the same port without storing or deciding authority;
-    # its server-owned verbs fail closed and all accepted mutations cross the
-    # authenticated Coordinator boundary. The one shared erased role delegator
-    # also implements this port over an already-selected Dispatch; it owns no
+    # adapter implements only Worker roles without storing or deciding authority;
+    # Coordinator roles are absent from its type. Accepted mutations cross the
+    # authenticated Coordinator boundary. The shared erased role delegators
+    # implement their selected roles over one Dispatch owner; they own no
     # SQL, claim transition, or second queue.
-    "DispatchQueue": (
-        "crates/server/awaken-dispatch/src/",
-        "crates/server/awaken-coordinator-client/src/dispatch_client.rs",
-        "crates/shared/awaken-dispatch-erasure/src/lib.rs",
-    ),
     "OperationCoordinator": (
         "crates/runtime/awaken-store-inmem/src/",
         "crates/stores/awaken-store-fs/src/",
@@ -35,6 +30,38 @@ AUTHORITY_IMPLS: dict[str, tuple[str, ...]] = {
     "SessionRepository": ("crates/stores/awaken-session-store/src/",),
     "LifecycleOutbox": ("crates/stores/awaken-session-store/src/",),
 }
+
+WORKER_DISPATCH_ROLES = (
+    "DispatchEnqueue", "DispatchClaims", "DispatchExecution",
+    "DispatchClaimOwnership", "DispatchSettlement", "InboxRead",
+)
+COORDINATOR_DISPATCH_ROLES = (
+    "DispatchAdministration", "DispatchCommitAuthority", "DispatchReads",
+    "DispatchMaintenance", "SessionRunReservations", "SessionReservationAuthority",
+    "DispatchAttemptControl", "DispatchControlClaims", "DispatchControlReads",
+    "Inbox", "Outbox", "SessionContinuationOutbox", "DispatchOperationalFeed",
+)
+DISPATCH_OWNERS = (
+    "crates/server/awaken-dispatch/src/",
+    "crates/shared/awaken-dispatch-erasure/src/lib.rs",
+)
+for role in WORKER_DISPATCH_ROLES:
+    AUTHORITY_IMPLS[role] = (*DISPATCH_OWNERS, "crates/server/awaken-coordinator-client/src/dispatch_client.rs")
+for role in COORDINATOR_DISPATCH_ROLES:
+    AUTHORITY_IMPLS[role] = DISPATCH_OWNERS
+
+
+def dispatch_projection_violations(source: str) -> list[str]:
+    """A core Worker view cannot fabricate local authority or probe for ports."""
+    errors = []
+    if re.search(r"\b(?:trait|impl)\s+(?:[\w:]+::)?(?:DispatchQueue|ControlDispatchQueue)\b", source):
+        errors.append("use required caller roles instead of the removed broad dispatch traits")
+    if re.search(r"\.(?:control|claimed_checkpoint_transport|claimed_credential_delivery_transport)\s*\(", source):
+        errors.append("dispatch roles must be bound at construction, never discovered by optional getters")
+    local = "|".join(COORDINATOR_DISPATCH_ROLES)
+    if re.search(rf"\bimpl\s+(?:[\w:]+::)?({local})\s+for\s+AnyDispatchStore\b", source):
+        errors.append("AnyDispatchStore is a Worker projection and cannot implement Coordinator roles")
+    return errors
 
 TABLE_AUTHORITIES: tuple[tuple[str, re.Pattern[str], tuple[str, ...]], ...] = (
     (
@@ -135,16 +162,16 @@ def selftest() -> None:
     database owners without treating test doubles as production authorities.
     """
     assert implementation_violation(
-        "crates/server/awaken-dispatch/src/sqlite.rs", "DispatchQueue"
+        "crates/server/awaken-dispatch/src/sqlite.rs", "DispatchCommitAuthority"
     ) == []  # R1
     assert implementation_violation(
-        "crates/server/awaken-coordinator-client/src/dispatch_client.rs", "DispatchQueue"
+        "crates/server/awaken-coordinator-client/src/dispatch_client.rs", "DispatchClaims"
     ) == []  # R2
     assert implementation_violation(
-        "crates/shared/awaken-dispatch-erasure/src/lib.rs", "DispatchQueue"
+        "crates/shared/awaken-dispatch-erasure/src/lib.rs", "DispatchCommitAuthority"
     ) == []  # R2 role delegation, not a second durable authority
     assert implementation_violation(
-        "crates/server/awaken-session-executor/src/dispatch.rs", "DispatchQueue"
+        "crates/server/awaken-session-executor/src/dispatch.rs", "DispatchCommitAuthority"
     )  # R3
     allowed = TABLE_AUTHORITIES[2][2]
     assert table_violation("crates/stores/awaken-session-store/src/lib.rs", "session", allowed) == []
@@ -153,6 +180,15 @@ def selftest() -> None:
     stripped = _crate_boundary_workspace.production_rust(sample)
     assert "Fake" not in stripped  # R4
     assert "live" in stripped  # R5
+    for role in COORDINATOR_DISPATCH_ROLES:
+        assert implementation_violation("crates/server/awaken-coordinator-client/src/dispatch_client.rs", role)
+        assert dispatch_projection_violations(f"impl {role} for AnyDispatchStore {{}}")
+        assert dispatch_projection_violations(f"impl awaken_dispatch_contract::{role} for AnyDispatchStore {{}}")
+        assert not dispatch_projection_violations(f"impl {role} for AnyCoordinatorDispatch {{}}")
+    for getter in ("control", "claimed_checkpoint_transport", "claimed_credential_delivery_transport"):
+        assert dispatch_projection_violations(f"store.{getter}()")
+    assert dispatch_projection_violations("pub trait DispatchQueue {}")
+    assert not dispatch_projection_violations("DispatchBinding::remote(owner, commit)")
     # Causes: C1 canonical result adapter or storage backend; C2 direct kernel
     # call; C3 every adapter call assigned to this file retained. Effects/rules:
     # A1 owner+C2 -> accept; A2 backend+C2 -> reject the policy bypass;
@@ -179,8 +215,7 @@ def selftest() -> None:
 def check_all(repo_root: Path, crates_root: Path) -> list[str]:
     errors: list[str] = []
     implementation = re.compile(
-        r"\bimpl(?:\s*<[^>{}]*>)?\s+(DispatchQueue|OperationCoordinator|"
-        r"SessionRepository|LifecycleOutbox)\s+for\b"
+        r"\bimpl(?:\s*<[^>{}]*>)?\s+(?:[\w:]+::)?(" + "|".join(AUTHORITY_IMPLS) + r")\s+for\b"
     )
     for path in sorted(crates_root.glob("**/*")):
         if not path.is_file() or path.suffix not in {".rs", ".sql"}:
@@ -195,6 +230,7 @@ def check_all(repo_root: Path, crates_root: Path) -> list[str]:
             else source
         )
         errors.extend(attempt_rule_violations(relative, production))
+        errors.extend(f"{relative}: {error}" for error in dispatch_projection_violations(production))
         for match in implementation.finditer(production):
             errors.extend(implementation_violation(relative, match.group(1)))
         for authority, pattern, allowed in TABLE_AUTHORITIES:

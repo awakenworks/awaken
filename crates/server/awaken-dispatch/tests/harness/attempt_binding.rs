@@ -6,10 +6,9 @@ use awaken_dispatch::{
 use awaken_dispatch::{
     PlacementRequirements, RunClaim, RunDispatch, WorkerIdentity, WorkerSnapshot,
 };
-use awaken_dispatch_contract::ControlDispatchQueue;
 
 pub async fn bound_claim(
-    store: &impl ControlDispatchQueue,
+    store: &impl ConformanceDispatch,
     name: &str,
     clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) -> (RunClaim, AttemptExecutionBinding, WorkerSnapshot) {
@@ -45,7 +44,7 @@ pub async fn bound_claim(
 
 /// Shared decision table, executed against all three stores and Any delegation.
 pub async fn assert_binding_lifecycle(
-    store: &impl ControlDispatchQueue,
+    store: &impl ConformanceDispatch,
     clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     // C1 exact registered Worker tuple (not merely its owner string); C2 empty,
@@ -381,7 +380,7 @@ pub async fn assert_binding_lifecycle(
 }
 
 pub async fn assert_closing_lifecycle(
-    store: &impl ControlDispatchQueue,
+    store: &impl ConformanceDispatch,
     clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     // C1 exact old entry vs foreign epoch; C2 durable closing phase; C3 late
@@ -480,3 +479,5 @@ pub async fn assert_closing_lifecycle(
         "D5"
     );
 }
+
+use awaken_dispatch_testkit::ConformanceDispatch;

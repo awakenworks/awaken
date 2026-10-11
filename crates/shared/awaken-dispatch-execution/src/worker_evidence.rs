@@ -1,6 +1,8 @@
 //! Exact closed-idle Worker retirement port for the process maintenance scan.
 
-use awaken_dispatch_contract::{ControlDispatchQueue, WorkerDirectory, WorkerIdentity};
+use awaken_dispatch_contract::{
+    DispatchControlReads, DispatchReads, WorkerDirectory, WorkerIdentity,
+};
 use awaken_session_execution_contract::ApplicationError;
 
 /// The Host scans and expires Registry records; Coordinator Ingress retains the
@@ -18,9 +20,13 @@ pub trait WorkerEvidenceRelease: Send + Sync {
     /// crosses this port.
     async fn release_closed_idle_worker_evidence(
         &self,
-        dispatch: &dyn ControlDispatchQueue,
+        dispatch: &dyn PhysicalAttemptReads,
         directory: &dyn WorkerDirectory,
         identity: &WorkerIdentity,
         now_ms: u64,
     ) -> Result<(), ApplicationError>;
 }
+
+/// Read-only physical-slot discovery supplied by the local Coordinator.
+pub trait PhysicalAttemptReads: DispatchReads + DispatchControlReads {}
+impl<T: DispatchReads + DispatchControlReads> PhysicalAttemptReads for T {}

@@ -25,7 +25,12 @@
 //! and the run record — not from a duplicated status in the queue. That keeps the
 //! DispatchQueue aggregate free of run-outcome truth.
 
-use crate::ControlDispatch;
+use crate::control_dispatch::LocalWorkerDispatch;
+use awaken_dispatch_erasure::{AnyDispatchStore, Dispatch, DispatchBinding, DispatchTopology};
+use awaken_dispatch_contract::{
+    ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport, DispatchClaimOwnership,
+    DispatchCommitAuthority, DispatchExecution,
+};
 use std::sync::Arc;
 
 use awaken_agent_contract::ThreadCommit;
@@ -85,6 +90,7 @@ pub struct DispatchWorker<S> {
     runtime: Arc<Runtime>,
     attempt_executor: std::sync::RwLock<Arc<dyn RunAttemptExecutor>>,
     store: Arc<S>,
+    ports: ExecutionAuthority,
     exec: WorkerContext,
     reader: Arc<dyn CommittedThreadView>,
     claimed_commit: Arc<dyn ClaimedRunCommit>,
@@ -103,17 +109,17 @@ pub struct DispatchWorker<S> {
 }
 
 struct ClaimBoundOwnershipVerifier {
-    dispatch: Arc<dyn crate::DispatchQueue>,
+    dispatch: Arc<dyn DispatchClaimOwnership>,
     claim: RunClaim,
 }
 
 struct ClaimBoundCredentialRecorder {
-    dispatch: Arc<dyn crate::DispatchQueue>,
+    dispatch: Arc<dyn DispatchExecution>,
     claim: RunClaim,
 }
 
 struct ClaimBoundCredentialDeliveryRefresh {
-    dispatch: Arc<dyn crate::DispatchQueue>,
+    dispatch: Arc<dyn ClaimedCredentialDeliveryTransport>,
     claim: RunClaim,
 }
 
@@ -205,8 +211,6 @@ impl AttemptCredentialDeliverySource for ClaimBoundCredentialDeliveryRefresh {
         request: AttemptCredentialDeliveryRequest,
     ) -> Result<AttemptCredentialDelivery, String> {
         self.dispatch
-            .claimed_credential_delivery_transport()
-            .ok_or_else(|| "claim credential delivery transport is unavailable".to_string())?
             .refresh_credential_delivery(&self.claim, request)
             .await
             .map_err(|error| error.to_string())?
@@ -223,7 +227,7 @@ impl AttemptCredentialDeliverySource for ClaimBoundCredentialDeliveryRefresh {
 /// store that owns the row, so there is no second clock for an embedder to
 /// supply and nothing left to disagree with.
 pub fn claim_bound_ownership_verifier(
-    dispatch: Arc<dyn crate::DispatchQueue>,
+    dispatch: Arc<dyn DispatchClaimOwnership>,
     claim: RunClaim,
 ) -> Arc<dyn AttemptOwnershipVerifier> {
     Arc::new(ClaimBoundOwnershipVerifier { dispatch, claim })
@@ -240,7 +244,7 @@ impl AttemptOwnershipVerifier for ClaimBoundOwnershipVerifier {
     }
 }
 
-impl<S: ControlDispatch + 'static> DispatchWorker<S> {
+impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// Rebuild the sole durable causal scope from the exact claimed instruction.
     /// Every claim entry uses this helper so recovery, pre-execution failure, and
     /// ordinary execution cannot drift into separate trace carrier rules.
@@ -267,15 +271,17 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                         crate::Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
                     })?,
                 None => {
-                    self.store
-                        .claimed_checkpoint_transport()
-                        .ok_or_else(|| {
-                            crate::Error::Dispatch(crate::DispatchError::Rejected(
-                                "recovery projection has neither a local source nor a claimed remote transport".into(),
-                            ))
-                        })?
-                        .load_recovery_snapshot(&claim, claimed.session_work_authority.as_ref())
-                        .await?
+                    match &self.ports {
+                        ExecutionAuthority::Remote { checkpoints, .. } => checkpoints,
+                        ExecutionAuthority::Local(_) => {
+                            return Err(crate::Error::Dispatch(crate::DispatchError::Rejected(
+                                "local recovery projection requires its committed recovery source"
+                                    .into(),
+                            )));
+                        }
+                    }
+                    .load_recovery_snapshot(&claim, claimed.session_work_authority.as_ref())
+                    .await?
                 }
             };
             projection
@@ -369,6 +375,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     ) -> Self
     where
         C: CommitCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
+        S: LocalWorkerDispatch,
     {
         // `commit` must back two independently erased ports; this clone only
         // increments the Arc count and does not clone coordinator state.
@@ -394,28 +401,14 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
         commit: Arc<dyn CommitCoordinator>,
         reader: Arc<dyn CommittedThreadView>,
         owner: impl Into<String>,
-    ) -> Self {
-        let dispatch: Arc<dyn crate::dispatch::DispatchQueue> = store.clone();
-        let attempt_executor: Arc<dyn RunAttemptExecutor> = runtime.clone();
-        Self {
-            runtime,
-            attempt_executor: std::sync::RwLock::new(attempt_executor),
-            store,
-            exec: WorkerContext::new(commit.clone()).with_reader(reader.clone()),
-            reader,
-            claimed_commit: Arc::new(GuardedRunCommit::new(commit, dispatch)),
-            recovery_projection: None,
-            recovery_source: None,
-            terminal_scan: Default::default(),
-            settlement_observer: None,
-            session_admission_observer: None,
-            owner: owner.into(),
-            execution_binding: None,
-            lease_ms: DEFAULT_LEASE_MS,
-            cancellation: None,
-            local_credential_capabilities: Default::default(),
-            worker_credential_resolver: None,
-        }
+    ) -> Self
+    where
+        S: LocalWorkerDispatch,
+    {
+        let guard: Arc<dyn DispatchCommitAuthority> = store.clone();
+        let claimed_commit = Arc::new(GuardedRunCommit::new(commit.clone(), guard.clone()));
+        let ports = ExecutionAuthority::Local(store.clone());
+        construct_dispatch_worker(runtime, store, commit, reader, owner, ports, claimed_commit)
     }
 
     /// Inherit the same attempt capabilities as direct execution. The worker
@@ -470,30 +463,24 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
             .clone()
     }
 
-    /// Override how a claimed worker commit is applied. Database-less workers
-    /// inject the server-side atomic implementation; local workers keep the
-    /// guarded store implementation installed by [`new`](Self::new).
-    #[must_use]
-    pub fn with_claimed_commit(mut self, commit: Arc<dyn ClaimedRunCommit>) -> Self {
-        self.claimed_commit = commit;
-        self
-    }
-
-    /// Install the non-authoritative read cache used by a database-independent
-    /// Worker. Every claimed drive must load it before executor entry.
-    #[must_use]
-    pub fn with_recovery_projection(mut self, projection: Arc<crate::RecoveryProjection>) -> Self {
-        // `new` creates a local projection so every Worker has a coherent read
-        // boundary before topology is known. Replacing that boundary for a
-        // database-independent Worker must replace every reader as well as the
-        // install target; otherwise the fetched snapshot lands in one cache
-        // while resume selection and the Runtime read a second empty cache.
+    /// Replace the selected recovery cache without changing its load authority.
+    /// Split local readers cannot opt into projection recovery without a source;
+    /// use `new` or `new_bound` to supply the required combined commit boundary.
+    pub fn with_recovery_projection(
+        mut self,
+        projection: Arc<crate::RecoveryProjection>,
+    ) -> Result<Self, Error> {
+        if matches!(self.ports, ExecutionAuthority::Local(_)) && self.recovery_source.is_none() {
+            return Err(Error::Dispatch(crate::DispatchError::Rejected(
+                "local recovery projection requires its committed recovery source at construction"
+                    .into(),
+            )));
+        }
         let reader: Arc<dyn CommittedThreadView> = projection.clone();
         self.reader = reader.clone();
         self.exec = self.exec.with_reader(reader);
         self.recovery_projection = Some(projection);
-        self.recovery_source = None;
-        self
+        Ok(self)
     }
 
     /// Install the one fallible hook that must complete after committed
@@ -630,8 +617,8 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
             coordinator = coordinator.with_recovery_projection(projection.clone());
         }
         let fenced: Arc<dyn CommitCoordinator> = Arc::new(coordinator);
-        let dispatch: Arc<dyn crate::DispatchQueue> = self.store.clone();
-        let ownership = claim_bound_ownership_verifier(dispatch.clone(), claim.clone());
+        let dispatch: Arc<dyn DispatchExecution> = self.store.clone();
+        let ownership = claim_bound_ownership_verifier(self.store.clone(), claim.clone());
         let mut ctx = self
             .exec
             .runtime_context(
@@ -669,27 +656,32 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
             if claim_credential_refresh_is_available(
                 credential_bindings.len(),
                 credential_deliveries.len(),
-                dispatch.claimed_credential_delivery_transport().is_some(),
-            ) {
+                matches!(self.ports, ExecutionAuthority::Remote { .. }),
+            ) && let ExecutionAuthority::Remote { credentials, .. } = &self.ports
+            {
                 realization = realization.with_delivery_refresh(Arc::new(
                     ClaimBoundCredentialDeliveryRefresh {
-                        dispatch: dispatch.clone(),
+                        dispatch: credentials.clone(),
                         claim: claim.clone(),
                     },
                 ));
             }
             ctx = ctx.with_credential_realization(realization);
         }
-        // Always install the claim-fenced adapter. A database-less Worker has no
-        // local checkpoint authority (`inner=None`); the adapter then delegates
-        // through the authenticated dispatch transport. Local SQLite/Postgres
-        // workers retain their explicitly paired durable inner store.
+        // The immutable binding selects either the local epoch guard and its
+        // optional checkpoint store or the required authenticated remote RPC.
         let inner_checkpoint = ctx.stream_checkpoint.clone();
-        ctx = ctx.with_stream_checkpoint(Arc::new(crate::FencedStreamCheckpointStore::new(
-            inner_checkpoint,
-            dispatch,
-            claim.clone(),
-        )));
+        let checkpoint = match &self.ports {
+            ExecutionAuthority::Local(guard) => crate::FencedStreamCheckpointStore::new(
+                inner_checkpoint,
+                guard.clone(),
+                claim.clone(),
+            ),
+            ExecutionAuthority::Remote { checkpoints, .. } => {
+                crate::FencedStreamCheckpointStore::remote(checkpoints.clone(), claim.clone())
+            }
+        };
+        ctx = ctx.with_stream_checkpoint(Arc::new(checkpoint));
         Ok(match model_executor {
             Some(exec) => ctx.with_model_executor(exec.clone()),
             None => ctx,
@@ -918,13 +910,10 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                 .settlement_observer
                 .as_ref()
                 .is_some_and(|observer| observer.owns_dispatch_fence());
-            let local_guard = if observer.is_some() && !observer_owns_fence {
-                self.store
-                    .lock_session_run_reservation_epoch(&claim)
-                    .await?
-            } else {
-                None
-            };
+            let local_guard = self
+                .ports
+                .reservation_guard(&claim, observer.is_some() && !observer_owns_fence)
+                .await?;
             let cancellation_requested = local_guard
                 .as_ref()
                 .map_or(claimed.cancellation_requested, |guard| {
@@ -1516,7 +1505,12 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
                 let guard = if observer.owns_dispatch_fence() {
                     None
                 } else {
-                    let Some(guard) = self.store.lock_commit_epoch(&claim).await? else {
+                    let ExecutionAuthority::Local(store) = &self.ports else {
+                        return Err(Error::Dispatch(crate::DispatchError::Rejected(
+                            "remote settlement observer must own its dispatch fence".into(),
+                        )));
+                    };
+                    let Some(guard) = store.lock_commit_epoch(&claim).await? else {
                         return Ok(SettleOutcome::Fenced);
                     };
                     if !guard.permits_settlement() {
@@ -1844,7 +1838,134 @@ fn claimed_snapshot_execution_requires_exact_identity() {
     );
 }
 
+/// Every topology supplies its required authority before any claim is driven.
+enum ExecutionAuthority {
+    Local(Arc<dyn LocalWorkerDispatch>),
+    Remote {
+        checkpoints: Arc<dyn ClaimedCheckpointTransport>,
+        credentials: Arc<dyn ClaimedCredentialDeliveryTransport>,
+    },
+}
+impl DispatchWorker<AnyDispatchStore> {
+    pub fn from_binding(
+        runtime: Arc<Runtime>,
+        binding: DispatchBinding,
+        commit: Arc<dyn CommitCoordinator>,
+        reader: Arc<dyn CommittedThreadView>,
+        owner: impl Into<String>,
+    ) -> Self {
+        let (ports, claimed_commit) = match binding.placement() {
+            DispatchTopology::Local(local) => {
+                let guard: Arc<dyn DispatchCommitAuthority> = local.clone();
+                (
+                    ExecutionAuthority::Local(local.clone()),
+                    Arc::new(GuardedRunCommit::new(commit.clone(), guard))
+                        as Arc<dyn ClaimedRunCommit>,
+                )
+            }
+            DispatchTopology::Remote {
+                checkpoints,
+                credentials,
+                commit,
+            } => (
+                ExecutionAuthority::Remote {
+                    checkpoints: checkpoints.clone(),
+                    credentials: credentials.clone(),
+                },
+                commit.clone(),
+            ),
+        };
+        // Remote execution always loads one claim-scoped prefix before entry.
+        // Caller-provided provisional readers cannot bypass that required load.
+        let projection = matches!(ports, ExecutionAuthority::Remote { .. })
+            .then(|| Arc::new(crate::RecoveryProjection::new()));
+        let reader: Arc<dyn CommittedThreadView> = projection
+            .as_ref()
+            .map_or(reader, |projection| projection.clone());
+        let mut worker = construct_dispatch_worker(
+            runtime,
+            binding.queue(),
+            commit,
+            reader,
+            owner,
+            ports,
+            claimed_commit,
+        );
+        worker.recovery_projection = projection;
+        worker
+    }
+    pub fn new_bound<C>(
+        runtime: Arc<Runtime>,
+        binding: DispatchBinding,
+        commit: Arc<C>,
+        owner: impl Into<String>,
+    ) -> Self
+    where
+        C: CommitCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
+    {
+        let projection = Arc::new(crate::RecoveryProjection::new());
+        let local = matches!(binding.placement(), DispatchTopology::Local(_));
+        let mut worker =
+            Self::from_binding(runtime, binding, commit.clone(), projection.clone(), owner);
+        if local {
+            worker.recovery_projection = Some(projection);
+            worker.recovery_source = Some(commit);
+        }
+        worker
+    }
+}
+
+fn construct_dispatch_worker<S: Dispatch + 'static>(
+    runtime: Arc<Runtime>,
+    store: Arc<S>,
+    commit: Arc<dyn CommitCoordinator>,
+    reader: Arc<dyn CommittedThreadView>,
+    owner: impl Into<String>,
+    ports: ExecutionAuthority,
+    claimed_commit: Arc<dyn ClaimedRunCommit>,
+) -> DispatchWorker<S> {
+    let attempt_executor: Arc<dyn RunAttemptExecutor> = runtime.clone();
+    DispatchWorker {
+        runtime,
+        attempt_executor: std::sync::RwLock::new(attempt_executor),
+        store,
+        ports,
+        exec: WorkerContext::new(commit.clone()).with_reader(reader.clone()),
+        reader,
+        claimed_commit,
+        recovery_projection: None,
+        recovery_source: None,
+        terminal_scan: Default::default(),
+        settlement_observer: None,
+        session_admission_observer: None,
+        owner: owner.into(),
+        execution_binding: None,
+        lease_ms: DEFAULT_LEASE_MS,
+        cancellation: None,
+        local_credential_capabilities: Default::default(),
+        worker_credential_resolver: None,
+    }
+}
+
+impl ExecutionAuthority {
+    async fn reservation_guard(
+        &self,
+        claim: &RunClaim,
+        required: bool,
+    ) -> Result<Option<awaken_dispatch_contract::CommitEpochGuard>, Error> {
+        if !required {
+            return Ok(None);
+        }
+        match self {
+            Self::Local(store) => Ok(store.lock_session_run_reservation_epoch(claim).await?),
+            Self::Remote { .. } => Ok(None),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use awaken_dispatch_contract::DispatchClaims;
+    use awaken_dispatch_contract::DispatchEnqueue;
     include!("worker/tests.rs");
 }

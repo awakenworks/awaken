@@ -23,16 +23,14 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_dispatch::{
-    AttemptAdmission, ClaimedStreamPublisher, DispatchError, DispatchOutcome, DispatchQueue, Inbox,
-    MemoryDispatchStore, Outbox, PendingInput, RunClaim, RunDispatch, SettleOutcome,
-    StreamObservationRequest, SubmitOptions, WorkerIdentity,
+    AttemptAdmission, ClaimedStreamPublisher, DispatchError, DispatchOutcome, MemoryDispatchStore,
+    RunClaim, RunDispatch, SettleOutcome, StreamObservationRequest, SubmitOptions, WorkerIdentity,
 };
 use awaken_dispatch_contract::ClaimedCheckpointTransport as _;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
 };
-use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
@@ -520,10 +518,7 @@ async fn worker_transport_cannot_silently_erase_an_execution_binding() {
         queue.handoff_attempt(&claim, Some(&binding)).await,
         Err(DispatchError::Rejected(_))
     ));
-    assert!(
-        queue.control().is_none(),
-        "a Worker-side client has no Control rung: physical attempt readback is unreachable"
-    );
+    // Control readback is absent at the type boundary (compile-fail docs).
     assert_eq!(
         calls.load(Ordering::SeqCst),
         0,
@@ -1072,184 +1067,128 @@ async fn renew_lease_returns_typed_loss_over_the_wire_when_the_lease_was_stolen(
     assert_eq!(store.dispatch_count(), 1);
 }
 
-// ── 2. Fail-closed server-local stubs (no server: these resolve on the client) ───
+// ── 2. Required Worker roles and compile-time Coordinator refusals ────────────
 
-fn an_input() -> PendingInput {
-    PendingInput {
-        message_id: "m1".into(),
-        run_id: RunId("run-1".into()),
-        thread_id: ThreadId("thread-1".into()),
-        correlation_id: "corr-1".into(),
-        available_at_ms: None,
-        context_messages: Vec::new(),
-        result: ResumeResult::allow(),
-    }
-}
-
-/// Server-authority cause/effect table: C1 a database-less Worker invokes a
-/// Coordinator-owned mutation; C2 the verb is a remote-worker write supported
-/// by this client. E1 is fail-closed without dialing; E2 is authenticated HTTP
-/// dispatch (covered by D1-D4). This test covers rule A1 C1+!C2=>E1 for recovery,
-/// cancel, Inbox mutation, and Outbox staging, preventing false success.
+/// C1 Coordinator mutations fail to compile (HttpDispatchQueue's docs).
+/// C2 supported Worker verbs cross authenticated HTTP (D1-D4). This test
+/// preserves the positive Worker-role and legitimate Inbox-read partition.
 #[tokio::test]
 async fn server_local_write_verbs_fail_closed() {
-    // No server is needed: these verbs resolve locally on the client without a
-    // request, so a bad base URL is never dialed.
+    // The negative write scenarios now fail at compile time, before a client can
+    // dial. HttpDispatchQueue's docs cover Administration, Inbox and Outbox.
     let queue = HttpDispatchQueue::new(
         "http://127.0.0.1:1",
         WorkerIdentity::new("worker-local", "boot-local", 1),
     );
-    let run = RunId("run-1".into());
-
-    // The verbs a database-less worker must never legitimately drive — server-owned
-    // recovery/cancel and the write side of the inbox/outbox — reject (fail closed):
-    // they never pretend a mutation the server didn't perform.
-    assert!(matches!(
-        queue.requeue(&run).await,
-        Err(DispatchError::Rejected(_))
-    ));
-    assert!(matches!(
-        queue.cancel(&run).await,
-        Err(DispatchError::Rejected(_))
-    ));
-    assert!(matches!(
-        Inbox::append(&queue, an_input()).await,
-        Err(DispatchError::Rejected(_))
-    ));
-    assert!(matches!(
-        Inbox::retract(&queue, "m1", 1).await,
-        Err(DispatchError::Rejected(_))
-    ));
-    assert!(matches!(
-        Inbox::edit(&queue, "m1", 1, ResumeResult::allow()).await,
-        Err(DispatchError::Rejected(_))
-    ));
-    assert!(matches!(
-        Outbox::stage(&queue, an_input()).await,
-        Err(DispatchError::Rejected(_))
-    ));
+    fn worker_only(_: &dyn awaken_dispatch_execution::RemoteDispatch) {}
+    worker_only(&queue);
+    assert!(
+        awaken_dispatch_contract::InboxRead::list(&queue, &ThreadId("thread-1".into()))
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
-/// Maintenance/readback cause/effect table: C1 the operation requires
-/// Coordinator store authority; C2 it is the Worker drive's local Inbox list;
-/// C3 the pending inputs were already carried by `Claimed.pending`. Rules:
-/// M1 C1+!C2=>`Rejected` without dialing; M2 C2+C3=>empty list. M2 is the sole
-/// legitimate no-op read; every maintenance mutation and authoritative query
-/// uses M1 so the client cannot pretend server work happened.
+// Type refusals for every Coordinator-only role live in HttpDispatchQueue's
+// compile-fail docs. The scheduler's existing 42-row matrix verifies that actual
+// remote services/pools construct no local maintenance and still drain claims.
 #[tokio::test]
 async fn maintenance_verbs_fail_closed_except_the_legitimate_inbox_list_readback() {
-    let queue = HttpDispatchQueue::new(
+    let queue = Arc::new(HttpDispatchQueue::new(
         "http://127.0.0.1:1",
         WorkerIdentity::new("worker-local", "boot-local", 1),
-    );
-    // M3 transport topology must survive the exact type erasure used by Host.
-    // Schedulers skip maintenance, but the explicit M1 calls below still reject.
-    // M4 the same erasure must not disable a genuine local store's maintenance.
+    ));
+    let remote = awaken_dispatch::DispatchBinding::remote(queue, Arc::new(SelectionOnlyCommit));
+    assert!(matches!(
+        remote.placement(),
+        awaken_dispatch::DispatchTopology::Remote { .. }
+    ));
     assert!(
-        awaken_dispatch::AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(
-            awaken_time::system_clock()
-        )))
-        .owns_local_maintenance()
+        awaken_dispatch_contract::InboxRead::list(
+            remote.queue().as_ref(),
+            &ThreadId("thread-1".into())
+        )
+        .await
+        .unwrap()
+        .is_empty()
     );
-    assert!(!queue.owns_local_maintenance());
-    // A Worker-side client is not a Control store, so it cannot be wrapped in
-    // `AnyDispatchStore`; the maintenance refusals below are asserted on the
-    // client itself.
-    assert!(!queue.owns_local_maintenance());
-    let run = RunId("run-1".into());
-    let thread = ThreadId("thread-1".into());
-    let _ = &run;
-
+    let local = Arc::new(
+        awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(
+            MemoryDispatchStore::new(awaken_time::system_clock()),
+        )),
+    );
     assert!(matches!(
-        queue.quarantine_retry_exhausted(5, 0).await,
-        Err(DispatchError::Rejected(_))
+        awaken_dispatch::DispatchBinding::local(local).placement(),
+        awaken_dispatch::DispatchTopology::Local(_)
     ));
-    assert!(matches!(
-        queue.dead_letters().await,
-        Err(DispatchError::Rejected(_))
-    ));
-    assert!(matches!(
-        queue.purge_dead_letters().await,
-        Err(DispatchError::Rejected(_))
-    ));
-    assert!(matches!(
-        queue.purge_dead_letters_before(0).await,
-        Err(DispatchError::Rejected(_))
-    ));
-    assert!(matches!(
-        queue.superseded().await,
-        Err(DispatchError::Rejected(_))
-    ));
-    assert!(matches!(
-        queue.list_dispatches().await,
-        Err(DispatchError::Rejected(_))
-    ));
-    assert!(matches!(
-        Outbox::relay(&queue).await,
-        Err(DispatchError::Rejected(_))
-    ));
-
-    // The one legitimate no-op read: an empty inbox is correct, not pretended.
-    assert!(Inbox::list(&queue, &thread).await.unwrap().is_empty());
 }
 
-// Control rung through the Host's type erasure (ADR-0081 capability ladder):
-// C1 the erased handle wraps a Worker-side transport; C2 it wraps a durable
-// store. R1 for C1 `control()` is None and a Control operation through the
-// adapter is a typed Rejected naming the missing rung, never a transport call;
-// R2 for C2 `control()` is Some, so the Coordinator keeps its Control surface
-// after the same erasure.
 #[tokio::test]
 async fn any_dispatch_store_exposes_the_control_rung_only_when_its_inner_handle_owns_it() {
-    use awaken_dispatch::{ControlDispatchQueue, DispatchQueue};
-    let worker_side =
-        awaken_dispatch::AnyDispatchStore::from_dispatch(Arc::new(HttpDispatchQueue::new(
-            "http://127.0.0.1:1",
-            WorkerIdentity::new("worker-local", "boot-local", 1),
-        )));
-    assert!(worker_side.control().is_none(), "R1 no rung");
-    match worker_side
-        .reject_session_run_reservation(&RunId("run-1".into()))
-        .await
-    {
-        Err(DispatchError::Rejected(reason)) => {
-            assert!(
-                reason.contains("Control rung"),
-                "R1 names the rung: {reason}"
-            );
-        }
-        other => panic!("R1 expected a typed refusal, got {other:?}"),
-    }
-    let durable = awaken_dispatch::AnyDispatchStore::from_dispatch(Arc::new(
-        MemoryDispatchStore::new(awaken_time::system_clock()),
-    ));
-    assert!(durable.control().is_some(), "R2 store keeps its rung");
+    let owner = Arc::new(
+        awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(
+            MemoryDispatchStore::new(awaken_time::system_clock()),
+        )),
+    );
+    let binding = awaken_dispatch::DispatchBinding::local(owner.clone());
+    let awaken_dispatch::DispatchTopology::Local(selected) = binding.placement() else {
+        panic!("local authority retained");
+    };
+    assert!(Arc::ptr_eq(selected, &owner));
+    assert!(Arc::ptr_eq(&binding.queue(), &owner.worker_view()));
+    assert!(
+        !selected
+            .reject_session_run_reservation(&RunId("missing".into()))
+            .await
+            .unwrap()
+    );
 }
 
+struct SelectionOnlyCommit;
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::ClaimedRunCommit for SelectionOnlyCommit {
+    async fn commit(
+        &self,
+        _: &RunClaim,
+        _: awaken_agent_contract::ThreadCommit,
+    ) -> Result<
+        awaken_agent_contract::thread::commit::staged::CommitRecord,
+        awaken_agent_contract::thread::commit::coordinator::Error,
+    > {
+        panic!("construction has zero commit effects")
+    }
+}
 #[test]
 fn any_dispatch_store_preserves_the_claimed_recovery_transport() {
-    /* Recovery-port cause/effect table. C1 a database-less Worker wraps its
-     * HttpDispatchQueue in the process-wide AnyDispatchStore; C2 that concrete
-     * client owns the claim-fenced checkpoint/recovery transport. E1 the erased
-     * store must expose the same port; E2 an ordinary local Memory store remains
-     * absent. Rules R1=C1+C2=>E1 and R2=!C2=>E2. Losing E1 lets the Worker claim
-     * a Run but fail before model/tool entry because it cannot load committed
-     * recovery truth from Control. */
-    let remote =
-        awaken_dispatch::AnyDispatchStore::from_dispatch(Arc::new(HttpDispatchQueue::new(
-            "http://127.0.0.1:1",
-            WorkerIdentity::new("worker-local", "boot-local", 1),
-        )));
-    assert!(
-        remote.claimed_checkpoint_transport().is_some(),
-        "R1/E1 remote recovery survives type erasure"
-    );
-
-    let local = awaken_dispatch::AnyDispatchStore::from_dispatch(Arc::new(
-        MemoryDispatchStore::new(awaken_time::system_clock()),
+    // Required remote checkpoint, credential and commit Arcs survive selection
+    // exactly. A local placement exposes only its selected durable owner.
+    let owner = Arc::new(HttpDispatchQueue::new(
+        "http://127.0.0.1:1",
+        WorkerIdentity::new("worker-local", "boot-local", 1),
     ));
-    assert!(
-        local.claimed_checkpoint_transport().is_none(),
-        "R2/E2 no transport is invented for a local store"
-    );
+    let checkpoints: Arc<dyn awaken_dispatch_contract::ClaimedCheckpointTransport> =
+        owner.clone();
+    let credentials: Arc<dyn awaken_dispatch_contract::ClaimedCredentialDeliveryTransport> =
+        owner.clone();
+    let commit: Arc<dyn awaken_dispatch_contract::ClaimedRunCommit> =
+        Arc::new(SelectionOnlyCommit);
+    let binding = awaken_dispatch::DispatchBinding::remote(owner, commit.clone());
+    let awaken_dispatch::DispatchTopology::Remote {
+        checkpoints: selected,
+        credentials: delivery,
+        commit: selected_commit,
+    } = binding.placement()
+    else {
+        panic!("remote selection");
+    };
+    assert!(Arc::ptr_eq(selected, &checkpoints));
+    assert!(Arc::ptr_eq(delivery, &credentials));
+    assert!(Arc::ptr_eq(selected_commit, &commit));
+    assert!(Arc::ptr_eq(&binding.queue(), &binding.clone().queue()));
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaims as _, DispatchEnqueue as _, DispatchExecution as _, DispatchReads as _,
+    DispatchSettlement as _, SessionRunReservations as _,
+};

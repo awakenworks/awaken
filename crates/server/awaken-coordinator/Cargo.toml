@@ -154,6 +154,7 @@ test-support = [
     "awaken-deployment-application/test-support",
     "awaken-captured-content-store/test-support",
     "awaken-dispatch-http/test-support",
+    "awaken-dispatch/test-support",
     "awaken-resource-worker-http/test-support",
     "awaken-config-store/test-support",
     "awaken-credential-vault/test-support",

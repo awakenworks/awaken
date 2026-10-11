@@ -4,17 +4,16 @@ mod harness;
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_dispatch::{
-    AnyDispatchStore, DispatchOutcome, DispatchQueue, MemoryDispatchStore, PostgresDispatchStore,
+    AnyCoordinatorDispatch, DispatchOutcome, MemoryDispatchStore, PostgresDispatchStore,
     RunDispatch, SqliteDispatchStore,
 };
-use awaken_dispatch_contract::ControlDispatchQueue;
 
 fn id(value: &str) -> RunId {
     RunId(value.into())
 }
 
 async fn assert_bounded_query_conformance(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     // Cause/effect decision table. C1 page budget is zero/one/multiple; C2 the
@@ -148,9 +147,9 @@ async fn memory_and_any_bounded_dispatch_queries_conform() {
     // than silently using a full-list fallback; Memory owns one ordered row map.
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     assert_bounded_query_conformance(
-        &AnyDispatchStore::from_dispatch(std::sync::Arc::new(MemoryDispatchStore::new(
-            clock.clock(),
-        ))),
+        &AnyCoordinatorDispatch::from_durable_dispatch(std::sync::Arc::new(
+            MemoryDispatchStore::new(clock.clock()),
+        )),
         &clock,
     )
     .await;
@@ -184,7 +183,7 @@ async fn postgres_bounded_dispatch_queries_conform() {
     .await;
 }
 
-async fn assert_bad_row_isolation(store: &dyn ControlDispatchQueue) {
+async fn assert_bad_row_isolation(store: &impl awaken_dispatch::PhysicalAttemptReads) {
     // Q7 malformed request -> identity is still discoverable, exact summary
     // errors (not None), and a healthy peer remains readable. This ensures the
     // caller can advance its cursor and isolate corruption without hiding it.
@@ -270,3 +269,7 @@ async fn postgres_corrupt_summary_does_not_poison_identity_pages() {
         .unwrap();
     assert_bad_row_isolation(&store).await;
 }
+
+use awaken_dispatch_contract::DispatchEnqueue as _;
+
+use awaken_dispatch_testkit::ConformanceDispatch;

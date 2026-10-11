@@ -12,7 +12,6 @@
 //! duration are derived from trusted server-side SPIs before the neutral
 //! `DispatchQueue` is called.
 
-use awaken_dispatch_contract::ControlDispatchQueue;
 use awaken_session_resource_contract::SessionResourceManifest;
 use std::sync::Arc;
 
@@ -152,7 +151,7 @@ pub fn worker_environment_warmup_router(
 
 /// Explicit application service mounted by the worker HTTP adapter.
 pub struct WorkerDispatchService {
-    dispatch: Arc<dyn ControlDispatchQueue>,
+    dispatch: Arc<dyn WorkerDispatchAuthority>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     clock: Arc<dyn WallClock>,
     lease_policy: Arc<dyn WorkerLeasePolicy>,
@@ -186,7 +185,7 @@ pub struct WorkerDispatchService {
 impl WorkerDispatchService {
     #[must_use]
     pub fn new(
-        dispatch: Arc<dyn ControlDispatchQueue>,
+        dispatch: Arc<dyn WorkerDispatchAuthority>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
         clock: Arc<dyn WallClock>,
         lease_policy: Arc<dyn WorkerLeasePolicy>,
@@ -387,7 +386,7 @@ impl WorkerDispatchService {
     /// Local/test composition. Managed deployments should use [`Self::new`] with
     /// their WorkerLease/mTLS authenticator.
     #[must_use]
-    pub fn local(dispatch: Arc<dyn ControlDispatchQueue>, clock: Arc<dyn WallClock>) -> Self {
+    pub fn local(dispatch: Arc<dyn WorkerDispatchAuthority>, clock: Arc<dyn WallClock>) -> Self {
         Self::new(
             dispatch,
             Arc::new(HeaderWorkerAuthenticator),
@@ -484,7 +483,7 @@ async fn observe_expired_predecessor(
 pub struct RegisteredDispatchDependencies {
     pub execution_bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     pub execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
-    pub dispatch: Arc<dyn ControlDispatchQueue>,
+    pub dispatch: Arc<dyn WorkerDispatchAuthority>,
     pub checkpoint: Arc<dyn StreamCheckpointStore>,
     pub directory: Arc<dyn WorkerDirectory>,
     pub policy: Arc<dyn PlacementPolicy>,
@@ -1793,4 +1792,32 @@ async fn stream_event(
     }
     .await;
     respond(result)
+}
+
+use awaken_dispatch_contract::{
+    DispatchClaims, DispatchControlClaims, DispatchEnqueue, DispatchSettlement,
+    SessionReservationAuthority,
+};
+/// Required server-side authority for authenticated Worker dispatch endpoints.
+/// Administration, queue maintenance, inbox writes and reservation mutations are excluded.
+pub trait WorkerDispatchAuthority:
+    awaken_dispatch::AttemptControlAuthority
+    + awaken_dispatch::PhysicalAttemptReads
+    + DispatchEnqueue
+    + DispatchClaims
+    + DispatchSettlement
+    + DispatchControlClaims
+    + SessionReservationAuthority
+{
+}
+impl<
+    T: awaken_dispatch::AttemptControlAuthority
+        + awaken_dispatch::PhysicalAttemptReads
+        + DispatchEnqueue
+        + DispatchClaims
+        + DispatchSettlement
+        + DispatchControlClaims
+        + SessionReservationAuthority,
+> WorkerDispatchAuthority for T
+{
 }

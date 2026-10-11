@@ -17,9 +17,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_dispatch::{
-    AnyDispatchStore, Dispatch, DispatchQueue, MemoryDispatchStore, RunDispatch, SubmitOptions,
-};
+use awaken_dispatch::{MemoryDispatchStore, RunDispatch, SubmitOptions};
 use awaken_dispatch_http::durable_ops_router;
 use awaken_dispatch_testkit::ConformanceClock as _;
 use awaken_runtime_contract::activation::RunActivation;
@@ -113,9 +111,8 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
     // the queue deterministically and then assert the host verbs route to it.
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let mem = Arc::new(MemoryDispatchStore::new(clock.clock()));
-    let any = Arc::new(AnyDispatchStore::from_dispatch(
-        mem.clone() as Arc<dyn Dispatch>
-    ));
+    let any =
+        Arc::new(awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(mem.clone()));
     let host = (awaken_runtime_host_testkit::volatile_dependencies(Arc::new(OkModel), "stub")
         .await
         .with_ephemeral_dispatch(any))
@@ -267,9 +264,8 @@ async fn monitoring_reads_committed_dispatches_without_materializing_a_session()
      * Superseded. The non-durable C1=false => 400 rule remains below. */
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let mem = Arc::new(MemoryDispatchStore::new(clock.clock()));
-    let any = Arc::new(AnyDispatchStore::from_dispatch(
-        mem.clone() as Arc<dyn Dispatch>
-    ));
+    let any =
+        Arc::new(awaken_dispatch::AnyCoordinatorDispatch::from_durable_dispatch(mem.clone()));
     let host = (awaken_runtime_host_testkit::volatile_dependencies(Arc::new(OkModel), "stub")
         .await
         .with_ephemeral_dispatch(any))
@@ -356,3 +352,7 @@ async fn every_dispatch_read_and_repair_verb_requires_the_one_durable_capability
         );
     }
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaims as _, DispatchEnqueue as _, DispatchMaintenance as _,
+};

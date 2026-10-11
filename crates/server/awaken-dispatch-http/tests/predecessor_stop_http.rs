@@ -4,7 +4,6 @@
 //! fixtures here; this suite does not claim Kubernetes or remote termination.
 mod postgres_support;
 
-use awaken_dispatch_contract::{ControlDispatchQueue, DispatchQueue};
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::run::{Record as RunRecord, RunState};
@@ -259,7 +258,7 @@ async fn register(
 }
 
 struct Fixture {
-    store: Arc<dyn ControlDispatchQueue>,
+    store: Arc<dyn WorkerDispatchAuthority>,
     directory: Arc<dyn WorkerDirectory>,
     stop: Arc<StopSource>,
     old: RunClaim,
@@ -296,7 +295,7 @@ impl Fixture {
     }
 
     async fn with_store(
-        store: Arc<dyn ControlDispatchQueue>,
+        store: Arc<dyn WorkerDispatchAuthority>,
         directory: Arc<dyn WorkerDirectory>,
         bound: bool,
         old_ttl: u64,
@@ -644,7 +643,7 @@ async fn postgres_guarded_admission_uses_one_process_connection_and_rejects_fore
                 .advance_past(snapshot.expires_at_ms)
                 .await;
         }
-        let admission_store: &dyn ControlDispatchQueue = if rule == "composed" {
+        let admission_store: &dyn WorkerDispatchAuthority = if rule == "composed" {
             &composed
         } else {
             &store
@@ -1014,8 +1013,8 @@ async fn local_exit_receipt_keeps_its_subject_and_rejects_empty_provider_evidenc
     second.assert_occupied().await;
 }
 
-async fn dispatch_stores() -> Vec<Arc<dyn ControlDispatchQueue>> {
-    let mut stores: Vec<Arc<dyn ControlDispatchQueue>> = vec![
+async fn dispatch_stores() -> Vec<Arc<dyn WorkerDispatchAuthority>> {
+    let mut stores: Vec<Arc<dyn WorkerDispatchAuthority>> = vec![
         Arc::new(MemoryDispatchStore::new(awaken_time::system_clock())),
         Arc::new(
             SqliteDispatchStore::open_in_memory(awaken_time::system_clock())
@@ -1427,3 +1426,9 @@ fn postgres_configuration_contract() {
         "complete_stop_uses_exact_retirement_and_requires_fresh_successor_admission",
     ]);
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaims as _, DispatchControlReads as _, DispatchEnqueue as _, DispatchExecution as _,
+};
+
+use awaken_dispatch_http::WorkerDispatchAuthority;

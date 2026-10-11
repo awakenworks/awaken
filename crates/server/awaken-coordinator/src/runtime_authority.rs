@@ -23,7 +23,7 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::thread::read::lifecycle::{
     RunLifecycleCursor, RunLifecycleFeed, RunLifecycleFeedError, RunLifecyclePage,
 };
-use awaken_dispatch::{AnyDispatchStore, WakeSignal};
+use awaken_dispatch::{AnyCoordinatorDispatch, WakeSignal};
 use awaken_session_executor::{
     DeploymentConfig, DispatchBackend, LocalCommit, LocalCommitAdapter, LocalCommitQueries,
     RuntimeAuthority, RuntimeAuthorityError, StoreKind, Wake,
@@ -44,7 +44,7 @@ pub struct DurableRuntimeAuthority {
     /// The Coordinator process's one wall clock. The dispatch store judges its
     /// rows and every local commit store stamps its commits with this handle.
     clock: Arc<dyn awaken_time::WallClock>,
-    dispatch: Arc<AnyDispatchStore>,
+    dispatch: Arc<AnyCoordinatorDispatch>,
     wake: Option<Arc<dyn WakeSignal>>,
     postgres_commit: Option<Arc<PostgresCommitCoordinator>>,
     /// One live execution projection per Thread, opened only on demand. The
@@ -346,7 +346,7 @@ async fn open_dispatch(
     schema: SchemaAccess,
     postgres_pool: Option<sqlx::PgPool>,
     clock: Arc<dyn awaken_time::WallClock>,
-) -> Result<(Arc<AnyDispatchStore>, Option<Arc<dyn WakeSignal>>), String> {
+) -> Result<(Arc<AnyCoordinatorDispatch>, Option<Arc<dyn WakeSignal>>), String> {
     match deployment.dispatch_backend {
         DispatchBackend::Sqlite => {
             let root = deployment.storage_dir.as_deref().ok_or_else(|| {
@@ -407,7 +407,7 @@ async fn open_nats_dispatch(
     pool: sqlx::PgPool,
     deployment: &DeploymentConfig,
     schema: SchemaAccess,
-) -> Result<(Arc<AnyDispatchStore>, Option<Arc<dyn WakeSignal>>), String> {
+) -> Result<(Arc<AnyCoordinatorDispatch>, Option<Arc<dyn WakeSignal>>), String> {
     let nats_url = deployment
         .nats_url
         .as_deref()
@@ -431,7 +431,7 @@ async fn open_nats_dispatch(
     _pool: sqlx::PgPool,
     _deployment: &DeploymentConfig,
     _schema: SchemaAccess,
-) -> Result<(Arc<AnyDispatchStore>, Option<Arc<dyn WakeSignal>>), String> {
+) -> Result<(Arc<AnyCoordinatorDispatch>, Option<Arc<dyn WakeSignal>>), String> {
     Err("NATS dispatch wake requested but awaken-coordinator was built without `nats`".to_owned())
 }
 
@@ -527,7 +527,7 @@ impl RuntimeAuthority for DurableRuntimeAuthority {
         }
     }
 
-    fn dispatch_store(&self) -> Arc<AnyDispatchStore> {
+    fn dispatch_store(&self) -> Arc<AnyCoordinatorDispatch> {
         self.dispatch.clone()
     }
 

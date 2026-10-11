@@ -23,52 +23,6 @@ impl Inbox for SqliteDispatchStore {
         append_pending_row(&mut conn, NS, &input).await
     }
 
-    async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
-        let thread = thread_id.clone();
-        let (_authority, mut conn) = self.with_conn().await?;
-        let p = NS;
-        let rows = sqlx::query_as::<_, PendingRecordRow>(&format!(
-            "SELECT message_id, run_id, correlation_id, result, context_messages, revision, available_at \
-             FROM {p}_pending WHERE thread_id = ?1 ORDER BY created_at"
-        ))
-        .bind(&thread.0)
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(store_error)?;
-        let mut records = Vec::new();
-        for (
-            message_id,
-            run_id,
-            correlation_id,
-            result,
-            context_messages,
-            revision,
-            available_at,
-        ) in rows
-        {
-            records.push(PendingRecord {
-                input: PendingInput {
-                    message_id,
-                    run_id: RunId(run_id),
-                    thread_id: thread.clone(),
-                    correlation_id,
-                    available_at_ms: available_at
-                        .map(crate::clock::millis_from_db)
-                        .transpose()
-                        .map_err(|err| DispatchError::Rejected(err.to_string()))?,
-                    result: serde_json::from_str(&result).map_err(json_err)?,
-                    context_messages: context_messages
-                        .map(|messages| serde_json::from_str::<Vec<Message>>(&messages))
-                        .transpose()
-                        .map_err(json_err)?
-                        .unwrap_or_default(),
-                },
-                revision: durable_u64("pending input revision", revision)?,
-            });
-        }
-        Ok(records)
-    }
-
     async fn retract(
         &self,
         message_id: &str,
@@ -141,9 +95,59 @@ impl Inbox for SqliteDispatchStore {
     }
 }
 
+#[async_trait]
+impl awaken_dispatch_contract::InboxRead for SqliteDispatchStore {
+    async fn list(&self, thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
+        let thread = thread_id.clone();
+        let (_authority, mut conn) = self.with_conn().await?;
+        let p = NS;
+        let rows = sqlx::query_as::<_, PendingRecordRow>(&format!(
+            "SELECT message_id, run_id, correlation_id, result, context_messages, revision, available_at \
+             FROM {p}_pending WHERE thread_id = ?1 ORDER BY created_at"
+        ))
+        .bind(&thread.0)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(store_error)?;
+        let mut records = Vec::new();
+        for (
+            message_id,
+            run_id,
+            correlation_id,
+            result,
+            context_messages,
+            revision,
+            available_at,
+        ) in rows
+        {
+            records.push(PendingRecord {
+                input: PendingInput {
+                    message_id,
+                    run_id: RunId(run_id),
+                    thread_id: thread.clone(),
+                    correlation_id,
+                    available_at_ms: available_at
+                        .map(crate::clock::millis_from_db)
+                        .transpose()
+                        .map_err(|err| DispatchError::Rejected(err.to_string()))?,
+                    result: serde_json::from_str(&result).map_err(json_err)?,
+                    context_messages: context_messages
+                        .map(|messages| serde_json::from_str::<Vec<Message>>(&messages))
+                        .transpose()
+                        .map_err(json_err)?
+                        .unwrap_or_default(),
+                },
+                revision: durable_u64("pending input revision", revision)?,
+            });
+        }
+        Ok(records)
+    }
+}
+
 #[cfg(test)]
 mod inbox_revision_tests {
     use super::*;
+    use awaken_dispatch_contract::InboxRead;
 
     #[tokio::test]
     async fn sqlite_pending_edit_never_promotes_exhausted_integer_to_real() {

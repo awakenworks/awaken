@@ -18,9 +18,15 @@
 //! fallback, a crashed lease is recovered and re-driven, and a staged cross-thread
 //! delivery is relayed at least once.
 
+use awaken_dispatch::DispatchAdministration;
+use awaken_dispatch::DispatchClaims;
+use awaken_dispatch::DispatchEnqueue;
+use awaken_dispatch::DispatchExecution;
+use awaken_dispatch::DispatchReads;
+use awaken_dispatch::InboxRead;
+use awaken_dispatch::SessionRunReservations;
 mod harness;
 
-use awaken_dispatch_contract::ControlDispatchQueue;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,10 +36,10 @@ use awaken_agent_contract::agent::{run::Id as RunId, run::RunState, thread::Id a
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
-    CompletionSink, DEFAULT_LEASE_MS, DispatchError, DispatchPool, DispatchQueue,
-    DispatchReconciler, DispatchServiceConfig, DispatchSettlementError, DispatchSettlementObserver,
-    DispatchWorker, Error, Inbox, LocalWakeSignal, MemoryDispatchStore, PendingInput, RunClaim,
-    RunDispatch, SessionChildAdmission, WakeSignal, WorkerResolver,
+    CompletionSink, DEFAULT_LEASE_MS, DispatchError, DispatchPool, DispatchReconciler,
+    DispatchServiceConfig, DispatchSettlementError, DispatchSettlementObserver, DispatchWorker,
+    Error, LocalWakeSignal, MemoryDispatchStore, PendingInput, RunClaim, RunDispatch,
+    SessionChildAdmission, WakeSignal, WorkerResolver,
 };
 use awaken_dispatch_testkit::ConformanceClock as _;
 use awaken_runtime::Runtime;

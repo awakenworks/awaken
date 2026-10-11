@@ -8,30 +8,63 @@
 // @formal evidence ingress.epoch_reclaim
 // @formal evidence ingress.single_owner
 // @formal evidence run_ingress.renewal_projects_cancel_only_to_exact_physical_attempt
-/// Durable run-dispatch queue: activation opportunity, claim, lease, recovery.
+/// Remote claim-fenced checkpoint and committed-recovery operations. This is
+/// not a second checkpoint store: the Coordinator endpoint applies the same
+/// Dispatch claim guard to its canonical stores.
 #[async_trait]
-pub trait DispatchQueue: Send + Sync {
-    /// Exact old attempt reports its closed local entry (not remote stop).
-    /// Occupancy remains and ordinary ACK/handoff are fenced thereafter.
-    async fn close_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError>;
-    /// Whether this adapter owns process-local queue maintenance (outbox relay,
-    /// quarantine GC and global terminal scans). Database-less transports do
-    /// not: the upstream Coordinator owns those operations. This is immutable
-    /// adapter topology, not a grant to execute or mutate a claimed Run.
-    fn owns_local_maintenance(&self) -> bool {
-        true
-    }
-
-    /// Resolve one exact recovery claim before executor entry. Admitted binds
-    /// the activity epoch and publishes Pending, Rejected removes the unstarted
-    /// row, and Retry returns it to Reserved. Stale claims are fenced in all
-    /// cases.
-    async fn resolve_claimed_session_run_reservation(
+pub trait ClaimedCheckpointTransport: Send + Sync {
+    async fn load_stream_checkpoint(
         &self,
-        _claim: &RunClaim,
-        _resolution: SessionRunReservationResolution,
+        claim: &RunClaim,
+    ) -> Result<Option<StreamCheckpoint>, DispatchError>;
+
+    async fn put_stream_checkpoint(
+        &self,
+        claim: &RunClaim,
+        checkpoint: StreamCheckpoint,
     ) -> Result<SettleOutcome, DispatchError>;
 
+    async fn delete_stream_checkpoint(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<SettleOutcome, DispatchError>;
+
+    async fn load_recovery_snapshot(
+        &self,
+        claim: &RunClaim,
+        session_work_authority: Option<&awaken_worker_contract::SessionWorkAuthorityReceipt>,
+    ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>;
+}
+
+#[async_trait]
+pub trait ClaimedCredentialDeliveryTransport: Send + Sync {
+    async fn refresh_credential_delivery(
+        &self,
+        claim: &RunClaim,
+        request: awaken_credential_contract::AttemptCredentialDeliveryRequest,
+    ) -> Result<Option<awaken_credential_contract::AttemptCredentialDelivery>, DispatchError>;
+}
+
+/// One operational observation from the canonical Dispatch store.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DispatchDepths {
+    pub runnable: u64,
+    pub leased: u64,
+}
+
+impl DispatchDepths {
+    #[must_use]
+    pub const fn worker_demand(self) -> u64 {
+        self.runnable.saturating_add(self.leased)
+    }
+}
+
+// Worker and Coordinator roles are independent required ports. Owned bundles
+// live with their consumers; transports expose only the roles they implement.
+
+/// Durable submission, with canonical replay identity and admission options.
+#[async_trait]
+pub trait DispatchEnqueue: Send + Sync {
     /// Idempotently record an accepted run at default options. Re-enqueueing the
     /// same run id and exact canonical dispatch is a no-op; reusing that id for a
     /// different dispatch is rejected, so an at-least-once submit has one exact
@@ -49,6 +82,41 @@ pub trait DispatchQueue: Send + Sync {
         request: RunDispatch,
         options: SubmitOptions,
     ) -> Result<(), DispatchError>;
+}
+
+/// Coordinator cancellation and operator requeue commands.
+#[async_trait]
+pub trait DispatchAdministration: Send + Sync {
+    /// Durably request cancellation of a pending, awaiting, running, or
+    /// dead-lettered dispatch.
+    /// This operation records intent but never removes the row or pending input;
+    /// for a running row it also advances the epoch and releases the old lease so
+    /// that owner's later commit is fenced. The worker claims it and commits the
+    /// Runtime-owned terminal boundary before settlement removes delivery state;
+    /// requires-action Session children use their specialized interruption
+    /// boundary rather than a generic `Cancelled`. Repeating it is idempotent.
+    /// Returns `None` only for a terminal queue state or unknown run.
+    async fn cancel(&self, run_id: &RunId) -> Result<Option<ThreadId>, DispatchError>;
+
+    /// Return an unfenced dead-lettered run to the queue at a fresh budget.
+    /// Returns `true` if a dead-lettered run with that id was requeued. A
+    /// terminal Session fence reuses the durable cancellation bit to make the
+    /// retained dead letter permanently non-runnable.
+    async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError>;
+}
+
+/// Worker claim acquisition and exact reservation-repair resolution.
+#[async_trait]
+pub trait DispatchClaims: Send + Sync {
+    /// Resolve one exact recovery claim before executor entry. Admitted binds
+    /// the activity epoch and publishes Pending, Rejected removes the unstarted
+    /// row, and Retry returns it to Reserved. Stale claims are fenced in all
+    /// cases.
+    async fn resolve_claimed_session_run_reservation(
+        &self,
+        _claim: &RunClaim,
+        _resolution: SessionRunReservationResolution,
+    ) -> Result<SettleOutcome, DispatchError>;
 
     /// Atomically record and claim one newly admitted Run.
     ///
@@ -156,6 +224,14 @@ pub trait DispatchQueue: Send + Sync {
         _worker: &WorkerSnapshot,
         _lease_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError>;
+}
+
+/// Mutations scoped to one already-acquired Run claim.
+#[async_trait]
+pub trait DispatchExecution: Send + Sync {
+    /// Exact old attempt reports its closed local entry (not remote stop).
+    /// Occupancy remains and ordinary ACK/handoff are fenced thereafter.
+    async fn close_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError>;
 
     /// Extend the lease on one exact fenced claim, so a long run is not
     /// reclaimed by another node's recovery while it is still making progress.
@@ -241,16 +317,6 @@ pub trait DispatchQueue: Send + Sync {
         _retry_after_ms: u64,
     ) -> Result<SettleOutcome, DispatchError>;
 
-    /// Whether one exact fenced claim still owns a live dispatch lease.
-    ///
-    /// The default reuses the backend's authoritative epoch guard instead of
-    /// introducing another claim source or duplicating owner/epoch queries.
-    /// Required, not defaulted: the answer is "is this claim live *now*", and
-    /// only the implementation knows which clock its rows are judged against.
-    /// A default would have to invent one or take it from the caller, and a
-    /// caller's clock cannot decide liveness for rows other nodes also claim.
-    async fn claim_is_current(&self, claim: &RunClaim) -> Result<bool, DispatchError>;
-
     /// Persist secret-free proof that the exact claim-epoch credential binding
     /// was realized. Implementations fence on the complete claim, verify through
     /// [`verify_credential_realization_receipt`], and make exact retries
@@ -261,6 +327,39 @@ pub trait DispatchQueue: Send + Sync {
         _receipt: CredentialRealizationReceipt,
     ) -> Result<SettleOutcome, DispatchError>;
 
+    /// Bind a currently claimed run to the sandbox it was placed on (B-P3,
+    /// ADR-0021 §6). The complete claim is required so a stale incarnation cannot
+    /// overwrite the replacement's environment after its lease expires. The
+    /// reference is opaque to the dispatch aggregate (the fleet serializes a
+    /// `SandboxHandle` into it). Stored durably so `claim` returns it on recovery
+    /// and `reconcile_adoption` can re-adopt the same sandbox. Default is a no-op
+    /// for backends that do not persist the binding (the neutral seam).
+    async fn bind_sandbox(
+        &self,
+        _claim: &RunClaim,
+        _sandbox_ref: &str,
+    ) -> Result<SettleOutcome, DispatchError> {
+        Ok(SettleOutcome::Fenced)
+    }
+}
+
+/// Read authority for the current Run claim.
+#[async_trait]
+pub trait DispatchClaimOwnership: Send + Sync {
+    /// Whether one exact fenced claim still owns a live dispatch lease.
+    ///
+    /// The default reuses the backend's authoritative epoch guard instead of
+    /// introducing another claim source or duplicating owner/epoch queries.
+    /// Required, not defaulted: the answer is "is this claim live *now*", and
+    /// only the implementation knows which clock its rows are judged against.
+    /// A default would have to invent one or take it from the caller, and a
+    /// caller's clock cannot decide liveness for rows other nodes also claim.
+    async fn claim_is_current(&self, claim: &RunClaim) -> Result<bool, DispatchError>;
+}
+
+/// Local durable claim guards for cross-aggregate commits and resource effects.
+#[async_trait]
+pub trait DispatchCommitAuthority: Send + Sync {
     /// Return the current live claim only when this exact registered Worker
     /// incarnation owns `run_id` and no cancellation has been requested.
     ///
@@ -273,6 +372,20 @@ pub trait DispatchQueue: Send + Sync {
         _run_id: &RunId,
     ) -> Result<Option<RunClaim>, DispatchError>;
 
+    /// Hold a claim's exact epoch stable across a `ThreadCommit`.
+    ///
+    /// `Some` means the claim remains authoritative while the guard lives;
+    /// `None` means the row is gone or its epoch/owner no longer matches. This is
+    /// required: a durable adapter may not degrade to a check-then-commit sequence.
+    async fn lock_commit_epoch(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<CommitEpochGuard>, DispatchError>;
+}
+
+/// Exact-epoch settlement after committed Run truth is observed.
+#[async_trait]
+pub trait DispatchSettlement: Send + Sync {
     /// Settle a claimed dispatch, fenced by the lease `epoch` the caller holds (from
     /// [`Claimed`]`.lease.epoch`). The settle applies only when `epoch` is still the
     /// row's current epoch; if the run was re-claimed under a higher epoch (a
@@ -293,20 +406,29 @@ pub trait DispatchQueue: Send + Sync {
         outcome: DispatchOutcome,
         consumed: &[String],
     ) -> Result<SettleOutcome, DispatchError>;
+}
 
-    /// Hold a claim's exact epoch stable across a `ThreadCommit`.
-    ///
-    /// `Some` means the claim remains authoritative while the guard lives;
-    /// `None` means the row is gone or its epoch/owner no longer matches. This is
-    /// required: a durable adapter may not degrade to a check-then-commit sequence.
-    async fn lock_commit_epoch(
-        &self,
-        claim: &RunClaim,
-    ) -> Result<Option<CommitEpochGuard>, DispatchError>;
+/// Coordinator operational queries over persisted dispatch rows.
+#[async_trait]
+pub trait DispatchReads: Send + Sync {
+    /// The run ids currently dead-lettered, for operations.
+    async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError>;
 
+    /// The run ids superseded by a newer submission on their thread (ADR-0022),
+    /// for operations — the mirror of [`dead_letters`](Self::dead_letters).
+    async fn superseded(&self) -> Result<Vec<RunId>, DispatchError>;
+
+    /// Every dispatch row's operational summary, in enqueue order — the query
+    /// surface for monitoring and maintenance (ADR-0025).
+    async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError>;
+}
+
+/// Coordinator quarantine and garbage-collection commands.
+#[async_trait]
+pub trait DispatchMaintenance: Send + Sync {
     /// Manually quarantine expired crashed dispatches at/above `max_attempts`.
     /// Moves rows to `DeadLetter`; automatic services use
-    /// [`claim_retry_exhausted`](Self::claim_retry_exhausted), so the Run first
+    /// [`claim_retry_exhausted`](DispatchClaims::claim_retry_exhausted), so the Run first
     /// receives committed terminal truth (ADR-0015).
     ///
     /// `expired_before_ms` is the one time on this port a caller still supplies,
@@ -320,41 +442,6 @@ pub trait DispatchQueue: Send + Sync {
         expired_before_ms: u64,
     ) -> Result<usize, DispatchError>;
 
-    /// Bind a currently claimed run to the sandbox it was placed on (B-P3,
-    /// ADR-0021 §6). The complete claim is required so a stale incarnation cannot
-    /// overwrite the replacement's environment after its lease expires. The
-    /// reference is opaque to the dispatch aggregate (the fleet serializes a
-    /// `SandboxHandle` into it). Stored durably so `claim` returns it on recovery
-    /// and `reconcile_adoption` can re-adopt the same sandbox. Default is a no-op
-    /// for backends that do not persist the binding (the neutral seam).
-    async fn bind_sandbox(
-        &self,
-        _claim: &RunClaim,
-        _sandbox_ref: &str,
-    ) -> Result<SettleOutcome, DispatchError> {
-        Ok(SettleOutcome::Fenced)
-    }
-
-    /// The run ids currently dead-lettered, for operations.
-    async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError>;
-
-    /// Return an unfenced dead-lettered run to the queue at a fresh budget.
-    /// Returns `true` if a dead-lettered run with that id was requeued. A
-    /// terminal Session fence reuses the durable cancellation bit to make the
-    /// retained dead letter permanently non-runnable.
-    async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError>;
-
-    /// Durably request cancellation of a pending, awaiting, running, or
-    /// dead-lettered dispatch.
-    /// This operation records intent but never removes the row or pending input;
-    /// for a running row it also advances the epoch and releases the old lease so
-    /// that owner's later commit is fenced. The worker claims it and commits the
-    /// Runtime-owned terminal boundary before settlement removes delivery state;
-    /// requires-action Session children use their specialized interruption
-    /// boundary rather than a generic `Cancelled`. Repeating it is idempotent.
-    /// Returns `None` only for a terminal queue state or unknown run.
-    async fn cancel(&self, run_id: &RunId) -> Result<Option<ThreadId>, DispatchError>;
-
     /// Remove every dead-lettered dispatch (and its pending input) — operator GC.
     /// Returns how many were purged.
     async fn purge_dead_letters(&self) -> Result<usize, DispatchError>;
@@ -363,123 +450,11 @@ pub trait DispatchQueue: Send + Sync {
     /// `cutoff_ms` (and their pending input) — time-windowed GC the daemon runs on
     /// a cadence (ADR-0023). Returns how many were purged.
     async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, DispatchError>;
-
-    /// The run ids superseded by a newer submission on their thread (ADR-0022),
-    /// for operations — the mirror of [`dead_letters`](Self::dead_letters).
-    async fn superseded(&self) -> Result<Vec<RunId>, DispatchError>;
-
-    /// Every dispatch row's operational summary, in enqueue order — the query
-    /// surface for monitoring and maintenance (ADR-0025).
-    async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError>;
-
-    /// Claim-fenced checkpoint/recovery transport owned by a database-less
-    /// Worker projection. Local durable stores return None and use their
-    /// colocated checkpoint/recovery ports; callers select the path before I/O.
-    fn claimed_checkpoint_transport(&self) -> Option<&dyn ClaimedCheckpointTransport> {
-        None
-    }
-
-    fn claimed_credential_delivery_transport(
-        &self,
-    ) -> Option<&dyn ClaimedCredentialDeliveryTransport> {
-        None
-    }
-
-    /// The Control-side surface of this queue: Session Run reservations,
-    /// child admission, placement claims, terminal recovery, physical attempt
-    /// readback, the completion feed, and operational scans. `None` means this
-    /// handle is a Worker-side projection that must never perform them
-    /// (ADR-0081 capability ladder); a composition root selects a
-    /// [`ControlDispatchQueue`] instead of discovering the gap at the effect.
-    fn control(&self) -> Option<&dyn ControlDispatchQueue> {
-        None
-    }
 }
 
-/// Remote claim-fenced checkpoint and committed-recovery operations. This is
-/// not a second checkpoint store: the Coordinator endpoint applies the same
-/// Dispatch claim guard to its canonical stores.
+/// Coordinator reservation and Session-child admission commands.
 #[async_trait]
-pub trait ClaimedCheckpointTransport: Send + Sync {
-    async fn load_stream_checkpoint(
-        &self,
-        claim: &RunClaim,
-    ) -> Result<Option<StreamCheckpoint>, DispatchError>;
-
-    async fn put_stream_checkpoint(
-        &self,
-        claim: &RunClaim,
-        checkpoint: StreamCheckpoint,
-    ) -> Result<SettleOutcome, DispatchError>;
-
-    async fn delete_stream_checkpoint(
-        &self,
-        claim: &RunClaim,
-    ) -> Result<SettleOutcome, DispatchError>;
-
-    async fn load_recovery_snapshot(
-        &self,
-        claim: &RunClaim,
-        session_work_authority: Option<&awaken_worker_contract::SessionWorkAuthorityReceipt>,
-    ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, DispatchError>;
-}
-
-#[async_trait]
-pub trait ClaimedCredentialDeliveryTransport: Send + Sync {
-    async fn refresh_credential_delivery(
-        &self,
-        claim: &RunClaim,
-        request: awaken_credential_contract::AttemptCredentialDeliveryRequest,
-    ) -> Result<Option<awaken_credential_contract::AttemptCredentialDelivery>, DispatchError>;
-}
-
-/// One operational observation from the canonical Dispatch store.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DispatchDepths {
-    pub runnable: u64,
-    pub leased: u64,
-}
-
-impl DispatchDepths {
-    #[must_use]
-    pub const fn worker_demand(self) -> u64 {
-        self.runnable.saturating_add(self.leased)
-    }
-}
-
-/// Control-side dispatch operations that only the Coordinator's own store
-/// performs: Session Run reservations and their epoch lock, Session child
-/// admission, placement-aware and terminal-recovery claims, physical attempt
-/// readback, the completion feed, and operational scans. Every durable store
-/// implements this; a Worker-side transport projection does not, and says so
-/// through [`DispatchQueue::control`] rather than a failing default.
-#[async_trait]
-pub trait ControlDispatchQueue: DispatchQueue {
-    /// Trusted Coordinator-only retirement after complete independent closure
-    /// evidence. Worker transports expose only ordinary return and entry close.
-    async fn finish_attempt_closure(
-        &self,
-        claim: &RunClaim,
-    ) -> Result<SettleOutcome, DispatchError>;
-
-    /// Use the original Registry exclusion through physical admission. SQL
-    /// adapters sharing one pool transfer its transaction instead of requiring
-    /// a second connection; other adapters retain the guard until completion.
-    async fn admit_attempt_guarded(
-        &self,
-        claim: &RunClaim,
-        binding: Option<&crate::dispatch::AttemptExecutionBinding>,
-        guard: awaken_worker_contract::WorkerIncarnationGuard,
-        handoff: bool,
-    ) -> Result<AttemptAdmission, DispatchError>;
-    /// Read one exact persisted binding only while `claim` remains the current
-    /// owner. This query grants no material and changes no delivery state.
-    async fn current_credential_binding(
-        &self,
-        claim: &RunClaim,
-        candidate: &awaken_runtime_contract::CandidateFingerprint,
-    ) -> Result<Option<AttemptCredentialBinding>, DispatchError>;
-
+pub trait SessionRunReservations: SessionReservationAuthority {
     /// Persist one complete self-affine Session Run intent without making it
     /// claimable. The store applies this TTL using its own clock, granting an
     /// exclusive window to commit the Session activity and activate this row.
@@ -518,7 +493,45 @@ pub trait ControlDispatchQueue: DispatchQueue {
         request: RunDispatch,
         admission: SessionChildAdmission,
     ) -> Result<(), DispatchError>;
+}
+/// Exact reservation-epoch authority for activity admission and repair.
+#[async_trait]
+pub trait SessionReservationAuthority: Send + Sync {
+    /// Acquire the narrow authority for one live `ReservationLeased` repair.
+    /// This guard may authorize only Session activity admission; commit, stream,
+    /// sandbox, credential, and settle operations continue to require an
+    /// ordinary `Leased` claim through [`DispatchCommitAuthority::lock_commit_epoch`].
+    async fn lock_session_run_reservation_epoch(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<CommitEpochGuard>, DispatchError>;
+}
 
+/// Trusted Coordinator attempt admission and independent closure commands.
+#[async_trait]
+pub trait DispatchAttemptControl: Send + Sync {
+    /// Trusted Coordinator-only retirement after complete independent closure
+    /// evidence. Worker transports expose only ordinary return and entry close.
+    async fn finish_attempt_closure(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<SettleOutcome, DispatchError>;
+
+    /// Use the original Registry exclusion through physical admission. SQL
+    /// adapters sharing one pool transfer its transaction instead of requiring
+    /// a second connection; other adapters retain the guard until completion.
+    async fn admit_attempt_guarded(
+        &self,
+        claim: &RunClaim,
+        binding: Option<&crate::dispatch::AttemptExecutionBinding>,
+        guard: awaken_worker_contract::WorkerIncarnationGuard,
+        handoff: bool,
+    ) -> Result<AttemptAdmission, DispatchError>;
+}
+
+/// Coordinator placement and terminal-recovery claim acquisition.
+#[async_trait]
+pub trait DispatchControlClaims: Send + Sync {
     /// Claim according to a replaceable preference policy while preserving the
     /// same atomic eligibility, recovery and assignment transition. Preference
     /// may use a liveness snapshot, while the backend's final claim transition
@@ -542,7 +555,7 @@ pub trait ControlDispatchQueue: DispatchQueue {
     /// This is the repair-side entry into the ordinary fenced settlement path:
     /// it never reads or accepts Run outcome truth, never executes the Run, and
     /// skips execution placement/credential admission because the caller will
-    /// only redeliver terminal observers and call [`settle`](DispatchQueue::settle) with
+    /// only redeliver terminal observers and call [`settle`](DispatchSettlement::settle) with
     /// `Done`. Implementations must claim only an unleased `pending`/`awaiting`
     /// row whose Thread has no running dispatch, or a `running` row whose lease
     /// is strictly expired. Every state requires an empty physical slot: this
@@ -555,6 +568,18 @@ pub trait ControlDispatchQueue: DispatchQueue {
         owner: &str,
         lease_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError>;
+}
+
+/// Coordinator bounded recovery, attempt, completion and demand reads.
+#[async_trait]
+pub trait DispatchControlReads: Send + Sync {
+    /// Read one exact persisted binding only while `claim` remains the current
+    /// owner. This query grants no material and changes no delivery state.
+    async fn current_credential_binding(
+        &self,
+        claim: &RunClaim,
+        candidate: &awaken_runtime_contract::CandidateFingerprint,
+    ) -> Result<Option<AttemptCredentialBinding>, DispatchError>;
 
     /// Read the existing occupied physical identity, independently of the newer
     /// mutation claim/Worker assignment. No transport authority or stop evidence
@@ -564,15 +589,6 @@ pub trait ControlDispatchQueue: DispatchQueue {
         &self,
         run_id: &RunId,
     ) -> Result<Option<PhysicalAttempt>, DispatchError>;
-
-    /// Acquire the narrow authority for one live `ReservationLeased` repair.
-    /// This guard may authorize only Session activity admission; commit, stream,
-    /// sandbox, credential, and settle operations continue to require an
-    /// ordinary `Leased` claim through [`DispatchQueue::lock_commit_epoch`].
-    async fn lock_session_run_reservation_epoch(
-        &self,
-        claim: &RunClaim,
-    ) -> Result<Option<CommitEpochGuard>, DispatchError>;
 
     /// Return durable applied-`Done` facts after `after_sequence`, in ascending
     /// sequence order, capped at `limit`.

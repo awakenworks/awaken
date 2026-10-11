@@ -844,7 +844,7 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
     let mut run =
         tokio::spawn(async move { driver.run(None, "durable-interrupt", user("go")).await });
     await_interrupt_inference_gate(&reached, &mut run).await;
-    use awaken_dispatch_contract::DispatchQueue as _;
+
     let before = dispatch.list_dispatches().await.unwrap();
     assert_eq!(before.len(), 1, "R1: exactly one admitted Run");
     let original = &before[0];
@@ -898,8 +898,6 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
 
 #[tokio::test]
 async fn live_only_durable_control_never_materializes_a_cold_session() {
-    use awaken_dispatch_contract::DispatchQueue as _;
-
     // Cause/effect table for the Host boundary: C1 typed durable capability is
     // enabled; C2 a process-resident Session context exists; C3 the Runtime owns
     // the exact active attempt. Effects: E1 reject with the capability error;
@@ -994,7 +992,7 @@ async fn live_only_durable_control_never_materializes_a_cold_session() {
 
 #[tokio::test]
 async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environment() {
-    use awaken_dispatch::{DispatchQueue as _, RunDispatch};
+    use awaken_dispatch::RunDispatch;
 
     // Cause/effect graph: C1 one Session-affined dispatch exhausted retries; C2
     // no Runtime context/Environment is resident; C3 Environment realization
@@ -1086,7 +1084,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
     // settles Cancelled. Constraint/Invariant: selection uses durable dispatch
     // truth, never guessed process state. Decision rule: C0+unique C2+C3 yields
     // E1; ambiguity is owned by the fail-closed sibling test.
-    use awaken_dispatch::{DispatchQueue as _, RunDispatch};
+    use awaken_dispatch::RunDispatch;
     use awaken_runtime_contract::execution::{
         Error as ExecutionError, Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
     };
@@ -1254,7 +1252,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
 
 #[tokio::test]
 async fn managed_primary_interrupt_cancels_every_exact_session_dispatch() {
-    use awaken_dispatch::{DispatchOutcome, DispatchQueue as _, RunDispatch};
+    use awaken_dispatch::{DispatchOutcome, RunDispatch};
 
     // Cause/effect graph: C1 the local active Run hint is absent; C2 the store
     // has an Awaiting customer-tool Run and a queued child-report continuation
@@ -1483,3 +1481,8 @@ async fn run_capture_level_is_the_shared_decision_for_every_cause() {
     }
     assert_eq!(rows, 3 * 6 * 4);
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaims as _, DispatchEnqueue as _, DispatchMaintenance as _, DispatchReads as _,
+    DispatchSettlement as _,
+};

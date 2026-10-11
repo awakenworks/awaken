@@ -20,6 +20,9 @@
 //! concrete `Runtime` (it routes a run to its thread's runtime), and a real runtime
 //! never returns `Running`, so the invariant is asserted where the state is mapped.
 
+use awaken_dispatch::DispatchClaims;
+use awaken_dispatch::DispatchEnqueue;
+use awaken_dispatch::InboxRead;
 mod harness;
 
 use std::sync::Arc;
@@ -30,7 +33,7 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch::{
-    ContinuationAdmission, DispatchQueue, DispatchWorker, Inbox, MemoryDispatchStore, RunDispatch,
+    ContinuationAdmission, DispatchWorker, Inbox, MemoryDispatchStore, RunDispatch,
     SqliteDispatchStore, SubmitOptions,
 };
 use awaken_dispatch_contract::SessionContinuationOutbox as _;

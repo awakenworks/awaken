@@ -406,6 +406,8 @@ mod tests {
         AdoptionModel, eager_environment, empty_frozen_projection_for_snapshot, test_activation,
     };
     use crate::session_environment::SandboxEnvironmentAccess as _;
+    use awaken_dispatch_contract::DispatchClaims;
+    use awaken_dispatch_contract::DispatchEnqueue;
     use awaken_sandbox_local::FilesystemHandleCodec as _;
     use std::sync::Arc;
 
@@ -1017,7 +1019,7 @@ mod tests {
         // CR4 projection publication now carries the actual Dispatch claim.
         // Use its authoritative queue row, not a fabricated tuple that would
         // bypass the deferred binding fence when the slot had no claim.
-        use awaken_dispatch_contract::DispatchQueue as _;
+
         let dispatch = host.dispatch_store().unwrap();
         dispatch
             .enqueue(awaken_dispatch_contract::RunDispatch::new(
@@ -1579,7 +1581,7 @@ mod tests {
 
         // CR4 the legacy recovery fixture must also exercise real binding CAS,
         // not an unregistered claim previously hidden by the empty local slot.
-        use awaken_dispatch_contract::DispatchQueue as _;
+
         let dispatch = host.dispatch_store().unwrap();
         dispatch
             .enqueue(awaken_dispatch_contract::RunDispatch::new(

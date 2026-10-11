@@ -3,7 +3,7 @@
 // @formal evidence remote_worker.pending_signal_is_consumed_by_commit
 // Unit tests for the one DispatchWorker implementation. The containing module
 // stays in `worker.rs`, preserving every existing test path and design comment.
-use awaken_dispatch_contract::ControlDispatchQueue;
+
 use std::sync::Arc;
 
 use super::{
@@ -28,7 +28,7 @@ use awaken_store_inmem::MemoryCommitCoordinator;
 use crate::Error;
 use crate::RecoveryProjection;
 use crate::dispatch::{DispatchOutcome, PendingInput};
-use crate::{DispatchQueue, FencedStreamCheckpointStore, RunClaim};
+use crate::{FencedStreamCheckpointStore, RunClaim};
 use awaken_credential_contract::CredentialRealizationKind;
 use awaken_credential_contract::{AttemptCredentialBinding, AttemptCredentialDelivery};
 use awaken_dispatch::MemoryDispatchStore;
@@ -456,10 +456,10 @@ fn only_a_recovered_claim_that_will_execute_records_a_reschedule() {
 
 #[test]
 fn remote_projection_is_the_single_awaiting_resume_reader() {
-    // Cause/effect graph: C1 `new` starts with a provisional local projection;
+    // Cause/effect graph: C1 remote construction installs a provisional projection;
     // C2 a database-independent Worker installs its transport-backed
     // projection; C3 that snapshot says the claimed Run is Awaiting and owns
-    // a resume ticket. Effects: E1 the old projection/source are released;
+    // a resume ticket. Effects: E1 the old projection is released and RPC retained;
     // E2 snapshot install, dispatch selection, and Runtime context share one
     // Arc; E3 the Awaiting ticket is visible at the exact decision point that
     // chooses `resume`, so the original activation cannot be executed fresh.
@@ -472,13 +472,29 @@ fn remote_projection_is_the_single_awaiting_resume_reader() {
     // Constraint/Invariant: remote snapshot install, dispatch selection, and
     // Runtime resume must share one reader Arc. Decision rule: P1-P3 cover
     // local ownership and both remote ticket partitions.
-    let worker = DispatchWorker::new(
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+    let identity = awaken_dispatch_contract::WorkerIdentity::new("worker", "boot", 1);
+    let binding = awaken_dispatch_erasure::DispatchBinding::remote(
+        Arc::new(awaken_coordinator_client::HttpDispatchQueue::new(
+            "http://127.0.0.1:9",
+            identity.clone(),
+        )),
+        Arc::new(awaken_coordinator_client::RemoteClaimedRunCommit::new(
+            "http://127.0.0.1:9",
+            identity,
+        )),
+    );
+    let worker = DispatchWorker::from_binding(
         Arc::new(Runtime::new()),
-        Arc::new(MemoryDispatchStore::new(awaken_time::system_clock())),
-        Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock())),
+        binding,
+        commit.clone(),
+        commit,
         "worker",
     );
-    assert!(worker.recovery_source.is_some());
+    assert!(
+        worker.recovery_source.is_none(),
+        "remote load authority is required RPC"
+    );
     let provisional = Arc::downgrade(
         worker
             .recovery_projection
@@ -488,7 +504,9 @@ fn remote_projection_is_the_single_awaiting_resume_reader() {
 
     let projection = Arc::new(RecoveryProjection::new());
     let projection_reader: Arc<dyn CommittedThreadView> = projection.clone();
-    let worker = worker.with_recovery_projection(projection.clone());
+    let worker = worker
+        .with_recovery_projection(projection.clone())
+        .expect("required remote recovery RPC");
 
     assert!(
         worker.recovery_source.is_none(),
@@ -712,7 +730,7 @@ async fn child_attempt_rebinds_every_parent_run_authority_to_its_claim() {
         .expect("R1 parent admission")
         .expect("R1 parent claim");
     let parent_claim = RunClaim::from(&parent.lease);
-    let dispatch: Arc<dyn ControlDispatchQueue> = store.clone();
+    let dispatch: Arc<dyn awaken_dispatch_contract::DispatchCommitAuthority> = store.clone();
     let parent_checkpoint: Arc<dyn StreamCheckpointStore> = Arc::new(
         FencedStreamCheckpointStore::new(None, dispatch, parent_claim),
     );
@@ -755,15 +773,10 @@ async fn child_attempt_rebinds_every_parent_run_authority_to_its_claim() {
         )
         .expect("R1 child projection install");
     let projection_reader: Arc<dyn CommittedThreadView> = projection.clone();
-    let worker = DispatchWorker::from_parts(
-        Arc::new(Runtime::new()),
-        store,
-        commit.clone(),
-        commit,
-        "worker",
-    )
-    .with_context(parent_context)
-    .with_recovery_projection(projection.clone());
+    let worker = DispatchWorker::new(Arc::new(Runtime::new()), store, commit, "worker")
+        .with_context(parent_context)
+        .with_recovery_projection(projection.clone())
+        .expect("required local recovery source");
     let context = worker
         .execution_context_with(&child_claim, None, &None, &[], &[], None)
         .expect("R1 exact child context");
@@ -904,6 +917,55 @@ fn claim_refresh_requires_complete_control_delivery_and_transport() {
             super::claim_credential_refresh_is_available(bindings, deliveries, transport),
             expected,
             "bindings={bindings} deliveries={deliveries} transport={transport}",
+        );
+    }
+}
+
+#[test]
+fn remote_constructors_install_one_required_snapshot_target() {
+    // C1 erased construction; C2 combined construction. Both must retain one
+    // cache shared by snapshot installation, dispatch selection and Runtime.
+    // A provisional committed reader cannot bypass the required remote load.
+    for combined in [false, true] {
+        let identity = awaken_dispatch_contract::WorkerIdentity::new("worker", "boot", 1);
+        let binding = awaken_dispatch_erasure::DispatchBinding::remote(
+            Arc::new(awaken_coordinator_client::HttpDispatchQueue::new(
+                "http://127.0.0.1:9",
+                identity.clone(),
+            )),
+            Arc::new(awaken_coordinator_client::RemoteClaimedRunCommit::new(
+                "http://127.0.0.1:9",
+                identity,
+            )),
+        );
+        let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+        let worker = if combined {
+            DispatchWorker::new_bound(Arc::new(Runtime::new()), binding, commit, "worker")
+        } else {
+            DispatchWorker::from_binding(
+                Arc::new(Runtime::new()),
+                binding,
+                commit.clone(),
+                commit,
+                "worker",
+            )
+        };
+        let projection: Arc<dyn CommittedThreadView> = worker
+            .recovery_projection
+            .as_ref()
+            .expect("required target")
+            .clone();
+        assert!(
+            Arc::ptr_eq(&worker.reader, &projection),
+            "combined={combined}"
+        );
+        assert!(Arc::ptr_eq(
+            &worker.execution_context().reader.expect("Runtime reader"),
+            &projection
+        ));
+        assert!(
+            worker.recovery_source.is_none(),
+            "remote construction retains RPC authority"
         );
     }
 }

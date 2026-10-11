@@ -1123,3 +1123,8 @@ async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recover
         .expect("A4 archive task")
         .expect("A4/E4 one replay converges after raced work settles");
 }
+
+use awaken_dispatch_contract::{
+    DispatchAdministration as _, DispatchClaims as _, DispatchEnqueue as _, DispatchReads as _,
+    DispatchSettlement as _,
+};

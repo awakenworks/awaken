@@ -29,6 +29,7 @@
 //! leaves the lease to expire and be reclaimed.
 
 use crate::ControlDispatch;
+use awaken_dispatch_erasure::{AnyDispatchStore, Dispatch, DispatchBinding, DispatchTopology};
 use awaken_lease_contract::fence::SlotToken;
 use std::sync::Arc;
 use std::time::Duration;
@@ -124,7 +125,7 @@ pub trait WorkerResolver<S>: Send + Sync {
         claimed: &Claimed,
     ) -> Result<Option<(RunId, RunState)>, Error>
     where
-        S: ControlDispatch + 'static,
+        S: Dispatch + 'static,
     {
         self.worker_for_claimed(claimed)
             .await?
@@ -159,12 +160,12 @@ pub struct DispatchPool<S> {
     shutdown: CancellationToken,
     drains: Vec<JoinHandle<()>>,
     wake_coordinator: JoinHandle<()>,
-    reconciler: JoinHandle<()>,
+    reconciler: Option<JoinHandle<()>>,
     depth_sampler: Option<JoinHandle<()>>,
     admission: Arc<PoolAdmission>,
 }
 
-fn spawn_observed_depth<S: ControlDispatch + 'static>(
+fn spawn_observed_depth<S: awaken_dispatch_contract::DispatchControlReads + ?Sized + 'static>(
     store: Arc<S>,
     shutdown: CancellationToken,
     enabled: bool,
@@ -190,8 +191,31 @@ pub struct DispatchReconciler {
 }
 
 impl DispatchReconciler {
-    pub fn spawn<S: ControlDispatch + 'static>(
-        store: Arc<S>,
+    /// Select the maintenance owner from the same immutable binding as execution.
+    /// A remote Worker has no local maintenance task to stop.
+    pub fn spawn_for_binding(
+        binding: DispatchBinding,
+        clock: Arc<dyn WallClock>,
+        wake: Arc<dyn WakeSignal>,
+        config: DispatchServiceConfig,
+        resolver: Arc<dyn WorkerResolver<AnyDispatchStore>>,
+        completion: Option<Arc<dyn CompletionSink>>,
+    ) -> Option<Self> {
+        match binding.placement() {
+            DispatchTopology::Local(owner) => Some(Self::spawn(
+                owner.clone(),
+                clock,
+                wake,
+                config,
+                resolver,
+                completion,
+            )),
+            DispatchTopology::Remote { .. } => None,
+        }
+    }
+
+    pub fn spawn<S: Dispatch + 'static>(
+        store: Arc<dyn ControlDispatch>,
         clock: Arc<dyn WallClock>,
         wake: Arc<dyn WakeSignal>,
         config: DispatchServiceConfig,
@@ -475,7 +499,7 @@ impl PoolAdmission {
     }
 }
 
-impl<S: ControlDispatch + 'static> DispatchPool<S> {
+impl<S: Dispatch + 'static> DispatchPool<S> {
     /// Spawn the pool with the single-process wake signal. `concurrency` is the
     /// number of runs driven in parallel (clamped to at least 1).
     pub fn spawn(
@@ -486,7 +510,10 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
         config: DispatchServiceConfig,
         resolver: Arc<dyn WorkerResolver<S>>,
         concurrency: usize,
-    ) -> Self {
+    ) -> Self
+    where
+        S: ControlDispatch,
+    {
         Self::spawn_with_wake(
             store,
             clock,
@@ -511,8 +538,13 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
         resolver: Arc<dyn WorkerResolver<S>>,
         concurrency: usize,
         wake: Arc<dyn WakeSignal>,
-    ) -> Self {
+    ) -> Self
+    where
+        S: ControlDispatch,
+    {
+        let scheduling = SchedulingAuthority::Local(store.clone());
         Self::spawn_inner(
+            scheduling,
             store,
             clock,
             owner,
@@ -541,8 +573,13 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
         concurrency: usize,
         wake: Arc<dyn WakeSignal>,
         completion: Arc<dyn CompletionSink>,
-    ) -> Self {
+    ) -> Self
+    where
+        S: ControlDispatch,
+    {
+        let scheduling = SchedulingAuthority::Local(store.clone());
         Self::spawn_inner(
+            scheduling,
             store,
             clock,
             owner,
@@ -567,8 +604,13 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
         resolver: Arc<dyn WorkerResolver<S>>,
         concurrency: usize,
         completion: Arc<dyn CompletionSink>,
-    ) -> Self {
+    ) -> Self
+    where
+        S: ControlDispatch,
+    {
+        let scheduling = SchedulingAuthority::Local(store.clone());
         Self::spawn_inner(
+            scheduling,
             store,
             clock,
             owner,
@@ -583,6 +625,7 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
 
     #[allow(clippy::too_many_arguments)]
     fn spawn_inner(
+        scheduling: SchedulingAuthority,
         store: Arc<S>,
         clock: Arc<dyn WallClock>,
         owner: impl Into<String>,
@@ -595,11 +638,14 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
     ) -> Self {
         let owner = owner.into();
         let shutdown = CancellationToken::new();
-        let depth_sampler = spawn_observed_depth(
-            store.clone(),
-            shutdown.clone(),
-            config.sample_dispatch_queue_depth,
-        );
+        let depth_sampler = match &scheduling {
+            SchedulingAuthority::Local(local) => spawn_observed_depth(
+                local.clone(),
+                shutdown.clone(),
+                config.sample_dispatch_queue_depth,
+            ),
+            SchedulingAuthority::Remote => None,
+        };
         let admission = Arc::new(PoolAdmission::new(config.max_attempts));
         let reconciliation_wake = Arc::new(LocalWakeSignal::new());
         let drains = (0..concurrency.max(1))
@@ -623,16 +669,21 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
             shutdown.clone(),
             config.poll_interval,
         ));
-        let reconciler = tokio::spawn(reconciliation_loop(ReconciliationContext {
-            store: store.clone(),
-            clock: clock.clone(),
-            wake: wake.clone(),
-            reconciliation_wake,
-            shutdown: shutdown.clone(),
-            config,
-            resolver: resolver.clone(),
-            completion: completion.clone(),
-        }));
+        let reconciler = match scheduling {
+            SchedulingAuthority::Local(local) => {
+                Some(tokio::spawn(reconciliation_loop(ReconciliationContext {
+                    store: local,
+                    clock: clock.clone(),
+                    wake: wake.clone(),
+                    reconciliation_wake,
+                    shutdown: shutdown.clone(),
+                    config,
+                    resolver: resolver.clone(),
+                    completion: completion.clone(),
+                })))
+            }
+            SchedulingAuthority::Remote => None,
+        };
         Self {
             store,
             wake,
@@ -662,14 +713,20 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
     }
 
     /// Durably deliver pending input and nudge the pool to resume the run.
-    pub async fn deliver(&self, input: PendingInput) -> Result<(), Error> {
+    pub async fn deliver(&self, input: PendingInput) -> Result<(), Error>
+    where
+        S: awaken_dispatch_contract::Inbox,
+    {
         self.store.append(input).await?;
         publish_dispatch_hint(self.wake.as_ref(), &self.shutdown).await;
         Ok(())
     }
 
     /// Stage a cross-thread delivery and nudge the pool to relay it.
-    pub async fn send(&self, input: PendingInput) -> Result<(), Error> {
+    pub async fn send(&self, input: PendingInput) -> Result<(), Error>
+    where
+        S: awaken_dispatch_contract::Outbox,
+    {
         self.store.stage(input).await?;
         publish_dispatch_hint(self.wake.as_ref(), &self.shutdown).await;
         Ok(())
@@ -687,7 +744,10 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
     /// those effects out of the caller prevents an HTTP/control request from
     /// becoming a second synchronous dispatch driver. The retained intent remains
     /// authoritative across process replacement.
-    pub async fn cancel(&self, run_id: &RunId) -> Result<bool, Error> {
+    pub async fn cancel(&self, run_id: &RunId) -> Result<bool, Error>
+    where
+        S: awaken_dispatch_contract::DispatchAdministration,
+    {
         if self.store.cancel(run_id).await?.is_none() {
             return Ok(false);
         }
@@ -783,7 +843,9 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
             let _ = drain.await;
         }
         let _ = self.wake_coordinator.await;
-        let _ = self.reconciler.await;
+        if let Some(reconciler) = self.reconciler {
+            let _ = reconciler.await;
+        }
         if let Some(sampler) = self.depth_sampler {
             let _ = sampler.await;
         }
@@ -793,7 +855,7 @@ impl<S: ControlDispatch + 'static> DispatchPool<S> {
 /// One drain task: claim a runnable dispatch, route it to its owning session's
 /// worker, drive it, repeat until idle, then await on a wake or the poll timer.
 #[allow(clippy::too_many_arguments)]
-async fn drain_loop<S: ControlDispatch + 'static>(
+async fn drain_loop<S: Dispatch + 'static>(
     store: Arc<S>,
     clock: Arc<dyn WallClock>,
     shutdown: CancellationToken,
@@ -1115,7 +1177,7 @@ async fn wake_coordinator_loop(
 /// that owns its thread. Returns whether a run was claimed. On settle, notifies the
 /// [`CompletionSink`] so a foreground waiter wakes by event, not by poll.
 #[allow(clippy::too_many_arguments)]
-async fn claim_and_drive<S: ControlDispatch + 'static>(
+async fn claim_and_drive<S: Dispatch + 'static>(
     store: &Arc<S>,
     clock: &Arc<dyn WallClock>,
     owner: &str,
@@ -1229,7 +1291,9 @@ async fn claim_and_drive<S: ControlDispatch + 'static>(
     Ok(true)
 }
 
-pub(crate) async fn defer_failed_claim<S: ControlDispatch + 'static>(
+pub(crate) async fn defer_failed_claim<
+    S: awaken_dispatch_contract::DispatchExecution + 'static,
+>(
     store: &S,
     claim: &crate::RunClaim,
     retry_after_ms: u64,
@@ -1261,7 +1325,7 @@ pub(crate) async fn defer_failed_claim<S: ControlDispatch + 'static>(
 /// already-committed terminals. Retry exhaustion belongs to the actual drainer,
 /// so coordinator-only maintenance never competes with a remote Worker.
 struct ReconciliationContext<S> {
-    store: Arc<S>,
+    store: Arc<dyn ControlDispatch>,
     clock: Arc<dyn WallClock>,
     wake: Arc<dyn WakeSignal>,
     // Standalone: the external port. Pool: its sole listener's local fan-out.
@@ -1273,12 +1337,12 @@ struct ReconciliationContext<S> {
     completion: Option<Arc<dyn CompletionSink>>,
 }
 
-async fn reconciliation_loop<S: ControlDispatch + 'static>(context: ReconciliationContext<S>) {
+async fn reconciliation_loop<S: Dispatch + 'static>(context: ReconciliationContext<S>) {
     // The same pool also drives database-less Workers. Their upstream already
     // owns maintenance; do not poll unsupported server verbs or a second scan.
     // Claim/renewal/retry-exhaustion stay in the independent ordinary drainers.
     let Some(maintenance) = LocalMaintenanceSchedule::for_adapter(
-        context.store.owns_local_maintenance(),
+        true,
         context.config.dead_letter_ttl.is_some(),
         context.config.terminal_reconciliation_interval.is_some(),
     ) else {
@@ -1366,6 +1430,43 @@ async fn reconciliation_loop<S: ControlDispatch + 'static>(context: Reconciliati
             _ = wait_for_terminal_reconciliation(next_terminal_reconciliation) => {},
             _ = tokio::time::sleep(config.poll_interval) => {}
         }
+    }
+}
+
+/// An explicit topology selects maintenance before any queue I/O.
+enum SchedulingAuthority {
+    Local(Arc<dyn ControlDispatch>),
+    Remote,
+}
+impl DispatchPool<AnyDispatchStore> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_bound(
+        binding: DispatchBinding,
+        clock: Arc<dyn WallClock>,
+        owner: impl Into<String>,
+        lease_ms: u64,
+        config: DispatchServiceConfig,
+        resolver: Arc<dyn WorkerResolver<AnyDispatchStore>>,
+        concurrency: usize,
+        wake: Arc<dyn WakeSignal>,
+        completion: Option<Arc<dyn CompletionSink>>,
+    ) -> Self {
+        let scheduling = match binding.placement() {
+            DispatchTopology::Local(local) => SchedulingAuthority::Local(local.clone()),
+            DispatchTopology::Remote { .. } => SchedulingAuthority::Remote,
+        };
+        Self::spawn_inner(
+            scheduling,
+            binding.queue(),
+            clock,
+            owner,
+            lease_ms,
+            config,
+            resolver,
+            concurrency,
+            wake,
+            completion,
+        )
     }
 }
 

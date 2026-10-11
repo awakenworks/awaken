@@ -15,10 +15,6 @@
       "awaken_runtime_contract::llm": 3,
       "awaken_runtime_contract::runtime_context": 2
     },
-    "awaken-dispatch-erasure": {
-      "awaken_agent_contract::stream::checkpoint": 1,
-      "awaken_runtime_contract::resume": 1
-    },
     "awaken-executable-agent-contract": {
       "awaken_runtime_contract::plugin": 1
     },
@@ -93,8 +89,7 @@
     "awaken-coordinator-client": {
       "awaken_agent_contract::stream::checkpoint": 1,
       "awaken_agent_contract::stream::sink": 1,
-      "awaken_agent_contract::thread::commit": 3,
-      "awaken_runtime_contract::resume": 1
+      "awaken_agent_contract::thread::commit": 3
     }
   }
 }

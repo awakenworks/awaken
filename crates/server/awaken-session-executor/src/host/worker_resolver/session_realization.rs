@@ -22,6 +22,8 @@ mod tests {
         eager_environment, install_complete_projection_for_snapshot, managed_test_host,
         test_activation, with_empty_session_resources,
     };
+    use awaken_dispatch_contract::DispatchClaims;
+    use awaken_dispatch_contract::DispatchEnqueue;
     use std::sync::{Arc, Mutex};
 
     /// Legacy raw-claim merge cause/effect graph: C1 the durable Environment
@@ -132,7 +134,7 @@ mod tests {
     /// avoids a second store-contract test in this Worker realization suite.
     #[tokio::test]
     async fn cold_worker_runtime_projection_decision_table() {
-        use awaken_dispatch::{DispatchQueue, WorkerResolver as _};
+        use awaken_dispatch::WorkerResolver as _;
 
         let now = awaken_time::system_clock().now().as_epoch_ms();
         let clock = std::sync::Arc::new(awaken_lease_testkit::ManualClock::new(0));

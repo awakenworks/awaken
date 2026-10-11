@@ -3,7 +3,7 @@ use super::*;
 use awaken_dispatch::{
     ApplicationError, AttemptExecutionBinding, RunClaim, WorkerExecutionBindingSource,
 };
-use awaken_dispatch_contract::ControlDispatchQueue;
+
 use awaken_dispatch_testkit::worker_http as support;
 use serde_json::{Value, json};
 use std::future::Future;
@@ -736,3 +736,8 @@ async fn provider_wait_cannot_refresh_stale_authority_or_downgrade_failure() {
         );
     }
 }
+
+use awaken_dispatch_contract::{
+    DispatchAdministration as _, DispatchClaims as _, DispatchControlReads as _,
+    DispatchEnqueue as _, DispatchExecution as _,
+};

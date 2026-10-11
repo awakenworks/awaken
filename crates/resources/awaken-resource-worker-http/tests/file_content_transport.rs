@@ -1,5 +1,8 @@
 //! File Resource Coordinator boundary tests over real HTTP.
 
+use awaken_dispatch::DispatchClaims;
+use awaken_dispatch::DispatchEnqueue;
+use awaken_dispatch::DispatchSettlement;
 use awaken_dispatch_testkit::worker_http as support;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,9 +21,7 @@ use awaken_resource_contract::FileContentSource as _;
 use awaken_resource_contract::{FileReadPurpose, ResolvedFileContent};
 use awaken_resource_worker_http::HttpFileContentSource;
 use awaken_resource_worker_http::{WorkerFileContentService, worker_file_content_router};
-use awaken_dispatch::{
-    DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
-};
+use awaken_dispatch::{MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity};
 use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_session_repository_contract::SessionRepository as _;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};

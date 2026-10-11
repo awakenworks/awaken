@@ -1,5 +1,5 @@
 // @formal evidence worker.placement_extension_cannot_widen_eligibility
-//! `AnyDispatchStore`, the runtime-selectable backend (ADR-0019 multi-node
+//! `AnyCoordinatorDispatch`, the runtime-selectable backend (ADR-0019 multi-node
 //! wiring). Proves the enum-free wrapper delegates the full `Dispatch` bundle to
 //! its active backend and preserves the owner-scoped claim/lease semantics the
 //! fleet relies on. The SQLite paths always run; the Postgres path skips when no
@@ -10,15 +10,14 @@ mod harness;
 #[path = "any_store/resolution_failure.rs"]
 mod resolution_failure;
 
-use awaken_dispatch_contract::ControlDispatchQueue;
 use awaken_time::system_clock;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_dispatch::{
-    AnyDispatchStore, DispatchCursor, DispatchOperation, DispatchOperationalFeed, DispatchOutcome,
-    DispatchQueue, DispatchTestHarness, Inbox, LeastLoadedPolicy, MemoryDispatchStore,
+    AnyCoordinatorDispatch, DispatchCursor, DispatchOperation, DispatchOperationalFeed,
+    DispatchOutcome, DispatchTestHarness, Inbox, LeastLoadedPolicy, MemoryDispatchStore,
     PlacementContext, PlacementError, PlacementPolicy, PlacementRequirements, RankedWorker,
     RunDispatch, SubmitOptions, WorkerIdentity, WorkerManifest, WorkerSnapshot, WorkerState,
 };
@@ -29,7 +28,7 @@ use awaken_store_sqlite::SqliteCommitCoordinator;
 use awaken_dispatch_testkit::ConformanceClock as _;
 use harness::{TICKET, activation, activation_on, tool_runtime};
 
-async fn any_in_memory() -> AnyDispatchStore {
+async fn any_in_memory() -> AnyCoordinatorDispatch {
     awaken_dispatch::open_sqlite_dispatch_store_in_memory(system_clock())
         .await
         .expect("open in-memory sqlite backend")
@@ -38,7 +37,7 @@ async fn any_in_memory() -> AnyDispatchStore {
 /// The same runtime-selected backend over a raw injected clock handle.
 async fn any_in_memory_with_clock_handle(
     clock: std::sync::Arc<dyn awaken_time::WallClock>,
-) -> AnyDispatchStore {
+) -> AnyCoordinatorDispatch {
     awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock)
         .await
         .expect("open in-memory sqlite backend")
@@ -48,7 +47,7 @@ async fn any_in_memory_with_clock_handle(
 /// dispatch port now reads "now" from the store it was built with.
 async fn any_in_memory_with_clock(
     clock: &awaken_dispatch_testkit::ManualStoreClock,
-) -> AnyDispatchStore {
+) -> AnyCoordinatorDispatch {
     awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clock())
         .await
         .expect("open in-memory sqlite backend")
@@ -59,7 +58,9 @@ async fn execution_binding_is_frozen_with_the_physical_slot() {
     // Shared B1-B9 includes Any delegation, Memory and real SQLite transactions.
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     for store in [
-        AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(clock.clock()))),
+        AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(MemoryDispatchStore::new(
+            clock.clock(),
+        ))),
         any_in_memory_with_clock(&clock).await,
     ] {
         harness::attempt_binding::assert_binding_lifecycle(&store, &clock).await;
@@ -76,7 +77,9 @@ async fn returned_attempt_cannot_restart_under_the_same_claim() {
     // This is a prerequisite for accepting independently delayed stop evidence.
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     for store in [
-        AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(clock.clock()))),
+        AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(MemoryDispatchStore::new(
+            clock.clock(),
+        ))),
         any_in_memory_with_clock(&clock).await,
     ] {
         harness::attempt_retirement::assert_retirement(&store, 0, &clock).await;
@@ -87,16 +90,21 @@ async fn returned_attempt_cannot_restart_under_the_same_claim() {
 async fn non_postgres_wrapper_does_not_fabricate_a_checkpoint_authority() {
     // Cause/effect decision table: R1 Postgres -> paired durable checkpoint (covered
     // by `any_postgres_connect_and_claim`); R2 SQLite -> None so the host must bind
-    // its durable FS checkpoint; R3 remote dispatch -> None so the claim-bound HTTP
-    // path remains authoritative. This test owns R2/R3 and prevents an implicit
-    // process-local checkpoint from returning inside the runtime-selected wrapper.
+    // its durable FS checkpoint; R3 a Worker projection cannot discover a local
+    // checkpoint at all (compile-fail docs). Required remote transport identity
+    // is checked by awaken-coordinator-client's composition tests and HTTP E2E.
     assert!(
         any_in_memory().await.stream_checkpoint_store().is_none(),
         "R2"
     );
-    let remote =
-        AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new(system_clock())));
-    assert!(remote.stream_checkpoint_store().is_none(), "R3");
+    let local = Arc::new(AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(
+        MemoryDispatchStore::new(system_clock()),
+    )));
+    let binding = awaken_dispatch::DispatchBinding::local(local.clone());
+    assert!(
+        Arc::ptr_eq(&binding.queue(), &local.worker_view()),
+        "R3 Worker projection keeps its one selected owner; no checkpoint capability is projected"
+    );
 }
 
 #[tokio::test]
@@ -150,7 +158,7 @@ async fn compatible_claim_skips_ineligible_work_and_pins_the_incarnation() {
 }
 
 async fn exact_backend_capability_claim_conformance(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     // Cause/effect graph:
@@ -289,7 +297,7 @@ fn worker_with_load(id: &str, load: u32) -> WorkerSnapshot {
 }
 
 async fn policy_claim_conformance(
-    store: &dyn ControlDispatchQueue,
+    store: &dyn ConformanceDispatch,
     clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     let mut requirements = PlacementRequirements::remote_required();
@@ -682,25 +690,27 @@ async fn any_exposes_the_builtin_backends_operational_feed() {
 
 #[tokio::test]
 async fn any_fails_feed_reads_closed_for_a_dispatch_only_adapter() {
-    // A4: no operational source is installed. Both selectors fail; unsupported
-    // observation cannot become an empty successful read.
-    let dispatch_only: Arc<dyn awaken_dispatch::Dispatch> =
-        Arc::new(MemoryDispatchStore::new(system_clock()));
-    let store = AnyDispatchStore::from_dispatch(dispatch_only);
-
+    // Unsupported feed reads are now unrepresentable; the unscoped and scoped
+    // compile-fail examples on AnyDispatchStore cover both rejected selectors.
+    // The two positive selectors still observe the one actual durable feed.
+    let owner = AnyCoordinatorDispatch::from_durable_dispatch(Arc::new(MemoryDispatchStore::new(
+        system_clock(),
+    )));
     assert!(
-        store
+        owner
             .events_after(DispatchCursor(0), 1, None)
             .await
-            .is_err(),
-        "an erased legacy adapter cannot pretend to expose durable operations"
+            .unwrap()
+            .events
+            .is_empty()
     );
     assert!(
-        store
+        owner
             .events_after(DispatchCursor(0), 1, Some(&RunId("run".into())))
             .await
-            .is_err(),
-        "A4 scoped reads cannot manufacture an absent feed"
+            .unwrap()
+            .events
+            .is_empty()
     );
 }
 
@@ -739,7 +749,7 @@ async fn with_owner_drives_a_durable_run_over_any_sqlite() {
         0,
         "the tool has not run while awaiting"
     );
-    // The run is now awaiting awaiting input over the AnyDispatchStore(sqlite)
+    // The run is now awaiting awaiting input over the AnyCoordinatorDispatch(sqlite)
     // backend, built with this process's unique claim owner — the with_owner +
     // wrapper path executed end to end in the real ingress.
     let _ = store;
@@ -797,7 +807,7 @@ async fn any_postgres_connect_and_claim() {
     // Decision table: R1 C1+!C2 -> skip environmental acceptance; R2 C1+C2+!C3 ->
     // E1+E2; R3 C1+C2+C3 -> E1+E2+E3. SQLite/remote wrappers own the complementary
     // `None` checkpoint row and must use FS/claim-bound transport respectively.
-    // Constraint/Invariant: AnyDispatchStore delegates to one selected backend
+    // Constraint/Invariant: AnyCoordinatorDispatch delegates to one selected backend
     // and never creates a parallel checkpoint authority. Decision rule: execute
     // R1-R3 according to environmental availability and recreation state.
     let schema = "t_any_store";
@@ -854,3 +864,10 @@ async fn any_postgres_connect_and_claim() {
         awaken_agent_contract::observation::Observed::Present(partial)
     );
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaims as _, DispatchControlClaims as _, DispatchEnqueue as _, DispatchExecution as _,
+    DispatchSettlement as _,
+};
+
+use awaken_dispatch_testkit::ConformanceDispatch;

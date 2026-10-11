@@ -9,7 +9,6 @@
 //! registry, receipt map, mailbox, or background executor.
 
 use super::*;
-use awaken_dispatch_contract::ControlDispatchQueue;
 
 mod agent_message_source;
 mod committed_links;
@@ -228,9 +227,7 @@ impl SharedHost {
         command: &awaken_session_execution_contract::SessionThreadToolReplyCommand,
     ) -> Result<awaken_session_execution_contract::SessionThreadToolReplyFence, HostError> {
         // Resolve topology before SessionApplication opens a reply activity.
-        self.dispatch_store()?
-            .session_continuation()
-            .ok_or_else(|| HostError::internal("Session reply requires a continuation owner"))?;
+        self.coordinator_dispatch()?;
         let (thread_id, _ticket) = match self.validated_session_thread_tool_reply(command).await {
             Ok(active) => active,
             Err(active_error) => match self.session_thread_tool_reply_receipt(command).await? {
@@ -253,7 +250,7 @@ impl SharedHost {
         };
         let parent = ThreadId(command.session_id.to_string());
         let dispatch = self
-            .dispatch_store()?
+            .coordinator_dispatch()?
             .list_dispatches()
             .await
             .map_err(|error| HostError::internal(error.to_string()))?
@@ -306,7 +303,7 @@ impl SharedHost {
         let result =
             super::run::session_thread_reply_result(&ticket, &command.tool_use_id, &command.reply);
 
-        let store = self.dispatch_store()?;
+        let store = self.coordinator_dispatch()?;
         let parent = ThreadId(command.session_id.to_string());
         let dispatch = store
             .list_dispatches()
@@ -351,8 +348,6 @@ impl SharedHost {
             context_messages,
         };
         store
-            .session_continuation()
-            .ok_or_else(|| HostError::internal("Session reply requires a continuation owner"))?
             .stage_session_resume(
                 input,
                 &parent,
@@ -570,7 +565,7 @@ impl SharedHost {
                 max_unarchived_threads,
             )
             .await?;
-        let store = self.dispatch_store()?;
+        let store = self.coordinator_dispatch()?;
 
         store
             .enqueue_session_child(request, admission)
@@ -631,7 +626,7 @@ impl SharedHost {
                 "coordinated Agent report has inconsistent provenance",
             ));
         }
-        let store = self.dispatch_store()?;
+        let store = self.coordinator_dispatch()?;
 
         // This is Coordinator admission, not a physical execution attempt.
         // A completed child may have left its Environment with a remote Worker.
@@ -699,7 +694,7 @@ impl SharedHost {
     ) -> Result<Vec<awaken_dispatch_contract::DispatchSummary>, HostError> {
         let parent = ThreadId(session_id.to_string());
         Ok(self
-            .dispatch_store()?
+            .coordinator_dispatch()?
             .list_dispatches()
             .await
             .map_err(|error| HostError::internal(error.to_string()))?
@@ -864,9 +859,15 @@ impl SharedHost {
     }
 }
 
+use awaken_dispatch_contract::{
+    DispatchEnqueue as _, DispatchReads as _, SessionContinuationOutbox as _,
+    SessionRunReservations as _,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_dispatch_contract::DispatchClaims;
 
     #[test]
     fn dispatch_admission_errors_preserve_commit_certainty() {
@@ -938,7 +939,6 @@ mod tests {
         // | C1   | none   | 0->B       | B      | none         | E1,E4,E5  |
         // | C2   | A      | A->B       | B      | A            | E2,E4,E5  |
         // | C3   | A      | none       | A      | A            | E3,E4,E5  |
-        use awaken_dispatch_contract::DispatchQueue as _;
 
         let manifest = |revision| {
             awaken_session_resource_contract::SessionResourceManifest::at_revision(

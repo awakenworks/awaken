@@ -113,7 +113,7 @@ pub async fn init_scenario_runtime(
         && deployment.store == awaken_session_executor::StoreKind::Sqlite
         && deployment.dispatch_backend == awaken_session_executor::DispatchBackend::Sqlite
     {
-        let dispatch = awaken_dispatch::AnyDispatchStore::from_durable_store(
+        let dispatch = awaken_dispatch::AnyCoordinatorDispatch::from_durable_store(
             awaken_dispatch::MemoryDispatchStore::new(clock.clone()),
             None,
         );
@@ -330,10 +330,8 @@ mod tests {
         let reference = init_scenario_runtime(&missing, awaken_time::system_clock())
             .await
             .expect("R0 scenario SQLite runtime needs no shared backend");
-        assert!(
-            reference.dispatch_store().session_continuation().is_some(),
-            "R0 exact durable role survives erasure"
-        );
+        fn continuation(_: &dyn awaken_dispatch::SessionContinuationOutbox) {}
+        continuation(reference.dispatch_store().as_ref());
         use awaken_dispatch::DispatchOperationalFeed as _;
         assert!(
             reference

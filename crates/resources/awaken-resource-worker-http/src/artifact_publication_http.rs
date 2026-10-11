@@ -7,7 +7,7 @@ use awaken_resource_contract::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
     ArtifactRecovery, FileApplicationService, MAX_MANAGED_FILE_SIZE_BYTES, ResourcePurgeError,
 };
-use awaken_dispatch_contract::{DispatchQueue, RunClaim};
+use awaken_dispatch_contract::{DispatchCommitAuthority, RunClaim};
 use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_session_state_contract::{SessionEnvironmentOperation, SessionTerminalCleanupEffect};
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
@@ -402,7 +402,7 @@ impl ArtifactPublisher<ResourceOperationFence> for HttpArtifactPublisher {
 
 pub struct WorkerArtifactPublicationService {
     application: Arc<dyn FileApplicationService>,
-    dispatch: Arc<dyn DispatchQueue>,
+    dispatch: Arc<dyn DispatchCommitAuthority>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Arc<dyn WorkerDirectory>,
     terminal_preparation_control:
@@ -417,7 +417,7 @@ impl WorkerArtifactPublicationService {
     #[must_use]
     pub fn new(
         application: Arc<dyn FileApplicationService>,
-        dispatch: Arc<dyn DispatchQueue>,
+        dispatch: Arc<dyn DispatchCommitAuthority>,
         authenticator: Arc<dyn WorkerRequestAuthenticator>,
         directory: Arc<dyn WorkerDirectory>,
         clock: Arc<dyn awaken_time::WallClock>,

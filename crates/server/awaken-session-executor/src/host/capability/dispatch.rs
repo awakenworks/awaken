@@ -30,6 +30,11 @@ pub(crate) struct DispatchCapability {
 }
 
 impl DispatchCapability {
+    /// Whether foreground Runs are delivered through this capability's queue.
+    pub(crate) fn durable_ingress(&self) -> bool {
+        self.execution.ingress.is_durable()
+    }
+
     /// The selected execution topology, with no pool yet: `mount` spawns it.
     pub(in crate::host) fn new(
         execution: super::ExecutionTopology,
@@ -48,9 +53,12 @@ impl SharedHost {
     pub fn dispatch_store(
         &self,
     ) -> Result<Arc<awaken_dispatch_erasure::AnyDispatchStore>, HostError> {
-        self.optional_dispatch_store().ok_or_else(|| {
-            HostError::internal("database-less Worker requires an injected dispatch transport")
-        })
+        self.authority
+            .dispatch_binding()
+            .map(|binding| binding.queue())
+            .ok_or_else(|| {
+                HostError::internal("database-less Worker requires an injected dispatch binding")
+            })
     }
 
     /// Existing durable dispatch authority when this topology has one. Direct
@@ -58,8 +66,18 @@ impl SharedHost {
     /// Thread truth without manufacturing a queue merely for discovery.
     pub(crate) fn optional_dispatch_store(
         &self,
-    ) -> Option<Arc<awaken_dispatch_erasure::AnyDispatchStore>> {
-        self.authority.dispatch_store()
+    ) -> Option<Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>> {
+        match self.authority.dispatch_binding()?.placement() {
+            awaken_dispatch_erasure::DispatchTopology::Local(owner) => Some(owner.clone()),
+            awaken_dispatch_erasure::DispatchTopology::Remote { .. } => None,
+        }
+    }
+
+    pub fn coordinator_dispatch(
+        &self,
+    ) -> Result<Arc<awaken_dispatch_erasure::AnyCoordinatorDispatch>, HostError> {
+        self.optional_dispatch_store()
+            .ok_or_else(|| HostError::internal("operation requires a Coordinator dispatch owner"))
     }
 
     /// Whether this process owns a co-located dispatch pool. Process startup uses
@@ -68,11 +86,6 @@ impl SharedHost {
     #[must_use]
     pub fn runs_local_dispatch_pool(&self) -> bool {
         self.dispatch.execution.local.runs_local_pool()
-    }
-
-    /// Whether foreground Runs are delivered through the durable queue.
-    pub(crate) fn durable_ingress(&self) -> bool {
-        self.dispatch.execution.ingress.is_durable()
     }
 
     /// Stable logical identity used by both local dispatch claims and local
@@ -118,7 +131,7 @@ impl SharedHost {
         if self.dispatch.dispatch_pool.get().is_some() {
             return;
         }
-        let Ok(store) = self.dispatch_store() else {
+        let Some(binding) = self.authority.dispatch_binding() else {
             // Postgres backend not yet initialised — a later `mount` after
             // Coordinator startup supplies the shared dispatch authority and
             // this Host owns only its process-local claimer.
@@ -133,30 +146,21 @@ impl SharedHost {
         // spawn the pool with the cross-node wake so a peer's enqueue nudges this pool
         // without busy-poll; otherwise the in-process `LocalWakeSignal` suffices.
         let completion = self.completion.clone() as Arc<dyn CompletionSink>;
-        let shared_wake = self.authority.dispatch_wake();
-        let pool = match shared_wake {
-            Some(wake) => DispatchPool::spawn_with_wake_and_completion(
-                store,
-                self.clock.clone(),
-                self.dispatch_owner().to_owned(),
-                DEFAULT_LEASE_MS,
-                config,
-                resolver,
-                concurrency,
-                wake,
-                completion,
-            ),
-            None => DispatchPool::spawn_with_completion(
-                store,
-                self.clock.clone(),
-                self.dispatch_owner().to_owned(),
-                DEFAULT_LEASE_MS,
-                config,
-                resolver,
-                concurrency,
-                completion,
-            ),
-        };
+        let shared_wake = self
+            .authority
+            .dispatch_wake()
+            .unwrap_or_else(|| Arc::new(awaken_dispatch_execution::LocalWakeSignal::new()));
+        let pool = DispatchPool::spawn_bound(
+            binding,
+            self.clock.clone(),
+            self.dispatch_owner().to_owned(),
+            DEFAULT_LEASE_MS,
+            config,
+            resolver,
+            concurrency,
+            shared_wake,
+            Some(completion),
+        );
         let _ = self.dispatch.dispatch_pool.set(Arc::new(pool));
     }
 
@@ -240,9 +244,11 @@ impl SharedHost {
         else {
             return Ok(());
         };
-        let dispatch = self
-            .dispatch_store()
-            .map_err(|e| HostWorkerResolver::execution_error(e.to_string()))?;
+        let dispatch = self.optional_dispatch_store().ok_or_else(|| {
+            HostWorkerResolver::execution_error(
+                "Worker evidence reconciliation requires a Coordinator owner",
+            )
+        })?;
         let now = awaken_time::WallClockExt::now_ms(self.clock.as_ref());
         let mut records = directory
             .list()
@@ -307,7 +313,7 @@ impl SharedHost {
     /// a database-less Worker has no global committed reader and must not start it.
     /// Returns whether this call started the loop.
     pub fn ensure_terminal_dispatch_reconciliation(self: &Arc<Self>) -> bool {
-        if !self.durable_ingress()
+        if !self.dispatch.durable_ingress()
             || self.runs_local_dispatch_pool()
             || !self.authority.scans_committed_terminals()
             || self
@@ -319,7 +325,7 @@ impl SharedHost {
         {
             return false;
         }
-        let Ok(store) = self.dispatch_store() else {
+        let Some(store) = self.optional_dispatch_store() else {
             return false;
         };
         let resolver: Arc<dyn awaken_dispatch_execution::WorkerResolver<AnyDispatchStore>> =

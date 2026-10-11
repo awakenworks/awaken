@@ -10,14 +10,11 @@
 //! Only the worker verbs cross the wire — `enqueue`, `claim_new_run`, `claim`,
 //! `renew_lease` and `settle`. Claimed commits use the separate atomic
 //! server operation; this transport exposes no check-then-commit fence read. The
-//! server-local operational verbs (manual quarantine, purge, supersede, cancel, requeue,
-//! awaiting-run, list-dispatches) and the `Inbox`/`Outbox` write + relay aggregates
-//! are server-local: the worker never runs them, so they fail closed (`Rejected`)
-//! rather than pretend a mutation the server didn't perform. The sole exception is
-//! `Inbox::list`, which the db-less worker's own drive calls (`worker.rs`) to drain
-//! a thread's unbound input — the pending is already in `Claimed.pending`, so an
-//! empty list is the correct answer, not a pretended one. Wrap this in
-//! `AnyDispatchStore::from_dispatch` to hand it to the pool.
+//! Coordinator administration, maintenance, readback and inbox/outbox writes
+//! have no implementation on this transport. `InboxRead::list` is the Worker's
+//! read projection: pending inputs already travel in `Claimed.pending`.
+//! Bind this owner with its required claimed-commit service through
+//! `DispatchBinding::remote` before constructing a Worker or pool.
 
 use async_trait::async_trait;
 use serde::Serialize;
@@ -30,21 +27,20 @@ use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_agent_contract::stream::sink::Error as StreamError;
 use awaken_dispatch_contract::{
-    AttemptAdmission, AttemptExecutionRequest, BindSandboxRequest, CasOutcome, CheckpointRequest,
+    AttemptAdmission, AttemptExecutionRequest, BindSandboxRequest, CheckpointRequest,
     ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest, Claimed,
-    ClaimedCredentialDeliveryTransport, CommitEpochGuard, CredentialDeliveryRefreshRequest,
+    ClaimedCredentialDeliveryTransport, CredentialDeliveryRefreshRequest,
     CredentialRealizationReceipt, CredentialRealizationRequest, DeliverAndClaimRequest,
-    DispatchError, DispatchOutcome, DispatchQueue, DispatchSummary, EnqueueRequest, Inbox,
-    LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, RecoveryRequest, RenewRequest,
-    RunClaim, RunDispatch, SessionRunReservationResolution, SessionRunReservationResolutionRequest,
-    SettleOutcome, SettleRequest, StreamEventRequest, StreamObservationRequest, SubmitOptions,
+    DispatchError, DispatchOutcome, EnqueueRequest, LeaseRenewalOutcome, PendingInput,
+    PendingRecord, RecoveryRequest, RenewRequest, RunClaim, RunDispatch,
+    SessionRunReservationResolution, SessionRunReservationResolutionRequest, SettleOutcome,
+    SettleRequest, StreamEventRequest, StreamObservationRequest, SubmitOptions,
 };
 
 use awaken_dispatch_contract::{
     ClaimedStreamPublisher, WorkerIdentity, WorkerSnapshot,
     worker_credential_realization_capabilities,
 };
-use awaken_runtime_contract::resume::ResumeResult;
 use awaken_worker_transport_security::{WorkerRequestAuthorizer, WorkerUpstream};
 
 async fn dispatch_response_error(response: reqwest::Response) -> DispatchError {
@@ -105,6 +101,70 @@ fn installed_worker_credential_capabilities(
 }
 
 /// A `Dispatch` store whose worker verbs are HTTP calls to a cell server.
+/// Worker HTTP transport supplies execution and claim-bound RPC roles only.
+/// Local authority is rejected by the type checker before any request.
+/// ```compile_fail,E0599
+/// use awaken_coordinator_client::HttpDispatchQueue;
+/// use awaken_dispatch_contract::DispatchAdministration;
+/// use awaken_agent_contract::agent::run::Id;
+/// async fn cancel_peer(worker: &HttpDispatchQueue) {
+///     worker.cancel(&Id("no-such-run".into())).await;
+/// }
+/// ```
+/// ```compile_fail
+/// use awaken_coordinator_client::HttpDispatchQueue;
+/// use awaken_dispatch_contract::DispatchAdministration;
+/// fn required<T: DispatchAdministration>() {}
+/// required::<HttpDispatchQueue>();
+/// ```
+/// ```compile_fail
+/// use awaken_coordinator_client::HttpDispatchQueue;
+/// use awaken_dispatch_contract::Inbox;
+/// fn required<T: Inbox>() {}
+/// required::<HttpDispatchQueue>();
+/// ```
+/// ```compile_fail
+/// use awaken_coordinator_client::HttpDispatchQueue;
+/// use awaken_dispatch_contract::Outbox;
+/// fn required<T: Outbox>() {}
+/// required::<HttpDispatchQueue>();
+/// ```
+/// ```compile_fail
+/// use awaken_coordinator_client::HttpDispatchQueue;
+/// use awaken_dispatch_contract::DispatchMaintenance;
+/// fn required<T: DispatchMaintenance>() {}
+/// required::<HttpDispatchQueue>();
+/// ```
+/// ```compile_fail
+/// use awaken_coordinator_client::HttpDispatchQueue;
+/// use awaken_dispatch_contract::DispatchReads;
+/// fn required<T: DispatchReads>() {}
+/// required::<HttpDispatchQueue>();
+/// ```
+/// ```compile_fail
+/// use awaken_coordinator_client::HttpDispatchQueue;
+/// use awaken_dispatch_contract::DispatchCommitAuthority;
+/// fn required<T: DispatchCommitAuthority>() {}
+/// required::<HttpDispatchQueue>();
+/// ```
+/// ```compile_fail
+/// use awaken_coordinator_client::HttpDispatchQueue;
+/// use awaken_dispatch_contract::DispatchControlReads;
+/// fn required<T: DispatchControlReads>() {}
+/// required::<HttpDispatchQueue>();
+/// ```
+/// ```compile_fail
+/// use awaken_coordinator_client::HttpDispatchQueue;
+/// use awaken_dispatch_contract::DispatchControlClaims;
+/// fn required<T: DispatchControlClaims>() {}
+/// required::<HttpDispatchQueue>();
+/// ```
+/// ```compile_fail
+/// use awaken_coordinator_client::HttpDispatchQueue;
+/// use awaken_dispatch_contract::SessionReservationAuthority;
+/// fn required<T: SessionReservationAuthority>() {}
+/// required::<HttpDispatchQueue>();
+/// ```
 pub struct HttpDispatchQueue {
     base_url: String,
     client: reqwest::Client,
@@ -130,7 +190,7 @@ pub fn worker_transports_with_upstream(
     upstream: &WorkerUpstream,
     identity: WorkerIdentity,
 ) -> (
-    Arc<dyn awaken_dispatch_erasure::Dispatch>,
+    Arc<dyn awaken_dispatch_execution::RemoteDispatch>,
     Arc<dyn ClaimedStreamPublisher>,
 ) {
     let transport = dispatch_transport_with_upstream(upstream, identity);
@@ -264,12 +324,6 @@ impl HttpDispatchQueue {
         ))
     }
 
-    fn server_local<T>(verb: &str) -> Result<T, DispatchError> {
-        Err(DispatchError::Rejected(format!(
-            "{verb} is a server-local operation, not available on the worker dispatch transport"
-        )))
-    }
-
     fn worker_id(&self) -> &str {
         &self.worker_identity.worker_id
     }
@@ -346,17 +400,7 @@ impl ClaimedCredentialDeliveryTransport for HttpDispatchQueue {
 }
 
 #[async_trait]
-impl DispatchQueue for HttpDispatchQueue {
-    fn owns_local_maintenance(&self) -> bool {
-        false
-    }
-
-    fn claimed_credential_delivery_transport(
-        &self,
-    ) -> Option<&dyn ClaimedCredentialDeliveryTransport> {
-        Some(self)
-    }
-
+impl awaken_dispatch_contract::DispatchClaims for HttpDispatchQueue {
     async fn resolve_claimed_session_run_reservation(
         &self,
         claim: &RunClaim,
@@ -380,108 +424,6 @@ impl DispatchQueue for HttpDispatchQueue {
                 SettleOutcome::Fenced
             },
         )
-    }
-
-    async fn claim_is_current(&self, claim: &RunClaim) -> Result<bool, DispatchError> {
-        let value = self
-            .post(
-                "/v1/worker/dispatch/claim_is_current",
-                &RecoveryRequest {
-                    claim: claim.clone(),
-                    identity: Some(self.worker_identity.clone()),
-                    session_work_authority: None,
-                },
-                self.worker_id(),
-            )
-            .await?;
-        Ok(value
-            .get("current")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false))
-    }
-
-    async fn record_credential_realization(
-        &self,
-        claim: &RunClaim,
-        receipt: CredentialRealizationReceipt,
-    ) -> Result<SettleOutcome, DispatchError> {
-        let value = self
-            .post(
-                "/v1/worker/dispatch/credential_realization",
-                &CredentialRealizationRequest {
-                    claim: claim.clone(),
-                    receipt,
-                    identity: Some(self.worker_identity.clone()),
-                },
-                self.worker_id(),
-            )
-            .await?;
-        Ok(
-            if value.get("applied").and_then(serde_json::Value::as_bool) == Some(true) {
-                SettleOutcome::Applied
-            } else {
-                SettleOutcome::Fenced
-            },
-        )
-    }
-
-    async fn worker_owns_run(
-        &self,
-        _identity: &WorkerIdentity,
-        _run_id: &RunId,
-    ) -> Result<Option<RunClaim>, DispatchError> {
-        Self::server_local("worker_owns_run")
-    }
-
-    async fn lock_commit_epoch(
-        &self,
-        _claim: &RunClaim,
-    ) -> Result<Option<CommitEpochGuard>, DispatchError> {
-        Err(DispatchError::Rejected(
-            "remote claims require the atomic claimed-commit endpoint".to_string(),
-        ))
-    }
-
-    async fn bind_sandbox(
-        &self,
-        claim: &RunClaim,
-        sandbox_ref: &str,
-    ) -> Result<SettleOutcome, DispatchError> {
-        let value = self
-            .post_idempotent(
-                "/v1/worker/dispatch/bind_sandbox",
-                &BindSandboxRequest {
-                    claim: claim.clone(),
-                    sandbox_ref: sandbox_ref.to_string(),
-                    identity: Some(self.worker_identity.clone()),
-                },
-                self.worker_id(),
-            )
-            .await?;
-        Ok(
-            if value.get("applied").and_then(|value| value.as_bool()) == Some(true) {
-                SettleOutcome::Applied
-            } else {
-                SettleOutcome::Fenced
-            },
-        )
-    }
-
-    async fn enqueue_with(
-        &self,
-        request: RunDispatch,
-        options: SubmitOptions,
-    ) -> Result<(), DispatchError> {
-        self.post(
-            "/v1/worker/dispatch/enqueue",
-            &EnqueueRequest {
-                request,
-                options: Some(options),
-            },
-            self.worker_id(),
-        )
-        .await?;
-        Ok(())
     }
 
     async fn claim_new_run(
@@ -676,6 +618,80 @@ impl DispatchQueue for HttpDispatchQueue {
         )
         .await
     }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::DispatchClaimOwnership for HttpDispatchQueue {
+    async fn claim_is_current(&self, claim: &RunClaim) -> Result<bool, DispatchError> {
+        let value = self
+            .post(
+                "/v1/worker/dispatch/claim_is_current",
+                &RecoveryRequest {
+                    claim: claim.clone(),
+                    identity: Some(self.worker_identity.clone()),
+                    session_work_authority: None,
+                },
+                self.worker_id(),
+            )
+            .await?;
+        Ok(value
+            .get("current")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false))
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::DispatchExecution for HttpDispatchQueue {
+    async fn record_credential_realization(
+        &self,
+        claim: &RunClaim,
+        receipt: CredentialRealizationReceipt,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let value = self
+            .post(
+                "/v1/worker/dispatch/credential_realization",
+                &CredentialRealizationRequest {
+                    claim: claim.clone(),
+                    receipt,
+                    identity: Some(self.worker_identity.clone()),
+                },
+                self.worker_id(),
+            )
+            .await?;
+        Ok(
+            if value.get("applied").and_then(serde_json::Value::as_bool) == Some(true) {
+                SettleOutcome::Applied
+            } else {
+                SettleOutcome::Fenced
+            },
+        )
+    }
+
+    async fn bind_sandbox(
+        &self,
+        claim: &RunClaim,
+        sandbox_ref: &str,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let value = self
+            .post_idempotent(
+                "/v1/worker/dispatch/bind_sandbox",
+                &BindSandboxRequest {
+                    claim: claim.clone(),
+                    sandbox_ref: sandbox_ref.to_string(),
+                    identity: Some(self.worker_identity.clone()),
+                },
+                self.worker_id(),
+            )
+            .await?;
+        Ok(
+            if value.get("applied").and_then(|value| value.as_bool()) == Some(true) {
+                SettleOutcome::Applied
+            } else {
+                SettleOutcome::Fenced
+            },
+        )
+    }
 
     async fn renew_lease(
         &self,
@@ -811,7 +827,30 @@ impl DispatchQueue for HttpDispatchQueue {
             },
         )
     }
+}
 
+#[async_trait]
+impl awaken_dispatch_contract::DispatchEnqueue for HttpDispatchQueue {
+    async fn enqueue_with(
+        &self,
+        request: RunDispatch,
+        options: SubmitOptions,
+    ) -> Result<(), DispatchError> {
+        self.post(
+            "/v1/worker/dispatch/enqueue",
+            &EnqueueRequest {
+                request,
+                options: Some(options),
+            },
+            self.worker_id(),
+        )
+        .await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl awaken_dispatch_contract::DispatchSettlement for HttpDispatchQueue {
     async fn settle(
         &self,
         run_id: &RunId,
@@ -840,49 +879,6 @@ impl DispatchQueue for HttpDispatchQueue {
                 SettleOutcome::Fenced
             },
         )
-    }
-
-    // --- server-local operational verbs: the SERVER owns manual quarantine/GC.
-    // A database-less worker never legitimately drives them, so they FAIL CLOSED
-    // (Rejected) rather than pretend a mutation/read the server didn't perform — a
-    // silent `Ok` no-op here would let a remote worker believe it quarantined,
-    // purged, or relayed when it did nothing. Schedulers use this adapter's
-    // owns_local_maintenance boundary to avoid starting redundant server work;
-    // an explicit misuse still surfaces the fault rather than reporting success. ---
-
-    async fn quarantine_retry_exhausted(
-        &self,
-        _max_attempts: u64,
-        _expired_before_ms: u64,
-    ) -> Result<usize, DispatchError> {
-        Self::server_local("quarantine_retry_exhausted")
-    }
-    async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
-        Self::server_local("dead_letters")
-    }
-    async fn requeue(&self, _run_id: &RunId) -> Result<bool, DispatchError> {
-        Self::server_local("requeue")
-    }
-    async fn cancel(&self, _run_id: &RunId) -> Result<Option<ThreadId>, DispatchError> {
-        Self::server_local("cancel")
-    }
-    async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
-        Self::server_local("purge_dead_letters")
-    }
-    async fn purge_dead_letters_before(&self, _cutoff_ms: u64) -> Result<usize, DispatchError> {
-        Self::server_local("purge_dead_letters_before")
-    }
-    async fn superseded(&self) -> Result<Vec<RunId>, DispatchError> {
-        Self::server_local("superseded")
-    }
-    async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
-        Self::server_local("list_dispatches")
-    }
-
-    fn claimed_checkpoint_transport(
-        &self,
-    ) -> Option<&dyn awaken_dispatch_contract::ClaimedCheckpointTransport> {
-        Some(self)
     }
 }
 
@@ -979,10 +975,7 @@ impl awaken_dispatch_contract::ClaimedCheckpointTransport for HttpDispatchQueue 
 }
 
 #[async_trait]
-impl Inbox for HttpDispatchQueue {
-    async fn append(&self, _input: PendingInput) -> Result<bool, DispatchError> {
-        Self::server_local("inbox.append")
-    }
+impl awaken_dispatch_contract::InboxRead for HttpDispatchQueue {
     // The one legitimate read no-op (NOT fail-closed): the worker's own drive calls
     // `Inbox::list` to drain a thread's unbound input, but a db-less worker already
     // receives its run's pending input in `Claimed.pending`, and the unbound-inbox
@@ -991,31 +984,6 @@ impl Inbox for HttpDispatchQueue {
     // drive (`worker.rs` consumes it with `?`).
     async fn list(&self, _thread_id: &ThreadId) -> Result<Vec<PendingRecord>, DispatchError> {
         Ok(Vec::new())
-    }
-    async fn retract(
-        &self,
-        _message_id: &str,
-        _expected_revision: u64,
-    ) -> Result<CasOutcome, DispatchError> {
-        Self::server_local("inbox.retract")
-    }
-    async fn edit(
-        &self,
-        _message_id: &str,
-        _expected_revision: u64,
-        _result: ResumeResult,
-    ) -> Result<CasOutcome, DispatchError> {
-        Self::server_local("inbox.edit")
-    }
-}
-
-#[async_trait]
-impl Outbox for HttpDispatchQueue {
-    async fn stage(&self, _input: PendingInput) -> Result<bool, DispatchError> {
-        Self::server_local("outbox.stage")
-    }
-    async fn relay(&self) -> Result<usize, DispatchError> {
-        Self::server_local("outbox.relay")
     }
 }
 

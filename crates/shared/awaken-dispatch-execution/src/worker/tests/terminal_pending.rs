@@ -177,3 +177,8 @@ async fn terminal_observation_pending_defers_only_the_exact_claim() {
         "P3/E4 old owner fenced"
     );
 }
+
+use awaken_dispatch_contract::{
+    DispatchControlClaims as _, DispatchControlReads as _, DispatchSettlement as _,
+    SessionRunReservations as _,
+};

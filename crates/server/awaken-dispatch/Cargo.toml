@@ -19,7 +19,6 @@ awaken-tool-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-dispatch-contract = { workspace = true }
-awaken-dispatch-erasure.workspace = true
 awaken-dispatch-execution.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-types.workspace = true
@@ -62,6 +61,7 @@ test-support = ["durable", "awaken-dispatch-execution/test-support"]
 nats = ["durable", "dep:async-nats", "dep:futures-lite"]
 
 [dev-dependencies]
+awaken-worker-contract.workspace = true
 awaken-lease-testkit.workspace = true
 awaken-store-conformance.workspace = true
 awaken-reliability-testkit.workspace = true

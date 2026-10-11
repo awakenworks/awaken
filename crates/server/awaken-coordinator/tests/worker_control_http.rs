@@ -1,6 +1,6 @@
 // @formal evidence worker_credential.stale_heartbeat_never_rolls_back_revision
 use awaken_dispatch::ClaimedCheckpointTransport as _;
-use awaken_dispatch::ControlDispatchQueue;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -11,8 +11,7 @@ use awaken_agent_contract::observation::Observed;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_lease_testkit::ManualClock;
 use awaken_dispatch::{
-    DispatchQueue, MemoryDispatchStore, PlacementRequirements, RunDispatch,
-    WORKER_LOCAL_CREDENTIALS_CAPABILITY,
+    MemoryDispatchStore, PlacementRequirements, RunDispatch, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
 };
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_runtime_contract::activation::RunActivation;
@@ -77,7 +76,7 @@ async fn initial_session_preparation_requires_exact_ready_worker_authority() {
     let preparation = Arc::new(RecordingSessionPreparation::default());
     let service = WorkerDispatchService::new(
         Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()))
-            as Arc<dyn ControlDispatchQueue>,
+            as Arc<dyn WorkerDispatchAuthority>,
         Arc::new(HeaderWorkerAuthenticator),
         clock.clone(),
         Arc::new(FixedWorkerLeasePolicy::new(1_000)),
@@ -168,7 +167,7 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
     let directory = Arc::new(MemoryWorkerDirectory::new());
     let service = WorkerDispatchService::new(
         Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()))
-            as Arc<dyn ControlDispatchQueue>,
+            as Arc<dyn WorkerDispatchAuthority>,
         Arc::new(HeaderWorkerAuthenticator),
         clock.clone(),
         Arc::new(FixedWorkerLeasePolicy::new(1_000)),
@@ -299,7 +298,7 @@ async fn authenticated_header_cannot_register_a_different_worker_id() {
     let directory = Arc::new(MemoryWorkerDirectory::new());
     let service = WorkerDispatchService::new(
         Arc::new(MemoryDispatchStore::new(awaken_time::system_clock()))
-            as Arc<dyn ControlDispatchQueue>,
+            as Arc<dyn WorkerDispatchAuthority>,
         Arc::new(HeaderWorkerAuthenticator),
         Arc::new(ManualClock::new(0)),
         Arc::new(FixedWorkerLeasePolicy::new(1_000)),
@@ -394,7 +393,7 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
         .await
         .unwrap();
     let service = WorkerDispatchService::new(
-        dispatch as Arc<dyn ControlDispatchQueue>,
+        dispatch as Arc<dyn WorkerDispatchAuthority>,
         Arc::new(HeaderWorkerAuthenticator),
         clock,
         Arc::new(FixedWorkerLeasePolicy::new(1_000)),
@@ -529,7 +528,7 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
         .unwrap();
 
     let service = WorkerDispatchService::new(
-        dispatch.clone() as Arc<dyn ControlDispatchQueue>,
+        dispatch.clone() as Arc<dyn WorkerDispatchAuthority>,
         Arc::new(HeaderWorkerAuthenticator),
         clock.clone(),
         Arc::new(FixedWorkerLeasePolicy::new(1_000)),
@@ -753,3 +752,9 @@ async fn http_claim_requires_the_exact_worker_private_credential_revision() {
         "R3+R5"
     );
 }
+
+use awaken_dispatch::{
+    DispatchClaims as _, DispatchEnqueue as _, DispatchExecution as _, DispatchSettlement as _,
+};
+
+use awaken_dispatch_http::WorkerDispatchAuthority;

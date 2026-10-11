@@ -2,7 +2,6 @@
 //! Terminal delegation quiescence over durable dispatch authority.
 
 use super::*;
-use awaken_dispatch_contract::ControlDispatchQueue;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TerminalDispatchAction {
@@ -59,7 +58,7 @@ impl SharedHost {
             .read_run(thread, |run| run.context.clone())
             .flatten();
         let mut coordinated_thread_ids = std::collections::HashSet::new();
-        if let Ok(store) = self.dispatch_store() {
+        if let Ok(store) = self.coordinator_dispatch() {
             let thread_id = ThreadId(thread.to_string());
             // Cause/effect decision table: P1 root dispatch and P2 every row
             // whose trusted parent affinity names this Session are the complete
@@ -308,6 +307,11 @@ fn terminal_quiescence_rejects_only_unstarted_reservations() {
         state == awaken_dispatch_contract::DispatchState::Superseded
     );
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaimOwnership as _, DispatchControlReads as _, DispatchReads as _,
+    SessionRunReservations as _,
+};
 
 #[cfg(test)]
 mod fast_pending_tests {

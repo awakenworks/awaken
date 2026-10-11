@@ -102,7 +102,6 @@ mod web_search;
 mod worker_services;
 
 use crate::skill_delivery::skill_store_run_error;
-use awaken_dispatch_contract::ControlDispatchQueue;
 pub(crate) use awaken_session_realization_contract::ResourceOperationFence;
 pub(crate) use dispatch_session_runtime::DispatchSessionRuntime;
 
@@ -443,7 +442,7 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
             }
             match self
                 .host
-                .dispatch_store()
+                .coordinator_dispatch()
                 .map_err(to_run_error)?
                 .reserve_session_run(request, 30_000)
                 .await
@@ -1242,3 +1241,5 @@ impl awaken_session_execution_contract::CapabilityRuntime for ManagedHost {
 // Keep the public trait implementation textually at the crate root so this
 // physical responsibility split cannot change its rustc DefPath.
 include!("managed_host_mcp_attachment.rs");
+
+use awaken_dispatch_contract::SessionRunReservations as _;

@@ -7,7 +7,7 @@
 //! This is the durable-dispatch bounded context's port surface, factored out of
 //! the `awaken-dispatch` host so store backends and adapters can depend on the
 //! contract without the host crate (G2). It carries the neutral dispatch ports
-//! (`DispatchQueue` / `Inbox` / `Outbox`) and the
+//! (caller-specific dispatch roles / `Inbox` / `Outbox`) and the
 //! serializable [`RunDispatch`] a durable queue persists and replays — no live
 //! handles (G3). Worker wiring stays private to the host.
 
@@ -47,17 +47,22 @@ pub use dispatch::{
     AttemptAdmission, AttemptCredentialBindingError, CasOutcome, ClaimCredentialOperation, Claimed,
     ClaimedCheckpointTransport, ClaimedCommitCommand, ClaimedCredentialDeliveryTransport,
     CommitEpochAdmission, CommitEpochBoundary, CommitEpochCompletion, CommitEpochGuard,
-    ContinuationAdmission, ControlDispatchQueue, DispatchCompletion,
-    DispatchCredentialAdmissionError, DispatchDepths, DispatchError, DispatchLease,
-    DispatchOutcome, DispatchQueue, DispatchSettlementError, DispatchSettlementObserver,
-    DispatchState, DispatchSummary, Inbox, LeaseRenewalOutcome, Outbox, PendingInput,
-    PendingRecord, RunClaim, SessionChildAdmission, SessionContinuationOutbox,
+    ContinuationAdmission, DispatchCompletion, DispatchCredentialAdmissionError, DispatchDepths,
+    DispatchError, DispatchLease, DispatchOutcome, DispatchSettlementError,
+    DispatchSettlementObserver, DispatchState, DispatchSummary, Inbox, LeaseRenewalOutcome, Outbox,
+    PendingInput, PendingRecord, RunClaim, SessionChildAdmission, SessionContinuationOutbox,
     SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
     SettleOutcome, SubmitOptions, can_admit_claim_credentials, claim_credential_operation,
     classify_commit_epoch_admission, compile_attempt_credential_bindings,
     compile_claim_credential_bindings, deadline_has_passed, decide_lease_renewal,
     session_run_replacement_candidate_is_safe, verify_attempt_credential_bindings,
     verify_claim_credential_bindings, worker_credential_realization_capabilities,
+};
+pub use dispatch::{
+    DispatchAdministration, DispatchAttemptControl, DispatchClaimOwnership, DispatchClaims,
+    DispatchCommitAuthority, DispatchControlClaims, DispatchControlReads, DispatchEnqueue,
+    DispatchExecution, DispatchMaintenance, DispatchReads, DispatchSettlement,
+    SessionReservationAuthority, SessionRunReservations,
 };
 pub use dispatch_transition::{
     CancelTransition, DispatchTransition, DispatchTransitionError, GuardedTransition,
@@ -82,3 +87,5 @@ pub use worker_transport::{
     StreamObservationRequest, WorkerHeartbeatReceipt, WorkerIdentityRequest,
     WorkerRegistrationReceipt,
 };
+
+pub use dispatch::InboxRead;

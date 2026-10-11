@@ -231,3 +231,7 @@ async fn follow_up_close_fence_applies_the_contract_rule_for_each_thread_kind() 
         );
     }
 }
+
+use awaken_dispatch_contract::{
+    DispatchClaims as _, DispatchEnqueue as _, DispatchReads as _, DispatchSettlement as _,
+};

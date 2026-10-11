@@ -6,11 +6,12 @@
 //! entry uses its original claim-fenced commit, observer and settlement path.
 
 use super::{DispatchWorker, PendingInputAdmission, pending_input_admission};
-use crate::ControlDispatch;
 use crate::Error;
+use crate::control_dispatch::TerminalRecoveryDispatch;
 use crate::dispatch::{Claimed, DispatchOutcome, DispatchSummary, RunClaim, SettleOutcome};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_dispatch_erasure::Dispatch;
 use awaken_runtime_contract::terminal::{
     CommittedTerminalProjection, CommittedTerminalRun, committed_terminal_projection,
     deliver_committed_terminal,
@@ -31,7 +32,7 @@ impl CommittedTerminalSettlement {
     }
 }
 
-impl<S: ControlDispatch + 'static> DispatchWorker<S> {
+impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// Read the one Runtime-contract terminal projection for this exact claim.
     /// Identity conflicts are corrupt authority, not an ordinary nonterminal.
     pub(super) fn committed_terminal_for_claim(
@@ -316,16 +317,18 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     pub async fn reconcile_committed_terminal(
         &self,
         run_id: &RunId,
+        control: &dyn TerminalRecoveryDispatch,
     ) -> Result<Option<(RunId, RunState)>, Error> {
-        let Some(row) = self.store.dispatch_summary(run_id).await? else {
+        let Some(row) = control.dispatch_summary(run_id).await? else {
             return Ok(None);
         };
-        self.reconcile_terminal_row(row).await
+        self.reconcile_terminal_row(row, control).await
     }
 
     async fn reconcile_terminal_row(
         &self,
         row: DispatchSummary,
+        control: &dyn TerminalRecoveryDispatch,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         let run_id = &row.run_id;
         // A local active-active worker's process projection may predate the peer
@@ -338,8 +341,7 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
         if !matches!(self.reader.run_state(run_id), Some(RunState::Ended(_))) {
             return Ok(None);
         }
-        let Some(claimed) = self
-            .store
+        let Some(claimed) = control
             .claim_for_terminal_recovery(run_id, &self.owner, self.lease_ms)
             .await?
         else {
@@ -353,10 +355,11 @@ impl<S: ControlDispatch + 'static> DispatchWorker<S> {
     pub async fn reconcile_committed_terminals(
         &self,
         limit: usize,
+        control: &dyn TerminalRecoveryDispatch,
     ) -> Result<Vec<(RunId, RunState)>, Error> {
         self.terminal_scan
-            .reconcile(self.store.as_ref(), limit, |row| {
-                self.reconcile_terminal_row(row)
+            .reconcile(control, limit, |row| {
+                self.reconcile_terminal_row(row, control)
             })
             .await
     }
