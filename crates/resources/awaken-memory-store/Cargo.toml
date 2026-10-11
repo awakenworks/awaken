@@ -36,6 +36,7 @@ awaken-sqlite-pool = { workspace = true, optional = true }
 awaken-sql-storage.workspace = true
 
 [dev-dependencies]
+awaken-reliability-testkit.workspace = true
 proptest.workspace = true
 awaken-lease-testkit.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }

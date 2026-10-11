@@ -11,10 +11,13 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import tempfile
 import tomllib
 import unittest
+from unittest.mock import patch as mock_patch
 
 import crate_test
+import nextest_execution
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILE = ROOT / ".config/rust-tests.toml"
@@ -85,24 +88,73 @@ def execution_commands(metadata: dict, selected: list[str], features: list[str],
 
 
 def execute_commands(commands: list[list[str]], environment: dict[str, str],
-                     run=subprocess.run) -> tuple[int, list[dict]]:
+                     run=subprocess.run, directory: Path | None = None,
+                     timeout: float = 1800) -> tuple[int, list[dict]]:
     rows = []
+    deadline = time.monotonic() + timeout
     for command in commands:
         print("Affected command: " + json.dumps(command), flush=True)
         started = time.monotonic()
         error = None
+        stages = None
+        log = None
         try:
-            status = run(command, cwd=ROOT, env=environment).returncode
-        except OSError as exception:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                status, error = 124, "affected execution deadline exhausted"
+            elif directory is not None and command[:3] == ["cargo", "nextest", "run"]:
+                status, stages = nextest_execution.execute(command, environment,
+                                                          directory / "nextest", remaining, run=run)
+            else:
+                argv = command if directory is None else [sys.executable, str(ROOT / "scripts/ci/deadline.py"),
+                                                         str(remaining), "--", *command]
+                if directory is None:
+                    status = run(argv, cwd=ROOT, env=environment).returncode
+                else:
+                    log = directory / f"command-{len(rows)}.log"
+                    with log.open("w", encoding="utf-8") as stream:
+                        status = run(argv, cwd=ROOT, env=environment, stdout=stream,
+                                     stderr=subprocess.STDOUT).returncode
+        except (OSError, ValueError) as exception:
             status, error = 1, str(exception)
         row = {"command": command, "exit_code": status,
                "duration_seconds": time.monotonic() - started}
         if error is not None:
             row["error"] = error
+        if stages is not None:
+            row["stages"] = stages
+        if log is not None:
+            row["log"] = str(log)
         rows.append(row)
         if status:
             return status, rows
     return 0, rows
+
+
+def execute_plan(plan: dict, environment: dict[str, str], fingerprint: str, patch: bytes,
+                 timeout: float = 1800) -> int:
+    """A source-bound receipt for both explicit and affected local selections."""
+    directory = Path(environment["CARGO_TARGET_DIR"]) / "test-timings" / f"selection-{time.time_ns()}"
+    directory.mkdir(parents=True)
+    receipt = directory / "results.json"
+    plan.update(schema_version=3, source_digest=fingerprint, full_gate=False, status="running")
+    plan["compiler_environment"] = {key: environment.get(key) for key in (
+        "CARGO_BUILD_JOBS", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "AWAKEN_LINK_OUTPUT_STAGING",
+        "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS")}
+    (directory / "source.patch").write_bytes(patch)
+    receipt.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+    print(f"Selection execution evidence: {receipt}", flush=True)
+    started = time.monotonic()
+    status, rows = execute_commands(plan["commands"], environment, directory=directory, timeout=timeout)
+    unchanged = source_snapshot()[0] == fingerprint
+    if not unchanged:
+        print("Source changed during selection execution; result cannot qualify this tree", file=sys.stderr)
+        status = status or 1
+    plan.update(status=("passed" if plan["commands"] else "no-tests") if status == 0 else "failed",
+                rows=rows, exit_code=status, source_unchanged=unchanged,
+                duration_seconds=time.monotonic() - started)
+    receipt.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+    return status
 
 
 class PlanTests(unittest.TestCase):
@@ -151,6 +203,19 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(rows[0]["exit_code"], 0)
         self.assertEqual(rows[1]["error"], "spawn failed")
 
+    def test_source_changes_and_no_work_cannot_create_green_execution_evidence(self) -> None:
+        for unchanged, commands, expected in ((True, [], "no-tests"), (False, [], "failed"),
+                                               (False, [["build"]], "failed")):
+            with self.subTest(unchanged=unchanged, commands=commands), tempfile.TemporaryDirectory() as temporary:
+                plan = {"kind": "fixture", "commands": commands}
+                with mock_patch(__name__ + ".source_snapshot", return_value=("same" if unchanged else "changed", b"")), \
+                     mock_patch(__name__ + ".execute_commands", return_value=(0, [])):
+                    status = execute_plan(plan, {"CARGO_TARGET_DIR": temporary}, "same", b"")
+                receipt = json.loads(next(Path(temporary).rglob("results.json")).read_text())
+                self.assertEqual(receipt["status"], expected)
+                self.assertEqual(receipt["full_gate"], False)
+                self.assertEqual(status == 0, unchanged)
+
     def test_receipt_identity_includes_untracked_bytes_and_boundaries(self) -> None:
         expected = source_digest(b"revision", b"patch", {"a": b"bc"})
         for revision, patch, files in ((b"other", b"patch", {"a": b"bc"}), (b"revision", b"changed", {"a": b"bc"}), (b"revision", b"patch", {"a": b"different"}), (b"revision", b"patch", {"ab": b"c"})):
@@ -189,7 +254,10 @@ def main() -> int:
     parser.add_argument("--source-digest", action="store_true")
     parser.add_argument("--base")
     parser.add_argument("--run", action="store_true")
+    parser.add_argument("--timeout", type=int, default=1800)
     args = parser.parse_args()
+    if args.timeout < 1:
+        parser.error("--timeout must be positive")
     if args.features or args.self_test or args.source_digest:
         if args.base or args.run or sum((args.features, args.self_test, args.source_digest)) != 1:
             parser.error("--features, --source-digest and --self-test are standalone modes")
@@ -212,36 +280,15 @@ def main() -> int:
     if errors:
         raise crate_test.PlanError("; ".join(errors))
     selected, reason = affected_packages(metadata, changed)
-    commands = execution_commands(metadata, selected, features, companions)
+    commands, graph = crate_test.guarded_plan(metadata, features, companions, selected, []) if selected else ([], {})
     if source_snapshot()[0] != fingerprint:
         print("Source changed while deriving affected packages; refusing the stale plan", file=sys.stderr)
         return 1
-    plan = {"schema_version": 2, "kind": "local-affected", "revision": git_output("rev-parse", "HEAD").decode().strip(), "base": base, "changed": changed, "selected_packages": selected, "reason": reason, "commands": commands, "full_gate": False}
+    plan = {"schema_version": 3, "kind": "local-affected", "revision": git_output("rev-parse", "HEAD").decode().strip(), "source_digest": fingerprint, "base": base, "changed": changed, "selected_packages": selected, "reason": reason, "commands": commands, "feature_graph": graph, "full_gate": False}
     print(json.dumps(plan, indent=2), flush=True)
-    if not args.run or not selected:
+    if not args.run:
         return 0
-    directory = Path(environment["CARGO_TARGET_DIR"]) / "test-timings"
-    directory.mkdir(parents=True, exist_ok=True)
-    receipt = directory / f"affected-{time.time_ns()}.json"
-    plan["source_digest"] = fingerprint
-    receipt.with_suffix(".patch").write_bytes(patch)
-    plan["status"] = "running"
-    receipt.write_text(json.dumps(plan, indent=2), encoding="utf-8")
-    started = time.monotonic()
-    try:
-        status, rows = execute_commands(commands, environment)
-    except OSError as error:
-        plan["error"] = str(error)
-        status, rows = 1, []
-    unchanged = source_snapshot()[0] == fingerprint
-    if not unchanged:
-        print("Source changed during affected execution; result cannot qualify this tree", file=sys.stderr)
-        status = status or 1
-    plan.update(status="passed" if status == 0 else "failed", rows=rows,
-                exit_code=status, source_unchanged=unchanged, duration_seconds=time.monotonic() - started)
-    receipt.write_text(json.dumps(plan, indent=2), encoding="utf-8")
-    print(f"Affected execution evidence: {receipt}")
-    return status
+    return execute_plan(plan, environment, fingerprint, patch, args.timeout)
 
 
 if __name__ == "__main__":

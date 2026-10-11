@@ -13,7 +13,8 @@
 # gate passes ``--require-docker`` so the same condition fails instead of
 # producing a false green.
 #
-# Usage: scripts/ci/pg_tests.sh [--require-docker|--self-test]   (from repo root)
+# Usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--self-test]
+# --backend-parity uses a caller-owned live URL and runs only the named matrix.
 set -uo pipefail
 # Keep phase diagnostics visible even when a command suppresses probe output.
 # This descriptor belongs to this runner; never log command arguments/secrets.
@@ -78,6 +79,46 @@ pg_required_test() {
   [ "$remaining" -gt 0 ] || { echo "PostgreSQL gate budget exhausted before required tests" >&2; return 124; }
   [ "$remaining" -le "$PG_TEST_TIMEOUT_SECONDS" ] || remaining=$PG_TEST_TIMEOUT_SECONDS
   AWAKEN_REQUIRED_TEST_TIMEOUT_SECONDS="$remaining" run_required_rust_tests "$@"
+}
+
+backend_parity() {
+  # One selection owner for native and Docker fixtures. Every row requires its
+  # concrete backend bindings in the inventory, then reconciles actual outcomes.
+  # SQLite is explicit even when a crate's defaults leave it disabled.
+  pg_required_test -p awaken-model-catalog-store --features postgres,sqlite,test-support --test repo_conformance \
+    --require-case=in_memory_repo_conforms --require-case=sqlite::sqlite_repo_conforms \
+    --require-case=postgres::postgres_repo_conforms \
+    --require-case=postgres::configured_database_failure_is_not_a_successful_skip -- --test-threads=1 || record_failure "$?"
+  pg_required_test -p awaken-credential-store --features postgres,sqlite,test-support,sealed-aead --test repo_conformance \
+    --require-case=in_memory_repo_conforms --require-case=sqlite_repo_conforms \
+    --require-case=postgres::postgres_repo_conforms \
+    --require-case=postgres::fixture_absence_and_configured_failure_are_distinct -- --test-threads=1 || record_failure "$?"
+  pg_required_test -p awaken-data-subject-store --features postgres,test-support --test repo_conformance \
+    --require-case=in_memory_repo_conforms --require-case=sqlite_repo_conforms \
+    --require-case=postgres::postgres_repo_conforms \
+    --require-case=postgres::postgres_erasure_independent_connections_preserve_winner_after_reopen \
+    --require-case=postgres::fixture_cleanup_preserves_another_live_schema \
+    --require-case=postgres::fixture_absence_and_configured_failure_are_distinct -- --test-threads=1 || record_failure "$?"
+  pg_required_test -p awaken-captured-content-store --features postgres,test-support --test repo_conformance \
+    --require-case=in_memory_captured_content_conforms --require-case=sqlite_captured_content_conforms \
+    --require-case=postgres::postgres_captured_content_conforms \
+    --require-case=postgres::postgres_fixture_absence_and_configured_failure_have_distinct_outcomes -- --test-threads=1 || record_failure "$?"
+  pg_required_test -p awaken-work-store --features test-support --test work_queue_conformance \
+    --require-case=in_memory_backend_conforms --require-case=sqlite_backend_conforms \
+    --require-case=postgres_backend_conforms --require-case=fixture_absence_and_configured_failure_are_distinct \
+    -- --test-threads=1 || record_failure "$?"
+  pg_required_test -p awaken-session-store --features test-support --test session_repo_conformance \
+    --require-case=sqlite_backend_conforms --require-case=postgres_backend_conforms \
+    --require-case=postgres_fixture_absence_and_configured_failure_are_distinct \
+    -- --skip postgres_session_capacity_reference_and_indexed_observation --test-threads=1 || record_failure "$?"
+  pg_required_test -p awaken-memory-store --features postgres,sqlite,test-support --test conformance \
+    --require-case=volatile_materialized_path_cas --require-case=sqlite_materialized_path_cas \
+    --require-case=postgres::postgres_memory_repository_conforms \
+    --require-case=postgres::fixture_absence_and_configured_failure_are_distinct -- --test-threads=1 || record_failure "$?"
+  pg_required_test -p awaken-skill-store --features postgres,sqlite,test-support --test conformance \
+    --require-case=in_memory_conforms --require-case=sqlite_conforms --require-case=postgres::postgres_conforms \
+    --require-case=postgres::fixture_absence_and_configured_failure_are_distinct \
+    -- --test-threads=1 || record_failure "$?"
 }
 
 published_port() {
@@ -246,7 +287,7 @@ self_test() {
     echo "Postgres gate omits the coordinator-owned active/active transport test" >&2
     return 1
   }
-  grep -Fq "cargo test -p awaken-session-store --features test-support --test session_repo_conformance" "$0" || {
+  grep -Fq 'pg_required_test -p awaken-session-store --features test-support --test session_repo_conformance' "$0" || {
     echo "Postgres gate omits Session and Deployment repository conformance" >&2
     return 1
   }
@@ -275,7 +316,7 @@ self_test() {
     echo "Postgres gate omits fail-closed ApplicationAccess durability conformance" >&2
     return 1
   }
-  grep -Fq "cargo test -p awaken-model-catalog-store --features postgres,test-support" "$0" || {
+  grep -Fq 'pg_required_test -p awaken-model-catalog-store --features postgres,sqlite,test-support' "$0" || {
     echo "Postgres gate omits the authoritative model-catalog store" >&2
     return 1
   }
@@ -286,16 +327,16 @@ self_test() {
   # C1 independent schema fixtures share one finite PostgreSQL connection
   # budget; C2 each test's explicit race witnesses must remain concurrent.
   # R1 serialize only outer test cases; R2 preserve concurrency inside each.
-  grep -Fqx 'pg_test cargo test -p awaken-credential-store --features postgres,test-support,sealed-aead --test repo_conformance -- --test-threads=1 || record_failure "$?"' "$0" || {
+  grep -Fq 'pg_required_test -p awaken-credential-store --features postgres,sqlite,test-support,sealed-aead --test repo_conformance' "$0" || {
     echo "Postgres gate omits serialized sealed credential store conformance" >&2
     return 1
   }
-  grep -Fq "cargo test -p awaken-data-subject-store --features postgres,test-support" "$0" || {
+  grep -Fq 'pg_required_test -p awaken-data-subject-store --features postgres,test-support' "$0" || {
     echo "Postgres gate omits postgres,test-support for awaken-data-subject-store" >&2
     return 1
   }
   local crate
-  for crate in awaken-admin-config-api awaken-memory-store awaken-skill-store; do
+  for crate in awaken-admin-config-api; do
     grep -Fq "cargo test -p $crate --features postgres" "$0" || {
       echo "Postgres gate omits --features postgres for $crate" >&2
       return 1
@@ -339,11 +380,13 @@ self_test() {
   }
 }
 
+backend_only=0
 case "${1:-}" in
   "") ;;
   --require-docker) require_docker=1 ;;
   --self-test) self_test; exit $? ;;
-  *) echo "usage: scripts/ci/pg_tests.sh [--require-docker|--self-test]" >&2; exit 2 ;;
+  --backend-parity) backend_only=1 ;;
+  *) echo "usage: scripts/ci/pg_tests.sh [--require-docker|--backend-parity|--self-test]" >&2; exit 2 ;;
 esac
 
 for deadline in "$PG_OPERATION_TIMEOUT_SECONDS" "$PG_READY_TIMEOUT_SECONDS" \
@@ -353,6 +396,15 @@ for deadline in "$PG_OPERATION_TIMEOUT_SECONDS" "$PG_READY_TIMEOUT_SECONDS" \
     exit 2
   }
 done
+
+if [ "$backend_only" -eq 1 ]; then
+  [ "$#" -eq 1 ] && [ -n "${AWAKEN_TEST_DATABASE_URL:-}" ] || {
+    echo "backend parity requires an explicit owned PostgreSQL fixture URL" >&2; exit 2;
+  }
+  export AWAKEN_TEST_REQUIRE_POSTGRES=1
+  backend_parity
+  exit "$first_failure"
+fi
 
 if ! command -v docker >/dev/null 2>&1 \
   || ! pg_run_with_deadline docker-info "$PG_OPERATION_TIMEOUT_SECONDS" docker info >/dev/null 2>&1; then
@@ -580,8 +632,6 @@ pg_test cargo test -p awaken-dispatch --features test-support \
   || record_failure "$?"
 pg_test cargo test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http -- --test-threads=1 --show-output \
   || record_failure "$?"
-pg_test cargo test -p awaken-session-store --features test-support --test session_repo_conformance -- --test-threads=1 \
-  || record_failure "$?"
 pg_test cargo test -p awaken-session-store --features test-support --lib postgres_ -- --test-threads=1 \
   || record_failure "$?"
 pg_test cargo test -p awaken-cli --lib installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy -- --test-threads=1 --exact || record_failure "$?"
@@ -596,12 +646,7 @@ AWAKEN_CRASH_BACKEND=postgres pg_required_test -p awaken-session-store --locked 
 AWAKEN_CRASH_BACKEND=postgres pg_required_test -p awaken-credential-store --locked --features postgres,sqlite,sealed-aead,test-support --test process_crash_creation --test process_crash_managed_creation || record_failure "$?"
 pg_test cargo test -p awaken-admin-config-api --features postgres --test postgres_store || record_failure "$?"
 pg_test cargo test -p awaken-store-postgres --test postgres_live || record_failure "$?"
-pg_test cargo test -p awaken-model-catalog-store --features postgres,test-support --test repo_conformance || record_failure "$?"
-# Independent schema fixtures share the finite database connection budget;
-# serialize outer tests while their internal writer races remain concurrent.
-pg_test cargo test -p awaken-credential-store --features postgres,test-support,sealed-aead --test repo_conformance -- --test-threads=1 || record_failure "$?"
-pg_test cargo test -p awaken-data-subject-store --features postgres,test-support --test repo_conformance || record_failure "$?"
-pg_test cargo test -p awaken-captured-content-store --features postgres,test-support --test repo_conformance || record_failure "$?"
+backend_parity
 pg_test cargo test -p awaken-env-store --features test-support --tests || record_failure "$?"
 pg_test cargo test -p awaken-file-store --features postgres,sqlite,object-store || record_failure "$?"
 
@@ -634,8 +679,6 @@ export AWAKEN_TEST_S3_SECRET_KEY="$FILE_STORE_ROTATED_SECRET_KEY"
 pg_test cargo test -p awaken-file-store --features object-store \
   object::tests::minio_rotated_credentials_revoke_old_secret_and_preserve_objects -- --exact \
   || record_failure "$?"
-pg_test cargo test -p awaken-memory-store --features postgres --test conformance || record_failure "$?"
-pg_test cargo test -p awaken-skill-store --features postgres --test conformance || record_failure "$?"
 pg_test cargo test -p awaken-resource-store --all-features || record_failure "$?"
 pg_test cargo test -p awaken-resource-persistence || record_failure "$?"
 pg_test cargo test -p awaken-session-application --lib postgres_ -- --test-threads=1 \

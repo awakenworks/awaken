@@ -59,6 +59,7 @@ fn block<F: std::future::Future>(f: F) -> F::Output {
 
 async fn owned_postgres_pool(url: &str, tag: &str) -> (sqlx::PgPool, String) {
     let admin = PgPoolOptions::new()
+        .max_connections(1)
         .acquire_timeout(std::time::Duration::from_secs(5))
         .connect(url)
         .await
@@ -71,6 +72,7 @@ async fn owned_postgres_pool(url: &str, tag: &str) -> (sqlx::PgPool, String) {
     admin.close().await;
     let owned_schema = schema.clone();
     let pool = PgPoolOptions::new()
+        .max_connections(4)
         .acquire_timeout(std::time::Duration::from_secs(5))
         .after_connect(move |connection, _| {
             let schema = owned_schema.clone();
@@ -92,6 +94,34 @@ async fn close_postgres_pool(pool: sqlx::PgPool, schema: &str) {
         .await
         .expect("drop exact owned Session schema");
     pool.close().await;
+}
+
+#[tokio::test]
+async fn postgres_backend_conforms() {
+    // Apply the entire existing Session/Deployment port suite to PostgreSQL,
+    // as sqlite_backend_conforms does. A smaller CAS-only suite cannot qualify
+    // the missing lifecycle, outbox, scheduler and ownership rules.
+    let Some(url) = awaken_reliability_testkit::postgres_fixture_url() else {
+        return;
+    };
+    let fixtures = tokio::sync::Mutex::new(Vec::new());
+    run_suite(|| async {
+        let (pool, schema) = owned_postgres_pool(&url, "conformance").await;
+        let repo = awaken_session_store::PostgresManagedSessionRepository::with_pool(pool.clone())
+            .await
+            .expect("PostgreSQL Session repository migrations");
+        fixtures.lock().await.push((pool, schema));
+        repo
+    })
+    .await;
+    for (pool, schema) in fixtures.into_inner() {
+        close_postgres_pool(pool, &schema).await;
+    }
+}
+
+#[test]
+fn postgres_fixture_absence_and_configured_failure_are_distinct() {
+    awaken_reliability_testkit::assert_postgres_fixture_child_contract("postgres_backend_conforms");
 }
 
 #[test]

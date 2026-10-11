@@ -1007,6 +1007,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-data-subject-application",
+ "awaken-reliability-testkit",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
  "awaken-sql-storage",
@@ -1882,6 +1883,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-lease-testkit",
+ "awaken-reliability-testkit",
  "awaken-resource-contract",
  "awaken-scoped-migration",
  "awaken-sql-storage",

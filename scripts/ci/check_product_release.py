@@ -265,7 +265,7 @@ def validate(
 
 def current_inputs() -> tuple[str, str, str, str, str, str, str, str, tuple[str, ...]]:
     release_workflows = tuple(
-        str(path.relative_to(REPOSITORY))
+        path.relative_to(REPOSITORY).as_posix()
         for path in sorted((REPOSITORY / ".github/workflows").glob("*release*.yml"))
     )
     return (
