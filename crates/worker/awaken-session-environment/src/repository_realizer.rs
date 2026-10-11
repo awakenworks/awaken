@@ -11,6 +11,7 @@ impl pc::RepositoryRealizer for SandboxEnvironment {
         &self,
         plan: &pc::RepositoryRealizationPlan,
         credential: Option<&pc::RepositoryHttpBasicCredential>,
+        intent: pc::RepositoryRealizationIntent,
     ) -> Result<(), pc::SandboxError> {
         match self {
             Self::Workdir { .. } | Self::Namespace { .. } if credential.is_some() => {
@@ -19,9 +20,9 @@ impl pc::RepositoryRealizer for SandboxEnvironment {
                 ))
             }
             Self::Workdir { sandbox, .. } => {
-                pc::RepositoryRealizer::realize_repository(sandbox.as_ref(), plan, credential).await
+                sandbox.realize_repository(plan, credential, intent).await
             }
-            Self::Namespace { sandbox, .. } => sandbox.provision_repo(plan, credential),
+            Self::Namespace { sandbox, .. } => sandbox.provision_repo(plan, credential, intent),
             Self::Container {
                 sandbox,
                 hand,
@@ -34,6 +35,7 @@ impl pc::RepositoryRealizer for SandboxEnvironment {
                     plan,
                     credential,
                     clock,
+                    intent,
                 )
                 .await
             }
@@ -53,13 +55,9 @@ impl pc::RepositoryRealizer for SandboxEnvironment {
                 )),
             ),
             Self::Workdir { sandbox, .. } => {
-                pc::RepositoryRealizer::publish_repository(
-                    sandbox.as_ref(),
-                    plan,
-                    expectation,
-                    credential,
-                )
-                .await
+                sandbox
+                    .publish_repository(plan, expectation, credential)
+                    .await
             }
             Self::Namespace { sandbox, .. } => sandbox.push_repo(plan, expectation, credential),
             Self::Container {

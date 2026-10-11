@@ -222,12 +222,13 @@ impl SkillSource for SnapshotSkillSource {
 /// Implements the neutral
 /// ordinary Agent-backed tool — the same generic capability used by the goal
 /// judge and compactor.
-struct ForkAgentTool {
-    llm: Arc<dyn LlmExecutor>,
-    model_ref: String,
+pub(crate) struct ForkAgentTool {
+    pub(crate) llm: Arc<dyn LlmExecutor>,
+    pub(crate) model_ref: String,
     /// The parent agent's sandbox, shared with the fork.
-    sandbox: Arc<crate::session_environment::SessionEnvironment>,
-    execution: Arc<crate::store::HostCommit>,
+    pub(crate) sandbox: Arc<crate::session_environment::SessionEnvironment>,
+    pub(crate) execution: Arc<crate::store::HostCommit>,
+    pub(crate) clock: Arc<dyn awaken_time::WallClock>,
 }
 
 #[async_trait::async_trait]
@@ -247,6 +248,7 @@ impl RawTool for ForkAgentTool {
         let delegates = std::collections::HashSet::new();
         crate::agent_runner::run_agent(
             self.llm.clone(),
+            self.clock.clone(),
             crate::agent_runner::AgentExecution {
                 agent_id: &request.agent_id,
                 model_ref: &self.model_ref,
@@ -448,12 +450,9 @@ pub(crate) async fn build_skill_registry(
 /// `base_gate` is wrapped so conditional (`paths`) Skills surface on file touch.
 pub(crate) fn semantic_skill_adapter(
     registry: Arc<dyn SkillRegistry>,
-    env: Option<Arc<crate::session_environment::SessionEnvironment>>,
-    llm: Arc<dyn LlmExecutor>,
-    model_ref: &str,
     session_id: &str,
     base_gate: Arc<dyn ToolGateHook>,
-    execution: Arc<crate::store::HostCommit>,
+    agent_tool: Option<Arc<dyn RawTool>>,
 ) -> SemanticSkillAdapter {
     let activations = PathActivations::new();
     let active_tools = ActiveSkillTools::new();
@@ -466,13 +465,7 @@ pub(crate) fn semantic_skill_adapter(
     let mut activate = SkillTool::new(registry.clone())
         .with_session_id(session_id)
         .with_active_tools(active_tools);
-    if let Some(env) = env {
-        let agent_tool: Arc<dyn RawTool> = Arc::new(ForkAgentTool {
-            llm,
-            model_ref: model_ref.to_string(),
-            sandbox: env,
-            execution,
-        });
+    if let Some(agent_tool) = agent_tool {
         activate = activate.with_agent_tool(agent_tool);
     }
     let activate: Arc<dyn RawTool> = Arc::new(activate);

@@ -89,6 +89,8 @@ pub(crate) struct AuxAgentTool {
     /// Housekeeping calls use their caller-owned `call_id` as a stable auxiliary
     /// identity and commit through the Session's ordinary durable Run boundary.
     pub(crate) execution: Arc<HostCommit>,
+    /// The same caller-owned clock already used by the commit authority.
+    pub(crate) clock: Arc<dyn awaken_time::WallClock>,
 }
 
 #[async_trait::async_trait]
@@ -108,6 +110,7 @@ impl RawTool for AuxAgentTool {
             &self.catalog,
             crate::agent_runner::AgentRunSandbox::Fresh(self.provider.as_ref()),
             self.llm.clone(),
+            self.clock.clone(),
             &request.agent_id,
             &thread,
             RunId(format!("{thread}/run")),

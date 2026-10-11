@@ -89,8 +89,22 @@ async fn scoped_repository_reuses_clone_publication_and_exact_resource_paths() {
         )
         .unwrap();
     let plan = plan(remote.to_str().unwrap().into());
-    sandbox.realize_repository(&plan, None).await.unwrap();
-    sandbox.realize_repository(&plan, None).await.unwrap();
+    sandbox
+        .realize_repository(
+            &plan,
+            None,
+            awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
+        )
+        .await
+        .unwrap();
+    sandbox
+        .realize_repository(
+            &plan,
+            None,
+            awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
+        )
+        .await
+        .unwrap();
     let checkout = sandbox.workspace_path().join("workspace/repo");
     assert_eq!(
         std::fs::read(checkout.join("file")).unwrap(),
@@ -187,7 +201,11 @@ async fn repository_reply_does_not_complete_before_tree_exit() {
         let sandbox = sandbox.clone();
         tokio::spawn(async move {
             sandbox
-                .realize_repository(&plan("https://example.invalid/repo".into()), None)
+                .realize_repository(
+                    &plan("https://example.invalid/repo".into()),
+                    None,
+                    awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
+                )
                 .await
         })
     };
@@ -264,7 +282,11 @@ async fn repository_response_failures_are_bounded_and_operation_specific() {
             .unwrap();
         let result = tokio::time::timeout(
             Duration::from_secs(5),
-            sandbox.realize_repository(&plan("https://example.invalid/repo".into()), None),
+            sandbox.realize_repository(
+                &plan("https://example.invalid/repo".into()),
+                None,
+                awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
+            ),
         )
         .await
         .unwrap();
@@ -320,7 +342,11 @@ async fn repository_credentials_cross_only_the_private_command_environment() {
             .install_scoped_execution(Path::new("/usr/bin/bwrap"), &helper, Authority::live())
             .unwrap();
         sandbox
-            .realize_repository(&plan("https://example.invalid/repo".into()), credential)
+            .realize_repository(
+                &plan("https://example.invalid/repo".into()),
+                credential,
+                awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
+            )
             .await
             .unwrap();
         let evidence = marker(base.path()).to_string();

@@ -683,10 +683,12 @@ impl RuntimeToolSource for crate::session_environment::SessionEnvironment {
 
 pub(crate) fn build_runtime<S: RuntimeToolSource + ?Sized>(
     llm: Arc<dyn LlmExecutor>,
+    clock: Arc<dyn awaken_time::WallClock>,
     sandbox: &S,
     background_supervisor: Option<Arc<awaken_ext_background_task::BackgroundTaskSupervisor>>,
 ) -> Runtime {
     let mut runtime = Runtime::new()
+        .with_clock(clock)
         .with_llm(llm)
         .with_gate(server_gate())
         // Structure-only metrics at the model/tool chokepoints (#2). Binds to the
@@ -716,11 +718,12 @@ pub(crate) fn build_runtime<S: RuntimeToolSource + ?Sized>(
 /// this same installation seam; only their frozen configuration input differs.
 pub(crate) fn build_runtime_with_authorization<S: RuntimeToolSource + ?Sized>(
     llm: Arc<dyn LlmExecutor>,
+    clock: Arc<dyn awaken_time::WallClock>,
     sandbox: &S,
     authorization: &EffectiveToolAuthorization,
     background_supervisor: Option<Arc<awaken_ext_background_task::BackgroundTaskSupervisor>>,
 ) -> Runtime {
-    let runtime = build_runtime(llm, sandbox, background_supervisor);
+    let runtime = build_runtime(llm, clock, sandbox, background_supervisor);
     if authorization.explicit {
         runtime.with_gate(authorization.gate.clone())
     } else {
@@ -1142,6 +1145,80 @@ mod tests {
             commit.resume_ticket_for(&run_id).is_none(),
             "H5 no confirmation authority"
         );
+        // H6/H7 clock cause/effect table: plain/authenticated Host factory +
+        // the caller's single store clock + a real Awaiting ticket -> exactly
+        // one approval callback, one tool effect and normal completion. The
+        // SDK owns missing-clock/cancellation/terminal-replay rows; this seam
+        // proves neither Host factory silently drops that mandatory handle.
+        struct ReadSource(Arc<std::sync::atomic::AtomicUsize>);
+        impl RuntimeToolSource for ReadSource {
+            fn runtime_tools(&self) -> Vec<Arc<dyn awaken_tool_contract::tool::RawTool>> {
+                vec![Arc::new(ReadCounter(self.0.clone()))]
+            }
+        }
+        for authorized_factory in [false, true] {
+            let clock = Arc::new(awaken_lease_testkit::ManualClock::new(1_234));
+            let store = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new(
+                clock.clone(),
+            ));
+            let policy: Arc<dyn ToolPermissionPolicy> = Arc::new(effective_policy_with_toolsets(
+                None,
+                &[],
+                std::slice::from_ref(&auto_toolset),
+                Arc::new(Fixed(AutoDecision::Indeterminate)),
+            ));
+            let authorization = EffectiveToolAuthorization {
+                gate: Arc::new(PermissionGate::new(policy.clone())),
+                policy,
+                explicit: true,
+            };
+            let effects = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let source = ReadSource(effects.clone());
+            let runtime = if authorized_factory {
+                build_runtime_with_authorization(
+                    Arc::new(OneRead),
+                    clock.clone(),
+                    &source,
+                    &authorization,
+                    None,
+                )
+            } else {
+                build_runtime(Arc::new(OneRead), clock.clone(), &source, None)
+                    .with_gate(authorization.gate.clone())
+            };
+            let callbacks = std::sync::atomic::AtomicUsize::new(0);
+            let context = awaken_runtime_contract::RuntimeRunContext::new()
+                .with_commit(store.clone())
+                .with_reader(store);
+            let result = runtime
+                .run_to_completion(&snapshot, "factory-clock", "read", context, |_| {
+                    callbacks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    clock.advance(7);
+                    awaken_runtime_contract::resume::ResumeResult::allow()
+                })
+                .await
+                .unwrap();
+            assert!(
+                matches!(
+                    result,
+                    awaken_agent_contract::agent::run::RunState::Ended(
+                        awaken_agent_contract::agent::run::EndCause::NaturalEnd
+                    )
+                ),
+                "H6/H7 ordinary completion"
+            );
+            assert_eq!(
+                callbacks.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "H6/H7 real Awaiting"
+            );
+            assert_eq!(
+                effects.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "H6/H7 one resumed effect"
+            );
+        }
+
         assert!(
             commit
                 .committed()
@@ -1812,7 +1889,12 @@ mod tests {
             .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
             .await
             .unwrap();
-        let runtime = build_runtime(Arc::new(NoLlm), &sandbox, None);
+        let runtime = build_runtime(
+            Arc::new(NoLlm),
+            Arc::new(awaken_lease_testkit::ManualClock::new(1_000)),
+            &sandbox,
+            None,
+        );
         assert!(
             runtime
                 .validate_plugins(&config_with(serde_json::json!({"machines": []})))

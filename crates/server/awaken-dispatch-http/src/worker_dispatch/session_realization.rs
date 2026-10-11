@@ -701,6 +701,7 @@ pub(super) fn terminal_cleanup_control(
         .ok_or_else(|| HostError::internal("Session terminal cleanup control is not configured"))
 }
 
+#[tracing::instrument(name = "worker.session.realization.renew", skip_all, fields(session_id = %request.command.session_id, worker_id = %request.identity.worker_id, epoch = request.command.asserted_lease.epoch))]
 pub(super) async fn renew_session_realization(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
@@ -710,11 +711,10 @@ pub(super) async fn renew_session_realization(
 ) -> (StatusCode, Json<Value>) {
     let result: Result<Value, RealizationHttpError> = async {
         verify_worker_identity(&worker, &request.identity)
-            .map_err(HostError::bad_request)
-            .map_err(RealizationHttpError::from)?;
+            .map_err(HostError::bad_request)?;
         let authority = claim_authority(&service, &worker, Some(&request.identity), false)
-            .await
-            .map_err(RealizationHttpError::from)?;
+            .instrument(tracing::info_span!("session.realization.registry_authority"))
+            .await?;
         let registry_expiry = authority
             .snapshot
             .as_ref()
@@ -763,8 +763,8 @@ pub(super) async fn renew_session_realization(
             authority.now_ms,
             awaken_worker_contract::SessionWorkAcquisition::RealizationRenewal,
         )
-        .await
-        .map_err(RealizationHttpError::from)?;
+        .instrument(tracing::info_span!("session.realization.work_ownership"))
+        .await?;
         if !ownership.permits_effect_for(&request.identity.lease_owner()) {
             // A settled Run retires its self-hosted Session Work before the
             // longer-lived local realization lease next comes due. That is a
@@ -784,11 +784,10 @@ pub(super) async fn renew_session_realization(
             };
             return Err(RealizationHttpError::Control(failure));
         }
-        let lease = session_control(&service)
-            .map_err(RealizationHttpError::from)?
+        let lease = session_control(&service)?
             .renew_session_realization(command)
-            .await
-            .map_err(RealizationHttpError::from)?;
+            .instrument(tracing::info_span!("session.realization.control_dispatch"))
+            .await?;
         Ok(json!(lease))
     }
     .await;

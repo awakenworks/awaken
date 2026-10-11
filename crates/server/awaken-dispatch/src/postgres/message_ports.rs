@@ -34,7 +34,23 @@ impl DispatchOperationalFeed for PostgresDispatchStore {
         } else {
             query
         };
-        let rows = query.fetch_all(&self.pool).await.map_err(store_error)?;
+        // A sequence is allocated before commit. Wait for existing INSERT
+        // transactions and prevent new ones only while selecting this page;
+        // otherwise a higher commit can hide a later lower commit forever.
+        // This reuses the operation table's actual PostgreSQL locks, not a
+        // second cursor or writer. The empty-limit row above performs no lock.
+        let mut observation = self.pool.begin().await.map_err(store_error)?;
+        sqlx::query(&format!(
+            "LOCK TABLE {prefix}_dispatch_operation IN SHARE MODE"
+        ))
+        .execute(&mut *observation)
+        .await
+        .map_err(store_error)?;
+        let rows = query
+            .fetch_all(&mut *observation)
+            .await
+            .map_err(store_error)?;
+        observation.commit().await.map_err(store_error)?;
         let events = rows
             .into_iter()
             .map(|row| {

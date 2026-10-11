@@ -29,6 +29,22 @@ pub(crate) struct StagedResources {
     pub repositories: Vec<RepositoryActivation>,
 }
 
+impl StagedResources {
+    pub(crate) fn repository_at_path(
+        &self,
+        path: &str,
+    ) -> Result<&RepositoryActivation, pc::SandboxError> {
+        self.repositories
+            .iter()
+            .find(|repository| repository.plan.mount_path == path)
+            .ok_or_else(|| {
+                pc::SandboxError::invalid(format!(
+                    "compiled Repository activation `{path}` is missing"
+                ))
+            })
+    }
+}
+
 #[derive(Clone)]
 pub(crate) enum ResourceBindingCheck {
     MemoryStore {

@@ -144,7 +144,8 @@ async fn missing_tool_and_reader_are_actionable_before_effects() {
             serde_json::json!({"type":"object"}),
         ))
         .build();
-    let runtime = Runtime::new();
+    let clock = awaken_time::system_clock();
+    let runtime = Runtime::new().with_clock(clock.clone());
     assert_eq!(
         runtime
             .run(&config, "hello", RuntimeRunContext::new())
@@ -153,7 +154,7 @@ async fn missing_tool_and_reader_are_actionable_before_effects() {
             .code(),
         "missing_tool"
     );
-    let store = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+    let store = Arc::new(MemoryCommitCoordinator::new(clock));
     let error = runtime
         .run_to_completion(
             &snapshot(),

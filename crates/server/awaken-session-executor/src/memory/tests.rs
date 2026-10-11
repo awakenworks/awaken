@@ -435,14 +435,17 @@ impl LlmExecutor for IndexModel {
 
 #[tokio::test]
 async fn agent_selector_runs_the_subagent_and_parses_its_reply() {
+    let clock = awaken_time::system_clock();
     // Cause/effect graph and decision-table rule S1:
     // C1 selector snapshot valid + C2 explicit commit/history authority present
     // -> E1 auxiliary Run commits through that authority + E2 parsed selection
     // is returned. The forbidden complement (!C2 -> process-local fallback) is
     // unrepresentable because `AgentSelector::new` requires the authority.
+    // C3 the same clock Arc feeds that commit owner and auxiliary Runtime; it
+    // is required by the selector's construction, without a second fallback.
     let commit = Arc::new(HostCommit::Local(Arc::new(
         crate::LocalCommitAdapter::projected(awaken_store_inmem::MemoryCommitCoordinator::new(
-            awaken_time::system_clock(),
+            clock.clone(),
         )),
     )));
     let selector = AgentSelector::new(
@@ -453,6 +456,7 @@ async fn agent_selector_runs_the_subagent_and_parses_its_reply() {
         )
         .expect("literal model reference"),
         commit,
+        clock.clone(),
         Arc::new(LocalProvider::new(
             std::env::temp_dir().join(format!("awaken-mem-select-{}", std::process::id())),
         )),

@@ -29,6 +29,7 @@ impl AgentSelector {
         llm: Arc<dyn LlmExecutor>,
         snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
         execution: Arc<HostCommit>,
+        clock: Arc<dyn awaken_time::WallClock>,
         sandboxes: Arc<dyn awaken_session_environment_contract::AuxiliarySandboxProvider>,
     ) -> Self {
         let agent_id = snapshot.root_agent_id.0.clone();
@@ -39,6 +40,7 @@ impl AgentSelector {
                 provider: sandboxes,
                 catalog,
                 execution,
+                clock,
             }),
             agent_id,
         }

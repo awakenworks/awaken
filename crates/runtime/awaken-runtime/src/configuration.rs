@@ -30,6 +30,10 @@ pub enum ConfigurationError {
     )]
     MissingCommitCoordinator,
     #[error(
+        "answering an awaiting ticket needs the store owner's clock; configure Runtime::with_clock"
+    )]
+    MissingClock,
+    #[error(
         "no model provider configured for this runtime; configure with_llm or with_model_executor"
     )]
     MissingModelProvider,
@@ -43,6 +47,7 @@ impl ConfigurationError {
             Self::MissingSandboxExecutor { .. } => "missing_sandbox_executor",
             Self::MissingHistoryReader => "missing_history_reader",
             Self::MissingCommitCoordinator => "missing_commit_coordinator",
+            Self::MissingClock => "missing_clock",
             Self::MissingModelProvider => "missing_model_provider",
         }
     }

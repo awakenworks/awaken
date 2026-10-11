@@ -53,6 +53,7 @@ async fn tui_session_pieces_run_one_turn_without_a_terminal() {
         build_runtime(llm),
         coding_config("scripted-model").expect("model reference is an executable binding"),
         HandToolContext::new(&dir),
+        awaken_time::system_clock(),
     );
 
     // Drive one turn, approving the mutating tool — the same `session.turn` call

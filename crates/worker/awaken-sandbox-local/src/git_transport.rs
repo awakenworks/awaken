@@ -40,6 +40,7 @@ pub(crate) fn provision_repo_at(
     initial_branch: Option<&str>,
     initial_commit: Option<&str>,
     credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
+    intent: pc::RepositoryRealizationIntent,
 ) -> Result<(), SandboxError> {
     let dest = jailed_at(root, logical)?;
     let destination_state =
@@ -54,6 +55,11 @@ pub(crate) fn provision_repo_at(
                 "repository destination `{}` is occupied by an incomplete or non-Repository tree",
                 dest.display()
             )));
+        }
+        RepositoryDestinationState::Absent if intent == pc::RepositoryRealizationIntent::Retain => {
+            return Err(SandboxError::conflict(
+                "retained Repository working tree is absent",
+            ));
         }
         RepositoryDestinationState::Absent => {}
     }
@@ -660,6 +666,7 @@ mod tests {
             None,
             None,
             None,
+            awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
         )
         .expect_err("R4 incomplete final rejects before Git");
         assert_eq!(
@@ -1366,6 +1373,7 @@ mod tests {
             None,
             Some(&head),
             Some(&credential),
+            awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
         )
         .expect("C1 authenticated exact checkout");
         let exact_dir = root.root().join("workspace/exact");
@@ -1384,6 +1392,7 @@ mod tests {
             None,
             Some("0000000000000000000000000000000000000000"),
             Some(&credential),
+            awaken_provisioning_contract::RepositoryRealizationIntent::Initialize,
         )
         .expect_err("C2 invalid checkout must fail");
         assert!(error.to_string().contains("checkout"), "C2: {error}");

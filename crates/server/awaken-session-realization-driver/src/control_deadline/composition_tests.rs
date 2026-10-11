@@ -92,9 +92,22 @@ async fn scheduler_capacity_observes_real_poll_drop_and_two_stage_cancellation()
         snapshot(&mut trace, "wait-queued", "queued", "none", reserved.len());
         if outcome == "queued-deadline" {
             tokio::time::advance(std::time::Duration::from_millis(10)).await;
-            assert!(matches!(futures_util::poll!(&mut request), Poll::Ready(Err(
-                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(_)
-            ))), "S2 exhausted queue budget never polls transport");
+            // D1: exhausted admission queue -> bounded queue diagnostic, with
+            // zero transport entry. D2 below: admitted request stalls -> request
+            // diagnostic. Both share one absolute timer and release capacity.
+            let Poll::Ready(Err(
+                awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(
+                    detail,
+                ),
+            )) = futures_util::poll!(&mut request)
+            else {
+                panic!("D1 deadline");
+            };
+            assert!(
+                detail.contains("phase=queue"),
+                "D1 queue and request timeouts must be distinguishable: {detail}"
+            );
+            // The completed future must not be polled twice.
             assert!(!active.get(), "S2 no late transport entry");
             drop(request);
             snapshot(
@@ -143,6 +156,13 @@ async fn scheduler_capacity_observes_real_poll_drop_and_two_stage_cancellation()
                 let Poll::Ready(result) = futures_util::poll!(&mut request) else {
                     panic!("S4 response/deadline must settle the actual call");
                 };
+                if outcome == "deadline" {
+                    let Err(awaken_session_realization_contract::SessionRealizationControlFailure::Unavailable(detail)) = &result else { panic!("D2 deadline"); };
+                    assert!(
+                        detail.contains("phase=request"),
+                        "D2 admitted transport timeout: {detail}"
+                    );
+                }
                 match outcome {
                     "deadline" => assert!(matches!(
                         result,

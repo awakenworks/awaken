@@ -7,6 +7,7 @@
 
 use super::*;
 use std::sync::Arc;
+use tracing::Instrument as _;
 
 /// Freeze the predecessor and apply its exact successor as one candidate command.
 fn claim_terminal_cleanup_candidate(
@@ -240,6 +241,7 @@ impl SessionApplication {
     /// Extend only the existing root-owned realization fence. Renewal never
     /// resolves executable catalogs, pins credentials, materializes transcript
     /// context, or advances pending MCP/Resource desired state.
+    #[tracing::instrument(name = "session.realization.root_renewal", skip_all, fields(session_id = %command.session_id, epoch = command.asserted_lease.epoch))]
     pub(super) async fn renew_session_realization_after_load(
         &self,
         command: RenewSessionRealization,
@@ -259,19 +261,16 @@ impl SessionApplication {
             ));
         }
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            let owner_scope = self
-                .owner(&command.session_id)
-                .await
-                .map_err(mutation_control)?;
-            let mut session = self
-                .session_aggregate(&command.session_id)
-                .await
+            let attempt_span = tracing::info_span!("session.realization.root_cas", attempt);
+            let (owner_scope, session) = self
+                .load_realization_root(&command.session_id)
+                .instrument(attempt_span.clone())
+                .await?;
+            let mut session = crate::mutation::aggregate_from_snapshot(session)
                 .map_err(repository_control)?;
-            if session.frozen_baseline().is_none() {
-                return Err(SessionRealizationControlFailure::NotReady);
-            }
-            if !session.is_terminal()
-                && !environment_admits_realization_effects(&session.environment)
+            if session.frozen_baseline().is_none()
+                || (!session.is_terminal()
+                    && !environment_admits_realization_effects(&session.environment))
             {
                 return Err(SessionRealizationControlFailure::NotReady);
             }
@@ -299,6 +298,9 @@ impl SessionApplication {
                     "renew-session-realization-lease",
                     Vec::new(),
                 )
+                .instrument(
+                    tracing::info_span!(parent: &attempt_span, "session.realization.root_commit"),
+                )
                 .await
             {
                 Ok(commit) => {
@@ -307,14 +309,9 @@ impl SessionApplication {
                         .realization
                         .ok_or(SessionRealizationControlFailure::NotReady);
                 }
-                Err(SessionMutationError::Conflict)
-                    if attempt + 1 < SessionApplication::ROOT_CAS_ATTEMPTS =>
-                {
-                    continue;
-                }
-                Err(SessionMutationError::Conflict) => {
-                    return Err(SessionRealizationControlFailure::Conflict);
-                }
+                // The existing bounded loop owns every retry; exhaustion
+                // returns the same Conflict below, without a second last-row path.
+                Err(SessionMutationError::Conflict) => {}
                 Err(error) => return Err(unavailable(error)),
             }
         }

@@ -395,6 +395,49 @@ pub struct RepositoryRealizationPlan {
     pub access: MountAccess,
 }
 
+/// The Resource owner distinguishes initialization from retaining an already
+/// activated, provider-owned working tree. This is an effect input, not state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepositoryRealizationIntent {
+    Initialize,
+    Retain,
+}
+
+impl RepositoryRealizationIntent {
+    /// One provider-neutral ownership rule; the adapter supplies its existing
+    /// V2 handle/path evidence. An initialization reservation is not retention.
+    pub fn validate_owned_path(
+        self,
+        plan: &RepositoryRealizationPlan,
+        owned_paths: Option<&[String]>,
+    ) -> Result<(), SandboxError> {
+        if self == Self::Retain
+            && !owned_paths.is_some_and(|paths| paths.contains(&plan.mount_path))
+        {
+            return Err(SandboxError::conflict(
+                "retained Repository path is not provider-owned",
+            ));
+        }
+        Ok(())
+    }
+    /// Writable content may evolve after activation. Read-only content keeps
+    /// its configured checkout constraints even when its physical tree survives.
+    pub fn checkout_constraints(
+        self,
+        plan: &RepositoryRealizationPlan,
+    ) -> (Option<&str>, Option<&str>) {
+        if self == Self::Retain && plan.access == MountAccess::ReadWrite {
+            (None, None)
+        } else {
+            (
+                plan.initial_branch.as_deref(),
+                plan.initial_commit.as_deref(),
+            )
+        }
+    }
+}
+
 impl RepositoryRealizationPlan {
     /// Validate the one Repository mount-path contract shared by admission and
     /// every provider adapter.
@@ -819,6 +862,7 @@ pub trait RepositoryRealizer: Send + Sync {
         &self,
         plan: &RepositoryRealizationPlan,
         credential: Option<&RepositoryHttpBasicCredential>,
+        intent: RepositoryRealizationIntent,
     ) -> Result<(), SandboxError>;
 
     /// Publish one exact Agent-authored branch/commit coordinate. The caller

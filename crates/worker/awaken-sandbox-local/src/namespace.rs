@@ -12,6 +12,8 @@
 //! [`sandbox_exec_argv`]) — unit-testable without the tool installed; the actual
 //! exec requires the matching OS launcher on the host.
 
+mod repositories;
+
 use std::path::PathBuf;
 use std::process::Stdio as ProcStdio;
 
@@ -1572,44 +1574,6 @@ impl NamespaceSandbox {
             ),
         )
         .map_err(|error| pc::SandboxError::backend("clear_resource_projection", error))
-    }
-
-    pub fn provision_repo(
-        &self,
-        plan: &pc::RepositoryRealizationPlan,
-        credential: Option<&pc::RepositoryHttpBasicCredential>,
-    ) -> Result<(), pc::SandboxError> {
-        self.require_root_identity()?;
-        plan.validate_mount_path()?;
-        provision_repo_at(
-            &self.workspace_root(),
-            workspace_relative(&plan.mount_path),
-            &plan.transport_url,
-            plan.initial_branch.as_deref(),
-            plan.initial_commit.as_deref(),
-            credential,
-        )?;
-        self.reserve_owned_path(&plan.mount_path);
-        Ok(())
-    }
-
-    pub fn push_repo(
-        &self,
-        plan: &pc::RepositoryRealizationPlan,
-        expectation: &pc::RepositoryPublicationExpectation,
-        credential: Option<&pc::RepositoryHttpBasicCredential>,
-    ) -> Result<pc::RepositoryPublicationReceipt, pc::RepositoryPublicationError> {
-        self.require_root_identity()
-            .map_err(pc::RepositoryPublicationError::Unavailable)?;
-        plan.validate_mount_path()
-            .map_err(pc::RepositoryPublicationError::Unavailable)?;
-        push_repo_to_at(
-            &self.workspace_root(),
-            workspace_relative(&plan.mount_path),
-            plan,
-            expectation,
-            credential,
-        )
     }
 
     pub fn list_files(&self, subdir: &str) -> Result<Vec<(String, Vec<u8>)>, pc::SandboxError> {

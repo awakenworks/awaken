@@ -60,8 +60,11 @@ fn context(store: &Arc<MemoryCommitCoordinator>) -> RuntimeRunContext {
 
 #[tokio::test]
 async fn explicit_identity_preserves_the_ordinary_run_lifecycle() {
-    let direct_store = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
-    let direct = Runtime::new().with_llm(Arc::new(FixedModel));
+    let direct_clock = awaken_time::system_clock();
+    let direct_store = Arc::new(MemoryCommitCoordinator::new(direct_clock.clone()));
+    let direct = Runtime::new()
+        .with_clock(direct_clock)
+        .with_llm(Arc::new(FixedModel));
     let direct_state = direct
         .run_to_completion(
             &config(),
@@ -73,8 +76,11 @@ async fn explicit_identity_preserves_the_ordinary_run_lifecycle() {
         .await
         .expect("direct Run");
 
-    let explicit_store = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
-    let explicit = Runtime::new().with_llm(Arc::new(FixedModel));
+    let explicit_clock = awaken_time::system_clock();
+    let explicit_store = Arc::new(MemoryCommitCoordinator::new(explicit_clock.clone()));
+    let explicit = Runtime::new()
+        .with_clock(explicit_clock)
+        .with_llm(Arc::new(FixedModel));
     let explicit_id = RunId("stable-explicit-run".into());
     let explicit_state = explicit
         .run_to_completion_with_id(
@@ -121,9 +127,10 @@ async fn explicit_terminal_identity_cannot_move_to_another_thread() {
     // E2 exact replay returns committed truth; E3 foreign Thread fails without
     // inference. Decision table: R1 !C1 -> E1; R2 C1 && C2 -> E2;
     // R3 C1 && !C2 -> E3. The contract projection owns C1/C2 for Runtime and Host.
-    let store = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+    let clock = awaken_time::system_clock();
+    let store = Arc::new(MemoryCommitCoordinator::new(clock.clone()));
     let model = Arc::new(CountingModel(AtomicUsize::new(0)));
-    let runtime = Runtime::new().with_llm(model.clone());
+    let runtime = Runtime::new().with_clock(clock).with_llm(model.clone());
     let run_id = RunId("thread-bound-run".into());
 
     let first = runtime

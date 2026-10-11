@@ -7,6 +7,105 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+#[tokio::test]
+async fn worker_control_rpc_continues_trace_without_exporting_payload() {
+    // Causes: C1 tracing enabled/disabled; C2 a sampled admitting context;
+    // C3 an authenticated control RPC with identity/payload. R1 C1+C2 ->
+    // propagate the same W3C trace over the actual HTTP boundary; R2 !C1 ->
+    // same RPC result, no trace dependency; both rows export no request body.
+    // Subscriber/meter globals are isolated in a child of this test binary.
+    const CHILD: &str = "AWAKEN_CONTROL_TRACE_TEST_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        for enabled in ["enabled", "disabled"] {
+            let directory = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "worker_control_rpc_continues_trace_without_exporting_payload",
+                    "--nocapture",
+                ])
+                .env(CHILD, enabled)
+                .env(
+                    "AWAKEN_CONTROL_TRACE_TEST_FILE",
+                    directory.path().join("trace.jsonl"),
+                )
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{enabled}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        return;
+    }
+    let enabled = std::env::var(CHILD).unwrap() == "enabled";
+    let trace_file =
+        std::path::PathBuf::from(std::env::var_os("AWAKEN_CONTROL_TRACE_TEST_FILE").unwrap());
+    let config = awaken_observability::ObservabilityConfig {
+        trace_file: enabled.then(|| trace_file.clone()),
+        ..Default::default()
+    };
+    awaken_observability::init(&config);
+    let (header, observed) = tokio::sync::oneshot::channel();
+    let header = Arc::new(std::sync::Mutex::new(Some(header)));
+    let app = Router::new().route(
+        "/v1/worker/register",
+        post(move |headers: axum::http::HeaderMap| {
+            let header = header.clone();
+            async move {
+                header
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap()
+                    .send(
+                        headers
+                            .get("traceparent")
+                            .map(|value| value.to_str().unwrap().to_owned()),
+                    )
+                    .unwrap();
+                register_zero_ttl().await
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let span = awaken_observability::span_with_remote_parent(
+        tracing::info_span!(parent: None, "test.admitting"),
+        Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"),
+    );
+    use tracing::Instrument as _;
+    WorkerControlClient::new(
+        WorkerUpstream::new(format!("http://{address}")).with_worker_id("worker-a"),
+    )
+    .register_classified("private-payload-marker", WorkerManifest::default())
+    .instrument(span)
+    .await
+    .unwrap();
+    let carrier = observed.await.unwrap();
+    server.abort();
+    awaken_observability::shutdown();
+    if enabled {
+        assert!(
+            carrier
+                .unwrap()
+                .contains("0af7651916cd43dd8448eb211c80319c"),
+            "R1 missing RPC trace continuity"
+        );
+        let exported = std::fs::read_to_string(trace_file).unwrap();
+        assert!(
+            !exported.contains("private-payload-marker"),
+            "request bodies never enter diagnostics"
+        );
+    } else {
+        assert!(carrier.is_none(), "R2 unconfigured tracing");
+        assert!(!trace_file.exists(), "R2 no exporter effect");
+    }
+}
+
 async fn register_zero_ttl() -> Json<Value> {
     Json(json!({
         "worker": {

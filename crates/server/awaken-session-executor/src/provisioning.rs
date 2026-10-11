@@ -447,6 +447,7 @@ impl SharedHost {
                 repository,
                 &resources.binding_checks,
                 realizer,
+                pc::RepositoryRealizationIntent::Initialize,
             )
             .await?;
         }
@@ -461,6 +462,7 @@ impl SharedHost {
         repository: &RepositoryActivation,
         binding_checks: &[ResourceBindingCheck],
         realizer: &dyn pc::RepositoryRealizer,
+        intent: pc::RepositoryRealizationIntent,
     ) -> Result<(), crate::host_error::HostError> {
         repository
             .plan
@@ -470,7 +472,7 @@ impl SharedHost {
             .repository_operation_credential(thread, repository, binding_checks, None)
             .await?;
         realizer
-            .realize_repository(&repository.plan, credential.as_ref())
+            .realize_repository(&repository.plan, credential.as_ref(), intent)
             .await
             .map_err(|error| crate::host_error::HostError::internal(error.to_string()))
     }

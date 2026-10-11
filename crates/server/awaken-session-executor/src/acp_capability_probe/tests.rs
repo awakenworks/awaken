@@ -51,6 +51,109 @@ impl AcpCapabilityHandshake for ReadyHandshake {
     }
 }
 
+struct PairedHandshake(Arc<tokio::sync::Barrier>);
+#[async_trait]
+impl AcpCapabilityHandshake for PairedHandshake {
+    async fn negotiate(
+        &self,
+        channel: &mut dyn awaken_agent_channel::AgentChannel,
+        config: &AcpCapabilityProbeConfig,
+    ) -> Result<NegotiatedAcpCapabilities, String> {
+        self.0.wait().await;
+        ReadyHandshake.negotiate(channel, config).await
+    }
+}
+
+#[tokio::test]
+async fn shared_workspace_worker_incarnations_probe_independently_and_blank_owner_has_no_effect() {
+    // C1 shared platform Workspace/provider/argv; C2 distinct registry-issued
+    // runtime incarnations. R1 C1+C2 -> concurrent independent realizations,
+    // both exact disposals, no name collision. R2 missing owner -> reject
+    // before create. The barrier requires both actual processes to reach
+    // handshake; changing back to shared Workspace naming fails this row.
+    let base = tempfile::tempdir().unwrap();
+    let handshake = Arc::new(PairedHandshake(Arc::new(tokio::sync::Barrier::new(2))));
+    let mut first = probe_negotiator(base.path(), "shared-workspace", handshake.clone()).await;
+    let mut second = probe_negotiator(base.path(), "shared-workspace", handshake).await;
+    first.scope_owner = "worker-a/incarnation-1".into();
+    second.scope_owner = "worker-b/incarnation-2".into();
+    let argv = probe_argv();
+    let (a, b) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(
+            first.negotiate(&argv, probe_cwd(), None),
+            second.negotiate(&argv, probe_cwd(), None),
+        )
+    })
+    .await
+    .expect("R1 both independent environments reached handshake");
+    a.expect("R1 first disposed");
+    b.expect("R1 second disposed");
+    for owner in [&first.scope_owner, &second.scope_owner] {
+        assert!(
+            !base
+                .path()
+                .join(SessionAcpCapabilityNegotiator::probe_scope(
+                    owner, &argv, None
+                ))
+                .exists()
+        );
+    }
+    first.scope_owner.clear();
+    assert!(
+        first
+            .negotiate(&argv, probe_cwd(), None)
+            .await
+            .unwrap_err()
+            .contains("incarnation"),
+        "R2"
+    );
+}
+
+#[tokio::test]
+async fn a_cancelled_owned_probe_can_be_reconciled_without_creating_a_second_scope() {
+    // Causes: P1 create and prompt-free child started; P2 the caller is
+    // cancelled during handshake; P3 a later owner repeats the exact inputs.
+    // Effects: retain one discoverable realization, independently close its
+    // old participants, retry on that same scope, then dispose it. R1 P1+P2+P3
+    // must converge without a second orphan or a fabricated capability. A
+    // foreign owner/argv/auth and unproved physical closure remain refusal rows
+    // in the adjacent identity and provider tests.
+    let base = tempfile::tempdir().unwrap();
+    let argv = probe_argv();
+    let original =
+        probe_negotiator(base.path(), "probe-recovery", Arc::new(StalledHandshake)).await;
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(1500),
+            AcpCapabilityNegotiator::negotiate(&original, &argv, probe_cwd(), None)
+        )
+        .await
+        .is_err()
+    );
+    let scope = SessionAcpCapabilityNegotiator::probe_scope("probe-recovery", &argv, None);
+    assert!(
+        original
+            .host
+            .resources
+            .memory
+            .drain(Duration::from_secs(5))
+            .await,
+        "the original exact-handle cleanup must finish before a later Host can create"
+    );
+    assert!(
+        !base.path().join(&scope).exists(),
+        "cleanup physically disposed the original"
+    );
+    let later = probe_negotiator(base.path(), "probe-recovery", Arc::new(ReadyHandshake)).await;
+    AcpCapabilityNegotiator::negotiate(&later, &argv, probe_cwd(), None)
+        .await
+        .expect("P1-P3 verified reconciliation must converge on the original scope");
+    assert!(
+        !base.path().join(&scope).exists(),
+        "one scope fully disposed"
+    );
+}
+
 /// A Workdir Session provider rooted in `base`. The Workdir tier is the one
 /// that needs no daemon, and it stamps the scope on the resource the same way
 /// every other tier does: the environment *is* the directory named by it.
@@ -67,6 +170,7 @@ async fn probe_negotiator(
             .into_session_provider();
     SessionAcpCapabilityNegotiator::new(
         (dependencies).build().expect("validated Host dependencies"),
+        owner.to_owned(),
         Duration::from_secs(30),
         handshake,
     )
@@ -93,30 +197,55 @@ fn probe_cwd() -> &'static Path {
     Path::new(pc::WorkspaceLayout::OUTPUTS_ROOT)
 }
 
-/// A cancelled probe must leave something every tier's reconciliation can
-/// select on, and a completed one must leave nothing at all.
-///
-/// Causes: C1 the probe is cancelled after its environment exists; C2 the probe
-/// completes and disposes; C3 a later probe supplies the same owner/argv/auth;
-/// C4 it supplies a different one.
-/// Effects: E1 the stranded environment stands at the scope
-/// [`SessionAcpCapabilityNegotiator::probe_scope`] recomputes from inputs that
-/// outlive the task; E2 the in-process ledger names that scope; E3 nothing is
-/// stranded and the ledger is empty; E4 the later probe addresses the same
-/// environment rather than creating a second orphan beside it; E5 it addresses
-/// a different one.
-///
-/// | Rule | C1 | C2 | C3 | C4 | Effect      |
-/// | R1   | T  | F  | F  | F  | E1 + E2     |
-/// | R2   | T  | F  | T  | F  | E4          |
-/// | R3   | T  | F  | F  | T  | E5          |
-/// | R4   | F  | T  | F  | F  | E3          |
+#[tokio::test]
+async fn probe_handshake_timeout_and_spawn_failure_dispose_without_capability_evidence() {
+    // R1 exact create + handshake deadline -> error and exact disposal;
+    // R2 exact create + failed exec -> error and exact disposal. Neither row
+    // returns protocol capability evidence or leaves a false settled strand.
+    for fail_spawn in [false, true] {
+        let base = tempfile::tempdir().unwrap();
+        let argv = if fail_spawn {
+            vec!["/missing-acp-test-program".into()]
+        } else {
+            probe_argv()
+        };
+        let mut negotiator =
+            probe_negotiator(base.path(), "probe-failure", Arc::new(StalledHandshake)).await;
+        negotiator.timeout = Duration::from_millis(20);
+        let scope = SessionAcpCapabilityNegotiator::probe_scope("probe-failure", &argv, None);
+        let error = AcpCapabilityNegotiator::negotiate(&negotiator, &argv, probe_cwd(), None)
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains(if fail_spawn {
+                "spawn ACP"
+            } else {
+                "probe timed out"
+            }),
+            "{error}"
+        );
+        assert!(
+            !base.path().join(&scope).exists(),
+            "R1/R2 provider disposal"
+        );
+        assert!(
+            !negotiator.stranded.contains(&scope),
+            "R1/R2 no false strand"
+        );
+    }
+}
+
+/// Probe lifecycle decision table: R1 caller cancellation after create ->
+/// exact-handle cleanup continues in the Host registry; R2 later Host after
+/// proved disposal -> fresh create at the same scope; R3 foreign/process-loss
+/// legacy tree -> refuse and preserve bytes; R4 normal handshake -> verified
+/// capabilities only after disposal, with no stranded ledger entry. Different
+/// owner, argv and auth are distinct discovery coordinates, never grants.
 #[tokio::test]
 async fn a_cancelled_probe_strands_an_environment_that_its_own_scope_still_names() {
     let argv = probe_argv();
 
-    // R1 — cancel while the handshake stalls. `timeout` dropping the future is
-    // the ordinary cancellation; nothing in the probe gets to run a tail.
+    // R1: dropping the receiver cancels handshake; the owner still runs cleanup.
     let stranded_base = tempfile::tempdir().unwrap();
     let negotiator =
         probe_negotiator(stranded_base.path(), "ws-alpha", Arc::new(StalledHandshake)).await;
@@ -132,12 +261,20 @@ async fn a_cancelled_probe_strands_an_environment_that_its_own_scope_still_names
 
     let scope = SessionAcpCapabilityNegotiator::probe_scope("ws-alpha", &argv, None);
     assert!(
-        stranded_base.path().join(&scope).is_dir(),
-        "E1 the stranded environment must stand at the derived scope"
+        negotiator
+            .host
+            .resources
+            .memory
+            .drain(Duration::from_secs(5))
+            .await
     );
     assert!(
-        negotiator.stranded.contains(&scope),
-        "E2 the claim's retention must name it"
+        !stranded_base.path().join(&scope).exists(),
+        "receiver cancellation must finish exact-handle disposal"
+    );
+    assert!(
+        !negotiator.stranded.contains(&scope),
+        "verified disposal settles the strand"
     );
     assert!(
         !negotiator
@@ -148,17 +285,22 @@ async fn a_cancelled_probe_strands_an_environment_that_its_own_scope_still_names
         "E2 the retention names the probe that ran, not every scope"
     );
 
-    // R2 — the name survives the task that made it. A second negotiator, built
-    // from nothing but the same owner and inputs, addresses that exact
-    // environment; a random-UUID scope could only ever create a second orphan
-    // beside it and never mention the first again.
+    // R2: only the actual disposal above permits fresh creation.
     let later = probe_negotiator(stranded_base.path(), "ws-alpha", Arc::new(ReadyHandshake)).await;
+    AcpCapabilityNegotiator::negotiate(&later, &argv, probe_cwd(), None)
+        .await
+        .expect("E4 retry follows proved disposal, not adoption by name");
+    // A process-loss/foreign legacy tree carries no transferable authority.
+    // Same derived name still cannot grant adoption or destructive cleanup.
+    std::fs::create_dir(stranded_base.path().join(&scope)).unwrap();
+    std::fs::write(stranded_base.path().join(&scope).join("foreign"), "retain").unwrap();
     let refusal = AcpCapabilityNegotiator::negotiate(&later, &argv, probe_cwd(), None)
         .await
-        .expect_err("E4 the stranded environment occupies the scope");
-    assert!(
-        refusal.contains(&scope),
-        "E4 the refusal must name the scope a reconciliation selects on: {refusal}"
+        .unwrap_err();
+    assert!(refusal.contains(&scope));
+    assert_eq!(
+        std::fs::read_to_string(stranded_base.path().join(&scope).join("foreign")).unwrap(),
+        "retain"
     );
 
     // R3 — a different runtime owner, a different CLI or a different auth

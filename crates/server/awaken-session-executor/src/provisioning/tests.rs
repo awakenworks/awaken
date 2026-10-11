@@ -80,6 +80,8 @@ impl pc::RepositoryRealizer for RecordingPublicationRealizer {
         &self,
         _plan: &pc::RepositoryRealizationPlan,
         _credential: Option<&pc::RepositoryHttpBasicCredential>,
+
+        _intent: awaken_provisioning_contract::RepositoryRealizationIntent,
     ) -> Result<(), pc::SandboxError> {
         unreachable!("publication helper never realizes a repository")
     }
@@ -1021,6 +1023,8 @@ async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
             &self,
             _plan: &pc::RepositoryRealizationPlan,
             _credential: Option<&pc::RepositoryHttpBasicCredential>,
+
+            _intent: awaken_provisioning_contract::RepositoryRealizationIntent,
         ) -> Result<(), pc::SandboxError> {
             Err(pc::SandboxError::backend(
                 "realize_repository",

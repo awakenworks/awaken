@@ -68,7 +68,7 @@ impl HostWorkerResolver {
             .dispatch_store()
             .map_err(|error| Self::execution_error(error.to_string()))?;
         let mut worker = awaken_dispatch_execution::DispatchWorker::new(
-            Arc::new(awaken_runtime::Runtime::new()),
+            Arc::new(awaken_runtime::Runtime::new().with_clock(host.clock.clone())),
             store,
             commit.clone(),
             claimed.lease.owner().to_owned(),

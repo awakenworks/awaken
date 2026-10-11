@@ -82,15 +82,19 @@ impl WorkerControlClient {
         Self { upstream }
     }
 
+    #[tracing::instrument(name = "worker.control.rpc", skip_all, fields(rpc.path = path, http.status_code = tracing::field::Empty))]
     async fn post_response(
         &self,
         path: &str,
         body: Value,
     ) -> Result<(reqwest::StatusCode, Value), WorkerControlRequestError> {
-        let request = self
-            .upstream
-            .client()
-            .post(format!("{}{}", self.upstream.base_url(), path));
+        let mut request =
+            self.upstream
+                .client()
+                .post(format!("{}{}", self.upstream.base_url(), path));
+        if let Some(traceparent) = awaken_observability::current_traceparent() {
+            request = request.header("traceparent", traceparent);
+        }
         let response = self
             .upstream
             .authorize("POST", path, request)?
@@ -99,6 +103,7 @@ impl WorkerControlClient {
             .await
             .map_err(WorkerControlRequestError::request)?;
         let status = response.status();
+        tracing::Span::current().record("http.status_code", status.as_u16());
         let body: Value = response
             .json()
             .await
