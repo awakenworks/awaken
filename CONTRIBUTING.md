@@ -94,16 +94,20 @@ Use each owning script:
   removes annotated or deleted debt. Default/`--check` is read-only; write modes,
   including reasoned writes, refuse new unannotated types and inline hard errors.
   Retained decisions keep their metadata. A first write permits zero debt only.
-- test inventory: `python3 scripts/ci/check_test_inventory.py --write`; a
-  removed or renamed test is also recorded in
-  [`test_inventory_ledger.json`](scripts/ci/test_inventory_ledger.json).
+- test inventory: `python3 scripts/ci/check_test_inventory.py --tighten` adds
+  names or raises minimum occurrence counts while retaining held requirements.
+  `--write-baseline` records the current multiset after the ledger check.
+  Removed or renamed tests require an authored decision in
+  [`test_inventory_ledger.json`](scripts/ci/test_inventory_ledger.json);
+  `--reason` never substitutes for that decision. Default/`--check` is read-only
+  and retains the original empty floor when the TXT file is absent.
 - public API snapshots: `scripts/ci/check_public_api.sh --bless`, on the
   nightly pinned as `PUBLIC_API_NIGHTLY` in
   [`check_public_api.sh`](scripts/ci/check_public_api.sh), never a rolling one.
 - file limits: an oversized legacy file carries an
   `awaken-file-limit-ceiling: N` marker that may only fall.
 
-For a guard with a writer, use its owning flag instead of hand-editing its JSON.
+For a guard with a writer, use its owning flag instead of hand-editing its baseline.
 The context/SPI/expiry/registry helpers have no writer: their source or metadata
 decision remains the owning interface. A CLI reason cannot replace that decision.
 

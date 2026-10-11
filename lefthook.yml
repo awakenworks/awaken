@@ -134,7 +134,7 @@ pre-commit:
     #     rename or deletion is recorded in the ledger in the same commit.
     test-inventory:
       # >>> generated glob from check_test_inventory.py INPUT_GLOBS — do not edit
-      glob: "{crates/**/*.rs,scripts/ci/check_test_inventory.py,scripts/ci/test_inventory.txt,scripts/ci/test_inventory_ledger.json}"
+      glob: "{crates/**/*.rs,crates/**/Cargo.toml,scripts/ci/*.py,scripts/ci/test_inventory.txt,scripts/ci/test_inventory_ledger.json}"
       # <<< generated glob
       run: python3 scripts/ci/check_test_inventory.py
 

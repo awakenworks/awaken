@@ -188,6 +188,11 @@ def baseline_cli(
     is_initialization: Callable[[dict], bool] | None = None,
     stage: Callable[[], None] | None = None,
     hard_rules: Callable[[dict], list[str]] | None = None,
+    decode: Callable[[str], dict] = json.loads,
+    encode: Callable[[dict], str] | None = None,
+    empty_baseline: Callable[[], dict] = dict,
+    allow_missing_check: bool = False,
+    check_message: Callable[[Measured, dict], str] | None = None,
 ) -> int:
     """One CLI and write boundary; each guard retains its measurement and rules.
 
@@ -196,13 +201,16 @@ def baseline_cli(
     allowances, but their candidate must still pass every hard rule.
     Baseline-dependent hard admission uses this one original snapshot before
     any candidate is built; a candidate cannot grandfather its own new debt.
+    Owners may supply a pure record codec and their verified absent-check
+    policy; this remains the only file IO boundary. Tighter ceilings fall,
+    while a coverage floor rises. JSON defaults and reason admission stay here.
     """
     parser = argparse.ArgumentParser(prog=prog, description=description, allow_abbrev=False,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--self-test", action="store_true", help="run the decision table")
     modes.add_argument("--check", action="store_true", help="check without writing (the default)")
-    modes.add_argument("--tighten", action="store_true", help="record decreases only in an existing baseline")
+    modes.add_argument("--tighten", action="store_true", help="record tighter bounds in an existing baseline")
     modes.add_argument("--write-baseline", action="store_true", help="record the current tree (growth needs --reason)")
     parser.add_argument("--reason", help="with --write-baseline: why a recorded allowance may grow")
     if report:
@@ -223,10 +231,11 @@ def baseline_cli(
         self_test()
         return 0
     exists = baseline_path.exists()
-    if not exists and not args.write_baseline and not (report_only and args.report):
+    if (not exists and not args.write_baseline and not (report_only and args.report)
+            and not (allow_missing_check and not args.tighten)):
         print("ERROR: an existing baseline is required; initialize it with --write-baseline", file=sys.stderr)
         return 1
-    previous = json.loads(baseline_path.read_text(encoding="utf-8")) if exists else {}
+    previous = decode(baseline_path.read_text(encoding="utf-8")) if exists else empty_baseline()
     errors, measured = measure()
     if hard_rules:
         errors += hard_rules(previous)
@@ -257,14 +266,15 @@ def baseline_cli(
         return 1
     if args.tighten or args.write_baseline:
         if document != previous or not exists:
-            baseline_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+            text = encode(document) if encode else json.dumps(document, indent=2) + "\n"
+            baseline_path.write_text(text, encoding="utf-8")
             print(f"wrote {baseline_path.name}")
             if args.tighten and getattr(args, "stage", False):
                 stage()
         else:
             print(f"{baseline_path.name} is already tight")
     else:
-        print(f"OK - {prog} ratchets hold.")
+        print(check_message(measured, previous) if check_message else f"OK - {prog} ratchets hold.")
     return 0
 
 
