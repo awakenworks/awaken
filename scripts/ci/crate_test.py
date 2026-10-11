@@ -33,8 +33,10 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
 import tomllib
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -60,21 +62,48 @@ def load_profile(path: Path = PROFILE) -> tuple[list[str], list[dict[str, str]]]
     return features, companions
 
 
-def host_triple() -> str:
-    for line in subprocess.check_output(["rustc", "-vV"], cwd=ROOT, text=True).splitlines():
+def host_triple(root: Path = ROOT, environment: dict[str, str] | None = None) -> str:
+    for line in subprocess.check_output(["rustc", "-vV"], cwd=root, env=environment, text=True).splitlines():
         if line.startswith("host: "):
             return line.split(" ", 1)[1].strip()
     raise PlanError("rustc -vV reports no host triple")
 
 
-def full_graph_metadata(features: list[str]) -> dict:
-    """Cargo's resolve for the full gate's feature set, on this host."""
+def full_graph_metadata(features: list[str], *, root: Path = ROOT,
+                        environment: dict[str, str] | None = None, host_only: bool = True) -> dict:
+    """The one Cargo resolve reader for authored test or compile features.
+
+    Test/compile callers normally use this host. The original local affected
+    test planner retains its all-platform conservative selection graph.
+    """
 
     return json.loads(subprocess.check_output(
-        ["cargo", "metadata", "--locked", "--format-version", "1", "--features", ",".join(features),
-         "--filter-platform", host_triple()],
-        cwd=ROOT,
+        ["cargo", "metadata", "--locked", "--format-version", "1",
+         *(["--features", ",".join(features)] if features else []),
+         *(["--filter-platform", host_triple(root, environment)] if host_only else [])],
+        cwd=root, env=environment,
     ))
+
+
+def native_graph_reason(root: Path, values: dict[str, str]) -> str:
+    """Whether this metadata owner's host filter can describe the compile.
+
+    Stable Cargo offers no effective-config oracle. Do not interpret configs
+    ourselves: their existence, or an explicit compiler/target override, means
+    the affected compile caller must retain the original whole command. Paths
+    and variable names explain refusal without revealing configuration values.
+    The single-crate test helper's existing profile behavior is unchanged.
+    """
+    overrides = ("CARGO_BUILD_TARGET", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS", "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_BUILD_RUSTC", "CARGO_BUILD_RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER")
+    if any(values.get(name) for name in overrides):
+        return "unconfirmed compile target/compiler environment"
+    cargo_home = Path(values.get("CARGO_HOME", str(Path.home() / ".cargo")))
+    if not cargo_home.is_absolute():
+        cargo_home = root / cargo_home
+    directories = [*(parent / ".cargo" for parent in (root.resolve(), *root.resolve().parents)), cargo_home]
+    if any((directory / name).exists() for directory in directories for name in ("config", "config.toml")):
+        return "unconfirmed repository/ancestor/CARGO_HOME Cargo configuration"
+    return ""
 
 
 def _members(metadata: dict) -> dict[str, dict]:
@@ -328,6 +357,56 @@ class CrateTestPlan(unittest.TestCase):
                          ["-pleaf"], ["--no-default-features"], ["--target=x86_64-other"]):
             with self.subTest(override=override), self.assertRaises(PlanError):
                 guarded_plan(self.metadata(), self.features, self.companions, ["leaf"], override)
+    def test_metadata_owner_preserves_root_environment_features_and_host_mode(self) -> None:
+        # B10: both callers use this original metadata owner. The compile caller
+        # passes its authored features/root/BUILD environment; the old affected
+        # nextest mode requests the all-platform graph. Neither invents a profile
+        # or compiler feature solver. Empty features must not mean --features ''.
+        root, values = Path("/fixture/root"), {"CARGO_TARGET_DIR": "/fixture/target"}
+        with mock.patch(__name__ + ".host_triple", return_value="fixture-host") as host, \
+                mock.patch.object(subprocess, "check_output", return_value="{}") as output:
+            self.assertEqual(full_graph_metadata(["cli/k8s"], root=root, environment=values), {})
+            host.assert_called_once_with(root, values)
+            output.assert_called_once_with(["cargo", "metadata", "--locked", "--format-version", "1", "--features", "cli/k8s", "--filter-platform", "fixture-host"], cwd=root, env=values)
+        with mock.patch(__name__ + ".host_triple", side_effect=AssertionError("host must not be read")), \
+                mock.patch.object(subprocess, "check_output", return_value="{}") as output:
+            full_graph_metadata([], root=root, environment=values, host_only=False)
+            output.assert_called_once_with(["cargo", "metadata", "--locked", "--format-version", "1"], cwd=root, env=values)
+
+    def test_metadata_refusal_starts_no_companion_or_nextest(self) -> None:
+        # B12: original metadata75/23/signal refusal -> same public CLI status,
+        # zero companion/test processes. This is the existing owner entry point,
+        # not a duplicate runner or a successful empty plan.
+        for original, expected in ((75, 75), (23, 23), (-15, 143)):
+            with self.subTest(status=original), \
+                    mock.patch(__name__ + ".full_graph_metadata", side_effect=subprocess.CalledProcessError(original, ["cargo", "metadata"])), \
+                    mock.patch.object(subprocess, "run", side_effect=AssertionError("dependent execution started")):
+                self.assertEqual(main(["-p", "awaken-cli"]), expected)
+
+    def test_compile_host_admission_never_guesses_effective_configuration(self) -> None:
+        # B8: no configuration/override -> native host may be used. A target
+        # environment, root/ancestor config or CARGO_HOME config -> explicit
+        # unknown; the caller widens before compiling. No contents/secret values
+        # are interpreted or printed, and the test helper's profile is separate.
+        with tempfile.TemporaryDirectory() as directory:
+            outer = Path(directory)
+            root, home = outer / "repository/subdirectory", outer / "cargo-home"
+            root.mkdir(parents=True)
+            home.mkdir()
+            values = {"CARGO_HOME": str(home)}
+            self.assertEqual(native_graph_reason(root, values), "")
+            self.assertIn("environment", native_graph_reason(root, {**values, "CARGO_BUILD_TARGET": "private-value"}))
+            for config in (root / ".cargo/config.toml", root.parent / ".cargo/config", home / "config.toml"):
+                config.parent.mkdir(exist_ok=True)
+                config.write_text("[build]\ntarget = 'private-value'\n")
+                reason = native_graph_reason(root, values)
+                self.assertIn("configuration", reason)
+                self.assertNotIn("private-value", reason)
+                config.unlink()
+            relative_home = root / "relative-home"
+            relative_home.mkdir()
+            (relative_home / "config.toml").write_text("[build]\ntarget='private-value'\n")
+            self.assertIn("configuration", native_graph_reason(root, {"CARGO_HOME": "relative-home"}))
 
     def test_p8_stale_companion_rows(self) -> None:
         rows = [{"package": "leaf", "binary": "hand-bin", "launcher": "gone"}]
@@ -405,6 +484,10 @@ def main(argv: list[str]) -> int:
     except PlanError as error:
         print(error, file=sys.stderr)
         return 2
+    except subprocess.CalledProcessError as error:
+        # A refused metadata/read cannot become an empty successful plan or
+        # start a companion. Keep admission75 and every original positive code.
+        return error.returncode if error.returncode >= 0 else 128 - error.returncode
     values = environment()
     prefix = [f"CARGO_TARGET_DIR={values['CARGO_TARGET_DIR']}", f"CARGO_BUILD_BUILD_DIR={values['CARGO_BUILD_BUILD_DIR']}"]
     for command in commands:

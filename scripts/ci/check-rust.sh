@@ -10,6 +10,7 @@ cd "$(dirname "$0")/../.."
 source scripts/ci/_cargo_target.sh
 source scripts/ci/_provider_environment.sh
 awaken_configure_cargo_target "$PWD"
+export CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"
 awaken_unset_ambient_api_keys
 awaken_append_repo_tools
 
@@ -310,8 +311,14 @@ case "$mode" in
     # workspace check must include the production Worker composition. Boxing at
     # the owned boundary fixes layout without detaching execution or increasing
     # recursion limits; an ingress-only replacement would lose this coverage.
-    step "check" "fix the compile errors shown above" \
-      cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}"
+    if [ "$mode" = "--quick" ]; then
+      step "check" "fix the compile errors shown above" \
+        python3 scripts/ci/rust_test_plan.py --base HEAD --run --check-command \
+        cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}"
+    else
+      step "check" "fix the compile errors shown above" \
+        cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}"
+    fi
     if [ "$mode" = "--push" ]; then
       # Push cause/effect table. P1 a commit compiles but carries dead code or
       # another `-D warnings` lint -> the quick check passes, main goes red at

@@ -21,9 +21,10 @@ Scope and its reasons:
   commands have no staged-file trigger set, so there is nothing to narrow: the
   commit-message validator takes the message file as ``{1}``, and the push gate
   runs unconditionally.
-* Only the ``glob:`` line is generated.  Command names, ``run:`` bodies and the
-  surrounding comments stay human-authored; a command that runs a shell script
-  or a non-Python tool keeps its hand-written glob and is left untouched.
+* Only the ``glob:`` line is generated. Command names, ``run:`` bodies and the
+  surrounding comments stay human-authored. The Rust shell gate's literal mode
+  arms and guards select its Python input owners; unsupported control shapes
+  refuse generation. Other shell scripts and non-Python tools stay untouched.
 * The invoked checker's own path is added to its rendered glob automatically
   (unless an already-declared pattern matches it), because editing a checker
   changes what it accepts.
@@ -44,7 +45,7 @@ from pathlib import Path
 # lefthook.yml and every scripts/ci module whose INPUT_GLOBS this renderer
 # reads.  The renderer is itself a gate with inputs, so its own hook trigger is
 # rendered from this declaration rather than written by hand.
-INPUT_GLOBS: tuple[str, ...] = ("lefthook.yml", "scripts/ci/*.py")
+INPUT_GLOBS: tuple[str, ...] = ("lefthook.yml", "scripts/ci/*.py", "scripts/ci/check-rust.sh")
 
 ROOT = Path(__file__).resolve().parents[2]
 HOOKS = ROOT / "lefthook.yml"
@@ -60,6 +61,104 @@ TOP_LEVEL = re.compile(r"^[A-Za-z]")
 GLOB_LINE = re.compile(r"^      glob:")
 INVOCATION = re.compile(r"scripts/ci/([A-Za-z0-9_]+\.py)")
 PATTERN = re.compile(r"[A-Za-z0-9_./*-]+")
+
+
+def gate_branch(gate: str, pattern: str) -> str:
+    """One literal `case` arm of the Rust gate; shared with orchestration."""
+    match = re.search(rf"(?ms)^  {re.escape(pattern)}\)\n(.*?)^    ;;", gate)
+    return match.group(1) if match else ""
+
+
+def gate_mode_source(gate: str, mode: str) -> str:
+    """Conservative call-site view of the existing Rust shell gate, not a runner.
+
+    Unknown ordinary conditions retain both branches. Only literal mode guards
+    exclude calls. Loops retain their body; functions are inspected too. Refuse
+    changes to the supported mode-control shape instead of losing a trigger.
+    """
+    assignments = 0
+    for line in gate.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if re.search(r"\bmode(?:\+)?=", stripped):
+            assignments += 1
+            if stripped != 'mode="${1:---full}"' or assignments != 1:
+                raise SystemExit("generate_hooks: Rust gate mode is reassigned")
+        elif re.search(r"\b(?:read|unset|readonly|declare|typeset|local)\b.*\bmode\b|\bprintf\s+-v\s", stripped):
+            raise SystemExit("generate_hooks: unsupported Rust gate mode write")
+    if assignments != 1:
+        raise SystemExit("generate_hooks: Rust gate needs its canonical CLI mode assignment")
+    cases = list(re.finditer(r'(?m)^case "\$mode" in\n', gate))
+    if len(cases) != 2 or re.search(r'(?m)^\s*case (?!"\$mode" in$)', gate):
+        raise SystemExit("generate_hooks: unsupported Rust gate case shape")
+    admission_end = gate.find("\nesac\n", cases[0].end())
+    if admission_end < 0 or INVOCATION.search(gate[cases[0].end():admission_end]):
+        raise SystemExit("generate_hooks: unsupported Rust gate mode admission")
+    dispatch = gate[cases[-1].start():]
+    dispatch_end = dispatch.find("\nesac\n")
+    if dispatch_end < 0:
+        raise SystemExit("generate_hooks: incomplete Rust gate mode dispatch")
+    patterns = re.findall(r"(?m)^  ([^()\n]+)\)\n", dispatch)
+    if any(pattern != "*" and any(not re.fullmatch(r"--[a-z-]+", arm) for arm in pattern.split("|")) for pattern in patterns):
+        raise SystemExit("generate_hooks: dynamic Rust gate mode arm")
+    matching = [pattern for pattern in patterns if mode in pattern.split("|")]
+    if len(matching) != 1 or not gate_branch(dispatch, matching[0]):
+        raise SystemExit("generate_hooks: missing or ambiguous Rust gate mode arm")
+    source = (gate[:cases[0].start()] + gate[admission_end + len("\nesac\n"):cases[-1].start()]
+              + gate_branch(dispatch, matching[0]) + dispatch[dispatch_end + len("\nesac\n"):])
+    frames: list[bool | None] = []
+    selected: list[str] = []
+    for line in source.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if re.search(r'python3\s+(?:-[A-Za-z]+\s+)*["$]', line):
+            raise SystemExit("generate_hooks: dynamic Rust gate Python call")
+        if stripped.startswith(("eval ", "source $", 'source "$', ". $", '. "$')):
+            raise SystemExit("generate_hooks: dynamic Rust gate call source")
+        if stripped.startswith("if "):
+            if "$mode" in stripped:
+                guard = re.fullmatch(r'if \[ "\$mode" = "(--[a-z-]+)" \]( && [^;]+)?; then', stripped)
+                if not guard:
+                    raise SystemExit("generate_hooks: unsupported Rust gate mode guard")
+                if guard.group(2) and ("||" in guard.group(2) or "$mode" in guard.group(2)):
+                    raise SystemExit("generate_hooks: unsupported compound Rust gate mode guard")
+                # False mode makes an AND false. Matching mode leaves an opaque
+                # condition undecided, so both real then/else calls are retained.
+                frames.append(False if guard.group(1) != mode else (None if guard.group(2) else True))
+            else:
+                frames.append(None)
+        elif stripped.startswith("elif "):
+            if "$mode" in stripped or not frames or frames[-1] is not None:
+                raise SystemExit("generate_hooks: unsupported Rust gate elif")
+        elif stripped == "else":
+            if not frames:
+                raise SystemExit("generate_hooks: unmatched Rust gate else")
+            if frames[-1] is not None:
+                frames[-1] = not frames[-1]
+        elif stripped == "fi":
+            if not frames:
+                raise SystemExit("generate_hooks: unmatched Rust gate fi")
+            frames.pop()
+        elif "$mode" in stripped and (stripped.startswith(("while ", "for ")) or INVOCATION.search(line)):
+            raise SystemExit("generate_hooks: dynamic Rust gate mode call")
+        if False not in frames:
+            selected.append(line)
+    if frames:
+        raise SystemExit("generate_hooks: incomplete Rust gate conditional")
+    return "".join(selected)
+
+
+def invoked_scripts(block: str) -> set[str]:
+    """Direct Python calls plus the Rust gate's actual literal hook mode."""
+    scripts = set(INVOCATION.findall(block))
+    if "scripts/ci/check-rust.sh" in block:
+        modes = re.findall(r"scripts/ci/check-rust\.sh (--[a-z-]+)(?:\s|$)", block)
+        if len(modes) != 1:
+            raise SystemExit("generate_hooks: Rust hook needs one literal mode")
+        scripts.update(INVOCATION.findall(gate_mode_source((ROOT / "scripts/ci/check-rust.sh").read_text(), modes[0])))
+    return scripts
 
 
 def _expand_braces(pattern: str) -> list[str]:
@@ -242,7 +341,7 @@ def wired_scripts(hooks: str) -> set[str]:
     wired: set[str] = set()
     for _, header, end in spans:
         block = lines[header + 1:_body_end(lines, header + 1, end)]
-        wired.update(INVOCATION.findall("".join(_without_generated(block))))
+        wired.update(invoked_scripts("".join(_without_generated(block))))
     return wired
 
 
@@ -284,7 +383,7 @@ def render(hooks: str, declarations: dict[str, tuple[str, ...]]) -> str:
         scripts = sorted(
             {
                 name
-                for name in INVOCATION.findall("".join(cleaned))
+                for name in invoked_scripts("".join(cleaned))
                 if name in declarations
             }
         )
@@ -350,7 +449,7 @@ def selftest() -> None:
         "      run: python3 scripts/ci/check_alpha.py {staged_files}\n"
         "\n    shell:\n"
         '      glob: "crates/**/*.rs"\n'
-        "      run: scripts/ci/check-rust.sh --quick\n"
+        "      run: tools/opaque.sh\n"
         "\n    everything:\n"
         '      glob: "docs/*.md"\n'
         "      run: python3 scripts/ci/check_everything.py --staged\n"
@@ -419,6 +518,53 @@ def selftest() -> None:
     assert glob_matches("types/**/*.rs", "types/top.rs"), "M4 zero directories"
     assert glob_matches("types/**/*.rs", "types/a/b.rs"), "M4 nested"
     assert not glob_matches("docs/*.md", "docs/wiki/a.md"), "M4 * stays in one segment"
+    # B-trigger causal table: T1 common prefix + nested materializer loop calls
+    # -> included; T2 quick arm -> included; T3 push-only/full-only/self-test
+    # early-exit calls -> excluded; T4 unknown/dynamic mode or Python call ->
+    # refuse generation, never fewer inputs. T5 docs-only -> no Rust trigger;
+    # T6 docs plus manifest/hook/toolchain/fuzz input -> Rust trigger and the
+    # affected planner's whole fallback. This is the actual shell control shape,
+    # not a second declared checker registry or a shell execution wrapper.
+    gate = (ROOT / "scripts/ci/check-rust.sh").read_text()
+    quick = gate_mode_source(gate, "--quick")
+    assert "rust_test_plan.py" in quick and "check_dependency_sources.py" in quick
+    assert "check_formal_coverage.py" not in quick and "check_formal_surface.py" not in quick
+    assert "gate_tools.py" not in quick and "--no-run --timings" not in quick
+    early = gate.replace('mode="${1:---full}"\n', 'python3 scripts/ci/prefix_probe.py\nmode="${1:---full}"\n')
+    assert "prefix_probe.py" in gate_mode_source(early, "--quick"), "T1 early common prefix must be retained"
+    assert "suffix_probe.py" in gate_mode_source(gate + "\npython3 scripts/ci/suffix_probe.py\n", "--quick"), "T1 common suffix is retained"
+    loop = gate.replace("for materializer_profile in bare brokered; do\n",
+                        "for materializer_profile in bare brokered; do\n  python3 scripts/ci/loop_probe.py\n")
+    assert "loop_probe.py" in gate_mode_source(loop, "--quick"), "T1 loop is retained"
+    self_test = gate.replace('if [ "$mode" = "--self-test" ]; then\n',
+                             'if [ "$mode" = "--self-test" ]; then\n  python3 scripts/ci/self_probe.py\n')
+    assert "self_probe.py" not in gate_mode_source(self_test, "--quick"), "T3 early-exit mode is excluded"
+    # T1 compound-mode cause: matching mode + opaque false condition takes the
+    # real else branch. Both outcomes of that condition must own their inputs.
+    compound = gate.replace('if [ "$mode" = "--quick" ]; then',
+                            'if [ "$mode" = "--quick" ] && test -n "${OPAQUE:-}"; then')
+    compound = compound.replace('    else\n      step "check"',
+                                '    else\n      python3 scripts/ci/compound_else_probe.py\n      step "check"')
+    assert "rust_test_plan.py" in gate_mode_source(compound, "--quick")
+    assert "compound_else_probe.py" in gate_mode_source(compound, "--quick"), "T1 compound else must be retained"
+    for broken in (gate.replace("  --quick|--push)\n", "  --push)\n"),
+                   gate.replace('if [ "$mode" = "--quick" ]; then', 'if test "$mode" = "--quick"; then'),
+                   gate.replace("python3 scripts/ci/rust_test_plan.py --base", 'python3 "$checker" --base'),
+                   gate.replace("python3 scripts/ci/rust_test_plan.py --base", 'eval "$checker" --base'),
+                   gate.replace('mode="${1:---full}"\n', 'mode="${1:---full}"\nmode="--push"\n'),
+                   gate.replace('mode="${1:---full}"\n', 'mode="${1:---full}"\nreadonly mode="--push"\n'),
+                   gate.replace("  --full)\n", '  "$dynamic")\n')):
+        try:
+            gate_mode_source(broken, "--quick")
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("T4 unsupported control shape accepted")
+    inputs = declared_input_globs(SCRIPTS)["rust_test_plan.py"]
+    assert not any(glob_matches(pattern, "docs/design.md") for pattern in inputs), "T5 docs fastpath"
+    for path in ("Cargo.toml", "crates/contract/foo/Cargo.toml", "lefthook.yml", "rust-toolchain.toml",
+                 ".cargo/config.toml", ".config/rust-tests.toml", "fuzz/fuzz_targets/foo.rs", "scripts/ci/check-rust.sh"):
+        assert any(glob_matches(pattern, path) for pattern in inputs), f"T6 uncovered {path}"
     print("generate_hooks self-test: generated globs follow their declarations")
 
 

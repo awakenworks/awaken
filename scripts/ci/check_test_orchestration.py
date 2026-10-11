@@ -706,13 +706,6 @@ GATE_CARGO_COMMAND = re.compile(r"^\s*(cargo (?:clippy|check) --workspace [^\n\"
 MAXIMAL_COMPILE_SURFACE = "--workspace --all-features --all-targets"
 
 
-def gate_branch(gate: str, pattern: str) -> str:
-    """One `case` arm of check-rust.sh, by its arm pattern."""
-
-    match = re.search(rf"(?ms)^  {re.escape(pattern)}\)\n(.*?)^    ;;", gate)
-    return match.group(1) if match else ""
-
-
 def push_gate_commands(gate: str) -> tuple[str, ...]:
     """What `--push` must run, derived from what `--full` runs.
 
@@ -723,7 +716,7 @@ def push_gate_commands(gate: str) -> tuple[str, ...]:
     read off the `--full` arm, plus the two ledger checks push adds.
     """
 
-    full = gate_branch(gate, "--full")
+    full = generate_hooks.gate_branch(gate, "--full")
     derived = [command.rstrip() for command in GATE_CARGO_COMMAND.findall(full)]
     return tuple(dict.fromkeys(derived)) + PUSH_ONLY_COMMANDS
 
@@ -788,7 +781,8 @@ def rust_hook_errors(hooks: str, gate: str) -> list[str]:
             errors.append(f"Rust pre-commit duplicates {checker}")
         if gate.count(command) != 1:
             errors.append(f"Rust gate must execute {checker} exactly once")
-        if f"scripts/ci/{checker}" not in owner_text:
+        trigger = re.search(r'(?m)^      glob: "([^"]+)"$', owner_text)
+        if trigger and not generate_hooks.glob_matches(trigger.group(1), f"scripts/ci/{checker}"):
             errors.append(f"Rust hook does not cover changes to {checker}")
         if cargo_gate < 0 or gate.find(command) > cargo_gate:
             errors.append(f"Cargo absence must not suppress {checker}")
@@ -811,7 +805,7 @@ def lint_surface_errors(gate: str) -> list[str]:
 
     errors: list[str] = []
     for arm, must_lint in (("--quick|--push", True), ("--full", True)):
-        body = gate_branch(gate, arm)
+        body = generate_hooks.gate_branch(gate, arm)
         if not body:
             errors.append(f"check-rust.sh has no {arm} arm to check the lint surface of")
             continue
@@ -1345,7 +1339,7 @@ def self_test() -> None:
         "      run: python3 scripts/ci/check_alpha.py {staged_files}\n"
         "\n    shell:\n"
         '      glob: "crates/**/*.rs"\n'
-        "      run: scripts/ci/check-rust.sh --quick\n",
+        "      run: tools/opaque.sh\n",
         declarations,
     )
     assert not generated_hook_glob_errors(synthetic, declarations), "N1"
@@ -1356,7 +1350,7 @@ def self_test() -> None:
     assert generated_hook_glob_errors(
         synthetic, {**declarations, "check_unwired.py": ("formal/*.json",)}
     ), "N3"
-    assert '      glob: "crates/**/*.rs"\n' in synthetic and "check-rust.sh" in synthetic, "N4"
+    assert '      glob: "crates/**/*.rs"\n' in synthetic and "opaque.sh" in synthetic, "N4"
     # Live: the repository's own hooks are exactly what their declarations render.
     assert not generated_hook_glob_errors(
         hooks, generate_hooks.declared_input_globs(ROOT / "scripts/ci")
@@ -1367,7 +1361,14 @@ def self_test() -> None:
         assert rust_hook_errors(duplicate, gate), f"H2 direct {checker}"
         assert rust_hook_errors(hooks, gate + "\n" + command), f"H2 nested {checker}"
         assert rust_hook_errors(hooks, gate.replace(command, "true")), f"H3 missing {checker}"
-        assert rust_hook_errors(hooks.replace(f"scripts/ci/{checker},", ""), gate), f"H3 trigger {checker}"
+        # H3 removes the actual covering patterns (including broad generated
+        # patterns), rather than making a no-op edit to an obsolete literal.
+        rust_owner = re.search(r"(?m)^    rust-quick:\n((?:      .*\n)+)", hooks).group(1)
+        trigger = re.search(r'(?m)^      glob: "([^"]+)"$', rust_owner).group(1)
+        remaining = [pattern for pattern in generate_hooks._expand_braces(trigger)
+                     if not generate_hooks.glob_matches(pattern, f"scripts/ci/{checker}")]
+        missing = hooks.replace(rust_owner, rust_owner.replace(trigger, "{" + ",".join(remaining) + "}"), 1)
+        assert f"Rust hook does not cover changes to {checker}" in rust_hook_errors(missing, gate), f"H3 trigger {checker}"
         assert rust_hook_errors(hooks, "if ! command -v cargo\n" + gate), f"H4 {checker}"
     # Cause/effect decision table for the checker itself:
     # C1 canonical aggregate includes every required package suite and required
