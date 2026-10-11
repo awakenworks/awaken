@@ -138,7 +138,8 @@ pub fn session_unattempted_profiled_archive_record(
 }
 
 /// Pure affinity admission, not an assignment or a receipt. The application
-/// must obtain the required archive witness and recheck the root CAS.
+/// must obtain the required archive witness and recheck the root CAS. A logical
+/// Worker name alone does not identify its original process installation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionTerminalCleanupAffinity {
     Unchanged,
@@ -150,12 +151,13 @@ pub enum SessionTerminalCleanupAffinity {
 pub fn session_terminal_cleanup_affinity_for(
     session: &PersistedSession,
     target_owner: &str,
+    target_runtime_incarnation: &str,
     now_unix_ms: u64,
 ) -> SessionTerminalCleanupAffinity {
     let Some(current) = &session.realization else {
         return SessionTerminalCleanupAffinity::Unchanged;
     };
-    if current.owner == target_owner {
+    if current.owner == target_owner && current.runtime_incarnation == target_runtime_incarnation {
         return SessionTerminalCleanupAffinity::Unchanged;
     }
     if !awaken_session_resource_contract::realization_lease_is_live_at(

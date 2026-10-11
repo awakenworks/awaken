@@ -26,6 +26,93 @@ fn root(execution: SessionExecutionState, revision: u64) -> SessionAggregate {
 }
 
 #[test]
+fn terminal_cleanup_affinity_distinguishes_owner_and_runtime_incarnation() {
+    // Cause graph: C1 logical owner exact; C2 Runtime incarnation exact;
+    // C3 prior lease live; C4 physical Environment; C5 child/non-pristine
+    // cleanup set. The original same-process continuation is C1&&C2; a
+    // Worker restart is not that continuation merely because C1 still holds.
+    //
+    // | Rule | incumbent | C1+C2 | C3 | C4/C5 | effect |
+    // | A1 | absent | - | - | - | original first-placement Unchanged |
+    // | A2 | present | both exact | either | either | Unchanged |
+    // | A3 | present | either changed | expired | neither | require original archive receipt |
+    // | A4 | present | either changed | live or physical or non-pristine | Retained |
+    // All 32 present combinations are covered. The pure query reads no
+    // receipt, changes no root and grants no physical takeover authority.
+    use crate::{
+        SessionTerminalCleanupAffinity as Affinity, session_terminal_cleanup_affinity_for,
+    };
+    let mut initial = root(SessionExecutionState::Terminated, 4).into_snapshot();
+    assert_eq!(
+        session_terminal_cleanup_affinity_for(&initial, "worker-a", "worker-a:2:boot-new", 10),
+        Affinity::Unchanged,
+        "A1 no historical affinity; physical placement still has its application gate",
+    );
+    assert!(initial.terminal_cleanup.request(&initial.session_id));
+    for same_owner in [false, true] {
+        for same_runtime in [false, true] {
+            for live in [false, true] {
+                for physical in [false, true] {
+                    for child in [false, true] {
+                        let mut session = initial.clone();
+                        session
+                            .terminal_cleanup
+                            .freeze_targets(
+                                &session.session_id,
+                                if child {
+                                    vec!["child".into()]
+                                } else {
+                                    Vec::new()
+                                },
+                                0,
+                                0,
+                            )
+                            .unwrap();
+                        session.realization = Some(crate::SessionRealizationLease {
+                            owner: "worker-a".into(),
+                            runtime_incarnation: "worker-a:1:boot-old".into(),
+                            epoch: 4,
+                            expires_at_unix_ms: if live { u64::MAX } else { 1 },
+                        });
+                        if physical {
+                            session.environment = crate::SessionEnvironmentState::Resident {
+                                binding: "original-binding".into(),
+                                effect_id: None,
+                                generation: None,
+                                idle_since_unix_ms: None,
+                            };
+                        }
+                        let before = session.clone();
+                        let expected = if same_owner && same_runtime {
+                            Affinity::Unchanged
+                        } else if !live && !physical && !child {
+                            Affinity::RequiresUnattemptedArchiveReceipt
+                        } else {
+                            Affinity::Retained
+                        };
+                        assert_eq!(
+                            session_terminal_cleanup_affinity_for(
+                                &session,
+                                if same_owner { "worker-a" } else { "worker-b" },
+                                if same_runtime {
+                                    "worker-a:1:boot-old"
+                                } else {
+                                    "worker-a:2:boot-new"
+                                },
+                                10,
+                            ),
+                            expected,
+                            "A2-A4 owner={same_owner} runtime={same_runtime} live={live} physical={physical} child={child}",
+                        );
+                        assert_eq!(session, before, "A1-A4 query never mutates root");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn compatible_snapshot_roundtrip_preserves_wire_and_unknown_observations() {
     let root = root(SessionExecutionState::Idle, 4);
     let original = serde_json::to_value(root.snapshot()).unwrap();

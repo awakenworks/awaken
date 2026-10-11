@@ -2749,27 +2749,32 @@ async fn restoring_terminal_cleanup_binds_the_exact_target_only_to_the_root() {
 /// source or would require terminal cleanup to invent/restore one; C11 the
 /// asserted terminal timestamp may be expired while the current same-generation
 /// root is live, but an expired current root cannot start publication.
+/// C12 logical owner equality does not prove that a different Runtime has
+/// closed or can access the original physical source. Those original rows
+/// remain pending; separate exact-Runtime expired roots exercise continuation.
 ///
 /// | Rule | child preparation | lease | publication outcome | Effect |
 /// |---|---|---|---|---|
 /// | P1 | pending | exact | none | E1 + E2 + E9 |
 /// | P2 | complete | stale | none | E4 |
-/// | P3 | none | expired same-owner Resident source | none, action=Waiting | E3 + E7 + E9 |
+/// | P3-old | none | expired same-owner/different Runtime Resident source | none | pending; zero CAS/effects |
+/// | P3 | none | expired exact-owner+Runtime Resident source | none, action=Waiting | E3 + E7 + E9 |
 /// | P3a | none | unclaimed, credential capability absent | none | E4 |
 /// | P3b | none | Unmaterialized source | none | E4, zero root CAS |
 /// | P3c | none | asserted expired, current same-generation live | none | E3 + E7 + E9 |
 /// | P3d | none | asserted and current expired | none | E4 before projection |
 /// | P4 | complete | exact | wrong | E4 |
 /// | P5 | complete | exact | exact/replay | E5 + E6 + E9 |
-/// | P6 | complete | exact successor of expired Resident affinity | rejection/replay | E8 + E6 + E9 |
+/// | P6 | complete | exact-Runtime successor of expired Resident affinity | rejection/replay | E8 + E6 + E9 |
 fn repository_publication_terminal_session(
     session_id: &str,
     child: Option<&str>,
     lease: Option<awaken_session_resource_contract::SessionRealizationLease>,
     environment: awaken_session_state_contract::SessionEnvironmentState,
+    intent: Option<awaken_session_state_contract::SessionRepositoryPublicationIntent>,
 ) -> PersistedSession {
     let resources = credentialed_repository_resources("source", "repo-1");
-    let intent = repository_publication_intent(&resources);
+    let intent = intent.unwrap_or_else(|| repository_publication_intent(&resources));
     let mut session = persisted(session_id, true, "terminated");
     session.environment = environment;
     session.resources = awaken_session_state_contract::SessionResourceState::from_active(resources);
@@ -2794,81 +2799,65 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     // Constraint: SessionCleanupOperation is the only queue/receipt registry;
     // this matrix therefore observes only its command projections and root CAS.
     let repo = sqlite_session_repository("Repository publication Session repository").await;
+    let child_id = SessionId::from("publication-child-barrier");
+    let cold_id = SessionId::from("publication-cold-claim");
+    let rejected_id = SessionId::from("publication-rejected");
+    let current_rejected_id = SessionId::from("publication-rejected-current");
+    let invalid_id = SessionId::from("publication-unmaterialized");
     let exact_lease = awaken_session_resource_contract::SessionRealizationLease {
         owner: "worker-a".into(),
         runtime_incarnation: "worker-a:publication".into(),
         epoch: 4,
         expires_at_unix_ms: u64::MAX,
     };
-    create(
-        repo.as_ref(),
-        repository_publication_terminal_session(
-            "publication-child-barrier",
-            Some("publication-child"),
-            Some(exact_lease.clone()),
-            awaken_session_state_contract::SessionEnvironmentState::Resident {
-                binding: "publication-child-barrier:publication-source".into(),
-                effect_id: None,
-                generation: None,
-                idle_since_unix_ms: None,
-            },
-        ),
-    )
-    .await;
     let expired_cold_lease = awaken_session_resource_contract::SessionRealizationLease {
         owner: "worker-b".into(),
         runtime_incarnation: "worker-b:previous-publication".into(),
         epoch: 2,
         expires_at_unix_ms: 1,
     };
-    create(
-        repo.as_ref(),
-        repository_publication_terminal_session(
-            "publication-cold-claim",
-            None,
-            Some(expired_cold_lease.clone()),
-            awaken_session_state_contract::SessionEnvironmentState::Resident {
-                binding: "publication-cold-claim:publication-source".into(),
-                effect_id: None,
-                generation: None,
-                idle_since_unix_ms: None,
-            },
-        ),
-    )
-    .await;
-    let resources = credentialed_repository_resources("source", "repo-1");
-    let mut rejected_intent = repository_publication_intent(&resources);
-    rejected_intent.expectation.expected_prior_commit =
-        Some("1111111111111111111111111111111111111111".into());
-    let mut rejected = persisted("publication-rejected", true, "terminated");
-    rejected.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
-        binding: "publication-rejected:publication-source".into(),
+    let mut rejected_intent =
+        repository_publication_intent(&credentialed_repository_resources("source", "repo-1"));
+    rejected_intent.expectation.expected_prior_commit = Some("1".repeat(40));
+    let resident = |id: &str| awaken_session_state_contract::SessionEnvironmentState::Resident {
+        binding: format!("{id}:publication-source"),
         effect_id: None,
         generation: None,
         idle_since_unix_ms: None,
     };
-    rejected.realization = Some(expired_cold_lease.clone());
-    rejected.resources =
-        awaken_session_state_contract::SessionResourceState::from_active(resources);
-    rejected
-        .terminal_cleanup
-        .request_with_publication(
-            &awaken_session_types::SessionId::from("publication-rejected"),
-            rejected_intent,
+    for (id, child, lease, intent) in [
+        (
+            "publication-child-barrier",
+            Some("publication-child"),
+            exact_lease.clone(),
+            None,
+        ),
+        (
+            "publication-cold-claim",
+            None,
+            expired_cold_lease.clone(),
+            None,
+        ),
+        (
+            "publication-rejected",
+            None,
+            expired_cold_lease.clone(),
+            Some(rejected_intent.clone()),
+        ),
+    ] {
+        create(
+            repo.as_ref(),
+            repository_publication_terminal_session(id, child, Some(lease), resident(id), intent),
         )
-        .unwrap();
-    rejected
-        .terminal_cleanup
-        .freeze_targets(
-            &awaken_session_types::SessionId::from("publication-rejected"),
-            [],
-            17,
-            19,
-        )
-        .unwrap();
-    create(repo.as_ref(), rejected).await;
-    let application = application_with_configuration(
-        repo.clone(),
+        .await;
+    }
+    let retained_cold = repo.get(&cold_id).await.unwrap();
+    let retained_rejected = repo.get(&rejected_id).await.unwrap();
+    let observation_runtime = Arc::new(RecordingCleanupRuntime::default());
+    let application = SessionApplication::new_with_configuration(
+        observation_runtime.clone(),
+        Arc::new(NoopMcpRealizer),
+        crate::SessionPersistence::new(repo.clone(), system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
@@ -2879,7 +2868,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         matches!(
             application
                 .terminal_repository_publication_command(
-                    &SessionId::from("publication-cold-claim"),
+                    &cold_id,
                     &expired_cold_lease,
                 )
                 .await,
@@ -2889,7 +2878,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     );
 
     let child_work = application
-        .terminal_cleanup_work(&SessionId::from("publication-child-barrier"), &exact_lease)
+        .terminal_cleanup_work(&child_id, &exact_lease)
         .await
         .expect("P1 exact lease")
         .expect("P1 terminal fence");
@@ -2902,10 +2891,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     assert_eq!(child_commands[0].thread_id, "publication-child", "P1/E1");
     assert!(
         application
-            .terminal_repository_publication_command(
-                &SessionId::from("publication-child-barrier"),
-                &exact_lease,
-            )
+            .terminal_repository_publication_command(&child_id, &exact_lease,)
             .await
             .expect("P1 exact lease")
             .is_none(),
@@ -2916,7 +2902,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         .fail_publication_once
         .store(true, Ordering::SeqCst);
     crate::drive_session_terminal_cleanup(
-        &SessionId::from("publication-child-barrier"),
+        &child_id,
         &exact_lease,
         &application,
         &child_worker,
@@ -2927,7 +2913,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     assert!(
         matches!(
             application
-                .terminal_cleanup_work(&SessionId::from("publication-child-barrier"), &exact_lease)
+                .terminal_cleanup_work(&child_id, &exact_lease)
                 .await
                 .unwrap()
                 .unwrap()
@@ -2942,7 +2928,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         matches!(
             application
                 .terminal_repository_publication_command(
-                    &SessionId::from("publication-child-barrier"),
+                    &child_id,
                     &stale,
                 )
                 .await,
@@ -2977,13 +2963,95 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     manifest
         .capabilities
         .insert(awaken_worker_contract::REPOSITORY_CREDENTIALS_CAPABILITY.to_string());
+    workers.replace(vec![terminal_cleanup_worker(&target, manifest.clone())]);
+    assert!(
+        application
+            .claim_next_terminal_cleanup(target.clone(), None)
+            .await
+            .expect("P3-old unresolved physical predecessor stays pending")
+            .is_none(),
+        "P3-old credentials do not prove predecessor closure or physical-source access",
+    );
+    for before in [&retained_cold, &retained_rejected] {
+        assert_eq!(
+            repo.get(&before.session_id).await.unwrap(),
+            *before,
+            "P3-old/P6-old original physical Runtime remains unchanged with zero root CAS",
+        );
+    }
+    assert!(
+        observation_runtime.effective_ids.lock().unwrap().is_empty()
+            && observation_runtime
+                .publication_intents
+                .lock()
+                .unwrap()
+                .is_empty(),
+        "P3-old no early preparation, disposal or publication effects",
+    );
+    // New exact-Runtime subjects exercise ordinary continuation without
+    // rewriting either original physical predecessor or fabricating history.
+    let expired_current = awaken_session_resource_contract::SessionRealizationLease {
+        runtime_incarnation: target.runtime_incarnation.clone(),
+        ..expired_cold_lease.clone()
+    };
+    for (id, intent) in [
+        ("publication-cold-claim-current", None),
+        ("publication-rejected-current", Some(rejected_intent)),
+    ] {
+        create(
+            repo.as_ref(),
+            repository_publication_terminal_session(
+                id,
+                None,
+                Some(expired_current.clone()),
+                resident(id),
+                intent,
+            ),
+        )
+        .await;
+    }
+    // P3a must also reach an exact-Runtime subject: the retained old rows
+    // above cannot independently prove the Repository-capability gate.
+    let current_before = repo
+        .get(&SessionId::from("publication-cold-claim-current"))
+        .await
+        .unwrap();
+    let mut without_credentials = manifest.clone();
+    without_credentials
+        .capabilities
+        .remove(awaken_worker_contract::REPOSITORY_CREDENTIALS_CAPABILITY);
+    workers.replace(vec![terminal_cleanup_worker(&target, without_credentials)]);
+    assert!(
+        application
+            .claim_next_terminal_cleanup(target.clone(), None)
+            .await
+            .expect("P3a exact Runtime still requires Repository credentials")
+            .is_none(),
+        "P3a/E4 independent of predecessor affinity",
+    );
+    assert_eq!(
+        repo.get(&current_before.session_id).await.unwrap(),
+        current_before,
+        "P3a zero root CAS"
+    );
     workers.replace(vec![terminal_cleanup_worker(&target, manifest)]);
     let assignment = application
         .claim_next_terminal_cleanup(target.clone(), None)
         .await
         .expect("P3 claim")
         .expect("P3 publication-only assignment");
-    assert_eq!(assignment.session_id, "publication-cold-claim", "P3/E3");
+    assert_eq!(
+        assignment.session_id, "publication-cold-claim-current",
+        "P3/E3"
+    );
+    assert_eq!(
+        assignment.authority.lease.epoch, 3,
+        "P3 exact Runtime epoch2 successor"
+    );
+    assert_eq!(
+        assignment.authority.lease.runtime_incarnation, target.runtime_incarnation,
+        "P3 exact Runtime continuation"
+    );
     assert!(
         matches!(
             application
@@ -3142,7 +3210,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         .expect("P6 claim")
         .expect("P6 rejected publication assignment");
     assert_eq!(
-        rejected_assignment.session_id, "publication-rejected",
+        rejected_assignment.session_id, "publication-rejected-current",
         "P6 exact Session"
     );
     let projection = application
@@ -3213,17 +3281,12 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     )
     .await
     .expect("P6 root preparation and aggregate disposal");
-    let durable = repo
-        .get(&SessionId::from("publication-rejected"))
-        .await
-        .unwrap();
+    let durable = repo.get(&current_rejected_id).await.unwrap();
     assert!(durable.terminal_cleanup.is_completed(), "P6/E6 completed");
     assert_eq!(
         durable
             .terminal_cleanup
-            .repository_publication_rejection(&awaken_session_types::SessionId::from(
-                "publication-rejected"
-            ))
+            .repository_publication_rejection(&current_rejected_id)
             .unwrap(),
         Some(&rejection),
         "P6/E8 rejection survives the same root CAS lifecycle"
@@ -3233,6 +3296,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         None,
         None,
         awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
+        None,
     );
     create(repo.as_ref(), invalid_source).await;
     assert!(
@@ -3243,13 +3307,16 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         "P3b/E4 an Unmaterialized Session cannot acquire a publication lease"
     );
     assert!(
-        repo.get(&SessionId::from("publication-unmaterialized"))
-            .await
-            .unwrap()
-            .realization
-            .is_none(),
+        repo.get(&invalid_id).await.unwrap().realization.is_none(),
         "P3b/E4 invalid source admission performs zero root mutation"
     );
+    for before in [&retained_cold, &retained_rejected] {
+        assert_eq!(
+            repo.get(&before.session_id).await.unwrap(),
+            *before,
+            "P3-old/P6-old later publication/replay never mutates historical physical rows"
+        );
+    }
 }
 
 #[tokio::test]
@@ -3281,6 +3348,7 @@ async fn cold_terminal_cleanup_claim_pages_past_a_saturated_invalid_batch() {
                 None,
                 None,
                 awaken_session_state_contract::SessionEnvironmentState::Unmaterialized,
+                None,
             ),
         )
         .await;
@@ -3359,12 +3427,12 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
     // require its stated effects, including each fail-closed outcome.
     // Cause/effect graph: C1 placement is Worker-owned; C2 cleanup has an
     // immutable Requested command; C3 the realization lease is absent, expired
-    // under the same logical Worker installation, exact-current with equal or
-    // older expiry, live under that owner's predecessor incarnation,
+    // under the exact same Worker incarnation, exact-current with equal or
+    // older expiry, live/expired under that owner's predecessor incarnation,
     // or belongs to a foreign logical Worker; C4 the authenticated registry
     // snapshot is current and explicitly supports the closed cleanup protocol;
     // C5 the root CAS response is lost. Effects: E1 unbound or
-    // expired same-owner claims allocate epoch N+1; E2 exact-current returns
+    // expired exact-incarnation claims allocate epoch N+1; E2 exact-current returns
     // its existing lease without a root CAS; the shorter proof window is tested
     // with a real Registry in cleanup_timing. E3 the cursor advances past each returned
     // row so one pending candidate cannot starve the bounded sweep; E4 foreign,
@@ -3373,8 +3441,8 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
     // Commands remain in terminal_cleanup; Worker compatibility cannot cross
     // the provider's stable installation namespace.
     // | Rule | C1+C2 | lease | Effect |
-    // | C1 | yes | same owner, predecessor incarnation, live | E4 |
-    // | C2/C3 | yes | absent / expired same owner | E1 |
+    // | C1 | yes | same owner, predecessor incarnation, live/expired, no no-Create receipt | E4 |
+    // | C2/C3 | yes | absent / expired exact owner+incarnation | E1 |
     // | C4 | yes | exact current, equal/newer target | E2+E3 |
     // | C5 | yes | live or expired foreign owner | E4; immutable provider affinity |
     // | C6 | no / Fenced / unauthenticated or legacy Worker | any | E4 |
@@ -3409,55 +3477,42 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
         session
     };
 
-    create(
-        repo.as_ref(),
-        requested(
+    for (id, current) in [
+        (
             "claim-a-current",
             Some(lease("worker-a", "worker-a:2:boot-new", 4, u64::MAX)),
         ),
-    )
-    .await;
-    create(
-        repo.as_ref(),
-        requested(
+        (
             "claim-b-foreign-live",
             Some(lease("worker-b", "worker-b:1:boot", 5, u64::MAX)),
         ),
-    )
-    .await;
-    create(
-        repo.as_ref(),
-        requested(
+        (
             "claim-b0-current-renewable",
             Some(lease("worker-a", "worker-a:2:boot-new", 4, u64::MAX - 1)),
         ),
-    )
-    .await;
-    create(
-        repo.as_ref(),
-        requested(
+        (
             "claim-c-predecessor",
             Some(lease("worker-a", "worker-a:1:boot-old", 7, u64::MAX)),
         ),
-    )
-    .await;
-    create(repo.as_ref(), requested("claim-d-absent", None)).await;
-    create(
-        repo.as_ref(),
-        requested(
+        ("claim-d-absent", None),
+        (
             "claim-e-expired",
             Some(lease("worker-a", "worker-a:1:boot-old", 9, 1)),
         ),
-    )
-    .await;
-    create(
-        repo.as_ref(),
-        requested(
+        (
+            "claim-e0-expired-current",
+            Some(lease("worker-a", "worker-a:2:boot-new", 9, 1)),
+        ),
+        (
             "claim-f-expired-foreign",
             Some(lease("worker-b", "worker-b:1:boot", 11, 1)),
         ),
-    )
-    .await;
+    ] {
+        create(repo.as_ref(), requested(id, current)).await;
+    }
+    let expired_predecessor = repo.get(&SessionId::from("claim-e-expired")).await.unwrap();
+    // C3 is a distinct same-incarnation continuation. The original expired
+    // predecessor remains a negative; its history/coordinates are unchanged.
     let mut fenced = persisted("claim-g-fenced", true, "terminated");
     assert!(
         fenced
@@ -3500,7 +3555,7 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
         ("C4-equal", "claim-a-current", 4),
         ("C4-longer", "claim-b0-current-renewable", 4),
         ("C2", "claim-d-absent", 1),
-        ("C3", "claim-e-expired", 10),
+        ("C3", "claim-e0-expired-current", 10),
     ] {
         let assignment = application
             .claim_next_terminal_cleanup(target.clone(), after.as_ref())
@@ -3546,6 +3601,11 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
             .realization,
         Some(lease("worker-a", "worker-a:1:boot-old", 7, u64::MAX)),
         "C1/E2 live predecessor affinity performs zero root mutation"
+    );
+    assert_eq!(
+        repo.get(&SessionId::from("claim-e-expired")).await.unwrap(),
+        expired_predecessor,
+        "C1/E4 expired predecessor without an original no-Create receipt stays pending with zero CAS",
     );
     let foreign = repo
         .get(&SessionId::from("claim-f-expired-foreign"))
@@ -3987,9 +4047,14 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
 /// authority restores the exact prior realization; E4 compensation never
 /// overwrites a concurrent successor. Both reads use the installed
 /// `WorkerObservationSource`; Session root CAS remains the sole lease writer.
+/// C0 prior affinity must also identify that same Runtime or carry the real
+/// no-Create archive witness. R0 keeps the original expired predecessor as a
+/// negative with zero CAS; R3a uses a separate exact-incarnation continuation
+/// to reach the original post-CAS Registry race and compensation law.
 ///
 /// | Rule | C2 at CAS | C3 | C4 readback | C5 successor | Effect |
 /// |---|---|---|---|---|---|
+/// | R0 | predecessor affinity has no no-Create witness | no | - | no | pending; original root unchanged |
 /// | R1 | revoked | no | - | no | E1; no assignment/root mutation |
 /// | R2 | unavailable | no | - | no | E2 |
 /// | R3a | exact | yes | revoked | no | E3 |
@@ -3998,26 +4063,24 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
 #[tokio::test]
 async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
     let target = registry_race_target();
+    let configuration = SessionApplicationConfiguration {
+        execution_placement: SessionExecutionPlacement::RegisteredWorker,
+        ..Default::default()
+    };
     let registered = || terminal_cleanup_worker(&target, terminal_cleanup_manifest());
 
     let r1_repo = sqlite_session_repository("R1 Session repository").await;
+    let r1_id = SessionId::from("registry-race-r1");
     create(
         r1_repo.as_ref(),
         registry_race_terminal_session("registry-race-r1", None),
     )
     .await;
-    let r1_revision = r1_repo
-        .get(&SessionId::from("registry-race-r1"))
-        .await
-        .unwrap()
-        .revision;
+    let r1_revision = r1_repo.get(&r1_id).await.unwrap().revision;
     let r1_application = application_with_configuration(
         r1_repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
-        SessionApplicationConfiguration {
-            execution_placement: SessionExecutionPlacement::RegisteredWorker,
-            ..Default::default()
-        },
+        configuration.clone(),
     );
     let r1_workers = Arc::new(RecordingWorkerObservations::default());
     r1_workers.script([
@@ -4035,32 +4098,23 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
             .is_none(),
         "R1/E1"
     );
-    let r1_durable = r1_repo
-        .get(&SessionId::from("registry-race-r1"))
-        .await
-        .unwrap();
+    let r1_durable = r1_repo.get(&r1_id).await.unwrap();
     assert_eq!(r1_durable.realization, None, "R1/E1");
     assert_eq!(r1_durable.revision, r1_revision, "R1/E1 zero root CAS");
     assert_eq!(r1_workers.list_calls.load(Ordering::SeqCst), 2, "R1/E1");
 
     let r2_repo = sqlite_session_repository("R2 Session repository").await;
+    let r2_id = SessionId::from("registry-race-r2");
     create(
         r2_repo.as_ref(),
         registry_race_terminal_session("registry-race-r2", None),
     )
     .await;
-    let r2_revision = r2_repo
-        .get(&SessionId::from("registry-race-r2"))
-        .await
-        .unwrap()
-        .revision;
+    let r2_revision = r2_repo.get(&r2_id).await.unwrap().revision;
     let r2_application = application_with_configuration(
         r2_repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
-        SessionApplicationConfiguration {
-            execution_placement: SessionExecutionPlacement::RegisteredWorker,
-            ..Default::default()
-        },
+        configuration.clone(),
     );
     let r2_workers = Arc::new(RecordingWorkerObservations::default());
     r2_workers.script([
@@ -4083,20 +4137,54 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
         ),
         "R2/E2"
     );
-    let r2_durable = r2_repo
-        .get(&SessionId::from("registry-race-r2"))
-        .await
-        .unwrap();
+    let r2_durable = r2_repo.get(&r2_id).await.unwrap();
     assert_eq!(r2_durable.realization, None, "R2/E2");
     assert_eq!(r2_durable.revision, r2_revision, "R2/E2 zero root CAS");
     assert_eq!(r2_workers.list_calls.load(Ordering::SeqCst), 2, "R2/E2");
 
-    let r3_prior = awaken_session_resource_contract::SessionRealizationLease {
+    let r3_predecessor = awaken_session_resource_contract::SessionRealizationLease {
         owner: target.owner.clone(),
         runtime_incarnation: "worker-registry-race:1:boot-prior".into(),
         epoch: 7,
         expires_at_unix_ms: 1,
     };
+    let r0_repo = sqlite_session_repository("R0 predecessor Session repository").await;
+    let r0_id = SessionId::from("registry-race-r0");
+    create(
+        r0_repo.as_ref(),
+        registry_race_terminal_session("registry-race-r0", Some(r3_predecessor.clone())),
+    )
+    .await;
+    let r0_before = r0_repo.get(&r0_id).await.unwrap();
+    let r0_application = application_with_configuration(
+        r0_repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+        configuration.clone(),
+    );
+    let r0_workers = Arc::new(RecordingWorkerObservations::default());
+    r0_workers.replace(vec![registered()]);
+    r0_application
+        .set_worker_observation_source(r0_workers.clone())
+        .expect("R0 Worker observation authority");
+    assert!(
+        r0_application
+            .claim_next_terminal_cleanup(target.clone(), None)
+            .await
+            .expect("R0 unresolved predecessor remains pending")
+            .is_none(),
+        "R0 no same-name Worker takeover without original no-Create evidence",
+    );
+    assert_eq!(
+        r0_repo.get(&r0_id).await.unwrap(),
+        r0_before,
+        "R0 zero root CAS",
+    );
+    let r3_prior = awaken_session_resource_contract::SessionRealizationLease {
+        runtime_incarnation: target.runtime_incarnation.clone(),
+        ..r3_predecessor
+    };
+    // This independent exact-incarnation expired row is ordinary continued
+    // ownership. It does not retrofit closure or an archive receipt onto R0.
     let r3_inner: Arc<dyn awaken_session_repository_contract::SessionStore> =
         sqlite_session_repository("R3 Session repository").await;
     create(
@@ -4108,10 +4196,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
     let r3_application = application_with_configuration(
         r3_repo,
         Arc::new(RecordingEnvironmentSource::default()),
-        SessionApplicationConfiguration {
-            execution_placement: SessionExecutionPlacement::RegisteredWorker,
-            ..Default::default()
-        },
+        configuration.clone(),
     );
     let r3_workers = Arc::new(RecordingWorkerObservations::default());
     r3_workers.script([
@@ -4162,10 +4247,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
     let r3b_application = application_with_configuration(
         r3b_repo,
         Arc::new(RecordingEnvironmentSource::default()),
-        SessionApplicationConfiguration {
-            execution_placement: SessionExecutionPlacement::RegisteredWorker,
-            ..Default::default()
-        },
+        configuration.clone(),
     );
     let r3b_workers = Arc::new(RecordingWorkerObservations::default());
     r3b_workers.script([
@@ -4206,10 +4288,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
     let r3c_application = application_with_configuration(
         r3c_repo,
         Arc::new(RecordingEnvironmentSource::default()),
-        SessionApplicationConfiguration {
-            execution_placement: SessionExecutionPlacement::RegisteredWorker,
-            ..Default::default()
-        },
+        configuration.clone(),
     );
     let r3c_workers = Arc::new(RecordingWorkerObservations::default());
     r3c_workers.script([
@@ -4254,6 +4333,9 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     // Session root unchanged; E3 Draining/full-capacity Workers may release
     // existing resources because cleanup is not new Run capacity; E4 physical
     // Environment state without a historical owner fails closed.
+    // C9 a matching logical name/checkpoint format does not close an old
+    // Runtime or prove physical-domain access. Keep that historical subject
+    // pending, and use a separate exact-Runtime expired subject for W8/W9.
     //
     // | Rule | source | protocol | resources | Environment | Effect |
     // |---|---|---|---|---|---|
@@ -4265,8 +4347,9 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     // | W5 | exact | current | missing capability | unmaterialized | E2 skip |
     // | W6 | exact Draining/full | current | exact capability | unmaterialized | E1+E3 |
     // | W7 | exact | current, Repository credential missing/exact | credentialed | E2 then E1 |
-    // | W8 | exact | current, checkpoint format missing | none | Hibernated/owned | E2 |
-    // | W9 | exact | current, checkpoint format exact | none | Hibernated/owned | E1 |
+    // | W8-old/W9-old | new Runtime | missing/exact checkpoint format | none | Hibernated/old Runtime | pending; zero CAS/effects |
+    // | W8 | exact | current, checkpoint format missing | none | Hibernated/exact Runtime | E2 |
+    // | W9 | exact | current, checkpoint format exact | none | Hibernated/exact Runtime | E1 |
     // | W10 | exact | current | exact capability | Resident/no owner | E2+E4 |
     let repo = sqlite_session_repository("Worker-compatible cleanup Session repository").await;
     let target = awaken_session_realization_contract::SessionRealizationTarget {
@@ -4275,28 +4358,18 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
         lease_expires_at_unix_ms: u64::MAX,
         reassign_existing_lease: false,
     };
-    let mut requested = persisted("claim-compatible", true, "terminated");
+    let mut requested = registry_race_terminal_session("claim-compatible", None);
     requested.resources = awaken_session_state_contract::SessionResourceState::from_active(
         file_resources("claim-compatible-file"),
     );
-    assert!(
-        requested
-            .terminal_cleanup
-            .request(&awaken_session_types::SessionId::from("claim-compatible"))
-    );
-    requested
-        .terminal_cleanup
-        .freeze_targets(
-            &awaken_session_types::SessionId::from("claim-compatible"),
-            [],
-            0,
-            0,
-        )
-        .expect("freeze compatible cleanup target");
+    // The original checked factory performs the same request/freeze assertions.
     create(repo.as_ref(), requested).await;
 
-    let application = application_with_configuration(
-        repo.clone(),
+    let observation_runtime = Arc::new(RecordingCleanupRuntime::default());
+    let application = SessionApplication::new_with_configuration(
+        observation_runtime.clone(),
+        Arc::new(NoopMcpRealizer),
+        crate::SessionPersistence::new(repo.clone(), system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
@@ -4442,25 +4515,9 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
 
     let credentialed_session_id = "claim-d-credential";
     let resources = credentialed_repository_resources("source", "repo-active");
-    let mut credentialed = persisted(credentialed_session_id, true, "terminated");
+    let mut credentialed = registry_race_terminal_session(credentialed_session_id, None);
     credentialed.resources =
         awaken_session_state_contract::SessionResourceState::from_active(resources);
-    assert!(
-        credentialed
-            .terminal_cleanup
-            .request(&awaken_session_types::SessionId::from(
-                credentialed_session_id
-            ))
-    );
-    credentialed
-        .terminal_cleanup
-        .freeze_targets(
-            &awaken_session_types::SessionId::from(credentialed_session_id),
-            [],
-            0,
-            0,
-        )
-        .expect("freeze credentialed cleanup target");
     create(repo.as_ref(), credentialed).await;
     let mut resource_only_manifest = terminal_cleanup_manifest();
     resource_only_manifest
@@ -4496,96 +4553,126 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     );
 
     let checkpoint_session_id = "claim-e-checkpoint";
-    let generation = awaken_session_state_contract::SandboxGeneration::new(
-        &awaken_session_types::SessionId::from(checkpoint_session_id),
-        1,
-        u64::MAX,
-        "env-7",
-        "base-image",
-    );
-    let mut checkpoint = persisted(checkpoint_session_id, true, "terminated");
-    assert!(
-        checkpoint
-            .terminal_cleanup
-            .request(&awaken_session_types::SessionId::from(
-                checkpoint_session_id
-            ))
-    );
-    checkpoint
-        .terminal_cleanup
-        .freeze_targets(
-            &awaken_session_types::SessionId::from(checkpoint_session_id),
-            [],
-            0,
-            0,
-        )
-        .expect("freeze checkpoint cleanup target");
-    checkpoint.environment = awaken_session_state_contract::SessionEnvironmentState::Hibernated {
-        checkpoint: awaken_session_state_contract::SandboxCheckpointRef {
-            id: "checkpoint-object".into(),
-            format: "portable-checkpoint-v1".into(),
-            digest: "sha256:checkpoint".into(),
-            size_bytes: 7,
-            created_at_unix_ms: 1,
-            expires_at_unix_ms: u64::MAX,
-            environment_fingerprint: "env-7".into(),
-            base_image_fingerprint: "base-image".into(),
-            excluded_mounts: Vec::new(),
-            suspend_effect_id: "suspend-effect".into(),
-        },
-        generation,
-    };
-    checkpoint.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
-        owner: target.owner.clone(),
-        runtime_incarnation: "worker-compatible:2:old-boot".into(),
-        epoch: 5,
-        expires_at_unix_ms: 1,
-    });
-    create(repo.as_ref(), checkpoint).await;
-    workers.replace(vec![terminal_cleanup_worker(
-        &target,
-        terminal_cleanup_manifest(),
-    )]);
-    assert!(
-        application
+    let current_checkpoint_id = "claim-e0-checkpoint-current";
+    let mut retained_checkpoint = None;
+    let mut checkpoint_assignment = None;
+    // One original root factory and one fixture table preserve both separate
+    // subjects. Format support never converts the old Runtime into a closed
+    // source; only the independent exact-Runtime row reaches W9 continuation.
+    for (id, runtime, object_id, exact_runtime) in [
+        (
+            checkpoint_session_id,
+            "worker-compatible:2:old-boot",
+            "checkpoint-object",
+            false,
+        ),
+        (
+            current_checkpoint_id,
+            target.runtime_incarnation.as_str(),
+            "checkpoint-current-object",
+            true,
+        ),
+    ] {
+        let mut checkpoint = registry_race_terminal_session(
+            id,
+            Some(awaken_session_resource_contract::SessionRealizationLease {
+                owner: target.owner.clone(),
+                runtime_incarnation: runtime.into(),
+                epoch: 5,
+                expires_at_unix_ms: 1,
+            }),
+        );
+        checkpoint.environment =
+            awaken_session_state_contract::SessionEnvironmentState::Hibernated {
+                checkpoint: awaken_session_state_contract::SandboxCheckpointRef {
+                    id: object_id.into(),
+                    format: "portable-checkpoint-v1".into(),
+                    digest: "sha256:checkpoint".into(),
+                    size_bytes: 7,
+                    created_at_unix_ms: 1,
+                    expires_at_unix_ms: u64::MAX,
+                    environment_fingerprint: "env-7".into(),
+                    base_image_fingerprint: "base-image".into(),
+                    excluded_mounts: Vec::new(),
+                    suspend_effect_id: "suspend-effect".into(),
+                },
+                generation: awaken_session_state_contract::SandboxGeneration::new(
+                    &SessionId::from(id),
+                    1,
+                    u64::MAX,
+                    "env-7",
+                    "base-image",
+                ),
+            };
+        create(repo.as_ref(), checkpoint).await;
+        let before = repo.get(&SessionId::from(id)).await.unwrap();
+        workers.replace(vec![terminal_cleanup_worker(
+            &target,
+            terminal_cleanup_manifest(),
+        )]);
+        assert!(
+            application
+                .claim_next_terminal_cleanup(
+                    target.clone(),
+                    Some(&credentialed_assignment.session_id),
+                )
+                .await
+                .expect("W8 unsupported checkpoint format is ineligible")
+                .is_none(),
+            "W8/E2"
+        );
+        assert_eq!(
+            repo.get(&SessionId::from(id)).await.unwrap(),
+            before,
+            "W8 zero root CAS"
+        );
+        let mut checkpoint_manifest = terminal_cleanup_manifest();
+        checkpoint_manifest
+            .checkpoint_formats
+            .insert("portable-checkpoint-v1".into());
+        workers.replace(vec![terminal_cleanup_worker(&target, checkpoint_manifest)]);
+        let admitted = application
             .claim_next_terminal_cleanup(target.clone(), Some(&credentialed_assignment.session_id))
             .await
-            .expect("W8 unsupported checkpoint format is ineligible")
-            .is_none(),
-        "W8/E2"
-    );
-    let mut checkpoint_manifest = terminal_cleanup_manifest();
-    checkpoint_manifest
-        .checkpoint_formats
-        .insert("portable-checkpoint-v1".into());
-    workers.replace(vec![terminal_cleanup_worker(&target, checkpoint_manifest)]);
-    let checkpoint_assignment = application
-        .claim_next_terminal_cleanup(target.clone(), Some(&credentialed_assignment.session_id))
-        .await
-        .expect("W9 supported checkpoint admission")
-        .expect("W9 assignment");
-    assert_eq!(
-        checkpoint_assignment.session_id, checkpoint_session_id,
-        "W9/E1"
-    );
+            .expect("W9 supported checkpoint admission");
+        if exact_runtime {
+            let assignment = admitted.expect("W9 exact Runtime assignment");
+            assert_eq!(assignment.session_id, current_checkpoint_id, "W9/E1");
+            assert_eq!(
+                assignment.authority.lease.epoch, 6,
+                "W9 exact Runtime epoch5 successor"
+            );
+            assert_eq!(
+                assignment.authority.lease.runtime_incarnation, target.runtime_incarnation,
+                "W9 exact Runtime continuation"
+            );
+            checkpoint_assignment = Some(assignment);
+        } else {
+            assert!(
+                admitted.is_none(),
+                "W9-old portability cannot prove closed execution/domain access"
+            );
+            assert_eq!(
+                repo.get(&SessionId::from(id)).await.unwrap(),
+                before,
+                "W8-old/W9-old original Runtime/checkpoint preserved with zero CAS"
+            );
+            assert!(
+                observation_runtime.effective_ids.lock().unwrap().is_empty()
+                    && observation_runtime
+                        .publication_intents
+                        .lock()
+                        .unwrap()
+                        .is_empty(),
+                "W8-old/W9-old no early preparation, disposal or publication effects"
+            );
+            retained_checkpoint = Some(before);
+        }
+    }
+    let checkpoint_assignment = checkpoint_assignment.expect("W9 exact Runtime positive row ran");
+    let retained_checkpoint = retained_checkpoint.expect("W9-old predecessor negative row ran");
 
-    let mut unowned = persisted("claim-f-unowned-resident", true, "terminated");
-    assert!(
-        unowned
-            .terminal_cleanup
-            .request(&awaken_session_types::SessionId::from(
-                "claim-f-unowned-resident"
-            ))
-    );
-    unowned
-        .terminal_cleanup
-        .freeze_targets(
-            &awaken_session_types::SessionId::from("claim-f-unowned-resident"),
-            [],
-            0,
-            0,
-        )
-        .expect("freeze unowned cleanup target");
+    let mut unowned = registry_race_terminal_session("claim-f-unowned-resident", None);
     unowned.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
         binding: "physical-without-owner".into(),
         effect_id: None,
@@ -4609,6 +4696,13 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
             .realization
             .is_none(),
         "W10/E2 zero root mutation"
+    );
+    assert_eq!(
+        repo.get(&SessionId::from(checkpoint_session_id))
+            .await
+            .unwrap(),
+        retained_checkpoint,
+        "W9-old later exact-Runtime assignment never reassigns the historical checkpoint row",
     );
 }
 
