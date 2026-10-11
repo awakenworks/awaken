@@ -410,7 +410,9 @@ async fn recovery_enforces_ticket_deadline_using_the_supplied_owner_clock() {
     // Boundary design: one reading before expiry may resume; the deadline itself
     // and a later reading reject without a tool effect or a ticket-consumption commit.
     for now in [19, 20, 21] {
-        let (runtime, snapshot, _, hits, store) = setup(true);
+        let (runtime, snapshot, _, hits, _) = setup(true);
+        let clock: Arc<dyn awaken_time::WallClock> = Arc::new(FrozenClock(now));
+        let store = Arc::new(MemoryCommitCoordinator::new(clock.clone()));
         let context = RuntimeRunContext::new().with_store(store.clone());
         let session = runtime.session(&snapshot, "deadline", context).unwrap();
         let outcome = session.run("hello").await.unwrap();
@@ -435,7 +437,7 @@ async fn recovery_enforces_ticket_deadline_using_the_supplied_owner_clock() {
             .resume_with_id_async_with_options(
                 outcome.run_id().clone(),
                 "ignored",
-                ApprovalOptions::default().with_clock(Arc::new(FrozenClock(now))),
+                ApprovalOptions::default().with_clock(clock),
                 |_| async { Ok(ResumeResult::allow()) },
             )
             .await;
