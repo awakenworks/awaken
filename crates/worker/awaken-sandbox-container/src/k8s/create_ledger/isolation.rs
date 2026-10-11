@@ -151,12 +151,10 @@ fn exact_reservation_metadata(
         }
         _ => false,
     };
-    metadata.name.as_deref() == Some(ticket.request.name.as_str())
-        && metadata.namespace.as_deref() == Some(ticket.request.namespace.as_str())
+    request_fields_match(ticket, metadata)
         && metadata.uid.as_deref().is_some_and(|actual| {
             !actual.trim().is_empty() && uid.is_none_or(|expected| actual == expected)
         })
-        && metadata.deletion_timestamp.is_none()
         && metadata.owner_references.is_none()
         && exact_finalizers
         && metadata
@@ -165,45 +163,59 @@ fn exact_reservation_metadata(
             .and_then(|labels| labels.get(ISOLATION_LABEL))
             .map(String::as_str)
             == Some("true")
-        && metadata
+}
+
+/// Original-request field law shared by typed ledger observations, provider
+/// reservations and broker JSON results. UID admission, nonce presence and
+/// isolation purpose remain with each caller; this grants no effect authority.
+#[must_use]
+pub fn original_request_metadata_matches(
+    request: &super::CreateTicketRequest,
+    nonce: &str,
+    name: Option<&str>,
+    namespace: Option<&str>,
+    observed_nonce: Option<&str>,
+    request_digest: Option<&str>,
+    not_deleting: bool,
+) -> bool {
+    name == Some(request.name.as_str())
+        && namespace == Some(request.namespace.as_str())
+        && observed_nonce == Some(nonce)
+        && request_digest == Some(request.digest.as_str())
+        && not_deleting
+}
+
+fn request_fields_match(ticket: &CreateTicket, metadata: &ObjectMeta) -> bool {
+    original_request_metadata_matches(
+        &ticket.request,
+        &ticket.isolation_id,
+        metadata.name.as_deref(),
+        metadata.namespace.as_deref(),
+        metadata
             .annotations
             .as_ref()
             .and_then(|values| values.get(ISOLATION_ID_ANNOTATION))
-            .map(String::as_str)
-            == Some(ticket.isolation_id.as_str())
-        && metadata
+            .map(String::as_str),
+        metadata
             .annotations
             .as_ref()
             .and_then(|values| values.get(REQUEST_DIGEST_ANNOTATION))
-            .map(String::as_str)
-            == Some(ticket.request.digest.as_str())
+            .map(String::as_str),
+        metadata.deletion_timestamp.is_none(),
+    )
 }
 
 fn exact_original_metadata(ticket: &CreateTicket, metadata: &ObjectMeta) -> bool {
-    metadata.name.as_deref() == Some(ticket.request.name.as_str())
-        && metadata.namespace.as_deref() == Some(ticket.request.namespace.as_str())
+    request_fields_match(ticket, metadata)
         && metadata
             .uid
             .as_deref()
             .is_some_and(|uid| !uid.trim().is_empty())
-        && metadata.deletion_timestamp.is_none()
         && metadata
             .labels
             .as_ref()
             .and_then(|labels| labels.get(ISOLATION_LABEL))
             .is_none()
-        && metadata
-            .annotations
-            .as_ref()
-            .and_then(|values| values.get(ISOLATION_ID_ANNOTATION))
-            .map(String::as_str)
-            == Some(ticket.isolation_id.as_str())
-        && metadata
-            .annotations
-            .as_ref()
-            .and_then(|values| values.get(REQUEST_DIGEST_ANNOTATION))
-            .map(String::as_str)
-            == Some(ticket.request.digest.as_str())
 }
 
 fn exact_reservation(ticket: &CreateTicket, observed: &Pod, uid: Option<&str>) -> bool {
@@ -447,6 +459,131 @@ mod tests {
             origin: Default::default(),
             isolation_id: "0123456789abcdef0123456789abcdef".into(),
             isolation_pending: true,
+        }
+    }
+
+    #[test]
+    fn original_metadata_field_law_keeps_isolation_purpose_and_unknown_uid() {
+        // Causes C1: original name/namespace/nonce/request digest and undeleted
+        // state; C2: observed UID missing/empty/blank/other/nonblank with whitespace;
+        // C3: isolation marker present; C4: historical empty nonce. Effects:
+        // L1 all C1+nonblank UID+!C3 -> original metadata; L2 any changed C1,
+        // missing/blank UID or C3 -> refuse. L3 spaced nonblank UID and matching
+        // empty nonce preserve this reader's old semantics; neither borrows the
+        // broker's exact retained UID/nonempty-nonce purpose. This pure law does
+        // not admit historical isolation or turn a reservation into Created.
+        for row in [
+            "exact",
+            "name",
+            "namespace",
+            "nonce",
+            "digest",
+            "deleting",
+            "uid-missing",
+            "uid-empty",
+            "uid-blank",
+            "uid-spaced",
+            "uid-other",
+            "isolation-marker",
+            "nonce-empty",
+        ] {
+            let mut ticket = ticket();
+            let mut metadata = ObjectMeta {
+                name: Some(ticket.request.name.clone()),
+                namespace: Some(ticket.request.namespace.clone()),
+                uid: Some("original-uid".into()),
+                annotations: Some(
+                    [
+                        (ISOLATION_ID_ANNOTATION.into(), ticket.isolation_id.clone()),
+                        (
+                            REQUEST_DIGEST_ANNOTATION.into(),
+                            ticket.request.digest.clone(),
+                        ),
+                    ]
+                    .into(),
+                ),
+                ..Default::default()
+            };
+            match row {
+                "name" => metadata.name = Some("other".into()),
+                "namespace" => metadata.namespace = Some("other".into()),
+                "nonce" => {
+                    metadata
+                        .annotations
+                        .as_mut()
+                        .unwrap()
+                        .insert(ISOLATION_ID_ANNOTATION.into(), "other".into());
+                }
+                "digest" => {
+                    metadata
+                        .annotations
+                        .as_mut()
+                        .unwrap()
+                        .insert(REQUEST_DIGEST_ANNOTATION.into(), "b".repeat(64));
+                }
+                "deleting" => {
+                    metadata.deletion_timestamp = Some(
+                        serde_json::from_value(serde_json::json!("2026-10-12T00:00:00Z")).unwrap(),
+                    )
+                }
+                "uid-missing" => metadata.uid = None,
+                "uid-empty" => metadata.uid = Some(String::new()),
+                "uid-blank" => metadata.uid = Some(" \t ".into()),
+                "uid-spaced" => metadata.uid = Some(" original-uid ".into()),
+                "uid-other" => metadata.uid = Some("another-original-uid".into()),
+                "isolation-marker" => {
+                    metadata.labels = Some([(ISOLATION_LABEL.into(), "false".into())].into())
+                }
+                "nonce-empty" => {
+                    ticket.isolation_id.clear();
+                    metadata
+                        .annotations
+                        .as_mut()
+                        .unwrap()
+                        .insert(ISOLATION_ID_ANNOTATION.into(), String::new());
+                }
+                _ => {}
+            }
+            assert_eq!(
+                exact_original_metadata(&ticket, &metadata),
+                matches!(row, "exact" | "uid-spaced" | "uid-other" | "nonce-empty"),
+                "L1-L3/{row}"
+            );
+        }
+        let ticket = ticket();
+        let mut isolated = reservation(&ticket).unwrap();
+        isolated.metadata.uid = Some("reserved-uid".into());
+        assert!(exact_reservation(&ticket, &isolated, Some("reserved-uid")));
+        assert!(
+            !exact_original(&ticket, &isolated),
+            "L2 purposes do not swap"
+        );
+        // L4/L5: reservation shares only the original-request field law. Its
+        // optional expected UID, exact finalizers, absent owner and true marker
+        // stay independent; each false axis still refuses the inert object.
+        assert!(exact_reservation(&ticket, &isolated, None));
+        assert!(!exact_reservation(&ticket, &isolated, Some("other-uid")));
+        for row in ["finalizer", "owner", "marker", "deleting"] {
+            let mut changed = isolated.clone();
+            match row {
+                "finalizer" => changed.metadata.finalizers = None,
+                "owner" => changed.metadata.owner_references = Some(Vec::new()),
+                "marker" => {
+                    changed
+                        .metadata
+                        .labels
+                        .as_mut()
+                        .unwrap()
+                        .insert(ISOLATION_LABEL.into(), "false".into());
+                }
+                "deleting" => {
+                    changed.metadata.deletion_timestamp = Some(
+                        serde_json::from_value(serde_json::json!("2026-10-12T00:00:00Z")).unwrap(),
+                    )
+                }
+                _ => unreachable!(),
+            }
+            assert!(!exact_reservation(&ticket, &changed, None), "L5/{row}");
         }
     }
 
