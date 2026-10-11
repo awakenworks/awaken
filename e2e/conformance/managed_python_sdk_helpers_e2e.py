@@ -17,7 +17,7 @@ from anthropic.lib.tools.agent_toolset import AgentToolContext, beta_agent_tools
 
 BASE_URL = os.environ["AWAKEN_MANAGED_BASE_URL"]
 ORACLE_PATH = Path(os.environ["AWAKEN_PYTHON_ORACLE"])
-ENVIRONMENT_KEY = "e2e-env-key"  # awaken-allow: secret
+ENVIRONMENT_KEY = "e2e-env-key"  # awaken-allow(secret):
 T = TypeVar("T")
 
 
@@ -392,7 +392,7 @@ async def main() -> None:
     exercise_public_library_surface()
     await exercise_agent_toolset()
     async with anthropic.AsyncAnthropic(
-        api_key="e2e-dummy",  # awaken-allow: secret
+        api_key="e2e-dummy",  # awaken-allow(secret):
         base_url=BASE_URL,
         max_retries=0,
     ) as client:

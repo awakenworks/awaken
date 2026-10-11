@@ -426,9 +426,9 @@ python3 scripts/ci/gate_tools.py disk --stage postgres || exit $?
 NAME="awaken-ci-pg-$$"
 OBJECT_NAME="awaken-ci-object-$$"
 REQUESTED_PORT="${AWAKEN_CI_PG_PORT:-}"
-PASSWORD="ci" # awaken-allow: secret (throwaway ephemeral container, torn down on exit)
+PASSWORD="ci" # awaken-allow(secret): (throwaway ephemeral container, torn down on exit)
 DB="awaken"
-POSTGRES_CONTAINER_ENV=("POSTGRES_PASSWORD=$PASSWORD" "POSTGRES_DB=$DB") # awaken-allow: secret
+POSTGRES_CONTAINER_ENV=("POSTGRES_PASSWORD=$PASSWORD" "POSTGRES_DB=$DB") # awaken-allow(secret):
 RECOVERY_ROOT=""
 POSTGRES_CREATE_ATTEMPTED=0
 OBJECT_CREATE_ATTEMPTED=0
@@ -522,7 +522,7 @@ if [ "$ready" -ne 1 ]; then
   exit 1
 fi
 
-export AWAKEN_TEST_DATABASE_URL="postgres://postgres:$PASSWORD@127.0.0.1:$PORT/$DB" # awaken-allow: secret
+export AWAKEN_TEST_DATABASE_URL="postgres://postgres:$PASSWORD@127.0.0.1:$PORT/$DB" # awaken-allow(secret):
 export AWAKEN_TEST_REQUIRE_POSTGRES=1
 echo "-> AWAKEN_TEST_DATABASE_URL configured for ephemeral Postgres :$PORT"
 
@@ -535,10 +535,10 @@ echo "-> AWAKEN_TEST_DATABASE_URL configured for ephemeral Postgres :$PORT"
 # the recovery drill.
 MINIO_IMAGE="${AWAKEN_CI_OBJECT_IMAGE:-quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z}"
 MC_IMAGE="${AWAKEN_CI_OBJECT_CLIENT_IMAGE:-quay.io/minio/mc:RELEASE.2024-11-21T17-21-54Z}"
-export FILE_STORE_ACCESS_KEY="awaken-file-store" # awaken-allow: secret (throwaway fixture identity)
-FILE_STORE_INITIAL_SECRET_KEY="awaken-file-store-initial" # awaken-allow: secret (throwaway fixture)
-export FILE_STORE_SECRET_KEY="$FILE_STORE_INITIAL_SECRET_KEY" # awaken-allow: secret
-# awaken-allow: secret (throwaway MinIO fixture, destroyed by the exit trap)
+export FILE_STORE_ACCESS_KEY="awaken-file-store" # awaken-allow(secret): (throwaway fixture identity)
+FILE_STORE_INITIAL_SECRET_KEY="awaken-file-store-initial" # awaken-allow(secret): (throwaway fixture)
+export FILE_STORE_SECRET_KEY="$FILE_STORE_INITIAL_SECRET_KEY" # awaken-allow(secret):
+# awaken-allow(secret): (throwaway MinIO fixture, destroyed by the exit trap)
 # This disposable object's lifetime is the fixture lifetime. Give its real S3
 # substrate an independent bounded capacity: Docker's shared image filesystem
 # can cross MinIO's free-drive threshold despite this fixture storing few bytes.
@@ -582,14 +582,14 @@ if [ "$object_ready" -ne 1 ]; then
   exit 1
 fi
 export AWAKEN_TEST_S3_ENDPOINT="http://127.0.0.1:$OBJECT_PORT"
-export AWAKEN_TEST_S3_ACCESS_KEY="$FILE_STORE_ACCESS_KEY" # awaken-allow: secret
-export AWAKEN_TEST_S3_SECRET_KEY="$FILE_STORE_INITIAL_SECRET_KEY" # awaken-allow: secret
+export AWAKEN_TEST_S3_ACCESS_KEY="$FILE_STORE_ACCESS_KEY" # awaken-allow(secret):
+export AWAKEN_TEST_S3_SECRET_KEY="$FILE_STORE_INITIAL_SECRET_KEY" # awaken-allow(secret):
 echo "-> AWAKEN_TEST_S3_ENDPOINT=$AWAKEN_TEST_S3_ENDPOINT"
 
 # Authorization decision table: the fixture identity may access only the two
 # prefixes exercised by conformance and rotation tests. The live Rust contract
 # includes a forbidden write outside those prefixes.
-# awaken-allow: secret (throwaway identity passed into its disposable container)
+# awaken-allow(secret): (throwaway identity passed into its disposable container)
 if ! pg_run_with_deadline object-policy "$PG_OPERATION_TIMEOUT_SECONDS" \
   docker run --rm --network "container:$OBJECT_NAME" \
   --volume "$PWD/scripts/ci/fixtures/minio-file-store-policy.json:/policy.json:ro" \
@@ -656,9 +656,9 @@ export AWAKEN_TEST_S3_ROTATION_ID="rotation-$$"
 pg_test cargo test -p awaken-file-store --features object-store \
   object::tests::minio_rotation_seed -- --exact \
   || record_failure "$?"
-FILE_STORE_ROTATED_SECRET_KEY="awaken-file-store-rotated" # awaken-allow: secret (throwaway fixture)
-export FILE_STORE_SECRET_KEY="$FILE_STORE_ROTATED_SECRET_KEY" # awaken-allow: secret
-# awaken-allow: secret (replacement passed into the same disposable container)
+FILE_STORE_ROTATED_SECRET_KEY="awaken-file-store-rotated" # awaken-allow(secret): (throwaway fixture)
+export FILE_STORE_SECRET_KEY="$FILE_STORE_ROTATED_SECRET_KEY" # awaken-allow(secret):
+# awaken-allow(secret): (replacement passed into the same disposable container)
 rotation_status=0
 pg_run_with_deadline object-credential-rotation "$PG_OPERATION_TIMEOUT_SECONDS" \
   docker run --rm --network "container:$OBJECT_NAME" \
@@ -674,7 +674,7 @@ if [ "$rotation_status" -ne 0 ]; then
   echo "✗ failed to rotate object-store fixture credential" >&2
   record_failure "$rotation_status"
 fi
-export AWAKEN_TEST_S3_OLD_SECRET_KEY="$FILE_STORE_INITIAL_SECRET_KEY" # awaken-allow: secret
+export AWAKEN_TEST_S3_OLD_SECRET_KEY="$FILE_STORE_INITIAL_SECRET_KEY" # awaken-allow(secret):
 export AWAKEN_TEST_S3_SECRET_KEY="$FILE_STORE_ROTATED_SECRET_KEY"
 pg_test cargo test -p awaken-file-store --features object-store \
   object::tests::minio_rotated_credentials_revoke_old_secret_and_preserve_objects -- --exact \

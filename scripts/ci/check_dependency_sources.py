@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import argparse
 import re
-import subprocess
 import sys
 import tomllib
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+
+import formal_sources
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 FULL_GIT_REV = re.compile(r"[0-9a-f]{40}")
@@ -122,13 +123,9 @@ def validate_lock_data(data: dict[str, object], label: str) -> list[str]:
 
 
 def tracked_manifests() -> list[Path]:
-    try:
-        output = subprocess.check_output(
-            ["git", "ls-files"], cwd=REPO_ROOT, text=True, stderr=subprocess.DEVNULL
-        )
-    except (OSError, subprocess.CalledProcessError):
-        return sorted(REPO_ROOT.rglob("Cargo.toml"))
-    return [REPO_ROOT / line for line in output.splitlines() if line.endswith("Cargo.toml")]
+    return sorted(REPO_ROOT / relative for relative in
+            formal_sources.tracked_files(REPO_ROOT, allow_nonrepository=True)
+            if relative.endswith("Cargo.toml"))
 
 
 def load_toml(path: Path) -> dict[str, object]:
@@ -148,6 +145,18 @@ def check_repository() -> list[str]:
 
 
 def self_test() -> int:
+    # SIO4: a non-Git fixture keeps the original sorted manifest walk. Its
+    # caller-specific Cargo filter is independent of the shared path primitive.
+    import tempfile
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        for relative in ("z/Cargo.toml", "a/Cargo.toml", "unrelated.txt"):
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("")
+        with patch.object(sys.modules[__name__], "REPO_ROOT", root):
+            assert tracked_manifests() == [root / "a/Cargo.toml", root / "z/Cargo.toml"], "SIO4 sorted fixture manifests"
     # Cause/effect design and decision table:
     # canonical HTTPS | full exact rev | one rev/repository | effect
     # yes             | yes            | yes                | accept

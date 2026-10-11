@@ -492,7 +492,7 @@ mod tests {
         let left = enqueue(&pool, &order, "left").await;
         let right = enqueue(&pool, &order, "right").await;
         let started = std::time::Instant::now();
-        // awaken-wait: S1 measures the timer itself; its prompt firing proves runtime workers are not blocked.
+        // awaken-allow(wait): S1 measures the timer itself; its prompt firing proves runtime workers are not blocked.
         let authority_timer = tokio::time::sleep(Duration::from_millis(10));
         tokio::time::timeout(Duration::from_millis(100), authority_timer)
             .await

@@ -32,7 +32,7 @@ spec:
             - { name: SESSION_DEPLOYMENT_INGRESS, value: durable }
             - { name: SESSION_DEPLOYMENT_DISPATCH_BACKEND, value: postgres }
             - { name: SESSION_DEPLOYMENT_STORE, value: postgres }
-            - { name: SESSION_DEPLOYMENT_DATABASE_URL, value: "postgres://postgres:test@postgres:5432/awaken" } # awaken-allow: secret
+            - { name: SESSION_DEPLOYMENT_DATABASE_URL, value: "postgres://postgres:test@postgres:5432/awaken" } # awaken-allow(secret):
             - { name: SESSION_DEPLOYMENT_WAKE, value: pg-notify }
             - { name: SESSION_DEPLOYMENT_POSTGRES_MAX_CONNECTIONS, value: "8" }
             - name: SESSION_DEPLOYMENT_DISPATCH_OWNER

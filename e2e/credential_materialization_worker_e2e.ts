@@ -57,7 +57,7 @@ const CONFIG_BASE = `http://127.0.0.1:${CONFIG_PORT}`;
 const WORKER_BASE = `https://127.0.0.1:${TLS_PORT}`;
 const THREAD = 'credential-materialization-worker';
 const SEAL_KEY = '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef';
-const PROVIDER_KEY = 'sk-worker-materialization-e2e'; // awaken-allow: secret
+const PROVIDER_KEY = 'sk-worker-materialization-e2e'; // awaken-allow(secret):
 
 function hexComponent(value: string): string {
   return Buffer.from(value).toString('hex');

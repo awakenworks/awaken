@@ -164,7 +164,7 @@ export async function buildRequestWitnessBundle({ packageRoot, operations, contr
     return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
   };
   const client = new Anthropic({
-    apiKey: 'request-contract', // awaken-allow: secret
+    apiKey: 'request-contract', // awaken-allow(secret):
     baseURL: BASE_URL,
     fetch,
     maxRetries: 0,

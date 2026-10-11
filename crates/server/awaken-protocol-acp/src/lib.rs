@@ -1313,7 +1313,7 @@ mod tests {
         tokio::select! {
             biased;
             result = &mut cleanup => panic!("R1 cleanup completed before grace: {result:?}"),
-            // awaken-wait: the paused-clock half of the TERM grace is the boundary under test
+            // awaken-allow(wait): the paused-clock half of the TERM grace is the boundary under test
             () = tokio::time::sleep(grace / 2) => {}
         }
         assert_eq!(signalled.lock().unwrap().as_slice(), &[pc::Signal::Term]);

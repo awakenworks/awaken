@@ -25,7 +25,7 @@ const WORKSPACE = `workspace_control_pg_${process.pid}`;
 const AGENT = `control-pg-agent-${process.pid}`;
 const MODEL = 'fake-haiku';
 const PROVIDER = 'anthropic';
-const FAKE_KEY = `sk-control-pg-${process.pid}`; // awaken-allow: secret
+const FAKE_KEY = `sk-control-pg-${process.pid}`; // awaken-allow(secret):
 const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
 const BETAS = ['managed-agents-2026-04-01'];
 const sleep = (milliseconds: number) =>

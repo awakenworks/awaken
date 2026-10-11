@@ -159,7 +159,7 @@ async fn credential_materialization_cannot_restart_the_inherited_response_budget
     let error = with_budget(
         budget(Duration::from_millis(10), Duration::from_millis(10)),
         async {
-            // awaken-wait: pre-dispatch materialization intentionally consumes the
+            // awaken-allow(wait): pre-dispatch materialization intentionally consumes the
             // entire configured 10ms response budget; this deadline is the cause.
             tokio::time::sleep(Duration::from_millis(20)).await;
             let executor =

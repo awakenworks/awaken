@@ -1134,7 +1134,7 @@ mod tests {
             })
             .await;
         });
-        // awaken-wait: paused clock; three proof windows of healthy renewals
+        // awaken-allow(wait): paused clock; three proof windows of healthy renewals
         // must pass without the monitor closing, which is the fact under test.
         tokio::time::sleep(timing.proof_window() * 3).await;
         assert!(!monitor.is_finished(), "L1 healthy evidence keeps renewing");

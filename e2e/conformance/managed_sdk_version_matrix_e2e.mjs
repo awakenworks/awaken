@@ -58,7 +58,7 @@ function generatedResourceMethods(surface, resourceName) {
 function assertSdkCapabilityBoundary() {
   const surface = (role) => {
     const anchor = qualifiedClient(QUALIFIED_CLIENTS, role);
-    const client = new anchor.Client({ apiKey: 'surface-inventory' }); // awaken-allow: secret
+    const client = new anchor.Client({ apiKey: 'surface-inventory' }); // awaken-allow(secret):
     const beta = client.beta;
     return {
       beta,

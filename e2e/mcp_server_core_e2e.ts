@@ -129,7 +129,7 @@ async function main(): Promise<void> {
     const counted = await peer.request('tools/call', {
       name: 'count',
       arguments: { steps: 4 },
-      _meta: { progressToken: 'ts-progress' }, // awaken-allow: secret
+      _meta: { progressToken: 'ts-progress' }, // awaken-allow(secret):
     });
     const progress = peer.notifications.slice(before);
     assert.deepEqual(progress.map((event) => event.method), Array(4).fill('notifications/progress'));
@@ -146,7 +146,7 @@ async function main(): Promise<void> {
       {
         name: 'count',
         arguments: { steps: 100 },
-        _meta: { progressToken: 'cancel-progress' }, // awaken-allow: secret
+        _meta: { progressToken: 'cancel-progress' }, // awaken-allow(secret):
       },
       'cancel-me',
     );

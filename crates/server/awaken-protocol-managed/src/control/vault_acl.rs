@@ -157,7 +157,7 @@ mod tests {
         let params = static_bearer_to_create_params(
             "vlt_1",
             WireStaticBearerCreate {
-                token: "brr-from-the-wire".into(), // awaken-allow: secret
+                token: "brr-from-the-wire".into(), // awaken-allow(secret):
             },
         );
         let source = create_source(params, &store).await.unwrap();
@@ -183,7 +183,7 @@ mod tests {
         let bridged = mcp_oauth_to_create_params(
             "vlt_1",
             WireMcpOauthCreate {
-                access_token: "at-from-the-wire".into(), // awaken-allow: secret
+                access_token: "at-from-the-wire".into(), // awaken-allow(secret):
                 refresh_token: Some("rt-from-the-wire".into()),
             },
         );

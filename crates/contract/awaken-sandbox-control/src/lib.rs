@@ -258,7 +258,7 @@ mod tests {
         let response: SandboxControlResponse = serde_json::from_value(serde_json::json!({
             "type": "repository_git_credential",
             "username": "git-user",
-            "password": "valid-capability", // awaken-allow: secret -- inert redaction fixture
+            "password": "valid-capability", // awaken-allow(secret): -- inert redaction fixture
             "expires_at_unix_ms": 42
         }))
         .unwrap();

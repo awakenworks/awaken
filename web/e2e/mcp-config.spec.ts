@@ -21,7 +21,7 @@ let serverId: string;
 test.beforeAll(async ({ request }) => {
   if (live) expect(liveKey, "live acceptance requires a DeepSeek key; never fall back to a fixture").toBeTruthy();
   mcp = await startTemplateMcp({ tools: { accounts: ["read_source"] }, records: { accounts: [{ marker }] } }, { accounts: { [tokenA]: "Product", [tokenB]: "Personal" } });
-  const providerKey = "mcp-ui-provider-key"; // awaken-allow: secret
+  const providerKey = "mcp-ui-provider-key"; // awaken-allow(secret):
   if (!liveKey) upstream = await startFakeAnthropic(providerKey, { models: [model], behavior: (req: { messages?: { content?: unknown[] }[]; tools?: { name: string }[] }) => {
     const blocks = (req.messages ?? []).flatMap((m) => Array.isArray(m.content) ? m.content : []) as { type?: string }[];
     const results = blocks.filter((b) => b.type === "tool_result");

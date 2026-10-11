@@ -194,7 +194,7 @@ async function main() {
     {
       const counters = { runs: 0, closes: 0 };
       const { environment, session } = await createClaimableSession(client, 'worker-handle-explicit');
-      const environmentClient = new Anthropic({ authToken: 'e2e-env-key', baseURL: baseUrl }); // awaken-allow: secret
+      const environmentClient = new Anthropic({ authToken: 'e2e-env-key', baseURL: baseUrl }); // awaken-allow(secret):
       const work = await environmentClient.beta.environments.work.poll(environment.id, { betas: BETAS });
       assert.equal(work?.data.id, session.id);
       await environmentClient.beta.environments.work.ack(work.id, {
@@ -228,7 +228,7 @@ async function main() {
     {
       const counters = { runs: 0, closes: 0 };
       const { environment, session } = await createClaimableSession(client, 'worker-handle-env');
-      const environmentClient = new Anthropic({ authToken: 'e2e-env-key', baseURL: baseUrl }); // awaken-allow: secret
+      const environmentClient = new Anthropic({ authToken: 'e2e-env-key', baseURL: baseUrl }); // awaken-allow(secret):
       const work = await environmentClient.beta.environments.work.poll(environment.id, { betas: BETAS });
       await environmentClient.beta.environments.work.ack(work.id, {
         environment_id: environment.id,
@@ -327,7 +327,7 @@ async function main() {
           agent.id,
         );
         const environmentClient = new Anthropic({
-          authToken: 'e2e-env-key', // awaken-allow: secret
+          authToken: 'e2e-env-key', // awaken-allow(secret):
           baseURL: management.baseUrl,
         });
         const work = await environmentClient.beta.environments.work.poll(environment.id, {
@@ -413,7 +413,7 @@ async function main() {
     // force-stops the lease even when no Session event ever arrives.
     {
       const { environment, session } = await createClaimableSession(client, 'worker-abort');
-      const environmentClient = new Anthropic({ authToken: 'e2e-env-key', baseURL: baseUrl }); // awaken-allow: secret
+      const environmentClient = new Anthropic({ authToken: 'e2e-env-key', baseURL: baseUrl }); // awaken-allow(secret):
       const work = await environmentClient.beta.environments.work.poll(environment.id, { betas: BETAS });
       await environmentClient.beta.environments.work.ack(work.id, {
         environment_id: environment.id,
@@ -442,7 +442,7 @@ async function main() {
     // active until an independent owner performs the cleanup.
     {
       const { environment, session } = await createClaimableSession(client, 'worker-stop-failure');
-      const environmentClient = new Anthropic({ authToken: 'e2e-env-key', baseURL: baseUrl }); // awaken-allow: secret
+      const environmentClient = new Anthropic({ authToken: 'e2e-env-key', baseURL: baseUrl }); // awaken-allow(secret):
       const work = await environmentClient.beta.environments.work.poll(environment.id, { betas: BETAS });
       await environmentClient.beta.environments.work.ack(work.id, {
         environment_id: environment.id,
@@ -515,7 +515,7 @@ async function main() {
           [{ type: 'memory_store', memory_store_id: store.id, access: 'read_write' }],
         );
         const environmentClient = new Anthropic({
-          authToken: 'e2e-env-key', // awaken-allow: secret
+          authToken: 'e2e-env-key', // awaken-allow(secret):
           baseURL: management.baseUrl,
         });
         const work = await environmentClient.beta.environments.work.poll(environment.id, {

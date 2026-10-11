@@ -375,7 +375,7 @@ async fn retention_drain_is_bounded_and_recovers_durable_backlog() {
             .await
             .expect("seed retention backlog");
     }
-    let live_token = "retention-live-authority"; // awaken-allow: secret -- inert test fixture
+    let live_token = "retention-live-authority"; // awaken-allow(secret): -- inert test fixture
     repository
         .create(record(ApplicationAccessTokenId::new(), live_token))
         .await
@@ -602,7 +602,7 @@ async fn expired_and_unavailable_authorities_remain_distinct() {
             .await
             .unwrap(),
     );
-    let token = "expired-token"; // awaken-allow: secret -- inert test fixture
+    let token = "expired-token"; // awaken-allow(secret): -- inert test fixture
     repository
         .create(
             ApplicationAccessRecord::new(

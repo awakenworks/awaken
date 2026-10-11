@@ -164,6 +164,15 @@ pre-commit:
       # <<< generated glob
       run: python3 scripts/ci/check_scan_scope.py
 
+    # The existing release source validator inventories every tracked writer.
+    # Its declaration and pre-commit trigger cover that same repository corpus.
+    sandbox-release-source:
+      # >>> generated glob from check_sandbox_image_release.py INPUT_GLOBS — do not edit
+      # no glob: check_sandbox_image_release.py reads every staged file, so this command
+      # must keep the whole staged set as its trigger.
+      # <<< generated glob
+      run: python3 scripts/ci/check_sandbox_image_release.py
+
     # 3b. The one declaration of every external tool a gate needs. Its self-test
     #    proves each row can still be located by the method it states, so a row
     #    that stopped describing reality fails here rather than inside a proof.
@@ -204,7 +213,7 @@ pre-commit:
     #    lane kept mutating the old path; nothing ran until hours later.
     gate-path-references:
       # >>> generated glob from check_gate_path_references.py INPUT_GLOBS — do not edit
-      glob: "{.github/**/*.yml,crates/**,deploy/**/*.sh,deploy/**/*.yaml,deploy/**/*.yml,e2e/**/*.sh,lefthook.yml,scripts/**/*.sh,scripts/ci/check_gate_path_references.py}"
+      glob: "{.github/**/*.yml,crates/**,deploy/**/*.sh,deploy/**/*.yaml,deploy/**/*.yml,e2e/**/*.sh,lefthook.yml,scripts/**/*.sh,scripts/ci/check_gate_path_references.py,scripts/ci/formal_sources.py}"
       # <<< generated glob
       run: python3 scripts/ci/check_gate_path_references.py --self-test && python3 scripts/ci/check_gate_path_references.py
 

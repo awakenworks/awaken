@@ -57,7 +57,7 @@ def exercise_library_exports(exports: list[str]) -> None:
 
 
 async def exercise_resource_helper_surface(helpers: list[str]) -> None:
-    async with anthropic.AsyncAnthropic(api_key="surface-only", max_retries=0) as client:  # awaken-allow: secret
+    async with anthropic.AsyncAnthropic(api_key="surface-only", max_retries=0) as client:  # awaken-allow(secret):
         for identity in helpers:
             value: object = client
             for segment in identity.split("."):

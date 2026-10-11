@@ -478,7 +478,7 @@ async fn deployment_repository_credentials_fail_closed_before_persistence() {
             "resources":[{
                 "type":"github_repository",
                 "url":"https://github.com/acme/repo.git",
-                "authorization_token":"must-not-disappear" // awaken-allow: secret
+                "authorization_token":"must-not-disappear" // awaken-allow(secret):
             }]
         })),
     )

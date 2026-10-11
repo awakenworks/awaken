@@ -36,11 +36,11 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 
 import formal_ledger
+import formal_sources
 
 # Every file this checker reads: the lane roots whose closure it walks, the
 # executables it accounts for, and the obligation ledger (its TOML files and
@@ -202,8 +202,7 @@ def indexed_executables(root: Path) -> set[str] | None:
     # non-Git self-test fixtures. A failed index read is never an empty corpus.
     if not (root / ".git").exists():
         return None
-    environment = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
-    output = subprocess.check_output(["git", "-C", str(root), "ls-files", "--stage", "-z"], env=environment)
+    output = formal_sources.git_output(root, "ls-files", "--stage", "-z")
     return executable_index_modes(output.decode("utf-8"))
 
 

@@ -408,7 +408,7 @@ async function publishAgent(endpoint: string, memoryStoreId: string): Promise<vo
     dialect: 'anthropic_messages',
     base_url: `${endpoint}/v1/`,
     timeout_secs: 10,
-    secret: 'resource-e2e-model-key', // awaken-allow: secret
+    secret: 'resource-e2e-model-key', // awaken-allow(secret):
   });
   assert.equal(connected.status, 201, JSON.stringify(connected.body));
   const catalog = await json('GET', scoped(WORKSPACE, 'config/catalog'));

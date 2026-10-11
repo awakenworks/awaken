@@ -73,7 +73,7 @@ async function main() {
       // A bogus key validates as `invalid` (the provider rejects it).
       r = await req(base, 'POST', '/v1/config/credentials', {
         workspace_id: workspace, kind: 'vault', provider_id: 'anthropic', env_key: 'ANTHROPIC_API_KEY',
-        secret: 'sk-obviously-not-a-real-key', // awaken-allow: secret
+        secret: 'sk-obviously-not-a-real-key', // awaken-allow(secret):
       });
       assert.equal(r.status, 201);
       const badId = r.json.id;

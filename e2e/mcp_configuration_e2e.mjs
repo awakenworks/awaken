@@ -46,7 +46,7 @@ async function config(method, route, body, expected = 200) {
   return text ? JSON.parse(text) : null;
 }
 const launch = () => spawnProduction(data, PORT, { stdout: 'inherit', fields: { sandbox_tier: 'namespace', log_filter: 'warn' } }, withoutAmbientProviderKeys(process.env));
-const clientFor = () => new Anthropic({ apiKey: 'e2e-local', baseURL: base, maxRetries: 0 }); // awaken-allow: secret (test service)
+const clientFor = () => new Anthropic({ apiKey: 'e2e-local', baseURL: base, maxRetries: 0 }); // awaken-allow(secret): (test service)
 async function saveServer(definition) {
   const current = await config('GET', '/mcp-servers');
   return config('PUT', '/mcp-servers', { expected_revision: current.revision, definition });
@@ -102,7 +102,7 @@ async function main() {
     key = process.env.DEEPSEEK_API_KEY ?? (process.env.DEEPSEEK_API_KEY_FILE && fs.readFileSync(process.env.DEEPSEEK_API_KEY_FILE, 'utf8').trim());
     assert.ok(key, '--live requires DeepSeek credentials'); model = process.env.DEEPSEEK_MODEL ?? 'deepseek-flash'; endpoint = 'https://api.deepseek.com'; provider = 'deepseek'; dialect = 'open_ai_chat';
   } else {
-    key = 'mcp-config-fixture-key'; // awaken-allow: secret
+    key = 'mcp-config-fixture-key'; // awaken-allow(secret):
     model = 'mcp-config-fixture'; provider = 'anthropic'; dialect = 'anthropic_messages';
     upstream = await startFakeAnthropic(key, { models: [model], behavior: (request) => {
       const blocks = (request.messages ?? []).flatMap((m) => Array.isArray(m.content) ? m.content : []);
@@ -120,7 +120,7 @@ async function main() {
   const ca = await client.beta.vaults.credentials.create(va.id, { display_name: 'Product Notion', auth: { type: 'static_bearer', mcp_server_url: fixture.servers[0].url, token: tokenA }, betas: BETAS });
   const cb = await client.beta.vaults.credentials.create(vb.id, { display_name: 'Personal Notion', auth: { type: 'mcp_oauth', mcp_server_url: fixture.servers[0].url, access_token: tokenB }, betas: BETAS });
   // A mixed Vault is legal: resource type is not an auth category.
-  await client.beta.vaults.credentials.create(va.id, { auth: { type: 'environment_variable', networking: { type: 'limited', allowed_hosts: ['example.test'] }, secret_name: 'MCP_CONFIG_TEST', secret_value: 'synthetic-env-value' }, betas: BETAS }); // awaken-allow: secret
+  await client.beta.vaults.credentials.create(va.id, { auth: { type: 'environment_variable', networking: { type: 'limited', allowed_hosts: ['example.test'] }, secret_name: 'MCP_CONFIG_TEST', secret_value: 'synthetic-env-value' }, betas: BETAS }); // awaken-allow(secret):
   await saveServer(definition('accounts', fixture.servers[0].url));
   await saveServer(definition('public', anonymous.servers[0].url));
   const candidates = await config('GET', '/mcp-servers/local:accounts/credentials');

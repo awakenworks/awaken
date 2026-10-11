@@ -2,7 +2,7 @@
 // @formal evidence session_event_batch.exact_retry_replays_and_changed_retry_conflicts
 // @formal evidence session_event_batch.final_non_admission_excludes_late_acceptance
 // @formal evidence session_event_batch.idempotent_receipt_is_admission_stable
-// awaken-file-limit-ceiling: 7147 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 7147 (legacy oversized test file: split, never grow)
 //! Adapter integration tests with fake runtimes: the happy path, and the HITL
 //! await -> `requires_action` -> `user.tool_confirmation` -> resume round-trip.
 

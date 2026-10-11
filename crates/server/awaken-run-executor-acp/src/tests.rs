@@ -2,7 +2,7 @@
 // @formal evidence acp.permission_tool_identity_normalization_is_exact
 // @formal evidence acp.process_cleanup_requires_observed_exit_and_retained_owner
 // @formal evidence session_execution.one_physical_attempt_per_thread
-// awaken-file-limit-ceiling: 5856 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 5856 (legacy oversized test file: split, never grow)
 //! End-to-end tests with in-memory fakes: a scripted duplex channel stands in for
 //! the launched CLI — no daemon, no network.
 
@@ -4592,7 +4592,7 @@ async fn retained_inline_mcp_credential_is_ignored_before_session_new() {
             "mcp_servers": [{
                 "name": "github",
                 "transport": { "kind": "http", "url": "https://mcp.gh" },
-                "credential": { "auth": "trusted_inline", "secret": "sk-trusted" } // awaken-allow: secret
+                "credential": { "auth": "trusted_inline", "secret": "sk-trusted" } // awaken-allow(secret):
             }]
         }),
     );
@@ -5149,7 +5149,7 @@ impl awaken_provisioning_contract::SecretBroker for MatrixSecretBroker {
         reference: &str,
     ) -> std::result::Result<Vec<u8>, awaken_provisioning_contract::SandboxError> {
         (reference == "lease://matrix")
-            .then(|| br#"{"OPENAI_API_KEY":"matrix-secret"}"#.to_vec()) // awaken-allow: secret
+            .then(|| br#"{"OPENAI_API_KEY":"matrix-secret"}"#.to_vec()) // awaken-allow(secret):
             .ok_or_else(|| awaken_provisioning_contract::SandboxError::not_found("unknown lease"))
     }
 

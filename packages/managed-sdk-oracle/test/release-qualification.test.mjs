@@ -144,10 +144,10 @@ test('deployment replacement hook cannot receive Managed service credentials', (
   // never customer/API/Tunnel credentials. The evidence path is injected while
   // unrelated orchestration variables survive unchanged.
   const environment = {
-    AWAKEN_MANAGED_API_KEY: 'actual-key', // awaken-allow: secret
-    AWAKEN_MANAGED_TUNNEL_ACCESS_TOKEN: 'actual-token', // awaken-allow: secret
-    ANTHROPIC_MANAGED_REFERENCE_API_KEY: 'reference-key', // awaken-allow: secret
-    ANTHROPIC_MANAGED_REFERENCE_TUNNEL_ACCESS_TOKEN: 'reference-token', // awaken-allow: secret
+    AWAKEN_MANAGED_API_KEY: 'actual-key', // awaken-allow(secret):
+    AWAKEN_MANAGED_TUNNEL_ACCESS_TOKEN: 'actual-token', // awaken-allow(secret):
+    ANTHROPIC_MANAGED_REFERENCE_API_KEY: 'reference-key', // awaken-allow(secret):
+    ANTHROPIC_MANAGED_REFERENCE_TUNNEL_ACCESS_TOKEN: 'reference-token', // awaken-allow(secret):
     KUBECONFIG: '/qualification/kubeconfig',
   };
   assert.deepEqual(replacementCommandEnvironment(environment, '/tmp/evidence.json'), {
@@ -155,10 +155,10 @@ test('deployment replacement hook cannot receive Managed service credentials', (
     KUBECONFIG: '/qualification/kubeconfig',
   });
   assert.deepEqual(environment, {
-    AWAKEN_MANAGED_API_KEY: 'actual-key', // awaken-allow: secret
-    AWAKEN_MANAGED_TUNNEL_ACCESS_TOKEN: 'actual-token', // awaken-allow: secret
-    ANTHROPIC_MANAGED_REFERENCE_API_KEY: 'reference-key', // awaken-allow: secret
-    ANTHROPIC_MANAGED_REFERENCE_TUNNEL_ACCESS_TOKEN: 'reference-token', // awaken-allow: secret
+    AWAKEN_MANAGED_API_KEY: 'actual-key', // awaken-allow(secret):
+    AWAKEN_MANAGED_TUNNEL_ACCESS_TOKEN: 'actual-token', // awaken-allow(secret):
+    ANTHROPIC_MANAGED_REFERENCE_API_KEY: 'reference-key', // awaken-allow(secret):
+    ANTHROPIC_MANAGED_REFERENCE_TUNNEL_ACCESS_TOKEN: 'reference-token', // awaken-allow(secret):
     KUBECONFIG: '/qualification/kubeconfig',
   }, 'caller environment is immutable');
 });

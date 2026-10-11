@@ -330,7 +330,7 @@ export async function officialRequestWitnesses({ packageRoot, version, operation
     return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
   };
   const client = new Anthropic({
-    apiKey: 'request-witness', // awaken-allow: secret
+    apiKey: 'request-witness', // awaken-allow(secret):
     baseURL: BASE_URL,
     fetch,
     maxRetries: 0,

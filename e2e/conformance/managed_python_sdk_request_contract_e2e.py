@@ -210,7 +210,7 @@ def exercise_sync(bundle: dict[str, Any]) -> tuple[int, int]:
         return httpx2.Response(200, json={})
 
     with anthropic.Anthropic(
-        api_key="sync-request-contract",  # awaken-allow: secret
+        api_key="sync-request-contract",  # awaken-allow(secret):
         http_client=httpx2.Client(transport=httpx2.MockTransport(respond)),
         max_retries=0,
     ) as client:
@@ -287,7 +287,7 @@ async def exercise_async(bundle: dict[str, Any]) -> tuple[int, int]:
         return httpx2.Response(200, json={})
 
     async with anthropic.AsyncAnthropic(
-        api_key="async-request-contract",  # awaken-allow: secret
+        api_key="async-request-contract",  # awaken-allow(secret):
         http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(respond)),
         max_retries=0,
     ) as client:
@@ -408,7 +408,7 @@ async def exercise_client_header_parameters() -> None:
 
                 http_client = (httpx2.AsyncClient if asynchronous else httpx2.Client)(transport=httpx2.MockTransport(respond))
                 client = (anthropic.AsyncAnthropic if asynchronous else anthropic.Anthropic)(
-                    api_key="header-contract",  # awaken-allow: secret
+                    api_key="header-contract",  # awaken-allow(secret):
                     http_client=http_client,
                     max_retries=0,
                     default_headers={} if default is None else {header: default},

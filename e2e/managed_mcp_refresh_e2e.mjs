@@ -27,29 +27,29 @@ import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 import { alwaysAllowMcpAgent } from './fixtures/managed_mcp_session.ts';
 
 const BETAS = ['managed-agents-2026-04-01'];
-const EXPIRED_TOKEN = 'expired-token-e2e'; // awaken-allow: secret
-const REFRESH_TOKEN = 'rt-fixed-e2e'; // awaken-allow: secret
-const NEW_TOKEN = 'new-token'; // awaken-allow: secret
-const WRONG_TOKEN = 'wrong-token-e2e'; // awaken-allow: secret
+const EXPIRED_TOKEN = 'expired-token-e2e'; // awaken-allow(secret):
+const REFRESH_TOKEN = 'rt-fixed-e2e'; // awaken-allow(secret):
+const NEW_TOKEN = 'new-token'; // awaken-allow(secret):
+const WRONG_TOKEN = 'wrong-token-e2e'; // awaken-allow(secret):
 const CLIENT_ID = 'cli-e2e';
 
 // Confidential-client arm. The secret contains a space and an '&' so the test
 // pins that both halves are form-urlencoded BEFORE the base64 (RFC 6749 §2.3.1).
 const CONF_CLIENT_ID = 'cli-conf-e2e';
-const CONF_CLIENT_SECRET = 'conf s3cret&e2e'; // awaken-allow: secret
-const CONF_EXPIRED_TOKEN = 'conf-expired-e2e'; // awaken-allow: secret
-const CONF_REFRESH_TOKEN = 'rt-conf-e2e'; // awaken-allow: secret
-const CONF_NEW_TOKEN = 'conf-new-token'; // awaken-allow: secret
+const CONF_CLIENT_SECRET = 'conf s3cret&e2e'; // awaken-allow(secret):
+const CONF_EXPIRED_TOKEN = 'conf-expired-e2e'; // awaken-allow(secret):
+const CONF_REFRESH_TOKEN = 'rt-conf-e2e'; // awaken-allow(secret):
+const CONF_NEW_TOKEN = 'conf-new-token'; // awaken-allow(secret):
 // The exact §2.3.1 wire: 'cli-conf-e2e' is identity under form-urlencoding and
 // 'conf s3cret&e2e' encodes to 'conf+s3cret%26e2e' (the pair is hardcoded, so
 // this pins the encoding rather than mirroring the server).
 const CONF_BASIC_HEADER =
   `Basic ${Buffer.from('cli-conf-e2e:conf+s3cret%26e2e').toString('base64')}`;
 const POST_CLIENT_ID = 'cli-post-e2e';
-const POST_CLIENT_SECRET = 'post s3cret&e2e'; // awaken-allow: secret
-const POST_EXPIRED_TOKEN = 'post-expired-e2e'; // awaken-allow: secret
-const POST_REFRESH_TOKEN = 'rt-post-e2e'; // awaken-allow: secret
-const POST_NEW_TOKEN = 'post-new-token'; // awaken-allow: secret
+const POST_CLIENT_SECRET = 'post s3cret&e2e'; // awaken-allow(secret):
+const POST_EXPIRED_TOKEN = 'post-expired-e2e'; // awaken-allow(secret):
+const POST_REFRESH_TOKEN = 'rt-post-e2e'; // awaken-allow(secret):
+const POST_NEW_TOKEN = 'post-new-token'; // awaken-allow(secret):
 
 async function sendMessage(client, sessionId, text, predicate, description) {
   // Refresh-turn rule R0: C1=one exact User receipt and C2=the caller's MCP
@@ -119,7 +119,7 @@ async function main() {
   });
   // Fixture B: a plain static-bearer instance whose accepted token the invalid
   // arm's credential does NOT hold (and no refresh escape hatch).
-  const fixtureB = await startCalcFixture('calc-b-accepted-token'); // awaken-allow: secret
+  const fixtureB = await startCalcFixture('calc-b-accepted-token'); // awaken-allow(secret):
   // Fixture C: the confidential-client arm — expired initial token, and the
   // /token grant must authenticate with the §2.3.1 Basic header.
   const fixtureC = await startCalcFixture(CONF_EXPIRED_TOKEN, {

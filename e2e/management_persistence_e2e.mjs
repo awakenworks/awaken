@@ -54,7 +54,7 @@ import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = await availablePort(Number(process.env.E2E_PORT));
-const CALC_TOKEN = 'calc-persist-bearer-token'; // awaken-allow: secret
+const CALC_TOKEN = 'calc-persist-bearer-token'; // awaken-allow(secret):
 // 64 hex chars = the 32-byte AEAD key typed control_seal_key requires.
 const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
 

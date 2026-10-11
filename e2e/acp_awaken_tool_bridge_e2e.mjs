@@ -76,7 +76,7 @@ async function begin(client) {
   // restart-and-approval rule; crashing on C1 alone is the retained-unknown
   // scenario owned by the durable recovery suite. The slot is the source of
   // truth, so no timer or Session status substitutes for its retirement.
-  // awaken-wait: wait for the exact durable physical boundary before restart.
+  // awaken-allow(wait): wait for the exact durable physical boundary before restart.
   await waitForValue(
     async () => sqliteRows(
       `${STORAGE}/dispatch.db`,

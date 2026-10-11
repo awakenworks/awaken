@@ -208,7 +208,7 @@ mod tests {
         let left = tokio::spawn(async move { left_backend.get("missing-left").await });
         let right_backend = Arc::clone(&backend);
         let right = tokio::spawn(async move { right_backend.get("missing-right").await });
-        // awaken-wait: B1 measures the timer itself; its prompt firing proves runtime workers are not blocked.
+        // awaken-allow(wait): B1 measures the timer itself; its prompt firing proves runtime workers are not blocked.
         let authority_timer = tokio::time::sleep(std::time::Duration::from_millis(10));
         tokio::time::timeout(std::time::Duration::from_millis(100), authority_timer)
             .await

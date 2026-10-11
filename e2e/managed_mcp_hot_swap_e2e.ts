@@ -48,8 +48,8 @@ import {
 } from './fixtures/managed_mcp_session.ts';
 
 const BETAS = ['managed-agents-2026-04-01'];
-const TOKEN_A = 'hot-swap-token-a'; // awaken-allow: secret
-const TOKEN_B = 'hot-swap-token-b'; // awaken-allow: secret
+const TOKEN_A = 'hot-swap-token-a'; // awaken-allow(secret):
+const TOKEN_B = 'hot-swap-token-b'; // awaken-allow(secret):
 
 type Event = { type: string; [key: string]: unknown };
 

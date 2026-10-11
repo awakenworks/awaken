@@ -33,7 +33,7 @@ const BETAS = ['managed-agents-2026-04-01'];
 const BASE_PORT = Number(process.env.E2E_PORT ?? 38327);
 
 async function managedRun(base, agent, marker) {
-  const client = new Anthropic({ apiKey: 'local-provider-certification', baseURL: base }); // awaken-allow: secret (local fixture)
+  const client = new Anthropic({ apiKey: 'local-provider-certification', baseURL: base }); // awaken-allow(secret): (local fixture)
   const session = await client.beta.sessions.create({
     agent,
     environment_id: 'env_local',
@@ -82,7 +82,7 @@ const eventText = (event) => (event.content ?? [])
   .trim();
 
 async function exerciseManagedMultiagentAttempt(base, coordinator, worker, servedModel, markers) {
-  const client = new Anthropic({ apiKey: 'local-provider-certification', baseURL: base }); // awaken-allow: secret (local fixture)
+  const client = new Anthropic({ apiKey: 'local-provider-certification', baseURL: base }); // awaken-allow(secret): (local fixture)
   const session = await client.beta.sessions.create({
     agent: coordinator,
     environment_id: 'env_local',

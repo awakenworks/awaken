@@ -15,7 +15,7 @@ import {
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
-const FAKE_KEY = 'sk-fake-upstream-key'; // awaken-allow: secret
+const FAKE_KEY = 'sk-fake-upstream-key'; // awaken-allow(secret):
 
 function agentMessages(events) {
   return events
@@ -122,7 +122,7 @@ async function main() {
       r = await req(base, 'POST', '/v1/config/credentials', {
         workspace_id: ws, kind: 'vault', provider_id: 'anthropic',
         env_key: 'ANTHROPIC_API_KEY',
-        secret: 'sk-wrong-key', // awaken-allow: secret
+        secret: 'sk-wrong-key', // awaken-allow(secret):
       });
       assert.equal(r.status, 201);
       r = await req(base, 'POST', `/v1/config/credentials/${r.json.id}/validate`, {

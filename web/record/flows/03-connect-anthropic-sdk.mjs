@@ -64,7 +64,7 @@ export async function prepare({ page }) {
   // Self-managed recordings supply a real Workspace service key via the named
   // environment variable; neither path exposes credential material on screen.
   const client = new Anthropic({
-    apiKey: process.env.AWAKEN_RECORD_SERVICE_API_KEY ?? "local-no-login", // awaken-allow: secret
+    apiKey: process.env.AWAKEN_RECORD_SERVICE_API_KEY ?? "local-no-login", // awaken-allow(secret):
     baseURL: BACKEND,
     maxRetries: 0,
   });

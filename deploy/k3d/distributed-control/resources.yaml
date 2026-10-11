@@ -60,24 +60,24 @@ kind: Secret
 metadata: { name: adr71-control-auth }
 type: Opaque
 stringData:
-  registration-token: "adr71-registration-token" # awaken-allow: secret
-  control-service-token: "adr71-control-service-token" # awaken-allow: secret
-  seal-key: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff" # awaken-allow: secret
+  registration-token: "adr71-registration-token" # awaken-allow(secret):
+  control-service-token: "adr71-control-service-token" # awaken-allow(secret):
+  seal-key: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff" # awaken-allow(secret):
 ---
 apiVersion: v1
 kind: Secret
 metadata: { name: adr71-coordinator-auth }
 type: Opaque
 stringData:
-  registration-token: "adr71-registration-token" # awaken-allow: secret
-  control-service-token: "adr71-control-service-token" # awaken-allow: secret
+  registration-token: "adr71-registration-token" # awaken-allow(secret):
+  control-service-token: "adr71-control-service-token" # awaken-allow(secret):
 ---
 apiVersion: v1
 kind: Secret
 metadata: { name: adr71-worker-material }
 type: Opaque
 stringData:
-  provider-secret: "adr71-provider-secret" # awaken-allow: secret
+  provider-secret: "adr71-provider-secret" # awaken-allow(secret):
   payload-fingerprint: "sha256:adr71-provider-payload"
 ---
 apiVersion: v1
@@ -98,13 +98,13 @@ stringData:
     executable_agent_registration_token_file = "/etc/awaken-auth/registration-token"
     control_service_token_file = "/etc/awaken-auth/control-service-token"
     control_seal_key_file = "/etc/awaken-auth/seal-key"
-    catalog_db = "postgres://awaken_control:adr71-control-db@postgres:5432/control" # awaken-allow: secret
-    credential_db = "postgres://awaken_control:adr71-control-db@postgres:5432/credentials" # awaken-allow: secret
-    config_db = "postgres://awaken_control:adr71-control-db@postgres:5432/control" # awaken-allow: secret
-    admin_db = "postgres://awaken_control:adr71-control-db@postgres:5432/control" # awaken-allow: secret
-    data_subject_db = "postgres://awaken_control:adr71-control-db@postgres:5432/control" # awaken-allow: secret
+    catalog_db = "postgres://awaken_control:adr71-control-db@postgres:5432/control" # awaken-allow(secret):
+    credential_db = "postgres://awaken_control:adr71-control-db@postgres:5432/credentials" # awaken-allow(secret):
+    config_db = "postgres://awaken_control:adr71-control-db@postgres:5432/control" # awaken-allow(secret):
+    admin_db = "postgres://awaken_control:adr71-control-db@postgres:5432/control" # awaken-allow(secret):
+    data_subject_db = "postgres://awaken_control:adr71-control-db@postgres:5432/control" # awaken-allow(secret):
     # Static Environment definitions and sandbox-policy versions are Control facts.
-    environment_db = "postgres://awaken_control:adr71-control-db@postgres:5432/control" # awaken-allow: secret
+    environment_db = "postgres://awaken_control:adr71-control-db@postgres:5432/control" # awaken-allow(secret):
   coordinator.toml: |
     data_dir = "/var/lib/awaken/coordinator"
     expected_platform_workspace_id = "workspace-adr71"
@@ -114,14 +114,14 @@ stringData:
     role = "coordinator"
     no_browser = true
     identity_mode = "no-login"
-    runtime_database_url = "postgres://awaken_coordinator:adr71-coordinator-db@postgres:5432/runtime" # awaken-allow: secret
+    runtime_database_url = "postgres://awaken_coordinator:adr71-coordinator-db@postgres:5432/runtime" # awaken-allow(secret):
     # Two Workers expose 16 concurrent claim slots. Keep claim traffic plus
     # foreground enqueue/commit/heartbeat headroom bounded per Coordinator;
     # database capacity is sized for every owner repository across all replicas.
     postgres_max_connections = 32
-    resource_database_url = "postgres://awaken_coordinator:adr71-coordinator-db@postgres:5432/resources" # awaken-allow: secret
-    sessions_db = "postgres://awaken_coordinator:adr71-coordinator-db@postgres:5432/runtime" # awaken-allow: secret
-    captured_content_db = "postgres://awaken_coordinator:adr71-coordinator-db@postgres:5432/runtime" # awaken-allow: secret
+    resource_database_url = "postgres://awaken_coordinator:adr71-coordinator-db@postgres:5432/resources" # awaken-allow(secret):
+    sessions_db = "postgres://awaken_coordinator:adr71-coordinator-db@postgres:5432/runtime" # awaken-allow(secret):
+    captured_content_db = "postgres://awaken_coordinator:adr71-coordinator-db@postgres:5432/runtime" # awaken-allow(secret):
     executable_agent_registration_token_file = "/etc/awaken-auth/registration-token"
     control_internal_url = "http://control:3001"
     control_service_token_file = "/etc/awaken-auth/control-service-token"

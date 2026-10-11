@@ -63,7 +63,7 @@ async function main() {
       const c1 = await client.beta.vaults.credentials.create(vaultA.id, {
         type: 'environment_variable',
         secret_name: 'K1',
-        secret_value: 'sk-one', // awaken-allow: secret
+        secret_value: 'sk-one', // awaken-allow(secret):
         networking: { type: 'unrestricted' },
         injection_location: { header: true },
         betas: BETAS,
@@ -71,7 +71,7 @@ async function main() {
       const c2 = await client.beta.vaults.credentials.create(vaultA.id, {
         type: 'environment_variable',
         secret_name: 'K2',
-        secret_value: 'sk-two', // awaken-allow: secret
+        secret_value: 'sk-two', // awaken-allow(secret):
         networking: { type: 'unrestricted' },
         betas: BETAS,
       });
@@ -96,7 +96,7 @@ async function main() {
         vault_id: vaultA.id,
         auth: {
           type: 'environment_variable',
-          secret_value: 'sk-one-rotated', // awaken-allow: secret
+          secret_value: 'sk-one-rotated', // awaken-allow(secret):
           networking: { type: 'limited', allowed_hosts: ['api.example.com'] },
           injection_location: { body: true },
         },
@@ -152,12 +152,12 @@ async function main() {
       const oauth = await client.beta.vaults.credentials.create(vaultA.id, {
         type: 'mcp_oauth',
         mcp_server_url: 'https://mcp.example.com/sse',
-        access_token: 'at', // awaken-allow: secret
+        access_token: 'at', // awaken-allow(secret):
         refresh: {
           client_id: 'cli',
-          refresh_token: 'rt', // awaken-allow: secret
+          refresh_token: 'rt', // awaken-allow(secret):
           token_endpoint: 'https://auth.example.com/token',
-          token_endpoint_auth: { type: 'client_secret_basic', client_secret: 'cs-orig' }, // awaken-allow: secret
+          token_endpoint_auth: { type: 'client_secret_basic', client_secret: 'cs-orig' }, // awaken-allow(secret):
         },
         betas: BETAS,
       });

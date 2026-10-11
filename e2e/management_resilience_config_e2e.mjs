@@ -16,7 +16,7 @@ import { withServer, pass } from './harness.mjs';
 import { closeHttpServer } from './http_server.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38472);
-const DIRECTORY_KEY = 'sk-resilience-directory'; // awaken-allow: secret
+const DIRECTORY_KEY = 'sk-resilience-directory'; // awaken-allow(secret):
 
 async function modelDirectory() {
   const server = http.createServer((request, response) => {

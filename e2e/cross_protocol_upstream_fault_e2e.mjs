@@ -31,7 +31,7 @@ import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 
-const FAKE_KEY = 'sk-fake-xproto-fault'; // awaken-allow: secret
+const FAKE_KEY = 'sk-fake-xproto-fault'; // awaken-allow(secret):
 const BASE_PORT = Number(process.env.E2E_PORT ?? 38613);
 
 // Parse an SSE body into decoded data frames.

@@ -76,7 +76,8 @@ DECLARATION = "INPUT_GLOBS"
 PATH_LITERAL = re.compile(r"^[A-Za-z0-9_.*][A-Za-z0-9_.*{}\[\],-]*(?:/[A-Za-z0-9_.*{}\[\],-]+)+$")
 # A file suffix, the other way a scope is written down: `.rs`, `*.mjs`.
 SUFFIX_LITERAL = re.compile(r"^\*?\.[A-Za-z0-9]{1,6}$")
-# A repository walk: `.glob(`/`.rglob(` anywhere in the module text.
+# Direct walks retain the original detection; delegated walks use the actual
+# imported source owner below, so removing a copied walk does not hide a scanner.
 WALKS_THE_REPOSITORY = re.compile(r"\.r?glob\s*\(")
 ENTRY_POINT = re.compile(r'^if __name__ == ["\']__main__["\']:', re.MULTILINE)
 DECLARES = re.compile(r"^INPUT_GLOBS\b", re.MULTILINE)
@@ -150,13 +151,39 @@ def scope_lists(module: Path) -> list[tuple[str, int, int]]:
     return found
 
 
+def walks_repository(source: str) -> bool:
+    """Direct walks or calls to the existing canonical tracked-file reader."""
+    if WALKS_THE_REPOSITORY.search(source):
+        return True
+    tree = ast.parse(source)
+    modules: set[str] = set()
+    readers: set[str] = set()
+    for statement in tree.body:
+        if isinstance(statement, ast.Import):
+            modules.update(alias.asname or alias.name for alias in statement.names
+                           if alias.name == "formal_sources")
+        elif isinstance(statement, ast.ImportFrom) and statement.module == "formal_sources":
+            readers.update(alias.asname or alias.name for alias in statement.names
+                           if alias.name == "tracked_files")
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        function = node.func
+        if isinstance(function, ast.Name) and function.id in readers:
+            return True
+        if (isinstance(function, ast.Attribute) and function.attr == "tracked_files"
+                and isinstance(function.value, ast.Name) and function.value.id in modules):
+            return True
+    return False
+
+
 def undeclared_scanners(scripts: Path) -> list[str]:
     """Entry points under `scripts` that walk the repository without a declaration."""
 
     found: list[str] = []
     for module in sorted(scripts.glob("*.py")):
         source = module.read_text(encoding="utf-8")
-        if not ENTRY_POINT.search(source) or not WALKS_THE_REPOSITORY.search(source):
+        if not ENTRY_POINT.search(source) or not walks_repository(source):
             continue
         if DECLARES.search(source):
             continue
@@ -410,6 +437,35 @@ def selftest() -> None:
         )
         assert any("does not name it" in error for error in
                    validation_errors(root, wrong)), "M19"
+
+        # M22: the same entry point delegates its unchanged repository scan to
+        # formal_sources instead of copying rglob. The original declaration/
+        # registry/runner rules still apply; consolidation is not ground gained.
+        # M23: comments/strings, unbound names and another owner's same method
+        # name are not that call. Recognize imports and AST calls, not mentions.
+        for imported, call in (
+            ('import formal_sources', 'formal_sources.tracked_files(ROOT)'),
+            ('import formal_sources as sources', 'sources.tracked_files(ROOT)'),
+            ('from formal_sources import tracked_files as files', 'files(ROOT)'),
+        ):
+            probe.write_text(
+                'OWNERS = ("crates/a/src/lib.rs", "crates/b/src/lib.rs")\n'
+                f'{imported}\n{call}\n'
+                'if __name__ == "__main__":\n    pass\n', encoding="utf-8",
+            )
+            assert validation_errors(root, wired) == [], "M22 registered delegated scan"
+            assert any("declares no INPUT_GLOBS" in error for error in
+                       validation_errors(root, registered)), "M22 declaration still required"
+            probe.write_text('INPUT_GLOBS = ("Cargo.toml",)\n' + probe.read_text(), encoding="utf-8")
+            assert undeclared_scanners(scripts) == [], "M22 declared delegation"
+        for source in (
+            'import formal_sources\n# formal_sources.tracked_files(ROOT)\n',
+            'import formal_sources\ntext = "formal_sources.tracked_files(ROOT)"\n',
+            'formal_sources.tracked_files(ROOT)\n',
+            'import other\nother.tracked_files(ROOT)\n',
+        ):
+            probe.write_text(source + 'if __name__ == "__main__":\n    pass\n', encoding="utf-8")
+            assert undeclared_scanners(scripts) == [], "M23 no unrelated or textual call"
 
         # M20: a helper module that globs but has no entry point is not a scanner.
         probe.write_text(

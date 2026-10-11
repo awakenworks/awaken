@@ -96,7 +96,7 @@ async function main() {
     );
     // R1/R1b: the in-flight provider may leave an occupied physical slot. A
     // transient 503 is the durable cleanup fence, not a completed cancellation.
-    // awaken-wait: allow the 15-second upstream fixture and one-second cleanup
+    // awaken-allow(wait): allow the 15-second upstream fixture and one-second cleanup
     // retry loop to settle, then require the SDK's successful cleanup receipt.
     const canceled = await eventually(
       async () => {

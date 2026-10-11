@@ -37,7 +37,7 @@ The owners, one per side, are the only places a wait loop belongs:
 
 Four rules, each ratcheted per file so today's debt is frozen and tomorrow's
 is refused. Genuine timing tests -- a timeout, a TTL, a lease expiry, a
-backoff -- are legitimate and stay; they say why through an `awaken-wait:`
+backoff -- are legitimate and stay; they say why through an `awaken-allow(wait):`
 reason comment, which is a decision someone made and can be argued with.
 
 The corpus is the `INPUT_GLOBS` declaration, walked -- not a second list beside
@@ -55,7 +55,10 @@ The shared CLI owns parsing and JSON IO, while this guard retains that rule.
 Convert the wait to its durable owner, or document the existing genuine timing
 exemption, before recording a decrease. No CLI reason waives a hard rule:
 
-* `wait-reason`: every matched `awaken-wait:` reason must have at least 20
+* `wait`: `awaken-allow(wait): <reason>` documents the existing genuine timing
+  exemption on the same or one of the three preceding lines. The source reason
+  has at least 20 characters; another rule's marker never exempts a wait.
+* `wait-reason`: every matched `awaken-allow(wait):` reason must have at least 20
   characters, including markers whose waits the scanner already exempted.
 * `allow-reason`: a baseline `allow` decision exempts only its exact path/rule
   pair and must explain why in at least 20 characters. Its owner, expiry and
@@ -71,6 +74,7 @@ import re
 from pathlib import Path
 
 import _architecture_ratchet
+import formal_sources
 
 # This checker reads the repository's test trees and its own baseline, so its
 # lefthook trigger is rendered from exactly that set.
@@ -175,7 +179,6 @@ OWNED_WAIT = re.compile(
 WAIT_CALL = re.compile(
     r"wait_for_session_events\s*\(|waitForValue\s*\(|waitForSessionEventReceipt\s*\(",
 )
-REASON = re.compile(r"awaken-wait:\s*(?P<reason>.+?)\s*$")
 MIN_REASON = 20
 
 # ---------------------------------------------------------------------------
@@ -354,7 +357,7 @@ MESSAGES = {
         f"asserts. Settle on a committed value through {{owner}} and anchor "
         "on the command's own processed_at, an outbox that drained, a revision, "
         "or a lifecycle fact. A real timeout/expiry test keeps its sleep and "
-        "says why in an `awaken-wait: <reason>` comment above it"
+        "says why in an `awaken-allow(wait): <reason>` comment above it"
     ),
     "generic-settle": (
         "this wait settles on a Session lifecycle/status signal, which names "
@@ -435,12 +438,12 @@ def test_module_of(text: str) -> str:
 
 
 def _exempt(lines: list[str], index: int) -> str | None:
-    """The `awaken-wait:` reason covering line `index`, if one is in force."""
+    """The `awaken-allow(wait):` reason covering line `index`, if one is in force."""
 
     for offset in range(max(0, index - 3), index + 1):
-        match = REASON.search(lines[offset])
-        if match:
-            return match.group("reason")
+        reason = formal_sources.allow_reason(lines[offset], "wait")
+        if reason:
+            return reason
     return None
 
 
@@ -599,9 +602,9 @@ def short_reasons(text: str) -> list[tuple[int, str]]:
     """Line/reason pairs for matched markers that do not actually say why."""
 
     return [
-        (number, match.group("reason"))
+        (number, reason)
         for number, line in enumerate(text.splitlines(), 1)
-        if (match := REASON.search(line)) and len(match.group("reason")) < MIN_REASON
+        if (reason := formal_sources.allow_reason(line, "wait")) is not None and len(reason) < MIN_REASON
     ]
 
 
@@ -637,7 +640,7 @@ def measure() -> tuple[list[str], Measurement]:
         found[relative] = file_violations(relative, text)
         for number, reason in short_reasons(text):
             errors.append(f"wait-reason: {relative}:{number} {len(reason)} -> >= {MIN_REASON}; "
-                          f"`awaken-wait: {reason}` must explain the wait; "
+                          f"`awaken-allow(wait): {reason}` must explain the wait; "
                           "fix: python3 scripts/ci/guards.py explain check_test_waits:wait-reason")
     return errors, measurement(found)
 
@@ -692,13 +695,13 @@ def selftest() -> None:
     | Rule | Cause                                              | Effect |
     |------|----------------------------------------------------|--------|
     | S1   | fixed sleep, then an assertion                      | reject |
-    | S2   | same, carrying an `awaken-wait:` reason             | accept |
+    | S2   | same, carrying an `awaken-allow(wait):` reason             | accept |
     | S3   | sleep as the poll interval of a loop                | not S1 |
     | S4   | wait settles on a lifecycle status, no durable value | reject |
     | S5   | same wait also naming a committed value             | accept |
     | S6   | private poll loop with a sleep and an exit          | reject |
     | S7   | loop delegating to an owned wait                    | accept |
-    | S8   | an `awaken-wait:` marker that says nothing          | reject |
+    | S8   | an `awaken-allow(wait):` marker that says nothing          | reject |
     | S9   | a `src` file's inline `#[cfg(test)] mod … {`        | in scope |
     | S10  | a `#[cfg(test)]` on one item, or `mod tests;`       | out of scope |
     | S11  | bounded poll loop that just falls through           | reject |
@@ -710,7 +713,7 @@ def selftest() -> None:
     | Rule | Cause                                                 | Effect |
     |------|-------------------------------------------------------|--------|
     | H1   | bare `sleep 2`, then `[ … ] || fail`                   | reject |
-    | H2   | same, carrying an `awaken-wait:` reason                | accept |
+    | H2   | same, carrying an `awaken-allow(wait):` reason                | accept |
     | H3   | `sleep 0.2` as a bounded loop's poll interval          | not H1 |
     | H4   | `for i in {1..30}` poll that just falls through        | reject |
     | H5   | same loop ending in `echo … >&2` / `return 2`          | accept |
@@ -755,7 +758,7 @@ def selftest() -> None:
     assert "sleep-then-assert" in rules(s1), "S1"
 
     s2 = (
-        "    // awaken-wait: the lease TTL itself is the subject of this test\n"
+        "    // awaken-allow(wait): the lease TTL itself is the subject of this test\n"
         "    tokio::time::sleep(d).await;\n"
         "    assert_eq!(calls, 1);\n"
     )
@@ -867,9 +870,9 @@ def selftest() -> None:
     )
     assert "silent-timeout" not in rules(s13), "S13"
 
-    assert short_reasons("// awaken-wait: flaky\n"), "S8"
+    assert short_reasons("// awaken-allow(wait): flaky\n"), "S8"
     assert not short_reasons(
-        "// awaken-wait: the lease TTL itself is the subject of this test\n"
+        "// awaken-allow(wait): the lease TTL itself is the subject of this test\n"
     ), "S8"
 
     baseline = {"sleep-then-assert": {"a.rs": 1}}
@@ -889,7 +892,7 @@ def selftest() -> None:
     assert "sleep-then-assert" in shell_rules(h1), "H1"
 
     h2 = (
-        "# awaken-wait: the drain grace period itself is the subject here\n"
+        "# awaken-allow(wait): the drain grace period itself is the subject here\n"
         "sleep 2\n"
         'n="$(assistant_count inflight)"\n'
         '[ "$n" -eq 1 ] || fail "inflight has $n replies"\n'
@@ -1048,6 +1051,7 @@ def selftest() -> None:
                 "reads its suffix, but no INPUT_GLOBS pattern covers it"
             )
     _selftest_cli()
+    _selftest_source_exemptions()
     print("check_test_waits selftest: the decision table holds")
 
 
@@ -1185,14 +1189,14 @@ def _selftest_cli() -> None:
     assert status == 1 and before == after and "e2e/new.mjs:1" in errors, "TCLI3 mixed growth/fall"
 
     for argv in modes:
-        status, before, after, _, _, _, errors = invoke(argv, {path: "// awaken-wait: flaky\n" + sleep})
+        status, before, after, _, _, _, errors = invoke(argv, {path: "// awaken-allow(wait): flaky\n" + sleep})
         assert status == 1 and before == after and "wait-reason:" in errors, "TCLI4 short exempt marker"
         invalid = {**held, "allow": [{"path": path, "rule": "sleep-then-assert", "reason": "short"}]}
         status, before, after, _, _, _, errors = invoke(argv, baseline=invalid)
         assert status == 1 and before == after and "allow-reason:" in errors, "TCLI4 short allow"
     for reason in ("x" * MIN_REASON, "the lease TTL itself is the subject of this test"):
         for argv in writes:
-            status, _, after, _, _, _, _ = invoke(argv, {path: "// awaken-wait: " + reason + "\n" + sleep})
+            status, _, after, _, _, _, _ = invoke(argv, {path: "// awaken-allow(wait): " + reason + "\n" + sleep})
             assert status == 0 and json.loads(after)["baseline"]["sleep-then-assert"] == {}, "TCLI4/TCLI5 valid reason"
     decision = {"path": path, "rule": "sleep-then-assert", "reason": "x" * MIN_REASON,
                 "owner": "test-owner", "expiry": "review", "unknown": {"keep": True}}
@@ -1224,7 +1228,7 @@ def _selftest_cli() -> None:
     # sleep/assert and Rust's inline test projection are still actually scanned.
     texts = {"e2e/probe.sh": "sleep 2\n[ \"$n\" -eq 1 ] || fail bad\n",
              "crates/fixture/src/lib.rs": "pub fn product() {}\n#[cfg(test)]\nmod tests {\n"
-                 "    // awaken-wait: the lease TTL itself is the subject of this test\n"
+                 "    // awaken-allow(wait): the lease TTL itself is the subject of this test\n"
                  "    tokio::time::sleep(d).await;\n    assert_eq!(calls, 1);\n}\n"}
     shell_held = {**held, "baseline": {"sleep-then-assert": {"e2e/probe.sh": 1}}}
     for argv in modes:
@@ -1252,6 +1256,35 @@ def _selftest_cli() -> None:
     for name in helpers:
         assert any(generate_hooks.glob_matches(pattern, "scripts/ci/" + name)
                    for pattern in declared), "TCLI10 helper edits trigger owning hook"
+
+
+def _selftest_source_exemptions() -> None:
+    """SX2 causes/effects of the shared spelling under the original wait policy.
+
+    Rule identity + same/-1/-2/-3 line -> scanner exemption; -4/other rule/old
+    current spelling -> original debt. Independently payload length<20 -> hard
+    source error even when already exempted; length20 is valid. A blank payload
+    cannot waive debt. Cross every boundary with the three existing dialects;
+    TCLI4 above separately proves every real CLI mode refuses short reasons.
+    """
+    for path, sleep, assertion, comment in (
+        ("tests/probe.rs", "tokio::time::sleep(d).await;", "assert_eq!(calls, 1);", "//"),
+        ("e2e/probe.mjs", "await sleep(10);", "assert.equal(calls, 1);", "//"),
+        ("e2e/probe.sh", "sleep 2", '[ "$n" -eq 1 ] || fail bad', "#"),
+    ):
+        for distance in (0, 1, 2, 3, 4):
+            for reason in ("x" * 19, "x" * 20):
+                marker = f"{comment} awaken-allow(wait): {reason}"
+                text = (f"{sleep} {marker}\n{assertion}\n" if distance == 0 else
+                        marker + "\n" * distance + sleep + "\n" + assertion + "\n")
+                found = file_violations(path, text)
+                assert bool(found) == (distance == 4), "SX2 exact original covering window"
+                assert bool(short_reasons(text)) == (len(reason) < MIN_REASON), "SX2 separate hard reason rule"
+        for marker in ("awaken-" + "wait: " + "x" * 20,
+                       "awaken-allow(secret): " + "x" * 20):
+            assert file_violations(path, f"{comment} {marker}\n{sleep}\n{assertion}\n"), "SX2 no current legacy/foreign-rule exemption"
+        text = f"{comment} awaken-allow(wait):\n{sleep}\n{assertion}\n"
+        assert short_reasons(text) and file_violations(path, text), "SX2 blank source reason is hard and cannot waive debt"
 
 
 

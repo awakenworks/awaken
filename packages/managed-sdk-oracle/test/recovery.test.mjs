@@ -25,7 +25,7 @@ function recoveryFake() {
     session: null,
     file: { id: 'file-1' },
     tunnel: { id: 'tunnel-1', archived_at: null },
-    tunnelToken: 'rotated-tunnel-token', // awaken-allow: secret (fixture)
+    tunnelToken: 'rotated-tunnel-token', // awaken-allow(secret): (fixture)
   };
   const client = { beta: {
     files: {

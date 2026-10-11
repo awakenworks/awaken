@@ -179,7 +179,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
             Some(json!({
                 "workspace_id": platform_workspace, "kind": "vault", "provider_id": "anthropic",
                 "env_key": "ANTHROPIC_API_KEY",
-                "secret": "sk-restart-secret" // awaken-allow: secret
+                "secret": "sk-restart-secret" // awaken-allow(secret):
             })),
         )
         .await;

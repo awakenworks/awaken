@@ -115,7 +115,7 @@ test('every official TypeScript Managed SDK method has one executable owner', ()
   // ownership edge instead of accepting a parallel or unexecuted evidence table.
   // Constraints/invariant: Beta and GA share one inventory but retain distinct
   // call identities; package orchestration, not a second manifest, proves reachability.
-  const client = new Anthropic({ apiKey: 'surface-inventory' }); // awaken-allow: secret
+  const client = new Anthropic({ apiKey: 'surface-inventory' }); // awaken-allow(secret):
   const actual = officialManagedMethods(client);
   assertExactMethodInventory(MANAGED_TS_METHOD_MANIFEST, actual);
 
@@ -162,7 +162,7 @@ test('Managed SDK method ownership rejects missing and overlapping scoped entrie
   // fails uniqueness before a duplicate owner can mask drift. Constraint: this
   // mutates copies of the one production manifest, never a second inventory.
   // Decision rules: R2 C1->E1; R3 C2->E2.
-  const client = new Anthropic({ apiKey: 'surface-inventory' }); // awaken-allow: secret
+  const client = new Anthropic({ apiKey: 'surface-inventory' }); // awaken-allow(secret):
   const actual = officialManagedMethods(client);
   assert.throws(
     () => assertExactMethodInventory(MANAGED_TS_METHOD_MANIFEST.slice(1), actual),
@@ -196,12 +196,12 @@ test('one behavior-owner graph projects the exact wire contract of each SDK vers
   ).operations;
   const legacy = managedTsMethodManifestForOperations(legacyOperations, {
     helperMethods: managedTsSdkHelperMethods(new LegacyAnthropic({
-      apiKey: 'inventory', // awaken-allow: secret
+      apiKey: 'inventory', // awaken-allow(secret):
     })),
   });
   const current = managedTsMethodManifestForOperations(currentOperations, {
     helperMethods: managedTsSdkHelperMethods(new Anthropic({
-      apiKey: 'inventory', // awaken-allow: secret
+      apiKey: 'inventory', // awaken-allow(secret):
     })),
   });
   assert.deepEqual(current, MANAGED_TS_METHOD_MANIFEST, 'C1/E1');

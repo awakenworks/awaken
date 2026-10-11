@@ -8,7 +8,7 @@
 // @formal evidence session_event_batch.idempotency_key_appends_at_most_once
 // @formal evidence tool_result.pending_commit_coordinate_is_exact
 // @formal evidence tool_result.terminal_run_rejects_late_result
-// awaken-file-limit-ceiling: 13645 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 13645 (legacy oversized test file: split, never grow)
 use awaken_session_repository_contract::LifecycleOutbox as _;
 use awaken_session_types::SessionId;
 mod budget_reach;

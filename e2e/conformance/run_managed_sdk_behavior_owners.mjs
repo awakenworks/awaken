@@ -118,7 +118,7 @@ const requestContracts = extractRequestContractsFromPackageRoot(
 );
 const sdkModule = await import(pathToFileURL(path.join(sdkRoot, 'index.mjs')));
 const helperMethods = managedTsSdkHelperMethods(new sdkModule.default({
-  apiKey: 'behavior-owner-helper-inventory', // awaken-allow: secret
+  apiKey: 'behavior-owner-helper-inventory', // awaken-allow(secret):
 }));
 
 // Derive operation-local negative capability evidence from every admitted SDK,

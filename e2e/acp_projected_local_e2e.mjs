@@ -355,7 +355,7 @@ async function main() {
   fs.mkdirSync(STORAGE, { recursive: true });
   const binary = awakenBin();
   let server = start(binary, 'gemini');
-  const mcpToken = 'projected-codex-mcp-token'; // awaken-allow: secret (fixture)
+  const mcpToken = 'projected-codex-mcp-token'; // awaken-allow(secret): (fixture)
   const fixture = await startCalcFixture(mcpToken);
   const directory = await startModelDirectory();
   try {
@@ -370,7 +370,7 @@ async function main() {
       model: 'gemini-upstream',
       dialect: 'gemini',
       baseUrl: `${directory.url}/gemini/v1beta/`,
-      secret: 'persisted-gemini-key', // awaken-allow: secret (fixture)
+      secret: 'persisted-gemini-key', // awaken-allow(secret): (fixture)
     });
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
     const session = await client.beta.sessions.create({
@@ -439,7 +439,7 @@ async function main() {
       // credential-artifact rejection boundary (P3).
       dialect: 'open_ai_responses',
       baseUrl: `${directory.url}/openai/v1/`,
-      secret: 'persisted-codex-key', // awaken-allow: secret (fixture)
+      secret: 'persisted-codex-key', // awaken-allow(secret): (fixture)
     });
     const codexClient = new Anthropic({
       apiKey: 'e2e-dummy',

@@ -38,7 +38,7 @@ const server = http.createServer(async (request, response) => {
       : certificate));
   } else if (request.url.includes('reveal_token') || request.url.includes('rotate_token')) {
     response.setHeader('cache-control', 'no-store');
-    response.end(JSON.stringify({ id: 'ttok_contract', type: 'tunnel_token', tunnel_token: 'secret' })); // awaken-allow: secret
+    response.end(JSON.stringify({ id: 'ttok_contract', type: 'tunnel_token', tunnel_token: 'secret' })); // awaken-allow(secret):
   } else if (request.method === 'GET' && request.url.startsWith('/v1/tunnels?')) {
     response.end(JSON.stringify({ data: [tunnel], next_page: null }));
   } else {
@@ -49,7 +49,7 @@ const server = http.createServer(async (request, response) => {
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 try {
   const { port } = server.address();
-  const client = new Anthropic({ apiKey: 'contract-key', baseURL: `http://127.0.0.1:${port}` }); // awaken-allow: secret -- inert loopback fixture
+  const client = new Anthropic({ apiKey: 'contract-key', baseURL: `http://127.0.0.1:${port}` }); // awaken-allow(secret): -- inert loopback fixture
   const betas = [beta];
   const created = await client.beta.tunnels.create({ display_name: 'contract', betas }).withResponse();
   assert.equal(created.data.id, tunnel.id, 'T1 create');

@@ -2,7 +2,7 @@
 // @formal evidence session_run.execution_requires_dispatch_work_and_realization_owner
 // @formal evidence session_run.stale_work_epoch_cannot_observe_authoritative_thread_commit
 // @formal evidence worker.accepted_protocol_version_is_inside_advertised_range
-// awaken-file-limit-ceiling: 3223 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 3223 (legacy oversized test file: split, never grow)
 //! The production request identity is wired through lifecycle and dispatch
 //! clients over a real socket, including the post-registration incarnation bind.
 

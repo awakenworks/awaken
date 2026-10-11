@@ -21,7 +21,7 @@ test('release mode runs with complete fixtures even without the optional opt-in 
   assert.deepEqual(
     whenOnlineMode({
       AWAKEN_WHEN_ONLINE_REQUIRED: '1',
-      ANTHROPIC_API_KEY: 'secret', // awaken-allow: secret
+      ANTHROPIC_API_KEY: 'secret', // awaken-allow(secret):
       AWAKEN_WHEN_ONLINE_AGENT: 'agent_reference',
       AWAKEN_WHEN_ONLINE_ENV: 'environment_reference',
     }),
@@ -39,7 +39,7 @@ test('an opted-in partial fixture fails before external work', () => {
   // prevents local placeholder identities from becoming reference evidence.
   const mode = whenOnlineMode({
     AWAKEN_WHEN_ONLINE: '1',
-    ANTHROPIC_API_KEY: 'secret', // awaken-allow: secret
+    ANTHROPIC_API_KEY: 'secret', // awaken-allow(secret):
   });
   assert.equal(mode.run, false);
   assert.match(mode.error, /AWAKEN_WHEN_ONLINE_AGENT, AWAKEN_WHEN_ONLINE_ENV/u);
@@ -48,7 +48,7 @@ test('an opted-in partial fixture fails before external work', () => {
 test('developer opt-in runs only with one complete official fixture tuple', () => {
   assert.deepEqual(whenOnlineMode({
     AWAKEN_WHEN_ONLINE: '1',
-    ANTHROPIC_API_KEY: 'secret', // awaken-allow: secret
+    ANTHROPIC_API_KEY: 'secret', // awaken-allow(secret):
     AWAKEN_WHEN_ONLINE_AGENT: 'agent_reference',
     AWAKEN_WHEN_ONLINE_ENV: 'environment_reference',
   }), { run: true, error: null });
@@ -59,10 +59,10 @@ test('official evidence cannot be redirected by an ambient SDK base URL', () => 
   // The projection must discard the gateway so only api.anthropic.com can
   // produce live-reference evidence; the API key remains the selected input.
   assert.deepEqual(officialAnthropicClientOptions({
-    ANTHROPIC_API_KEY: 'reference-key', // awaken-allow: secret
+    ANTHROPIC_API_KEY: 'reference-key', // awaken-allow(secret):
     ANTHROPIC_BASE_URL: 'https://gateway.invalid',
   }), {
-    apiKey: 'reference-key', // awaken-allow: secret
+    apiKey: 'reference-key', // awaken-allow(secret):
     baseURL: 'https://api.anthropic.com',
   });
 });

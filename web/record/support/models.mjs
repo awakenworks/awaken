@@ -3,7 +3,7 @@ import os from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { BACKEND } from "./control-plane.mjs";
 
-const SYNTHETIC_KEY = "recording-fixture-only"; // awaken-allow: secret (synthetic fixture)
+const SYNTHETIC_KEY = "recording-fixture-only"; // awaken-allow(secret): (synthetic fixture)
 const SYNTHETIC_PORT = Number(process.env.AWAKEN_RECORD_SYNTHETIC_PORT ?? 38088);
 let syntheticDirectory;
 let syntheticModel = "recording-model";

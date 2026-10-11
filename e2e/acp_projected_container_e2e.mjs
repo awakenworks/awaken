@@ -33,7 +33,7 @@ const STORAGE = path.join(TMP, 'storage');
 const IMAGE = `awaken-acp-projected-e2e:${process.pid}`;
 const BASE_IMAGE = process.env.AWAKEN_TEST_SESSION_IMAGE ?? 'awaken-sandbox:session-e2e';
 const BETAS = ['managed-agents-2026-04-01', FILES_BETA];
-const MCP_TOKEN = 'projected-container-mcp-token'; // awaken-allow: secret (fixture)
+const MCP_TOKEN = 'projected-container-mcp-token'; // awaken-allow(secret): (fixture)
 let WORKSPACE;
 const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
 const AGENT = 'projected-container-agent';
@@ -193,7 +193,7 @@ async function publishAgent(base, directoryUrl) {
     dialect: 'gemini',
     base_url: `${directoryUrl}/v1beta/`,
     timeout_secs: 30,
-    secret: 'persisted-container-key', // awaken-allow: secret (fixture)
+    secret: 'persisted-container-key', // awaken-allow(secret): (fixture)
   });
   await request(base, 'PUT', `/v1/config/agents/${AGENT}`, {
     name: AGENT,

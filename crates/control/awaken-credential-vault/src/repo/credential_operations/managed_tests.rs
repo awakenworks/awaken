@@ -769,7 +769,7 @@ async fn managed_begin_rejects_every_forged_fresh_material_owner_shape() {
         .writer_epoch
         .and_then(awaken_lease_contract::fence::Epoch::next);
     let mut forged_owner = canonical.clone();
-    forged_owner.material_fence.writer_token = Some("foreign-owner".into()); // awaken-allow: secret -- writer identity, not material
+    forged_owner.material_fence.writer_token = Some("foreign-owner".into()); // awaken-allow(secret): -- writer identity, not material
 
     for forged in [forged_ready, forged_epoch, forged_owner] {
         assert!(matches!(

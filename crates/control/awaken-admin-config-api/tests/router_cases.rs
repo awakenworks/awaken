@@ -638,7 +638,7 @@ async fn rotate_credential_replaces_material_without_leaking_and_rejects_stale_v
     author_model(&h, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
     let credential = enter_vault_cred(&h.app, Some("anthropic"), "sk-before-rotation").await;
 
-    let replacement = "sk-after-rotation"; // awaken-allow: secret
+    let replacement = "sk-after-rotation"; // awaken-allow(secret):
     let (status, rotated) = call(
         &h.app,
         "POST",
@@ -669,7 +669,7 @@ async fn rotate_credential_replaces_material_without_leaking_and_rejects_stale_v
         &h.app,
         "POST",
         &format!("/v1/config/credentials/{credential}/rotate"),
-        Some(json!({"expected_version": 1, "secret": "sk-stale-replacement"})), // awaken-allow: secret
+        Some(json!({"expected_version": 1, "secret": "sk-stale-replacement"})), // awaken-allow(secret):
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{problem}");
@@ -802,7 +802,7 @@ async fn described_create_and_descriptor_only_rotation_use_existing_authority_ro
 #[tokio::test]
 async fn post_credential_is_201_and_never_echoes_the_secret() {
     let h = harness();
-    let secret = "sk-post-cred-cleartext"; // awaken-allow: secret
+    let secret = "sk-post-cred-cleartext"; // awaken-allow(secret):
     let (s, cred) = call(
         &h.app,
         "POST",
@@ -880,7 +880,7 @@ async fn hosted_credential_operation_is_idempotent_exact_and_secret_free() {
             "workspace-a".into(),
             "domain-pack/provider".into(),
             "credential-resource:create:42".into(),
-            CredentialMaterial::secret(RedactedString::new("hosted-business-secret")), // awaken-allow: secret
+            CredentialMaterial::secret(RedactedString::new("hosted-business-secret")), // awaken-allow(secret):
         )
         .unwrap(),
     )
@@ -916,7 +916,7 @@ async fn hosted_credential_operation_is_idempotent_exact_and_secret_free() {
     assert_eq!(replay, first, "H2");
 
     let mut conflicting = request;
-    conflicting["secret"] = json!("different-hosted-business-secret"); // awaken-allow: secret
+    conflicting["secret"] = json!("different-hosted-business-secret"); // awaken-allow(secret):
     let (status, problem) = call(&h.app, "POST", "/v1/config/credentials", Some(conflicting)).await;
     assert_eq!(status, StatusCode::CONFLICT, "H3: {problem}");
     assert_eq!(problem["code"], "credential_version_conflict", "H3");
@@ -1016,7 +1016,7 @@ async fn hosted_described_replacement_reuses_post_and_preserves_predecessor() {
         "descriptor": descriptor,
         "material": {
             "type_id": awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
-            "fields": {"username": "x-access-token", "password": "old-token"} // awaken-allow: secret -- inert fixture
+            "fields": {"username": "x-access-token", "password": "old-token"} // awaken-allow(secret): -- inert fixture
         }
     });
     let (status, old) = call(&h.app, "POST", "/v1/config/credentials", Some(old_request)).await;
@@ -1033,7 +1033,7 @@ async fn hosted_described_replacement_reuses_post_and_preserves_predecessor() {
         "descriptor": old["descriptor"],
         "material": {
             "type_id": awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
-            "fields": {"username": "x-access-token", "password": "new-token"} // awaken-allow: secret -- inert fixture
+            "fields": {"username": "x-access-token", "password": "new-token"} // awaken-allow(secret): -- inert fixture
         }
     });
     let (status, replacement) = call(
@@ -1088,7 +1088,7 @@ async fn hosted_described_replacement_reuses_post_and_preserves_predecessor() {
         "descriptor": old["descriptor"],
         "material": {
             "type_id": awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
-            "fields": {"username": "x-access-token", "password": "stale-token"} // awaken-allow: secret -- inert fixture
+            "fields": {"username": "x-access-token", "password": "stale-token"} // awaken-allow(secret): -- inert fixture
         }
     });
     let (status, problem) = call(
@@ -1115,7 +1115,7 @@ async fn hosted_described_replacement_reuses_post_and_preserves_predecessor() {
         "replacement_of": {"id": old["id"], "revision": old["version"]},
         "kind": "vault",
         "provider_id": "github",
-        "secret": "compat-token" // awaken-allow: secret -- inert fixture
+        "secret": "compat-token" // awaken-allow(secret): -- inert fixture
     });
     let (status, problem) = call(
         &h.app,
@@ -1137,7 +1137,7 @@ async fn hosted_described_replacement_reuses_post_and_preserves_predecessor() {
         "descriptor": old["descriptor"],
         "material": {
             "type_id": awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
-            "fields": {"username": "x-access-token", "password": "foreign-token"} // awaken-allow: secret -- inert fixture
+            "fields": {"username": "x-access-token", "password": "foreign-token"} // awaken-allow(secret): -- inert fixture
         }
     });
     let (status, foreign) = call(
@@ -1156,7 +1156,7 @@ async fn hosted_described_replacement_reuses_post_and_preserves_predecessor() {
         "descriptor": old["descriptor"],
         "material": {
             "type_id": awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
-            "fields": {"username": "x-access-token", "password": "cross-workspace-token"} // awaken-allow: secret -- inert fixture
+            "fields": {"username": "x-access-token", "password": "cross-workspace-token"} // awaken-allow(secret): -- inert fixture
         }
     });
     let (cross_status, cross_problem) = call(
@@ -1178,7 +1178,7 @@ async fn hosted_described_replacement_reuses_post_and_preserves_predecessor() {
             "descriptor": old["descriptor"],
             "material": {
                 "type_id": awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
-                "fields": {"username": "x-access-token", "password": "absent-token"} // awaken-allow: secret -- inert fixture
+                "fields": {"username": "x-access-token", "password": "absent-token"} // awaken-allow(secret): -- inert fixture
             }
         })),
     )
@@ -1221,7 +1221,7 @@ async fn hosted_credential_list_does_not_mix_model_credentials() {
             "kind": "vault",
             "provider_id": "domain-pack/provider",
             "idempotency_key": "resource-create-1",
-            "secret": "business-secret" // awaken-allow: secret
+            "secret": "business-secret" // awaken-allow(secret):
         })),
     )
     .await;
@@ -1259,7 +1259,7 @@ async fn hosted_credential_list_does_not_mix_model_credentials() {
 #[tokio::test]
 async fn credential_entry_is_open_to_external_material_types_without_secret_leaks() {
     let h = harness();
-    let private_key = "external-private-key"; // awaken-allow: secret
+    let private_key = "external-private-key"; // awaken-allow(secret):
     let material = json!({
         "type_id": "acme.ssh-key/v1",
         "fields": {
@@ -1366,7 +1366,7 @@ async fn generic_admin_route_never_creates_worker_local_credentials() {
                 "workspace_id": "ws",
                 "kind": "worker_local",
                 "provider_id": "openai",
-                "secret": "must-not-cross-the-control-plane", // awaken-allow: secret
+                "secret": "must-not-cross-the-control-plane", // awaken-allow(secret):
             }),
         ),
     ] {
@@ -1512,7 +1512,7 @@ async fn every_workspace_claim_is_fenced_against_the_edge_resolved_workspace() {
             "display_name": "Anthropic",
             "dialect": "anthropic_messages",
             "base_url": "https://example.invalid/v1/",
-            "secret": "sk-test", // awaken-allow: secret
+            "secret": "sk-test", // awaken-allow(secret):
         })
     };
     let credential = |workspace: &str| -> Value {
@@ -1521,7 +1521,7 @@ async fn every_workspace_claim_is_fenced_against_the_edge_resolved_workspace() {
             "kind": "vault",
             "provider_id": "openai",
             "env_key": "OPENAI_API_KEY",
-            "secret": "sk-openai", // awaken-allow: secret
+            "secret": "sk-openai", // awaken-allow(secret):
         })
     };
 

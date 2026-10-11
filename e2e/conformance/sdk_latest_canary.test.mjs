@@ -74,7 +74,7 @@ test('empty path admission uses actual SDK diagnostics for positional and groupe
   const root = resolveSdkPackage('@anthropic-ai/sdk-current').root;
   const { default: Anthropic } = await import(pathToFileURL(resolve(root, 'index.mjs')));
   let requests = 0;
-  const client = new Anthropic({ apiKey: 'path-contract', // awaken-allow: secret
+  const client = new Anthropic({ apiKey: 'path-contract', // awaken-allow(secret):
     maxRetries: 0, fetch: async () => { requests++; throw new Error('unexpected path I/O'); } });
   const classify = requestContractInternals.pythonEmptyPathRejection;
   for (const [invoke, args, field] of [

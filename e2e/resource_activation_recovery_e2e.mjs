@@ -29,7 +29,7 @@ const PORT = Number(process.env.E2E_PORT ?? 38436);
 const WORKSPACE = `activation-recovery-${process.pid}`;
 const AGENT = 'activation-recovery-agent';
 const MODEL = 'activation-recovery-model';
-const FAKE_KEY = 'sk-activation-recovery-fake'; // awaken-allow: secret
+const FAKE_KEY = 'sk-activation-recovery-fake'; // awaken-allow(secret):
 const MANAGED_BETA = 'managed-agents-2026-04-01';
 const MEMORY_BETA = 'agent-memory-2026-07-22';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

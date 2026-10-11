@@ -1352,7 +1352,7 @@ mod tests {
             "not a certificate",
             "-----BEGIN CERTIFICATE-----\n!invalid!\n-----END CERTIFICATE-----",
             "-----BEGIN CERTIFICATE-----\nYQ==\n-----END CERTIFICATE-----",
-            "-----BEGIN PRIVATE KEY-----\nYQ==\n-----END PRIVATE KEY-----", // awaken-allow: secret -- invalid one-byte DER fixture, not a key
+            "-----BEGIN PRIVATE KEY-----\nYQ==\n-----END PRIVATE KEY-----", // awaken-allow(secret): -- invalid one-byte DER fixture, not a key
         ] {
             assert!(
                 WorkerUpstream::remote_with_ca_certificate(

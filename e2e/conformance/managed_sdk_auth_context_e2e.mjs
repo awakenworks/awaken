@@ -104,7 +104,7 @@ async function main() {
       const label = `${role}:${version}`;
       const projectsWorkspace = projectsWorkspaceResponseContext(packageRoot);
       const invalid = new Client({
-        apiKey: `invalid-${version}`, // awaken-allow: secret
+        apiKey: `invalid-${version}`, // awaken-allow(secret):
         baseURL: running.baseUrl,
         maxRetries: 0,
       });

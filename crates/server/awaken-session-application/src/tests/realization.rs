@@ -7,7 +7,7 @@
 // @formal evidence session_resources.terminal_assignment_retains_desired_generation
 // @formal evidence session_resources.terminal_session_never_reactivates
 // @formal evidence session_run.execution_requires_dispatch_work_and_realization_owner
-// awaken-file-limit-ceiling: 6486 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 6486 (legacy oversized test file: split, never grow)
 use super::*;
 mod capacity_budget;
 mod cleanup_timing;

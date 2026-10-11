@@ -133,7 +133,7 @@ async function main() {
     await assert.rejects(
       () => client.beta.sessions.resources.update(fileRes.id, {
         session_id: session.id,
-        authorization_token: 'file-cannot-use-token', // awaken-allow: secret
+        authorization_token: 'file-cannot-use-token', // awaken-allow(secret):
         betas: BETAS,
       }),
       (e) => e.status === 400,
@@ -142,7 +142,7 @@ async function main() {
     await assert.rejects(
       () => client.beta.sessions.resources.update(repoRes.id, {
         session_id: session.id,
-        authorization_token: 'must-not-enter', // awaken-allow: secret
+        authorization_token: 'must-not-enter', // awaken-allow(secret):
         betas: BETAS,
       }),
       (e) => e.status === 400,

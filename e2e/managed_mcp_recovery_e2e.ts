@@ -33,8 +33,8 @@ import {
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PREFERRED_PORT = Number(process.env.E2E_PORT);
-const TOKEN_A = 'recovery-token-a'; // awaken-allow: secret
-const TOKEN_B = 'recovery-token-b'; // awaken-allow: secret
+const TOKEN_A = 'recovery-token-a'; // awaken-allow(secret):
+const TOKEN_B = 'recovery-token-b'; // awaken-allow(secret):
 
 async function update(
   client: Anthropic,

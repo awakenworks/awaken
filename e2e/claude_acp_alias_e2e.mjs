@@ -25,7 +25,7 @@ const commandArgumentsFor = ordinal => ({ command: `AWAKEN_ALIAS_SENTINEL_${ordi
 function startClient(root, provider, decide) {
   const child = spawn(process.execPath, [executable], {
     cwd: root, detached: true, stdio: ['pipe', 'pipe', 'pipe'], env: {
-      ...process.env, HOME: root, CLAUDE_CONFIG_DIR: root, ANTHROPIC_API_KEY: 'fixture-key', // awaken-allow: secret -- loopback-only fixture key
+      ...process.env, HOME: root, CLAUDE_CONFIG_DIR: root, ANTHROPIC_API_KEY: 'fixture-key', // awaken-allow(secret): -- loopback-only fixture key
       ANTHROPIC_AUTH_TOKEN: '', CLAUDE_CODE_OAUTH_TOKEN: '', ANTHROPIC_BASE_URL: provider.url,
       ANTHROPIC_MODEL: 'claude-sonnet-4-6', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     },

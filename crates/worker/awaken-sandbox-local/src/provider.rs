@@ -1,7 +1,7 @@
 // @formal surface obligation=sandbox.admission_requires_requested_capabilities
 // @formal surface obligation=sandbox.fail_closed_policy_never_downgrades
 // @formal reason: Local provider selection and realization.
-// awaken-file-limit-ceiling: 1619
+// awaken-allow(file-limit-ceiling): 1619
 //! `LocalProvider` — the `awaken-provisioning-contract` seam realized on the local
 //! machine (ADR-0041, first slice / Workdir tier).
 //!

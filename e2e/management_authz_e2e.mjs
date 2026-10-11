@@ -165,7 +165,7 @@ async function main() {
     r = await req(base, 'POST', '/v1/config/credentials', {
       workspace_id: workspace, kind: 'vault', provider_id: 'anthropic',
       env_key: 'ANTHROPIC_API_KEY',
-      secret: 'sk-authz-e2e-secret', // awaken-allow: secret
+      secret: 'sk-authz-e2e-secret', // awaken-allow(secret):
     }, token);
     assert.equal(r.status, 201, `credential entry: ${JSON.stringify(r.json)}`);
     const credId = r.json.id;
@@ -179,7 +179,7 @@ async function main() {
     const wireCred = await client.beta.vaults.credentials.create(vault.id, {
       type: 'mcp_oauth',
       mcp_server_url: 'http://127.0.0.1:9/mcp',
-      access_token: 'authz-e2e-mcp-bearer', // awaken-allow: secret
+      access_token: 'authz-e2e-mcp-bearer', // awaken-allow(secret):
       betas: BETAS,
     });
     assert.equal(wireCred.auth.type, 'mcp_oauth');

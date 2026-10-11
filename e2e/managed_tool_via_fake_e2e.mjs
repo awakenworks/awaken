@@ -15,7 +15,7 @@ import {
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
-const FAKE_KEY = 'sk-fake-tool-key'; // awaken-allow: secret
+const FAKE_KEY = 'sk-fake-tool-key'; // awaken-allow(secret):
 
 async function send(client, id, text) {
   // C1=exact User receipt; C2=wire/tool terminal. E1=types from the post-C1

@@ -103,7 +103,7 @@ impl Harness {
             .await;
         assert_eq!(status, StatusCode::OK, "{vault}");
         let vault_id = vault["id"].as_str().unwrap().to_string();
-        let (status,credential)=self.call(workspace,"POST",&format!("/v1/vaults/{vault_id}/credentials"),json!({"display_name":label,"auth":{"type":"static_bearer","mcp_server_url":url,"token":"synthetic-account-token"}})).await; // awaken-allow: secret
+        let (status,credential)=self.call(workspace,"POST",&format!("/v1/vaults/{vault_id}/credentials"),json!({"display_name":label,"auth":{"type":"static_bearer","mcp_server_url":url,"token":"synthetic-account-token"}})).await; // awaken-allow(secret):
         assert_eq!(status, StatusCode::OK, "{credential}");
         (vault_id, credential["id"].as_str().unwrap().to_string())
     }

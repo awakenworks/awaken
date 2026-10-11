@@ -618,7 +618,7 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
         ledger.seal_worker(anchor).await?;
         let _ = ledger.seal_group_and_join(anchor, "old-effect").await?;
         let mut isolated = None;
-        // awaken-wait: Kubernetes policy activation is an external physical fact; each retry reads the same durable ticket join.
+        // awaken-allow(wait): Kubernetes policy activation is an external physical fact; each retry reads the same durable ticket join.
         for _ in 0..60 {
             let joined = ledger.isolate_sealed_group_and_join(anchor, "old-effect").await?;
             if let RequestJoin::Complete(tickets) = joined {
@@ -1022,7 +1022,7 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
             let api: Api<DynamicObject> =
                 Api::namespaced_with(client.clone(), &name, &api_resource);
             let object_name = format!("reserved-{resource}");
-            // awaken-wait: a selected admission policy can outlive its binding
+            // awaken-allow(wait): a selected admission policy can outlive its binding
             // deletion briefly; only an exact UID-fenced DELETE and absence
             // close each task-owned reservation.
             for _ in 0..60 {
@@ -1123,7 +1123,7 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
                 cleanup_errors.push("inert Pod has no exact name".into());
                 continue;
             };
-            // awaken-wait: Admission policy removal must propagate before the
+            // awaken-allow(wait): Admission policy removal must propagate before the
             // exact task-owned finalizer can be released. Both original and
             // claim-only reservations use this one cleanup owner.
             for _ in 0..60 {
@@ -1159,7 +1159,7 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
                 }
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
-            // awaken-wait: each exact name is absent before Namespace cleanup.
+            // awaken-allow(wait): each exact name is absent before Namespace cleanup.
             for _ in 0..60 {
                 match pods.get_opt(&pod_name).await {
                     Ok(None) => break,
@@ -1184,7 +1184,7 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
         if let Err(error) = delete_namespace_by_uid(&namespaces, &object).await {
             cleanup_errors.push(format!("Namespace {name}: {error}"));
         }
-        // awaken-wait: Namespace finalization is an external Kubernetes fact, read back by the exact generated name.
+        // awaken-allow(wait): Namespace finalization is an external Kubernetes fact, read back by the exact generated name.
         for _ in 0..60 {
             if matches!(namespaces.get_opt(&name).await, Ok(None)) {
                 break;
@@ -1298,7 +1298,7 @@ async fn original_create_guard_keeps_a_deleted_pod_visible_until_exact_release()
         Ok(None) => {}
         Err(error) => cleanup_errors.push(format!("original Pod cleanup read: {error}")),
     }
-    // awaken-wait: Kubernetes finalizer release is verified by the exact Pod name after a UID-fenced deletion request.
+    // awaken-allow(wait): Kubernetes finalizer release is verified by the exact Pod name after a UID-fenced deletion request.
     for _ in 0..60 {
         match pods.get_opt("original-pod").await {
             Ok(None) => break,
@@ -1317,7 +1317,7 @@ async fn original_create_guard_keeps_a_deleted_pod_visible_until_exact_release()
     if let Err(error) = delete_namespace_by_uid(&namespaces, &namespace).await {
         cleanup_errors.push(format!("original guard Namespace deletion: {error}"));
     }
-    // awaken-wait: The generated test Namespace must be absent before the physical control can report success.
+    // awaken-allow(wait): The generated test Namespace must be absent before the physical control can report success.
     for _ in 0..60 {
         if matches!(namespaces.get_opt(&name).await, Ok(None)) {
             break;

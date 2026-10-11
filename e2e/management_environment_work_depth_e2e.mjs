@@ -29,7 +29,7 @@ const { server, baseUrl: baseURL } = spawnServer('worker', PORT);
 try {
   await waitForPort(PORT);
   const admin = new Anthropic({ apiKey: 'e2e-dummy', baseURL });
-  const worker = new Anthropic({ authToken: 'e2e-env-key', baseURL }); // awaken-allow: secret
+  const worker = new Anthropic({ authToken: 'e2e-env-key', baseURL }); // awaken-allow(secret):
 
   // Authentication partition W0: a Work-shaped credential is intercepted by
   // the Work capability edge before generic IAM. The process has already
@@ -37,7 +37,7 @@ try {
   // unresolved identity cannot turn that internal scope into a public header.
   const forgedWorkResponse = await fetch(new URL('/v1/sessions/sesn_forged', baseURL), {
     headers: {
-      authorization: 'Bearer sk-ant-req-forged', // awaken-allow: secret
+      authorization: 'Bearer sk-ant-req-forged', // awaken-allow(secret):
       'anthropic-beta': BETAS[0],
       'anthropic-version': '2023-06-01',
     },

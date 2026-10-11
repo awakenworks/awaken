@@ -1,7 +1,7 @@
 // @formal surface requirement=product.admin_console.console_workflows
 // @formal reason: This source implements the repository-controlled admin product boundary and is
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
-// awaken-file-limit-ceiling: 1570
+// awaken-allow(file-limit-ceiling): 1570
 //! HTTP CRUD for the admin config plane (ADR-0043 L1): the self-hosted-only
 //! management surface the Anthropic Managed wire does not define. It authors the
 //! catalog (provider / protocol-endpoint / offering) and enters credentials, then

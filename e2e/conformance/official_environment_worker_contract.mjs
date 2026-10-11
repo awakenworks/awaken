@@ -13,7 +13,7 @@ export async function exerciseEnvironmentWorkerSecretToken({ Anthropic, Environm
   const workSecretOf = (payload) => Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
   const observed = [];
   const client = new Anthropic({
-    apiKey: 'environment-key-absent', // awaken-allow: secret
+    apiKey: 'environment-key-absent', // awaken-allow(secret):
     baseURL: 'https://managed.invalid',
     maxRetries: 0,
     fetch: async (input, init) => {
@@ -25,7 +25,7 @@ export async function exerciseEnvironmentWorkerSecretToken({ Anthropic, Environm
   const worker = new EnvironmentWorker({ client, environmentId: 'env_candidate' });
   const item = { workId: 'work_candidate', environmentId: 'env_candidate', sessionId: 'session_candidate' };
   const ctrl = new AbortController();
-  const run = worker.handleItem({ ...item, workSecret: workSecretOf({ sessions_token: 'token_from_secret' }), signal: ctrl.signal }) // awaken-allow: secret
+  const run = worker.handleItem({ ...item, workSecret: workSecretOf({ sessions_token: 'token_from_secret' }), signal: ctrl.signal }) // awaken-allow(secret):
     .then(() => 'completed', (error) => String(error));
   await waitForValue(() => observed.length, (count) => count > 0,
     'worker secret request reached the observed transport', { timeoutMs: 10_000 });

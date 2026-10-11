@@ -11,7 +11,7 @@ export async function exerciseNonReplayableTransport({ Anthropic, packageRoot })
   for (const stream of [false, true]) for (const failure of ['http', 'connection']) {
     let requests = 0;
     const client = new Anthropic({
-      apiKey: 'transport-contract-fixture', // awaken-allow: secret (synthetic fixture)
+      apiKey: 'transport-contract-fixture', // awaken-allow(secret): (synthetic fixture)
       baseURL: 'https://transport.invalid', maxRetries: 1, logLevel: 'off',
       fetch: async () => {
         requests++;
@@ -34,7 +34,7 @@ export async function exerciseNonReplayableTransport({ Anthropic, packageRoot })
     let observed;
     const client = new Anthropic({
       apiKey: null, baseURL:'https://transport.invalid', maxRetries:0,
-      credentials:async()=>({token:'oauth-contract-fixture',expiresAt:null}), // awaken-allow: secret (synthetic fixture)
+      credentials:async()=>({token:'oauth-contract-fixture',expiresAt:null}), // awaken-allow(secret): (synthetic fixture)
       fetch:async (input, init)=> {
         observed=new Headers(init?.headers ?? input.headers);
         return new Response(JSON.stringify({data:[],has_more:false,first_id:null,last_id:null}),

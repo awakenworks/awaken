@@ -89,7 +89,7 @@ async fn admin_and_vault_surfaces_are_served_together() {
         Some(json!({
             "type": "environment_variable",
             "secret_name": "ANTHROPIC_API_KEY",
-            "secret_value": "sk-mgmt-secret", // awaken-allow: secret
+            "secret_value": "sk-mgmt-secret", // awaken-allow(secret):
             "networking": { "type": "unrestricted" }
         })),
     )
@@ -137,7 +137,7 @@ async fn admin_and_vault_surfaces_are_served_together() {
             "resources": [{
                 "type": "github_repository",
                 "url": "https://github.com/awaken/managed-compat.git",
-                "authorization_token": "initial-repository-token" // awaken-allow: secret
+                "authorization_token": "initial-repository-token" // awaken-allow(secret):
             }]
         })),
     )
@@ -167,7 +167,7 @@ async fn admin_and_vault_surfaces_are_served_together() {
         &app,
         "POST",
         &format!("/v1/sessions/{session_id}/resources/{resource_id}"),
-        Some(json!({ "authorization_token": "rotated-repository-token" })), // awaken-allow: secret
+        Some(json!({ "authorization_token": "rotated-repository-token" })), // awaken-allow(secret):
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{rotated}");

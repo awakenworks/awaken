@@ -23,8 +23,8 @@ import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 import { alwaysAllowMcpAgent, sendManagedMessage } from './fixtures/managed_mcp_session.ts';
 
 const BETAS = ['managed-agents-2026-04-01'];
-const CALC_TOKEN = 'calc-bearer-token-e2e'; // awaken-allow: secret
-const LOSING_TOKEN = 'calc-losing-token-e2e'; // awaken-allow: secret
+const CALC_TOKEN = 'calc-bearer-token-e2e'; // awaken-allow(secret):
+const LOSING_TOKEN = 'calc-losing-token-e2e'; // awaken-allow(secret):
 
 type SessionEvent = { type: string; [key: string]: any };
 

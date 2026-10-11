@@ -98,9 +98,9 @@ async function startModelDirectory(apiKey) {
 }
 
 async function main() {
-  process.env.ANTHROPIC_API_KEY = 'must-not-be-config-input'; // awaken-allow: secret
+  process.env.ANTHROPIC_API_KEY = 'must-not-be-config-input'; // awaken-allow(secret):
   process.env.ANTHROPIC_MODEL = 'must-not-be-selected';
-  const directory = await startModelDirectory('sk-admin-e2e'); // awaken-allow: secret
+  const directory = await startModelDirectory('sk-admin-e2e'); // awaken-allow(secret):
   try {
     await withScenarioServer('management', 'mcp', Number(process.env.E2E_PORT), async (base) => {
       // A `workspace_id` in a request is a claim fenced against the Workspace
@@ -164,7 +164,7 @@ async function main() {
         dialect: 'anthropic_messages',
         base_url: `${directory.url}/v1/`,
         timeout_secs: 30,
-        secret: 'sk-admin-e2e', // awaken-allow: secret
+        secret: 'sk-admin-e2e', // awaken-allow(secret):
       };
       r = await req(base, 'POST', '/v1/config/provider-connections', {
         ...connection,
@@ -181,7 +181,7 @@ async function main() {
       r = await req(base, 'POST', '/v1/config/provider-connections', {
         ...connection,
         timeout_secs: undefined,
-        secret: 'wrong-secret', // awaken-allow: secret
+        secret: 'wrong-secret', // awaken-allow(secret):
       });
       assert.equal(r.status, 502, JSON.stringify(r.json));
       assert.equal(r.json.code, 'model_discovery_failed');
@@ -335,7 +335,7 @@ async function main() {
       // --- credential pool + failover resolve ---------------------------------
       // Member A is a persisted credential that is archived before resolution.
       r = await req(base, 'POST', '/v1/config/credentials', {
-        workspace_id: ws, kind: 'vault', provider_id: 'anthropic', secret: 'sk-disabled', // awaken-allow: secret
+        workspace_id: ws, kind: 'vault', provider_id: 'anthropic', secret: 'sk-disabled', // awaken-allow(secret):
       });
       assert.equal(r.status, 201);
       const badCredId = r.json.id;

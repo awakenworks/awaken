@@ -1680,7 +1680,7 @@ fn build_pod_projects_inline_content_as_configmap_subpath_volumes() {
 
 #[test]
 fn native_credential_is_seeded_from_a_secret_into_a_writable_file() {
-    let credential = br#"{"tokens":{"refresh_token":"never-log-me"}}"#.to_vec(); // awaken-allow: secret -- synthetic test fixture
+    let credential = br#"{"tokens":{"refresh_token":"never-log-me"}}"#.to_vec(); // awaken-allow(secret): -- synthetic test fixture
     let mut plan = plan_with_memory(Vec::new());
     plan.binds = vec![crate::BindPlan {
         source_ref: "credential://acp/native/codex".into(),

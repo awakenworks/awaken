@@ -22,7 +22,7 @@ import { spawnProduction, stopServer, waitForPort, waitForSessionEventReceipt } 
 
 const PORT = Number(process.env.E2E_PORT ?? 38421);
 const BETAS = ['managed-agents-2026-04-01'];
-const FAKE_KEY = 'sk-awaken-percomp-fake-key'; // awaken-allow: secret
+const FAKE_KEY = 'sk-awaken-percomp-fake-key'; // awaken-allow(secret):
 const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
 const AGENT = 'db-model-agent';
 const MODEL = 'fake-haiku';

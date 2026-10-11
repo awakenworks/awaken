@@ -34,7 +34,7 @@ async function main() {
       const cred = await client.beta.vaults.credentials.create(vault.id, {
         type: 'environment_variable',
         secret_name: 'ANTHROPIC_API_KEY',
-        secret_value: 'sk-e2e-secret', // awaken-allow: secret
+        secret_value: 'sk-e2e-secret', // awaken-allow(secret):
         networking: { type: 'unrestricted' },
         betas: BETAS,
       });

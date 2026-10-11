@@ -1,5 +1,5 @@
 // @formal evidence session.delete_retry_never_reopens_duplicates_fact_or_changes_cleanup_identity
-// awaken-file-limit-ceiling: 5239 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 5239 (legacy oversized test file: split, never grow)
 use awaken_session_types::SessionId;
 #[macro_use]
 mod no_committed_threads;

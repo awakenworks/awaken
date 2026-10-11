@@ -105,11 +105,18 @@ Use each owning script:
   nightly pinned as `PUBLIC_API_NIGHTLY` in
   [`check_public_api.sh`](scripts/ci/check_public_api.sh), never a rolling one.
 - file limits: an oversized legacy file carries an
-  `awaken-file-limit-ceiling: N` marker that may only fall.
+  `awaken-allow(file-limit-ceiling): N` marker in the first five lines, excluding
+  an opening formal header. The ceiling may only fall against its HEAD value.
 
 For a guard with a writer, use its owning flag instead of hand-editing its baseline.
 The context/SPI/expiry/registry helpers have no writer: their source or metadata
 decision remains the owning interface. A CLI reason cannot replace that decision.
+
+Source exemptions use `awaken-allow(<rule>): <payload>` with the owning guard's
+existing policy. `awaken-allow(secret):` applies only to its own line and permits
+an empty explanation. `awaken-allow(wait): <reason>` applies on the same line or
+within the three preceding lines; its timing reason must have at least 20
+characters. File-limit payloads are numeric ceilings, not exemption reasons.
 
 ## Commits
 

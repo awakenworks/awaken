@@ -39,7 +39,7 @@ const key = process.env.DEEPSEEK_API_KEY || (process.env.DEEPSEEK_API_KEY_FILE
 assert.ok(baseURL && context && serviceContainer?.startsWith('awaken-skill-lazy-') && key, 'explicit owned service, Kubernetes context and DeepSeek key required');
 assert.ok(Number.isSafeInteger(replyBudget) && replyBudget > 0);
 const betas = ['managed-agents-2026-04-01'];
-const client = new Anthropic({ baseURL, apiKey: 'e2e-local', maxRetries: 0 }); // awaken-allow: secret (no-login test deployment)
+const client = new Anthropic({ baseURL, apiKey: 'e2e-local', maxRetries: 0 }); // awaken-allow(secret): (no-login test deployment)
 const tag = randomBytes(6).toString('hex');
 const referenceMarker = `REFERENCE_${tag}`;
 const executionMarker = `EXECUTION_${tag}`;

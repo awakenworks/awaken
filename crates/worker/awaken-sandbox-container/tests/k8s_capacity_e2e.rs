@@ -139,7 +139,7 @@ async fn a_namespace_quota_refusal_returns_capacity_and_succeeds_once_raised() {
 
     // The quota controller fills `status.used` asynchronously after the quota
     // is created; until then admission may still admit.
-    // awaken-wait: quota status is an external Kubernetes fact, read back by the exact quota name.
+    // awaken-allow(wait): quota status is an external Kubernetes fact, read back by the exact quota name.
     for _ in 0..60 {
         let observed = quotas.get("sandbox-pods").await.expect("read quota");
         if observed.status.and_then(|status| status.used).is_some() {
@@ -168,7 +168,7 @@ async fn a_namespace_quota_refusal_returns_capacity_and_succeeds_once_raised() {
         .await
         .expect("raise the quota");
     let mut created = Err(pc::SandboxError::not_ready("quota not yet raised"));
-    // awaken-wait: the raised quota reaches admission asynchronously; each retry is a fresh exact Create.
+    // awaken-allow(wait): the raised quota reaches admission asynchronously; each retry is a fresh exact Create.
     for fence_round in 2..32 {
         created = create(&provider, &spec, fence_round).await;
         if !matches!(created, Err(pc::SandboxError::CapacityUnavailable(_))) {
@@ -216,7 +216,7 @@ async fn an_unschedulable_pod_is_disposed_and_returns_capacity_after_the_bound()
         started.elapsed() < Duration::from_secs(100),
         "E1 the scheduler bound, not the start-up timeout, ended the wait"
     );
-    // awaken-wait: Pod deletion finishes asynchronously; read back the namespace's Pods.
+    // awaken-allow(wait): Pod deletion finishes asynchronously; read back the namespace's Pods.
     for _ in 0..60 {
         if namespace.pods().await.is_empty() {
             break;

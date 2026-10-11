@@ -1,7 +1,7 @@
 // @formal evidence credential.injection_location_has_exactly_three_usable_states_and_partial_updates_preserve_validity
 // @formal evidence credential.managed_vault_delete_fences_children_waits_for_rollout_and_is_absorbing
 // @formal evidence credential_envelope.issuance_requires_exact_claim
-// awaken-file-limit-ceiling: 3697 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 3697 (legacy oversized test file: split, never grow)
 //! The Managed vault/credential front door over HTTP: create a vault, enter
 //! `environment_variable` / `static_bearer` / `mcp_oauth` credentials (secrets
 //! write-only), retrieve them secret-free, and confirm an unscoped env-var
@@ -367,7 +367,7 @@ async fn credential_create_idempotency_key_replays_one_secret_free_child() {
     let body = json!({
         "type": "static_bearer",
         "mcp_server_url": "https://mcp.example.com/mcp",
-        "token": "write-only", // fixture, not a credential. awaken-allow: secret
+        "token": "write-only", // fixture, not a credential. awaken-allow(secret):
         "display_name": "Docs MCP"
     });
 
@@ -689,7 +689,7 @@ async fn vault_credential_lifecycle_and_resolution() {
         Some(json!({
             "type": "environment_variable",
             "secret_name": "ANTHROPIC_API_KEY",
-            "secret_value": "sk-vault-secret", // awaken-allow: secret
+            "secret_value": "sk-vault-secret", // awaken-allow(secret):
             "networking": { "type": "unrestricted" }
         })),
     )
@@ -820,7 +820,7 @@ async fn wire_constraints_fail_closed() {
         Some(json!({
             "type": "environment_variable",
             "secret_name": "K",
-            "secret_value": "v", // awaken-allow: secret
+            "secret_value": "v", // awaken-allow(secret):
             "networking": { "type": "unrestricted" }
         })),
     )
@@ -840,7 +840,7 @@ async fn wire_constraints_fail_closed() {
     let body = json!({
         "type": "environment_variable",
         "secret_name": "DUP",
-        "secret_value": "v", // awaken-allow: secret
+        "secret_value": "v", // awaken-allow(secret):
         "networking": { "type": "unrestricted" }
     });
     let _ = call(
@@ -865,7 +865,7 @@ async fn wire_constraints_fail_closed() {
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
-        Some(json!({ "type": "basic_auth", "token": "x" })), // awaken-allow: secret
+        Some(json!({ "type": "basic_auth", "token": "x" })), // awaken-allow(secret):
     )
     .await
     .expect(StatusCode::BAD_REQUEST);
@@ -876,7 +876,7 @@ async fn wire_constraints_fail_closed() {
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
-        Some(json!({ "type": "static_bearer", "bearer_token": "x" })), // awaken-allow: secret
+        Some(json!({ "type": "static_bearer", "bearer_token": "x" })), // awaken-allow(secret):
     )
     .await
     .expect(StatusCode::BAD_REQUEST);
@@ -894,7 +894,7 @@ async fn wire_constraints_fail_closed() {
             Some(json!({
                 "type": "static_bearer",
                 "mcp_server_url": invalid_url,
-                "token": "x" // awaken-allow: secret
+                "token": "x" // awaken-allow(secret):
             })),
         )
         .await
@@ -927,7 +927,7 @@ async fn create_credential(h: &Harness, vault_id: &str, secret_name: &str) -> St
         Some(json!({
             "type": "environment_variable",
             "secret_name": secret_name,
-            "secret_value": "sk-v", // awaken-allow: secret
+            "secret_value": "sk-v", // awaken-allow(secret):
             "networking": { "type": "unrestricted" }
         })),
     )
@@ -992,7 +992,7 @@ async fn delete_vault_fences_children_and_converges_after_rollout_ack() {
         Some(json!({
             "type": "environment_variable",
             "secret_name": "AFTER_DELETE",
-            "secret_value": "sk-after-delete", // awaken-allow: secret
+            "secret_value": "sk-after-delete", // awaken-allow(secret):
             "networking": { "type": "unrestricted" }
         })),
     )
@@ -1460,7 +1460,7 @@ async fn update_credential_patches_fields_reseals_secret_and_rejects_type_change
         Some(json!({
             "auth": {
                 "type": "environment_variable",
-                "secret_value": "rotated-secret", // awaken-allow: secret
+                "secret_value": "rotated-secret", // awaken-allow(secret):
                 "networking": { "type": "limited", "allowed_hosts": ["api.example.com"] }
             },
             "display_name": "renamed",
@@ -1543,7 +1543,7 @@ async fn update_credential_patches_fields_reseals_secret_and_rejects_type_change
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{cred_id}"),
-        Some(json!({ "auth": { "type": "static_bearer", "token": "x" } })), // awaken-allow: secret
+        Some(json!({ "auth": { "type": "static_bearer", "token": "x" } })), // awaken-allow(secret):
     )
     .await
     .expect(StatusCode::BAD_REQUEST);
@@ -1604,7 +1604,7 @@ async fn environment_credential_injection_location_is_exact_atomic_and_recoverab
         let mut auth = json!({
             "type": "environment_variable",
             "secret_name": secret_name,
-            "secret_value": "write-only", // awaken-allow: secret
+            "secret_value": "write-only", // awaken-allow(secret):
             "networking": { "type": "unrestricted" }
         });
         if let Some(location) = injection_location {
@@ -1646,7 +1646,7 @@ async fn environment_credential_injection_location_is_exact_atomic_and_recoverab
             Some(json!({
                 "type": "environment_variable",
                 "secret_name": format!("INVALID_{name}"),
-                "secret_value": "never-stored", // awaken-allow: secret
+                "secret_value": "never-stored", // awaken-allow(secret):
                 "networking": { "type": "unrestricted" },
                 "injection_location": location,
             })),
@@ -1661,7 +1661,7 @@ async fn environment_credential_injection_location_is_exact_atomic_and_recoverab
         Some(json!({
             "type": "environment_variable",
             "secret_name": "NULL_OBJECT",
-            "secret_value": "never-stored", // awaken-allow: secret
+            "secret_value": "never-stored", // awaken-allow(secret):
             "networking": { "type": "unrestricted" },
             "injection_location": null,
         })),
@@ -1793,7 +1793,7 @@ async fn update_credential_clears_display_name_with_explicit_null() {
         Some(json!({
             "type": "static_bearer",
             "mcp_server_url": "https://mcp.example.com/sse",
-            "token": "brr", // awaken-allow: secret
+            "token": "brr", // awaken-allow(secret):
             "display_name": "to-clear"
         })),
     )
@@ -1827,9 +1827,9 @@ async fn update_mcp_oauth_refresh_rotates_sealed_secrets() {
         "https://mcp.example.com/sse",
         Some(json!({
             "client_id": "cli",
-            "refresh_token": "rt-old", // awaken-allow: secret
+            "refresh_token": "rt-old", // awaken-allow(secret):
             "token_endpoint": "https://auth.example.com/token",
-            "token_endpoint_auth": { "type": "client_secret_basic", "client_secret": "cs-old" }, // awaken-allow: secret
+            "token_endpoint_auth": { "type": "client_secret_basic", "client_secret": "cs-old" }, // awaken-allow(secret):
             "scope": "old"
         })),
     )
@@ -1852,9 +1852,9 @@ async fn update_mcp_oauth_refresh_rotates_sealed_secrets() {
             "auth": {
                 "type": "mcp_oauth",
                 "refresh": {
-                    "refresh_token": "rt-new", // awaken-allow: secret
+                    "refresh_token": "rt-new", // awaken-allow(secret):
                     "scope": "new",
-                    "token_endpoint_auth": { "type": "client_secret_post", "client_secret": "cs-new" } // awaken-allow: secret
+                    "token_endpoint_auth": { "type": "client_secret_post", "client_secret": "cs-new" } // awaken-allow(secret):
                 }
             }
         })),
@@ -1920,7 +1920,7 @@ async fn update_mcp_oauth_refresh_rotates_sealed_secrets() {
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{plain_id}"),
-        Some(json!({ "auth": { "type": "mcp_oauth", "refresh": { "refresh_token": "x" } } })), // awaken-allow: secret
+        Some(json!({ "auth": { "type": "mcp_oauth", "refresh": { "refresh_token": "x" } } })), // awaken-allow(secret):
     )
     .await
     .expect(StatusCode::BAD_REQUEST);
@@ -1940,9 +1940,9 @@ async fn update_refresh_token_endpoint_auth_omitting_client_secret_keeps_the_sea
         "https://mcp.example.com/oauth",
         Some(json!({
             "client_id": "cli",
-            "refresh_token": "rt", // awaken-allow: secret
+            "refresh_token": "rt", // awaken-allow(secret):
             "token_endpoint": "https://auth.example.com/token",
-            "token_endpoint_auth": { "type": "client_secret_basic", "client_secret": "cs-orig" } // awaken-allow: secret
+            "token_endpoint_auth": { "type": "client_secret_basic", "client_secret": "cs-orig" } // awaken-allow(secret):
         })),
     )
     .await;
@@ -2020,7 +2020,7 @@ async fn update_credential_covers_static_and_mcp_auth_branches() {
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
-        Some(json!({ "type": "static_bearer", "mcp_server_url": url, "token": "brr-old" })), // awaken-allow: secret
+        Some(json!({ "type": "static_bearer", "mcp_server_url": url, "token": "brr-old" })), // awaken-allow(secret):
     )
     .await
     .expect(StatusCode::OK);
@@ -2029,7 +2029,7 @@ async fn update_credential_covers_static_and_mcp_auth_branches() {
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials/{bearer_id}"),
-        Some(json!({ "auth": { "type": "static_bearer", "token": "brr-new" } })), // awaken-allow: secret
+        Some(json!({ "auth": { "type": "static_bearer", "token": "brr-new" } })), // awaken-allow(secret):
     )
     .await
     .expect(StatusCode::OK);
@@ -2059,7 +2059,7 @@ async fn update_credential_covers_static_and_mcp_auth_branches() {
         "https://mcp.example.com/oauth",
         Some(json!({
             "client_id": "cli",
-            "refresh_token": "rt", // awaken-allow: secret
+            "refresh_token": "rt", // awaken-allow(secret):
             "token_endpoint": "https://auth.example.com/token",
             "token_endpoint_auth": { "type": "none" }
         })),
@@ -2074,7 +2074,7 @@ async fn update_credential_covers_static_and_mcp_auth_branches() {
         Some(json!({
             "auth": {
                 "type": "mcp_oauth",
-                "access_token": "at-new", // awaken-allow: secret
+                "access_token": "at-new", // awaken-allow(secret):
                 "expires_at": "2030-01-01T00:00:00Z",
                 "refresh": { "scope": "s2", "token_endpoint_auth": { "type": "none" } }
             }
@@ -2093,7 +2093,7 @@ async fn update_credential_covers_static_and_mcp_auth_branches() {
         Some(json!({
             "auth": {
                 "type": "mcp_oauth",
-                "refresh": { "token_endpoint_auth": { "type": "client_secret_basic", "client_secret": "cs-b" } } // awaken-allow: secret
+                "refresh": { "token_endpoint_auth": { "type": "client_secret_basic", "client_secret": "cs-b" } } // awaken-allow(secret):
             }
         })),
     )
@@ -2211,7 +2211,7 @@ async fn too_many_credentials_is_rejected() {
         Some(json!({
             "type": "environment_variable",
             "secret_name": "KEY_20",
-            "secret_value": "sk-v", // awaken-allow: secret
+            "secret_value": "sk-v", // awaken-allow(secret):
             "networking": { "type": "unrestricted" }
         })),
     )
@@ -2226,7 +2226,7 @@ async fn too_many_credentials_is_rejected() {
         Some(json!({
             "type": "static_bearer",
             "mcp_server_url": "https://mcp.example.com/sse",
-            "token": "brr" // awaken-allow: secret
+            "token": "brr" // awaken-allow(secret):
         })),
     )
     .await
@@ -2242,7 +2242,7 @@ async fn create_mcp_oauth(h: &Harness, vault_id: &str, url: &str, refresh: Optio
     let mut body = json!({
         "type": "mcp_oauth",
         "mcp_server_url": url,
-        "access_token": "at-secret-token" // awaken-allow: secret
+        "access_token": "at-secret-token" // awaken-allow(secret):
     });
     if let Some(r) = refresh {
         body["refresh"] = r;
@@ -2269,7 +2269,7 @@ async fn static_bearer_credential_is_secret_free_and_round_trips() {
         Some(json!({
             "type": "static_bearer",
             "mcp_server_url": "https://mcp.example.com/sse",
-            "token": "brr-bearer-secret", // awaken-allow: secret
+            "token": "brr-bearer-secret", // awaken-allow(secret):
             "display_name": "linear bearer"
         })),
     )
@@ -2350,7 +2350,7 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
         Some(json!({
             "type": "static_bearer",
             "mcp_server_url": "https://mcp.example.com/sse",
-            "token": "recipient-bound-secret" // awaken-allow: secret
+            "token": "recipient-bound-secret" // awaken-allow(secret):
         })),
     )
     .await
@@ -2576,7 +2576,7 @@ async fn exact_vault_admission_publishes_one_revision_to_external_custody() {
         Some(json!({
             "type": "static_bearer",
             "mcp_server_url": "https://mcp.example.com/sse",
-            "token": "custody-secret" // awaken-allow: secret
+            "token": "custody-secret" // awaken-allow(secret):
         })),
     )
     .await
@@ -2636,7 +2636,7 @@ async fn external_custody_never_observes_an_unowned_plaintext_path() {
         Some(json!({
             "type": "static_bearer",
             "mcp_server_url": "https://mcp.example.com/sse",
-            "token": "selective-secret" // awaken-allow: secret
+            "token": "selective-secret" // awaken-allow(secret):
         })),
     )
     .await
@@ -2700,9 +2700,9 @@ async fn mcp_oauth_credential_with_refresh_never_leaks_secrets() {
         "https://mcp.example.com/sse",
         Some(json!({
             "client_id": "cli_1",
-            "refresh_token": "rt-secret-token", // awaken-allow: secret
+            "refresh_token": "rt-secret-token", // awaken-allow(secret):
             "token_endpoint": "https://auth.example.com/token",
-            "token_endpoint_auth": { "type": "client_secret_basic", "client_secret": "cs-secret" }, // awaken-allow: secret
+            "token_endpoint_auth": { "type": "client_secret_basic", "client_secret": "cs-secret" }, // awaken-allow(secret):
             "scope": "mcp:read"
         })),
     )
@@ -2838,7 +2838,7 @@ async fn mcp_binding_normalizes_urls_and_supports_both_credential_kinds() {
         Some(json!({
             "type": "static_bearer",
             "mcp_server_url": "https://mcp.example.com/mcp",
-            "token": "bearer-secret" // awaken-allow: secret
+            "token": "bearer-secret" // awaken-allow(secret):
         })),
     )
     .await
@@ -2959,7 +2959,7 @@ async fn same_target_credentials_are_authored_and_selected_deterministically() {
         Some(json!({
             "type": "static_bearer",
             "mcp_server_url": "https://mcp.example.com/mcp",
-            "token": "replacement" // awaken-allow: secret
+            "token": "replacement" // awaken-allow(secret):
         })),
     )
     .await
@@ -3470,7 +3470,7 @@ async fn validate_never_probes_env_var_or_static_bearer_credentials() {
         Some(json!({
             "type": "static_bearer",
             "mcp_server_url": "https://mcp.example.com/sse",
-            "token": "brr" // awaken-allow: secret
+            "token": "brr" // awaken-allow(secret):
         })),
     )
     .await
@@ -3528,7 +3528,7 @@ async fn exact_mcp_access_compiles_public_and_confidential_refresh() {
         url,
         Some(json!({
             "client_id": "cli_pub",
-            "refresh_token": "rt-secret-token", // awaken-allow: secret
+            "refresh_token": "rt-secret-token", // awaken-allow(secret):
             "token_endpoint": "https://auth.example.com/token",
             "token_endpoint_auth": { "type": "none" },
             "scope": "mcp:read",
@@ -3598,9 +3598,9 @@ async fn exact_mcp_access_compiles_public_and_confidential_refresh() {
             &format!("https://mcp.example.com/confidential-{index}"),
             Some(json!({
                 "client_id": "cli_conf",
-                "refresh_token": "rt-secret-token", // awaken-allow: secret
+                "refresh_token": "rt-secret-token", // awaken-allow(secret):
                 "token_endpoint": "https://auth.example.com/token",
-                "token_endpoint_auth": { "type": auth_type, "client_secret": "cs" } // awaken-allow: secret
+                "token_endpoint_auth": { "type": auth_type, "client_secret": "cs" } // awaken-allow(secret):
             })),
         )
         .await;
@@ -3652,7 +3652,7 @@ async fn exact_mcp_access_compiles_public_and_confidential_refresh() {
         Some(json!({
             "type": "static_bearer",
             "mcp_server_url": "https://mcp.example.com/bearer",
-            "token": "brr" // awaken-allow: secret
+            "token": "brr" // awaken-allow(secret):
         })),
     )
     .await

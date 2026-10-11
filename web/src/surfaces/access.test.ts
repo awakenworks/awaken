@@ -4,11 +4,11 @@ import { mintedServiceKey, serviceKeyRoleGuidance } from "./access";
 describe("service API key onboarding", () => {
   it("extracts only the one-time secret and never serializes the response", () => {
     expect(mintedServiceKey({
-      token: "sk-awaken-once", // awaken-allow: secret -- inert one-time-key fixture
+      token: "sk-awaken-once", // awaken-allow(secret): -- inert one-time-key fixture
       api_token: { id: "token-1" },
     })).toEqual({
       id: "token-1",
-      secret: "sk-awaken-once", // awaken-allow: secret -- inert expected fixture
+      secret: "sk-awaken-once", // awaken-allow(secret): -- inert expected fixture
     });
     expect(() => mintedServiceKey({ api_token: { id: "token-1" } }))
       .toThrow("did not return a one-time service API key");

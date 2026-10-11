@@ -118,9 +118,9 @@ test('catalog runtime profiles preserve their distinct credential custody', () =
     runtimes: [...ACP_RUNTIME_IDS],
     kimi,
     env: {
-      OPENAI_API_KEY: 'openai-secret', // awaken-allow: secret -- inert test fixture
+      OPENAI_API_KEY: 'openai-secret', // awaken-allow(secret): -- inert test fixture
       OPENAI_MODEL: 'codex-model',
-      GEMINI_API_KEY: 'gemini-secret', // awaken-allow: secret -- inert test fixture
+      GEMINI_API_KEY: 'gemini-secret', // awaken-allow(secret): -- inert test fixture
       GEMINI_MODEL: 'gemini-model',
     },
   });
@@ -154,16 +154,16 @@ test('applying a profile removes stale credentials from the previous runtime', (
     runtimes: [...ACP_RUNTIME_IDS],
     kimi,
     env: {
-      OPENAI_API_KEY: 'openai-secret', // awaken-allow: secret -- inert test fixture
+      OPENAI_API_KEY: 'openai-secret', // awaken-allow(secret): -- inert test fixture
       OPENAI_MODEL: 'codex-model',
-      GEMINI_API_KEY: 'gemini-secret', // awaken-allow: secret -- inert test fixture
+      GEMINI_API_KEY: 'gemini-secret', // awaken-allow(secret): -- inert test fixture
       GEMINI_MODEL: 'gemini-model',
     },
   });
   const profile = profiles.find(({ runtime }) => runtime === 'gemini');
   const allProfileKeys = new Set(profiles.flatMap(({ env }) => Object.keys(env)));
   const target = Object.fromEntries([...allProfileKeys].map((key) => [key, 'stale']));
-  target.GOOGLE_API_KEY = 'stale-google-alias'; // awaken-allow: secret -- inert test fixture
+  target.GOOGLE_API_KEY = 'stale-google-alias'; // awaken-allow(secret): -- inert test fixture
   applyAcpRuntimeProfile(profile, target);
   for (const key of allProfileKeys) {
     assert.equal(
@@ -173,7 +173,7 @@ test('applying a profile removes stale credentials from the previous runtime', (
     );
   }
   assert.equal(target.GOOGLE_API_KEY, undefined);
-  assert.equal(target.GEMINI_API_KEY, 'gemini-secret'); // awaken-allow: secret -- inert test fixture
+  assert.equal(target.GEMINI_API_KEY, 'gemini-secret'); // awaken-allow(secret): -- inert test fixture
   assert.equal(target.AWAKEN_ACP_CLI, 'gemini');
   assert.equal(target.AWAKEN_MODEL, 'gemini-model');
 });

@@ -40,8 +40,8 @@ await withRealServer('echo', PORT, async (baseURL) => {
     actual: {
       name: 'Awaken local real process',
       baseURL,
-      apiKey: 'e2e-dummy', // awaken-allow: secret
-      tunnelAccessToken: 'e2e-dummy-tunnel', // awaken-allow: secret
+      apiKey: 'e2e-dummy', // awaken-allow(secret):
+      tunnelAccessToken: 'e2e-dummy-tunnel', // awaken-allow(secret):
     },
     coverage,
   });

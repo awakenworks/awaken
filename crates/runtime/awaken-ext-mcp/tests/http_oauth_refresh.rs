@@ -101,7 +101,7 @@ async fn expired_token_is_refreshed_via_the_token_endpoint_and_retried() {
             &mut socket,
             "200 OK",
             "",
-            r#"{"access_token":"fresh-token","token_type":"Bearer","expires_in":3600}"#, // awaken-allow: secret
+            r#"{"access_token":"fresh-token","token_type":"Bearer","expires_in":3600}"#, // awaken-allow(secret):
         )
         .await;
         request
@@ -142,7 +142,7 @@ async fn expired_token_is_refreshed_via_the_token_endpoint_and_retried() {
 
     let refresher = Arc::new(OAuthRefresher {
         token_endpoint,
-        refresh_token: "rt-secret".to_string(), // awaken-allow: secret
+        refresh_token: "rt-secret".to_string(), // awaken-allow(secret):
         client_id: "client-abc".to_string(),
         seen: Mutex::new(Vec::new()),
     });

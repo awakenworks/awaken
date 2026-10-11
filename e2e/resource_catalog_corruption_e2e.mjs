@@ -28,7 +28,7 @@ const PORT = Number(process.env.E2E_PORT ?? 38439);
 const WORKSPACE = `catalog-corruption-${process.pid}`;
 const AGENT = 'catalog-corruption-agent';
 const MODEL = 'catalog-corruption-model';
-const FAKE_KEY = 'sk-catalog-corruption-fake'; // awaken-allow: secret
+const FAKE_KEY = 'sk-catalog-corruption-fake'; // awaken-allow(secret):
 const MANAGED_BETA = 'managed-agents-2026-04-01';
 const MEMORY_BETA = 'agent-memory-2026-07-22';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

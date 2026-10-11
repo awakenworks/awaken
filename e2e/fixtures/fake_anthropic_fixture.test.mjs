@@ -21,7 +21,7 @@ test('fault responses distinguish a complete envelope from a real body interrupt
       try {
         for (let request = 1; request <= 2; request++) {
           const response = await fetch(`${upstream.url}/v1/messages`, {
-            method:'POST', headers:{'x-api-key':'fixture-key', 'content-type':'application/json'}, // awaken-allow: secret -- synthetic local fixture credential
+            method:'POST', headers:{'x-api-key':'fixture-key', 'content-type':'application/json'}, // awaken-allow(secret): -- synthetic local fixture credential
             body:JSON.stringify({model:'fixture-model', messages:[]}),
           });
           const fault = request === 1 || alwaysFail;
@@ -61,7 +61,7 @@ test('fragmented HTTP input preserves UTF-8 before parsing the inference request
       for (let cut = 1; cut <= Buffer.byteLength(character); cut++) {
         await new Promise((resolve, reject) => {
           const req = http.request(`${upstream.url}/v1/messages`, {
-            method:'POST', headers:{'x-api-key':'fixture-key','content-type':'application/json'}, // awaken-allow: secret -- loopback-only synthetic fixture credential
+            method:'POST', headers:{'x-api-key':'fixture-key','content-type':'application/json'}, // awaken-allow(secret): -- loopback-only synthetic fixture credential
           }, res => {
             res.resume();
             res.on('end', () => res.statusCode === 200 ? resolve() : reject(new Error(`HTTP ${res.statusCode}`)));
@@ -98,7 +98,7 @@ test('held inference observes cancellation without blocking another request', { 
       return { text:`reply-${ordinal}` };
     },
   });
-  const client = new Anthropic({ baseURL:upstream.url, apiKey:'fixture-key', maxRetries:0 }); // awaken-allow: secret -- synthetic local test credential
+  const client = new Anthropic({ baseURL:upstream.url, apiKey:'fixture-key', maxRetries:0 }); // awaken-allow(secret): -- synthetic local test credential
   const params = { max_tokens:32, messages:[{ role:'user', content:'fixture' }] };
   let ordinal = 0;
   const controllers = [];
@@ -145,7 +145,7 @@ test('explicit bind address serves the same authenticated model wire', async () 
     const upstream = await startFakeAnthropic('fixture-key', { listenHost, models:['fixture-model'] });
     try {
       assert.equal(new URL(upstream.url).hostname, listenHost ?? '127.0.0.1');
-      const response = await fetch(`${upstream.url}/v1/models`, {headers:{'x-api-key':'fixture-key'}}); // awaken-allow: secret -- synthetic local test credential
+      const response = await fetch(`${upstream.url}/v1/models`, {headers:{'x-api-key':'fixture-key'}}); // awaken-allow(secret): -- synthetic local test credential
       assert.equal(response.status, 200);
       assert.equal((await response.json()).data[0].id, 'fixture-model');
       assert.equal((await fetch(`${upstream.url}/v1/models`)).status, 401);
@@ -189,7 +189,7 @@ test('official SDK decodes the same callback tool arguments over JSON and SSE', 
   const upstream = await startFakeAnthropic('fixture-key', {
     behavior:(_body, ordinal) => ({ tool:{ id:`tool-${ordinal}`, name:'Bash', input } }),
   });
-  const client = new Anthropic({ baseURL:upstream.url, apiKey:'fixture-key', maxRetries:0 }); // awaken-allow: secret -- loopback-only synthetic fixture credential
+  const client = new Anthropic({ baseURL:upstream.url, apiKey:'fixture-key', maxRetries:0 }); // awaken-allow(secret): -- loopback-only synthetic fixture credential
   const params = { model:'fixture-model', max_tokens:32, messages:[{ role:'user', content:'fixture' }] };
   try {
     const replies = [await client.messages.create(params, { query:{ beta:'true' } }),
@@ -201,7 +201,7 @@ test('official SDK decodes the same callback tool arguments over JSON and SSE', 
   } finally { await upstream.close(); }
   const named = await startFakeAnthropic('fixture-key');
   try {
-    const reply = await new Anthropic({ baseURL:named.url, apiKey:'fixture-key', maxRetries:0 }).messages.create(params); // awaken-allow: secret -- loopback-only synthetic fixture credential
+    const reply = await new Anthropic({ baseURL:named.url, apiKey:'fixture-key', maxRetries:0 }).messages.create(params); // awaken-allow(secret): -- loopback-only synthetic fixture credential
     assert.equal(reply.content[0].text, 'FAKE:fixture');
   } finally { await named.close(); }
 });

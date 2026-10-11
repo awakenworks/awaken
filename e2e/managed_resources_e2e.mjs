@@ -38,9 +38,9 @@ import {
 const BETAS = ['managed-agents-2026-04-01', FILES_BETA];
 const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
 // Distinctive test markers, not credentials.
-const TOKEN = 'ZEBRA_QUASAR_4718'; // awaken-allow: secret
-const ARTIFACT = 'DONE_9931'; // awaken-allow: secret
-const MEMTOKEN = 'AWKFACT_NATIVE_MEMORY_MOSS_ORBIT_5527'; // awaken-allow: secret
+const TOKEN = 'ZEBRA_QUASAR_4718'; // awaken-allow(secret):
+const ARTIFACT = 'DONE_9931'; // awaken-allow(secret):
+const MEMTOKEN = 'AWKFACT_NATIVE_MEMORY_MOSS_ORBIT_5527'; // awaken-allow(secret):
 
 const assistantText = (evs) =>
   evs

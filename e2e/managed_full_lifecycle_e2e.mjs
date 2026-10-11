@@ -29,9 +29,9 @@ import {
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
-const CALC_TOKEN = 'calc-bearer-token-full-e2e'; // awaken-allow: secret
-const FILE_MARK = 'FILE_MARK_5150'; // awaken-allow: secret
-const MEM_MARK = 'MEM_MARK_2718'; // awaken-allow: secret
+const CALC_TOKEN = 'calc-bearer-token-full-e2e'; // awaken-allow(secret):
+const FILE_MARK = 'FILE_MARK_5150'; // awaken-allow(secret):
+const MEM_MARK = 'MEM_MARK_2718'; // awaken-allow(secret):
 const PORT = Number(process.env.E2E_PORT ?? 38195);
 
 const calcToolset = () => ({

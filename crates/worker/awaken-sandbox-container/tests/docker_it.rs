@@ -309,7 +309,7 @@ async fn docker_exec_can_be_polled_reattached_signaled_and_waited() {
     // observable form and the deadline below fails loudly rather than letting
     // an exec that never started pass for one that did.
     let mut established = false;
-    // awaken-wait: settles on the exec's own committed in-container marker.
+    // awaken-allow(wait): settles on the exec's own committed in-container marker.
     for _ in 0..150 {
         if container_holds(&rt, id, EXEC_ESTABLISHED_MARKER).await {
             established = true;
@@ -431,7 +431,7 @@ async fn reaping_stops_the_process_a_plain_spawn_started() {
     // the pid before it execs this command, so the marker is proof the record
     // the reaper enumerates already exists.
     let mut established = false;
-    // awaken-wait: settles on the exec's own committed in-container marker.
+    // awaken-allow(wait): settles on the exec's own committed in-container marker.
     for _ in 0..150 {
         if container_holds(&rt, id, REAP_ESTABLISHED_MARKER).await {
             established = true;

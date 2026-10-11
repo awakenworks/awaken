@@ -764,7 +764,7 @@ pub async fn build_oauth_resolved_router() -> Router {
     };
 
     // The token the helper mints — the fake upstream authenticates exactly this.
-    const OAUTH_MINTED_KEY: &str = "oauth-minted-key"; // awaken-allow: secret
+    const OAUTH_MINTED_KEY: &str = "oauth-minted-key"; // awaken-allow(secret):
     let base = std::env::var("ANTHROPIC_BASE_URL")
         .expect("set ANTHROPIC_BASE_URL for AWAKEN_MODEL_MODE=oauth-resolved");
     let model =

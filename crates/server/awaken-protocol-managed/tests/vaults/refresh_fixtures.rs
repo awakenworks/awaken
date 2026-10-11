@@ -31,7 +31,7 @@ pub(super) fn refused_initialize_wire() -> Value {
 pub(super) fn oauth_refresh_config() -> Value {
     json!({
         "client_id": "client-1",
-        "refresh_token": "rt-secret", // awaken-allow: secret
+        "refresh_token": "rt-secret", // awaken-allow(secret):
         "token_endpoint": "https://auth.example.com/token",
         "token_endpoint_auth": { "type": "none" }
     })

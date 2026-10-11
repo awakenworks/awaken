@@ -6,7 +6,7 @@
 // @formal entrypoint session_resources.repository_rotation_requires_original_live_generation
 // @formal entrypoint session_resources.restart_retries_same_pending_revision
 // @formal entrypoint session_resources.terminal_session_never_reactivates
-// awaken-file-limit-ceiling: 1628
+// awaken-allow(file-limit-ceiling): 1628
 //! Durable Session Resource recovery and terminal reclamation.
 
 use awaken_resource_contract::{ResourceReference, ResourceReferenceKind, ResourceReferenceRecord};

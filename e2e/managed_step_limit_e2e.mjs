@@ -30,7 +30,7 @@ let upstream, fixture, server;
 const rows = [];
 const data = path.join(directory, 'server-data');
 const launch = () => spawnProduction(data, PORT, { stdout: 'inherit', fields: { sandbox_tier: 'namespace', log_filter: 'warn' } }, withoutAmbientProviderKeys(process.env));
-const clientFor = () => new Anthropic({ apiKey: 'e2e-local', baseURL: `http://127.0.0.1:${PORT}`, maxRetries: 0 }); // awaken-allow: secret (local no-login placeholder)
+const clientFor = () => new Anthropic({ apiKey: 'e2e-local', baseURL: `http://127.0.0.1:${PORT}`, maxRetries: 0 }); // awaken-allow(secret): (local no-login placeholder)
 const config = async (method, route, body) => {
   const response = await fetch(`http://127.0.0.1:${PORT}/v1/config${route}`, {
     method, headers: { 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -74,7 +74,7 @@ async function main() {
     assert.ok(key, 'real DeepSeek credentials required; never skip');
     model = process.env.DEEPSEEK_MODEL ?? 'deepseek-flash'; endpoint = 'https://api.deepseek.com'; provider = 'deepseek'; dialect = 'open_ai_chat';
   } else {
-    key = 'step-limit-fixture-key'; // awaken-allow: secret (synthetic upstream)
+    key = 'step-limit-fixture-key'; // awaken-allow(secret): (synthetic upstream)
     model = 'step-limit-fixture'; provider = 'anthropic'; dialect = 'anthropic_messages';
     upstream = await startFakeAnthropic(key, { models: [model], behavior: (request) => {
       const calls = (request.messages ?? []).flatMap((m) => Array.isArray(m.content) ? m.content : []).filter((b) => b.type === 'tool_use');

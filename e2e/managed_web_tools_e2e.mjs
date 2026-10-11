@@ -11,7 +11,7 @@ import { pass, waitForSessionEventReceipt, withScenarioServer } from './harness.
 const PORT = Number(process.env.E2E_PORT ?? 38209);
 const BETAS = ['managed-agents-2026-04-01'];
 const SEARCH_PROVIDER = 'scenario-web-search';
-const SEARCH_SECRET = 'scenario-search-secret'; // awaken-allow: secret (deterministic fixture)
+const SEARCH_SECRET = 'scenario-search-secret'; // awaken-allow(secret): (deterministic fixture)
 
 async function startFetchFixture() {
   const requests = [];

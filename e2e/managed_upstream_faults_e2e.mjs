@@ -12,7 +12,7 @@ import {
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
-const FAKE_KEY = 'sk-fake-faults-key'; // awaken-allow: secret
+const FAKE_KEY = 'sk-fake-faults-key'; // awaken-allow(secret):
 
 async function main() {
   // Cause-effect decision table: C1 protocol-complete success / HTTP 503;
