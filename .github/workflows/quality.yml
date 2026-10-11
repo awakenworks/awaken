@@ -5,6 +5,10 @@ name: awaken-full-quality
 
 on:
   workflow_call:
+    inputs:
+      rust_shards:
+        type: string
+        default: "1"
   pull_request:
   push:
     branches:
@@ -15,6 +19,16 @@ on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
+    inputs:
+      rust_shards:
+        description: Rust test partitions sharing one build and thread budget
+        type: choice
+        default: "1"
+        options: ["1", "2", "4"]
+      build_benchmark:
+        description: Measure representative cold and warm Cargo builds
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -39,9 +53,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: 1.96.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        id: rust_cache
         with:
           key: trusted-host-${{ runner.os }}
+          cache-workspace-crates: false
+      - name: Observe restored Cargo footprint
+        shell: bash
+        run: python3 scripts/ci/ci_performance.py cache --hit "${{ steps.rust_cache.outputs.cache-hit || 'unknown' }}" --output target/test-timings/cache-trusted-host.json
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
@@ -68,10 +88,23 @@ jobs:
           name: session-${{ github.sha }}-${{ github.run_attempt }}-${{ matrix.runner }}
           path: target/test-timings/session-observations-*/
           if-no-files-found: error
+      - name: Retain native build and cache observations
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-performance-${{ github.sha }}-${{ github.run_attempt }}-${{ matrix.runner }}
+          path: |
+            target/test-timings/
+            target/cargo-timings/
+            !target/test-timings/build-benchmark-*/round-*-jobs-*/debug/**
+          if-no-files-found: error
 
   full_quality:
     env:
       AWAKEN_STATIC_JOBS: "4"
+      # Opt-in until representative timing establishes a benefit. Ordinary
+      # nextest already schedules tests in parallel; partitioning is not free.
+      AWAKEN_RUST_SHARDS: ${{ inputs.rust_shards || '1' }}
     # The strict sandbox group requires Docker, unprivileged user namespaces,
     # /dev/fuse, k3d and kubectl. A named runner contract makes missing
     # substrates a scheduling failure instead of a successful test skip.
@@ -96,9 +129,14 @@ jobs:
         with:
           toolchain: 1.96.0
           components: clippy,rustfmt
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        id: rust_cache
         with:
           key: full-quality
+          cache-workspace-crates: false
+      - name: Observe restored Cargo footprint
+        run: python3 scripts/ci/ci_performance.py cache --hit "${{ steps.rust_cache.outputs.cache-hit || 'unknown' }}" --output target/test-timings/cache-full-quality.json
       - name: Bind evidence to the exact workflow SHA
         shell: bash
         run: |
@@ -137,6 +175,18 @@ jobs:
           AWAKEN_TEST_TIMINGS_FILE: target/test-timings/check-all.tsv
           AWAKEN_RELIABILITY_EVIDENCE_DIR: target/test-timings/reliability
         run: scripts/ci/check-all.sh --full-gate --record
+      - name: Compare representative ordinary Cargo builds
+        if: github.event_name == 'workflow_dispatch' && inputs.build_benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          source scripts/ci/_provider_environment.sh
+          awaken_append_repo_tools
+          awaken_unset_ambient_api_keys
+          python3 scripts/ci/benchmark_rust_build.py -p awaken-resource-worker-http --jobs 1 2 --rounds 2 --timeout 1800
+      - name: Summarize gate and build costs
+        if: always()
+        run: python3 scripts/ci/ci_performance.py report --output target/test-timings/performance.json
       - name: Retain exact-SHA quality evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -147,4 +197,36 @@ jobs:
             target/cargo-timings/
             web/test-results/
             scripts/ci/gate_record.json
+            !target/test-timings/build-benchmark-*/round-*-jobs-*/debug/**
+          if-no-files-found: error
+
+  performance_summary:
+    if: always()
+    needs: [trusted_host_portability, full_quality]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out the exact candidate revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Download quality performance observations
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: quality-${{ github.sha }}-${{ github.run_attempt }}
+          path: target/performance-input
+      - name: Measure completed jobs including post-cache save steps
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci/ci_performance.py github --root target/performance-input/target/test-timings --output target/test-timings/workflow-performance.json
+      - name: Retain workflow performance observations
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: performance-${{ github.sha }}-${{ github.run_attempt }}
+          path: target/test-timings/workflow-performance.*
           if-no-files-found: error

@@ -369,8 +369,19 @@ case "$mode" in
       # without nightly JSON instrumentation.
       if step "test-build" "fix the test compilation/link errors shown above" \
         cargo test --workspace --features "$workspace_features" "${locked[@]}" --no-run --timings; then
-        step "test" "re-run a single failure with: cargo nextest run --workspace -E 'test(<test_name>)' --no-capture" \
-          cargo nextest run --workspace --features "$workspace_features" "${locked[@]}"
+        if [ "${AWAKEN_RUST_SHARDS:-1}" = 1 ]; then
+          step "test" "re-run a single failure with: cargo nextest run --workspace -E 'test(<test_name>)' --no-capture" \
+            cargo nextest run --workspace --features "$workspace_features" "${locked[@]}"
+        else
+          shard_threads=()
+          if [ -n "${NEXTEST_TEST_THREADS:-}" ] && [ "$NEXTEST_TEST_THREADS" != num-cpus ]; then
+            shard_threads=(--threads "$NEXTEST_TEST_THREADS")
+          fi
+          step "test" "inspect the partition receipts; all listed cases must execute exactly once" \
+            python3 scripts/ci/rust_test_shards.py --shards "$AWAKEN_RUST_SHARDS" "${shard_threads[@]}" \
+              --timeout "${AWAKEN_RUST_TEST_TIMEOUT_SECONDS:-1800}" -- \
+              --workspace --features "$workspace_features" "${locked[@]}"
+        fi
       else
         echo "   (skipping workspace execution until test binaries compile)" >&2
       fi

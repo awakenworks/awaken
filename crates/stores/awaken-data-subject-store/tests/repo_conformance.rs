@@ -461,78 +461,112 @@ async fn sqlite_survives_reopen() {
 }
 
 /// Live Postgres conformance for the Control-owned DataSubject repository.
-/// Skips when no Postgres is reachable (`AWAKEN_TEST_DATABASE_URL`).
+/// Optional absence is visible; required absence or configured failure is fatal.
 #[cfg(feature = "postgres")]
 mod postgres {
+    use super::postgres_fixture::Fixture;
     use super::*;
     use awaken_data_subject_store::PgDataSubjectRepo;
-    use sqlx::Executor;
-    use sqlx::postgres::{PgPool, PgPoolOptions};
-
-    fn database_url() -> String {
-        std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
-        })
-    }
-
-    async fn schema_pool(schema: &'static str) -> Option<PgPool> {
-        let admin = match PgPool::connect(&database_url()).await {
-            Ok(pool) => pool,
-            Err(err) => {
-                println!("[skip] no Postgres reachable: {err}");
-                return None;
-            }
-        };
-        let _ = admin
-            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
-            .await;
-        admin
-            .execute(format!("CREATE SCHEMA {schema}").as_str())
-            .await
-            .expect("create schema");
-        admin.close().await;
-        PgPoolOptions::new()
-            .after_connect(move |conn, _meta| {
-                Box::pin(async move {
-                    conn.execute(format!("SET search_path = {schema}").as_str())
-                        .await?;
-                    Ok(())
-                })
-            })
-            .connect(&database_url())
-            .await
-            .ok()
-    }
-
-    async fn repo(schema: &'static str) -> Option<PgDataSubjectRepo> {
-        Some(
-            PgDataSubjectRepo::with_pool(schema_pool(schema).await?)
-                .await
-                .expect("store"),
-        )
-    }
 
     #[tokio::test]
     async fn postgres_repo_conforms() {
-        let Some(r) = repo("t_ds_roundtrip").await else {
+        if awaken_reliability_testkit::postgres_fixture_url().is_none() {
             return;
-        };
-        round_trip_and_scope_by_org(&r).await;
-        compare_and_swap_preserves_consents(&repo("t_ds_upsert").await.unwrap()).await;
-        missing_is_not_found(&repo("t_ds_missing").await.unwrap()).await;
-        create_and_cas_fence_stale_writers(&repo("t_ds_cas").await.unwrap()).await;
-        erasure_checkpoint_fences_stale_writers(&repo("t_ds_erasure_cas").await.unwrap()).await;
-        erasure_checkpoint_preserves_completed_targets(
-            &repo("t_ds_erasure_monotonic").await.unwrap(),
-        )
+        }
+        // All three backends use run_all: adding a port rule cannot silently
+        // leave PostgreSQL on a separately maintained subset of assertions.
+        let fixtures = std::sync::Mutex::new(Vec::new());
+        run_all(|| async {
+            let fixture = Fixture::new("parity").await.unwrap();
+            let repo = PgDataSubjectRepo::with_pool(fixture.pool.clone())
+                .await
+                .unwrap();
+            fixtures.lock().unwrap().push(fixture);
+            Box::new(repo) as Box<dyn DataSubjectRepo>
+        })
         .await;
-        let pool = schema_pool("t_ds_erasure_race").await.unwrap();
-        let left = PgDataSubjectRepo::with_pool(pool.clone()).await.unwrap();
-        let right = PgDataSubjectRepo::with_pool(pool.clone()).await.unwrap();
-        let third = PgDataSubjectRepo::with_pool(pool.clone()).await.unwrap();
-        erasure_checkpoint_competing_candidates([&left, &right, &third]).await;
-        println!(
-            "[executed] PostgreSQL erasure checkpoint conformance and independent transaction race"
+        for fixture in fixtures.into_inner().unwrap() {
+            fixture.cleanup().await;
+        }
+        for monotonic in [false, true] {
+            let fixture = Fixture::new("erasure").await.unwrap();
+            let repo = PgDataSubjectRepo::with_pool(fixture.pool.clone())
+                .await
+                .unwrap();
+            if monotonic {
+                erasure_checkpoint_preserves_completed_targets(&repo).await;
+            } else {
+                erasure_checkpoint_fences_stale_writers(&repo).await;
+            }
+            fixture.cleanup().await;
+        }
+    }
+
+    #[test]
+    fn fixture_absence_and_configured_failure_are_distinct() {
+        awaken_reliability_testkit::assert_postgres_fixture_child_contract(
+            "postgres::postgres_repo_conforms",
         );
     }
+
+    #[tokio::test]
+    async fn postgres_erasure_independent_connections_preserve_winner_after_reopen() {
+        // P1 independent connections race the same durable row -> one complete
+        // winner; P2 close every scenario pool and reopen -> identical checkpoint.
+        // This is the PostgreSQL counterpart of the existing SQLite R1-R4 case.
+        let Some(fixture) = Fixture::new("race").await else {
+            return;
+        };
+        let right_pool = fixture.reconnect().await;
+        let third_pool = fixture.reconnect().await;
+        let left = PgDataSubjectRepo::with_pool(fixture.pool.clone())
+            .await
+            .unwrap();
+        let right = PgDataSubjectRepo::with_pool(right_pool.clone())
+            .await
+            .unwrap();
+        let third = PgDataSubjectRepo::with_pool(third_pool.clone())
+            .await
+            .unwrap();
+        let winner = erasure_checkpoint_competing_candidates([&left, &right, &third]).await;
+        drop((left, right, third));
+        fixture.pool.close().await;
+        right_pool.close().await;
+        third_pool.close().await;
+        let reopened_pool = fixture.reconnect().await;
+        let reopened = PgDataSubjectRepo::with_pool(reopened_pool.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            reopened
+                .load(&DataSubjectId("dsub_erasure_race".into()))
+                .await
+                .unwrap(),
+            Some(winner)
+        );
+        reopened_pool.close().await;
+        fixture.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn fixture_cleanup_preserves_another_live_schema() {
+        let Some(first) = Fixture::new("first").await else {
+            return;
+        };
+        let other = Fixture::new("other").await.unwrap();
+        let repo = PgDataSubjectRepo::with_pool(other.pool.clone())
+            .await
+            .unwrap();
+        repo.create(subject("survivor", "org")).await.unwrap();
+        first.cleanup().await;
+        assert_eq!(
+            repo.get(&DataSubjectId("survivor".into())).await.unwrap(),
+            subject("survivor", "org")
+        );
+        other.cleanup().await;
+    }
 }
+
+#[cfg(feature = "postgres")]
+#[path = "support/postgres.rs"]
+mod postgres_fixture;

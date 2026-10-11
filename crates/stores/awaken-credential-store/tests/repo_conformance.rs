@@ -2240,13 +2240,8 @@ mod postgres {
     use sqlx::postgres::{PgPool, PgPoolOptions};
     use std::collections::BTreeMap;
 
-    fn database_url() -> String {
-        std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
-        })
-    }
-
-    async fn schema_pool(schema: &'static str) -> Option<PgPool> {
+    async fn schema_pool(tag: &'static str) -> Option<PgPool> {
+        let url = awaken_reliability_testkit::postgres_fixture_url()?;
         // Pool-budget cause/effect table for this integration-test binary:
         // C1 Rust runs the independent schema tests concurrently; C2 each
         // fixture uses an unconstrained sqlx pool; C3 PostgreSQL has a finite
@@ -2256,26 +2251,22 @@ mod postgres {
         // at most four (the largest lock/race witness is bounded below that).
         // R1 admin => max 1; R2 scenario => max 4; R3 explicit in-test races
         // remain concurrent and must not be serialized by the harness.
-        let admin = match PgPoolOptions::new()
+        let admin = PgPoolOptions::new()
             .max_connections(1)
-            .connect(&database_url())
+            .connect(&url)
             .await
-        {
-            Ok(pool) => pool,
-            Err(err) => {
-                // R3: an explicitly configured durable-backend gate must fail,
-                // never count an unreachable database as passing coverage.
-                assert!(
-                    std::env::var_os("AWAKEN_TEST_DATABASE_URL").is_none(),
-                    "explicit PostgreSQL fixture is unavailable: {err}"
-                );
-                println!("[skip] no Postgres reachable: {err}");
-                return None;
-            }
-        };
-        let _ = admin
-            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
-            .await;
+            .expect("configured Credential PostgreSQL fixture must connect");
+        // A real child admission test may run concurrently with this binary's
+        // conformance test. Own a unique schema; never delete a sibling's data.
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let schema = format!("{tag}_{}_{nonce:x}", std::process::id());
+        assert!(
+            schema.len() <= 63,
+            "owned fixture schema must not be truncated"
+        );
         admin
             .execute(format!("CREATE SCHEMA {schema}").as_str())
             .await
@@ -2285,6 +2276,7 @@ mod postgres {
             PgPoolOptions::new()
                 .max_connections(4)
                 .after_connect(move |conn, _meta| {
+                    let schema = schema.clone();
                     Box::pin(async move {
                         conn.execute(format!("SET search_path = {schema}").as_str())
                             .await?;
@@ -2293,7 +2285,7 @@ mod postgres {
                         Ok(())
                     })
                 })
-                .connect(&database_url())
+                .connect(&url)
                 .await
                 .expect("PostgreSQL scenario fixture must initialize after admin connection"),
         )
@@ -2305,6 +2297,13 @@ mod postgres {
             .await
             .expect("store");
         Some(repo)
+    }
+
+    #[test]
+    fn fixture_absence_and_configured_failure_are_distinct() {
+        awaken_reliability_testkit::assert_postgres_fixture_child_contract(
+            "postgres::postgres_repo_conforms",
+        );
     }
 
     fn managed_source(id: &str, workspace_id: &str) -> CredentialSource {
@@ -2390,13 +2389,17 @@ mod postgres {
         }
     }
 
-    async fn wait_for_lock_waiters(pool: &PgPool, application_name: &str, expected: i64) {
+    async fn wait_for_lock_waiters(pool: &PgPool, expected: i64) {
+        let application_name: String = sqlx::query_scalar("SELECT current_schema()")
+            .fetch_one(pool)
+            .await
+            .unwrap();
         for _ in 0..200 {
             let waiters = sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM pg_stat_activity \
                  WHERE application_name = $1 AND wait_event_type = 'Lock'",
             )
-            .bind(application_name)
+            .bind(&application_name)
             .fetch_one(pool)
             .await
             .unwrap();
@@ -2912,7 +2915,7 @@ mod postgres {
         let right_pending = right.clone();
         let right_task =
             tokio::spawn(async move { right_repo.commit_managed_mutation(&right_pending).await });
-        wait_for_lock_waiters(&pool, SCHEMA, 2).await;
+        wait_for_lock_waiters(&pool, 2).await;
         blocker.commit().await.unwrap();
 
         let results = [left_task.await.unwrap(), right_task.await.unwrap()];
@@ -3002,7 +3005,7 @@ mod postgres {
         let right_pending = right.clone();
         let right_task =
             tokio::spawn(async move { right_repo.commit_managed_mutation(&right_pending).await });
-        wait_for_lock_waiters(&pool, SCHEMA, 2).await;
+        wait_for_lock_waiters(&pool, 2).await;
         blocker.commit().await.unwrap();
         let (left_result, right_result) = (left_task.await.unwrap(), right_task.await.unwrap());
         let results = [left_result, right_result];
@@ -3144,7 +3147,7 @@ mod postgres {
         let apply_intent = intent.clone();
         let apply_task =
             tokio::spawn(async move { apply_repo.apply_mutation(&apply_intent).await });
-        wait_for_lock_waiters(&pool, SCHEMA, 1).await;
+        wait_for_lock_waiters(&pool, 1).await;
 
         let mut winner = source("cred:plain-race", "ws-winner");
         winner.provider_id = Some("winner".into());

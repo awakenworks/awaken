@@ -12,8 +12,9 @@ bare "No such file" for the companion.
 
 This derives everything from those two sources instead of a second list:
 
-* the crate's features are the ones Cargo resolves onto it in the full-gate
-  graph (`cargo metadata --features <workspace_features>`);
+* the crate's features come from the full-gate resolve. A host-filtered Cargo
+  tree comparison checks shared dependencies too; differences retain the full
+  workspace build with package-filtered execution;
 * a `[[companion]]` row of the profile names a binary, the package that builds
   it and the `launcher` crate whose code starts it; a crate whose dependency
   graph reaches the launcher gets the companion built first, with the profile's
@@ -184,6 +185,58 @@ def plan_packages(metadata: dict, features: list[str], companions: list[dict[str
     return commands
 
 
+def tree_features(output: str) -> dict[str, set[str]]:
+    """Cargo's host-filtered tree, keeping feature identity, not display repeats."""
+    graph: dict[str, set[str]] = {}
+    for line in output.splitlines():
+        if not line or line in ("[build-dependencies]", "[dev-dependencies]"):
+            continue
+        package, separator, features = line.removesuffix(" (*)").partition("|")
+        if not separator or not package:
+            raise PlanError("malformed Cargo feature tree: " + repr(line))
+        graph.setdefault(package, set()).update(filter(None, features.split(",")))
+    if not graph:
+        raise PlanError("empty Cargo feature tree")
+    return graph
+
+
+def guarded_plan(metadata: dict, features: list[str], companions: list[dict[str, str]],
+                 crates: list[str], passthrough: list[str], tree=None) -> tuple[list[list[str]], dict]:
+    """Retain the full build graph when a narrow build loses dependency features.
+
+    Cargo metadata resolves the workspace, but a -p build unifies fewer roots.
+    Cargo tree is a conservative comparison, not a compiler-unit proof. Any
+    difference falls back to the canonical workspace build and a package filter.
+    """
+    reserved = {"--features", "-F", "--all-features", "--no-default-features", "--target",
+                "--workspace", "--exclude", "--package", "-p"}
+    if any(arg.split("=", 1)[0] in reserved or
+           (len(arg) > 2 and arg.startswith(("-p", "-F"))) for arg in passthrough):
+        raise PlanError("the shared test profile owns package, feature and target selection")
+    commands = plan_packages(metadata, features, companions, crates, passthrough)
+    if tree is None:
+        def tree(arguments):
+            return tree_features(subprocess.check_output(
+                ["cargo", "tree", "--locked", *arguments, "--target", host_triple(),
+                 "--edges", "normal,build,dev", "--prefix", "none", "--format", "{p}|{f}"],
+                cwd=ROOT, text=True))
+    full = tree(["--workspace", "--features", ",".join(features)])
+    # plan_packages owns these arguments; nextest-only passthrough is excluded.
+    narrow = plan_packages(metadata, features, companions, crates, [])[-1][4:]
+    local = tree(narrow)
+    if not full or not local:
+        raise PlanError("empty Cargo feature graph")
+    differences = {package: {"workspace": sorted(full.get(package, set())), "selected": sorted(own)}
+                   for package, own in local.items() if package not in full or own != full[package]}
+    evidence = {"comparison": "cargo-tree-host-normal-build-dev", "differences": differences,
+                "build_scope": "workspace" if differences else "selected-packages"}
+    if differences:
+        selection = " | ".join(f"package(={crate})" for crate in crates)
+        commands[-1] = ["cargo", "nextest", "run", "--locked", "--workspace",
+                        "--features", ",".join(features), "-E", selection, *passthrough]
+    return commands, evidence
+
+
 def parse(argv: list[str]) -> tuple[bool, str, list[str]]:
     dry_run = False
     while argv and argv[0] == "--dry-run":
@@ -253,6 +306,29 @@ class CrateTestPlan(unittest.TestCase):
         with self.assertRaisesRegex(PlanError, "nope is not a workspace crate"):
             self.plan_for("nope")
 
+    def test_dependency_features_require_workspace_fallback(self) -> None:
+        # G1 exact local graph -> narrow build; G2 an unselected root enables
+        # a backend/shared feature -> canonical build with the SAME case filter;
+        # G3 malformed/empty graph -> refusal, never a narrow false green.
+        for different in (False, True):
+            def tree(arguments):
+                return {"leaf": set(), "shared": {"postgres"} if different and "--workspace" in arguments else set()}
+            commands, evidence = guarded_plan(self.metadata(), self.features, self.companions,
+                                              ["leaf"], [], tree=tree)
+            self.assertEqual("--workspace" in commands[-1], different)
+            self.assertEqual(bool(evidence["differences"]), different)
+            if different:
+                self.assertEqual(commands[-1][-2:], ["-E", "package(=leaf)"])
+        self.assertEqual(tree_features("shared v1|postgres,sqlite\nshared v1|sqlite (*)\n"),
+                         {"shared v1": {"postgres", "sqlite"}})
+        for malformed in ("", "no separator"):
+            with self.assertRaises(PlanError):
+                tree_features(malformed)
+        for override in (["--all-features"], ["--features", "alternate"], ["-Falternate"],
+                         ["-pleaf"], ["--no-default-features"], ["--target=x86_64-other"]):
+            with self.subTest(override=override), self.assertRaises(PlanError):
+                guarded_plan(self.metadata(), self.features, self.companions, ["leaf"], override)
+
     def test_p8_stale_companion_rows(self) -> None:
         rows = [{"package": "leaf", "binary": "hand-bin", "launcher": "gone"}]
         errors = companion_errors(self.metadata(), rows)
@@ -298,12 +374,16 @@ class CrateTestPlan(unittest.TestCase):
             self.assertIn("CARGO_BUILD_BUILD_DIR=" + target.split("=", 1)[1], builds[0])
             self.assertIn(companion["binary"], builds[0])
             self.assertIn("hand", builds[0][builds[0].index("--features") + 1].split(","))
-            self.assertEqual(test[test.index("-p") + 1], crate)
-            self.assertIn("container-k8s", test[test.index("--features") + 1].split(","))
+            if "--workspace" in test:
+                self.assertIn(f"package(={crate})", test)
+            else:
+                self.assertEqual(test[test.index("-p") + 1], crate)
+            self.assertTrue(any(f.split("/")[-1] == "container-k8s" for f in test[test.index("--features") + 1].split(",")))
             self.assertEqual(test[-1], "--no-fail-fast", "nextest arguments come last")
         leaf = self.dry_run("awaken-runtime")
         self.assertEqual(len(leaf), 1, "D3 a crate that launches nothing builds no companion")
-        self.assertNotIn("--features", leaf[0])
+        if "--workspace" in leaf[0]:
+            self.assertIn("package(=awaken-runtime)", leaf[0])
 
 
 def main(argv: list[str]) -> int:
@@ -311,13 +391,17 @@ def main(argv: list[str]) -> int:
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(CrateTestPlan)
         return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
     try:
+        from rust_test_plan import execute_plan, git_output, source_snapshot
+        fingerprint, patch = source_snapshot()
         dry_run, crate, passthrough = parse(argv)
         features, companions = load_profile()
         metadata = full_graph_metadata(features)
         errors = companion_errors(metadata, companions)
         if errors:
             raise PlanError("; ".join(errors) + f" -- fix the [[companion]] rows in {PROFILE.relative_to(ROOT)}")
-        commands = plan(metadata, features, companions, crate, passthrough)
+        commands, graph = guarded_plan(metadata, features, companions, [crate], passthrough)
+        if source_snapshot()[0] != fingerprint:
+            raise PlanError("source changed while deriving the test selection")
     except PlanError as error:
         print(error, file=sys.stderr)
         return 2
@@ -325,12 +409,11 @@ def main(argv: list[str]) -> int:
     prefix = [f"CARGO_TARGET_DIR={values['CARGO_TARGET_DIR']}", f"CARGO_BUILD_BUILD_DIR={values['CARGO_BUILD_BUILD_DIR']}"]
     for command in commands:
         print(shlex.join(prefix + command), flush=True)
-        if dry_run:
-            continue
-        status = subprocess.run(command, cwd=ROOT, env=values, check=False).returncode
-        if status:
-            return status
-    return 0
+    if dry_run:
+        return 0
+    return execute_plan({"kind": "local-explicit-package", "revision": git_output("rev-parse", "HEAD").decode().strip(),
+                         "selected_packages": [crate], "commands": commands, "feature_graph": graph},
+                        values, fingerprint, patch)
 
 
 if __name__ == "__main__":

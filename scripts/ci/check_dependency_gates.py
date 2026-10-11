@@ -206,7 +206,7 @@ EXIT = re.compile(r"\breturn\b|\bNone\s*;|\bOk\(\(\)\)\s*;|\bprocess\.exit\(0\)|
 PG_MARK = re.compile(r"AWAKEN_TEST_DATABASE_URL|no Postgres|PgPool::connect")
 # `-q`, `--features`, a package filter: the package is what matters, wherever it
 # sits on the line.
-GATE_ENTRY = re.compile(r"cargo (?:test|nextest run)\b[^\n]*?\s-p\s+([a-z0-9-]+)")
+GATE_ENTRY = re.compile(r"(?:cargo (?:test|nextest run)|pg_required_test)\b[^\n]*?\s-p\s+([a-z0-9-]+)")
 # The gate does not only supply Postgres, and it does not only `export`: a
 # `VAR=1 cargo test ...` prefix supplies the variable for exactly that command.
 # Whatever a gate sets, it supplies.

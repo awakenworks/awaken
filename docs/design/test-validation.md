@@ -76,16 +76,33 @@ The plan includes committed changes since the base, working changes, and
 untracked inputs. Global/unowned inputs fall back to the whole workspace.
 The execution selects Cargo packages as well as test cases. It derives each
 selected package's features from the full Cargo graph, builds each required
-Hand companion once, and runs the selected packages together. An execution
-filter on a workspace build alone would still compile unrelated test targets.
-The plan retains every command and its result; a failed companion build stops
-the dependent test run. The native shell entry point uses Git Bash on Windows.
+Hand companion once, and runs the selected packages together. Root features
+alone do not reproduce features that other workspace roots enable on shared
+dependencies. A host-filtered `cargo tree` comparison covers normal, build and
+dev dependencies: a difference conservatively retains the canonical workspace
+build and limits execution with package filters. An exact comparison permits
+the narrow build. This comparison is a conservative guard, not a compiler-unit
+equivalence proof. Package/feature/target overrides cannot bypass the shared
+profile. Benchmark workloads remain explicit narrow experiments.
+The plan retains the comparison, every command and its result; a failed
+companion build stops the dependent test run. The native shell entry point uses
+Git Bash on Windows.
 Documentation-only Markdown changes can have no Rust owner, but still require
 the documentation gate. The plan and execution receipts explicitly carry
 `full_gate: false`. The source digest covers HEAD, the binary working patch,
 and untracked names/bytes; a source change during execution rejects the result.
 Nextest's local selection does not run doctests: changes to public examples or
 compile-fail contracts also require the owner's `cargo test --doc --locked`.
+Verified selections independently list Nextest's JSON inventory, then compare
+binary-qualified actual successes with that inventory. Filtered and ignored
+listed cases are recorded individually and reconciled with the summary;
+entire filtered binaries are recorded separately without inventing their
+unlisted case names. Empty
+selections, renamed/missing/duplicate outcomes, unexpected exclusions, fixture
+skips and failed listing/execution reject the result. Listing and execution
+share one process-tree deadline; logs and source-bound JSON receipts live under
+`target/test-timings/selection-*/`. A no-change affected run records `no-tests`,
+never a passing execution.
 
 Run the existing domains independently for diagnosis:
 
@@ -101,6 +118,43 @@ named outcomes and occurrence counts. Equal totals with different names,
 empty selections, ignored cases, fixture skips, and failed processes cannot
 qualify. The listing and execution share one deadline; PostgreSQL stages also
 share the existing whole-gate budget.
+
+## Durable backend parity and remaining platform scope
+
+`pg_tests.sh` owns one repository-parity selection, reused by the Docker gate
+and an explicitly provisioned native PostgreSQL fixture:
+
+```sh
+# Caller owns fixture startup/cleanup. Missing or invalid URL fails.
+AWAKEN_TEST_DATABASE_URL=... bash scripts/ci/pg_tests.sh --backend-parity
+```
+
+| Owner | Shared backend rules required in the listed selection | Additional durable evidence |
+| --- | --- | --- |
+| Model catalog | Memory, SQLite, PostgreSQL | Snapshot validation, corrupt rows, reopen |
+| Credential | Memory, SQLite, PostgreSQL | Rotation, mutation/managed rollout recovery; fixture refusal child cases |
+| DataSubject | Memory, SQLite, PostgreSQL | Exact CAS/monotone erasure, independent-connection competition and reopen on both durable backends; isolated schema cleanup |
+| Captured content | Memory, SQLite, PostgreSQL | Scope/retention and exact fixture cleanup |
+| WorkQueue | Memory, SQLite, PostgreSQL | Single claim, exact expiry/reclaim and stale release |
+| Session/Deployment | SQLite, PostgreSQL | The complete generic port suite on both backends, plus the existing CAS/outbox rules |
+| Memory resources | Volatile, SQLite, PostgreSQL | CAS/timestamps/conditional deletion and configured fixture refusal |
+| Skill resources | Memory, filesystem, SQLite, PostgreSQL | Versions, pins, append and reopen |
+
+The runner requires named concrete backend bindings before executing the whole
+owned conformance target. Equal totals cannot hide a missing SQLite feature or
+a renamed PostgreSQL binding. Outer cases are serial to share a finite database
+budget; races inside each case remain concurrent. The separately ignored
+Session capacity observation retains its existing opt-in owner. Required
+libtest receipts retain names, argv, source digest, fixture admission and source
+stability; real PostgreSQL must execute rather than return a successful skip.
+
+This focused matrix does not qualify all of `pg_tests.sh --require-docker`:
+physical WAL/PITR recovery, S3/MinIO lifecycle, active/active HTTP, live pool
+cardinality and remaining application/store suites keep their existing full
+gate owners. A native MSVC run also does not qualify Linux pidfd/FUSE/container
+namespaces, real k3d, macOS Seatbelt, or paid external model APIs. Record each
+lane's source SHA and actual outcomes separately. Earlier full-suite evidence
+and an unchanged warm artifact cannot qualify a later commit.
 
 ## Reduce total time without losing evidence
 
@@ -159,7 +213,44 @@ If distributing full-suite work in the future, every shard must identify the
 same candidate SHA, feature/tool/substrate configuration and expected cases.
 The aggregator must reject missing/duplicate shards and partial/skipped
 results. A scheduler or cache hit alone cannot produce a green full receipt.
-The current implementation keeps full-suite composition unchanged.
+The full-suite composition stays in the same entrypoint. Rust partitions are
+available inside `check-rust.sh`, with one build, captured Cargo/binary metadata
+and one full JSON inventory. Before execution, independently listed `hash:i/N`
+partitions must cover every nonignored `(binary,test)` exactly once. The final
+aggregator repeats that check against actual outcomes and rejects missing,
+duplicate, failed or foreign-source/build/configuration shards. All workers
+share one process-tree budget and split the existing total test-thread budget;
+they do not each receive the full CPU count. Doctests remain a separate stage.
+Ordinary Rust outcomes retain their existing fixture scope; required backend
+and OS groups still supply the live-behavior qualification.
+
+```sh
+AWAKEN_RUST_SHARDS=2 NEXTEST_TEST_THREADS=8 bash scripts/ci/check-rust.sh --full
+```
+
+The default stays one partition until representative measurements establish a
+benefit: Nextest already schedules tests concurrently, and repeated inventory
+discovery has a cost. The quality workflow's manual `rust_shards` input enables
+the comparison without weakening PR/main/release requirements.
+
+The quality workflow retains cache-hit observations and bounded local Cargo
+directory footprints. Its post-job performance observer reads the exact run
+attempt's completed jobs, including the Rust cache action's post-save step,
+so restore/save overhead is measured rather than inferred from compilation.
+Listed cache archive sizes are separate from local directory sizes; pre-existing
+self-hosted files cannot be attributed to a restore. Incomplete footprint scans
+report unavailable sizes. Workspace-crate caching remains disabled.
+`ci_performance.py` preserves failed/incomplete job outcomes and source/run
+identities, ranks canonical stage costs and Cargo units, and reports test p50/p95
+and slow cases. Performance telemetry always carries `full_gate: false`.
+Missing CI data remains unavailable rather than borrowing another commit's
+results. A manual `build_benchmark` input runs the representative Resource HTTP
+workload at jobs 1/2 for two rounds with fresh target directories.
+Both observation uploads exclude only the benchmark targets' `debug` payload.
+Results, raw execution/listing logs and Cargo timing HTML stay in the artifact;
+the static performance policy rejects missing exclusions or broader evidence
+removal. Uploading these fresh compiler caches would add gigabytes of avoidable
+artifact compression and transfer to the measurement itself.
 
 ### Ordinary build benchmarks
 
@@ -190,6 +281,16 @@ heavier workload. Do not turn up global Cargo concurrency or change the system
 page file as part of a benchmark. Local development keeps incremental caches;
 compiler-cache experiments that disable incremental compilation belong to a
 separate measured CI configuration.
+
+On Windows, `--linker rust-lld` is an explicit alternative-linker experiment
+using the active toolchain's `rust-lld.exe` with the `lld-link` flavor. It keeps
+the MSVC target and records the linker condition; it does not alter the default
+or qualify Microsoft's `link.exe`. Ambient Rust flags are refused for this
+comparison. Preserve a failed default-linker observation independently instead
+of retrying it into a successful timing sample. The native 2026-10-11 Resource
+HTTP cold-build probe stopped at `ref-cast-impl` with LNK1105/error 1224 even at
+jobs 1; available commit memory was about 18.6 GiB before execution. This is a
+mapped-output failure, not evidence that increasing concurrency is safe.
 
 The 2026-10-11 native MSVC probe used the two leaf packages above, 56 compiled
 units and 11 executed tests per successful observation. The first round took

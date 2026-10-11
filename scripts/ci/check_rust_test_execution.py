@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import json
 import os
 from pathlib import Path
 import re
@@ -19,7 +20,8 @@ SUMMARY = re.compile(r"^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (
 SKIP = re.compile(r"^(?:SKIPPED\b|\[skip\])", re.MULTILINE | re.IGNORECASE)
 
 
-def execution_errors(inventory: str, results: str, exit_code: int) -> list[str]:
+def execution_errors(inventory: str, results: str, exit_code: int,
+                     required_cases: list[str] | None = None) -> list[str]:
     planned = Counter(LISTED.findall(inventory))
     observed = EXECUTED.findall(results)
     actual = Counter(name for name, _ in observed)
@@ -28,6 +30,9 @@ def execution_errors(inventory: str, results: str, exit_code: int) -> list[str]:
         errors.append(f"test command failed with status {exit_code}")
     if not planned:
         errors.append("required selection is empty")
+    missing = sorted(set(required_cases or []) - planned.keys())
+    if missing:
+        errors.append("required backend cases were not selected: " + ", ".join(missing))
     if actual != planned:
         errors.append(f"selection differs: missing={dict(planned - actual)}, unexpected={dict(actual - planned)}")
     if any(status != "ok" for _, status in observed):
@@ -50,6 +55,7 @@ class ExecutionTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         inputs = {*deadline_inputs, "scripts/ci/_strict_unittest.py",
                   "scripts/ci/_rust_test_execution.sh", "scripts/ci/check_rust_test_execution.py",
+                  "scripts/ci/rust_test_plan.py", "scripts/ci/crate_test.py", "scripts/ci/nextest_execution.py",
                   *entrypoint_inputs}
         for relative in sorted(inputs):
             target = fixture / relative
@@ -202,6 +208,12 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
         self.assertEqual(execution_errors(inventory, output, 0), [])
         self.assertTrue(execution_errors(inventory, output[:len(output) // 2], 0))
 
+    def test_missing_backend_is_rejected_even_when_every_listed_test_passes(self) -> None:
+        inventory = "sqlite: test\n"
+        output = "test sqlite ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored;\n"
+        self.assertEqual(execution_errors(inventory, output, 0, ["sqlite"]), [])
+        self.assertTrue(execution_errors(inventory, output, 0, ["sqlite", "postgres"]))
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -209,6 +221,8 @@ def main() -> int:
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--results", type=Path)
     parser.add_argument("--exit-code", type=int)
+    parser.add_argument("--require-case", action="append", default=[])
+    parser.add_argument("--receipt", type=Path)
     args = parser.parse_args()
     if args.self_test:
         if args.inventory or args.results or args.exit_code is not None:
@@ -217,7 +231,30 @@ def main() -> int:
         return int(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())
     if args.inventory is None or args.results is None or args.exit_code is None:
         parser.error("--inventory, --results and --exit-code are required")
-    errors = execution_errors(args.inventory.read_text(encoding="utf-8"), args.results.read_text(encoding="utf-8"), args.exit_code)
+    inventory = args.inventory.read_text(encoding="utf-8")
+    results = args.results.read_text(encoding="utf-8")
+    errors = execution_errors(inventory, results, args.exit_code, args.require_case)
+    if args.receipt:
+        from rust_test_plan import source_snapshot
+        directory = args.receipt.parent
+        before = (directory / "source.digest").read_text().strip()
+        unchanged = before == source_snapshot()[0]
+        if not unchanged:
+            errors.append("source changed during required backend execution")
+        args.receipt.write_text(json.dumps({
+            "schema_version": 1, "kind": "required-libtest", "full_gate": False,
+            "revision": (directory / "source.txt").read_text().strip(),
+            "source_digest": before, "source_unchanged": unchanged,
+            "arguments": (directory / "arguments.txt").read_text().splitlines(),
+            "list_command": (directory / "list-command.txt").read_text().splitlines(),
+            "test_command": (directory / "test-command.txt").read_text().splitlines(),
+            "duration_seconds": int((directory / "duration-seconds.txt").read_text().strip()),
+            "required_cases": args.require_case, "selected_cases": sorted(LISTED.findall(inventory)),
+            "executed_cases": EXECUTED.findall(results), "command_exit_code": args.exit_code,
+            "status": "failed" if errors else "passed", "errors": errors,
+            "postgres_fixture_required": os.environ.get("AWAKEN_TEST_REQUIRE_POSTGRES") == "1",
+            "postgres_fixture_configured": "AWAKEN_TEST_DATABASE_URL" in os.environ,
+        }, indent=2) + "\n", encoding="utf-8")
     for error in errors:
         print(f"Rust execution: {error}", file=sys.stderr)
     if not errors:
