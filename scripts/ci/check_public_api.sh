@@ -118,7 +118,9 @@ selected = sorted(
     p['name'] for p in packages
     if ((p.get('metadata') or {}).get('awaken') or {}).get('api_snapshot') is True
 )
-print('\n'.join(selected))
+# Native Windows Python translates print's LF into CRLF. Shell word splitting
+# leaves CR attached to all but the final package name; emit protocol bytes.
+sys.stdout.buffer.write(('\n'.join(selected) + '\n').encode('utf-8'))
 ")
 
 # A snapshot file for a crate that is not selected is an orphan: nothing checks

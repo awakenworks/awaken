@@ -201,9 +201,10 @@ class ShardTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {'CARGO_TARGET_DIR': temporary}), \
                  mock.patch.object(subprocess, 'run', side_effect=run), \
                  mock.patch.object(rust_test_plan, 'source_snapshot', return_value=('digest', b'')), \
-                 mock.patch.object(rust_test_plan, 'git_output', return_value=b'candidate'):
+                 mock.patch.object(rust_test_plan, 'git_output', return_value=b'candidate'), \
+                 mock.patch.object(time, 'time_ns', return_value=123):
                 self.assertEqual(execute(['--workspace', '--locked'], 2, 2, 30), 23)
-            receipt = json.loads(next(Path(temporary).glob('test-timings/*/results.json')).read_text())
+            receipt = json.loads((Path(temporary) / 'test-timings/rust-shards-123/results.json').read_text())
             self.assertEqual(receipt['status'], 'failed')
             self.assertEqual([row['exit_code'] for row in receipt['rows']], [0, 23])
             self.assertEqual(receipt['shards'], [])
@@ -221,9 +222,10 @@ class ShardTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {'CARGO_TARGET_DIR': temporary}), \
                  mock.patch.object(subprocess, 'run', side_effect=run), \
                  mock.patch.object(rust_test_plan, 'source_snapshot', return_value=('digest', b'')), \
-                 mock.patch.object(rust_test_plan, 'git_output', return_value=b'candidate'):
+                 mock.patch.object(rust_test_plan, 'git_output', return_value=b'candidate'), \
+                 mock.patch.object(time, 'time_ns', return_value=123):
                 self.assertEqual(execute(['--workspace', '--locked'], 2, 2, 30), 1)
-            receipt = json.loads(next(Path(temporary).glob('test-timings/*/results.json')).read_text())
+            receipt = json.loads((Path(temporary) / 'test-timings/rust-shards-123/results.json').read_text())
             self.assertEqual(receipt['status'], 'failed')
             self.assertEqual(receipt['shards'], [])
             self.assertEqual(len(calls), 5)

@@ -298,3 +298,77 @@ async fn v1_return_immediately_replaces_the_legacy_blocking_switch() {
         "TASK_STATE_COMPLETED"
     );
 }
+
+#[tokio::test]
+async fn missing_task_has_the_same_rest_classification_in_both_versions() {
+    for version in ["0.3.0", "1.0"] {
+        let app = router(Arc::new(Runtime), awaken_time::system_clock());
+        let mut request = params("audit-tenant", "audit-context");
+        request["message"]["taskId"] = json!("audit-nonexistent-task");
+        if version == "0.3.0" {
+            request["message"]["kind"] = json!("message");
+            request["message"]["role"] = json!("user");
+            request["message"]["parts"] = json!([{ "kind": "text", "text": "hello" }]);
+        }
+        let (status, _, body) =
+            call(app, "POST", "/audit-tenant/message:send", request, version).await;
+        println!("AUDIT missing_task version={version} status={status} body={body}");
+        assert_eq!(status, 404, "missing task version={version}: {body}");
+    }
+}
+
+struct AuditUnavailableRuntime;
+#[async_trait]
+impl RunApplication for AuditUnavailableRuntime {
+    async fn run(
+        &self,
+        _: &str,
+        _: &str,
+        _: Option<String>,
+        _: Vec<Message>,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        Err(RunApplicationError::unavailable(
+            "audit temporary upstream outage",
+        ))
+    }
+    async fn resume(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        Err(RunApplicationError::unavailable(
+            "audit temporary upstream outage",
+        ))
+    }
+    async fn pending(&self, _: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(None)
+    }
+    async fn history(&self, _: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
+    }
+    fn model(&self) -> String {
+        "audit-unavailable".into()
+    }
+}
+
+#[tokio::test]
+async fn unavailable_has_the_same_rest_classification_in_both_versions() {
+    for version in ["0.3.0", "1.0"] {
+        let app = router(
+            Arc::new(AuditUnavailableRuntime),
+            awaken_time::system_clock(),
+        );
+        let mut request = params("audit-tenant", "audit-context");
+        if version == "0.3.0" {
+            request["message"]["kind"] = json!("message");
+            request["message"]["role"] = json!("user");
+            request["message"]["parts"] = json!([{ "kind": "text", "text": "hello" }]);
+        }
+        let (status, _, body) =
+            call(app, "POST", "/audit-tenant/message:send", request, version).await;
+        println!("AUDIT unavailable version={version} status={status} body={body}");
+        assert_eq!(status, 503, "unavailable version={version}: {body}");
+    }
+}

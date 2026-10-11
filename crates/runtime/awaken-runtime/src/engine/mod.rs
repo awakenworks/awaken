@@ -135,7 +135,12 @@ async fn emit_stream(context: &RuntimeRunContext, observation: StreamObservation
 }
 
 fn map_resolver_error(err: resolver::Error) -> Error {
-    Error::Resolution(err.to_string())
+    awaken_runtime_contract::diagnostic::RuntimeDiagnostic::new(
+        awaken_runtime_contract::diagnostic::RuntimeErrorKind::InvalidRequest,
+        "resolution_failed",
+        err,
+    )
+    .into()
 }
 
 /// Normalize the two views once. Request-only context remains outside the

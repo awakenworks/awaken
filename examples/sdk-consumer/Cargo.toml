@@ -1,0 +1,28 @@
+[package]
+name = "awaken-sdk-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Deliberately independent: no root-workspace feature unification or test fixtures.
+[workspace]
+
+[dependencies]
+awaken-runtime = { path = "../../crates/runtime/awaken-runtime", default-features = false }
+awaken-store-inmem = { path = "../../crates/runtime/awaken-store-inmem" }
+awaken-time = { path = "../../crates/runtime/awaken-time" }
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt", "macros", "time"] }
+
+[dev-dependencies]
+awaken-store-fs = { path = "../../crates/stores/awaken-store-fs" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+tempfile = "3"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"

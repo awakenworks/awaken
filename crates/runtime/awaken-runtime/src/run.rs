@@ -14,16 +14,35 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::fresh_process_id;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{Error, RunExecutor};
-use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
+use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
-use awaken_runtime_contract::terminal::{
-    CommittedTerminalProjection, committed_terminal_projection, deliver_committed_terminal,
-};
 
 use crate::Runtime;
 
 impl Runtime {
+    /// Bind a Snapshot, Thread and store once for an embedded conversation.
+    pub fn session<'a>(
+        &'a self,
+        snapshot: &'a ExecutableAgentSnapshot,
+        thread: impl Into<String>,
+        context: RuntimeRunContext,
+    ) -> Result<crate::EmbeddedSession<'a>, Error> {
+        crate::EmbeddedSession::new(self, snapshot, ThreadId(thread.into()), context)
+    }
+
+    /// Single-shot entry returning a named projection of the committed record.
+    pub async fn run_with_outcome(
+        &self,
+        snapshot: &ExecutableAgentSnapshot,
+        input: impl Into<RunInput>,
+        context: RuntimeRunContext,
+    ) -> Result<crate::RunOutcome, Error> {
+        self.session(snapshot, fresh_process_id("thread"), context)?
+            .run(input)
+            .await
+    }
+
     /// Run `snapshot` once on a fresh thread, returning the resulting state.
     ///
     /// This is the single-shot entry: it registers the snapshot and executes once. If
@@ -36,6 +55,7 @@ impl Runtime {
         input: impl Into<RunInput>,
         context: RuntimeRunContext,
     ) -> Result<RunState, Error> {
+        crate::configuration::validate_for(self, snapshot, &context)?;
         let (_run_id, activation) =
             self.prepare_with_context(snapshot, fresh_process_id("thread"), input, &context);
         self.execute(activation, context).await
@@ -63,8 +83,15 @@ impl Runtime {
     {
         let (run_id, activation) =
             self.prepare_with_context(snapshot, thread.into(), input, &context);
-        self.drive_to_completion(run_id, activation, context, &mut decide)
-            .await
+        crate::approval::drive_to_completion(
+            self,
+            run_id,
+            activation,
+            context,
+            &mut |ticket| std::future::ready(Ok(decide(&ticket))),
+            &crate::ApprovalOptions::default(),
+        )
+        .await
     }
 
     /// Drive an embedded Run to completion under a caller-supplied durable
@@ -89,64 +116,15 @@ impl Runtime {
             input.into().0,
         )
         .with_inherited_toolsets(context.inherited_toolsets.clone());
-        self.drive_to_completion(run_id, activation, context, &mut decide)
-            .await
-    }
-
-    async fn drive_to_completion<F>(
-        &self,
-        run_id: RunId,
-        activation: RunActivation,
-        context: RuntimeRunContext,
-        decide: &mut F,
-    ) -> Result<RunState, Error>
-    where
-        F: FnMut(&ResumeTicket) -> ResumeResult,
-    {
-        // Stable-id entry is idempotent: an existing Ended run is returned, an
-        // Awaiting run resumes through its committed ticket, and only a missing or
-        // orphan Running run enters execution/recovery. No synthetic "continue"
-        // message is added to the transcript.
-        let terminal = context
-            .reader
-            .as_deref()
-            .map(|reader| committed_terminal_projection(reader, &run_id, &activation.thread_id));
-        let mut state = match terminal {
-            Some(CommittedTerminalProjection::Exact(terminal)) => {
-                let state = RunState::Ended(terminal.cause.clone());
-                let _ = deliver_committed_terminal(&context.terminal_observers, &terminal).await;
-                return Ok(state);
-            }
-            Some(CommittedTerminalProjection::IdentityConflict) => {
-                return Err(Error::Execution(
-                    "stable Run identity belongs to another Thread".to_string(),
-                ));
-            }
-            Some(CommittedTerminalProjection::Nonterminal) | None => match context
-                .reader
-                .as_deref()
-                .and_then(|reader| reader.run_state(&run_id))
-            {
-                Some(RunState::Awaiting) => RunState::Awaiting,
-                Some(RunState::Running) | None => self.execute(activation, context.clone()).await?,
-                Some(RunState::Ended(_)) => {
-                    return Err(Error::Execution(
-                        "committed Run changed while projecting terminal identity".to_string(),
-                    ));
-                }
-            },
-        };
-        while state == RunState::Awaiting {
-            let reader = context.reader.as_deref().ok_or_else(|| {
-                Error::Execution("resuming an awaiting run needs a history reader".to_string())
-            })?;
-            let ticket = reader
-                .resume_ticket(&run_id)
-                .ok_or_else(|| Error::Execution("awaiting run has no ticket".to_string()))?;
-            let command = ResumeCommand::from_ticket(&ticket, decide(&ticket), 0);
-            state = self.resume(command, reader, context.clone()).await?;
-        }
-        Ok(state)
+        crate::approval::drive_to_completion(
+            self,
+            run_id,
+            activation,
+            context,
+            &mut |ticket| std::future::ready(Ok(decide(&ticket))),
+            &crate::ApprovalOptions::default(),
+        )
+        .await
     }
 
     /// Start one run of `snapshot` on `thread` and drive it to its first pause or end,
@@ -162,6 +140,7 @@ impl Runtime {
         input: impl Into<RunInput>,
         context: RuntimeRunContext,
     ) -> Result<(RunId, RunState), Error> {
+        crate::configuration::validate_for(self, snapshot, &context)?;
         let (run_id, activation) =
             self.prepare_with_context(snapshot, thread.into(), input, &context);
         let state = self.execute(activation, context).await?;
@@ -189,7 +168,7 @@ impl Runtime {
     /// The convenience entries freeze the caller's execution input before the
     /// process-local context is consumed. Explicit dispatch builders may use
     /// `prepare` and set the same value when they hold a frozen authority.
-    fn prepare_with_context(
+    pub(crate) fn prepare_with_context(
         &self,
         snapshot: &ExecutableAgentSnapshot,
         thread: String,
@@ -206,7 +185,7 @@ impl Runtime {
 
 /// The input to one [`Runtime::run`]: a string becomes a single user message;
 /// explicit messages pass through unchanged.
-pub struct RunInput(Vec<Message>);
+pub struct RunInput(pub(crate) Vec<Message>);
 
 impl From<&str> for RunInput {
     fn from(text: &str) -> Self {

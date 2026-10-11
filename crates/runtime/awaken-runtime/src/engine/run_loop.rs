@@ -579,9 +579,7 @@ pub(super) async fn drive(
         .model_executor
         .clone()
         .or_else(|| runtime.llm().cloned())
-        .ok_or_else(|| {
-            Error::Execution("no model provider configured for this runtime".to_string())
-        })?;
+        .ok_or(crate::ConfigurationError::MissingModelProvider)?;
 
     // The attempt's durable-progress accumulator; it owns the step-commit
     // watermark invariant, so only the tail beyond a watermark is ever returned

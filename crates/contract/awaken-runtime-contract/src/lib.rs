@@ -10,6 +10,7 @@ pub mod control;
 pub mod credential;
 pub mod data_subject;
 pub mod delegation;
+pub mod diagnostic;
 pub mod execution;
 pub mod live_inbox;
 pub mod llm;

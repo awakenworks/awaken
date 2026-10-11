@@ -15,7 +15,31 @@ pub enum RunErrorKind {
     Unavailable,
 }
 
+/// Stable application facts. Protocol adapters project these without parsing prose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RunErrorClassification {
+    InvalidRequest,
+    NotFound,
+    UnsupportedOutputModes,
+    Unavailable,
+    Internal,
+}
+
 impl RunError {
+    /// Classify the existing kind/code pair; unknown codes retain their kind.
+    pub fn classification(&self) -> RunErrorClassification {
+        match (self.kind, self.code.as_str()) {
+            (RunErrorKind::BadRequest, "not_found") => RunErrorClassification::NotFound,
+            (RunErrorKind::BadRequest, "unsupported_output_modes") => {
+                RunErrorClassification::UnsupportedOutputModes
+            }
+            (RunErrorKind::BadRequest, _) => RunErrorClassification::InvalidRequest,
+            (RunErrorKind::Unavailable, _) => RunErrorClassification::Unavailable,
+            (RunErrorKind::Internal, _) => RunErrorClassification::Internal,
+        }
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),

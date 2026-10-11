@@ -1984,7 +1984,13 @@ async fn execution_fails_closed_on_fingerprint_mismatch() {
         CatalogFingerprint("catalog-b".to_string());
 
     let result = runtime.execute(activation, RuntimeRunContext::new()).await;
-    assert!(matches!(result, Err(Error::Resolution(_))));
+    let error = result.unwrap_err();
+    assert_eq!(error.code(), "resolution_failed");
+    assert!(
+        std::error::Error::source(&error)
+            .unwrap()
+            .is::<awaken_runtime_contract::resolver::Error>()
+    );
 }
 
 #[tokio::test]
@@ -2001,7 +2007,7 @@ async fn execution_does_not_require_an_installed_catalog() {
 async fn execution_requires_a_model_provider() {
     // Test design — Cause: a valid frozen activation is executed without an
     // installed model provider. Effect: execution fails with the Runtime
-    // Execution error before inference. Constraints/invariants: the snapshot is
+    // configuration diagnostic before inference. Constraints/invariants: the snapshot is
     // configuration authority but cannot fabricate an executable provider.
     // Decision rule M1=no provider=>fail closed; the installed-provider success
     // partition is covered by `execution_does_not_require_an_installed_catalog`.
@@ -2009,7 +2015,12 @@ async fn execution_requires_a_model_provider() {
     let result = runtime
         .execute(activation("catalog-a"), RuntimeRunContext::new())
         .await;
-    assert!(matches!(result, Err(Error::Execution(_))));
+    let error = result.unwrap_err();
+    assert_eq!(error.code(), "missing_model_provider");
+    assert_eq!(
+        error.kind(),
+        awaken_runtime_contract::diagnostic::RuntimeErrorKind::InvalidConfiguration
+    );
 }
 
 #[tokio::test]

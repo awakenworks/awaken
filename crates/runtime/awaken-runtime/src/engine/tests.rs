@@ -79,7 +79,9 @@ async fn failed_step_commit_retains_every_uncommitted_tail() {
         )
         .await
         .expect_err("R2/E2 rejects the staged delta");
-    assert!(matches!(error, Error::Commit(message) if message.contains("injected watermark")));
+    assert_eq!(error.code(), "commit_failed");
+    assert!(std::error::Error::source(&error).is_some());
+    assert!(error.to_string().contains("injected watermark"));
     assert!(ledger.has_uncommitted(), "R2/E2 retains pending truth");
 
     let tail = ledger.into_step_result(RunDisposition::ended(run_id, EndCause::NaturalEnd));

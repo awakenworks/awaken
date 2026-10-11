@@ -12,9 +12,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_agent_contract::agent::state::Store;
-use awaken_runtime_contract::permission::{
-    GateDecision, ToolCall, ToolGateHook, ToolPermissionPolicy,
+pub use awaken_agent_contract::agent::state::Store;
+pub use awaken_runtime_contract::permission::{
+    GateDecision, GateOutcome, ToolCall, ToolGateHook, ToolPermissionPolicy,
 };
 
 /// A [`ToolGateHook`] backed by a [`ToolPermissionPolicy`].
