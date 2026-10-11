@@ -266,8 +266,8 @@ impl SessionApplication {
                 .load_realization_root(&command.session_id)
                 .instrument(attempt_span.clone())
                 .await?;
-            let mut session = crate::mutation::aggregate_from_snapshot(session)
-                .map_err(repository_control)?;
+            let mut session =
+                crate::mutation::aggregate_from_snapshot(session).map_err(repository_control)?;
             if session.frozen_baseline().is_none()
                 || (!session.is_terminal()
                     && !environment_admits_realization_effects(&session.environment))

@@ -1,4 +1,3 @@
-use awaken_session_runtime_contract::SessionCoordinationReads as _;
 // @formal evidence session.agent_message_completed_target_allows_late_source_receipt_without_reexecution
 // @formal evidence session.agent_message_exact_replay_reuses_one_dispatch_and_payload_conflict_stutters
 // @formal evidence session.agent_message_missing_lifecycle_projection_relinquishes_without_settlement
@@ -9,11 +8,12 @@ use awaken_session_runtime_contract::SessionCoordinationReads as _;
 // @formal evidence session_run.execution_requires_dispatch_work_and_realization_owner
 // @formal evidence session_time.root_observations_are_revision_bound_and_replay_stable
 // @formal evidence session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
-// awaken-allow(file-limit-ceiling): 8501 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 8331 (legacy oversized test file: split, never grow)
 use super::*;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_session_repository_contract::LifecycleOutbox as _;
+use awaken_session_runtime_contract::SessionCoordinationReads as _;
 use awaken_session_state_contract::ManagedLifecycleFact;
 use awaken_session_types::SessionId;
 mod coordinated_resources;

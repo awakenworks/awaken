@@ -1,6 +1,3 @@
-use awaken_session_runtime_contract::{
-    SessionCoordinationReads as _, StreamingRunRuntime as _, ThreadReadRuntime as _,
-};
 // @formal evidence executable_projection.failed_refresh_never_enters_handler
 // @formal evidence session_event_batch.run_reservation_precedes_distinct_activity_receipt
 // @formal evidence session_execution.activity_receipts_are_unique_durable_and_exactly_settled
@@ -10,6 +7,9 @@ use awaken_session_application_contract::StepOutcome;
 use awaken_session_runtime_contract::{
     AdmitSessionRun, AdmittedSessionRun, SessionRunActivation, SessionRunDelivery,
     SessionRunReservation,
+};
+use awaken_session_runtime_contract::{
+    SessionCoordinationReads as _, StreamingRunRuntime as _, ThreadReadRuntime as _,
 };
 use awaken_session_types::SessionId;
 
