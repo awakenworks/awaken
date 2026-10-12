@@ -58,19 +58,7 @@ impl RealizationCompletionReceipt {
                 })
             })
             .collect::<Result<Vec<_>, pc::SandboxError>>()?;
-        for evidence in &memory_materializations {
-            evidence.validate()?;
-        }
-        memory_materializations.sort_by(|left, right| {
-            (&left.mount_path, &left.store_id).cmp(&(&right.mount_path, &right.store_id))
-        });
-        if memory_materializations.windows(2).any(|pair| {
-            pair[0].mount_path == pair[1].mount_path && pair[0].store_id == pair[1].store_id
-        }) {
-            return Err(pc::SandboxError::invalid(
-                "filesystem realization receipt has duplicate Memory materializations",
-            ));
-        }
+        pc::MemoryMaterializationEvidence::canonicalize_all(&mut memory_materializations)?;
         Ok(Self {
             mounts,
             memory_materializations,

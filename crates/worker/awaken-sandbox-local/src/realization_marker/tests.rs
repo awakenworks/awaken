@@ -67,6 +67,178 @@ fn empty_receipt() -> RealizationCompletionReceipt {
 }
 
 #[test]
+fn ready_memory_receipt_uses_canonical_evidence_without_losing_original_fields() {
+    // Cause graph: C1 valid original item fields; C2 input mount order differs
+    // from canonical Memory order; C3 duplicate identity or invalid item; C4
+    // decoded receipt omits Memory or uses noncanonical order; C5 the original
+    // Ready marker is observed by the shared Local/Namespace terminal reader.
+    // | M | causes | effects |
+    // | M1 | C1+C2 | exact fields retained; Memory sorted; mounts unchanged |
+    // | M2 | duplicate(store,path) | typed Invalid; no receipt |
+    // | M3 | invalid store/path/head generation | typed Invalid; no receipt |
+    // | M4 | missing/noncanonical decoded facts | reject; never empty fallback |
+    // | M5 | C1+C5 | exact nonempty Ready receipt returned, original codec bytes |
+    // | M6 | explicit complete empty | original empty wire remains distinct |
+    // These are fresh value/marker fixtures, not fabricated prior Memory
+    // histories or physical flush evidence. Namespace's existing cold Copy
+    // consumer tests still own no-remount, exact-handle join and ack admission.
+    let mounts = vec![
+        pc::RealizedMount {
+            mount_id: "z".into(),
+            mount_path: "/mnt/z".into(),
+            access: pc::MountAccess::ReadOnly,
+            realization: pc::Realization::Copy,
+            content_hash: None,
+        },
+        pc::RealizedMount {
+            mount_id: "a".into(),
+            mount_path: "/mnt/a".into(),
+            access: pc::MountAccess::ReadWrite,
+            realization: pc::Realization::Copy,
+            content_hash: Some("copy-a".into()),
+        },
+    ];
+    let a = pc::MemoryMaterializationEvidence::new(
+        "store-a",
+        "/mnt/a",
+        vec![pc::MemoryMaterializationHead {
+            path: "note.md".into(),
+            id: "head-a".into(),
+            version: 7,
+            content_sha256: "sha256:a".into(),
+        }],
+    )
+    .unwrap();
+    let z = pc::MemoryMaterializationEvidence::new("store-z", "/mnt/z", Vec::new()).unwrap();
+    let receipt = RealizationCompletionReceipt::new(&mounts, vec![z.clone(), a.clone()]).unwrap();
+    assert_eq!(receipt.mounts(), mounts, "M1 exact mount fields/order");
+    assert_eq!(receipt.memory_materializations(), &[a.clone(), z], "M1");
+    const ORIGINAL_WIRE: &str = r#"{"mounts":[{"mount_id":"z","mount_path":"/mnt/z","access":"read_only","realization":"copy"},{"mount_id":"a","mount_path":"/mnt/a","access":"read_write","realization":"copy","content_hash":"copy-a"}],"memory_materializations":[{"store_id":"store-a","mount_path":"/mnt/a","heads":[{"path":"note.md","id":"head-a","version":7,"content_sha256":"sha256:a"}]},{"store_id":"store-z","mount_path":"/mnt/z","heads":[]}]}"#;
+    assert_eq!(
+        serde_json::to_string(&receipt).unwrap(),
+        ORIGINAL_WIRE,
+        "M5"
+    );
+    let decoded: RealizationCompletionReceipt = serde_json::from_str(ORIGINAL_WIRE).unwrap();
+    decoded.validate().unwrap();
+    assert_eq!(decoded, receipt, "M5 codec preserves every original head");
+    assert!(
+        matches!(
+            RealizationCompletionReceipt::new(&mounts, vec![a.clone(), a.clone()]),
+            Err(pc::SandboxError::Invalid(_))
+        ),
+        "M2"
+    );
+    for field in 0..3 {
+        let mut invalid = a.clone();
+        match field {
+            0 => invalid.store_id.clear(),
+            1 => invalid.mount_path.clear(),
+            _ => invalid.heads[0].version = 0,
+        }
+        assert!(
+            matches!(
+                RealizationCompletionReceipt::new(&mounts, vec![invalid]),
+                Err(pc::SandboxError::Invalid(_))
+            ),
+            "M3/{field}"
+        );
+    }
+    let mut missing = serde_json::to_value(&receipt).unwrap();
+    missing
+        .as_object_mut()
+        .unwrap()
+        .remove("memory_materializations");
+    assert!(
+        serde_json::from_value::<RealizationCompletionReceipt>(missing).is_err(),
+        "M4 missing"
+    );
+    let mut reversed = serde_json::to_value(&receipt).unwrap();
+    reversed["memory_materializations"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    let reversed: RealizationCompletionReceipt = serde_json::from_value(reversed).unwrap();
+    assert!(
+        matches!(reversed.validate(), Err(pc::SandboxError::Invalid(_))),
+        "M4 order"
+    );
+    assert_eq!(
+        serde_json::to_string(&empty_receipt()).unwrap(),
+        r#"{"mounts":[],"memory_materializations":[]}"#,
+        "M6 explicitly complete empty"
+    );
+
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("original-memory-ready");
+    let mut requested = spec("original-memory-ready");
+    // M5 is a separate fresh producer-shaped Memory fixture: Copy mounts have
+    // per-head hashes, not an aggregate mount content_hash. M1 above owns the
+    // full value/codec field check; never weaken the consumer's real shape law.
+    let mut replay_mounts = mounts.clone();
+    replay_mounts[1].content_hash = None;
+    let replay_receipt = RealizationCompletionReceipt::new(
+        &replay_mounts,
+        receipt.memory_materializations().to_vec(),
+    )
+    .unwrap();
+    for mount in &replay_mounts {
+        requested.mounts.push(pc::MountRequirement {
+            mount_id: mount.mount_id.clone(),
+            source: pc::MountSource::MemoryStore {
+                store_id: format!("store-{}", mount.mount_id),
+                materialization_reference: None,
+                write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+            },
+            mount_path: mount.mount_path.clone(),
+            access: mount.access,
+            lifetime: pc::MountLifetime::Session,
+            required: true,
+        });
+    }
+    assert!(
+        matches!(
+            crate::replay_completion_receipt(&requested, &receipt, pc::Realization::Bind),
+            Err(pc::SandboxError::Invalid(_))
+        ),
+        "M5 original value fixture retains the invalid Copy content-hash negative"
+    );
+    let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&requested);
+    let original = fence("create", 1);
+    let mut creation = begin(&root, &fingerprint, &original, None, None).unwrap();
+    creation
+        .recorded_admission(|held, admitted| held.prepare_root(admitted))
+        .unwrap();
+    creation
+        .recorded_admission(|held, admitted| held.complete(&replay_receipt, admitted))
+        .unwrap();
+    drop(creation);
+    let observed = observe_terminal_receipt(
+        &root,
+        &fingerprint,
+        None,
+        Some(&original),
+        &fence("terminal", 2),
+    )
+    .unwrap();
+    let TerminalReceiptObservation::Receipt(observed) = observed else {
+        panic!("M5 exact Ready observation cannot drop to empty");
+    };
+    assert_eq!(observed, replay_receipt, "M5 original Ready facts");
+    let (realized, evidence) =
+        crate::replay_completion_receipt(&requested, &observed, pc::Realization::Bind).unwrap();
+    assert_eq!(
+        realized, replay_mounts,
+        "M5 Local/Namespace shared consumer"
+    );
+    assert_eq!(
+        evidence.as_slice(),
+        replay_receipt.memory_materializations(),
+        "M5 no empty fallback"
+    );
+}
+
+#[test]
 fn execution_marker_decode_has_one_bounded_phase_and_identity_contract() {
     // E1 schema-2 without executions remains readable, no invented guarantee.
     // E2 Ready/Removing/Removed accept a bounded exact unique participant list;
