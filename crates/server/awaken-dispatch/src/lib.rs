@@ -75,8 +75,8 @@ pub use application::{
     ClosedWorkerExecution, DurableDispatchStatus, DurableRunOperations, DurableSupersedeResult,
     ObservedAttemptStop, ObservedWorkerProcessExit, WorkerEvidenceReleaseAdapter,
     WorkerExecutionBindingSource, WorkerExecutionStopSource, WorkerProcessStopStatus,
-    has_active_physical_attempt_for_owner, release_closed_idle_worker_evidence,
-    stop_expired_predecessor,
+    has_active_physical_attempt_for_owner, reconcile_closed_idle_worker_evidence,
+    release_closed_idle_worker_evidence, stop_committed_terminal_attempt, stop_expired_predecessor,
 };
 pub use awaken_dispatch_execution::{AnyDispatchStore, Dispatch};
 pub use awaken_dispatch_execution::{
@@ -305,7 +305,7 @@ pub use awaken_dispatch_contract::{
     SessionReservationAuthority, SessionRunReservations,
 };
 
-pub use awaken_dispatch_execution::PhysicalAttemptReads;
+pub use awaken_dispatch_execution::{PhysicalAttemptReads, PhysicalAttemptRecoveryRead};
 
 #[cfg(test)]
 mod supersession_epoch_tests {

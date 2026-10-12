@@ -512,13 +512,17 @@ async fn observe_expired_predecessor(
     let Some(source) = &service.execution_stops else {
         return Ok(None);
     };
+    let recovery = service
+        .recovery
+        .as_deref()
+        .map(awaken_dispatch::PhysicalAttemptRecoveryRead::new);
     tokio::time::timeout(
         std::time::Duration::from_millis(request_budget_ms.max(1)),
         awaken_dispatch::stop_expired_predecessor(
             service.dispatch.as_ref(),
             directory(service)?.as_ref(),
             source.as_ref(),
-            service.recovery.as_deref(),
+            recovery.as_ref(),
             successor,
             service.clock.now_ms(),
         ),

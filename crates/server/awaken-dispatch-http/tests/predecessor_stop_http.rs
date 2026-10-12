@@ -18,7 +18,8 @@ use awaken_dispatch::{
     PostgresDispatchStore, RunClaim, RunDispatch, SqliteDispatchStore, WorkerDirectory,
     WorkerExecutionStopSource, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerProcessExit,
     WorkerProcessStopStatus, WorkerRegistration, WorkerState,
-    has_active_physical_attempt_for_owner, stop_expired_predecessor,
+    has_active_physical_attempt_for_owner, stop_committed_terminal_attempt,
+    stop_expired_predecessor,
 };
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_dispatch_testkit::worker_http::activation;
@@ -458,6 +459,40 @@ impl Fixture {
         (response.status(), response.json().await.unwrap())
     }
 
+    async fn committed_projection(
+        &self,
+        record: Option<RunRecord>,
+    ) -> awaken_dispatch::RecoveryProjection {
+        let mut snapshot = self
+            .recovery
+            .recovery_snapshot(&self.thread_id, &self.old.run_id)
+            .await
+            .unwrap();
+        snapshot.runs = record.into_iter().collect();
+        let view = awaken_dispatch::RecoveryProjection::new();
+        view.install(&self.old.run_id, &self.thread_id, snapshot)
+            .unwrap();
+        view
+    }
+
+    async fn stop_terminal(
+        &self,
+        view: &awaken_dispatch::RecoveryProjection,
+        summary: &awaken_dispatch::DispatchSummary,
+    ) -> Result<bool, ApplicationError> {
+        stop_committed_terminal_attempt(
+            self.store.as_ref(),
+            Some((self.directory.as_ref(), self.stop.as_ref())),
+            Some(&awaken_dispatch::PhysicalAttemptRecoveryRead::new(
+                self.recovery.as_ref(),
+            )),
+            view,
+            summary,
+            200,
+        )
+        .await
+    }
+
     async fn assert_occupied(&self) {
         let slot = self
             .store
@@ -850,7 +885,9 @@ async fn stop_admission_rejects_live_replaced_historical_and_noncurrent_subjects
                 f.store.as_ref(),
                 f.directory.as_ref(),
                 f.stop.as_ref(),
-                Some(f.recovery.as_ref()),
+                Some(&awaken_dispatch::PhysicalAttemptRecoveryRead::new(
+                    f.recovery.as_ref()
+                )),
                 &successor,
                 200
             )
@@ -968,7 +1005,9 @@ async fn local_exit_receipt_keeps_its_subject_and_rejects_empty_provider_evidenc
         first.store.as_ref(),
         first.directory.as_ref(),
         first.stop.as_ref(),
-        Some(first.recovery.as_ref()),
+        Some(&awaken_dispatch::PhysicalAttemptRecoveryRead::new(
+            first.recovery.as_ref(),
+        )),
         &first.next,
         200,
     )
@@ -988,7 +1027,9 @@ async fn local_exit_receipt_keeps_its_subject_and_rejects_empty_provider_evidenc
             second.store.as_ref(),
             second.directory.as_ref(),
             second.stop.as_ref(),
-            Some(second.recovery.as_ref()),
+            Some(&awaken_dispatch::PhysicalAttemptRecoveryRead::new(
+                second.recovery.as_ref()
+            )),
             &second.next,
             200
         )
@@ -1003,7 +1044,9 @@ async fn local_exit_receipt_keeps_its_subject_and_rejects_empty_provider_evidenc
             second.store.as_ref(),
             second.directory.as_ref(),
             second.stop.as_ref(),
-            Some(second.recovery.as_ref()),
+            Some(&awaken_dispatch::PhysicalAttemptRecoveryRead::new(
+                second.recovery.as_ref()
+            )),
             &second.next,
             200
         )
@@ -1414,6 +1457,368 @@ async fn reported_local_entry_closure_recovers_without_stopping_a_healthy_worker
             .snapshot
             .state,
         WorkerState::Ready
+    );
+}
+
+#[tokio::test]
+async fn committed_terminal_stop_rejects_unproven_or_changed_originals() {
+    // Causes: C1 exact committed Ended Run/Thread; C2 exact occupied original
+    // summary/live slot consistent; C3 original binding present; C4 Registry expired/closed, including
+    // an already-closing slot. Effects: E0 no provider IO or slot mutation;
+    // E1 identity conflict is explicit. Terminal DTO/queue state alone is no
+    // stop grant. Each rule varies one cause from the positive T8 below.
+    // Execution lowers C1 through the same SDK predicate; no Ingress copy or
+    // caller-provided terminal value supplies that fact. The borrowed reader
+    // publishes values only, preserving these identity/error partitions.
+    // | Rule | C1 | C2 | C3 | C4 | Effect |
+    // | T0 | missing/running/awaiting | yes | yes | yes | E0 |
+    // | T1 | foreign Thread or original Session affinity | yes | yes | yes | E0+E1 |
+    // | T2 | exact | summary says empty but live slot occupied | yes | yes | E0+error |
+    // | T3 | exact | yes | missing | yes | E0 |
+    // | T4 | exact | open/closing | yes | live | E0 |
+    for rule in [
+        "missing",
+        "running",
+        "awaiting",
+        "foreign-thread",
+        "foreign-session",
+        "changed",
+        "historical",
+        "live",
+        "closing-live",
+    ] {
+        let f = Fixture::new(
+            Arc::new(MemoryWorkerDirectory::new()),
+            rule != "historical",
+            if rule.contains("live") { 1_000 } else { 50 },
+            5_000,
+        )
+        .await;
+        if rule == "closing-live" {
+            f.store.close_attempt(&f.old).await.unwrap();
+        }
+        let before = f
+            .store
+            .load_physical_attempt(&f.old.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut expected = f
+            .store
+            .dispatch_summary(&f.old.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        if rule == "changed" {
+            expected.physical_attempt_active = false;
+        }
+        if rule == "foreign-session" {
+            expected.session_thread_id = Some(request_thread_id("foreign-parent"));
+        }
+        let record = (rule != "missing").then(|| RunRecord {
+            id: f.old.run_id.clone(),
+            thread_id: if rule == "foreign-thread" {
+                request_thread_id("foreign")
+            } else {
+                f.thread_id.clone()
+            },
+            state: match rule {
+                "running" => RunState::Running,
+                "awaiting" => RunState::Awaiting,
+                _ => RunState::Ended(awaken_agent_contract::agent::run::EndCause::NaturalEnd),
+            },
+        });
+        let view = f.committed_projection(record).await;
+        let probe = AttemptStopProbe::install(&f);
+        f.stop.release.add_permits(1);
+        probe.release.add_permits(1);
+        let stopped = f.stop_terminal(&view, &expected).await;
+        if rule == "foreign-thread" {
+            assert_eq!(
+                stopped.unwrap_err().to_string(),
+                "terminal closure names another committed Run or Thread",
+                "T1"
+            );
+        } else if rule == "changed" {
+            assert_eq!(
+                stopped.unwrap_err().to_string(),
+                "terminal summary and original physical attempt disagree",
+                "T2"
+            );
+        } else if rule == "foreign-session" {
+            assert_eq!(
+                stopped.unwrap_err().to_string(),
+                "terminal scan and original physical attempt have different affinity",
+                "T1 affinity"
+            );
+        } else {
+            assert!(!stopped.unwrap(), "{rule}");
+        }
+        assert!(f.stop.calls.lock().unwrap().is_empty(), "{rule}");
+        assert!(probe.calls.lock().unwrap().is_empty(), "{rule}");
+        assert_eq!(
+            f.store.load_physical_attempt(&f.old.run_id).await.unwrap(),
+            Some(before),
+            "{rule}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn committed_terminal_closure_needs_no_current_successor_and_retains_unknown_domains() {
+    // T5 exact Ended + original closed Worker + Unknown local exit => retain
+    // original open slot, no complete-provider IO. T6 local exit alone =>
+    // retain exact closing slot, no closure record. T7 failed provider read =>
+    // same closing slot/no record. T8 complete exact proof => atomic one old
+    // closure record+empty slot, never a Run claim or delivery settlement.
+    // Original next claim is explicitly relinquished before every invocation;
+    // no ordinary successor or fake admission coordinates authorize this path.
+    // Cross existing Memory/SQLite/configured PostgreSQL adapters, unchanged
+    // old HTTP successor matrices continue to cover their separate admission.
+    // The Execution adapter reads the original parent partition/Thread/Run
+    // afresh after closing; it never uses a previously sampled projection.
+    // The original pre/post-snapshot slot fences still reject a replacement
+    // during that IO before any complete-provider request or record append.
+    // T8 stale occupied summary+now-empty live slot => explicit retryable error,
+    // never a fabricated vacancy. Fresh empty summary => terminal claim readiness
+    // only; no new stop/receipt. This is the opposite mismatch to T2.
+    for store in dispatch_stores().await {
+        let f = Fixture::with_store(
+            store,
+            Arc::new(MemoryWorkerDirectory::new()),
+            true,
+            50,
+            5_000,
+        )
+        .await;
+        f.store.relinquish_claim(&f.next).await.unwrap();
+        assert!(
+            !f.store.claim_is_current(&f.next).await.unwrap(),
+            "no current successor"
+        );
+        let view = f
+            .committed_projection(Some(RunRecord {
+                id: f.old.run_id.clone(),
+                thread_id: f.thread_id.clone(),
+                state: RunState::Ended(awaken_agent_contract::agent::run::EndCause::NaturalEnd),
+            }))
+            .await;
+        let probe = AttemptStopProbe::install(&f);
+        let original = f
+            .store
+            .load_physical_attempt(&f.old.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let summary = f
+            .store
+            .dispatch_summary(&f.old.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        f.stop.release.add_permits(1);
+        assert!(
+            !f.stop_terminal(&view, &summary).await.unwrap(),
+            "T5 only delivery readiness is returned"
+        );
+        assert!(probe.calls.lock().unwrap().is_empty(), "T5");
+        assert_eq!(
+            f.store.load_physical_attempt(&f.old.run_id).await.unwrap(),
+            Some(original.clone()),
+            "T5"
+        );
+        *f.stop.result.lock().unwrap() = Ok(Some("original-process-exit".into()));
+        f.stop.release.add_permits(1);
+        probe.release.add_permits(1);
+        assert!(
+            !f.stop_terminal(&view, &summary).await.unwrap(),
+            "T6 local exit alone is not delivery readiness"
+        );
+        let closing = f
+            .store
+            .load_physical_attempt(&f.old.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(closing.closing, "T6");
+        assert_eq!(closing.claim, original.claim, "T6 identity");
+        *probe.result.lock().unwrap() = Err("lost domain observation".into());
+        probe.release.add_permits(1);
+        assert_eq!(
+            f.stop_terminal(&view, &summary)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "lost domain observation",
+            "T7"
+        );
+        assert_eq!(
+            f.store.load_physical_attempt(&f.old.run_id).await.unwrap(),
+            Some(closing.clone()),
+            "T7"
+        );
+        assert!(
+            f.store
+                .attempt_closure_records_after(
+                    awaken_dispatch::DispatchCursor(0),
+                    10,
+                    Some(&f.old.run_id)
+                )
+                .await
+                .unwrap()
+                .events
+                .is_empty(),
+            "T6/T7"
+        );
+        *probe.result.lock().unwrap() = Ok(Some("all-original-participants-terminal".into()));
+        probe.release.add_permits(1);
+        assert!(
+            f.stop_terminal(&view, &summary).await.unwrap(),
+            "T8 original physical proof allows only trying terminal claim"
+        );
+        assert!(
+            f.store
+                .load_physical_attempt(&f.old.run_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "T8"
+        );
+        let records = f
+            .store
+            .attempt_closure_records_after(
+                awaken_dispatch::DispatchCursor(0),
+                10,
+                Some(&f.old.run_id),
+            )
+            .await
+            .unwrap();
+        assert_eq!(records.events.len(), 1, "T8");
+        assert_eq!(
+            records.events[0].record.attempt(),
+            &closing,
+            "T8 exact old identity"
+        );
+        assert_eq!(
+            records.events[0].record.evidence_ref(),
+            "all-original-participants-terminal",
+            "T8"
+        );
+        assert_eq!(
+            f.stop_terminal(&view, &summary)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "terminal summary and original physical attempt disagree",
+            "T8 stale occupied summary cannot be vacancy"
+        );
+        let empty = f
+            .store
+            .dispatch_summary(&f.old.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            f.stop_terminal(&view, &empty).await.unwrap(),
+            "T8 canonical empty replay has no physical IO"
+        );
+        assert_eq!(
+            probe.calls.lock().unwrap().len(),
+            3,
+            "T6/T7/T8 same original domain"
+        );
+        assert!(
+            f.store
+                .completion_events_after(0, 1_000)
+                .await
+                .unwrap()
+                .iter()
+                .all(|event| event.run_id != f.old.run_id),
+            "closure is not Done for this exact Run"
+        );
+    }
+}
+
+#[tokio::test]
+async fn cancelled_terminal_observation_retries_the_same_original_closing_slot() {
+    // T9 the canonical domain source is pending after local exit and closing
+    // CAS; dropping maintenance => no full closure receipt/retirement. T10
+    // next cadence retries exact persisted binding without stopping the Worker
+    // twice; one positive source receipt atomically clears only the old slot.
+    // Barrier cancellation covers response loss without sleeps or new budgets.
+    let f = Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 50, 5_000).await;
+    f.store.relinquish_claim(&f.next).await.unwrap();
+    let view = f
+        .committed_projection(Some(RunRecord {
+            id: f.old.run_id.clone(),
+            thread_id: f.thread_id.clone(),
+            state: RunState::Ended(awaken_agent_contract::agent::run::EndCause::NaturalEnd),
+        }))
+        .await;
+    let probe = AttemptStopProbe::install(&f);
+    *f.stop.result.lock().unwrap() = Ok(Some("original-local-exit".into()));
+    *probe.result.lock().unwrap() = Ok(Some("original-full-domain-exit".into()));
+    let original = f
+        .store
+        .load_physical_attempt(&f.old.run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let summary = f
+        .store
+        .dispatch_summary(&f.old.run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    f.stop.release.add_permits(1);
+    {
+        let pending = f.stop_terminal(&view, &summary);
+        tokio::pin!(pending);
+        tokio::select! {
+            result = &mut pending => panic!("T9 domain unexpectedly completed: {result:?}"),
+            permit = probe.entered.acquire() => permit.unwrap().forget(),
+        }
+    }
+    let closing = f
+        .store
+        .load_physical_attempt(&f.old.run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(closing.closing, "T9");
+    assert_eq!(closing.claim, original.claim, "T9");
+    assert!(
+        f.store
+            .attempt_closure_records_after(
+                awaken_dispatch::DispatchCursor(0),
+                10,
+                Some(&f.old.run_id)
+            )
+            .await
+            .unwrap()
+            .events
+            .is_empty(),
+        "T9"
+    );
+    probe.release.add_permits(1);
+    f.stop_terminal(&view, &summary).await.unwrap();
+    assert!(
+        f.store
+            .load_physical_attempt(&f.old.run_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "T10"
+    );
+    assert_eq!(
+        f.stop.calls.lock().unwrap().len(),
+        1,
+        "T10 no repeated local stop"
+    );
+    assert_eq!(
+        *probe.calls.lock().unwrap(),
+        vec![closing.clone(), closing],
+        "T9/T10"
     );
 }
 

@@ -1567,13 +1567,11 @@ async fn mount_with_managed_over_and_models(
     // loop before exposing the Worker transport; local-pool embeddings already
     // perform the same maintenance inside that pool.
     if let Some(source) = worker_execution_stops.as_ref() {
-        host.bind_worker_evidence_reconciliation(
-            worker_directory.clone(),
-            Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
-                source.clone(),
-            )),
-        )
-        .map_err(|error| WorkerTransportBuildError::Dispatch(error.to_string()))?;
+        let maintenance = Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
+            source.clone(),
+        ));
+        host.bind_worker_evidence_reconciliation(worker_directory.clone(), maintenance)
+            .map_err(|error| WorkerTransportBuildError::Dispatch(error.to_string()))?;
     }
     // The durable-ingress operations surface (slice E): ADR-0009 follow-on verbs
     // (supersede / reconcile / manual quarantine + GC) over the same shared host.

@@ -322,3 +322,191 @@ async fn oversized_adapter_page_cannot_exceed_observation_budget() {
 use awaken_dispatch_contract::DispatchEnqueue as _;
 
 use awaken_dispatch_testkit::ConformanceDispatch;
+
+#[tokio::test]
+async fn occupied_superseded_and_dead_letters_remain_terminal_scan_candidates() {
+    // Causes: C1 original slot occupied versus empty; C2 current public
+    // supersession/rejection versus cancelled+expired quarantine; C3 first
+    // observer fails; C4 bounded page; C5 an explicitly legacy/inconsistent
+    // delivery label is returned by the one existing read-fault adapter.
+    // Effects: S1 occupied rows reach the same terminal callback regardless of
+    // delivery state; S2 empty quarantined rows remain skipped; S3 a failed
+    // candidate spends its budget and later suffix progresses; S4 scan itself
+    // never requeues, retires, or manufactures closure/completion. Existing
+    // budget/cancellation/corrupt-summary cases cover all iterator mechanics.
+    // | Rule | C1 | C2 | C3 | Effect |
+    // | S1 | occupied | projected legacy Superseded or real DeadLetter | no/yes | callback + S3 + S4 |
+    // | S2 | empty | real Superseded or real DeadLetter | - | no callback + S4 |
+    // Constraint: executing exact claim cannot relinquish to Pending; an
+    // occupied Superseded row is NOT reachable under current public law.
+    // C5 projects only a read label over the real retained Leased slot, never
+    // private stored state/history/closure. Underlying list and physical reads
+    // prove S4 unchanged. The public occupied supersede attempt remains refused.
+    use awaken_dispatch_contract::{
+        DispatchAdministration as _, DispatchClaims as _, DispatchControlReads as _,
+        DispatchExecution as _, DispatchMaintenance as _, DispatchReads as _,
+    };
+    let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
+    let store = harness::FlakyDispatchStore::new(0, clock.clone())
+        .with_summary_delivery_projection(
+            RunId("a-occupied-superseded".into()),
+            awaken_dispatch::DispatchState::Superseded,
+        );
+    let mut originals = Vec::new();
+    for (run, occupied, superseded) in [
+        ("a-occupied-superseded", true, true),
+        ("b-empty-superseded", false, true),
+        ("c-occupied-dead", true, false),
+        ("d-empty-dead", false, false),
+    ] {
+        let thread = format!("thread-{run}");
+        let run_id = RunId(run.into());
+        store
+            .enqueue(RunDispatch::new(harness::activation_on(run, &thread)))
+            .await
+            .unwrap();
+        let initial = store
+            .claim_run(&run_id, "original-owner", 1, &Default::default())
+            .await
+            .unwrap()
+            .unwrap();
+        if occupied {
+            store
+                .begin_attempt(&awaken_dispatch::RunClaim::from(&initial.lease), None)
+                .await
+                .unwrap();
+        }
+        if superseded {
+            let relinquished = store
+                .relinquish_claim(&awaken_dispatch::RunClaim::from(&initial.lease))
+                .await
+                .unwrap();
+            assert_eq!(
+                relinquished,
+                if occupied {
+                    awaken_dispatch::SettleOutcome::Fenced
+                } else {
+                    awaken_dispatch::SettleOutcome::Applied
+                },
+                "public relinquish does not erase occupancy"
+            );
+            store
+                .enqueue_with(
+                    RunDispatch::new(harness::activation_on(&format!("successor-{run}"), &thread)),
+                    awaken_dispatch::SubmitOptions {
+                        supersede: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+        } else {
+            store.cancel(&run_id).await.unwrap();
+            let next = store
+                .claim_run(&run_id, "quarantine-owner", 1, &Default::default())
+                .await
+                .unwrap()
+                .unwrap();
+            clock.set(next.lease.expires_ms() + 1);
+            assert_eq!(
+                store
+                    .quarantine_retry_exhausted(0, next.lease.expires_ms() + 1)
+                    .await
+                    .unwrap(),
+                1
+            );
+        }
+        let actual = store
+            .list_dispatches()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.run_id == run_id)
+            .unwrap();
+        assert_eq!(
+            actual.state,
+            if superseded && occupied {
+                awaken_dispatch::DispatchState::Leased
+            } else if superseded {
+                awaken_dispatch::DispatchState::Superseded
+            } else {
+                awaken_dispatch::DispatchState::DeadLetter
+            },
+            "current public transition truth"
+        );
+        assert_eq!(actual.physical_attempt_active, occupied);
+        assert_eq!(actual.cancellation_requested, !superseded);
+        let summary = store.dispatch_summary(&run_id).await.unwrap().unwrap();
+        assert_eq!(summary.physical_attempt_active, occupied);
+        assert_eq!(
+            summary.state,
+            if superseded {
+                awaken_dispatch::DispatchState::Superseded
+            } else {
+                awaken_dispatch::DispatchState::DeadLetter
+            }
+        );
+        originals.push((
+            run_id,
+            summary,
+            actual,
+            store
+                .load_physical_attempt(&RunId(run.into()))
+                .await
+                .unwrap(),
+        ));
+    }
+    let scan = TerminalReconciliationScan::default();
+    let seen = Mutex::new(Vec::new());
+    for _ in 0..6 {
+        scan.reconcile(&store, 1, |row| {
+            seen.lock().unwrap().push(row.run_id.clone());
+            async move {
+                if row.run_id.0 == "a-occupied-superseded" {
+                    Err(Error::ResolutionNotReady(
+                        "first orphan source unavailable".into(),
+                    ))
+                } else {
+                    Ok(None)
+                }
+            }
+        })
+        .await
+        .unwrap();
+    }
+    let seen = seen.lock().unwrap().clone();
+    assert!(
+        seen.contains(&RunId("a-occupied-superseded".into())),
+        "S1/S3 failed first orphan visited"
+    );
+    assert!(
+        seen.contains(&RunId("c-occupied-dead".into())),
+        "S1/S3 later orphan not starved"
+    );
+    for (run, summary, actual, physical) in originals {
+        assert_eq!(
+            store
+                .list_dispatches()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|row| row.run_id == run)
+                .unwrap(),
+            actual,
+            "S4 real stored state unchanged by projection/scan"
+        );
+        assert_eq!(
+            store.dispatch_summary(&run).await.unwrap(),
+            Some(summary.clone()),
+            "S4"
+        );
+        assert_eq!(
+            store.load_physical_attempt(&run).await.unwrap(),
+            physical,
+            "S4"
+        );
+        if !summary.physical_attempt_active {
+            assert!(!seen.contains(&run), "S2");
+        }
+    }
+}

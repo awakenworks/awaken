@@ -291,8 +291,9 @@ pub trait WorkerExecutionStopSource: Send + Sync {
     }
 }
 
-/// Coordinator composition exposes the one existing closed-idle release to
-/// the Host's maintenance cadence without exporting private stop commands.
+/// The Coordinator's original implementation-isolation adapter. One selected
+/// StopSource Arc implements the unchanged idle leaf and the explicit trusted
+/// terminal role; no Host, reader, recovery source or closure state is retained.
 pub struct WorkerEvidenceReleaseAdapter {
     source: Arc<dyn WorkerExecutionStopSource>,
 }
@@ -317,7 +318,7 @@ impl awaken_dispatch_execution::WorkerEvidenceRelease for WorkerEvidenceReleaseA
         identity: &crate::WorkerIdentity,
         now_ms: u64,
     ) -> Result<(), ApplicationError> {
-        release_closed_idle_worker_evidence(
+        reconcile_closed_idle_worker_evidence(
             dispatch,
             directory,
             self.source.as_ref(),
@@ -326,6 +327,48 @@ impl awaken_dispatch_execution::WorkerEvidenceRelease for WorkerEvidenceReleaseA
         )
         .await
     }
+}
+
+#[async_trait::async_trait]
+impl awaken_dispatch_execution::WorkerTerminalReconciliation for WorkerEvidenceReleaseAdapter {
+    async fn reconcile_terminal_attempt(
+        &self,
+        dispatch: &awaken_dispatch_execution::AnyCoordinatorDispatch,
+        directory: &dyn crate::WorkerDirectory,
+        reader: &dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView,
+        summary: &crate::DispatchSummary,
+        recovery: Option<&awaken_dispatch_execution::PhysicalAttemptRecoveryRead<'_>>,
+        now_ms: u64,
+    ) -> Result<bool, ApplicationError> {
+        stop_committed_terminal_attempt(
+            dispatch,
+            Some((directory, self.source.as_ref())),
+            recovery,
+            reader,
+            summary,
+            now_ms,
+        )
+        .await
+    }
+}
+
+/// Progress the existing closed-idle maintenance admission. Registry closure
+/// applies before optional provider ownership; an unowned incarnation still
+/// expires, but receives no physical observation or evidence-release action.
+/// The HTTP/provider direct-release kernel below keeps its original purpose.
+pub async fn reconcile_closed_idle_worker_evidence(
+    dispatch: &dyn PhysicalAttemptReads,
+    directory: &dyn crate::WorkerDirectory,
+    source: &dyn WorkerExecutionStopSource,
+    identity: &crate::WorkerIdentity,
+    now_ms: u64,
+) -> Result<(), ApplicationError> {
+    if !ensure_worker_closed(directory, identity, now_ms).await?
+        || !source.owns_worker_evidence(identity)
+    {
+        return Ok(());
+    }
+    release_closed_idle_worker_evidence(dispatch, directory, source, identity, now_ms).await
 }
 
 /// Retire only the original closed-idle domain admitted by Registry and the
@@ -434,7 +477,7 @@ pub async fn stop_expired_predecessor(
     dispatch: &dyn AttemptControlAuthority,
     directory: &dyn crate::WorkerDirectory,
     source: &dyn WorkerExecutionStopSource,
-    recovery: Option<&dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>,
+    recovery: Option<&awaken_dispatch_execution::PhysicalAttemptRecoveryRead<'_>>,
     successor: &crate::RunClaim,
     now_ms: u64,
 ) -> Result<Option<WorkerProcessStopStatus>, ApplicationError> {
@@ -445,13 +488,99 @@ pub async fn stop_expired_predecessor(
     {
         return Ok(None);
     }
-    let Some(mut predecessor) = dispatch
+    let Some(predecessor) = dispatch
         .load_physical_attempt(&successor.run_id)
         .await
         .map_err(|error| ApplicationError::unavailable(error.to_string()))?
     else {
         return Ok(None);
     };
+    if !predecessor.closing && predecessor.claim.owner == successor.owner {
+        return Ok(None);
+    }
+    close_original_attempt(dispatch, directory, source, recovery, predecessor, now_ms).await
+}
+
+/// Read trusted committed Thread truth and the current original physical slot
+/// inside the one Ingress stop-admission owner. The returned bool permits only
+/// attempting the existing terminal-recovery claim; it is not a closure receipt
+/// or a Run execution grant. No caller-supplied terminal DTO grants a stop.
+pub async fn stop_committed_terminal_attempt(
+    dispatch: &dyn AttemptControlAuthority,
+    evidence: Option<(&dyn crate::WorkerDirectory, &dyn WorkerExecutionStopSource)>,
+    recovery: Option<&awaken_dispatch_execution::PhysicalAttemptRecoveryRead<'_>>,
+    reader: &dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView,
+    summary: &crate::DispatchSummary,
+    now_ms: u64,
+) -> Result<bool, ApplicationError> {
+    if !awaken_dispatch_execution::committed_terminal_ready(reader, summary)? {
+        return Ok(false);
+    }
+    // Even a summary that says empty cannot hide a concurrent/unknown occupant.
+    // Both directions of inconsistency are retryable facts, never vacancy.
+    let original = dispatch
+        .load_physical_attempt(&summary.run_id)
+        .await
+        .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
+    if original.is_some() != summary.physical_attempt_active {
+        return Err(ApplicationError::unavailable(
+            "terminal summary and original physical attempt disagree",
+        ));
+    }
+    if let Some(original) = original {
+        let Some(thread_id) = original.thread_id.as_ref() else {
+            return Ok(false);
+        };
+        if original.claim.run_id != summary.run_id
+            || *thread_id != summary.thread_id
+            || original.session_thread_id != summary.session_thread_id
+        {
+            return Err(ApplicationError::invalid(
+                "terminal scan and original physical attempt have different affinity",
+            ));
+        }
+        let Some((directory, source)) = evidence else {
+            return Ok(false);
+        };
+        if original.closing {
+            let Some(binding) = original.binding.as_ref() else {
+                return Ok(false);
+            };
+            binding
+                .validate_for(&original.claim)
+                .map_err(|error| ApplicationError::internal(error.to_string()))?;
+            if !ensure_worker_closed(directory, binding.worker(), now_ms).await? {
+                return Ok(false);
+            }
+        }
+        close_original_attempt(dispatch, directory, source, recovery, original, now_ms).await?;
+        if dispatch
+            .load_physical_attempt(&summary.run_id)
+            .await
+            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+            .is_some()
+        {
+            return Ok(false);
+        }
+    }
+    // Quarantined and superseded delivery may lose original occupancy, but that
+    // physical fact never requeues/settles them or permits ordinary execution.
+    Ok(matches!(
+        summary.state,
+        crate::DispatchState::Pending
+            | crate::DispatchState::Awaiting
+            | crate::DispatchState::Leased
+    ))
+}
+
+async fn close_original_attempt(
+    dispatch: &dyn AttemptControlAuthority,
+    directory: &dyn crate::WorkerDirectory,
+    source: &dyn WorkerExecutionStopSource,
+    recovery: Option<&awaken_dispatch_execution::PhysicalAttemptRecoveryRead<'_>>,
+    mut predecessor: crate::PhysicalAttempt,
+    now_ms: u64,
+) -> Result<Option<WorkerProcessStopStatus>, ApplicationError> {
     let Some(binding) = predecessor.binding.clone() else {
         return Ok(None);
     };
@@ -461,19 +590,9 @@ pub async fn stop_expired_predecessor(
     let process_exit = if predecessor.closing {
         persisted_worker_exit(directory, &binding).await?
     } else {
-        if predecessor.claim.owner == successor.owner {
-            return Ok(None);
-        }
-        let observation = independently_close_worker(
-            dispatch,
-            directory,
-            source,
-            &predecessor,
-            &binding,
-            successor,
-            now_ms,
-        )
-        .await?;
+        let observation =
+            independently_close_worker(dispatch, directory, source, &predecessor, &binding, now_ms)
+                .await?;
         let exit = match observation {
             Some(WorkerProcessStopStatus::Exited(exit)) => exit,
             Some(WorkerProcessStopStatus::Unknown) => {
@@ -498,7 +617,7 @@ pub async fn stop_expired_predecessor(
             WorkerProcessStopStatus::Exited(exit.clone())
         });
     if dispatch
-        .load_physical_attempt(&successor.run_id)
+        .load_physical_attempt(&predecessor.claim.run_id)
         .await
         .map_err(|error| ApplicationError::unavailable(error.to_string()))?
         .as_ref()
@@ -509,15 +628,22 @@ pub async fn stop_expired_predecessor(
     let (Some(recovery), Some(thread_id)) = (recovery, predecessor.thread_id.as_ref()) else {
         return Ok(Some(observation));
     };
-    let session_thread_id = predecessor.session_thread_id.as_ref().unwrap_or(thread_id);
-    let snapshot = recovery
-        .recovery_snapshot_in_session(session_thread_id, thread_id, &predecessor.claim.run_id)
-        .await
-        .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
+    let snapshot = recovery.snapshot_for(&predecessor).await?;
     if snapshot.thread_id != *thread_id || snapshot.claimed_run_id != predecessor.claim.run_id {
         return Err(ApplicationError::internal(
             "recovery source returned another physical attempt subject",
         ));
+    }
+    // Snapshot IO can race an exact closure and a newly admitted successor.
+    // Never issue the old domain stop after its physical identity has changed.
+    if dispatch
+        .load_physical_attempt(&predecessor.claim.run_id)
+        .await
+        .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+        .as_ref()
+        != Some(&predecessor)
+    {
+        return Ok(Some(observation));
     }
     let stopped = source
         .close_attempt_execution(
@@ -545,22 +671,18 @@ pub async fn stop_expired_predecessor(
     Ok(Some(observation))
 }
 
-async fn independently_close_worker(
-    dispatch: &dyn AttemptControlAuthority,
+async fn ensure_worker_closed(
     directory: &dyn crate::WorkerDirectory,
-    source: &dyn WorkerExecutionStopSource,
-    predecessor: &crate::PhysicalAttempt,
-    binding: &crate::AttemptExecutionBinding,
-    successor: &crate::RunClaim,
+    identity: &crate::WorkerIdentity,
     now_ms: u64,
-) -> Result<Option<WorkerProcessStopStatus>, ApplicationError> {
+) -> Result<bool, ApplicationError> {
     let expiry = directory
-        .expire_incarnation(binding.worker(), now_ms)
+        .expire_incarnation(identity, now_ms)
         .await
         .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
     if expiry != crate::RegistryMutation::Applied
         && !directory
-            .incarnation(binding.worker())
+            .incarnation(identity)
             .await
             .map_err(|error| ApplicationError::unavailable(error.to_string()))?
             .is_some_and(|record| {
@@ -570,10 +692,24 @@ async fn independently_close_worker(
                 )
             })
     {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+async fn independently_close_worker(
+    dispatch: &dyn AttemptControlAuthority,
+    directory: &dyn crate::WorkerDirectory,
+    source: &dyn WorkerExecutionStopSource,
+    predecessor: &crate::PhysicalAttempt,
+    binding: &crate::AttemptExecutionBinding,
+    now_ms: u64,
+) -> Result<Option<WorkerProcessStopStatus>, ApplicationError> {
+    if !ensure_worker_closed(directory, binding.worker(), now_ms).await? {
         return Ok(None);
     }
     if dispatch
-        .load_physical_attempt(&successor.run_id)
+        .load_physical_attempt(&predecessor.claim.run_id)
         .await
         .map_err(|error| ApplicationError::unavailable(error.to_string()))?
         .as_ref()

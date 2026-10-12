@@ -120,7 +120,16 @@ impl awaken_dispatch_contract::DispatchControlReads for FlakyDispatchStore {
         run_id: &RunId,
     ) -> Result<Option<awaken_dispatch::DispatchSummary>, awaken_dispatch::DispatchError>
     {
-        self.inner.dispatch_summary(run_id).await
+        let mut summary = self.inner.dispatch_summary(run_id).await?;
+        // The one existing read-fault seam changes only a returned delivery
+        // label. Never change original physical identity, storage, or receipts.
+        if let Some((subject, state)) = &self.summary_delivery_projection
+            && subject == run_id
+            && let Some(row) = &mut summary
+        {
+            row.state = *state;
+        }
+        Ok(summary)
     }
 }
 

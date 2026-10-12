@@ -840,6 +840,7 @@ pub struct FlakyDispatchStore {
     maintenance_probe: Option<Arc<maintenance::MaintenanceProbe>>,
     inner: Arc<awaken_dispatch::MemoryDispatchStore>,
     oversized_scan_page: bool,
+    summary_delivery_projection: Option<(RunId, awaken_dispatch::DispatchState)>,
     scan_limits: std::sync::Mutex<Vec<usize>>,
     maintenance_calls: [AtomicUsize; 2],
     fail_claims: AtomicUsize,
@@ -870,6 +871,7 @@ impl FlakyDispatchStore {
             maintenance_probe: None,
             inner: Arc::new(awaken_dispatch::MemoryDispatchStore::new(clock)),
             oversized_scan_page: false,
+            summary_delivery_projection: None,
             scan_limits: std::sync::Mutex::new(Vec::new()),
             maintenance_calls: [AtomicUsize::new(0), AtomicUsize::new(0)],
             fail_claims: AtomicUsize::new(fail_claims),
@@ -911,6 +913,18 @@ impl FlakyDispatchStore {
 
     pub fn with_oversized_scan_page(mut self) -> Self {
         self.oversized_scan_page = true;
+        self
+    }
+
+    /// Read-only legacy/inconsistent delivery projection for one exact subject.
+    /// Physical reads and all mutations still reach the sole underlying Store;
+    /// this is not a current public-law transition or a closure/history proof.
+    pub fn with_summary_delivery_projection(
+        mut self,
+        run: RunId,
+        state: awaken_dispatch::DispatchState,
+    ) -> Self {
+        self.summary_delivery_projection = Some((run, state));
         self
     }
 
