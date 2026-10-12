@@ -16,6 +16,9 @@ fn original_projected_set_cutover_preserves_history_and_rejects_partial_evidence
     // empty, H2=complete nonempty -> E1; H3-H10=each independent bad axis ->E2;
     // H11=old schema+new carrier ->E3. Historical golden bytes below remain
     // unchanged; missing historical evidence stays None, never complete empty.
+    // HC1: current V3's outer Control UID must equal the same original Pod UID;
+    // mismatched identities reject before effect. Historical V1/V2 golden rows
+    // remain readable byte-for-byte and are never upgraded into V3 evidence.
     for objects in [
         Vec::new(),
         vec![KubernetesProjectedObject {
@@ -33,17 +36,19 @@ fn original_projected_set_cutover_preserves_history_and_rejects_partial_evidence
             None,
         )
         .unwrap();
-        let current = pc::SandboxHandle::container_v2(
-            "scope",
-            container_v2(
-                Some(ContainerContinuationHandle::KubernetesContinuationV3 {
-                    pod_uid: "pod-uid".into(),
-                    claim_uid: None,
-                    participants: Box::new(participants),
-                }),
-                Vec::new(),
-            ),
+        let mut payload = container_v2(
+            Some(ContainerContinuationHandle::KubernetesContinuationV3 {
+                pod_uid: "pod-uid".into(),
+                claim_uid: None,
+                participants: Box::new(participants),
+            }),
+            Vec::new(),
         );
+        // Current V3 has one original UID; the historical V1/V2 helper keeps
+        // its original golden UID and bytes independently below.
+        payload.previous.sandbox_control_incarnation =
+            Some(SandboxControlIncarnation::kubernetes_pod("pod-uid").unwrap());
+        let current = pc::SandboxHandle::container_v2("scope", payload);
         let encoded = serde_json::to_value(&current).unwrap();
         assert_eq!(
             encoded["payload"]["schema"], "container_v3",
@@ -66,10 +71,15 @@ fn original_projected_set_cutover_preserves_history_and_rejects_partial_evidence
             "invalid-name",
             "old-schema",
             "outer-restore",
+            "control-uid",
         ] {
             let mut changed = encoded.clone();
             let projection = &mut changed["payload"]["previous"]["runtime_handle"]["participants"];
             match axis {
+                "control-uid" => {
+                    changed["payload"]["previous"]["sandbox_control_incarnation"]["uid"] =
+                        "foreign-control-pod".into()
+                }
                 "missing-list" => {
                     projection.as_object_mut().unwrap().remove("objects");
                 }
@@ -123,16 +133,16 @@ fn restored_original_set_never_creates_ordinary_realization_authority() {
         Some((evidence.clone(), "plan".into())),
     )
     .unwrap();
-    let handle = pc::SandboxHandle::container(
-        "scope",
-        container_v1(Some(
-            ContainerContinuationHandle::KubernetesContinuationV3 {
-                pod_uid: "pod-uid".into(),
-                claim_uid: None,
-                participants: Box::new(participants),
-            },
-        )),
-    );
+    let mut payload = container_v1(Some(
+        ContainerContinuationHandle::KubernetesContinuationV3 {
+            pod_uid: "pod-uid".into(),
+            claim_uid: None,
+            participants: Box::new(participants),
+        },
+    ));
+    payload.sandbox_control_incarnation =
+        Some(SandboxControlIncarnation::kubernetes_pod("pod-uid").unwrap());
+    let handle = pc::SandboxHandle::container("scope", payload);
     let mut value = serde_json::to_value(&handle).unwrap();
     value["restoration"] = serde_json::to_value(&evidence).unwrap();
     assert_eq!(value["payload"]["schema"], "container_v3");

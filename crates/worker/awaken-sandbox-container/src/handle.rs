@@ -380,6 +380,11 @@ fn current_payload(
             .is_none_or(|(uid, claim)| {
                 uid.trim().is_empty()
                     || original.is_some_and(|original| original.pod_uid != uid)
+                    || payload
+                        .previous
+                        .sandbox_control_incarnation
+                        .as_ref()
+                        .is_some_and(|control| control.kubernetes_pod_uid() != Some(uid))
                     || claim.is_some_and(|uid| uid.trim().is_empty())
             })
         || original.is_some_and(|original| {

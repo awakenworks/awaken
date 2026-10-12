@@ -810,11 +810,11 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             file_store: self.file_store.clone(),
             live_input_projection: self.runtime.supports_live_input_projection(),
             runtime_handle,
-            continuation_excluded_paths: source_mount_paths(spec),
+            continuation_excluded_paths: recovery::source_mount_paths(spec),
             adoption_fingerprint: Some(adoption_fingerprint),
             realization_fingerprint: Some(realization_fingerprint),
             memory_materializations,
-            owned_paths: std::sync::Mutex::new(source_mount_paths(spec)),
+            owned_paths: std::sync::Mutex::new(recovery::source_mount_paths(spec)),
             adopted_handle: None,
             realized,
             recovered: already_active,
@@ -1033,6 +1033,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     })?,
             )
         };
+        let control_publication = ContainerControlPublicationRegistry::for_adoption(purpose).await;
         admit()?;
         Ok(ContainerSandbox {
             retained_attempt: None,
@@ -1043,7 +1044,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             base_env: payload.base_env,
             control_services,
             sandbox_control_incarnation,
-            control_publication: Arc::new(ContainerControlPublicationRegistry::default()),
+            control_publication: Arc::new(control_publication),
             blobs: self.blobs.clone(),
             file_store: self.file_store.clone(),
             live_input_projection: payload.live_input_projection,
@@ -1197,10 +1198,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             } => (container_id, runtime_handle),
         };
         // Only self-contained immutable inputs can be reprojected from the
-        // frozen spec. Memory, broker refs/writeback, control and package
-        // materialization still need their original durability evidence.
-        if !spec.control_services.is_empty()
-            || !plan.packages.is_empty()
+        // frozen spec. Memory, broker refs/writeback and package materialization
+        // still need their original durability evidence; Control stays within
+        // the exact original Pod and never reopens a live binding.
+        if !plan.packages.is_empty()
             || !plan.memory_mounts.is_empty()
             || spec.mounts.iter().any(|mount| {
                 mount.access != pc::MountAccess::ReadOnly
@@ -1221,28 +1222,14 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         );
         #[cfg(not(feature = "k8s"))]
         let guarded_claim = false;
-        let handle = pc::SandboxHandle::container_v2(
-            &spec.scope,
-            ContainerSandboxHandleV2 {
-                previous: ContainerSandboxHandleV1 {
-                    container_id,
-                    outputs_path: spec.outputs_path.clone(),
-                    base_env: spec.env.clone(),
-                    live_input_projection: self.runtime.supports_live_input_projection(),
-                    continuation_excluded_paths: source_mount_paths(spec),
-                    runtime_handle: Some(runtime_handle),
-                    sandbox_control_incarnation: None,
-                    control_services: Default::default(),
-                },
-                adoption_fingerprint: adoption_fingerprint.clone(),
-                realization_fingerprint: container_realization_fingerprint(
-                    spec,
-                    &adoption_fingerprint,
-                    &plan.image,
-                ),
-                owned_paths: source_mount_paths(spec),
-            },
-        );
+        let handle = recovery::terminal_handle(
+            spec,
+            container_id,
+            runtime_handle,
+            adoption_fingerprint.clone(),
+            container_realization_fingerprint(spec, &adoption_fingerprint, &plan.image),
+            self.runtime.supports_live_input_projection(),
+        )?;
         Ok(Some(ReconstructedTerminalHandle {
             handle,
             guarded_claim,
@@ -1327,6 +1314,17 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             .await?;
         // Observation is not a grant for staging/control reconstruction.
         admit()?;
+        if reconstructed
+            && !spec.control_services.is_empty()
+            && matches!(
+                observed,
+                pc::SandboxObservation::Ready | pc::SandboxObservation::Provisioning
+            )
+        {
+            return Err(pc::SandboxError::not_ready(
+                "cold terminal Control reconstruction requires a closed original source",
+            ));
+        }
         match observed {
             pc::SandboxObservation::Ready => self
                 .adopt_observed_container_with_spec(
@@ -1715,8 +1713,4 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
         Ok(Box::new(self.adopt_container(handle).await?))
     }
-}
-
-fn source_mount_paths(spec: &pc::SandboxSpec) -> Vec<String> {
-    spec.mounts.iter().map(|m| m.mount_path.clone()).collect()
 }

@@ -58,6 +58,14 @@ pub(crate) struct ContainerControlPublicationRegistry {
 }
 
 impl ContainerControlPublicationRegistry {
+    pub(crate) async fn for_adoption(purpose: crate::ContainerObservationPurpose) -> Self {
+        let registry = Self::default();
+        if purpose == crate::ContainerObservationPurpose::TerminalCleanup {
+            registry.close_for_dispose().await;
+        }
+        registry
+    }
+
     fn acquire(
         &self,
     ) -> Result<
