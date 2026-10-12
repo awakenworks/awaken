@@ -307,7 +307,11 @@ async fn joined_original_evidence(
             }
             projected
         }
-        Ok(None) if joined.other_tickets.is_empty() && plan.binds.is_empty() => {
+        Ok(None)
+            if joined.other_tickets.is_empty()
+                && plan.binds.is_empty()
+                && plan.control_services.is_empty() =>
+        {
             // Preserve the original Complete/narrow/full-projection empty law.
             // No missing/partial rich handoff is filled or written here.
             crate::kubernetes_handle::KubernetesProjectedParticipants::joined_empty(
@@ -727,16 +731,19 @@ impl ContainerRuntime for K8sRuntime {
         // an absence witness. A brokered rich attempt still seals its one
         // provider request ledger before returning Unknown, so the original
         // Worker cannot keep admitting physical Creates after terminal stop.
-        let narrow_shape = unmaterialized_absence_shape_is_closed(
-            !plan.packages.is_empty(),
-            !plan.binds.is_empty(),
-            !plan.memory_mounts.is_empty(),
-            false,
-        );
+        let narrow_shape = plan.control_services.is_empty()
+            && unmaterialized_absence_shape_is_closed(
+                !plan.packages.is_empty(),
+                !plan.binds.is_empty(),
+                !plan.memory_mounts.is_empty(),
+                false,
+            );
         let reconstructible_shape = narrow_shape
             || (plan.packages.is_empty()
                 && plan.memory_mounts.is_empty()
-                && plan.control_services.is_empty()
+                && plan
+                    .control_services
+                    .is_subset(&sandbox_control::services(self))
                 && plan.binds.iter().all(|bind| {
                     bind.read_only
                         && !bind.secret_writeback
@@ -748,14 +755,13 @@ impl ContainerRuntime for K8sRuntime {
         let Some(expected_effect_fence) = expected_effect_fence else {
             return Ok(MissingHandleTerminalEvidence::Unknown);
         };
-        let runtime_id = self.realization_runtime_id(scope)?;
-        let runtime_pod_name = pod_name(&runtime_id);
+        let runtime_pod_name = pod_name(&self.realization_runtime_id(scope)?);
         let runtime_claim_name = continuation_claim_for_pod(&runtime_pod_name)?;
         let joined = if let Some(transport) = &self.create_transport {
-            let joined = transport
+            let RequestJoin::Complete(tickets) = transport
                 .seal_predecessor(scope, expected_effect_fence, &runtime_pod_name)
-                .await?;
-            let RequestJoin::Complete(tickets) = joined else {
+                .await?
+            else {
                 return Ok(MissingHandleTerminalEvidence::Unknown);
             };
             // Whole-Worker closure and this Session's membership differ.
@@ -786,13 +792,11 @@ impl ContainerRuntime for K8sRuntime {
             };
             JoinedOriginalTickets::default()
         };
-        let created_claim_uid = &joined.created_claim_uid;
-        let isolated_pod = &joined.isolated_pod;
         if !reconstructible_shape || (!narrow_shape && joined.created_pod.is_none()) {
             return Ok(MissingHandleTerminalEvidence::Unknown);
         }
         self.admit_plan(plan).await?;
-        if let Some((ticket, uid)) = isolated_pod {
+        if let Some((ticket, uid)) = &joined.isolated_pod {
             return isolated_pod_terminal_evidence(
                 self,
                 GuardedOriginalContext {
@@ -804,7 +808,7 @@ impl ContainerRuntime for K8sRuntime {
                     claim_required,
                     absence_shape_closed,
                 },
-                created_claim_uid.clone(),
+                joined.created_claim_uid.clone(),
                 ticket.clone(),
                 uid.clone(),
             )
@@ -824,7 +828,7 @@ impl ContainerRuntime for K8sRuntime {
                 .get_opt(&runtime_claim_name)
                 .await
                 .map_err(backend)?;
-            let claim_uid = match (claim_required, created_claim_uid.as_deref(), claim.as_ref()) {
+            let claim_uid = match (claim_required, &joined.created_claim_uid, claim.as_ref()) {
                 (true, Some(ticket_uid), Some(observed))
                     if verify_joined_original_claim(
                         self,
@@ -861,7 +865,7 @@ impl ContainerRuntime for K8sRuntime {
         unmaterialized_after_join(
             self,
             &runtime_claim_name,
-            created_claim_uid.is_some(),
+            joined.created_claim_uid.is_some(),
             absence_shape_closed,
             pod.is_some(),
         )
