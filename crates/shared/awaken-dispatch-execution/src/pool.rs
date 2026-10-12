@@ -61,12 +61,17 @@ use awaken_time::WallClockExt;
 /// shared queue, then asks the resolver for the session worker carrying the
 /// claimed run's thread config and drives the run there.
 ///
-/// The resolver MUST return workers that share the pool's store and claim owner,
-/// so the Pool's claim, exact renewal guard, and drive agree on lease ownership
-/// (the host wires every session worker with the process's `dispatch_owner()` and
-/// the one shared store, which satisfies this).
+/// The resolver declares its immutable queue before any task is started. The
+/// pool validates this identity before claiming or entering resolution, then
+/// validates every returned Worker before execution or retry terminalization.
+/// The complete durable claim supplies the exact owner and renewal authority;
+/// a Worker's default owner is used only when it claims work independently.
 #[async_trait]
 pub trait WorkerResolver<S>: Send + Sync {
+    /// Required composition identity, including when resolution is unavailable.
+    /// This read must not resolve a Session or perform provider effects.
+    fn dispatch_store(&self) -> Result<Arc<S>, Error>;
+
     /// Retry infrastructure retention through this same maintenance loop.
     /// It never drives a Run or creates a second scheduler.
     async fn reconcile_worker_evidence(&self) -> Result<(), Error> {
@@ -120,17 +125,11 @@ pub trait WorkerResolver<S>: Send + Sync {
     /// terminal path. The default reuses the ordinary claimed Worker; hosts that
     /// can construct an environment-free boundary Worker override only that
     /// resolution detail. No resolver may author terminal truth itself.
-    async fn terminalize_retry_exhausted(
+    async fn worker_for_retry_exhausted(
         &self,
         claimed: &Claimed,
-    ) -> Result<Option<(RunId, RunState)>, Error>
-    where
-        S: Dispatch + 'static,
-    {
-        self.worker_for_claimed(claimed)
-            .await?
-            .terminalize_retry_exhausted(claimed)
-            .await
+    ) -> Result<Arc<DispatchWorker<S>>, Error> {
+        self.worker_for_claimed(claimed).await
     }
 
     /// Reconcile up to `limit` quiescent or expired dispatches against the
@@ -143,6 +142,36 @@ pub trait WorkerResolver<S>: Send + Sync {
     ) -> Result<Vec<(RunId, RunState)>, Error> {
         Ok(Vec::new())
     }
+}
+
+fn verify_resolver_store<S>(store: &Arc<S>, resolver: &dyn WorkerResolver<S>) -> Result<(), Error> {
+    if !Arc::ptr_eq(store, &resolver.dispatch_store()?) {
+        return Err(Error::Dispatch(crate::DispatchError::Rejected(
+            "resolver dispatch queue does not match pool binding".into(),
+        )));
+    }
+    Ok(())
+}
+
+/// Resolution cannot choose the queue on which an already-owned claim executes.
+async fn resolve_claimed_worker<S: Dispatch + 'static>(
+    store: &Arc<S>,
+    resolver: &dyn WorkerResolver<S>,
+    claimed: &Claimed,
+    retry_exhausted: bool,
+) -> Result<Arc<DispatchWorker<S>>, Error> {
+    verify_resolver_store(store, resolver)?;
+    let worker = if retry_exhausted {
+        resolver.worker_for_retry_exhausted(claimed).await?
+    } else {
+        resolver.worker_for_claimed(claimed).await?
+    };
+    if !Arc::ptr_eq(store, worker.store()) {
+        return Err(Error::Dispatch(crate::DispatchError::Rejected(
+            "resolved Worker dispatch queue does not match pool binding".into(),
+        )));
+    }
+    Ok(worker)
 }
 
 /// Notified the instant the pool settles a run, so a foreground submitter can await
@@ -510,7 +539,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         config: DispatchServiceConfig,
         resolver: Arc<dyn WorkerResolver<S>>,
         concurrency: usize,
-    ) -> Self
+    ) -> Result<Self, Error>
     where
         S: ControlDispatch,
     {
@@ -538,7 +567,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         resolver: Arc<dyn WorkerResolver<S>>,
         concurrency: usize,
         wake: Arc<dyn WakeSignal>,
-    ) -> Self
+    ) -> Result<Self, Error>
     where
         S: ControlDispatch,
     {
@@ -573,7 +602,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         concurrency: usize,
         wake: Arc<dyn WakeSignal>,
         completion: Arc<dyn CompletionSink>,
-    ) -> Self
+    ) -> Result<Self, Error>
     where
         S: ControlDispatch,
     {
@@ -604,7 +633,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         resolver: Arc<dyn WorkerResolver<S>>,
         concurrency: usize,
         completion: Arc<dyn CompletionSink>,
-    ) -> Self
+    ) -> Result<Self, Error>
     where
         S: ControlDispatch,
     {
@@ -635,8 +664,14 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         concurrency: usize,
         wake: Arc<dyn WakeSignal>,
         completion: Option<Arc<dyn CompletionSink>>,
-    ) -> Self {
+    ) -> Result<Self, Error> {
         let owner = owner.into();
+        if owner.trim().is_empty() {
+            return Err(Error::Dispatch(crate::DispatchError::Rejected(
+                "pool lease owner must be nonempty".into(),
+            )));
+        }
+        verify_resolver_store(&store, resolver.as_ref())?;
         let shutdown = CancellationToken::new();
         let depth_sampler = match &scheduling {
             SchedulingAuthority::Local(local) => spawn_observed_depth(
@@ -684,7 +719,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
             }
             SchedulingAuthority::Remote => None,
         };
-        Self {
+        Ok(Self {
             store,
             wake,
             shutdown,
@@ -693,7 +728,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
             reconciler,
             depth_sampler,
             admission,
-        }
+        })
     }
 
     /// Durably enqueue a run and nudge the pool to pick it up.
@@ -1187,6 +1222,7 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     admission: &Arc<PoolAdmission>,
     cycle: &DrainCycle,
 ) -> Result<bool, ClaimAndDriveFailure> {
+    verify_resolver_store(store, resolver)?;
     let (claimed, retry_exhausted) = {
         let gate = admission.gate.read().await;
         if !gate.accepts_claim() {
@@ -1234,9 +1270,12 @@ async fn claim_and_drive<S: Dispatch + 'static>(
         // a failure leaves the exact claim leased for later re-claim.
         admission.error_gate.release_probe(cycle).await;
         admission.wake.notify_one();
-        resolver.terminalize_retry_exhausted(&claimed).await
+        match resolve_claimed_worker(store, resolver, &claimed, true).await {
+            Ok(worker) => worker.terminalize_retry_exhausted(&claimed).await,
+            Err(error) => Err(error),
+        }
     } else {
-        match resolver.worker_for_claimed(&claimed).await {
+        match resolve_claimed_worker(store, resolver, &claimed, false).await {
             Ok(worker) => {
                 // Resolution succeeded, so this claim will make forward progress.
                 // Only now hand a permit to a peer: notifying before resolution
@@ -1450,7 +1489,7 @@ impl DispatchPool<AnyDispatchStore> {
         concurrency: usize,
         wake: Arc<dyn WakeSignal>,
         completion: Option<Arc<dyn CompletionSink>>,
-    ) -> Self {
+    ) -> Result<Self, Error> {
         let scheduling = match binding.placement() {
             DispatchTopology::Local(local) => SchedulingAuthority::Local(local.clone()),
             DispatchTopology::Remote { .. } => SchedulingAuthority::Remote,
@@ -1736,6 +1775,12 @@ mod in_flight_tests {
 
     #[async_trait]
     impl WorkerResolver<MemoryDispatchStore> for ReconciliationResolver {
+        fn dispatch_store(&self) -> Result<Arc<MemoryDispatchStore>, Error> {
+            Err(Error::Dispatch(crate::DispatchError::Rejected(
+                "maintenance-only resolver has no execution binding".into(),
+            )))
+        }
+
         async fn reconcile_worker_evidence(&self) -> Result<(), Error> {
             let call = self.evidence_calls.fetch_add(1, Ordering::SeqCst);
             if self.fail_first && call == 0 {
@@ -1837,6 +1882,12 @@ mod in_flight_tests {
         }
         #[async_trait]
         impl WorkerResolver<MemoryDispatchStore> for BlockedObservation {
+            fn dispatch_store(&self) -> Result<Arc<MemoryDispatchStore>, Error> {
+                Err(Error::Dispatch(crate::DispatchError::Rejected(
+                    "maintenance-only resolver has no execution binding".into(),
+                )))
+            }
+
             async fn worker_for(
                 &self,
                 _: &ThreadId,

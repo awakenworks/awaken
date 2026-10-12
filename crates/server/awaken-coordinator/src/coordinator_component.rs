@@ -143,6 +143,8 @@ pub struct CoordinatorComponent {
 
 #[derive(Debug, thiserror::Error)]
 pub enum CoordinatorBuildError {
+    #[error("build dispatch pool: {0}")]
+    DispatchPool(String),
     #[error("restore Deployment state: {0}")]
     DeploymentRestore(String),
     #[error("build registered Worker transport: {0}")]
@@ -197,10 +199,12 @@ pub(crate) fn register_runtime_background_drain(
 pub(crate) async fn start_runtime_services(
     host: &Arc<SharedHost>,
     dreams: &Arc<awaken_dream_application::DreamApplication>,
-) {
-    host.ensure_dispatch_pool();
+) -> Result<(), CoordinatorBuildError> {
+    host.ensure_dispatch_pool()
+        .map_err(|error| CoordinatorBuildError::DispatchPool(error.to_string()))?;
     host.ensure_terminal_dispatch_reconciliation();
     dreams.resume_incomplete().await;
+    Ok(())
 }
 
 /// Attach bounded application-credential retention to the Coordinator's one
@@ -426,7 +430,7 @@ pub async fn build_coordinator_component(
         dream_application,
         clock,
     )
-    .await;
+    .await?;
 
     Ok(CoordinatorComponent {
         router: data,
@@ -447,9 +451,9 @@ async fn start_coordinator_services(
     deployment_application: Arc<DeploymentApplication>,
     dream_application: Arc<awaken_dream_application::DreamApplication>,
     clock: Arc<dyn awaken_time::WallClock>,
-) {
+) -> Result<(), CoordinatorBuildError> {
     lifecycle_delivery.start(service_lifecycle);
-    start_runtime_services(&host, &dream_application).await;
+    start_runtime_services(&host, &dream_application).await?;
     register_session_lifecycle(service_lifecycle, session_application);
     register_runtime_background_drain(service_lifecycle, host);
 
@@ -461,6 +465,7 @@ async fn start_coordinator_services(
         dream_application,
         clock,
     );
+    Ok(())
 }
 
 #[cfg(test)]

@@ -153,7 +153,8 @@ async fn durable_child_run_scenario() {
     .build()
     .expect("validated Host dependencies");
     let _managed = ManagedHost::new(host.clone());
-    host.ensure_dispatch_pool();
+    host.ensure_dispatch_pool()
+        .expect("valid test dispatch composition");
 
     let awaiting = tokio::time::timeout(
         std::time::Duration::from_secs(20),

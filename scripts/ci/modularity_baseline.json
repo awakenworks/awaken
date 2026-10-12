@@ -330,7 +330,7 @@
     "awaken-session-executor::host/session/environment_lifecycle/terminal_preparation.rs::install_bound_environment_under_lifecycle": 315,
     "awaken-session-executor::host/session/environment_lifecycle/terminal_preparation.rs::prepare_bound_environment_for_effect_under_lifecycle": 219,
     "awaken-session-executor::host/session/environment_lifecycle/terminal_preparation.rs::prepare_terminal_environment_under_lifecycle": 233,
-    "awaken-session-executor::host/worker_resolver/claimed_dispatch.rs::worker_for_claimed": 248,
+    "awaken-session-executor::host/worker_resolver/claimed_dispatch.rs::worker_for_claimed": 240,
     "awaken-session-executor::host/worker_resolver/session_realization/projection_synchronizer.rs::synchronize_session_projection": 243,
     "awaken-session-executor::managed_resource_projection.rs::apply_session_inputs_body": 467,
     "awaken-session-executor::managed_resource_projection.rs::stage_resolved_input_with_resource_authority": 313,

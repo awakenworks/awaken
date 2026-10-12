@@ -11,6 +11,17 @@ pub(crate) struct HostWorkerResolver {
 }
 
 impl HostWorkerResolver {
+    pub(in crate::host) async fn open_commit(
+        host: &SharedHost,
+        thread_id: &awaken_agent_contract::agent::thread::Id,
+    ) -> Result<Arc<crate::store::HostCommit>, awaken_dispatch_execution::Error> {
+        host.authority
+            .open_commit(&thread_id.0)
+            .await
+            .map(Arc::new)
+            .map_err(|error| Self::execution_error(error.to_string()))
+    }
+
     pub(super) fn require_local_execution(
         host: &SharedHost,
     ) -> Result<(), awaken_dispatch_execution::Error> {

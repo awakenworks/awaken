@@ -359,7 +359,8 @@ async fn durable_foreground_run_relays_live_progress_before_committed_completion
     .build()
     .expect("validated Host dependencies");
     let _managed = install_test_dispatch_runtime(&host);
-    host.ensure_dispatch_pool();
+    host.ensure_dispatch_pool()
+        .expect("valid test dispatch composition");
     let sink = Arc::new(awaken_store_inmem::MemoryStreamSink::new());
 
     let outcome = host
@@ -2017,7 +2018,8 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
     .build()
     .expect("validated Host dependencies");
     let _managed = install_test_dispatch_runtime(&host);
-    host.ensure_dispatch_pool();
+    host.ensure_dispatch_pool()
+        .expect("valid test dispatch composition");
 
     let first = bounded_stage(
         "initial host.run settlement",
@@ -2092,7 +2094,8 @@ async fn coordinator_only_foreground_admission_survives_request_drop_without_a_p
     .build()
     .expect("validated Host dependencies");
     let _managed = install_test_dispatch_runtime(&host);
-    host.ensure_dispatch_pool();
+    host.ensure_dispatch_pool()
+        .expect("valid test dispatch composition");
     assert!(host.dispatch.dispatch_pool.get().is_none(), "Q2/E2");
 
     let request = host.clone();
