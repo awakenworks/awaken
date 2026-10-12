@@ -70,7 +70,8 @@ impl AttemptExecutionBinding {
 
 /// Narrow read of the existing physical slot, not the current mutation lease.
 /// Missing binding means historical/unbound execution, never stopped execution.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PhysicalAttempt {
     pub claim: RunClaim,
     pub binding: Option<AttemptExecutionBinding>,
@@ -85,6 +86,95 @@ pub struct PhysicalAttempt {
     /// same slot then requires an independent domain-closure ACK; ordinary
     /// late return and continuation handoff cannot clear or replace it.
     pub closing: bool,
+}
+
+/// The original trusted source's two different closure assertions. A retained
+/// value describes one attempt, never complete old-Worker-domain membership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptClosureKind {
+    AllExecutionStopped,
+    ControlledExecutionClosed,
+}
+
+/// Non-secret retained data accepted only through Coordinator attempt control.
+/// Deserializing this record grants no control role or Provider stop authority;
+/// the application still obtains its value from the private trusted receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptClosureRecord {
+    attempt: PhysicalAttempt,
+    kind: AttemptClosureKind,
+    evidence_ref: String,
+}
+
+impl AttemptClosureRecord {
+    pub fn try_new(
+        attempt: PhysicalAttempt,
+        kind: AttemptClosureKind,
+        evidence_ref: impl Into<String>,
+    ) -> Result<Self, DispatchError> {
+        let record = Self {
+            attempt,
+            kind,
+            evidence_ref: evidence_ref.into(),
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
+    /// Intrinsic data validation, not proof of Provider honesty or a grant.
+    pub fn validate(&self) -> Result<(), DispatchError> {
+        if !self.attempt.closing
+            || self.attempt.claim.run_id.0.trim().is_empty()
+            || self.attempt.claim.owner.trim().is_empty()
+            || self.evidence_ref.trim().is_empty()
+            || self
+                .attempt
+                .thread_id
+                .as_ref()
+                .is_some_and(|thread| thread.0.trim().is_empty())
+            || self
+                .attempt
+                .session_thread_id
+                .as_ref()
+                .is_some_and(|thread| thread.0.trim().is_empty())
+        {
+            return Err(DispatchError::Rejected(
+                "attempt closure requires its exact closed subject, Thread and Provider reference"
+                    .into(),
+            ));
+        }
+        if let Some(binding) = &self.attempt.binding {
+            binding.validate_for(&self.attempt.claim)?;
+        }
+        Ok(())
+    }
+
+    pub fn attempt(&self) -> &PhysicalAttempt {
+        &self.attempt
+    }
+    pub fn kind(&self) -> AttemptClosureKind {
+        self.kind
+    }
+    pub fn evidence_ref(&self) -> &str {
+        &self.evidence_ref
+    }
+}
+
+/// Server-local read data using the original operation table's global cursor.
+/// This is not part of the public diagnostics Page or a permission receipt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttemptClosureEvent {
+    pub cursor: crate::DispatchCursor,
+    pub recorded_at_ms: Option<u64>,
+    pub record: AttemptClosureRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttemptClosurePage {
+    pub events: Vec<AttemptClosureEvent>,
+    pub next_cursor: crate::DispatchCursor,
 }
 
 /// Response-loss retry must preserve even the absence of a binding. In

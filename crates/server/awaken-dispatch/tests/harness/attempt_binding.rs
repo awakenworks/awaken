@@ -1,7 +1,8 @@
 // @formal evidence session_execution.one_physical_attempt_per_thread
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch::{
-    AttemptAdmission as A, AttemptExecutionBinding, PhysicalAttempt, SettleOutcome as S,
+    AttemptAdmission as A, AttemptClosureKind, AttemptClosureRecord, AttemptExecutionBinding,
+    PhysicalAttempt, SettleOutcome as S,
 };
 use awaken_dispatch::{
     PlacementRequirements, RunClaim, RunDispatch, WorkerIdentity, WorkerSnapshot,
@@ -380,7 +381,7 @@ pub async fn assert_binding_lifecycle(
 }
 
 pub async fn assert_closing_lifecycle(
-    store: &impl ConformanceDispatch,
+    store: &(impl ConformanceDispatch + awaken_dispatch::DispatchOperationalFeed),
     clock: &dyn awaken_dispatch_testkit::ConformanceClock,
 ) {
     // C1 exact old entry vs foreign epoch; C2 durable closing phase; C3 late
@@ -390,6 +391,23 @@ pub async fn assert_closing_lifecycle(
     // handoff blocked. D4 exact closure => retire once; replay stutters. D5
     // admission at the retired epoch => Fenced. Run across every real backend;
     // this tests storage atomicity/provenance, not provider stop authenticity.
+    // C5 native request encoding is SQLite text or PostgreSQL Json; the one
+    // physical row projection must preserve original owner/epoch/binding and
+    // exact request Thread/partition/closing in D2/D4 below. These real-store
+    // rules cover it without a second tuple-shape test.
+    assert!(
+        store
+            .attempt_closure_records_after(
+                awaken_dispatch::DispatchCursor::default(),
+                usize::MAX,
+                None
+            )
+            .await
+            .unwrap()
+            .events
+            .is_empty(),
+        "D0 previous ordinary finish/handoff never produced closure evidence"
+    );
     let (old, binding, mut worker) = bound_claim(store, "closing-attempt", clock).await;
     store.begin_attempt(&old, Some(&binding)).await.unwrap();
     let foreign = RunClaim {
@@ -452,20 +470,81 @@ pub async fn assert_closing_lifecycle(
     );
     assert_eq!(
         store.load_physical_attempt(&old.run_id).await.unwrap(),
-        Some(closed)
+        Some(closed.clone())
     );
+    let mut foreign_subject = closed.clone();
+    foreign_subject.claim = foreign;
+    let foreign_record = AttemptClosureRecord::try_new(
+        foreign_subject,
+        AttemptClosureKind::ControlledExecutionClosed,
+        "store-fenced-foreign-closure",
+    )
+    .unwrap();
+    let record = AttemptClosureRecord::try_new(
+        closed,
+        AttemptClosureKind::ControlledExecutionClosed,
+        "store-original-controlled-closure",
+    )
+    .unwrap();
     assert_eq!(
-        store.finish_attempt_closure(&foreign).await.unwrap(),
+        store.finish_attempt_closure(&foreign_record).await.unwrap(),
         S::Fenced,
         "D4 wrong evidence subject"
     );
+    // D4b the claim alone is insufficient: changed physical reference or
+    // Thread partition must reject before either retirement or record append.
+    let mut wrong_binding = record.attempt().clone();
+    wrong_binding.binding = Some(
+        AttemptExecutionBinding::new(
+            binding.worker().clone(),
+            binding.provider_id(),
+            "different-physical-reference",
+        )
+        .unwrap(),
+    );
+    let wrong_binding =
+        AttemptClosureRecord::try_new(wrong_binding, record.kind(), record.evidence_ref()).unwrap();
+    assert!(
+        store.finish_attempt_closure(&wrong_binding).await.is_err(),
+        "D4b binding"
+    );
+    let mut wrong_thread = record.attempt().clone();
+    wrong_thread.thread_id = Some(ThreadId("foreign-closure-thread".into()));
+    let wrong_thread =
+        AttemptClosureRecord::try_new(wrong_thread, record.kind(), record.evidence_ref()).unwrap();
+    assert!(
+        store.finish_attempt_closure(&wrong_thread).await.is_err(),
+        "D4b Thread"
+    );
     assert_eq!(
-        store.finish_attempt_closure(&old).await.unwrap(),
+        store
+            .load_physical_attempt(&old.run_id)
+            .await
+            .unwrap()
+            .as_ref(),
+        Some(record.attempt()),
+        "D4b zero physical mutation"
+    );
+    assert!(
+        store
+            .attempt_closure_records_after(
+                awaken_dispatch::DispatchCursor::default(),
+                usize::MAX,
+                Some(&old.run_id)
+            )
+            .await
+            .unwrap()
+            .events
+            .is_empty(),
+        "D4b zero append"
+    );
+    assert_eq!(
+        store.finish_attempt_closure(&record).await.unwrap(),
         S::Applied,
         "D4"
     );
     assert_eq!(
-        store.finish_attempt_closure(&old).await.unwrap(),
+        store.finish_attempt_closure(&record).await.unwrap(),
         S::Applied,
         "D4 replay"
     );
@@ -478,6 +557,250 @@ pub async fn assert_closing_lifecycle(
         A::Fenced,
         "D5"
     );
+    // D6 captured metadata is the same first record, not a last-proof cache.
+    let retained = store
+        .attempt_closure_records_after(
+            awaken_dispatch::DispatchCursor::default(),
+            usize::MAX,
+            Some(&old.run_id),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        retained.events.len(),
+        1,
+        "D6 duplicate response has one fact"
+    );
+    assert_eq!(retained.events[0].record, record);
+    let changed = AttemptClosureRecord::try_new(
+        record.attempt().clone(),
+        AttemptClosureKind::AllExecutionStopped,
+        "changed-late-ref",
+    )
+    .unwrap();
+    assert!(
+        store.finish_attempt_closure(&changed).await.is_err(),
+        "D7 no kind/reference overwrite on replay"
+    );
+    assert_eq!(
+        store
+            .attempt_closure_records_after(
+                awaken_dispatch::DispatchCursor::default(),
+                usize::MAX,
+                Some(&old.run_id)
+            )
+            .await
+            .unwrap(),
+        retained
+    );
+    assert_internal_history_preserves_public_projection(store, clock).await;
 }
 
 use awaken_dispatch_testkit::ConformanceDispatch;
+
+async fn assert_internal_history_preserves_public_projection(
+    store: &(impl ConformanceDispatch + awaken_dispatch::DispatchOperationalFeed),
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
+) {
+    use awaken_dispatch::{DispatchCursor, DispatchOutcome};
+    // Cause/effect decisions: H1 exact closing subject + either trusted kind ->
+    // one same-transaction retained fact; H2 response lost/exact replay -> no
+    // append; H3 changed/foreign/missing record -> no fabricated first fact;
+    // H4 three internal facts exceed page limit1 before a visible suffix ->
+    // old public shape/cursor returns that suffix (no early empty page); H5
+    // normal Done/GC deletes the root row -> internal facts remain; H6 zero or
+    // internal-only public page -> empty and original requested cursor.
+    // Records cover known attempts only. Neither last nor all-known records
+    // certifies complete old-Worker membership, requests, access or cleanup.
+    let mut subjects = Vec::new();
+    for name in ["history-full", "history-controlled", "history-gc"] {
+        let (claim, binding, worker) = bound_claim(store, name, clock).await;
+        assert_eq!(
+            store.begin_attempt(&claim, Some(&binding)).await.unwrap(),
+            A::Applied
+        );
+        assert_eq!(store.close_attempt(&claim).await.unwrap(), S::Applied);
+        subjects.push((claim, worker));
+    }
+    let public_before = store
+        .events_after(DispatchCursor::default(), usize::MAX, None)
+        .await
+        .unwrap();
+    let cursor = public_before.next_cursor;
+    let mut records = Vec::new();
+    for (index, (claim, _)) in subjects.iter().enumerate() {
+        let kind = if index == 1 {
+            AttemptClosureKind::ControlledExecutionClosed
+        } else {
+            AttemptClosureKind::AllExecutionStopped
+        };
+        let record = AttemptClosureRecord::try_new(
+            store
+                .load_physical_attempt(&claim.run_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            kind,
+            format!("history-storage-reference-{index}"),
+        )
+        .unwrap();
+        assert_eq!(
+            store.finish_attempt_closure(&record).await.unwrap(),
+            S::Applied,
+            "H1"
+        );
+        assert_eq!(
+            store.finish_attempt_closure(&record).await.unwrap(),
+            S::Applied,
+            "H2"
+        );
+        records.push(record);
+    }
+    let hidden = store.events_after(cursor, 1, None).await.unwrap();
+    assert!(hidden.events.is_empty(), "H6 internal-only diagnostics");
+    assert_eq!(
+        hidden.next_cursor, cursor,
+        "H6 preserve public empty cursor"
+    );
+    let zero = store
+        .attempt_closure_records_after(cursor, 0, None)
+        .await
+        .unwrap();
+    assert!(zero.events.is_empty());
+    assert_eq!(zero.next_cursor, cursor, "H6 internal zero cursor");
+    let first = store
+        .attempt_closure_records_after(cursor, 1, None)
+        .await
+        .unwrap();
+    assert_eq!(first.events.len(), 1);
+    assert_eq!(first.events[0].record, records[0]);
+
+    let suffix = "history-public-suffix";
+    store
+        .enqueue(RunDispatch::new(super::activation_on(suffix, suffix)))
+        .await
+        .unwrap();
+    clock.set(0);
+    let suffix_claim = store
+        .claim_run(
+            &awaken_agent_contract::agent::run::Id(suffix.into()),
+            "history-suffix-owner",
+            60_000,
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let visible = store.events_after(cursor, 1, None).await.unwrap();
+    assert_eq!(
+        visible.events.len(),
+        1,
+        "H4 prefix > limit does not hide suffix"
+    );
+    assert_eq!(
+        visible.events[0].operation.run_id(),
+        suffix_claim.lease.run_id()
+    );
+    let encoded = serde_json::to_value(&visible).unwrap();
+    assert_eq!(
+        encoded["events"][0]["operation"]["type"], "claimed",
+        "H4 original public variant"
+    );
+    assert!(
+        encoded.to_string().find("attempt_closure").is_none(),
+        "H4 private fact never in public Page"
+    );
+
+    let full = &records[0];
+    assert_eq!(
+        store
+            .settle(
+                &full.attempt().claim.run_id,
+                full.attempt().claim.epoch,
+                DispatchOutcome::Done,
+                &[]
+            )
+            .await
+            .unwrap(),
+        S::Applied,
+        "H5 original logical Done"
+    );
+    assert_eq!(
+        store.finish_attempt_closure(full).await.unwrap(),
+        S::Applied,
+        "H2/H5 after row Done"
+    );
+    let (claim, worker) = &subjects[2];
+    store.cancel(&claim.run_id).await.unwrap();
+    clock.set(0);
+    let next = store
+        .claim_run_compatible(&claim.run_id, worker, 1)
+        .await
+        .unwrap()
+        .unwrap();
+    clock.advance_past(next.lease.expires_ms()).await;
+    assert_eq!(
+        store
+            .quarantine_retry_exhausted(0, next.lease.expires_ms().saturating_add(1))
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store.purge_dead_letters().await.unwrap(),
+        1,
+        "H5 original GC"
+    );
+    assert_eq!(
+        store.finish_attempt_closure(&records[2]).await.unwrap(),
+        S::Applied,
+        "H2/H5 after GC"
+    );
+    let retained = store
+        .attempt_closure_records_after(cursor, usize::MAX, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        retained
+            .events
+            .iter()
+            .map(|event| &event.record)
+            .collect::<Vec<_>>(),
+        records.iter().collect::<Vec<_>>(),
+        "H5 no history mirror or row-lifetime loss"
+    );
+    // An empty ordinary-retired slot cannot acquire evidence after the fact.
+    let source = RunClaim::from(&suffix_claim.lease);
+    store.begin_attempt(&source, None).await.unwrap();
+    let mut old = store
+        .load_physical_attempt(&source.run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    store.finish_attempt(&source).await.unwrap();
+    old.closing = true;
+    let invented = AttemptClosureRecord::try_new(
+        old,
+        AttemptClosureKind::AllExecutionStopped,
+        "must-not-backfill-empty",
+    )
+    .unwrap();
+    assert_eq!(
+        store.finish_attempt_closure(&invented).await.unwrap(),
+        S::Fenced,
+        "H3 ordinary/legacy empty is unknown"
+    );
+    assert!(
+        store
+            .attempt_closure_records_after(
+                DispatchCursor::default(),
+                usize::MAX,
+                Some(&source.run_id)
+            )
+            .await
+            .unwrap()
+            .events
+            .is_empty(),
+        "H3 no generated evidence"
+    );
+}

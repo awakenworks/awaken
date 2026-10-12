@@ -229,47 +229,17 @@ impl DispatchOperationalFeed for SqliteDispatchStore {
         limit: usize,
         run: Option<&RunId>,
     ) -> Result<DispatchPage, DispatchError> {
-        if limit == 0 {
-            return Ok(DispatchPage {
-                events: Vec::new(),
-                next_cursor: cursor,
-            });
-        }
-        let after = i64::try_from(cursor.0).map_err(|_| {
-            DispatchError::Rejected("dispatch cursor exceeds INTEGER range".to_string())
-        })?;
-        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let run = run.map(|run| run.0.clone());
-        let (_authority, mut conn) = self.with_conn().await?;
-        let prefix = NS;
-        let selection = if run.is_some() { "AND run_id = ?3" } else { "" };
-        let sql = format!(
-            "SELECT sequence, recorded_at_ms, operation FROM {prefix}_dispatch_operation \
-             WHERE sequence > ?1 {selection} ORDER BY sequence LIMIT ?2"
-        );
-        let mut query = sqlx::query_as::<_, (i64, Option<i64>, String)>(&sql)
-            .bind(after)
-            .bind(limit);
-        if let Some(run) = run {
-            query = query.bind(run);
-        }
-        let rows = query.fetch_all(&mut *conn).await.map_err(store_error)?;
-        let mut events = Vec::new();
-        for (sequence, recorded_at_ms, operation) in rows {
-            events.push(DispatchOperationalEvent {
-                cursor: DispatchCursor(u64::try_from(sequence).map_err(|_| {
-                    DispatchError::Rejected(
-                        "persisted dispatch operation sequence is negative".to_string(),
-                    )
-                })?),
-                recorded_at_ms: recorded_at_ms.map(u64::try_from).transpose().map_err(|_| {
-                    DispatchError::Rejected(
-                        "persisted dispatch operation time is negative".to_string(),
-                    )
-                })?,
-                operation: serde_json::from_str(&operation).map_err(json_err)?,
-            });
-        }
+        let events = self
+            .read_stored_operations(
+                cursor,
+                limit,
+                run,
+                crate::dispatch::OperationReadPurpose::Diagnostics,
+            )
+            .await?
+            .into_iter()
+            .filter_map(crate::dispatch::StoredDispatchEvent::diagnostic)
+            .collect::<Vec<_>>();
         let next_cursor = events.last().map_or(cursor, |event| event.cursor);
         Ok(DispatchPage {
             events,
@@ -513,5 +483,70 @@ impl awaken_dispatch_contract::SessionContinuationOutbox for SqliteDispatchStore
         }
         tx.commit().await.map_err(store_error)?;
         Ok(())
+    }
+}
+
+// Both purposes use the original operation rows, codec and global sequence.
+// Raw batches are decoded before filtering; hidden prefixes cannot consume the
+// logical LIMIT or turn unknown/corrupt old rows into silently empty pages.
+async fn read_stored_operation_page(
+    connection: &mut SqliteConnection,
+    cursor: DispatchCursor,
+    limit: usize,
+    run: Option<&RunId>,
+    purpose: crate::dispatch::OperationReadPurpose,
+) -> Result<Vec<crate::dispatch::StoredDispatchEvent>, DispatchError> {
+    let mut events = Vec::new();
+    let mut scanned = cursor;
+    while events.len() < limit {
+        let after = i64::try_from(scanned.0)
+            .map_err(|_| DispatchError::Rejected("dispatch cursor exceeds storage range".into()))?;
+        let remaining = i64::try_from(limit - events.len()).unwrap_or(i64::MAX);
+        let selection = if run.is_some() { "AND run_id = ?3" } else { "" };
+        let sql = format!(
+            "SELECT sequence, recorded_at_ms, run_id, operation FROM {NS}_dispatch_operation WHERE sequence > ?1 {selection} ORDER BY sequence LIMIT ?2"
+        );
+        let mut query = sqlx::query_as::<_, (i64, Option<i64>, String, String)>(&sql)
+            .bind(after)
+            .bind(remaining);
+        if let Some(run) = run {
+            query = query.bind(&run.0);
+        }
+        let rows = query
+            .fetch_all(&mut *connection)
+            .await
+            .map_err(store_error)?;
+        if rows.is_empty() {
+            break;
+        }
+        for (sequence, recorded_at_ms, run_id, encoded) in rows {
+            let event = crate::dispatch::StoredDispatchEvent::decode_row(
+                sequence,
+                recorded_at_ms,
+                &run_id,
+                &encoded,
+            )?;
+            scanned = event.cursor;
+            if event.operation.matches(purpose) {
+                events.push(event);
+            }
+        }
+    }
+    Ok(events)
+}
+
+impl SqliteDispatchStore {
+    async fn read_stored_operations(
+        &self,
+        cursor: DispatchCursor,
+        limit: usize,
+        run: Option<&RunId>,
+        purpose: crate::dispatch::OperationReadPurpose,
+    ) -> Result<Vec<crate::dispatch::StoredDispatchEvent>, DispatchError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let (_authority, mut connection) = self.with_conn().await?;
+        read_stored_operation_page(&mut connection, cursor, limit, run, purpose).await
     }
 }

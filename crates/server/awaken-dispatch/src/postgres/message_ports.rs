@@ -12,72 +12,17 @@ impl DispatchOperationalFeed for PostgresDispatchStore {
         limit: usize,
         run: Option<&RunId>,
     ) -> Result<DispatchPage, DispatchError> {
-        if limit == 0 {
-            return Ok(DispatchPage {
-                events: Vec::new(),
-                next_cursor: cursor,
-            });
-        }
-        let after = i64::try_from(cursor.0).map_err(|_| {
-            DispatchError::Rejected("dispatch cursor exceeds BIGINT range".to_string())
-        })?;
-        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let prefix = NS;
-        let selection = if run.is_some() { "AND run_id = $3" } else { "" };
-        let sql = format!(
-            "SELECT sequence, recorded_at_ms, operation FROM {prefix}_dispatch_operation \
-             WHERE sequence > $1 {selection} ORDER BY sequence LIMIT $2"
-        );
-        let query = sqlx::query(&sql).bind(after).bind(limit);
-        let query = if let Some(run) = run {
-            query.bind(&run.0)
-        } else {
-            query
-        };
-        // A sequence is allocated before commit. Wait for existing INSERT
-        // transactions and prevent new ones only while selecting this page;
-        // otherwise a higher commit can hide a later lower commit forever.
-        // This reuses the operation table's actual PostgreSQL locks, not a
-        // second cursor or writer. The empty-limit row above performs no lock.
-        let mut observation = self.pool.begin().await.map_err(store_error)?;
-        sqlx::query(&format!(
-            "LOCK TABLE {prefix}_dispatch_operation IN SHARE MODE"
-        ))
-        .execute(&mut *observation)
-        .await
-        .map_err(store_error)?;
-        let rows = query
-            .fetch_all(&mut *observation)
-            .await
-            .map_err(store_error)?;
-        observation.commit().await.map_err(store_error)?;
-        let events = rows
+        let events = self
+            .read_stored_operations(
+                cursor,
+                limit,
+                run,
+                crate::dispatch::OperationReadPurpose::Diagnostics,
+            )
+            .await?
             .into_iter()
-            .map(|row| {
-                let sequence = row.try_get::<i64, _>("sequence").map_err(store_error)?;
-                let recorded_at_ms = row
-                    .try_get::<Option<i64>, _>("recorded_at_ms")
-                    .map_err(store_error)?
-                    .map(u64::try_from)
-                    .transpose()
-                    .map_err(|_| {
-                        DispatchError::Rejected(
-                            "persisted dispatch operation time is negative".to_string(),
-                        )
-                    })?;
-                let Json(operation): Json<DispatchOperation> =
-                    row.try_get("operation").map_err(store_error)?;
-                Ok(DispatchOperationalEvent {
-                    cursor: DispatchCursor(u64::try_from(sequence).map_err(|_| {
-                        DispatchError::Rejected(
-                            "persisted dispatch operation sequence is negative".to_string(),
-                        )
-                    })?),
-                    recorded_at_ms,
-                    operation,
-                })
-            })
-            .collect::<Result<Vec<_>, DispatchError>>()?;
+            .filter_map(crate::dispatch::StoredDispatchEvent::diagnostic)
+            .collect::<Vec<_>>();
         let next_cursor = events.last().map_or(cursor, |event| event.cursor);
         Ok(DispatchPage {
             events,
@@ -463,8 +408,9 @@ async fn current_revision(
 
 async fn insert_operation(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    operation: &DispatchOperation,
+    operation: impl Into<crate::dispatch::StoredDispatchOperation>,
 ) -> Result<(), DispatchError> {
+    let operation = operation.into();
     let prefix = NS;
     // Stamped by the database's authority clock, the one every claim and lease
     // judgement of this store reads, in the same transaction as the transition.
@@ -473,9 +419,200 @@ async fn insert_operation(
          VALUES ($1, $2, FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint)"
     ))
     .bind(&operation.run_id().0)
-    .bind(Json(operation))
+    .bind(Json(&operation))
     .execute(&mut **tx)
     .await
     .map_err(store_error)?;
     Ok(())
+}
+
+// Both purposes use the original operation rows, codec and global sequence.
+// Raw batches are decoded before filtering; hidden prefixes cannot consume the
+// logical LIMIT or turn unknown/corrupt old rows into silently empty pages.
+async fn read_stored_operation_page(
+    connection: &mut sqlx::PgConnection,
+    cursor: DispatchCursor,
+    limit: usize,
+    run: Option<&RunId>,
+    purpose: crate::dispatch::OperationReadPurpose,
+) -> Result<Vec<crate::dispatch::StoredDispatchEvent>, DispatchError> {
+    let mut events = Vec::new();
+    let mut scanned = cursor;
+    while events.len() < limit {
+        let after = i64::try_from(scanned.0)
+            .map_err(|_| DispatchError::Rejected("dispatch cursor exceeds storage range".into()))?;
+        let remaining = i64::try_from(limit - events.len()).unwrap_or(i64::MAX);
+        let selection = if run.is_some() { "AND run_id = $3" } else { "" };
+        let sql = format!(
+            "SELECT sequence, recorded_at_ms, run_id, operation FROM {NS}_dispatch_operation WHERE sequence > $1 {selection} ORDER BY sequence LIMIT $2"
+        );
+        let mut query =
+            sqlx::query_as::<_, (i64, Option<i64>, String, Json<serde_json::Value>)>(&sql)
+                .bind(after)
+                .bind(remaining);
+        if let Some(run) = run {
+            query = query.bind(&run.0);
+        }
+        let rows = query
+            .fetch_all(&mut *connection)
+            .await
+            .map_err(store_error)?;
+        if rows.is_empty() {
+            break;
+        }
+        for (sequence, recorded_at_ms, run_id, encoded) in rows {
+            let event = crate::dispatch::StoredDispatchEvent::decode_row(
+                sequence,
+                recorded_at_ms,
+                &run_id,
+                &encoded.0.to_string(),
+            )?;
+            scanned = event.cursor;
+            if event.operation.matches(purpose) {
+                events.push(event);
+            }
+        }
+    }
+    Ok(events)
+}
+
+impl PostgresDispatchStore {
+    async fn read_stored_operations(
+        &self,
+        cursor: DispatchCursor,
+        limit: usize,
+        run: Option<&RunId>,
+        purpose: crate::dispatch::OperationReadPurpose,
+    ) -> Result<Vec<crate::dispatch::StoredDispatchEvent>, DispatchError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        // Preserve the original complete-prefix barrier across every raw
+        // batch, not merely the first one: no lower uncommitted allocation can
+        // be skipped by a later public or internal checkpoint.
+        let mut observation = self.pool.begin().await.map_err(store_error)?;
+        sqlx::query(&format!("LOCK TABLE {NS}_dispatch_operation IN SHARE MODE"))
+            .execute(&mut *observation)
+            .await
+            .map_err(store_error)?;
+        let events =
+            read_stored_operation_page(&mut observation, cursor, limit, run, purpose).await?;
+        observation.commit().await.map_err(store_error)?;
+        Ok(events)
+    }
+}
+
+// One physical-retirement + immutable operation append transaction. This
+// original Postgres store owns both effects; keeping the transaction beside
+// its operation codec/writer adds no second lifecycle or persistence owner.
+impl PostgresDispatchStore {
+    pub(super) async fn finish_physical_attempt_with(
+        &self,
+        claim: &RunClaim,
+        closure: Option<&crate::AttemptClosureRecord>,
+    ) -> Result<SettleOutcome, DispatchError> {
+        if let Some(record) = closure {
+            record.validate()?;
+        }
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let p = NS;
+        let epoch = durable_i64("dispatch attempt epoch", claim.epoch)?;
+        let current: Option<crate::dispatch::PhysicalAttemptStorageRow<Json<RunDispatch>>> = sqlx::query_as(&format!("SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, request, active_attempt_closing FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"))
+            .bind(&claim.run_id.0).fetch_optional(&mut *tx).await.map_err(store_error)?;
+        let Some((active_owner, active_epoch, binding, request, closing)) = current else {
+            let outcome = if let Some(record) = closure {
+                let prior = read_stored_operation_page(
+                    &mut tx,
+                    DispatchCursor::default(),
+                    usize::MAX,
+                    Some(&claim.run_id),
+                    crate::dispatch::OperationReadPurpose::AttemptClosure,
+                )
+                .await?;
+                crate::dispatch::attempt_closure_replay(
+                    record,
+                    prior.iter().filter_map(|event| event.operation.closure()),
+                )?
+            } else {
+                SettleOutcome::Fenced
+            };
+            tx.commit().await.map_err(store_error)?;
+            return Ok(outcome);
+        };
+        let active_epoch = active_epoch
+            .map(|value| durable_u64("dispatch attempt epoch", value))
+            .transpose()?;
+        let slot = PhysicalAttemptSlot::from_facts(
+            active_owner.is_some(),
+            active_epoch.is_some(),
+            active_owner.as_deref() == Some(&claim.owner),
+            active_epoch == Some(claim.epoch),
+        );
+        let (transition, outcome) =
+            crate::dispatch::decide_physical_attempt_finish(slot, closing, closure.is_some())?;
+        if let Some(record) = closure {
+            if transition == PhysicalAttemptTransition::Stutter {
+                let prior = read_stored_operation_page(
+                    &mut tx,
+                    DispatchCursor::default(),
+                    usize::MAX,
+                    Some(&claim.run_id),
+                    crate::dispatch::OperationReadPurpose::AttemptClosure,
+                )
+                .await?;
+                let replay = crate::dispatch::attempt_closure_replay(
+                    record,
+                    prior.iter().filter_map(|event| event.operation.closure()),
+                )?;
+                tx.commit().await.map_err(store_error)?;
+                return Ok(replay);
+            }
+            if transition == PhysicalAttemptTransition::Clear {
+                let request = request.0;
+                let mut stored = crate::dispatch::decode_physical_attempt(
+                    &claim.run_id,
+                    active_owner.clone(),
+                    active_epoch,
+                    binding,
+                    closing,
+                )?;
+                if let Some(stored) = &mut stored {
+                    stored.thread_id = Some(request.thread_id().clone());
+                    stored.session_thread_id = request.session_thread_id;
+                }
+                if stored.as_ref() != Some(record.attempt()) {
+                    return Err(DispatchError::Conflict(
+                        "closure subject differs from the frozen physical attempt".into(),
+                    ));
+                }
+                let prior = read_stored_operation_page(
+                    &mut tx,
+                    DispatchCursor::default(),
+                    usize::MAX,
+                    Some(&claim.run_id),
+                    crate::dispatch::OperationReadPurpose::AttemptClosure,
+                )
+                .await?;
+                if prior
+                    .iter()
+                    .filter_map(|event| event.operation.closure())
+                    .any(|previous| previous.attempt().claim == *claim)
+                {
+                    return Err(DispatchError::Conflict(
+                        "a retired closure subject cannot be asserted for another active entry"
+                            .into(),
+                    ));
+                }
+            }
+        }
+        if transition == PhysicalAttemptTransition::Clear {
+            sqlx::query(&format!("UPDATE {p}_dispatch SET active_attempt_owner = NULL, active_attempt_epoch = NULL, active_attempt_binding = NULL, active_attempt_closing = FALSE, retired_attempt_epoch = $3 WHERE run_id = $1 AND active_attempt_owner = $2 AND active_attempt_epoch = $3"))
+                .bind(&claim.run_id.0).bind(&claim.owner).bind(epoch).execute(&mut *tx).await.map_err(store_error)?;
+            if let Some(record) = closure {
+                insert_operation(&mut tx, record).await?;
+            }
+        }
+        tx.commit().await.map_err(store_error)?;
+        Ok(outcome)
+    }
 }

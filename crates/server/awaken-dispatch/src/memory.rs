@@ -61,8 +61,7 @@ use crate::dispatch::{
     verify_credential_realization_receipt,
 };
 use crate::{
-    DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
-    DispatchPage, LeaseLossReason,
+    DispatchCursor, DispatchOperation, DispatchOperationalFeed, DispatchPage, LeaseLossReason,
 };
 use awaken_dispatch_contract::{
     CancelTransition, CommitEpochAdmission, DispatchTransition, DispatchTransitionError,
@@ -229,7 +228,7 @@ struct State {
     /// Applied-Done facts, retained as permanent run-id tombstones (ADR-0060).
     completions: Vec<DispatchCompletion>,
     /// Dispatch-authority transitions in the same order as their mutations.
-    operations: Vec<DispatchOperationalEvent>,
+    operations: Vec<crate::dispatch::StoredDispatchEvent>,
 }
 
 impl State {
@@ -325,11 +324,14 @@ fn lock(state: &Mutex<State>) -> Result<std::sync::MutexGuard<'_, State>, Dispat
         .map_err(|_| DispatchError::unavailable("dispatch store poisoned"))
 }
 
-fn push_operation(state: &mut State, operation: DispatchOperation) {
-    state.operations.push(DispatchOperationalEvent {
+fn push_operation(
+    state: &mut State,
+    operation: impl Into<crate::dispatch::StoredDispatchOperation>,
+) {
+    state.operations.push(crate::dispatch::StoredDispatchEvent {
         cursor: DispatchCursor(state.operations.len() as u64 + 1),
         recorded_at_ms: Some(awaken_time::WallClockExt::now_ms(&*state.clock)),
-        operation,
+        operation: operation.into(),
     });
 }
 
@@ -1282,7 +1284,7 @@ impl awaken_dispatch_contract::DispatchExecution for MemoryDispatchStore {
     }
 
     async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
-        self.finish_physical_attempt_with(claim, false).await
+        self.finish_physical_attempt_with(claim, None).await
     }
 
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
@@ -1527,9 +1529,10 @@ impl awaken_dispatch_contract::DispatchAdministration for MemoryDispatchStore {
 impl awaken_dispatch_contract::DispatchAttemptControl for MemoryDispatchStore {
     async fn finish_attempt_closure(
         &self,
-        claim: &RunClaim,
+        record: &crate::AttemptClosureRecord,
     ) -> Result<SettleOutcome, DispatchError> {
-        self.finish_physical_attempt_with(claim, true).await
+        self.finish_physical_attempt_with(&record.attempt().claim, Some(record))
+            .await
     }
 
     async fn admit_attempt_guarded(
@@ -1591,6 +1594,16 @@ impl awaken_dispatch_contract::DispatchControlReads for MemoryDispatchStore {
             .map(Row::physical_attempt)
             .transpose()
             .map(Option::flatten)
+    }
+
+    async fn attempt_closure_records_after(
+        &self,
+        cursor: DispatchCursor,
+        limit: usize,
+        run: Option<&RunId>,
+    ) -> Result<crate::AttemptClosurePage, DispatchError> {
+        self.read_retained_attempt_closures(cursor, limit, run)
+            .await
     }
 
     async fn completion_events_after(
@@ -1871,15 +1884,15 @@ impl DispatchOperationalFeed for MemoryDispatchStore {
         limit: usize,
         run: Option<&RunId>,
     ) -> Result<DispatchPage, DispatchError> {
-        let state = lock(&self.state)?;
-        let events = state
-            .operations
-            .iter()
-            .filter(|event| {
-                event.cursor > cursor && run.is_none_or(|run| event.operation.run_id() == run)
-            })
-            .take(limit)
-            .cloned()
+        let events = lock(&self.state)?
+            .operation_page(
+                cursor,
+                limit,
+                run,
+                crate::dispatch::OperationReadPurpose::Diagnostics,
+            )
+            .into_iter()
+            .filter_map(crate::dispatch::StoredDispatchEvent::diagnostic)
             .collect::<Vec<_>>();
         let next_cursor = events.last().map_or(cursor, |event| event.cursor);
         Ok(DispatchPage {

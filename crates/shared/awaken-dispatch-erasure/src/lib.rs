@@ -471,9 +471,9 @@ impl awaken_dispatch_contract::SessionReservationAuthority for AnyCoordinatorDis
 impl DispatchAttemptControl for AnyCoordinatorDispatch {
     async fn finish_attempt_closure(
         &self,
-        claim: &RunClaim,
+        record: &awaken_dispatch_contract::AttemptClosureRecord,
     ) -> Result<SettleOutcome, DispatchError> {
-        delegate_owner!(self, finish_attempt_closure(claim))
+        delegate_owner!(self, finish_attempt_closure(record))
     }
 
     async fn admit_attempt_guarded(
@@ -522,6 +522,15 @@ impl DispatchControlReads for AnyCoordinatorDispatch {
         run_id: &RunId,
     ) -> Result<Option<awaken_dispatch_contract::dispatch::PhysicalAttempt>, DispatchError> {
         delegate_owner!(self, load_physical_attempt(run_id))
+    }
+
+    async fn attempt_closure_records_after(
+        &self,
+        cursor: DispatchCursor,
+        limit: usize,
+        run: Option<&RunId>,
+    ) -> Result<awaken_dispatch_contract::AttemptClosurePage, DispatchError> {
+        delegate_owner!(self, attempt_closure_records_after(cursor, limit, run))
     }
 
     async fn completion_events_after(

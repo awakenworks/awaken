@@ -105,7 +105,8 @@ ATTEMPT_RESULT_OWNER = "crates/server/awaken-dispatch/src/dispatch.rs"
 ATTEMPT_BACKENDS = {
     "crates/server/awaken-dispatch/src/memory/physical_attempt.rs": ("admission", "finish", "close"),
     "crates/server/awaken-dispatch/src/sqlite/physical_attempt.rs": ("admission", "finish", "close"),
-    "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs": ("admission", "finish", "close"),
+    "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs": ("admission", "close"),
+    "crates/server/awaken-dispatch/src/postgres/message_ports.rs": ("finish",),
 }
 
 
@@ -195,8 +196,11 @@ def selftest() -> None:
     # A3 backend+!C2+C3 -> accept; A4 backend missing any C3 call -> reject.
     # Memory and SQLite consolidate storage under their existing physical
     # attempt modules. A5 each contains admission, return and closure calls;
-    # removing any moved call must still fail A4. Thin forwarding is not a
-    # second decision owner.
+    # removing any moved call must still fail A4. A6 PostgreSQL retains
+    # admission/close in its queue owner and atomically retires/appends in its
+    # message-port owner. A finish call in the queue cannot replace a missing
+    # message-port finish; direct kernel calls still violate A2 in either file.
+    # Thin forwarding is not a second decision owner.
     # Constraint: this is structural ownership evidence, not a proof of SQL
     # transaction semantics; backend conformance owns behavioral refinement.
     shared = "decide_physical_attempt_admission(x); decide_physical_attempt_finish(x); decide_physical_attempt_close(x);"
@@ -210,6 +214,20 @@ def selftest() -> None:
         for operation in operations:
             missing = shared.replace(f"decide_physical_attempt_{operation}(x);", "")
             assert attempt_rule_violations(backend, missing)  # A4
+    postgres_queue = "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs"
+    postgres_records = "crates/server/awaken-dispatch/src/postgres/message_ports.rs"
+    assert attempt_rule_violations(
+        postgres_queue, "decide_physical_attempt_admission(x); decide_physical_attempt_close(x);"
+    ) == []  # A6 responsibilities retained at the actual queue owner
+    assert attempt_rule_violations(
+        postgres_records, "decide_physical_attempt_finish(x);"
+    ) == []  # A6 finish shares the operation writer's transaction
+    misplaced = attempt_rule_violations(postgres_queue, shared)
+    misplaced += attempt_rule_violations(postgres_records, "")
+    assert any(
+        error == f"{postgres_records}: missing canonical decide_physical_attempt_finish call"
+        for error in misplaced
+    )  # A6 even a queue finish cannot cover the actual owner's missing call
 
 
 def check_all(repo_root: Path, crates_root: Path) -> list[str]:

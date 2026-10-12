@@ -116,10 +116,11 @@ pub use awaken_dispatch_contract::{
 };
 pub use awaken_dispatch_contract::{ClaimedStreamPublisher, SessionContinuationOutbox};
 pub use dispatch::{
-    AttemptAdmission, AttemptCredentialBinding, AttemptExecutionBinding, CandidateFingerprint,
-    CasOutcome, Claimed, ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport,
-    CommitEpochGuard, ContinuationAdmission, CredentialRealizationReceipt, DispatchCompletion,
-    DispatchDepths, DispatchError, DispatchLease, DispatchOutcome, DispatchSettlementError,
+    AttemptAdmission, AttemptClosureEvent, AttemptClosurePage, AttemptClosureRecord,
+    AttemptCredentialBinding, AttemptExecutionBinding, CandidateFingerprint, CasOutcome, Claimed,
+    ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport, CommitEpochGuard,
+    ContinuationAdmission, CredentialRealizationReceipt, DispatchCompletion, DispatchDepths,
+    DispatchError, DispatchLease, DispatchOutcome, DispatchSettlementError,
     DispatchSettlementObserver, DispatchState, DispatchSummary, Inbox, LeaseRenewalOutcome, Outbox,
     PendingInput, PendingRecord, PhysicalAttempt, RunClaim, SessionChildAdmission,
     SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,

@@ -184,40 +184,44 @@ impl ClosedAttemptExecution {
                 "complete closure requires a durably closed entry and provider evidence",
             ));
         }
-        Ok(AttemptStopStatus::Stopped(Box::new(ObservedAttemptStop {
-            attempt: self.attempt.clone(),
-            evidence_ref,
+        let record = awaken_dispatch_contract::AttemptClosureRecord::try_new(
+            self.attempt.clone(),
             kind,
+            evidence_ref,
+        )
+        .map_err(|error| ApplicationError::invalid(error.to_string()))?;
+        Ok(AttemptStopStatus::Stopped(Box::new(ObservedAttemptStop {
+            record,
         })))
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AttemptClosureKind {
-    AllExecutionStopped,
-    ControlledExecutionClosed,
-}
+pub use awaken_dispatch_contract::AttemptClosureKind;
 
 /// Subject-bound assertion from the trusted stop source, never deserialized
 /// from Worker/user JSON. Covers this physical attempt only, not Session cleanup,
 /// business outcome, side-effect replay safety, or a successor's authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedAttemptStop {
-    attempt: crate::PhysicalAttempt,
-    evidence_ref: String,
-    kind: AttemptClosureKind,
+    record: awaken_dispatch_contract::AttemptClosureRecord,
 }
 
 impl ObservedAttemptStop {
     pub fn kind(&self) -> AttemptClosureKind {
-        self.kind
+        self.record.kind()
     }
     pub fn attempt(&self) -> &crate::PhysicalAttempt {
-        &self.attempt
+        self.record.attempt()
     }
 
     pub fn evidence_ref(&self) -> &str {
-        &self.evidence_ref
+        self.record.evidence_ref()
+    }
+
+    /// Retained data from this private trusted observation; never a grant
+    /// reconstructed from Worker/user JSON.
+    pub fn record(&self) -> &awaken_dispatch_contract::AttemptClosureRecord {
+        &self.record
     }
 }
 
@@ -533,7 +537,7 @@ pub async fn stop_expired_predecessor(
         // The closing phase denies normal return/handoff during provider IO.
         // Exact Coordinator closure still cannot clear a successor's slot.
         let retirement = dispatch
-            .finish_attempt_closure(&predecessor.claim)
+            .finish_attempt_closure(receipt.record())
             .await
             .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
         tracing::debug!(?retirement, kind = ?receipt.kind(), "independently closed physical attempt");
