@@ -48,7 +48,10 @@ pub use session_admission::SessionRunAdmissionObserver;
 pub use wake::{LocalWakeSignal, WakeSignal, publish_dispatch_hint};
 pub use worker::{DEFAULT_LEASE_MS, DispatchWorker, claim_bound_ownership_verifier};
 pub use worker_context::{ClaimedModelRequestGateFactory, InferenceMaterializerFn};
-pub use worker_evidence::{PhysicalAttemptReads, WorkerEvidenceRelease};
+pub use worker_evidence::{
+    PhysicalAttemptReads, PhysicalAttemptRecoveryRead, WorkerEvidenceRelease,
+    WorkerTerminalReconciliation, committed_terminal_ready,
+};
 
 pub use awaken_dispatch_erasure::{
     AnyCoordinatorDispatch, AnyDispatchStore, Dispatch, DispatchBinding, DispatchTopology,

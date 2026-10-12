@@ -45,7 +45,7 @@
       "awaken_agent_contract::stream::checkpoint": 4,
       "awaken_agent_contract::stream::sink": 1,
       "awaken_agent_contract::thread::commit": 3,
-      "awaken_agent_contract::thread::read::RunRecoverySource": 2,
+      "awaken_agent_contract::thread::read::RunRecoverySource": 1,
       "awaken_runtime_contract::activation": 1,
       "awaken_runtime_contract::attempt_termination": 1,
       "awaken_runtime_contract::control": 1,

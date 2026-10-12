@@ -59,8 +59,6 @@ impl SharedHost {
         // claims and remote claims revalidate against this same Host evidence.
         let local_credential_capabilities = self.local_credential_realization_capabilities();
         let recovery_projection = commit.recovery_projection();
-        let settlement_observer = self.dispatch_settlement_observer();
-        let session_admission_observer = self.session_run_admission_observer();
         // The recovered dispatch a crash left mid-flight is re-executed by this
         // worker; giving it the same checkpoint store lets that re-execution resume
         // the interrupted step from its flushed partial (Phase 3 cross-process).
@@ -80,11 +78,10 @@ impl SharedHost {
         if let Some(factory) = claimed_model_gate {
             worker = worker.with_claimed_model_request_gate_factory(factory);
         }
-        if let Some(observer) = settlement_observer {
-            worker = worker.with_settlement_observer(observer);
-        }
-        if let Some(observer) = session_admission_observer {
-            worker = worker.with_session_run_admission_observer(observer);
+        if let Some(observer) = self.dispatch_settlement_observer() {
+            worker = worker
+                .with_settlement_observer(observer.clone())
+                .with_session_run_admission_observer(observer);
         }
         worker = match self.authority.live_progress_publisher() {
             Some(publisher) => worker.with_claimed_stream_publisher(publisher),
