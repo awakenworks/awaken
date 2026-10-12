@@ -2419,17 +2419,21 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
     // T2 identical command + later clock -> exact root, no repeated effects;
     // T3 genuine mutation -> update only; T4 response loss + same receipt ->
     // first mutation time; T5 clock rollback -> updated time never regresses.
+    // T6 captures the real atomic insertion, removes only the new server-owned
+    // fact to form old raw JSON, installs its original default receipt through
+    // the real Store, then requires new-binary replay without history/effects.
     let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
             .unwrap(),
     );
     let runtime = Arc::new(RecordingCreateRuntime::default());
+    let captured = Arc::new(FaultingSessionRepository::new(repository.clone()));
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(1_800_000_000_123));
     let application = SessionApplication::new_with_configuration(
         runtime.clone(),
         Arc::new(NoopMcpRealizer),
-        crate::SessionPersistence::new(repository.clone(), clock.clone()),
+        crate::SessionPersistence::new(captured.clone(), clock.clone()),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
@@ -2444,6 +2448,10 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
         command
     };
     let created = application.create_session(make()).await.unwrap();
+    assert!(
+        created.environment_materialization().unwrap().is_empty(),
+        "T1 fresh fact atomic with root"
+    );
     assert_eq!(created.created_at_unix_ms, Some(1_800_000_000_123), "T1");
     clock.advance(10_000);
     assert_eq!(
@@ -2452,6 +2460,66 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
         "T2"
     );
     assert_eq!(runtime.preparations.load(Ordering::SeqCst), 1, "T2");
+    let inserted = captured.applied_create_roots().into_iter().next().unwrap();
+    let mut old_wire = serde_json::to_value(&inserted).unwrap();
+    old_wire
+        .as_object_mut()
+        .unwrap()
+        .remove("environment_materialization");
+    let mut old: PersistedSession = serde_json::from_value(old_wire).unwrap();
+    assert!(
+        old.environment_materialization().is_none(),
+        "T6 old JSON stays unknown"
+    );
+    old.revision = awaken_session_types::SessionRevision(0);
+    let mut old_request = old.clone();
+    old_request.created_at_unix_ms = None;
+    old_request.updated_at_unix_ms = None;
+    let old_hash =
+        awaken_session_state_contract::SessionMutationPayload::Replace(old_request).stable_hash();
+    let old_receipt = awaken_session_state_contract::IdempotencyRecord {
+        key: format!("session:create:{}:{old_hash}", old.session_id),
+        payload_hash: old_hash,
+    };
+    let historical: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    historical
+        .create("workspace", old, old_receipt, Vec::new())
+        .await
+        .unwrap();
+    let old_readback = historical.get(&created.session_id).await.unwrap();
+    let historical_runtime = Arc::new(RecordingCreateRuntime::default());
+    let new_reader = SessionApplication::new_with_configuration(
+        historical_runtime.clone(),
+        Arc::new(NoopMcpRealizer),
+        crate::SessionPersistence::new(historical.clone(), clock.clone()),
+        Arc::new(RecordingEnvironmentSource::default()),
+        SessionApplicationConfiguration {
+            execution_placement: SessionExecutionPlacement::RegisteredWorker,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        new_reader.create_session(make()).await.unwrap(),
+        old_readback,
+        "T6 exact old receipt replay"
+    );
+    assert!(
+        historical
+            .get(&created.session_id)
+            .await
+            .unwrap()
+            .environment_materialization()
+            .is_none()
+    );
+    assert_eq!(
+        historical_runtime.preparations.load(Ordering::SeqCst),
+        0,
+        "T6 zero repeated effects"
+    );
     let owner = application.owner(&created.session_id).await.unwrap();
     let mut changed = created.clone();
     changed.title = Some("time mutation".into());

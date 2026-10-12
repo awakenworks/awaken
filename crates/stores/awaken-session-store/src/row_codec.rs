@@ -46,6 +46,8 @@ fn invalid(message: impl Into<String>) -> serde_json::Error {
 }
 
 fn verify_aggregate(session: &PersistedSession) -> Result<(), serde_json::Error> {
+    awaken_session_state_contract::SessionEnvironmentMaterialization::validate_for(session)
+        .map_err(|error| invalid(error.to_string()))?;
     for batch in &session.event_batches {
         batch
             .verify_admission()
@@ -1017,6 +1019,108 @@ mod tests {
             serde_json::from_str(&canonical).expect("canonical envelope JSON");
         unknown["format"] = serde_json::json!("awaken.session.v999");
         assert!(super::decode_aggregate(&unknown.to_string()).is_err(), "F4");
+    }
+
+    #[test]
+    fn materialization_wire_validation_reuses_the_root_law_without_inventing_history() {
+        // Causes C1 raw old/current envelope; C2 missing/null/present-empty;
+        // C3 full valid intent vs foreign Session, non-materialization kind or
+        // structurally invalid lease. Effects: old rows stay omitted Unknown;
+        // explicit fresh survives; malformed facts fail encode and the actual
+        // indexed row decoder (the private JSON shape parser is not admission);
+        // historical lease expiry/current-owner changes are not corruption.
+        use awaken_session_state_contract::{
+            SessionAggregate, SessionEnvironmentEffectIntent, SessionEnvironmentEffectKind,
+        };
+        let old = sample("materialization-codec");
+        let raw = serde_json::to_string(&old).unwrap();
+        assert!(
+            super::decode_aggregate(&raw)
+                .unwrap()
+                .environment_materialization()
+                .is_none()
+        );
+        let mut fresh = awaken_session_state_contract::PersistedSession::frozen_with_budget(
+            old.session_id.clone(),
+            old.frozen_baseline().unwrap().clone(),
+            old.resources.clone(),
+            old.mcp.clone(),
+            old.title.clone(),
+            old.metadata.clone(),
+            old.tools.clone(),
+            old.budget.clone(),
+        );
+        fresh.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+            owner: "worker".into(),
+            runtime_incarnation: "worker:1:boot".into(),
+            epoch: 1,
+            expires_at_unix_ms: 500,
+        });
+        let fingerprint = fresh
+            .frozen_baseline()
+            .unwrap()
+            .environment
+            .config_fingerprint
+            .0
+            .clone();
+        let intent = SessionEnvironmentEffectIntent::new(
+            fresh.session_id.clone(),
+            SessionEnvironmentEffectKind::Create,
+            fresh.realization.clone(),
+        )
+        .for_environment(fingerprint.clone());
+        let mut aggregate = SessionAggregate::try_from(fresh).unwrap();
+        aggregate
+            .environment()
+            .admit_environment_effect("workspace", &intent, 1)
+            .unwrap();
+        let mut historic = aggregate.into_snapshot();
+        historic.realization = None;
+        assert_eq!(
+            super::decode_aggregate(&super::encode(&historic).unwrap()).unwrap(),
+            historic,
+            "C3 history independent of current lease"
+        );
+        for bad in [
+            SessionEnvironmentEffectIntent::new(
+                "foreign",
+                SessionEnvironmentEffectKind::Create,
+                intent.realization().cloned(),
+            )
+            .for_environment(fingerprint.clone()),
+            SessionEnvironmentEffectIntent::new(
+                historic.session_id.clone(),
+                SessionEnvironmentEffectKind::Adopt,
+                intent.realization().cloned(),
+            )
+            .for_environment(fingerprint.clone())
+            .from_binding("binding"),
+            SessionEnvironmentEffectIntent::new(
+                historic.session_id.clone(),
+                SessionEnvironmentEffectKind::Create,
+                None,
+            )
+            .for_environment(fingerprint),
+        ] {
+            let mut invalid = serde_json::to_value(&historic).unwrap();
+            invalid["environment_materialization"]["pending"] = serde_json::to_value(bad).unwrap();
+            let dto: awaken_session_state_contract::PersistedSession =
+                serde_json::from_value(invalid.clone()).unwrap();
+            assert!(super::encode(&dto).is_err(), "C3 encode uses same law");
+            for wire in [
+                invalid.clone(),
+                serde_json::json!({"format": super::CURRENT_AGGREGATE_FORMAT, "aggregate": invalid}),
+            ] {
+                assert!(
+                    super::decode(super::EncodedSessionRow {
+                        aggregate_json: wire.to_string(),
+                        revision: i64::try_from(historic.revision.0).unwrap(),
+                    })
+                    .is_err(),
+                    "C1/C3 canonical row decoder uses same law"
+                );
+            }
+        }
     }
 
     #[test]

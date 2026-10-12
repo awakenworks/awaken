@@ -926,6 +926,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         revision: awaken_session_types::SessionRevision(1),
         baseline,
         agent_publication: None,
+        environment_materialization: None,
         environment: Default::default(),
         resource_revision: 1,
         resources: resources.clone(),

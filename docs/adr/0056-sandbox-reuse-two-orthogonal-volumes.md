@@ -410,12 +410,15 @@ Provider I/O can outlive the lease captured in an Environment effect intent even
 while the existing renewal sweep extends the same generation. The Host retains
 one pre-I/O authority source in AuthorizedSessionEnvironmentEffect, forwards it
 to physical creation, and re-enters it before building the persistence receipt.
-The receipt uses current Control expiry under unchanged owner/incarnation/epoch,
-operation, binding and Environment context; its canonical fingerprint is rebuilt
-through the existing constructor. Worker loss, closed/expired proof, slot ABA or
-reassignment rejects before persistence. No TTL increase or second renewal task
-is introduced. This closes the real cold-pull failure where remote receipt
-admission correctly rejected the stale pre-create expiry.
+The Session root saves the complete first intent before provider I/O. The receipt
+uses that original intent, including its original expiry and frozen context;
+renewal never changes the operation identity or repairs missing history. Current
+Control authority is checked separately under the same owner/incarnation/epoch,
+and the receipt is built through the existing constructor from the saved value.
+Worker loss, closed/expired current proof, slot ABA or reassignment rejects
+before persistence. No TTL increase or second renewal task is introduced. Slow
+creation can therefore finish under an exact live renewal while preserving the
+root's original creation identity and receipt fingerprint.
 
 ## Amendment 2026-10-06: the selection and adoption kernels are designed but not wired
 

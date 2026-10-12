@@ -35,6 +35,10 @@ pub(crate) enum BoundSessionEnvironmentIdentity {
 #[derive(Clone)]
 pub(crate) struct UnboundSessionEnvironment {
     pub origin: UnboundSessionEnvironmentOrigin,
+    /// Exact immutable ordinary effect captured before provider I/O. A terminal
+    /// wrapper or historical owner may have no ordinary intent; neither can
+    /// reconstruct one from its ownership phase or a later realization lease.
+    pub intent: Option<Box<awaken_session_state_contract::SessionEnvironmentEffectIntent>>,
     pub binding: String,
     pub environment: Arc<crate::session_environment::SessionEnvironment>,
 }
@@ -42,33 +46,24 @@ pub(crate) struct UnboundSessionEnvironment {
 impl UnboundSessionEnvironment {
     pub(crate) fn exact_matches(&self, other: &Self) -> bool {
         self.origin == other.origin
+            && self.intent == other.intent
             && self.binding == other.binding
             && Arc::ptr_eq(&self.environment, &other.environment)
             && self.environment.lifecycle().handle() == other.environment.lifecycle().handle()
     }
 
-    pub(crate) fn effect_kind(
+    pub(crate) fn ordinary_intent(
         &self,
-    ) -> awaken_session_state_contract::SessionEnvironmentEffectKind {
-        match &self.origin {
-            UnboundSessionEnvironmentOrigin::New
-            | UnboundSessionEnvironmentOrigin::DurableCreate(_) => {
-                awaken_session_state_contract::SessionEnvironmentEffectKind::Create
-            }
-            UnboundSessionEnvironmentOrigin::Adoption
-            | UnboundSessionEnvironmentOrigin::AdoptionFrom(_)
-            | UnboundSessionEnvironmentOrigin::DurableAdoption(_) => {
-                awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt
-            }
-        }
-    }
-
-    pub(crate) fn source_binding(&self) -> Option<&str> {
-        matches!(
-            self.effect_kind(),
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt
-        )
-        .then_some(self.binding.as_str())
+    ) -> Result<
+        &awaken_session_state_contract::SessionEnvironmentEffectIntent,
+        crate::host_error::HostError,
+    > {
+        self.intent.as_deref().ok_or_else(|| {
+            crate::host_error::HostError::unavailable_classified(
+                "session_environment_candidate_intent_unknown",
+                "retained Environment has no original ordinary effect intent",
+            )
+        })
     }
 
     /// Known source or committed identity for this exact physical owner.
@@ -353,24 +348,16 @@ impl SessionEnvironmentOwner {
             Self::Preparing(SessionEnvironmentPreparation::AwaitingAdoption {
                 binding, ..
             }) => Some(binding),
-            Self::Resident(owned) => {
-                identity_is_durable(&owned.identity).then_some(owned.binding.as_str())
-            }
-            Self::Retiring(retiring) => match &retiring.owned {
-                RetiringEnvironmentOwner::Bound(owned) => {
-                    identity_is_durable(&owned.identity).then_some(owned.binding.as_str())
-                }
-                RetiringEnvironmentOwner::Unbound(candidate) => match &candidate.origin {
-                    UnboundSessionEnvironmentOrigin::DurableCreate(_)
-                    | UnboundSessionEnvironmentOrigin::AdoptionFrom(_)
-                    | UnboundSessionEnvironmentOrigin::Adoption
-                    | UnboundSessionEnvironmentOrigin::DurableAdoption(_) => {
-                        Some(candidate.binding.as_str())
-                    }
-                    UnboundSessionEnvironmentOrigin::New => None,
-                },
-            },
-            Self::Preparing(SessionEnvironmentPreparation::Candidate(candidate)) => matches!(
+            Self::Resident(owned)
+            | Self::Retiring(RetiringSessionEnvironment {
+                owned: RetiringEnvironmentOwner::Bound(owned),
+                ..
+            }) => identity_is_durable(&owned.identity).then_some(owned.binding.as_str()),
+            Self::Preparing(SessionEnvironmentPreparation::Candidate(candidate))
+            | Self::Retiring(RetiringSessionEnvironment {
+                owned: RetiringEnvironmentOwner::Unbound(candidate),
+                ..
+            }) => matches!(
                 &candidate.origin,
                 UnboundSessionEnvironmentOrigin::DurableCreate(_)
                     | UnboundSessionEnvironmentOrigin::AdoptionFrom(_)

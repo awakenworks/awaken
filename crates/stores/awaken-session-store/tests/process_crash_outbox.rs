@@ -49,52 +49,41 @@ fn session() -> PersistedSession {
             resource_holder: holder,
         },
     };
-    PersistedSession {
-        created_at_unix_ms: None,
-        updated_at_unix_ms: None,
-        session_id: "sesn_process_crash".into(),
-        revision: Default::default(),
-        baseline: awaken_session_configuration_contract::SessionBaselineState::Frozen(
-            awaken_session_configuration_contract::SessionBaseline::compile(
-                awaken_session_configuration_contract::SessionBaselineInputs {
-                    environment,
-                    runtime_placement:
-                        awaken_session_configuration_contract::SessionRuntimePlacement::Local,
-                    mcp_authoring: Default::default(),
-                    agent_id: "assistant".into(),
-                    agent_revision: None,
-                    model_override: None,
-                    model: "model".into(),
-                    runtime: None,
-                    delegate_ids: Vec::new(),
-                    toolsets: Vec::new(),
-                    mounts: Vec::new(),
-                    env: Vec::new(),
-                    prompts: Vec::new(),
-                    transcript_prefix: None,
-                },
-            ),
+    let mut legacy = PersistedSession::frozen_with_budget(
+        "sesn_process_crash",
+        awaken_session_configuration_contract::SessionBaseline::compile(
+            awaken_session_configuration_contract::SessionBaselineInputs {
+                environment,
+                runtime_placement:
+                    awaken_session_configuration_contract::SessionRuntimePlacement::Local,
+                mcp_authoring: Default::default(),
+                agent_id: "assistant".into(),
+                agent_revision: None,
+                model_override: None,
+                model: "model".into(),
+                runtime: None,
+                delegate_ids: Vec::new(),
+                toolsets: Vec::new(),
+                mounts: Vec::new(),
+                env: Vec::new(),
+                prompts: Vec::new(),
+                transcript_prefix: None,
+            },
         ),
-        title: None,
-        metadata: BTreeMap::new(),
-        tools: Default::default(),
-        budget: Default::default(),
-        event_batches: Vec::new(),
-        activity_epoch: 0,
-        active_activity_epochs: Default::default(),
-        running_interval: None,
-        closed_runtime_intervals: Vec::new(),
-        runtime_active_millis: 0,
-        usage_cursor: Default::default(),
-        environment: Default::default(),
-        mcp: Default::default(),
-        resources: Default::default(),
-        realization: None,
-        realization_progress: Default::default(),
-        execution: SessionExecutionState::Idle,
-        disposition: Default::default(),
-        terminal_cleanup: Default::default(),
-    }
+        Default::default(),
+        Default::default(),
+        None,
+        BTreeMap::new(),
+        Default::default(),
+        Default::default(),
+    );
+    legacy.execution = SessionExecutionState::Idle;
+    // This fixture models the pre-cutover missing field, not a fresh creation.
+    let mut wire = serde_json::to_value(legacy).unwrap();
+    wire.as_object_mut()
+        .unwrap()
+        .remove("environment_materialization");
+    serde_json::from_value(wire).unwrap()
 }
 
 fn fact() -> ManagedLifecycleFact {

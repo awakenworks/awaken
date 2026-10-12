@@ -541,6 +541,7 @@ pub(super) async fn authorize_session_environment_effect(
             &request.identity,
             request.intent.session_id().as_str(),
             lease,
+            RealizationAuthorityPurpose::EnvironmentEffect,
         )
         .await?;
         let authorization = service
@@ -556,7 +557,7 @@ pub(super) async fn authorize_session_environment_effect(
             .map_err(RealizationHttpError::from)?;
         if matches!(
             authorization,
-            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned
+            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned { .. }
         ) {
             return Err(RealizationHttpError::from(
                 awaken_session_types::RunError::classified(
@@ -588,6 +589,7 @@ pub(super) async fn persist_session_environment_receipt(
             &request.identity,
             request.receipt.session_id.as_str(),
             lease,
+            RealizationAuthorityPurpose::EnvironmentEffect,
         )
         .await?;
         let environment = service
@@ -607,40 +609,7 @@ pub(super) async fn persist_session_environment_receipt(
     respond_realization(result)
 }
 
-async fn verify_session_realization_authority(
-    service: &WorkerDispatchService,
-    worker: &VerifiedWorkerContext,
-    identity: &WorkerIdentity,
-    session_id: &str,
-    lease: &awaken_session_resource_contract::SessionRealizationLease,
-) -> Result<(), RealizationHttpError> {
-    verify_worker_identity(worker, identity)
-        .map_err(HostError::bad_request)
-        .map_err(RealizationHttpError::from)?;
-    let authority = claim_authority(service, worker, Some(identity), false).await?;
-    if lease.owner != identity.worker_id
-        || lease.runtime_incarnation != identity.lease_owner()
-        || !awaken_session_realization_contract::realization_lease_is_live_at(
-            lease.expires_at_unix_ms,
-            authority.now_ms,
-        )
-    {
-        return Err(RealizationHttpError::from(HostError::bad_request(
-            "Session realization lease is not owned by the authenticated Worker incarnation",
-        )));
-    }
-    acquire_session_work_owner(
-        service,
-        session_id,
-        &identity.lease_owner(),
-        authority.now_ms,
-        awaken_worker_contract::SessionWorkAcquisition::RealizationRenewal,
-    )
-    .await?;
-    Ok(())
-}
-
-async fn acquire_session_work_owner(
+pub(super) async fn acquire_session_work_owner(
     service: &WorkerDispatchService,
     session_id: &str,
     worker_owner: &str,
@@ -808,6 +777,7 @@ pub(super) async fn activate_session_realization(
             &request.identity,
             request.command.session_id.as_str(),
             &request.command.lease,
+            RealizationAuthorityPurpose::ActiveControl,
         )
         .await?;
         let realization = session_control(&service)
@@ -835,6 +805,7 @@ pub(super) async fn acknowledge_session_realization(
             &request.identity,
             request.command.session_id.as_str(),
             &request.command.lease,
+            RealizationAuthorityPurpose::ActiveControl,
         )
         .await?;
         let realization = session_control(&service)
@@ -862,6 +833,7 @@ pub(super) async fn fail_session_realization(
             &request.identity,
             request.command.session_id.as_str(),
             &request.command.lease,
+            RealizationAuthorityPurpose::ActiveControl,
         )
         .await?;
         session_control(&service)

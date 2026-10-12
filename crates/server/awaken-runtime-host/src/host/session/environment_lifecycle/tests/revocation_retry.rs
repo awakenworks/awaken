@@ -641,6 +641,7 @@ async fn newer_projection_replaces_only_a_descriptor_and_preserves_every_physica
             SessionEnvironmentOwner::Resident(bound.clone()),
             SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(
                 UnboundSessionEnvironment {
+                    intent: None,
                     origin: UnboundSessionEnvironmentOrigin::Adoption,
                     binding: bound.binding.clone(),
                     environment: env.clone(),

@@ -249,22 +249,24 @@ impl SharedHost {
     pub(crate) async fn authorize_environment_effect_before_io(
         &self,
         thread: &str,
-        kind: awaken_session_state_contract::SessionEnvironmentEffectKind,
-        source_binding: Option<&str>,
+        intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
     ) -> Result<AuthorizedSessionEnvironmentEffect, HostError> {
-        let (realization, claimed_ordinary_run, closed) = self
+        intent
+            .verify()
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        if intent.session_id().as_str() != thread {
+            return Err(HostError::internal(
+                "Environment request names another Session",
+            ));
+        }
+        let (claimed_ordinary_run, managed_projection, closed) = self
             .installed_sessions
             .modify_session(thread, |slot| {
-                let realization = slot.realization.authority.lease().cloned();
-                let claimed_ordinary_run = realization.is_none()
+                let managed = slot.inputs.baseline.is_some() || slot.run.session_dispatch();
+                let ordinary = slot.realization.authority.lease().is_none()
                     && slot.run.dispatch_claim().is_some()
-                    && !slot.run.session_dispatch()
-                    && slot.inputs.baseline.is_none();
-                (
-                    realization,
-                    claimed_ordinary_run,
-                    slot.realization.authority.is_closed(),
-                )
+                    && !managed;
+                (ordinary, managed, slot.realization.authority.is_closed())
             })
             .unwrap_or_default();
         if closed {
@@ -272,23 +274,6 @@ impl SharedHost {
                 "session_environment_realization_closed",
                 "closed Session realization cannot authorize an Environment effect",
             ));
-        }
-        let environment_fingerprint = self
-            .installed_sessions
-            .frozen(thread)
-            .baseline
-            .as_ref()
-            .map(|baseline| baseline.environment.config_fingerprint.0.clone());
-        let mut intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
-            thread,
-            kind,
-            realization,
-        );
-        if let Some(environment_fingerprint) = environment_fingerprint {
-            intent = intent.for_environment(environment_fingerprint);
-        }
-        if let Some(source_binding) = source_binding {
-            intent = intent.from_binding(source_binding);
         }
         let sink = self
             .environment_binding_sink
@@ -303,30 +288,49 @@ impl SharedHost {
         // (it has no realization lease) and duplicates the queue-owned binding.
         let authorization = match sink {
             Some(_) if claimed_ordinary_run => {
-                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned
+                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned {
+                    intent: Box::new(intent.clone()),
+                }
             }
             Some(sink) => sink
-                .authorize(&intent)
+                .authorize(intent)
                 .await
                 .map_err(crate::host_error::from_run_error)?,
-            None if intent.realization().is_none() => {
-                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned
+            None if !managed_projection && intent.realization().is_none() => {
+                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned {
+                    intent: Box::new(intent.clone()),
+                }
             }
             None => {
-                return Err(HostError::internal(
+                return Err(HostError::unavailable_classified(
+                    "session_environment_binding_authority_missing",
                     "durable Session Environment effect has no binding authority",
                 ));
             }
         };
+        authorization
+            .verify_for(intent)
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        let original = authorization.intent();
+        if matches!(
+            authorization,
+            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned { .. }
+        ) && (managed_projection || original.realization().is_some())
+        {
+            return Err(HostError::unavailable_classified(
+                "session_environment_owned_root_missing",
+                "a Managed Session cannot fall back to an unowned Environment effect",
+            ));
+        }
         let provider_fence = if !matches!(
             authorization,
-            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned
+            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned { .. }
         ) {
-            intent
+            original
                 .realization()
                 .map(|realization| {
                     realization
-                        .sandbox_effect_fence(intent.effect_id())
+                        .sandbox_effect_fence(original.effect_id())
                         .map_err(|error| HostError::internal(error.to_string()))
                 })
                 .transpose()?
@@ -345,7 +349,6 @@ impl SharedHost {
             })
             .transpose()?;
         Ok(AuthorizedSessionEnvironmentEffect {
-            intent,
             authorization,
             provider_fence,
             provider_authority,
@@ -361,9 +364,16 @@ impl SharedHost {
         crate::environment_owner::BoundSessionEnvironmentIdentity,
         EnvironmentBindingPersistenceError,
     > {
+        let captured = candidate.ordinary_intent()?;
+        if captured != effect.authorization.intent() {
+            return Err(HostError::internal(
+                "candidate changed its original Environment effect intent",
+            )
+            .into());
+        }
         if matches!(
             effect.authorization,
-            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned
+            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned { .. }
         ) && let Some(identity) = candidate.durable_identity()
         {
             return Ok(identity.clone());
@@ -383,11 +393,7 @@ impl SharedHost {
     > {
         let receipt = self
             .realizer
-            .current_environment_receipt(binding.clone(), effect)
-            .map_err(|error| EnvironmentBindingPersistenceError {
-                error,
-                committed_identity: None,
-            })?;
+            .current_environment_receipt(binding.clone(), effect)?;
         // A Resource reservation extends the already-published Environment
         // handle under the Session root. It is not a Run placement and must not
         // rewrite `RunDispatch.sandbox`: the slot can legitimately retain the
@@ -395,18 +401,14 @@ impl SharedHost {
         // live Resource generation. Create/Adopt/Rebuild remain the only raw
         // dispatch-cache writers and retain their exact claim fence below.
         let binds_deferred_dispatch = !matches!(
-            effect.intent.kind(),
+            effect.authorization.intent().kind(),
             awaken_session_state_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation { .. }
         );
         match &effect.authorization {
-            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned => {
+            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned { .. } => {
                 if binds_deferred_dispatch {
                     self.bind_deferred_dispatch_before_publish(thread, &binding)
-                        .await
-                        .map_err(|error| EnvironmentBindingPersistenceError {
-                            error,
-                            committed_identity: None,
-                        })?;
+                        .await?;
                 }
                 return Ok(
                     crate::environment_owner::BoundSessionEnvironmentIdentity::LegacyDirect(
@@ -416,28 +418,25 @@ impl SharedHost {
             }
             awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
                 binding: committed,
+                ..
             } => {
                 if committed != &binding {
-                    return Err(EnvironmentBindingPersistenceError {
-                        error: HostError::internal(
+                    return Err(HostError::internal(
                             "Session Environment effect already committed another binding",
-                        ),
-                        committed_identity: None,
-                    });
+                        ).into());
                 }
             }
-            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized => {}
+            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized { .. } => {}
         }
         let sink = self
             .environment_binding_sink
             .read()
             .expect("environment binding sink lock poisoned")
             .clone()
-            .ok_or_else(|| EnvironmentBindingPersistenceError {
-                error: HostError::internal(
+            .ok_or_else(|| {
+                HostError::internal(
                     "authorized Session Environment effect has no durable binding sink",
-                ),
-                committed_identity: None,
+                )
             })?;
         // Publishing needs Store-read generated identity, not merely a positive
         // authorization readback. If the response is lost, retain the exact
@@ -446,18 +445,9 @@ impl SharedHost {
         let committed = sink
             .persist(receipt.clone())
             .await
-            .map_err(crate::host_error::from_run_error)
-            .map_err(|error| EnvironmentBindingPersistenceError {
-                error,
-                committed_identity: None,
-            })?;
-        let committed_identity = super::environment_lifecycle::committed_identity(
-            &receipt, committed,
-        )
-        .map_err(|error| EnvironmentBindingPersistenceError {
-            error,
-            committed_identity: None,
-        })?;
+            .map_err(crate::host_error::from_run_error)?;
+        let committed_identity =
+            super::environment_lifecycle::committed_identity(&receipt, committed)?;
         if binds_deferred_dispatch {
             self.bind_deferred_dispatch_before_publish(thread, &binding)
                 .await
@@ -481,13 +471,13 @@ impl SharedHost {
         reconciliation: crate::staged_resources::EnvironmentResourceReconciliation,
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, HostError> {
         let exec = &self.realizer;
-        let candidate = match effect.intent.kind() {
+        let candidate = match effect.authorization.intent().kind() {
             awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt => {
-                exec.begin_session_environment_adoption(thread, environment.clone())?
+                exec.begin_session_environment_adoption(thread, environment.clone(), Some(effect.authorization.intent()))?
             }
             awaken_session_state_contract::SessionEnvironmentEffectKind::Create
             | awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild { .. } => {
-                exec.begin_session_environment_preparation(thread, environment.clone())?
+                exec.begin_session_environment_preparation(thread, environment.clone(), Some(effect.authorization.intent()))?
             }
             awaken_session_state_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation {
                 ..
@@ -537,11 +527,11 @@ impl SharedHost {
             crate::environment_owner::SessionEnvironmentOwner::Retiring(retiring)
                 if retiring.cause == crate::environment_owner::SessionEnvironmentRetirementCause::RealizationRevocation =>
                 match &retiring.owned {
-                    crate::environment_owner::RetiringEnvironmentOwner::Unbound(candidate) => Some(candidate.binding.clone()),
-                    _ => None,
+                    crate::environment_owner::RetiringEnvironmentOwner::Unbound(candidate) => candidate.ordinary_intent().map(|_| Some(candidate.binding.clone())),
+                    _ => Ok(None),
                 },
-            _ => None,
-        }).flatten();
+            _ => Ok(None),
+        }).unwrap_or(Ok(None))?;
         if let Some(binding) = revoked_binding {
             // A Candidate can own physical effects without a returned root
             // receipt. Reuse ordinary authorized adoption, including for an
@@ -574,11 +564,7 @@ impl SharedHost {
             return Ok(None);
         };
         let effect = self
-            .authorize_environment_effect_before_io(
-                thread,
-                candidate.effect_kind(),
-                candidate.source_binding(),
-            )
+            .authorize_environment_effect_before_io(thread, candidate.ordinary_intent()?)
             .await?;
         let identity = match self
             .persist_authorized_environment_before_publish(thread, &candidate, &effect)
@@ -658,10 +644,16 @@ impl SharedHost {
             ),
         };
         let effect = self
-            .authorize_environment_effect_before_io(thread, kind, source_binding)
+            .authorize_environment_effect_before_io(
+                thread,
+                &self
+                    .realizer
+                    .new_environment_effect_intent(thread, kind, source_binding),
+            )
             .await?;
         if let awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
             binding,
+            ..
         } = &effect.authorization
         {
             return self
@@ -975,51 +967,34 @@ impl crate::environment_holding::EnvironmentHolding {
         self.session_environment_provider(provisioning)
     }
 
-    /// Re-enter the captured authority after provider I/O, and submit current
-    /// Control lease coordinates under the same stable operation identity.
+    /// Re-enter current authority after I/O while preserving the Root's exact
+    /// original intent. Renewal is a delivery grant, not a new receipt identity.
     fn current_environment_receipt(
         &self,
         binding: String,
         effect: &AuthorizedSessionEnvironmentEffect,
     ) -> Result<awaken_session_state_contract::SessionEnvironmentReceipt, HostError> {
-        let intent = match (&effect.provider_fence, &effect.provider_authority) {
+        match (&effect.provider_fence, &effect.provider_authority) {
             (Some(initial), Some(authority)) => {
-                let current = authority
-                    .current_effect_fence(initial)
-                    .map_err(|error| HostError::internal(error.to_string()))?;
-                let lease = awaken_session_resource_contract::SessionRealizationLease {
-                    owner: current.owner().to_owned(),
-                    runtime_incarnation: current.runtime_incarnation().to_owned(),
-                    epoch: current.epoch(),
-                    expires_at_unix_ms: current.expires_at_unix_ms(),
-                };
-                let mut intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
-                    effect.intent.session_id().clone(),
-                    effect.intent.kind().clone(),
-                    Some(lease),
-                );
-                if let Some(environment) = effect.intent.environment_fingerprint() {
-                    intent = intent.for_environment(environment);
-                }
-                if let Some(source) = effect.intent.source_binding() {
-                    intent = intent.from_binding(source);
-                }
-                if intent.effect_id() != effect.intent.effect_id() {
-                    return Err(HostError::internal(
-                        "renewal changed Environment operation identity",
-                    ));
-                }
-                intent
+                awaken_provisioning_contract::with_current_sandbox_effect(
+                    initial,
+                    authority.as_ref(),
+                    |_| Ok(()),
+                )
+                .map_err(|error| HostError::internal(error.to_string()))?;
             }
-            (None, None) => effect.intent.clone(),
+            (None, None) => {}
             _ => {
                 return Err(HostError::internal(
                     "Environment effect lacks its captured authority",
                 ));
             }
-        };
-        awaken_session_state_contract::SessionEnvironmentReceipt::from_intent(&intent, binding)
-            .map_err(|error| HostError::internal(error.to_string()))
+        }
+        awaken_session_state_contract::SessionEnvironmentReceipt::from_intent(
+            effect.authorization.intent(),
+            binding,
+        )
+        .map_err(|error| HostError::internal(error.to_string()))
     }
 
     async fn create_session_environment_for_effect(
@@ -1029,7 +1004,8 @@ impl crate::environment_holding::EnvironmentHolding {
         effect: &AuthorizedSessionEnvironmentEffect,
     ) -> Result<crate::session_environment::SessionEnvironment, HostError> {
         let source_handle = effect
-            .intent
+            .authorization
+            .intent()
             .source_binding()
             .map(|source| {
                 serde_json::from_str::<awaken_provisioning_contract::SandboxHandle>(source).map_err(
@@ -1045,7 +1021,7 @@ impl crate::environment_holding::EnvironmentHolding {
         // container replaces the incarnation the source binding names, while
         // Workdir and Namespace rebuilds are owned by their realization marker.
         let intent = if matches!(
-            effect.intent.kind(),
+            effect.authorization.intent().kind(),
             awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild { .. }
         ) {
             awaken_session_environment_contract::EnvironmentRealizationKind::Rebuild
@@ -1084,26 +1060,21 @@ impl crate::environment_holding::EnvironmentHolding {
                 ));
             }
         };
-        if let (Some(source), Some(fence)) = (&current_fence, effect_fence) {
-            source
-                .current_effect_fence(fence)
+        let effect =
+            crate::session_environment::ProviderEffect::from_parts(effect_fence, current_fence)
                 .map_err(|error| HostError::internal(error.to_string()))?;
-        }
+        effect
+            .admit()
+            .map_err(|error| HostError::internal(error.to_string()))?;
         self.env
             .cache_volume_prewarmer
             .prepare_mounts(&spec.mounts)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
-        if let (Some(source), Some(fence)) = (&current_fence, effect_fence) {
-            // Cache preparation is asynchronous: recheck after it, not only
-            // before it. This sample does not replace provider-side fencing.
-            source
-                .current_effect_fence(fence)
-                .map_err(|error| HostError::internal(error.to_string()))?;
-        }
-        let effect =
-            crate::session_environment::ProviderEffect::from_parts(effect_fence, current_fence)
-                .map_err(|error| HostError::internal(error.to_string()))?;
+        // Cache preparation is asynchronous: re-enter the same captured effect.
+        effect
+            .admit()
+            .map_err(|error| HostError::internal(error.to_string()))?;
         provider
             .realizer()
             .create_effective_for_effect(&spec, effect, source_handle, intent)

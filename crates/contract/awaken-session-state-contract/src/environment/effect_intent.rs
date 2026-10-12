@@ -38,9 +38,44 @@ pub enum SessionEnvironmentEffectKind {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionEnvironmentEffectAuthorization {
-    Unowned,
-    Authorized,
-    AlreadyApplied { binding: String },
+    Unowned {
+        intent: Box<SessionEnvironmentEffectIntent>,
+    },
+    Authorized {
+        intent: Box<SessionEnvironmentEffectIntent>,
+    },
+    AlreadyApplied {
+        binding: String,
+        intent: Box<SessionEnvironmentEffectIntent>,
+    },
+}
+
+impl SessionEnvironmentEffectAuthorization {
+    /// A renewed request can receive the earlier admitted value, but never
+    /// another Session or operation. The saved expiry is retained verbatim.
+    pub fn verify_for(
+        &self,
+        requested: &SessionEnvironmentEffectIntent,
+    ) -> Result<(), SessionEnvironmentReceiptError> {
+        let original = self.intent();
+        original.verify()?;
+        if original.effect_id() != requested.effect_id()
+            || original.session_id() != requested.session_id()
+        {
+            return Err(SessionEnvironmentReceiptError::Mismatch);
+        }
+        Ok(())
+    }
+
+    /// The exact value returned by the aggregate, including first expiry.
+    #[must_use]
+    pub fn intent(&self) -> &SessionEnvironmentEffectIntent {
+        match self {
+            Self::Unowned { intent }
+            | Self::Authorized { intent }
+            | Self::AlreadyApplied { intent, .. } => intent,
+        }
+    }
 }
 
 /// Secret-free, binding-independent intent authorized before provider I/O.
@@ -121,7 +156,10 @@ impl SessionEnvironmentEffectIntent {
         self.realization.as_ref()
     }
 
-    pub(super) fn with_receipt_context(
+    /// Compile the complete frozen input coordinates in one identity refresh.
+    /// This constructs a request; only the aggregate can admit it before I/O.
+    #[must_use]
+    pub fn for_frozen_coordinates(
         mut self,
         source_binding: Option<String>,
         environment_fingerprint: Option<String>,

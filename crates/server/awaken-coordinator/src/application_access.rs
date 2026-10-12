@@ -541,65 +541,54 @@ mod tests {
     }
 
     fn frozen_session(id: &str, status: &str) -> PersistedSession {
-        // Test fixtures use the same closed constructors as production. A JSON
-        // object here previously drifted behind the required Environment facts
-        // and caused authorization tests to fail before exercising policy.
-        let baseline =
-            SessionBaselineState::Frozen(SessionBaseline::compile(SessionBaselineInputs {
-                environment: EnvironmentSnapshot {
-                    environment_id: "env".into(),
-                    revision: awaken_environment_contract::EnvironmentRevision(1),
-                    self_hosted: false,
-                    config_fingerprint: EnvironmentFingerprint("env-1".into()),
-                    sandbox: Default::default(),
-                    sandbox_provisioning: Default::default(),
-                    idle_retention: Default::default(),
-                    packages: Default::default(),
-                    prepared_image: None,
-                    network: SessionNetworkPolicy::None,
-                    credential_realization:
-                        awaken_credential_contract::CredentialRealizationProfile::self_hosted_acp(),
-                },
-                runtime_placement: SessionRuntimePlacement::Local,
-                mcp_authoring: SessionMcpAuthoringContext::default(),
-                agent_id: "support".into(),
-                agent_revision: None,
-                model: "test-model".into(),
-                model_override: None,
-                runtime: None,
-                delegate_ids: Vec::new(),
-                toolsets: Vec::new(),
-                mounts: Vec::new(),
-                env: Vec::new(),
-                prompts: Vec::new(),
-                transcript_prefix: None,
-            }));
-        PersistedSession {
-            created_at_unix_ms: None,
-            updated_at_unix_ms: None,
-            session_id: id.into(),
-            revision: Default::default(),
+        // Keep baseline/resources type-checked by the production constructor;
+        // only the historical missing materialization field is omitted on wire.
+        let baseline = SessionBaseline::compile(SessionBaselineInputs {
+            environment: EnvironmentSnapshot {
+                environment_id: "env".into(),
+                revision: awaken_environment_contract::EnvironmentRevision(1),
+                self_hosted: false,
+                config_fingerprint: EnvironmentFingerprint("env-1".into()),
+                sandbox: Default::default(),
+                sandbox_provisioning: Default::default(),
+                idle_retention: Default::default(),
+                packages: Default::default(),
+                prepared_image: None,
+                network: SessionNetworkPolicy::None,
+                credential_realization:
+                    awaken_credential_contract::CredentialRealizationProfile::self_hosted_acp(),
+            },
+            runtime_placement: SessionRuntimePlacement::Local,
+            mcp_authoring: SessionMcpAuthoringContext::default(),
+            agent_id: "support".into(),
+            agent_revision: None,
+            model: "test-model".into(),
+            model_override: None,
+            runtime: None,
+            delegate_ids: Vec::new(),
+            toolsets: Vec::new(),
+            mounts: Vec::new(),
+            env: Vec::new(),
+            prompts: Vec::new(),
+            transcript_prefix: None,
+        });
+        let mut legacy = PersistedSession::frozen_with_budget(
+            id,
             baseline,
-            title: None,
-            metadata: BTreeMap::new(),
-            tools: Default::default(),
-            event_batches: Vec::new(),
-            activity_epoch: 0,
-            active_activity_epochs: Default::default(),
-            running_interval: None,
-            closed_runtime_intervals: Vec::new(),
-            runtime_active_millis: 0,
-            usage_cursor: Default::default(),
-            budget: Default::default(),
-            environment: Default::default(),
-            mcp: Default::default(),
-            resources: Default::default(),
-            realization: None,
-            realization_progress: Default::default(),
-            execution: status.parse().expect("fixture execution state"),
-            disposition: Default::default(),
-            terminal_cleanup: Default::default(),
-        }
+            Default::default(),
+            Default::default(),
+            None,
+            BTreeMap::new(),
+            Default::default(),
+            Default::default(),
+        );
+        legacy.execution = status.parse().expect("fixture execution state");
+        // This fixture models the pre-cutover missing field, not a fresh creation.
+        let mut wire = serde_json::to_value(legacy).unwrap();
+        wire.as_object_mut()
+            .unwrap()
+            .remove("environment_materialization");
+        serde_json::from_value(wire).unwrap()
     }
 
     fn preparing_session(id: &str) -> PersistedSession {

@@ -218,57 +218,47 @@ fn frozen_application_session(
             resources(file_id),
         )
         .expect("prepare Worker Session resources");
-    awaken_session_state_contract::PersistedSession {
-        created_at_unix_ms: None,
-        updated_at_unix_ms: None,
-        session_id: session_id.into(),
-        revision: Default::default(),
-        baseline: awaken_session_configuration_contract::SessionBaselineState::Frozen(
-            awaken_session_configuration_contract::SessionBaseline::compile(
-                awaken_session_configuration_contract::SessionBaselineInputs {
-                    environment,
-                    runtime_placement:
-                        awaken_session_configuration_contract::SessionRuntimePlacement::Worker,
-                    mcp_authoring: Default::default(),
-                    agent_id: "agent".into(),
-                    agent_revision: None,
-                    model_override: None,
-                    model: "model".into(),
-                    runtime: None,
-                    delegate_ids: Vec::new(),
-                    toolsets: Vec::new(),
-                    mounts: Vec::new(),
-                    env: Vec::new(),
-                    prompts: Vec::new(),
-                    transcript_prefix: None,
-                },
-            ),
+    let mut legacy = awaken_session_state_contract::PersistedSession::frozen_with_budget(
+        session_id,
+        awaken_session_configuration_contract::SessionBaseline::compile(
+            awaken_session_configuration_contract::SessionBaselineInputs {
+                environment,
+                runtime_placement:
+                    awaken_session_configuration_contract::SessionRuntimePlacement::Worker,
+                mcp_authoring: Default::default(),
+                agent_id: "agent".into(),
+                agent_revision: None,
+                model_override: None,
+                model: "model".into(),
+                runtime: None,
+                delegate_ids: Vec::new(),
+                toolsets: Vec::new(),
+                mounts: Vec::new(),
+                env: Vec::new(),
+                prompts: Vec::new(),
+                transcript_prefix: None,
+            },
         ),
-        title: None,
-        metadata: Default::default(),
-        tools: Default::default(),
-        budget: Default::default(),
-        event_batches: Vec::new(),
-        activity_epoch: 0,
-        active_activity_epochs: Default::default(),
-        running_interval: None,
-        closed_runtime_intervals: Vec::new(),
-        runtime_active_millis: 0,
-        usage_cursor: Default::default(),
-        environment: Default::default(),
-        mcp: Default::default(),
-        resources: resource_state,
-        realization: Some(awaken_session_resource_contract::SessionRealizationLease {
-            owner: identity.worker_id.clone(),
-            runtime_incarnation: identity.lease_owner(),
-            epoch: 1,
-            expires_at_unix_ms: support::unix_now_ms().saturating_add(60_000),
-        }),
-        realization_progress: Default::default(),
-        execution: awaken_session_state_contract::SessionExecutionState::Running,
-        disposition: Default::default(),
-        terminal_cleanup: Default::default(),
-    }
+        resource_state,
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        Default::default(),
+    );
+    legacy.execution = awaken_session_state_contract::SessionExecutionState::Running;
+    legacy.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+        owner: identity.worker_id.clone(),
+        runtime_incarnation: identity.lease_owner(),
+        epoch: 1,
+        expires_at_unix_ms: support::unix_now_ms().saturating_add(60_000),
+    });
+    // This fixture models the pre-cutover missing field, not a fresh creation.
+    let mut wire = serde_json::to_value(legacy).unwrap();
+    wire.as_object_mut()
+        .unwrap()
+        .remove("environment_materialization");
+    serde_json::from_value(wire).unwrap()
 }
 
 /// Cause/effect decision table:

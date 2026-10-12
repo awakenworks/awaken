@@ -135,6 +135,19 @@ impl SessionMutationPayload {
         }
     }
 
+    /// Default Create identity excludes only the server-owned materialization
+    /// fact. All mutation/admission fingerprints still include the full root.
+    #[must_use]
+    pub fn default_create_idempotency(session: &PersistedSession) -> IdempotencyRecord {
+        let mut request = session.clone();
+        request.environment_materialization = None;
+        let payload_hash = Self::Replace(request).stable_hash();
+        IdempotencyRecord {
+            key: format!("session:create:{}:{payload_hash}", session.session_id),
+            payload_hash,
+        }
+    }
+
     #[must_use]
     pub fn stable_hash(&self) -> String {
         crate::stable_fingerprint(self)
@@ -184,6 +197,10 @@ pub enum SessionMutationValidationError {
     RuntimeIntervalStateMismatch,
     #[error("Session active activity epochs are inconsistent with execution state or fence")]
     ActiveActivityStateMismatch,
+    #[error("Session original materialization fact is inconsistent with its root")]
+    EnvironmentMaterializationMismatch,
+    #[error("Session replacement erased, reset or overwrote original materialization history")]
+    EnvironmentMaterializationChanged,
     #[error("lifecycle runtime interval payload is inconsistent")]
     RuntimeIntervalFactMismatch,
 }
@@ -215,6 +232,7 @@ pub enum SessionRepositoryError {
 pub(crate) fn validate_aggregate_state(
     session: &PersistedSession,
 ) -> Result<(), SessionMutationValidationError> {
+    crate::SessionEnvironmentMaterialization::validate_for(session)?;
     if session.running_interval.is_some() && session.execution != SessionExecutionState::Running {
         return Err(SessionMutationValidationError::RuntimeIntervalStateMismatch);
     }
@@ -347,7 +365,8 @@ impl PersistedSession {
             replacement.created_at_unix_ms,
             self.updated_at_unix_ms,
             replacement.updated_at_unix_ms,
-        )
+        )?;
+        crate::SessionEnvironmentMaterialization::validate_replacement(self, replacement)
     }
 }
 

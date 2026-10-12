@@ -93,7 +93,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
     };
     let candidate = host
         .realizer
-        .begin_session_environment_preparation("remote-terminal-worker", environment.clone())
+        .begin_session_environment_preparation("remote-terminal-worker", environment.clone(), None)
         .expect("R1 retain the exact Worker-local candidate");
     host.install_session_environment_owner_projection(
         "remote-terminal-worker",
@@ -257,13 +257,14 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
         .insert(ordinary_id.into(), ordinary_lease.clone());
 
     let terminal_id = "blocked-terminal-cleanup";
-    let terminal_projection = remote_terminal_cleanup_projection();
+    let mut terminal_projection = remote_terminal_cleanup_projection();
     let terminal_lease = awaken_session_resource_contract::SessionRealizationLease {
         owner: "remote-worker".into(),
         runtime_incarnation: "remote-worker:incarnation".into(),
         epoch: 9,
         expires_at_unix_ms: expiring_unix_ms,
     };
+    fresh_terminal_fixture_before_create(terminal_id, &mut terminal_projection, &terminal_lease);
     control.assignments.lock().unwrap().push_back(
         awaken_session_realization_contract::SessionTerminalCleanupAssignment {
             environment_creation_not_attempted: false,
@@ -744,6 +745,7 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
         "/workspace/cleanup",
         None,
     );
+    fresh_terminal_fixture_before_create(session_id, &mut projection, &lease);
     control.assignments.lock().unwrap().push_back(
         awaken_session_realization_contract::SessionTerminalCleanupAssignment {
             environment_creation_not_attempted: false,

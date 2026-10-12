@@ -92,53 +92,41 @@ pub fn sample_persisted(id: &str) -> PersistedSession {
     )
     .unwrap();
     mcp.attachments[0].state = awaken_session_mcp_contract::McpAttachmentState::Active;
-    PersistedSession {
-        created_at_unix_ms: None,
-        updated_at_unix_ms: None,
-        session_id: SessionId::from(id),
-        revision: Default::default(),
-        baseline: awaken_session_configuration_contract::SessionBaselineState::Frozen(
-            awaken_session_configuration_contract::SessionBaseline::compile(
-                awaken_session_configuration_contract::SessionBaselineInputs {
-                    environment,
-                    runtime_placement:
-                        awaken_session_configuration_contract::SessionRuntimePlacement::Local,
-                    mcp_authoring: Default::default(),
-                    agent_id: "coder".into(),
-                    agent_revision: None,
-                    model_override: None,
-                    model: "kimi-k2".into(),
-                    runtime: Some("acp:custom".into()),
-                    delegate_ids: Vec::new(),
-                    toolsets: Vec::new(),
-                    mounts: Vec::new(),
-                    env: Vec::new(),
-                    prompts: Vec::new(),
-                    transcript_prefix: None,
-                },
-            ),
+    let mut legacy = PersistedSession::frozen_with_budget(
+        SessionId::from(id),
+        awaken_session_configuration_contract::SessionBaseline::compile(
+            awaken_session_configuration_contract::SessionBaselineInputs {
+                environment,
+                runtime_placement:
+                    awaken_session_configuration_contract::SessionRuntimePlacement::Local,
+                mcp_authoring: Default::default(),
+                agent_id: "coder".into(),
+                agent_revision: None,
+                model_override: None,
+                model: "kimi-k2".into(),
+                runtime: Some("acp:custom".into()),
+                delegate_ids: Vec::new(),
+                toolsets: Vec::new(),
+                mounts: Vec::new(),
+                env: Vec::new(),
+                prompts: Vec::new(),
+                transcript_prefix: None,
+            },
         ),
-        title: Some("My session".to_string()),
-        metadata,
-        tools: Default::default(),
-        event_batches: Vec::new(),
-        activity_epoch: 0,
-        active_activity_epochs: Default::default(),
-        running_interval: None,
-        closed_runtime_intervals: Vec::new(),
-        runtime_active_millis: 0,
-        usage_cursor: Default::default(),
-        budget: Default::default(),
-        environment: Default::default(),
+        awaken_session_state_contract::SessionResourceState::from_active(sample_inputs()),
         mcp,
-        resources: awaken_session_state_contract::SessionResourceState::from_active(sample_inputs()),
-        realization: None,
-        realization_progress: Default::default(),
-        // A fresh root: the aggregate's own initial (Idle) execution state.
-        execution: Default::default(),
-        disposition: Default::default(),
-        terminal_cleanup: Default::default(),
-    }
+        Some("My session".to_string()),
+        metadata,
+        Default::default(),
+        Default::default(),
+    );
+    legacy.execution = Default::default();
+    // This fixture models the pre-cutover missing field, not a fresh creation.
+    let mut wire = serde_json::to_value(legacy).unwrap();
+    wire.as_object_mut()
+        .unwrap()
+        .remove("environment_materialization");
+    serde_json::from_value(wire).unwrap()
 }
 
 pub fn sample_inputs() -> awaken_session_resource_contract::ResolvedSessionResources {

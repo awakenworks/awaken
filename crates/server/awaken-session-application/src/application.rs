@@ -8,6 +8,12 @@
 // @formal entrypoint session_run.execution_requires_dispatch_work_and_realization_owner
 // @formal entrypoint session_time.root_observations_are_revision_bound_and_replay_stable
 // @formal entrypoint session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
+use awaken_session_state_contract::{
+    SessionEnvironmentEffectAuthorization, SessionEnvironmentEffectIntent,
+    SessionEnvironmentReceipt, SessionEnvironmentReceiptError,
+    SessionEnvironmentReceiptRecoveryAction, SessionEnvironmentState, SessionMutationResult,
+    SessionRepositoryError,
+};
 use awaken_time::WallClockExt;
 /// Process-level execution topology interpreted by the Session application.
 /// The selected value is frozen into every newly admitted Session; protocol
@@ -1066,7 +1072,7 @@ async fn reconcile_work_dispatches(
         // root read and dispatch policy before an external WorkQueue effect.
         let session = match sessions.get(&candidate.session_id).await {
             Ok(session) => session,
-            Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => continue,
+            Err(SessionRepositoryError::NotFound) => continue,
             Err(error) => {
                 report.failures.push(WorkDispatchFailure {
                     session_id: candidate.session_id.to_string(),
@@ -1099,7 +1105,7 @@ async fn self_hosted_work_environment(
 ) -> Result<Option<(String, bool)>, awaken_worker_contract::WorkQueueError> {
     let session = match application.session_repository().get(session_id).await {
         Ok(session) => session,
-        Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => return Ok(None),
+        Err(SessionRepositoryError::NotFound) => return Ok(None),
         Err(error) => {
             return Err(awaken_worker_contract::WorkQueueError::Storage(
                 error.to_string().into(),
@@ -1205,49 +1211,249 @@ impl RepositoryEnvironmentBindingSink {
         Self { repo, clock }
     }
 
-    fn receipt_error(
-        error: awaken_session_state_contract::SessionEnvironmentReceiptError,
-    ) -> RunError {
+    fn receipt_error(error: SessionEnvironmentReceiptError) -> RunError {
         match error.recovery_action() {
-            awaken_session_state_contract::SessionEnvironmentReceiptRecoveryAction::Retry => {
+            SessionEnvironmentReceiptRecoveryAction::Retry => {
                 let code = if matches!(
                     error,
-                    awaken_session_state_contract::SessionEnvironmentReceiptError::RealizationStale
+                    SessionEnvironmentReceiptError::MaterializationUnknown
+                        | SessionEnvironmentReceiptError::MaterializationPending
                 ) {
+                    "session_environment_materialization_pending"
+                } else if matches!(error, SessionEnvironmentReceiptError::RealizationStale) {
                     "session_realization_stale"
                 } else {
                     "session_environment_receipt_stale"
                 };
                 RunError::unavailable_classified(code, error.to_string())
             }
-            awaken_session_state_contract::SessionEnvironmentReceiptRecoveryAction::Reject => {
+            SessionEnvironmentReceiptRecoveryAction::Reject => {
                 RunError::classified("session_environment_receipt_rejected", error.to_string())
             }
         }
     }
 
     fn committed_authority(
-        session: &awaken_session_state_contract::PersistedSession,
-        receipt: &awaken_session_state_contract::SessionEnvironmentReceipt,
-    ) -> Result<awaken_session_state_contract::SessionEnvironmentState, RunError> {
+        session: &PersistedSession,
+        receipt: &SessionEnvironmentReceipt,
+    ) -> Result<SessionEnvironmentState, RunError> {
         // The aggregate receipt kernel has already restricted terminal writes
         // to the Fenced join window. Accept its exact Store-read Resident value
         // so terminal cleanup can dispose an Environment whose provider effect
         // crossed the archive CAS; this function must not re-decide that phase.
-        match &session.environment {
-            awaken_session_state_contract::SessionEnvironmentState::Resident {
-                binding,
-                effect_id: Some(effect_id),
-                generation: Some(_),
-                ..
-            } if binding == &receipt.binding && effect_id == &receipt.effect_id => {
-                Ok(session.environment.clone())
-            }
-            _ => Err(RunError::classified(
-                "session_environment_receipt_rejected",
-                "durable Environment does not match the exact binding receipt",
-            )),
+        session
+            .environment
+            .committed_receipt_generation(receipt)
+            .map(|_| session.environment.clone())
+            .map_err(|_| {
+                RunError::classified(
+                    "session_environment_receipt_rejected",
+                    "durable Environment does not match the exact binding receipt",
+                )
+            })
+    }
+}
+
+/// Closed commands of the one repository-backed Environment CAS protocol.
+/// Domain admission remains in Session; this enum only selects the existing
+/// command and its exact readback/error policy, never an arbitrary DTO mutator.
+enum EnvironmentBindingCommand<'a> {
+    Admit(&'a SessionEnvironmentEffectIntent),
+    Persist(&'a SessionEnvironmentReceipt),
+}
+
+enum EnvironmentBindingResult {
+    Admitted(SessionEnvironmentEffectAuthorization),
+    Bound(Box<SessionEnvironmentState>),
+}
+
+impl EnvironmentBindingCommand<'_> {
+    fn session_id(&self) -> &awaken_session_types::SessionId {
+        match self {
+            Self::Admit(intent) => intent.session_id(),
+            Self::Persist(receipt) => &receipt.session_id,
         }
+    }
+
+    fn operation(&self) -> &'static str {
+        match self {
+            Self::Admit(_) => "admit-environment",
+            Self::Persist(_) => "bind-environment",
+        }
+    }
+
+    fn apply(
+        &self,
+        session: &mut SessionAggregate,
+        owner: &str,
+        now: u64,
+    ) -> Result<(bool, EnvironmentBindingResult), RunError> {
+        match self {
+            Self::Admit(intent) => {
+                let (changed, authorization) = session
+                    .environment()
+                    .admit_environment_effect(owner, intent, now)
+                    .map_err(RepositoryEnvironmentBindingSink::receipt_error)?;
+                Ok((changed, EnvironmentBindingResult::Admitted(authorization)))
+            }
+            Self::Persist(receipt) => {
+                // Pure phase/source/lease/Resource law is evaluated once before
+                // CAS. Its exact Fenced late receipt join remains authoritative.
+                let changed = session
+                    .environment()
+                    .try_apply_environment_receipt(owner, receipt, now)
+                    .map_err(RepositoryEnvironmentBindingSink::receipt_error)?;
+                let state =
+                    RepositoryEnvironmentBindingSink::committed_authority(session, receipt)?;
+                Ok((changed, EnvironmentBindingResult::Bound(Box::new(state))))
+            }
+        }
+    }
+
+    fn readback(
+        &self,
+        committed: PersistedSession,
+        owner: &str,
+        now: u64,
+    ) -> Result<EnvironmentBindingResult, RunError> {
+        match self {
+            Self::Admit(_) => {
+                let mut aggregate = crate::mutation::aggregate_from_snapshot(committed)
+                    .map_err(session_repository_error)?;
+                let (changed, original) = self.apply(&mut aggregate, owner, now)?;
+                if changed {
+                    return Err(RunError::unavailable_classified(
+                        "session_environment_admission_unconfirmed",
+                        "first Environment admission is not Store-confirmed",
+                    ));
+                }
+                Ok(original)
+            }
+            Self::Persist(receipt) => {
+                // Do not re-decide the phase after a successful CAS: terminal
+                // cleanup may have advanced while the exact binding is read.
+                RepositoryEnvironmentBindingSink::committed_authority(&committed, receipt)
+                    .map(|state| EnvironmentBindingResult::Bound(Box::new(state)))
+            }
+        }
+    }
+
+    fn contended(&self) -> RunError {
+        match self {
+            Self::Admit(_) => RunError::unavailable_classified(
+                "session_environment_admission_cas_contended",
+                "Session Environment admission CAS exhausted",
+            ),
+            Self::Persist(_) => RunError::unavailable_classified(
+                "session_environment_binding_cas_contended",
+                "Session environment binding CAS exhausted",
+            ),
+        }
+    }
+
+    fn idempotency_mismatch(&self) -> RunError {
+        RunError::internal(match self {
+            Self::Admit(_) => "Session Environment admission idempotency mismatch",
+            Self::Persist(_) => "Session environment binding idempotency mismatch",
+        })
+    }
+}
+
+impl RepositoryEnvironmentBindingSink {
+    async fn execute(
+        &self,
+        command: EnvironmentBindingCommand<'_>,
+    ) -> Result<EnvironmentBindingResult, RunError> {
+        let session_id = command.session_id();
+        // Admission keeps its original owner lookup/Unowned classification;
+        // Persist rechecks the repository owner on every attempt as before.
+        let admission_owner = if let EnvironmentBindingCommand::Admit(intent) = &command {
+            intent.verify().map_err(Self::receipt_error)?;
+            match self.repo.owner(session_id).await {
+                Ok(owner) => Some(owner),
+                Err(SessionRepositoryError::NotFound) => {
+                    if intent.realization().is_some() {
+                        return Err(RunError::unavailable_classified(
+                            "session_environment_root_missing",
+                            "owned Environment effect lost its Session root",
+                        ));
+                    }
+                    return Ok(EnvironmentBindingResult::Admitted(
+                        SessionEnvironmentEffectAuthorization::Unowned {
+                            intent: Box::new((*intent).clone()),
+                        },
+                    ));
+                }
+                Err(error) => return Err(session_repository_error(error)),
+            }
+        } else {
+            None
+        };
+        const CAS_ATTEMPTS: usize = 3;
+        for attempt in 0..CAS_ATTEMPTS {
+            let owner = match &admission_owner {
+                Some(owner) => owner.clone(),
+                None => self
+                    .repo
+                    .owner(session_id)
+                    .await
+                    .map_err(session_repository_error)?,
+            };
+            let mut session = self
+                .repo
+                .get(session_id)
+                .await
+                .and_then(crate::mutation::aggregate_from_snapshot)
+                .map_err(session_repository_error)?;
+            let now = self.clock.now_ms();
+            let (changed, outcome) = command.apply(&mut session, &owner, now)?;
+            if !changed {
+                return Ok(outcome);
+            }
+            let idempotency = crate::mutation::compile_session_snapshot_idempotency(
+                &session,
+                command.operation(),
+            );
+            match crate::mutation::commit_observed_snapshot(
+                self.repo.as_ref(),
+                &owner,
+                &mut session,
+                idempotency,
+                Vec::new(),
+                now,
+            )
+            .await
+            {
+                Ok(
+                    SessionMutationResult::Applied { .. } | SessionMutationResult::Replayed { .. },
+                ) => {
+                    let committed = self
+                        .repo
+                        .get(session_id)
+                        .await
+                        .map_err(session_repository_error)?;
+                    return command.readback(committed, &owner, self.clock.now_ms());
+                }
+                Ok(SessionMutationResult::Conflict { .. }) if attempt + 1 < CAS_ATTEMPTS => {}
+                Ok(SessionMutationResult::Conflict { .. }) => break,
+                Ok(SessionMutationResult::IdempotencyMismatch) => {
+                    return Err(command.idempotency_mismatch());
+                }
+                Err(error) => {
+                    // Only admission historically recovers a lost response via
+                    // exact authorized readback; Persist retains its old error.
+                    if matches!(command, EnvironmentBindingCommand::Admit(_))
+                        && let Ok(committed) = self.repo.get(session_id).await
+                        && let Ok(original) =
+                            command.readback(committed, &owner, self.clock.now_ms())
+                    {
+                        return Ok(original);
+                    }
+                    return Err(session_repository_error(error));
+                }
+            }
+        }
+        Err(command.contended())
     }
 }
 
@@ -1255,110 +1461,29 @@ impl RepositoryEnvironmentBindingSink {
 impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
     async fn authorize(
         &self,
-        intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
-    ) -> Result<awaken_session_state_contract::SessionEnvironmentEffectAuthorization, RunError>
-    {
-        intent.verify().map_err(Self::receipt_error)?;
-        let session_id = intent.session_id();
-        let owner = match self.repo.owner(session_id).await {
-            Ok(owner) => owner,
-            Err(awaken_session_state_contract::SessionRepositoryError::NotFound) => {
-                return Ok(
-                    awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned,
-                );
-            }
-            Err(error) => return Err(session_repository_error(error)),
-        };
-        let session = self
-            .repo
-            .get(session_id)
-            .await
-                .and_then(crate::mutation::aggregate_from_snapshot)
-            .map_err(session_repository_error)?;
-        session
-            .authorize_environment_effect(&owner, intent, self.clock.now_ms())
-            .map_err(Self::receipt_error)
+        intent: &SessionEnvironmentEffectIntent,
+    ) -> Result<SessionEnvironmentEffectAuthorization, RunError> {
+        match self
+            .execute(EnvironmentBindingCommand::Admit(intent))
+            .await?
+        {
+            EnvironmentBindingResult::Admitted(authorization) => Ok(authorization),
+            EnvironmentBindingResult::Bound(_) => unreachable!("Admit has no binding result"),
+        }
     }
 
     async fn persist(
         &self,
-        receipt: awaken_session_state_contract::SessionEnvironmentReceipt,
-    ) -> Result<awaken_session_state_contract::SessionEnvironmentState, RunError> {
-        let session_id = &receipt.session_id;
-        const CAS_ATTEMPTS: usize = 3;
-        for attempt in 0..CAS_ATTEMPTS {
-            let owner = self
-                .repo
-                .owner(session_id)
-                .await
-                .map_err(session_repository_error)?;
-            let mut session = self
-                .repo
-                .get(session_id)
-                .await
-                .and_then(crate::mutation::aggregate_from_snapshot)
-                .map_err(session_repository_error)?;
-            let now_unix_ms = self.clock.now_ms();
-            // The aggregate is the only receipt admission authority. It checks
-            // phase, source binding, immutable Environment compatibility, and
-            // the exact durable pending Resource transition before this adapter
-            // may attempt the root CAS.
-            let changed = session.environment().try_apply_environment_receipt(&owner, &receipt, now_unix_ms)
-                .map_err(Self::receipt_error)?;
-            if !changed {
-                return Self::committed_authority(&session, &receipt);
-            }
-
-            Self::committed_authority(&session, &receipt)?;
-            let expected_revision = session.revision;
-            let payload_hash =
-                awaken_session_state_contract::SessionMutationPayload::Replace(session.snapshot().clone())
-                    .stable_hash();
-            let idempotency = awaken_session_state_contract::IdempotencyRecord {
-                key: format!(
-                    "session:bind-environment:{session_id}:{}:{payload_hash}",
-                    expected_revision.0
-                ),
-                payload_hash,
-            };
-            match crate::mutation::commit_observed_snapshot(
-                self.repo.as_ref(),
-                &owner,
-                &mut session,
-                idempotency,
-                Vec::new(),
-                now_unix_ms,
-            )
-            .await
-            .map_err(session_repository_error)?
-            {
-                awaken_session_state_contract::SessionMutationResult::Applied { .. }
-                | awaken_session_state_contract::SessionMutationResult::Replayed { .. } => {
-                    let committed = self
-                        .repo
-                        .get(session_id)
-                        .await
-                        .map_err(session_repository_error)?;
-                    return Self::committed_authority(&committed, &receipt);
-                }
-                awaken_session_state_contract::SessionMutationResult::Conflict { .. }
-                    if attempt + 1 < CAS_ATTEMPTS => {}
-                awaken_session_state_contract::SessionMutationResult::Conflict { .. } => {
-                    return Err(RunError::unavailable_classified(
-                        "session_environment_binding_cas_contended",
-                        "Session environment binding CAS exhausted",
-                    ));
-                }
-                awaken_session_state_contract::SessionMutationResult::IdempotencyMismatch => {
-                    return Err(RunError::internal(
-                        "Session environment binding idempotency mismatch",
-                    ));
-                }
+        receipt: SessionEnvironmentReceipt,
+    ) -> Result<SessionEnvironmentState, RunError> {
+        match self
+            .execute(EnvironmentBindingCommand::Persist(&receipt))
+            .await?
+        {
+            EnvironmentBindingResult::Bound(state) => Ok(*state),
+            EnvironmentBindingResult::Admitted(_) => {
+                unreachable!("Persist has no admission result")
             }
         }
-        Err(RunError::unavailable_classified(
-            "session_environment_binding_cas_contended",
-            "Session environment binding CAS exhausted",
-        ))
     }
 }

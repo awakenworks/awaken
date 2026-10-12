@@ -121,6 +121,10 @@ impl SessionApplication {
             baseline,
             agent_publication,
             environment: session.environment.clone(),
+            environment_materialization: session
+                .environment_materialization()
+                .cloned()
+                .map(Box::new),
             resource_revision,
             resources,
             previous_resource_manifest,

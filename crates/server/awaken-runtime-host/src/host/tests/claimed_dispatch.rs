@@ -96,23 +96,31 @@ async fn claimed_snapshot_is_the_worker_session_authority() {
             serde_json::json!({"default": "deny", "rules": []}),
         )])
         .build();
+    let roots = ManagedSessionRootFixture::new().await;
     let (host, managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default").await)
+        roots
+            .configure(crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default").await)
             .build()
             .expect("validated Host dependencies"),
     );
     install_test_session_application(&host);
-    crate::host::worker_resolver::test_support::install_complete_projection_for_snapshot(
-        &managed,
-        "t-published-claim",
-        host.local_workspace(),
-        session_environment(
-            awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
-            serde_json::json!({}),
-        ),
-        &published,
-    )
-    .await;
+    // P1 also requires actual Managed Root/lease authority before physical I/O;
+    // the explicit publication remains byte-exact, not resolved from a catalog.
+    let projection =
+        crate::host::worker_resolver::test_support::empty_frozen_projection_for_snapshot(
+            host.local_workspace(),
+            session_environment(
+                awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
+                serde_json::json!({}),
+            ),
+            &published,
+        );
+    let mut projection = projection;
+    projection.agent_publication = Some(published.clone());
+    roots
+        .install_projection(&managed, "t-published-claim", projection)
+        .await
+        .unwrap();
 
     let ctx = host
         .ctx_for_snapshot(
@@ -199,6 +207,8 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
     // Environment. Constraint: inbound A2A is only a protocol adapter and does
     // not alter this backend rule. Decision table: R1 C1&&!C2 -> no Environment;
     // R2 C1&&C2 -> BadRequest; R3 C1+Native fallback -> one Environment/Hand.
+    // All three use one real Root Store/sink; R3's physical effect cannot borrow
+    // Dispatch-only configuration as an execution grant. R1/R2 retain zero I/O.
     let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("remote-agent")
         .model(awaken_runtime_contract::resolved::ModelBinding::new(
             "remote-agent",
@@ -206,23 +216,28 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
             "a2a:https://agent.example.test",
         ))
         .build();
+    let roots = ManagedSessionRootFixture::new().await;
     let (host, managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default").await)
+        roots
+            .configure(crate::HostDependencies::ephemeral(Arc::new(OkModel), "host-default").await)
             .build()
             .expect("validated Host dependencies"),
     );
     install_test_session_application(&host);
-    crate::host::worker_resolver::test_support::install_complete_projection_for_snapshot(
-        &managed,
-        "a2a-io-only",
-        host.local_workspace(),
-        session_environment(
-            awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
-            serde_json::json!({}),
-        ),
-        &snapshot,
-    )
-    .await;
+    let mut projection =
+        crate::host::worker_resolver::test_support::empty_frozen_projection_for_snapshot(
+            host.local_workspace(),
+            session_environment(
+                awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
+                serde_json::json!({}),
+            ),
+            &snapshot,
+        );
+    projection.agent_publication = Some(snapshot.clone());
+    roots
+        .install_projection(&managed, "a2a-io-only", projection)
+        .await
+        .unwrap();
     let ctx = host
         .ctx_for_snapshot("a2a-io-only", Some("remote-agent"), Some(snapshot.clone()))
         .await
@@ -237,17 +252,20 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
         "R1 owner"
     );
 
-    crate::host::worker_resolver::test_support::install_complete_projection_for_snapshot(
-        &managed,
-        "a2a-with-mount",
-        host.local_workspace(),
-        session_environment(
-            awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
-            serde_json::json!({}),
-        ),
-        &snapshot,
-    )
-    .await;
+    let mut projection =
+        crate::host::worker_resolver::test_support::empty_frozen_projection_for_snapshot(
+            host.local_workspace(),
+            session_environment(
+                awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
+                serde_json::json!({}),
+            ),
+            &snapshot,
+        );
+    projection.agent_publication = Some(snapshot.clone());
+    roots
+        .install_projection(&managed, "a2a-with-mount", projection)
+        .await
+        .unwrap();
     host.realizer.staging.register_thread_resources(
         "a2a-with-mount",
         crate::staged_resources::StagedResources {
@@ -293,17 +311,20 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
             "native",
         )])
         .build();
-    crate::host::worker_resolver::test_support::install_complete_projection_for_snapshot(
-        &managed,
-        "a2a-native-fallback",
-        host.local_workspace(),
-        session_environment(
-            awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
-            serde_json::json!({}),
-        ),
-        &mixed,
-    )
-    .await;
+    let mut projection =
+        crate::host::worker_resolver::test_support::empty_frozen_projection_for_snapshot(
+            host.local_workspace(),
+            session_environment(
+                awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
+                serde_json::json!({}),
+            ),
+            &mixed,
+        );
+    projection.agent_publication = Some(mixed.clone());
+    roots
+        .install_projection(&managed, "a2a-native-fallback", projection)
+        .await
+        .unwrap();
     let ctx = host
         .ctx_for_snapshot("a2a-native-fallback", Some("mixed-agent"), Some(mixed))
         .await
@@ -912,23 +933,30 @@ async fn cold_host_inference_holder_follows_the_candidate_backend_decision_table
 async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
     let storage = tempfile::tempdir().expect("storage dir");
     let thread = "t-sandbox-recovery";
+    // Same selected Control owner/incarnation across two Host components: the
+    // Root and its first receipt survive, not a foreign Worker reassignment.
+    let roots = ManagedSessionRootFixture::new().await;
 
     let (first, first_managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_store_dir(storage.path())
-            .await)
+        roots
+            .configure(
+                crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+                    .await
+                    .with_store_dir(storage.path())
+                    .await,
+            )
             .build()
             .expect("validated Host dependencies"),
     );
     install_test_session_application(&first);
-    install_complete_test_session_for_realization(
-        &first_managed,
-        thread,
-        bare_session("assistant", first.local_workspace()),
-    )
-    .await
-    .expect("install first complete Session projection");
+    let original_projection = roots
+        .install_complete_test_session(
+            &first_managed,
+            thread,
+            bare_session("assistant", first.local_workspace()),
+        )
+        .await
+        .expect("install first complete Session projection");
     let first_ctx = first.ctx_for(thread, None).await.expect("first session");
     let handle = first_ctx
         .env
@@ -947,21 +975,29 @@ async fn replacement_host_adopts_the_dispatch_sandbox_from_a_stable_root() {
     drop(first);
 
     let (replacement, replacement_managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_store_dir(storage.path())
-            .await)
+        roots
+            .configure(
+                crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+                    .await
+                    .with_store_dir(storage.path())
+                    .await,
+            )
             .build()
             .expect("validated Host dependencies"),
     );
     install_test_session_application(&replacement);
-    replacement_managed
-        .install_complete_test_session(
-            thread,
-            bare_session("assistant", replacement.local_workspace()),
-        )
+    // Recovery reads the existing authoritative Root. The replacement Host's
+    // defaults are not a new creation request or an idempotency replay input.
+    use awaken_session_repository_contract::SessionRepository as _;
+    let stored = roots
+        .repository
+        .get(&awaken_session_types::SessionId::from(thread))
         .await
-        .expect("install replacement complete Session projection");
+        .unwrap();
+    roots
+        .install_committed_projection(&replacement_managed, thread, original_projection, stored)
+        .await
+        .expect("restore the exact existing Root projection");
     let binding = serde_json::to_string(&handle).expect("encode durable handle");
     assert_eq!(
         replacement

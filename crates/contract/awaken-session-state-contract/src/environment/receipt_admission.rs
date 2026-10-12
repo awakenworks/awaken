@@ -50,6 +50,10 @@ pub enum SessionEnvironmentReceiptError {
         "Session environment Resource reservation does not match the aggregate pending transition"
     )]
     ResourceTransitionMismatch,
+    #[error("Session original materialization history is unknown")]
+    MaterializationUnknown,
+    #[error("Session materialization remains pending its exact original effect and source closure")]
+    MaterializationPending,
 }
 
 /// Closed disposition for an Environment intent/receipt rejected by current
@@ -65,9 +69,11 @@ impl SessionEnvironmentReceiptError {
     #[must_use]
     pub const fn recovery_action(&self) -> SessionEnvironmentReceiptRecoveryAction {
         match self {
-            Self::RealizationStale | Self::WrongPhase | Self::ResourceTransitionMismatch => {
-                SessionEnvironmentReceiptRecoveryAction::Retry
-            }
+            Self::RealizationStale
+            | Self::WrongPhase
+            | Self::ResourceTransitionMismatch
+            | Self::MaterializationUnknown
+            | Self::MaterializationPending => SessionEnvironmentReceiptRecoveryAction::Retry,
             Self::Mismatch
             | Self::EnvironmentMismatch
             | Self::RequiresResident

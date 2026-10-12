@@ -78,56 +78,28 @@ pub fn session(id: &str, title: &str) -> PersistedSession {
         },
         awaken_credential_contract::CredentialExecutionPolicy::self_hosted_provider(),
     );
-    PersistedSession {
-        created_at_unix_ms: None,
-        updated_at_unix_ms: None,
-        session_id: SessionId::from(id),
-        revision: Default::default(),
-        baseline: awaken_session_configuration_contract::SessionBaselineState::Frozen(
-            awaken_session_configuration_contract::SessionBaseline::compile(
-                awaken_session_configuration_contract::SessionBaselineInputs {
-                    environment,
-                    runtime_placement:
-                        awaken_session_configuration_contract::SessionRuntimePlacement::Local,
-                    mcp_authoring: Default::default(),
-                    agent_id: "assistant".into(),
-                    agent_revision: None,
-                    model_override: None,
-                    model: "kimi".into(),
-                    runtime: Some("acp:custom".into()),
-                    delegate_ids: vec!["researcher".into()],
-                    toolsets: Vec::new(),
-                    mounts: Vec::new(),
-                    env: Vec::new(),
-                    prompts: Vec::new(),
-                    transcript_prefix: None,
-                },
-            ),
+    let mut legacy = PersistedSession::frozen_with_budget(
+        SessionId::from(id),
+        awaken_session_configuration_contract::SessionBaseline::compile(
+            awaken_session_configuration_contract::SessionBaselineInputs {
+                environment,
+                runtime_placement:
+                    awaken_session_configuration_contract::SessionRuntimePlacement::Local,
+                mcp_authoring: Default::default(),
+                agent_id: "assistant".into(),
+                agent_revision: None,
+                model_override: None,
+                model: "kimi".into(),
+                runtime: Some("acp:custom".into()),
+                delegate_ids: vec!["researcher".into()],
+                toolsets: Vec::new(),
+                mounts: Vec::new(),
+                env: Vec::new(),
+                prompts: Vec::new(),
+                transcript_prefix: None,
+            },
         ),
-        title: Some(title.to_string()),
-        metadata: std::collections::BTreeMap::from([("k".into(), "v".into())]),
-        tools: Default::default(),
-        budget: Default::default(),
-        event_batches: Vec::new(),
-        activity_epoch: 0,
-        active_activity_epochs: Default::default(),
-        running_interval: None,
-        closed_runtime_intervals: Vec::new(),
-        runtime_active_millis: 0,
-        usage_cursor: Default::default(),
-        environment: Default::default(),
-        mcp: awaken_session_mcp_contract::SessionMcpAttachmentSet::from_initial(
-            vec![McpAttachmentDraft {
-                name: "github".into(),
-                target: McpTarget::parse_http("https://mcp.example").unwrap(),
-                credential: Some(access),
-                prompts_as_skills: false,
-                origin: McpAttachmentOrigin::Agent,
-            }],
-            Some(holder),
-        )
-        .unwrap(),
-        resources: awaken_session_state_contract::SessionResourceState::from_active(
+        awaken_session_state_contract::SessionResourceState::from_active(
             serde_json::from_value(json!({
                 "inputs": [{
                     "binding_id": "input-file",
@@ -138,12 +110,29 @@ pub fn session(id: &str, title: &str) -> PersistedSession {
             }))
             .unwrap(),
         ),
-        realization: None,
-        realization_progress: Default::default(),
-        execution: SessionExecutionState::Idle,
-        disposition: Default::default(),
-        terminal_cleanup: Default::default(),
-    }
+        awaken_session_mcp_contract::SessionMcpAttachmentSet::from_initial(
+            vec![McpAttachmentDraft {
+                name: "github".into(),
+                target: McpTarget::parse_http("https://mcp.example").unwrap(),
+                credential: Some(access),
+                prompts_as_skills: false,
+                origin: McpAttachmentOrigin::Agent,
+            }],
+            Some(holder),
+        )
+        .unwrap(),
+        Some(title.to_string()),
+        std::collections::BTreeMap::from([("k".into(), "v".into())]),
+        Default::default(),
+        Default::default(),
+    );
+    legacy.execution = SessionExecutionState::Idle;
+    // This fixture models the pre-cutover missing field, not a fresh creation.
+    let mut wire = serde_json::to_value(legacy).unwrap();
+    wire.as_object_mut()
+        .unwrap()
+        .remove("environment_materialization");
+    serde_json::from_value(wire).unwrap()
 }
 
 pub fn hibernated_environment(

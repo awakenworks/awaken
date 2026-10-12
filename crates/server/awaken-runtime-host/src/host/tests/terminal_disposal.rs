@@ -112,7 +112,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     };
     let candidate = host
         .realizer
-        .begin_session_environment_preparation("t-end", env.clone())
+        .begin_session_environment_preparation("t-end", env.clone(), None)
         .expect("retain the exact terminal-test candidate");
     host.install_session_environment_owner_projection(
         "t-end",

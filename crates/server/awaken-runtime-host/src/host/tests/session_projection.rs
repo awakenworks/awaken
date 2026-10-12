@@ -1481,6 +1481,7 @@ async fn frozen_session_resolves_its_exact_agent_revision_instead_of_current() {
             mcp: Vec::new(),
             request_context: Vec::new(),
             agent_publication: None,
+            environment_materialization: None,
             baseline,
         },
         None,

@@ -407,6 +407,7 @@ mod tests {
             baseline,
             agent_publication: None,
             environment: Default::default(),
+            environment_materialization: None,
             resource_revision: 0,
             resources: Default::default(),
             previous_resource_manifest: Some(

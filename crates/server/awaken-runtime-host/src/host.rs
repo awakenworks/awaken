@@ -130,7 +130,7 @@ mod session;
 mod session_ctx;
 mod terminal_reconciliation;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 #[cfg(test)]
 pub(crate) use tests::fixtures::{
     MemoryHostModel, SelectedOnly, test_resource_execution, test_resource_validator,

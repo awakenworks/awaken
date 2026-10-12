@@ -4476,55 +4476,44 @@ fn persisted(id: &str, self_hosted: bool, status: &str) -> PersistedSession {
         credential_realization:
             awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
     };
-    PersistedSession {
-        created_at_unix_ms: None,
-        updated_at_unix_ms: None,
-        session_id: id.into(),
-        revision: Default::default(),
-        baseline: awaken_session_configuration_contract::SessionBaselineState::Frozen(
-            awaken_session_configuration_contract::SessionBaseline::compile(
-                awaken_session_configuration_contract::SessionBaselineInputs {
-                    environment,
-                    runtime_placement: if self_hosted {
-                        SessionRuntimePlacement::Worker
-                    } else {
-                        SessionRuntimePlacement::Local
-                    },
-                    mcp_authoring: Default::default(),
-                    agent_id: "agent".into(),
-                    agent_revision: None,
-                    model_override: None,
-                    model: "model".into(),
-                    runtime: None,
-                    delegate_ids: Vec::new(),
-                    toolsets: Vec::new(),
-                    mounts: Vec::new(),
-                    env: Vec::new(),
-                    prompts: Vec::new(),
-                    transcript_prefix: None,
+    let mut legacy = PersistedSession::frozen_with_budget(
+        id,
+        awaken_session_configuration_contract::SessionBaseline::compile(
+            awaken_session_configuration_contract::SessionBaselineInputs {
+                environment,
+                runtime_placement: if self_hosted {
+                    SessionRuntimePlacement::Worker
+                } else {
+                    SessionRuntimePlacement::Local
                 },
-            ),
+                mcp_authoring: Default::default(),
+                agent_id: "agent".into(),
+                agent_revision: None,
+                model_override: None,
+                model: "model".into(),
+                runtime: None,
+                delegate_ids: Vec::new(),
+                toolsets: Vec::new(),
+                mounts: Vec::new(),
+                env: Vec::new(),
+                prompts: Vec::new(),
+                transcript_prefix: None,
+            },
         ),
-        title: None,
-        metadata: Default::default(),
-        tools: Default::default(),
-        event_batches: Vec::new(),
-        activity_epoch: 0,
-        active_activity_epochs: Default::default(),
-        running_interval: None,
-        closed_runtime_intervals: Vec::new(),
-        runtime_active_millis: 0,
-        usage_cursor: Default::default(),
-        budget: Default::default(),
-        environment: Default::default(),
-        mcp: Default::default(),
-        resources: Default::default(),
-        realization: None,
-        realization_progress: Default::default(),
-        execution: status.parse().expect("fixture execution state"),
-        disposition: Default::default(),
-        terminal_cleanup: Default::default(),
-    }
+        Default::default(),
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        Default::default(),
+    );
+    legacy.execution = status.parse().expect("fixture execution state");
+    // This fixture models the pre-cutover missing field, not a fresh creation.
+    let mut wire = serde_json::to_value(legacy).unwrap();
+    wire.as_object_mut()
+        .unwrap()
+        .remove("environment_materialization");
+    serde_json::from_value(wire).unwrap()
 }
 
 async fn create(

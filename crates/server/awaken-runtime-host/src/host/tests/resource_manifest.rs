@@ -254,6 +254,12 @@ async fn automatic_memory_requires_one_explicit_existing_binding() {
     // E3 select exactly the authored binding and never the first array entry.
     // Decision table: A1 !C1=>E1; A2 C1&&!C2=>E2;
     // A3 C1+C2&&!C3=>E2/E1; A4 C1+C2+C3=>E3.
+    // F1 each row selects one real SQLite/Persistence before Host construction,
+    // then creates/assigns its Root before Runtime installation. This supplies
+    // Environment authority, not a memory binding: A2/A3 still fail, A4 must
+    // select the second explicitly authored existing store, and all four
+    // context-only requests create zero Runs. No mock authorization or
+    // first-array-entry fallback may turn absent config into a valid binding.
 
     let cases = [
         ("A1", false, Some("test-input-0"), None, None),
@@ -305,13 +311,16 @@ async fn automatic_memory_requires_one_explicit_existing_binding() {
         let publications =
             awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
                 .expect("valid publication");
-        let host = (crate::host::with_test_resource_validation(with_test_memory_mounter(
+        let roots = ManagedSessionRootFixture::new().await;
+        let dependencies = crate::host::with_test_resource_validation(with_test_memory_mounter(
             crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
                 .await
                 .with_agent_publications(Arc::new(publications)),
-        )))
-        .build()
-        .expect("validated Host dependencies");
+        ));
+        let host = roots
+            .configure(dependencies)
+            .build()
+            .expect("validated Host dependencies");
         let stores = [test_memory_store_id(), test_memory_store_id()];
         for store in &stores {
             host.resources
@@ -339,8 +348,8 @@ async fn automatic_memory_requires_one_explicit_existing_binding() {
         );
         let managed = managed_with_resource_source(host.clone());
         let thread = format!("automatic-{rule}");
-        managed
-            .install_complete_test_session(&thread, init)
+        roots
+            .install_complete_test_session(&managed, &thread, init)
             .await
             .unwrap();
         assert!(
@@ -373,6 +382,16 @@ async fn automatic_memory_requires_one_explicit_existing_binding() {
                 }
             }
         }
+        assert!(
+            host.commit_for_read(&thread)
+                .await
+                .unwrap()
+                .authoritative_latest_run(&ThreadId(thread.clone()))
+                .await
+                .unwrap()
+                .is_none(),
+            "{rule}: context construction starts zero Runs"
+        );
     }
 }
 

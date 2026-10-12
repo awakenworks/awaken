@@ -337,8 +337,11 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 assert!(
                     host.authorize_environment_effect_before_io(
                         SESSION,
-                        awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
-                        None,
+                        &host.realizer.new_environment_effect_intent(
+                            SESSION,
+                            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                            None
+                        ),
                     )
                     .await
                     .is_err(),
@@ -957,12 +960,12 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
     assert!(sandbox.spawn_agent(command()).await.is_err());
     let first = host
         .realizer
-        .begin_session_environment_preparation(SESSION, environment.clone())
+        .begin_session_environment_preparation(SESSION, environment.clone(), None)
         .unwrap();
     assert!(!sandbox.needs_execution_authority());
     let retry = host
         .realizer
-        .begin_session_environment_preparation(SESSION, environment.clone())
+        .begin_session_environment_preparation(SESSION, environment.clone(), None)
         .unwrap();
     assert!(Arc::ptr_eq(&first.environment, &retry.environment));
     let process = sandbox.spawn(command()).await.unwrap();

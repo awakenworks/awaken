@@ -6024,7 +6024,9 @@ async fn persist_profiled_publication_source(
     let sink = state.session_application().environment_binding_sink();
     assert_eq!(
         sink.authorize(&intent).await.unwrap(),
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized,
+        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized {
+            intent: Box::new(intent.clone())
+        },
         "profiled publication fixture uses the aggregate-authorized live source path"
     );
     let binding = format!("profiled-test-live-source:{session_id}");

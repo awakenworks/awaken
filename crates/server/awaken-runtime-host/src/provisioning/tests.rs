@@ -168,6 +168,7 @@ fn frozen_projection_with_model_override(
         revision: awaken_session_types::SessionRevision(1),
         baseline,
         agent_publication: None,
+        environment_materialization: None,
         environment,
         resource_revision: 0,
         resources: Default::default(),
@@ -230,7 +231,7 @@ fn install_terminal_artifact_environment(
         .expect("F1/E1 project the canonical legacy durable binding");
     let candidate = host
         .realizer
-        .begin_session_environment_adoption(session_id, environment)
+        .begin_session_environment_adoption(session_id, environment, None)
         .expect("F2/E2 retain the exact adoption candidate");
     let crate::installed_session::UnboundSessionEnvironmentOrigin::AdoptionFrom(identity) =
         &candidate.origin
