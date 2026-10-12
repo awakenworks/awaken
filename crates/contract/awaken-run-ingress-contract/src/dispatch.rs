@@ -81,6 +81,7 @@ include!("dispatch/settlement.rs");
 
 mod attempt_binding;
 pub use attempt_binding::{
+    AttemptClosureEvent, AttemptClosureKind, AttemptClosurePage, AttemptClosureRecord,
     AttemptExecutionBinding, PhysicalAttempt, attempt_binding_retry_is_exact,
 };
 

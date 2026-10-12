@@ -174,3 +174,27 @@ pub(super) fn runnable(state: &State, run_id: &RunId, now_ms: u64) -> Option<boo
     }
     (row.state == DispatchState::Pending).then_some(false)
 }
+
+/// Both operation purposes project the same original sequence. Purpose and
+/// exact Run are selected before the page limit, so private prefixes never
+/// hide later public delivery facts.
+impl State {
+    pub(super) fn operation_page(
+        &self,
+        cursor: DispatchCursor,
+        limit: usize,
+        run: Option<&RunId>,
+        purpose: crate::dispatch::OperationReadPurpose,
+    ) -> Vec<crate::dispatch::StoredDispatchEvent> {
+        self.operations
+            .iter()
+            .filter(|event| {
+                event.cursor > cursor
+                    && run.is_none_or(|run| event.operation.run_id() == run)
+                    && event.operation.matches(purpose)
+            })
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+}

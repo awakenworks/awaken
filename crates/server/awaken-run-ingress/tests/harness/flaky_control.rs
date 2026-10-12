@@ -18,9 +18,9 @@ impl awaken_run_ingress_contract::DispatchAttemptControl for FlakyDispatchStore 
 
     async fn finish_attempt_closure(
         &self,
-        claim: &awaken_run_ingress::RunClaim,
+        record: &awaken_run_ingress::AttemptClosureRecord,
     ) -> Result<awaken_run_ingress::SettleOutcome, awaken_run_ingress::DispatchError> {
-        self.inner.finish_attempt_closure(claim).await
+        self.inner.finish_attempt_closure(record).await
     }
 }
 
@@ -46,6 +46,17 @@ impl awaken_run_ingress_contract::DispatchControlReads for FlakyDispatchStore {
     ) -> Result<Option<awaken_run_ingress::PhysicalAttempt>, awaken_run_ingress::DispatchError>
     {
         self.inner.load_physical_attempt(run_id).await
+    }
+
+    async fn attempt_closure_records_after(
+        &self,
+        cursor: awaken_run_ingress::DispatchCursor,
+        limit: usize,
+        run: Option<&RunId>,
+    ) -> Result<awaken_run_ingress::AttemptClosurePage, awaken_run_ingress::DispatchError> {
+        self.inner
+            .attempt_closure_records_after(cursor, limit, run)
+            .await
     }
 
     async fn completion_events_after(
