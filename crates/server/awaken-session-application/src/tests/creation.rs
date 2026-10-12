@@ -438,7 +438,9 @@ fn direct_file_attachment(
 }
 
 #[async_trait::async_trait]
-impl SessionEnvironmentSource for AdmissionEnvironment {
+impl awaken_executable_environment_contract::SessionEnvironmentProjectionSource
+    for AdmissionEnvironment
+{
     async fn get(
         &self,
         _environment_id: &str,
@@ -481,7 +483,10 @@ impl SessionEnvironmentSource for AdmissionEnvironment {
         self.resolve_current_for_session(environment_id, runtime, mcp_targets)
             .await
     }
+}
 
+#[async_trait::async_trait]
+impl awaken_worker_contract::SessionWorkSource for AdmissionEnvironment {
     async fn enqueue_session_work(
         &self,
         _environment_id: &str,
@@ -519,9 +524,22 @@ impl SessionEnvironmentSource for AdmissionEnvironment {
     > {
         Ok(None)
     }
+
+    async fn release_session_work(
+        &self,
+        _lease: &awaken_worker_contract::SessionWorkLease,
+    ) -> Result<bool, awaken_worker_contract::WorkQueueError> {
+        Ok(false)
+    }
+    async fn release_worker_session_work(
+        &self,
+        _worker_owner: &str,
+    ) -> Result<usize, awaken_worker_contract::WorkQueueError> {
+        Ok(0)
+    }
 }
 
-fn creation_command(session_id: &str) -> CreateSessionCommand {
+pub(super) fn creation_command(session_id: &str) -> CreateSessionCommand {
     let environment = persisted("environment-template", true, "idle")
         .frozen_baseline()
         .expect("fixture baseline")

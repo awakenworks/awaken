@@ -320,7 +320,7 @@ impl SessionApplication {
                 match terminal_cleanup_path(
                     false,
                     legacy_receipts_complete,
-                    self.requires_external_realization(&session),
+                    session.requires_external_environment_owner(),
                 ) {
                     TerminalCleanupPath::NormalizeLegacy => {
                         // Historical one-stage receipts already prove physical
@@ -387,7 +387,7 @@ impl SessionApplication {
                 .map_err(internal)?
                 .is_completed();
             if cleanup_completed
-                && !self.requires_external_realization(&session)
+                && !session.requires_external_environment_owner()
                 && !drove_local_cleanup
                 && let Some(lease) = session.realization.as_ref()
             {

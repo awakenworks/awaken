@@ -544,29 +544,37 @@ async fn local_managed_state_over(
     let environments =
         environments.unwrap_or_else(|| volatile_environment_execution(clock.clone()));
     let runtime = Arc::new(ManagedHost::new(host.clone()));
-    let mut application = awaken_session_application::SessionApplication::new_with_configuration(
+    let mut builder = awaken_session_application::SessionApplication::builder(
         runtime.clone(),
         runtime.clone(),
         persistence,
         environments.clone(),
+    )
+    .configuration(
         awaken_session_application::SessionApplicationConfiguration {
             execution_placement,
             local_realization_owner,
             ..Default::default()
         },
-    );
-    application.set_credential_source(vaults.clone());
-    application.set_credential_material_ingress(vaults);
-    application.set_resource_registry(catalog);
+    )
+    .credentials(awaken_session_application::SessionCredentials::read_write(
+        vaults,
+    ))
+    .resources(awaken_session_application::SessionResources::catalog(
+        catalog,
+    ));
     if let Some(source) = agent_source {
-        application.set_config_source(source);
+        builder = builder.agent_profiles(source);
     }
     if let Some(resolver) = model_publication_resolver {
-        application.set_model_publication_resolver(resolver);
+        builder = builder.model_overrides(resolver);
     }
     if let Some(provider) = managed_list_price_provider {
-        application.set_managed_list_price_provider(provider);
+        builder = builder.managed_prices(provider);
     }
+    let application = builder
+        .build()
+        .expect("scenario Session capabilities are complete");
     let application = Arc::new(application);
     install_managed_agent_coordination(&host, &runtime, &application)
         .expect("scenario Session coordination application binds once");

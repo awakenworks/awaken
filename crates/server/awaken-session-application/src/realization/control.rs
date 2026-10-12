@@ -80,7 +80,7 @@ impl SessionApplication {
             if session.realization_progress.run_free_initial_preparation {
                 return Ok(session.into_snapshot());
             }
-            let external = self.requires_external_realization(&session)
+            let external = session.requires_external_environment_owner()
                 && session
                     .frozen_baseline()
                     .is_some_and(|baseline| !baseline.environment.self_hosted);
@@ -845,9 +845,10 @@ impl SessionApplication {
         );
         let initial_realization = session.execution != SessionExecutionState::Idle;
         let retry_initial = {
-            match command
-                .initial_realization_failure_plan(&session, self.realization_retry_budget())?
-            {
+            match command.initial_realization_failure_plan(
+                &session,
+                self.configuration.realization_retry_budget,
+            )? {
                 awaken_session_realization_contract::RealizationFailureOutcome::Retry {
                     refund_attempt,
                 } => {
@@ -1120,7 +1121,7 @@ impl SessionApplication {
         scope: TerminalCleanupClaimScope<'_>,
         replay_after_conflict: Option<&TerminalCleanupClaimConflict>,
     ) -> TerminalCleanupRootClaim {
-        if !scope.admits(self, &session)
+        if !scope.admits(&session)
             || !session.is_terminal()
             || !session.terminal_cleanup.is_requested()
         {

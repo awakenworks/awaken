@@ -176,6 +176,7 @@ nats = ["awaken-dispatch/nats"]
 container-k8s = ["awaken-worker-transport-security/kubernetes", "awaken-sandbox-container/k8s", "dep:kube"]
 
 [dev-dependencies]
+awaken-executable-environment-contract.workspace = true
 # Captures the Session adoption's correlated rollout diagnostics in its tests.
 awaken-reliability-testkit = { workspace = true, features = ["tracing"] }
 awaken-tool-relay = { workspace = true, features = ["test-support"] }

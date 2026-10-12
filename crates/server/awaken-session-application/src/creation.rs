@@ -678,7 +678,7 @@ impl SessionApplication {
             SessionCreateEffectPlan::ContinueAppliedRealization => {}
         }
 
-        let realized = if self.requires_external_realization(&persisted) {
+        let realized = if persisted.requires_external_environment_owner() {
             self.install_dispatch_projection(&owner_scope, &persisted)
                 .await
                 .map(|()| persisted.clone())
