@@ -32,7 +32,281 @@ fn root(execution: SessionExecutionState, revision: u64) -> SessionAggregate {
     wire.as_object_mut()
         .unwrap()
         .remove("environment_materialization");
+    wire.as_object_mut().unwrap().remove("run_activities");
     SessionAggregate::try_from(serde_json::from_value::<PersistedSession>(wire).unwrap()).unwrap()
+}
+
+#[test]
+fn named_activity_admissions_retain_raw_identity_without_requiring_a_created_domain() {
+    // Causes: N1 fresh, before first Create; N2 named operation/raw Thread/Run;
+    // N3 same Run with a new operation/epoch; N4 anonymous low admission;
+    // N5 invalid epoch/duplicate operation/blank raw identity. Effects: R1
+    // N1+N2 appends once in the existing reducer without inventing a domain;
+    // R2 N3 appends without rewriting N2; R3 N4 makes coverage sticky unknown;
+    // R4 N5 rejects with the whole working root unchanged, including coverage.
+    let thread = awaken_agent_contract::ThreadId("original-thread".into());
+    let run = awaken_agent_contract::RunId("original-run".into());
+    let mut aggregate = fresh_root(SessionExecutionState::Idle, 0);
+    assert!(aggregate.environment_materialization().unwrap().is_empty());
+    assert_eq!(aggregate.run_activities(), Some((&[][..], false)));
+    for (operation, epoch) in [("op-first", 1), ("op-continuation", 2)] {
+        assert_eq!(
+            aggregate.activity().open(
+                Some(epoch),
+                false,
+                false,
+                10,
+                0,
+                Some((operation, &thread, &run))
+            ),
+            SessionActivityAdmissionPlan::Open(epoch),
+            "R1/R2"
+        );
+    }
+    let (records, unrecorded) = aggregate.run_activities().unwrap();
+    assert!(
+        !unrecorded,
+        "R1 before first Create is not an omitted admission"
+    );
+    assert_eq!(records.len(), 2);
+    for (record, (operation, epoch)) in records
+        .iter()
+        .zip([("op-first", 1), ("op-continuation", 2)])
+    {
+        assert_eq!(record.operation_id(), operation);
+        assert_eq!(record.activity_epoch().get(), epoch);
+        assert_eq!(record.thread_id(), &thread);
+        assert_eq!(record.run_id(), &run);
+    }
+    let empty_thread = awaken_agent_contract::ThreadId(" ".into());
+    let empty_run = awaken_agent_contract::RunId(String::new());
+    for (epoch, operation, source_thread, source_run) in [
+        (0, "new", &thread, &run),
+        (2, "new", &thread, &run),
+        (3, "op-first", &thread, &run),
+        (3, " ", &thread, &run),
+        (3, "new", &empty_thread, &run),
+        (3, "new", &thread, &empty_run),
+    ] {
+        let before = aggregate.clone();
+        assert_eq!(
+            aggregate.activity().open(
+                Some(epoch),
+                false,
+                false,
+                20,
+                0,
+                Some((operation, source_thread, source_run))
+            ),
+            SessionActivityAdmissionPlan::Conflict,
+            "R4"
+        );
+        assert_eq!(aggregate, before, "R4 complete-state atomic rejection");
+    }
+    let mut dto = aggregate.into_snapshot();
+    assert_eq!(
+        dto.begin_activity_epoch(),
+        Some(3),
+        "R3 low anonymous kernel"
+    );
+    assert!(dto.run_activities().unwrap().1);
+    assert!(dto.begin_activity_epoch_at(4, Some(("op-after-anonymous", &thread, &run))));
+    assert!(
+        dto.run_activities().unwrap().1,
+        "R3 later named admission cannot clear unknown"
+    );
+    let before = dto.clone();
+    assert!(!dto.begin_activity_epoch_at(4, None));
+    assert_eq!(
+        dto, before,
+        "R4 failed anonymous admission cannot mutate history"
+    );
+    let mut legacy = root(SessionExecutionState::Idle, 0).into_snapshot();
+    assert!(legacy.begin_activity_epoch_at(1, Some(("legacy-op", &thread, &run))));
+    assert!(
+        legacy.run_activities().is_none(),
+        "legacy history is never backfilled"
+    );
+}
+
+#[test]
+fn retained_activity_history_import_and_replacement_reject_fabrication_and_rewrites() {
+    // Causes: H1 omitted legacy vs explicit fresh-empty; H2 invalid epoch/order,
+    // raw identity or duplicate operation; H3 latest named/Event-batch anchor;
+    // H4 replacement removes/rewrites prefix, clears sticky unknown, or appends
+    // without a genuinely new activity epoch. R1 H1 roundtrips exact old bytes;
+    // R2 malformed H2 or absent H3 rejects import; R3 H4 rejects replacement;
+    // R4 a new epoch may append while every old raw record remains immutable.
+    let mut named = fresh_root(SessionExecutionState::Idle, 0);
+    let thread = awaken_agent_contract::ThreadId("thread".into());
+    let run = awaken_agent_contract::RunId("run".into());
+    named
+        .activity()
+        .open(Some(1), false, false, 10, 0, Some(("op-1", &thread, &run)));
+    let before = named.into_snapshot();
+    let wire = serde_json::to_value(&before).unwrap();
+    let restored: PersistedSession = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(
+        SessionAggregate::try_from(restored).unwrap().snapshot(),
+        &before,
+        "R1 known"
+    );
+    let mut legacy_wire = wire.clone();
+    legacy_wire
+        .as_object_mut()
+        .unwrap()
+        .remove("run_activities");
+    let legacy: PersistedSession = serde_json::from_value(legacy_wire.clone()).unwrap();
+    assert!(legacy.run_activities().is_none());
+    assert_eq!(
+        serde_json::to_value(&legacy).unwrap(),
+        legacy_wire,
+        "R1 omitted bytes"
+    );
+    assert!(
+        legacy.validate_observation_replacement(&before).is_err(),
+        "R3 no legacy promotion"
+    );
+    assert!(
+        before.validate_observation_replacement(&legacy).is_err(),
+        "R3 no erasure"
+    );
+    let mut zero_epoch = wire.clone();
+    *zero_epoch
+        .pointer_mut("/run_activities/records/0/activity_epoch")
+        .unwrap() = serde_json::json!(0);
+    assert!(
+        serde_json::from_value::<PersistedSession>(zero_epoch).is_err(),
+        "R2 existing nonzero Epoch codec"
+    );
+    for (pointer, invalid) in [
+        (
+            "/run_activities/records/0/operation_id",
+            serde_json::json!(" "),
+        ),
+        ("/run_activities/records/0/thread_id", serde_json::json!("")),
+        ("/run_activities/records/0/run_id", serde_json::json!("\t")),
+        ("/run_activities/records", serde_json::json!([])),
+    ] {
+        let mut malformed = wire.clone();
+        *malformed.pointer_mut(pointer).unwrap() = invalid;
+        let dto: PersistedSession = serde_json::from_value(malformed).unwrap();
+        assert_eq!(
+            SessionAggregate::try_from(dto).unwrap_err(),
+            SessionMutationValidationError::ActivityHistoryMismatch,
+            "R2 {pointer}"
+        );
+    }
+    let mut after = before.clone();
+    assert!(after.begin_activity_epoch_at(2, Some(("op-2", &thread, &run))));
+    assert!(
+        before.validate_observation_replacement(&after).is_ok(),
+        "R4 append"
+    );
+    for invalid in [
+        {
+            let mut value = after.clone();
+            value.run_activities.as_deref_mut().unwrap().records[0].run_id =
+                awaken_agent_contract::RunId("rewritten".into());
+            value
+        },
+        {
+            let mut value = after.clone();
+            value
+                .run_activities
+                .as_deref_mut()
+                .unwrap()
+                .records
+                .remove(0);
+            value
+        },
+        {
+            let mut value = before.clone();
+            value.run_activities.as_deref_mut().unwrap().unrecorded = true;
+            value
+        },
+    ] {
+        assert!(
+            before.validate_observation_replacement(&invalid).is_err(),
+            "R3 prefix/epoch"
+        );
+    }
+    let mut duplicate = after.clone();
+    duplicate.run_activities.as_deref_mut().unwrap().records[1].operation_id = "op-1".into();
+    assert!(
+        SessionAggregate::try_from(duplicate).is_err(),
+        "R2 duplicate original operation"
+    );
+    let mut anonymous = before.clone();
+    anonymous.begin_activity_epoch();
+    let mut rewound = anonymous.clone();
+    rewound.activity_epoch = before.activity_epoch;
+    rewound.active_activity_epochs = before.active_activity_epochs.clone();
+    assert!(
+        anonymous
+            .validate_observation_replacement(&rewound)
+            .is_err(),
+        "R3 no scalar rewind under sticky unknown"
+    );
+    let mut cleared = anonymous.clone();
+    cleared.run_activities.as_deref_mut().unwrap().unrecorded = false;
+    assert!(
+        anonymous
+            .validate_observation_replacement(&cleared)
+            .is_err(),
+        "R3 sticky"
+    );
+}
+
+#[test]
+fn activity_history_survives_settlement_archive_delete_and_terminal_failure() {
+    // R1 named admission then settlement retains the raw fact; R2 archive,
+    // delete or failed execution closes active membership but keeps the same
+    // history. R3 terminal append is rejected even if a DTO invents a later
+    // epoch. Neither an empty active set nor retained raw records proves domain
+    // closure; these are preservation tests at the existing Root owner only.
+    for terminal in 0..3 {
+        let mut root = fresh_root(SessionExecutionState::Idle, 0);
+        let thread = awaken_agent_contract::ThreadId("thread".into());
+        let run = awaken_agent_contract::RunId("run".into());
+        root.activity()
+            .open(Some(1), false, false, 10, 0, Some(("op-1", &thread, &run)));
+        let original = root.run_activities().unwrap().0.to_vec();
+        root.activity().settle_activity_epoch(1);
+        assert_eq!(root.run_activities().unwrap().0, original, "R1");
+        match terminal {
+            0 => {
+                root.lifecycle().archive("time", 20).unwrap();
+            }
+            1 => {
+                root.lifecycle().request_delete("workspace", 0, 20).unwrap();
+            }
+            _ => {
+                root.lifecycle()
+                    .transition_execution_at(SessionExecutionState::ActivationFailed, 20)
+                    .unwrap();
+            }
+        }
+        assert!(root.active_activity_epochs.is_empty());
+        assert_eq!(
+            root.run_activities().unwrap(),
+            (original.as_slice(), false),
+            "R2"
+        );
+        let before = root.clone();
+        assert_eq!(
+            root.activity()
+                .open(Some(2), true, true, 30, 0, Some(("op-2", &thread, &run))),
+            SessionActivityAdmissionPlan::Terminal
+        );
+        assert_eq!(root, before, "R3 aggregate gate");
+        let mut invalid = root.snapshot().clone();
+        invalid.begin_activity_epoch_at(2, Some(("op-2", &thread, &run)));
+        assert!(
+            root.validate_observation_replacement(&invalid).is_err(),
+            "R3 replacement gate"
+        );
+    }
 }
 
 #[test]
@@ -656,7 +930,9 @@ fn activity_admission_matrix_changes_all_coordinates_or_none() {
                 dto.activity_epoch = 3;
                 let mut aggregate = SessionAggregate::try_from(dto).unwrap();
                 let before = aggregate.clone();
-                let actual = aggregate.activity().open(exact, external, false, 10, 7);
+                let actual = aggregate
+                    .activity()
+                    .open(exact, external, false, 10, 7, None);
                 let ready = matches!(
                     execution,
                     SessionExecutionState::Running | SessionExecutionState::Idle
@@ -696,7 +972,7 @@ fn activity_admission_matrix_changes_all_coordinates_or_none() {
     archived.lifecycle().archive("archive", 10).unwrap();
     let before = archived.clone();
     assert_eq!(
-        archived.activity().open(None, true, true, 20, 7),
+        archived.activity().open(None, true, true, 20, 7, None),
         SessionActivityAdmissionPlan::Terminal
     );
     assert_eq!(archived, before);
@@ -706,7 +982,7 @@ fn activity_admission_matrix_changes_all_coordinates_or_none() {
 fn final_activity_closes_interval_and_compiles_one_intrinsic_fact() {
     let mut aggregate = root(SessionExecutionState::Idle, 4);
     assert_eq!(
-        aggregate.activity().open(None, false, false, 10, 7),
+        aggregate.activity().open(None, false, false, 10, 7, None),
         SessionActivityAdmissionPlan::Open(1)
     );
     let before = aggregate.clone();
@@ -749,7 +1025,7 @@ fn final_activity_closes_interval_and_compiles_one_intrinsic_fact() {
 #[test]
 fn contradictory_interval_fact_is_rejected_at_fresh_repository_validation() {
     let mut aggregate = root(SessionExecutionState::Idle, 4);
-    aggregate.activity().open(None, false, false, 10, 0);
+    aggregate.activity().open(None, false, false, 10, 0, None);
     aggregate.activity().settle_activity_epoch(1);
     let interval = aggregate.activity().finish_running(20).unwrap().unwrap();
     let wrong = ManagedLifecycleFact {
@@ -1083,7 +1359,7 @@ fn admission_budget_and_counter_boundaries_preserve_rejection_atomicity() {
             assert_eq!(
                 aggregate
                     .activity()
-                    .open(None, false, continue_await, 10, 0),
+                    .open(None, false, continue_await, 10, 0, None),
                 expected
             );
             if !matches!(expected, SessionActivityAdmissionPlan::Open(_)) {
@@ -1111,7 +1387,7 @@ fn terminal_commands_close_running_interval_and_emit_one_revision_bound_fact() {
     // exact required lifecycle fact without relying on an application caller.
     for trigger in 0..3 {
         let mut aggregate = root(SessionExecutionState::Idle, 4);
-        aggregate.activity().open(None, false, false, 10, 7);
+        aggregate.activity().open(None, false, false, 10, 7, None);
         match trigger {
             0 => {
                 aggregate.lifecycle().archive("time", 20).unwrap();
@@ -1156,7 +1432,7 @@ fn physical_readiness_promotes_admitted_activity_as_one_valid_root() {
     for admitted in [false, true] {
         let mut aggregate = root(SessionExecutionState::Preparing, 4);
         if admitted {
-            aggregate.activity().open(None, true, false, 10, 7);
+            aggregate.activity().open(None, true, false, 10, 7, None);
         }
         assert_eq!(
             aggregate.activity().realization_ready(20).unwrap(),

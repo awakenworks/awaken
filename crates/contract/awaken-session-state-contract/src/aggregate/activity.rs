@@ -1,3 +1,8 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: The existing Session aggregate owns atomic activity admission and retained raw
+// @formal reason: Run identities before execution. Its application commits this candidate through the
+// @formal reason: original root CAS; scalar-plan proofs retain their stated scope, while new history,
+// @formal reason: replay and legacy preservation are covered by adjacent native tests, not a full-stop proof.
 use super::{
     SessionActivityOperations, SessionEventBatchError, SessionEventDispatchSettlementEffect,
     SessionEventProjectionAnchor, SessionExecutionState, SessionExecutionTransitionError,
@@ -60,6 +65,11 @@ impl SessionActivityOperations<'_> {
         continue_await: bool,
         now: u64,
         admitted_after: u64,
+        source: Option<(
+            &str,
+            &awaken_agent_contract::ThreadId,
+            &awaken_agent_contract::RunId,
+        )>,
     ) -> SessionActivityAdmissionPlan {
         let state = &mut self.aggregate.state;
         if state.is_terminal() {
@@ -77,7 +87,7 @@ impl SessionActivityOperations<'_> {
             return plan;
         };
         let mut next = state.clone();
-        if !next.begin_activity_epoch_at(epoch) {
+        if !next.begin_activity_epoch_at(epoch, source) {
             return SessionActivityAdmissionPlan::Conflict;
         }
         next.environment.mark_active();

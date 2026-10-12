@@ -307,6 +307,7 @@ impl SessionApplication {
                             &session_id,
                             &operation_id,
                             prior_epoch,
+                            (&command.target.thread_id(&command.session_id), &command.expected_run_id),
                         )
                         .await
                         .map_err(crate::SessionActivityError::run_error)?;
@@ -491,13 +492,23 @@ impl SessionAgentCoordination for SessionApplication {
         mode: SessionRunActivityAdmissionMode,
     ) -> Result<SessionRunActivityAdmission, RunError> {
         let operation_id = session_run_activity_operation_id(session_id, run_id);
+        let thread_id = ThreadId(session_id.to_string());
         let admitted = match mode {
             SessionRunActivityAdmissionMode::RecoverOrAdmit => self
-                .begin_admitted_activity_for_operation(agent_id, session_id, &operation_id)
+                .begin_admitted_activity_for_operation(
+                    agent_id,
+                    session_id,
+                    &operation_id,
+                    (&thread_id, run_id),
+                )
                 .await
                 .map(Some),
             SessionRunActivityAdmissionMode::RecoverOnly => self
-                .recover_activity_for_operation(session_id, &operation_id)
+                .recover_activity_for_operation(
+                    session_id,
+                    &operation_id,
+                    Some((&thread_id, run_id)),
+                )
                 .await
                 .map_err(crate::SessionActivityError::run_error),
         };
@@ -698,6 +709,7 @@ impl SessionAgentCoordination for SessionApplication {
             command.source_run_id.0.as_str(),
             command.operation_id.as_str(),
         ));
+        let run_id = RunId(format!("coord-run-{run_identity}"));
         // A new child is authored after the committed source call, so its
         // Resource envelope must use the Session's current desired generation.
         // Reuse complete dispatch projection; this stages facts only. The
@@ -710,7 +722,14 @@ impl SessionAgentCoordination for SessionApplication {
                 ))
             })?;
         let (_, activity_epoch) = self
-            .begin_activity_for_operation(&command.session_id, &command.operation_id)
+            .begin_activity_for_operation_with_policy(
+                &command.session_id,
+                &command.operation_id,
+                false,
+                None,
+                None,
+                Some((&thread_id, &run_id)),
+            )
             .await
             .map_err(crate::SessionActivityError::run_error)?;
         let session_id = command.session_id.clone();
@@ -719,7 +738,7 @@ impl SessionAgentCoordination for SessionApplication {
                 intent,
                 session_id: command.session_id,
                 thread_id: thread_id.clone(),
-                run_id: RunId(format!("coord-run-{run_identity}")),
+                run_id,
                 parent_run_id: command.source_run_id,
                 parent_call_id: command.source_call_id,
                 operation_id: command.operation_id,

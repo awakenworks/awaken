@@ -116,10 +116,17 @@ impl SessionApplication {
             let operation = awaken_session_execution_contract::session_run_activity_operation_id(
                 session_id, run_id,
             );
-            self.recover_activity_for_operation(session_id, &operation)
-                .await
-                .map_err(|error| SessionProjectionRecoveryError::Unavailable(error.to_string()))?
-                .ok_or(SessionProjectionRecoveryError::NotFound)?;
+            self.recover_activity_for_operation(
+                session_id,
+                &operation,
+                Some((
+                    &awaken_agent_contract::ThreadId(session_id.to_string()),
+                    run_id,
+                )),
+            )
+            .await
+            .map_err(|error| SessionProjectionRecoveryError::Unavailable(error.to_string()))?
+            .ok_or(SessionProjectionRecoveryError::NotFound)?;
             return Ok(SessionRunEventPage {
                 session_id: session_id.to_string(),
                 run_id: run_id.clone(),

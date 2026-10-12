@@ -243,6 +243,7 @@ impl SessionApplication {
             let session_id = command.session_id.clone();
             let agent_id = command.agent_id.clone();
             let run_id = command.run_id.clone();
+            let thread_id = awaken_agent_contract::ThreadId(session_id.to_string());
             let operation = session_run_activity_operation_id(&session_id, &run_id);
             // Cause/effect decision table: an existing exact activity receipt is
             // response-loss truth and outranks current policy, but it says nothing
@@ -263,7 +264,11 @@ impl SessionApplication {
             };
             let existing_activity_epoch = match durable_owner.as_ref() {
                 Some(_) => self
-                    .recover_activity_for_operation(&session_id, &operation)
+                    .recover_activity_for_operation(
+                        &session_id,
+                        &operation,
+                        Some((&thread_id, &run_id)),
+                    )
                     .await
                     .map_err(crate::SessionActivityError::run_error)?
                     .map(|(_, epoch)| epoch),
@@ -292,6 +297,7 @@ impl SessionApplication {
                             &session_id,
                             &operation,
                             projected_revision,
+                            (&thread_id, &run_id),
                         )
                         .await
                         .map_err(crate::SessionActivityError::run_error)?

@@ -89,8 +89,9 @@ pub use session_repo::{
     SessionMutation, SessionMutationPayload, SessionMutationResult, SessionMutationValidationError,
     SessionPlacementClass, SessionPublicStatus, SessionRecoveryQuarantine,
     SessionRepositoryConflict, SessionRepositoryError, SessionRepositoryRecoveryAction,
-    SessionScan, SessionScanCursor, SessionScanQuery, SessionTombstone, SessionWorkerObligation,
-    VisibleMcpServer, session_is_terminal, session_is_unattempted_profiled_preparation,
+    SessionRunActivityAdmissionRecord, SessionScan, SessionScanCursor, SessionScanQuery,
+    SessionTombstone, SessionWorkerObligation, VisibleMcpServer, session_is_terminal,
+    session_is_unattempted_profiled_preparation,
 };
 pub use terminal_cleanup::{
     SessionCleanupCommand, SessionCleanupDisposalCommand, SessionCleanupDisposalReceipt,

@@ -610,6 +610,7 @@ impl SessionApplication {
                     &session_id,
                     &operation_id,
                     pause.prior_session_activity_epoch,
+                    (&ticket.thread_id, &ticket.run_id),
                 )
                 .await
                 .map_err(|error| SessionUpdateError::ProjectionAfterCommit {
