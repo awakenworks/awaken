@@ -4014,6 +4014,7 @@ async fn terminal_profiled_session_retires_its_marked_repository_definition() {
             owner_scope: "default".into(),
             session_id: session_id.into(),
             mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Frozen,
+            application_origin: None,
             agent_id: "a".into(),
             source_revision: None,
             environment_id: Some(awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID.into()),

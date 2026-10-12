@@ -20,6 +20,7 @@ pub mod outcome_judge;
 pub mod public_benchmark;
 pub mod record;
 pub mod replay;
+pub mod skill_candidate;
 pub mod store;
 pub mod transcript_corpus;
 

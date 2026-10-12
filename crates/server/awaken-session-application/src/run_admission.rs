@@ -18,8 +18,9 @@ use awaken_session_application_contract::{
     OwnerScopedRunApplication, Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 use awaken_session_configuration_contract::{
-    ControlSessionCreationInputs, SessionBaselineState, SessionCreationIntent,
-    SessionMcpAuthoringContext, SessionNetworkPolicy, SessionToolConfiguration,
+    ApplicationOriginBinding, ControlSessionCreationInputs, SessionBaselineState,
+    SessionContextSeed, SessionCreationIntent, SessionMcpAuthoringContext, SessionNetworkPolicy,
+    SessionSystemPromptSelection, SessionToolConfiguration, SessionTrigger,
 };
 use awaken_session_mcp_contract::McpAttachmentOrigin;
 use awaken_session_execution_contract::{
@@ -45,6 +46,7 @@ pub struct CreateProfiledSessionCommand {
     pub owner_scope: String,
     pub session_id: String,
     pub mutation_policy: awaken_session_resource_contract::SessionMutationPolicy,
+    pub application_origin: Option<ApplicationOriginBinding>,
     pub agent_id: String,
     /// Exact executable publication source revision. `None` selects the current
     /// publication for ordinary interactive authoring.
@@ -615,6 +617,7 @@ impl SessionApplication {
             owner_scope,
             session_id,
             mutation_policy,
+            application_origin,
             agent_id,
             source_revision,
             environment_id: requested_environment_id,
@@ -631,15 +634,11 @@ impl SessionApplication {
             tools: requested_tools,
             idempotency,
         } = command;
-        awaken_session_configuration_contract::SessionContextSeed::admit_authored_prompts(&prompts)
+        SessionContextSeed::admit_authored_prompts(&prompts)
             .map_err(|error| RunError::bad_request(error.to_string()))?;
         let context_seed =
-            awaken_session_configuration_contract::SessionContextSeed::from_metadata(
-                awaken_session_configuration_contract::SessionTrigger::Interactive {},
-                &metadata,
-                None,
-            )
-            .map_err(|error| RunError::bad_request(error.to_string()))?;
+            SessionContextSeed::from_metadata(SessionTrigger::Interactive {}, &metadata, None)
+                .map_err(|error| RunError::bad_request(error.to_string()))?;
         let mut prompts = prompts;
         prompts.push(context_seed.encode());
         // Authored Repository paths and ownership are pure command facts. Reject
@@ -958,6 +957,7 @@ impl SessionApplication {
         let intent = SessionCreationIntent {
             control: ControlSessionCreationInputs {
                 mutation_policy,
+                application_origin,
                 environment,
                 runtime_placement: self.runtime_placement(),
                 agent_id,
@@ -965,8 +965,7 @@ impl SessionApplication {
                 model,
                 execution_model_ref,
                 model_override,
-                system_prompt:
-                    awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit,
+                system_prompt: SessionSystemPromptSelection::Inherit,
                 runtime: published_backend_ref,
                 mcp_authoring: SessionMcpAuthoringContext::default(),
                 delegate_ids: profile
@@ -1016,6 +1015,7 @@ impl SessionApplication {
             owner_scope: workspace_id.to_string(),
             session_id: thread_id.to_string(),
             mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Managed,
+            application_origin: None,
             agent_id: agent_id.to_string(),
             source_revision: None,
             environment_id: None,

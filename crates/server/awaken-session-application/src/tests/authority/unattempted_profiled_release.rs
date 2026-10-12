@@ -49,6 +49,7 @@ fn creation_intent(
     SessionCreationIntent {
         control: ControlSessionCreationInputs {
             mutation_policy: SessionMutationPolicy::Frozen,
+            application_origin: b.application_origin,
             environment: b.environment,
             runtime_placement: b.runtime_placement,
             agent_id: b.agent_id,

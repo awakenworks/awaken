@@ -87,6 +87,7 @@ mod mutation_tests {
             baseline: crate::SessionBaselineState::Preparing(crate::SessionCreationIntent {
                 control: crate::ControlSessionCreationInputs {
                     mutation_policy: crate::SessionMutationPolicy::Managed,
+                    application_origin: None,
                     environment: crate::EnvironmentSnapshot {
                         environment_id: "environment".into(),
                         revision: awaken_environment_contract::EnvironmentRevision(1),

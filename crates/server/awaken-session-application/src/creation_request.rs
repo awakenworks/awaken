@@ -22,7 +22,9 @@ use async_trait::async_trait;
 use awaken_agent_contract::AgentSkillBinding;
 use awaken_executable_agent_contract::ExecutableAgentSessionProfile;
 use awaken_runtime_contract::agent_bindings::InferenceOptions;
-use awaken_session_configuration_contract::{AgentCapabilities, SessionToolConfiguration};
+use awaken_session_configuration_contract::{
+    AgentCapabilities, SessionSystemPromptSelection, SessionToolConfiguration,
+};
 use awaken_session_state_contract::PersistedSession;
 use awaken_session_types::RunError;
 
@@ -695,6 +697,7 @@ impl SessionApplication {
         let intent = awaken_session_configuration_contract::SessionCreationIntent {
             control: awaken_session_configuration_contract::ControlSessionCreationInputs {
                 mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Managed,
+                application_origin: None,
                 environment,
                 runtime_placement: self.runtime_placement(),
                 mcp_authoring: awaken_session_configuration_contract::SessionMcpAuthoringContext {
@@ -706,17 +709,9 @@ impl SessionApplication {
                 execution_model_ref,
                 model_override,
                 system_prompt: match system_override {
-                    None => {
-                        awaken_session_configuration_contract::SessionSystemPromptSelection::Inherit
-                    }
-                    Some(None) => {
-                        awaken_session_configuration_contract::SessionSystemPromptSelection::Clear
-                    }
-                    Some(Some(value)) => {
-                        awaken_session_configuration_contract::SessionSystemPromptSelection::Replace(
-                            value,
-                        )
-                    }
+                    None => SessionSystemPromptSelection::Inherit,
+                    Some(None) => SessionSystemPromptSelection::Clear,
+                    Some(Some(value)) => SessionSystemPromptSelection::Replace(value),
                 },
                 runtime: published_backend_ref,
                 delegate_ids,

@@ -1388,6 +1388,8 @@ dependencies = [
  "awaken-ext-goal",
  "awaken-ext-memory",
  "awaken-outbound-http",
+ "awaken-resource-application",
+ "awaken-resource-contract",
  "awaken-run-executor-acp",
  "awaken-runtime",
  "awaken-runtime-contract",
@@ -1400,6 +1402,7 @@ dependencies = [
  "sqlx",
  "thiserror",
  "tokio",
+ "zip",
 ]
 
 [[package]]
