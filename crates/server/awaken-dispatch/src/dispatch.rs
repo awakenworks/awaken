@@ -14,6 +14,182 @@
 
 pub use awaken_dispatch_contract::dispatch::*;
 
+/// One private stored alternative in the original operation storage. The public
+/// diagnostics enum keeps its five unchanged variants and codec. No second
+/// history or fake delivery transition carries independent closure facts.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub(crate) enum StoredDispatchOperation {
+    Diagnostic(awaken_dispatch_contract::DispatchOperation),
+    Closure(StoredAttemptClosure),
+}
+
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum StoredAttemptClosure {
+    AttemptClosure { record: AttemptClosureRecord },
+}
+
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+impl From<&awaken_dispatch_contract::DispatchOperation> for StoredDispatchOperation {
+    fn from(operation: &awaken_dispatch_contract::DispatchOperation) -> Self {
+        Self::Diagnostic(operation.clone())
+    }
+}
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+impl From<awaken_dispatch_contract::DispatchOperation> for StoredDispatchOperation {
+    fn from(operation: awaken_dispatch_contract::DispatchOperation) -> Self {
+        Self::Diagnostic(operation)
+    }
+}
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+impl From<&AttemptClosureRecord> for StoredDispatchOperation {
+    fn from(record: &AttemptClosureRecord) -> Self {
+        Self::Closure(StoredAttemptClosure::AttemptClosure {
+            record: record.clone(),
+        })
+    }
+}
+
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+impl StoredDispatchOperation {
+    #[cfg(any(feature = "durable", test))]
+    pub(crate) fn decode(encoded: &str) -> Result<Self, DispatchError> {
+        let operation: Self = serde_json::from_str(encoded).map_err(DispatchError::unavailable)?;
+        if let Some(record) = operation.closure() {
+            record.validate()?;
+        }
+        Ok(operation)
+    }
+    pub(crate) fn run_id(&self) -> &awaken_agent_contract::agent::run::Id {
+        match self {
+            Self::Diagnostic(operation) => operation.run_id(),
+            Self::Closure(StoredAttemptClosure::AttemptClosure { record }) => {
+                &record.attempt().claim.run_id
+            }
+        }
+    }
+    pub(crate) fn closure(&self) -> Option<&AttemptClosureRecord> {
+        match self {
+            Self::Diagnostic(_) => None,
+            Self::Closure(StoredAttemptClosure::AttemptClosure { record }) => Some(record),
+        }
+    }
+    pub(crate) fn matches(&self, purpose: OperationReadPurpose) -> bool {
+        matches!(
+            (self, purpose),
+            (Self::Diagnostic(_), OperationReadPurpose::Diagnostics)
+                | (Self::Closure(_), OperationReadPurpose::AttemptClosure)
+        )
+    }
+}
+
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+#[derive(Clone, Copy)]
+pub(crate) enum OperationReadPurpose {
+    Diagnostics,
+    AttemptClosure,
+}
+
+/// The sole Memory operation element, and the canonical decoded SQL element.
+/// Public/internal pages are projections, never mirrored persistence.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StoredDispatchEvent {
+    pub(crate) cursor: awaken_dispatch_contract::DispatchCursor,
+    pub(crate) recorded_at_ms: Option<u64>,
+    pub(crate) operation: StoredDispatchOperation,
+}
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+impl StoredDispatchEvent {
+    /// One stored-row law for both native adapters. Negative coordinates and
+    /// a different encoded subject fail before either purpose can project a
+    /// value; nullable historical time remains explicit None.
+    #[cfg(any(feature = "durable", test))]
+    pub(crate) fn decode_row(
+        sequence: i64,
+        recorded_at_ms: Option<i64>,
+        run_id: &str,
+        encoded: &str,
+    ) -> Result<Self, DispatchError> {
+        let cursor =
+            awaken_dispatch_contract::DispatchCursor(u64::try_from(sequence).map_err(|_| {
+                DispatchError::Rejected("persisted dispatch operation sequence is negative".into())
+            })?);
+        let operation = StoredDispatchOperation::decode(encoded)?;
+        if operation.run_id().0 != run_id {
+            return Err(DispatchError::Rejected(
+                "operation storage subject differs from its original Run".into(),
+            ));
+        }
+        let recorded_at_ms = recorded_at_ms.map(u64::try_from).transpose().map_err(|_| {
+            DispatchError::Rejected("persisted dispatch operation time is negative".into())
+        })?;
+        Ok(Self {
+            cursor,
+            recorded_at_ms,
+            operation,
+        })
+    }
+
+    pub(crate) fn diagnostic(
+        self,
+    ) -> Option<awaken_dispatch_contract::DispatchOperationalEvent> {
+        match self.operation {
+            StoredDispatchOperation::Diagnostic(operation) => {
+                Some(awaken_dispatch_contract::DispatchOperationalEvent {
+                    cursor: self.cursor,
+                    recorded_at_ms: self.recorded_at_ms,
+                    operation,
+                })
+            }
+            StoredDispatchOperation::Closure(_) => None,
+        }
+    }
+    pub(crate) fn attempt_closure(self) -> Option<AttemptClosureEvent> {
+        match self.operation {
+            StoredDispatchOperation::Closure(StoredAttemptClosure::AttemptClosure { record }) => {
+                Some(AttemptClosureEvent {
+                    cursor: self.cursor,
+                    recorded_at_ms: self.recorded_at_ms,
+                    record,
+                })
+            }
+            StoredDispatchOperation::Diagnostic(_) => None,
+        }
+    }
+}
+
+/// Independent replay needs the exact first retained record. Neither an empty
+/// slot, a historical retired epoch nor a changed reference backfills evidence.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+pub(crate) fn attempt_closure_replay<'a>(
+    record: &AttemptClosureRecord,
+    prior: impl IntoIterator<Item = &'a AttemptClosureRecord>,
+) -> Result<SettleOutcome, DispatchError> {
+    let mut found = None;
+    for previous in prior {
+        if previous.attempt().claim == record.attempt().claim {
+            if found.is_some() {
+                return Err(DispatchError::Conflict(
+                    "duplicate independent attempt closure subjects".into(),
+                ));
+            }
+            found = Some(previous);
+        }
+    }
+    match found {
+        Some(previous) if previous == record => Ok(SettleOutcome::Applied),
+        Some(_) => Err(DispatchError::Conflict(
+            "independent attempt closure replay changed its original subject, kind or reference"
+                .into(),
+        )),
+        None => Ok(SettleOutcome::Fenced),
+    }
+}
+
 // SQL projection of the one Thread-peer exclusion rule. SQLite and PostgreSQL
 // use these exact expressions inside their existing transactions; adapter lock
 // and clock ownership are unchanged. Cancellation excludes only Running peers,
@@ -89,6 +265,14 @@ pub(crate) fn observed_physical_attempt_is_present(
         PhysicalAttemptSlot::ExactClaim | PhysicalAttemptSlot::OtherClaim => Ok(true),
     }
 }
+
+/// One native row projection used by exact physical reads and retirement.
+/// Column order is original owner, epoch, binding, request, closing. Request is
+/// adapter encoding (SQLite text or PostgreSQL Json), not another domain state;
+/// the shared physical decoder remains the only retained-facts law.
+#[cfg(feature = "durable")]
+pub(crate) type PhysicalAttemptStorageRow<Request> =
+    (Option<String>, Option<i64>, Option<String>, Request, bool);
 
 #[cfg(feature = "durable")]
 pub(crate) fn decode_physical_attempt(
@@ -1200,6 +1384,115 @@ mod claim_binding_proofs {
             assert_eq!(
                 claimed.cancellation_requested, state.cancellation_requested,
                 "R1-R2/E3"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod operation_storage_tests {
+    use super::*;
+
+    #[test]
+    fn private_closure_codec_preserves_public_wire_and_rejects_unknown_facts() {
+        // Codec decision table: W1 one of the five original public JSON shapes
+        // -> unchanged serialization and diagnostics projection; W2 either
+        // genuine closure kind -> internal projection only; W3 bad/unknown tag,
+        // blank reference or incomplete closed subject -> error, never a
+        // missing/public fallback. No deserialized record grants a stop role.
+        // Row decision table W4: nonnegative sequence/time + exact row Run
+        // -> same original coordinates; historical None time remains None.
+        // W5 negative sequence or time, or encoded Run != stored Run -> error
+        // for either purpose, before filtering or any cursor publication.
+        // Feature graph W6: neutral production has no physical store consumer
+        // and excludes this private stored block. Durable SQL and test-support
+        // Memory retain the same block; cfg(test) retains this real codec case.
+        // The crate neutral/store compile checks cover those partitions, rather
+        // than inventing a neutral encode/decode call to suppress dead code.
+        let claimed = r#"{"type":"claimed","claim":{"run_id":"r","owner":"w","epoch":1}}"#;
+        for (sequence, time, row_run, valid) in [
+            (1, Some(0), "r", true),
+            (1, None, "r", true),
+            (-1, Some(0), "r", false),
+            (1, Some(-1), "r", false),
+            (1, Some(0), "other", false),
+        ] {
+            let actual = StoredDispatchEvent::decode_row(sequence, time, row_run, claimed);
+            if valid {
+                let event = actual.unwrap();
+                assert_eq!(event.cursor.0, sequence as u64, "W4 original cursor");
+                assert_eq!(
+                    event.recorded_at_ms,
+                    time.map(|time| time as u64),
+                    "W4 historical time"
+                );
+            } else {
+                assert!(actual.is_err(), "W5 row coordinates/subject");
+            }
+        }
+        for encoded in [
+            r#"{"type":"claimed","claim":{"run_id":"r","owner":"w","epoch":1}}"#,
+            r#"{"type":"lease_lost","claim":{"run_id":"r","owner":"w","epoch":1},"reason":"expired"}"#,
+            r#"{"type":"reclaimed","previous":{"run_id":"r","owner":"w","epoch":1},"claim":{"run_id":"r","owner":"next","epoch":2}}"#,
+            r#"{"type":"settled","claim":{"run_id":"r","owner":"w","epoch":1},"outcome":"Done"}"#,
+            r#"{"type":"dead_lettered","claim":{"run_id":"r","owner":"w","epoch":1},"attempt_count":3}"#,
+        ] {
+            let decoded = StoredDispatchOperation::decode(encoded).unwrap();
+            assert!(decoded.matches(OperationReadPurpose::Diagnostics), "W1");
+            assert_eq!(
+                serde_json::to_value(decoded).unwrap(),
+                serde_json::from_str::<serde_json::Value>(encoded).unwrap(),
+                "W1 original wire Golden"
+            );
+        }
+        for kind in [
+            AttemptClosureKind::AllExecutionStopped,
+            AttemptClosureKind::ControlledExecutionClosed,
+        ] {
+            let record = AttemptClosureRecord::try_new(
+                PhysicalAttempt {
+                    claim: RunClaim {
+                        run_id: awaken_agent_contract::agent::run::Id("r".into()),
+                        owner: "w".into(),
+                        epoch: 1,
+                    },
+                    binding: None,
+                    thread_id: Some(awaken_agent_contract::agent::thread::Id("t".into())),
+                    session_thread_id: None,
+                    closing: true,
+                },
+                kind,
+                "codec-storage-reference",
+            )
+            .unwrap();
+            let encoded = serde_json::to_string(&StoredDispatchOperation::from(&record)).unwrap();
+            let decoded = StoredDispatchOperation::decode(&encoded).unwrap();
+            assert_eq!(decoded.closure(), Some(&record), "W2 exact typed payload");
+            assert!(
+                !decoded.matches(OperationReadPurpose::Diagnostics),
+                "W2 no public variant"
+            );
+            let mut bad: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+            bad["record"]["evidence_ref"] = "".into();
+            assert!(
+                StoredDispatchOperation::decode(&bad.to_string()).is_err(),
+                "W3 ref"
+            );
+            bad["record"]["evidence_ref"] = "ref".into();
+            bad["record"]["attempt"]["closing"] = false.into();
+            assert!(
+                StoredDispatchOperation::decode(&bad.to_string()).is_err(),
+                "W3 open subject"
+            );
+        }
+        for bad in [
+            r#"{"type":"unknown_old_operation"}"#,
+            r#"{"type":"attempt_closure"}"#,
+            "null",
+        ] {
+            assert!(
+                StoredDispatchOperation::decode(bad).is_err(),
+                "W3 unknown/missing is error"
             );
         }
     }

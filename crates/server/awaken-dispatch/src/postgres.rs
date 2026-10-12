@@ -53,10 +53,9 @@ use crate::postgres_identity::{
     exact_run_replay, load_completion_events, lock_run_identity, lock_session_child_admission,
 };
 use crate::{
-    DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
-    DispatchPage, DispatchPlacement, LeaseLossReason, PlacementPolicy, WorkerAssignment,
-    WorkerSnapshot, can_assign, can_claim_locally, durable_i64, durable_u64, next_claim_epoch,
-    policy_selects_requester,
+    DispatchCursor, DispatchOperation, DispatchOperationalFeed, DispatchPage, DispatchPlacement,
+    LeaseLossReason, PlacementPolicy, WorkerAssignment, WorkerSnapshot, can_assign,
+    can_claim_locally, durable_i64, durable_u64, next_claim_epoch, policy_selects_requester,
 };
 use awaken_dispatch_contract::{
     CommitEpochAdmission, PhysicalAttemptSlot, PhysicalAttemptTransition, RunDispatch,

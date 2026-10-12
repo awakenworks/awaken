@@ -66,16 +66,17 @@ async fn pending_for_run(
 async fn insert_operation(
     tx: &mut SqliteConnection,
     prefix: &str,
-    operation: &DispatchOperation,
+    operation: impl Into<crate::dispatch::StoredDispatchOperation>,
     recorded_at_ms: u64,
 ) -> Result<(), DispatchError> {
+    let operation = operation.into();
     let recorded_at_ms = crate::clock::db_millis(recorded_at_ms);
     sqlx::query(&format!(
         "INSERT INTO {prefix}_dispatch_operation \
          (run_id, operation, recorded_at_ms) VALUES (?1, ?2, ?3)"
     ))
     .bind(&operation.run_id().0)
-    .bind(json(operation)?)
+    .bind(json(&operation)?)
     .bind(recorded_at_ms)
     .execute(&mut *tx)
     .await

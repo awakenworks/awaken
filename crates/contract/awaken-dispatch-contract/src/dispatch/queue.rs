@@ -516,7 +516,7 @@ pub trait DispatchAttemptControl: Send + Sync {
     /// evidence. Worker transports expose only ordinary return and entry close.
     async fn finish_attempt_closure(
         &self,
-        claim: &RunClaim,
+        record: &AttemptClosureRecord,
     ) -> Result<SettleOutcome, DispatchError>;
 
     /// Use the original Registry exclusion through physical admission. SQL
@@ -591,6 +591,17 @@ pub trait DispatchControlReads: Send + Sync {
         &self,
         run_id: &RunId,
     ) -> Result<Option<PhysicalAttempt>, DispatchError>;
+
+    /// Read retained independent closure facts from the one original operation
+    /// storage. Missing records remain unknown; these are not an inventory of
+    /// all old execution or a cleanup/placement grant. Filtering precedes the
+    /// logical page limit and the original global cursor is retained.
+    async fn attempt_closure_records_after(
+        &self,
+        cursor: crate::DispatchCursor,
+        limit: usize,
+        run: Option<&RunId>,
+    ) -> Result<AttemptClosurePage, DispatchError>;
 
     /// Return durable applied-`Done` facts after `after_sequence`, in ascending
     /// sequence order, capped at `limit`.

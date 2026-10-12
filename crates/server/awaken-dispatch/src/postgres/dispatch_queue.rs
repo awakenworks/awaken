@@ -895,7 +895,7 @@ impl awaken_dispatch_contract::DispatchExecution for PostgresDispatchStore {
         self.close_physical_attempt(claim).await
     }
     async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
-        self.finish_physical_attempt_with(claim, false).await
+        self.finish_physical_attempt_with(claim, None).await
     }
 
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
@@ -1381,9 +1381,10 @@ impl awaken_dispatch_contract::DispatchAdministration for PostgresDispatchStore 
 impl awaken_dispatch_contract::DispatchAttemptControl for PostgresDispatchStore {
     async fn finish_attempt_closure(
         &self,
-        claim: &RunClaim,
+        record: &crate::AttemptClosureRecord,
     ) -> Result<SettleOutcome, DispatchError> {
-        self.finish_physical_attempt_with(claim, true).await
+        self.finish_physical_attempt_with(&record.attempt().claim, Some(record))
+            .await
     }
 
     async fn admit_attempt_guarded(
@@ -1519,6 +1520,30 @@ impl awaken_dispatch_contract::DispatchControlReads for PostgresDispatchStore {
                 attempt.session_thread_id = request.session_thread_id.clone();
                 attempt
             })
+        })
+    }
+
+    async fn attempt_closure_records_after(
+        &self,
+        cursor: DispatchCursor,
+        limit: usize,
+        run: Option<&RunId>,
+    ) -> Result<crate::AttemptClosurePage, DispatchError> {
+        let events = self
+            .read_stored_operations(
+                cursor,
+                limit,
+                run,
+                crate::dispatch::OperationReadPurpose::AttemptClosure,
+            )
+            .await?
+            .into_iter()
+            .filter_map(crate::dispatch::StoredDispatchEvent::attempt_closure)
+            .collect::<Vec<_>>();
+        let next_cursor = events.last().map_or(cursor, |event| event.cursor);
+        Ok(crate::AttemptClosurePage {
+            events,
+            next_cursor,
         })
     }
 
@@ -1799,65 +1824,6 @@ impl awaken_dispatch_contract::SessionReservationAuthority for PostgresDispatchS
     }
 }
 
-impl PostgresDispatchStore {
-    pub(super) async fn finish_physical_attempt_with(
-        &self,
-        claim: &RunClaim,
-        closure_evidence: bool,
-    ) -> Result<SettleOutcome, DispatchError> {
-        let p = NS;
-        let epoch = durable_i64("dispatch attempt epoch", claim.epoch)?;
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
-        let current = sqlx::query(&format!(
-            "SELECT active_attempt_owner, active_attempt_epoch, active_attempt_closing \
-             FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
-        ))
-        .bind(&claim.run_id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let Some(current) = current else {
-            let _ = tx.rollback().await;
-            return Ok(SettleOutcome::Fenced);
-        };
-        let active_owner: Option<String> = current
-            .try_get("active_attempt_owner")
-            .map_err(store_error)?;
-        let active_epoch = current
-            .try_get::<Option<i64>, _>("active_attempt_epoch")
-            .map_err(store_error)?
-            .map(|value| durable_u64("dispatch attempt epoch", value))
-            .transpose()?;
-        let slot = PhysicalAttemptSlot::from_facts(
-            active_owner.is_some(),
-            active_epoch.is_some(),
-            active_owner.as_deref() == Some(&claim.owner),
-            active_epoch == Some(claim.epoch),
-        );
-        let (transition, outcome) = crate::dispatch::decide_physical_attempt_finish(
-            slot,
-            current
-                .try_get("active_attempt_closing")
-                .map_err(store_error)?,
-            closure_evidence,
-        )?;
-        if transition == PhysicalAttemptTransition::Clear {
-            sqlx::query(&format!(
-                "UPDATE {p}_dispatch SET active_attempt_owner = NULL, \
-                     active_attempt_epoch = NULL, active_attempt_binding = NULL, active_attempt_closing = FALSE, retired_attempt_epoch = $3 WHERE run_id = $1 \
-                     AND active_attempt_owner = $2 AND active_attempt_epoch = $3"
-            ))
-            .bind(&claim.run_id.0)
-            .bind(&claim.owner)
-            .bind(epoch)
-            .execute(&mut *tx)
-            .await
-            .map_err(store_error)?;
-        }
-        tx.commit().await.map_err(store_error)?;
-        Ok(outcome)
-    }
-}
 impl PostgresDispatchStore {
     pub(super) async fn close_physical_attempt(
         &self,

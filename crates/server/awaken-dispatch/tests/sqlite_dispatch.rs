@@ -35,17 +35,63 @@ async fn closed_entry_survives_process_reopen_and_rejects_late_worker_ack() {
         .unwrap()
         .unwrap();
     assert!(stored.closing);
-    assert_eq!(stored.binding, Some(binding));
+    assert_eq!(stored.binding.as_ref(), Some(&binding));
+    let closure = awaken_dispatch::AttemptClosureRecord::try_new(
+        stored,
+        awaken_dispatch::AttemptClosureKind::ControlledExecutionClosed,
+        "cold-storage-original-closure",
+    )
+    .unwrap();
     assert_eq!(
         reopened.finish_attempt(&claim).await.unwrap(),
         SettleOutcome::Fenced
     );
+    // S5 the original transaction's append fails after slot update: neither
+    // retirement nor a record may become visible. This fixture adds/removes
+    // only its own INSERT failure trigger, never a production constraint.
+    let failure = awaken_sqlite_pool::EmbeddedSqlite::file(&path)
+        .open()
+        .await
+        .unwrap();
+    sqlx::query("CREATE TRIGGER test_reject_attempt_closure_insert BEFORE INSERT ON runtime_dispatch_operation WHEN json_extract(NEW.operation, '$.type') = 'attempt_closure' BEGIN SELECT RAISE(ABORT, 'test closure append failure'); END")
+        .execute(&failure).await.unwrap();
+    assert!(
+        reopened.finish_attempt_closure(&closure).await.is_err(),
+        "S5 append failure"
+    );
     assert_eq!(
-        reopened.finish_attempt_closure(&claim).await.unwrap(),
+        reopened
+            .load_physical_attempt(&claim.run_id)
+            .await
+            .unwrap()
+            .as_ref(),
+        Some(closure.attempt()),
+        "S5 slot rollback preserves exact source"
+    );
+    assert!(
+        reopened
+            .attempt_closure_records_after(
+                awaken_dispatch::DispatchCursor::default(),
+                usize::MAX,
+                Some(&claim.run_id)
+            )
+            .await
+            .unwrap()
+            .events
+            .is_empty(),
+        "S5 no partial record"
+    );
+    sqlx::query("DROP TRIGGER test_reject_attempt_closure_insert")
+        .execute(&failure)
+        .await
+        .unwrap();
+    drop(failure);
+    assert_eq!(
+        reopened.finish_attempt_closure(&closure).await.unwrap(),
         SettleOutcome::Applied
     );
     assert_eq!(
-        reopened.finish_attempt_closure(&claim).await.unwrap(),
+        reopened.finish_attempt_closure(&closure).await.unwrap(),
         SettleOutcome::Applied
     );
     assert!(
@@ -54,6 +100,132 @@ async fn closed_entry_survives_process_reopen_and_rejects_late_worker_ack() {
             .await
             .unwrap()
             .is_none()
+    );
+    // S4 first independent retirement commits but its caller loses all handles:
+    // cold reopen reads the same exact data/reference and one operation cursor,
+    // rather than reconstructing a proof from the retired epoch or empty slot.
+    drop(reopened);
+    let reopened = SqliteDispatchStore::open(path.to_str().unwrap(), clock.clock())
+        .await
+        .unwrap();
+    let retained = reopened
+        .attempt_closure_records_after(
+            awaken_dispatch::DispatchCursor::default(),
+            usize::MAX,
+            Some(&claim.run_id),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        retained.events.len(),
+        1,
+        "S4 one retained fact across cold reopen"
+    );
+    assert_eq!(
+        retained.events[0].record, closure,
+        "S4 exact original subject/kind/ref"
+    );
+    assert_eq!(
+        reopened.finish_attempt_closure(&closure).await.unwrap(),
+        SettleOutcome::Applied,
+        "S4 replay after cold reopen"
+    );
+    assert_eq!(
+        reopened
+            .attempt_closure_records_after(
+                awaken_dispatch::DispatchCursor::default(),
+                usize::MAX,
+                Some(&claim.run_id)
+            )
+            .await
+            .unwrap(),
+        retained,
+        "S4 no duplicate cursor or record"
+    );
+    // S6 corrupt private/public storage must fail both purpose projections;
+    // filtering may not swallow an unknown old tag or malformed known private
+    // record. A zero logical LIMIT performs no decoding and retains its cursor.
+    // Each injected row is removed by its exact fixture-owned sequence only.
+    let raw = awaken_sqlite_pool::EmbeddedSqlite::file(&path)
+        .open()
+        .await
+        .unwrap();
+    // S7 the same real table can express negative recorded time and a Run
+    // column/payload mismatch. Both purposes must reject before filtering;
+    // negative sequence itself is covered by the canonical codec's W5 table.
+    let valid_private =
+        serde_json::json!({"type":"attempt_closure", "record": &closure}).to_string();
+    let mut wrong_run = claim.clone();
+    wrong_run.run_id = awaken_agent_contract::agent::run::Id("different-stored-run".into());
+    let wrong_run =
+        serde_json::to_string(&awaken_dispatch::DispatchOperation::Claimed { claim: wrong_run })
+            .unwrap();
+    for (encoded, recorded_at_ms) in [
+        (r#"{"type":"attempt_closure"}"#.to_string(), 0),
+        (r#"{"type":"unknown_old_operation"}"#.to_string(), 0),
+        (valid_private, -1),
+        (wrong_run, 0),
+    ] {
+        let inserted = sqlx::query("INSERT INTO runtime_dispatch_operation(run_id, operation, recorded_at_ms) VALUES (?1, ?2, ?3)")
+            .bind(&claim.run_id.0).bind(encoded).bind(recorded_at_ms).execute(&raw).await.unwrap().last_insert_rowid();
+        assert!(
+            reopened
+                .events_after(
+                    awaken_dispatch::DispatchCursor::default(),
+                    usize::MAX,
+                    Some(&claim.run_id)
+                )
+                .await
+                .is_err(),
+            "S6/S7 diagnostics cannot swallow corrupt storage"
+        );
+        assert!(
+            reopened
+                .attempt_closure_records_after(
+                    awaken_dispatch::DispatchCursor::default(),
+                    usize::MAX,
+                    Some(&claim.run_id)
+                )
+                .await
+                .is_err(),
+            "S6/S7 internal purpose cannot swallow corrupt storage"
+        );
+        let cursor = awaken_dispatch::DispatchCursor(retained.next_cursor.0);
+        let public_zero = reopened
+            .events_after(cursor, 0, Some(&claim.run_id))
+            .await
+            .unwrap();
+        assert!(public_zero.events.is_empty());
+        assert_eq!(
+            public_zero.next_cursor, cursor,
+            "S6 public zero-limit no decode/advance"
+        );
+        let internal_zero = reopened
+            .attempt_closure_records_after(cursor, 0, Some(&claim.run_id))
+            .await
+            .unwrap();
+        assert!(internal_zero.events.is_empty());
+        assert_eq!(
+            internal_zero.next_cursor, cursor,
+            "S6 internal zero-limit no decode/advance"
+        );
+        sqlx::query("DELETE FROM runtime_dispatch_operation WHERE sequence = ?1")
+            .bind(inserted)
+            .execute(&raw)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        reopened
+            .attempt_closure_records_after(
+                awaken_dispatch::DispatchCursor::default(),
+                usize::MAX,
+                Some(&claim.run_id)
+            )
+            .await
+            .unwrap(),
+        retained,
+        "S6 original fact survives every fault/zero read"
     );
 }
 

@@ -23,9 +23,10 @@ type CompatibleCandidateRow = (
 impl awaken_dispatch_contract::DispatchAttemptControl for SqliteDispatchStore {
     async fn finish_attempt_closure(
         &self,
-        claim: &RunClaim,
+        record: &crate::AttemptClosureRecord,
     ) -> Result<SettleOutcome, DispatchError> {
-        self.finish_physical_attempt_with(claim, true).await
+        self.finish_physical_attempt_with(&record.attempt().claim, Some(record))
+            .await
     }
 
     async fn admit_attempt_guarded(
@@ -86,7 +87,7 @@ impl awaken_dispatch_contract::DispatchControlReads for SqliteDispatchStore {
         let run_id = run_id.clone();
         let (_authority, mut conn) = self.with_conn().await?;
         let p = NS;
-        let row: Option<(Option<String>, Option<i64>, Option<String>, String, bool)> =
+        let row: Option<crate::dispatch::PhysicalAttemptStorageRow<String>> =
             sqlx::query_as(&format!(
                 "SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, request, active_attempt_closing FROM {p}_dispatch WHERE run_id = ?1"
             ))
@@ -113,6 +114,30 @@ impl awaken_dispatch_contract::DispatchControlReads for SqliteDispatchStore {
                 attempt.session_thread_id = request.session_thread_id.clone();
                 attempt
             })
+        })
+    }
+
+    async fn attempt_closure_records_after(
+        &self,
+        cursor: DispatchCursor,
+        limit: usize,
+        run: Option<&RunId>,
+    ) -> Result<crate::AttemptClosurePage, DispatchError> {
+        let events = self
+            .read_stored_operations(
+                cursor,
+                limit,
+                run,
+                crate::dispatch::OperationReadPurpose::AttemptClosure,
+            )
+            .await?
+            .into_iter()
+            .filter_map(crate::dispatch::StoredDispatchEvent::attempt_closure)
+            .collect::<Vec<_>>();
+        let next_cursor = events.last().map_or(cursor, |event| event.cursor);
+        Ok(crate::AttemptClosurePage {
+            events,
+            next_cursor,
         })
     }
 

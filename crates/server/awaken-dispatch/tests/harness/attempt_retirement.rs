@@ -288,7 +288,21 @@ pub async fn assert_purge_retains_occupied(
     for (claim, _) in &retained {
         assert_eq!(store.close_attempt(claim).await.unwrap(), S::Applied);
         assert_eq!(
-            store.finish_attempt_closure(claim).await.unwrap(),
+            store
+                .finish_attempt_closure(
+                    &awaken_dispatch::AttemptClosureRecord::try_new(
+                        store
+                            .load_physical_attempt(&claim.run_id)
+                            .await
+                            .unwrap()
+                            .unwrap(),
+                        awaken_dispatch::AttemptClosureKind::ControlledExecutionClosed,
+                        "storage-retention-exact-closure-ack",
+                    )
+                    .unwrap()
+                )
+                .await
+                .unwrap(),
             S::Applied,
             "G4 exact original closure ACK"
         );

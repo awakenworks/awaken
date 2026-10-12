@@ -74,12 +74,29 @@ impl MemoryDispatchStore {
     pub(super) async fn finish_physical_attempt_with(
         &self,
         claim: &RunClaim,
-        closure_evidence: bool,
+        closure: Option<&crate::AttemptClosureRecord>,
     ) -> Result<SettleOutcome, DispatchError> {
+        if let Some(record) = closure {
+            record.validate()?;
+        }
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
-        let Some(row) = state.rows.get_mut(&claim.run_id) else {
-            return Ok(SettleOutcome::Fenced);
+        let prior = |state: &State| {
+            state
+                .operations
+                .iter()
+                .filter_map(|event| event.operation.closure())
+                .filter(|record| record.attempt().claim.run_id == claim.run_id)
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let Some(row) = state.rows.get(&claim.run_id) else {
+            return match closure {
+                Some(record) => {
+                    crate::dispatch::attempt_closure_replay(record, prior(&state).iter())
+                }
+                None => Ok(SettleOutcome::Fenced),
+            };
         };
         let slot = match row.active_attempt.as_ref() {
             None => PhysicalAttemptSlot::Empty,
@@ -89,13 +106,41 @@ impl MemoryDispatchStore {
         let (transition, outcome) = crate::dispatch::decide_physical_attempt_finish(
             slot,
             row.active_attempt_closing,
-            closure_evidence,
+            closure.is_some(),
         )?;
+        if let Some(record) = closure {
+            if transition == PhysicalAttemptTransition::Stutter {
+                return crate::dispatch::attempt_closure_replay(record, prior(&state).iter());
+            }
+            if transition == PhysicalAttemptTransition::Clear {
+                if row.physical_attempt()?.as_ref() != Some(record.attempt()) {
+                    return Err(DispatchError::Conflict(
+                        "closure subject differs from the frozen physical attempt".into(),
+                    ));
+                }
+                if prior(&state)
+                    .iter()
+                    .any(|old| old.attempt().claim == claim.clone())
+                {
+                    return Err(DispatchError::Conflict(
+                        "a retired closure subject cannot be asserted for another active entry"
+                            .into(),
+                    ));
+                }
+            }
+        }
         if transition == PhysicalAttemptTransition::Clear {
+            let row = state
+                .rows
+                .get_mut(&claim.run_id)
+                .expect("locked original row");
             row.active_attempt = None;
             row.active_attempt_binding = None;
             row.active_attempt_closing = false;
             row.retired_attempt_epoch = claim.epoch;
+            if let Some(record) = closure {
+                push_operation(&mut state, record);
+            }
         }
         Ok(outcome)
     }
@@ -148,5 +193,31 @@ impl Row {
                 })
             })
             .transpose()
+    }
+}
+
+// Physical-retirement facts live beside their one atomic mutation owner.
+impl MemoryDispatchStore {
+    pub(super) async fn read_retained_attempt_closures(
+        &self,
+        cursor: DispatchCursor,
+        limit: usize,
+        run: Option<&RunId>,
+    ) -> Result<crate::AttemptClosurePage, DispatchError> {
+        let events = lock(&self.state)?
+            .operation_page(
+                cursor,
+                limit,
+                run,
+                crate::dispatch::OperationReadPurpose::AttemptClosure,
+            )
+            .into_iter()
+            .filter_map(crate::dispatch::StoredDispatchEvent::attempt_closure)
+            .collect::<Vec<_>>();
+        let next_cursor = events.last().map_or(cursor, |event| event.cursor);
+        Ok(crate::AttemptClosurePage {
+            events,
+            next_cursor,
+        })
     }
 }
