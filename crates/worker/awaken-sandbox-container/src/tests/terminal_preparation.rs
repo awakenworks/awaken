@@ -10,6 +10,9 @@ async fn terminal_control_reconstruction_does_not_require_a_live_binding() {
     // TC2 Ready still needs a real binding; a missing binding rejects. TC3
     // ordinary adoption of Terminal remains refused. This provider fixture
     // asserts routing/identity/absence of live control, not a real Pod receipt.
+    // TC4: terminal wrapper's existing publication slot is absorbing-closed;
+    // an attempted publication must fail before any channel opens. Ordinary
+    // Ready adoption still requires its real binding (TC2), never this closure.
     for disposing in [false, true] {
         let runtime = Arc::new(
             FakeRuntime::default()
@@ -93,6 +96,21 @@ async fn terminal_control_reconstruction_does_not_require_a_live_binding() {
         assert!(
             runtime.st.lock().unwrap().control_binding_calls.is_empty(),
             "TC1 zero live control bind"
+        );
+        assert!(
+            SandboxControlServicePublisher::publish_sandbox_control_service(
+                cleanup.as_ref(),
+                SandboxControlServiceKind::RepositoryGitCredential,
+                Arc::new(UnavailableControlService),
+            )
+            .await
+            .is_err(),
+            "TC4 terminal Control cannot publish",
+        );
+        assert_eq!(
+            runtime.st.lock().unwrap().control_channel_opens,
+            0,
+            "TC4 zero channel opens"
         );
         runtime.set_observation(pc::SandboxObservation::Ready);
         assert!(

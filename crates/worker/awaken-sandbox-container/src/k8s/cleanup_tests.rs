@@ -197,6 +197,13 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
     // RP4=C6 => Unknown before preparation/delete; no partial/empty set.
     // These real kube HTTP adapter calls mock the trusted closed group. They
     // do not qualify Registry process exit, resource-domain access or a cluster.
+    // Control extension table: CC1 supported frozen RepositoryGitCredential
+    // sidecar plus original complete Created V3 set and Terminal -> same Pod
+    // Control UID/topology, closed publication slot, zero New/Adopt/channel,
+    // then the same authorized UID disposal. CC2 missing original handoff or
+    // altered pinned forwarder projection -> Unknown; no JoinedEmpty borrow.
+    // CC3 Ready/Provisioning -> NotReady before owner transfer/live binding.
+    // This adds no Memory/Secret source permission or old-execution closure.
     use crate::ContainerHandleCodec as _;
     use awaken_container_contract::ContainerEnvironmentProvider as _;
     for row in [
@@ -206,8 +213,18 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
         "foreign-member",
         "missing-ticket",
         "missing-results",
+        "control-terminal",
+        "control-empty",
+        "control-missing-results",
+        "control-empty-no-results",
+        "control-no-original-ticket",
+        "control-ready",
+        "control-provisioning",
+        "control-image-drift",
+        "control-port-drift",
     ] {
         let (mut source, state, reached, release, server) = fixture(0, false).await;
+        let control = row.starts_with("control-");
         source.continuation_volume = None;
         let scope = format!("rich-provider-{row}");
         let mut spec = crate::tests::spec(&scope);
@@ -240,6 +257,21 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
                 required: true,
             });
         }
+        if control {
+            spec.control_services
+                .insert(SandboxControlServiceKind::RepositoryGitCredential);
+            source = source.with_sandbox_control_forwarder(
+                K8sSandboxControlForwarder::new(
+                    format!("registry.test/control@sha256:{}", "a".repeat(64)),
+                    "/usr/local/bin/awaken-sandbox",
+                    7778,
+                )
+                .unwrap(),
+            );
+        }
+        if matches!(row, "control-empty" | "control-empty-no-results") {
+            spec.mounts.clear();
+        }
         let clock = awaken_time::system_clock();
         let image = "rich-provider-image";
         let plan = crate::container_plan_with_allowlist(
@@ -254,6 +286,16 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
         let original_tickets = Arc::new(Mutex::new(Vec::new()));
         let mut recovery = K8sRuntime::for_test(state.lock().unwrap().server_addr);
         recovery.clients.control = source.clients.control.clone();
+        if control {
+            recovery = recovery.with_sandbox_control_forwarder(
+                K8sSandboxControlForwarder::new(
+                    format!("registry.test/control@sha256:{}", "a".repeat(64)),
+                    "/usr/local/bin/awaken-sandbox",
+                    7778,
+                )
+                .unwrap(),
+            );
+        }
         let recovery = recovery
             .with_create_transport(Arc::new(ClosedProjectedRequests {
                 tickets: original_tickets.clone(),
@@ -358,23 +400,55 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
                 .extend(state.created_tickets.clone());
             state.writes.len()
         };
-        assert_eq!(original_set.objects.len(), 2);
-        let first = &original_set.objects[0];
+        assert_eq!(original_set.objects.len(), spec.mounts.len());
+        let first = original_set.objects.first();
         match row {
             "foreign-member" => {
-                state
-                    .lock()
-                    .unwrap()
-                    .projected_behavior
-                    .insert(first.name.clone(), "replacement");
+                state.lock().unwrap().projected_behavior.insert(
+                    first
+                        .expect("inline row has an original member")
+                        .name
+                        .clone(),
+                    "replacement",
+                );
             }
             "missing-ticket" => {
-                original_tickets
-                    .lock()
-                    .unwrap()
-                    .retain(|t| t.request.name != first.name);
+                original_tickets.lock().unwrap().retain(|t| {
+                    t.request.name != first.expect("inline row has an original member").name
+                });
             }
-            "missing-results" => {
+            "control-no-original-ticket" => {
+                original_tickets.lock().unwrap().clear();
+            }
+            "control-ready" | "control-provisioning" => {
+                let mut state = state.lock().unwrap();
+                let pod = state.pod.as_mut().unwrap();
+                pod.status = Some(serde_json::from_value(if row == "control-ready" {
+                    json!({"phase":"Running", "containerStatuses":pod.spec.as_ref().unwrap().containers.iter().map(|v| json!({
+                        "name":v.name,"ready":true,"image":"image@test","imageID":"image@test",
+                        "restartCount":0,"started":true,"state":{"running":{}}
+                    })).collect::<Vec<_>>()})
+                } else { json!({"phase":"Pending"}) }).unwrap());
+            }
+            "control-image-drift" | "control-port-drift" => {
+                let mut state = state.lock().unwrap();
+                let pod = state.pod.as_mut().unwrap();
+                let forwarder = pod
+                    .spec
+                    .as_mut()
+                    .unwrap()
+                    .containers
+                    .iter_mut()
+                    .find(|v| v.name == "sandbox-control")
+                    .unwrap();
+                if row == "control-image-drift" {
+                    forwarder.image =
+                        Some(format!("registry.test/control@sha256:{}", "b".repeat(64)));
+                } else {
+                    forwarder.ports.as_mut().unwrap()[0].container_port = 7779;
+                }
+            }
+            "missing-results" | "control-missing-results" | "control-empty-no-results" => {
                 state
                     .lock()
                     .unwrap()
@@ -400,7 +474,17 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
                 &terminal_authority,
             )
             .await;
-        if matches!(row, "foreign-member" | "missing-ticket" | "missing-results") {
+        if matches!(
+            row,
+            "foreign-member"
+                | "missing-ticket"
+                | "missing-results"
+                | "control-missing-results"
+                | "control-empty-no-results"
+                | "control-no-original-ticket"
+                | "control-image-drift"
+                | "control-port-drift"
+        ) {
             match result {
                 Err(error) => assert!(error.to_string().contains("container provider cannot dispose an in-flight restore without a durable handle"), "RP4/{row}: {error}"),
                 Ok(_) => panic!("RP4 incomplete or foreign original set cannot prepare/{row}"),
@@ -414,6 +498,27 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
             assert!(server.await.unwrap_err().is_cancelled());
             continue;
         }
+        if matches!(row, "control-ready" | "control-provisioning") {
+            match result {
+                Err(error) => assert!(
+                    error.to_string().contains(
+                        "cold terminal Control reconstruction requires a closed original source"
+                    ),
+                    "CC3/{row}: {error}"
+                ),
+                Ok(_) => panic!(
+                    "CC3 live/unready Control cannot rebind during cold terminal reconstruction"
+                ),
+            }
+            assert_eq!(
+                state.lock().unwrap().writes.len(),
+                source_writes,
+                "CC3 zero owner-transfer/republication"
+            );
+            server.abort();
+            assert!(server.await.unwrap_err().is_cancelled());
+            continue;
+        }
         let environment = Arc::new(result.unwrap().expect("RP1 exact original rich source"));
         let handle = environment.handle();
         assert!(
@@ -421,6 +526,21 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
             Some(crate::ContainerContinuationHandle::KubernetesContinuationV3 { pod_uid, participants, .. })
             if pod_uid == "pod-uid" && participants.as_ref() == &original_set && !participants.terminal_only())
         );
+        if control {
+            let payload = handle.container_payload().unwrap();
+            assert_eq!(
+                payload.control_services, spec.control_services,
+                "CC1 frozen topology"
+            );
+            assert_eq!(
+                payload
+                    .sandbox_control_incarnation
+                    .as_ref()
+                    .and_then(crate::SandboxControlIncarnation::kubernetes_pod_uid),
+                Some("pod-uid"),
+                "CC1 same original UID"
+            );
+        }
         let expected_paths = spec
             .mounts
             .iter()
@@ -471,7 +591,7 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
         if row == "delete-response-loss" {
             state.lock().unwrap().cut_after_call = Some(format!(
                 "DELETE /api/v1/namespaces/default/configmaps/{}",
-                first.name
+                first.expect("inline row has an original member").name
             ));
             let task = tokio::spawn({
                 let (environment, authorization, authority) = (
@@ -489,7 +609,11 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
                 .await
                 .unwrap();
             assert!(
-                !state.lock().unwrap().projected.contains(&first.name),
+                !state
+                    .lock()
+                    .unwrap()
+                    .projected
+                    .contains(&first.expect("inline row has an original member").name),
                 "RP2 DELETE accepted before lost response"
             );
             task.abort();
@@ -569,7 +693,7 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
                         .iter()
                         .filter(|call| call.as_str() == "DELETE configmaps")
                         .count(),
-                    2,
+                    original_set.objects.len(),
                     "RP1/RP2 each original UID is deleted once"
                 );
             }
@@ -579,7 +703,7 @@ async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() 
                     .iter()
                     .filter(|call| call.starts_with("POST "))
                     .count(),
-                2,
+                original_set.objects.len(),
                 "no new recovery Create"
             );
         }
