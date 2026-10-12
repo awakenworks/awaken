@@ -225,11 +225,13 @@ mod tests {
     async fn rich_brokered_terminal_seals_requests_without_granting_absence() {
         // Causes: C1 a plan has a projected participant and uses the broker;
         // C2 the old effect fence is exact/missing; C3 the broker joins all
-        // requests or reports Unknown; C4 direct mode has no durable broker.
+        // requests or reports Unknown; C4 direct mode has no durable broker;
+        // C5 Complete has no original Created Pod ticket/member handoff.
         // Effects: E1 C1+C2(exact) calls the one provider seal even when C3
-        // is Complete, but never grants a cleanup receipt; E2 missing C2 or
-        // C4 cannot borrow broker closure. Rules R1=C1+exact+Complete->E1,
-        // R2=C1+exact+Unknown->E1, R3=missing|direct->E2.
+        // is Complete, but C5 yields Unknown before any physical API call;
+        // E2 missing C2 or C4 cannot borrow broker closure. R1=exact+Complete
+        // +C5->E1, R2=exact+Unknown->E1, R3=missing|direct->E2. A sampled
+        // 404 cannot supply the absent rich origin or authorize cleanup.
         let mut plan = super::super::ephemeral_plan();
         plan.binds.push(crate::BindPlan {
             source_ref: "content".into(),
@@ -250,9 +252,26 @@ mod tests {
                 join: joined,
                 seal_calls: seals.clone(),
             });
-            let runtime = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap())
-                .with_create_transport(broker)
-                .unwrap();
+            let reads = Arc::new(AtomicUsize::new(0));
+            let mut runtime = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
+            runtime.clients.control = Client::new(
+                tower::service_fn({
+                    let reads = reads.clone();
+                    move |_request: Request<Body>| {
+                        let reads = reads.clone();
+                        async move {
+                            reads.fetch_add(1, Ordering::SeqCst);
+                            Ok::<_, std::io::Error>(Response::builder().status(500)
+                            .body(Body::from(serde_json::to_vec(&json!({
+                                "apiVersion":"v1", "kind":"Status", "status":"Failure",
+                                "reason":"UnexpectedPhysicalRead", "message":"missing original rich origin", "code":500
+                            })).unwrap())).unwrap())
+                        }
+                    }
+                }),
+                "default",
+            );
+            let runtime = runtime.with_create_transport(broker).unwrap();
             assert_eq!(
                 runtime
                     .missing_handle_terminal_evidence("scope", &plan, Some(&fence))
@@ -271,6 +290,11 @@ mod tests {
                 "R3 no old fence"
             );
             assert_eq!(seals.load(Ordering::SeqCst), 1, "R3 no extra seal");
+            assert_eq!(
+                reads.load(Ordering::SeqCst),
+                0,
+                "R1-R3 no original ticket means zero API"
+            );
         }
         let direct = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
         assert_eq!(

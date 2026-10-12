@@ -442,13 +442,15 @@ pub trait DispatchMaintenance: Send + Sync {
         expired_before_ms: u64,
     ) -> Result<usize, DispatchError>;
 
-    /// Remove every dead-lettered dispatch (and its pending input) — operator GC.
+    /// Remove dead-lettered dispatches whose physical slot is actually empty,
+    /// together with their pending input. Occupied, unbound, closing or corrupt
+    /// physical facts retain the original row; GC never certifies execution exit.
     /// Returns how many were purged.
     async fn purge_dead_letters(&self) -> Result<usize, DispatchError>;
 
-    /// Remove dead-lettered dispatches whose dead-letter time is at or before
-    /// `cutoff_ms` (and their pending input) — time-windowed GC the daemon runs on
-    /// a cadence (ADR-0023). Returns how many were purged.
+    /// Apply the same empty-slot requirement to dead-lettered dispatches whose
+    /// dead-letter time is at or before `cutoff_ms`. This is the time-windowed
+    /// GC the daemon runs on a cadence (ADR-0023). Returns how many were purged.
     async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, DispatchError>;
 }
 

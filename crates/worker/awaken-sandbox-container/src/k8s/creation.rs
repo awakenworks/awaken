@@ -104,7 +104,15 @@ pub(super) fn verify_interrupted_pod_projection(
     predecessor: &ContainerEffectFence,
     claim_uid: Option<&str>,
     observed: &Pod,
-) -> Result<(), RuntimeError> {
+) -> Result<
+    (
+        ContainerEffectFence,
+        pc::SandboxRealizationFingerprint,
+        pc::SandboxRealizationFingerprint,
+        ContainerCreateAttempt,
+    ),
+    RuntimeError,
+> {
     let annotations = observed.metadata.annotations.as_ref();
     let original_fence = pod_effect_fence(annotations)?
         .filter(|fence| fence.same_effect_identity(predecessor))
@@ -150,7 +158,8 @@ pub(super) fn verify_interrupted_pod_projection(
         return Err(backend("original projected results lack their declaration"));
     }
     stamp_pod_realization(&mut expected)?;
-    restore::verify_pod_projection(&expected, observed, None)
+    restore::verify_pod_projection(&expected, observed, None)?;
+    Ok((original_fence, adoption, realization, attempt))
 }
 
 /// Idempotently finish every participant behind an already UID-fenced Pod.

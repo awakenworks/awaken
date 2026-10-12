@@ -10,7 +10,7 @@ impl PostgresDispatchStore {
             "ORDER BY created_at"
         };
         let query = format!(
-            "SELECT run_id, thread_id, request, status, attempt_count, cancel_requested, sandbox, lease_until, active_attempt_epoch FROM {p}_dispatch \
+            "SELECT run_id, thread_id, request, status, attempt_count, cancel_requested, sandbox, lease_until, active_attempt_owner, active_attempt_epoch, active_attempt_binding, active_attempt_closing FROM {p}_dispatch \
              {suffix}"
         );
         let query = sqlx::query(&query);
@@ -24,8 +24,20 @@ impl PostgresDispatchStore {
             .map(|row| {
                 let Json(request): Json<RunDispatch> =
                     row.try_get("request").map_err(store_error)?;
+                let run_id = RunId(row.try_get("run_id").map_err(store_error)?);
+                let physical_attempt_active = crate::dispatch::decode_physical_attempt(
+                    &run_id,
+                    row.try_get("active_attempt_owner").map_err(store_error)?,
+                    row.try_get::<Option<i64>, _>("active_attempt_epoch")
+                        .map_err(store_error)?
+                        .map(|epoch| durable_u64("dispatch attempt epoch", epoch))
+                        .transpose()?,
+                    row.try_get("active_attempt_binding").map_err(store_error)?,
+                    row.try_get("active_attempt_closing").map_err(store_error)?,
+                )?
+                .is_some();
                 Ok(DispatchSummary {
-                    run_id: RunId(row.try_get("run_id").map_err(store_error)?),
+                    run_id,
                     thread_id: ThreadId(row.try_get("thread_id").map_err(store_error)?),
                     session_thread_id: request.session_thread_id,
                     session_activity_epoch: request.session_activity_epoch,
@@ -63,10 +75,7 @@ impl PostgresDispatchStore {
                         .try_get::<Option<String>, _>("sandbox")
                         .map_err(store_error)?
                         .is_some(),
-                    physical_attempt_active: row
-                        .try_get::<Option<i64>, _>("active_attempt_epoch")
-                        .map_err(store_error)?
-                        .is_some(),
+                    physical_attempt_active,
                 })
             })
             .collect()

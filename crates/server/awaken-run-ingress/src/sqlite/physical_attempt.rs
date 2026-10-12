@@ -122,6 +122,7 @@ impl SqliteDispatchStore {
             current.active_owner,
             active_epoch,
             current.binding,
+            current.closing,
         )?;
         let assignment: Option<WorkerAssignment> = current
             .assignment

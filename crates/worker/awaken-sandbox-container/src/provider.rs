@@ -745,16 +745,11 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         let container_id = prepared.locator;
         let runtime_handle_result = self.runtime.handle_extra(&container_id).await;
         admit()?;
-        let runtime_handle = match runtime_handle_result {
-            Ok(evidence) => evidence,
-            // `create` is exact-idempotent and may have recovered a Ready effect
-            // left before the Session receipt. Never destroy that exact substrate
-            // on a later evidence-read failure; the next root-driven retry must be
-            // able to rediscover and converge it.
-            Err(error) => {
-                return Err(pc::SandboxError::from(error.after_mutation()));
-            }
-        };
+        // `create` may have recovered a Ready effect before the Session
+        // receipt. Preserve that substrate after failed evidence readback so
+        // the next root-driven retry can rediscover the same incarnation.
+        let runtime_handle = runtime_handle_result
+            .map_err(|error| pc::SandboxError::from(error.after_mutation()))?;
         let control_services = spec.control_services.clone();
         let sandbox_control_incarnation = if control_services.is_empty() {
             None
@@ -815,20 +810,11 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             file_store: self.file_store.clone(),
             live_input_projection: self.runtime.supports_live_input_projection(),
             runtime_handle,
-            continuation_excluded_paths: spec
-                .mounts
-                .iter()
-                .map(|mount| mount.mount_path.clone())
-                .collect(),
+            continuation_excluded_paths: source_mount_paths(spec),
             adoption_fingerprint: Some(adoption_fingerprint),
             realization_fingerprint: Some(realization_fingerprint),
             memory_materializations,
-            owned_paths: std::sync::Mutex::new(
-                spec.mounts
-                    .iter()
-                    .map(|mount| mount.mount_path.clone())
-                    .collect(),
-            ),
+            owned_paths: std::sync::Mutex::new(source_mount_paths(spec)),
             adopted_handle: None,
             realized,
             recovered: already_active,
@@ -1210,8 +1196,20 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 runtime_handle,
             } => (container_id, runtime_handle),
         };
-        // The missing handle never retained mount or control participants.
-        if !spec.mounts.is_empty() || !spec.control_services.is_empty() {
+        // Only self-contained immutable inputs can be reprojected from the
+        // frozen spec. Memory, broker refs/writeback, control and package
+        // materialization still need their original durability evidence.
+        if !spec.control_services.is_empty()
+            || !plan.packages.is_empty()
+            || !plan.memory_mounts.is_empty()
+            || spec.mounts.iter().any(|mount| {
+                mount.access != pc::MountAccess::ReadOnly
+                    || !matches!(
+                        &mount.source,
+                        pc::MountSource::Inline { .. } | pc::MountSource::InlineBytes { .. }
+                    )
+            })
+        {
             return Err(pc::SandboxError::invalid(
                 "materialized container has unretained terminal participants",
             ));
@@ -1231,7 +1229,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     outputs_path: spec.outputs_path.clone(),
                     base_env: spec.env.clone(),
                     live_input_projection: self.runtime.supports_live_input_projection(),
-                    continuation_excluded_paths: Vec::new(),
+                    continuation_excluded_paths: source_mount_paths(spec),
                     runtime_handle: Some(runtime_handle),
                     sandbox_control_incarnation: None,
                     control_services: Default::default(),
@@ -1242,7 +1240,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     &adoption_fingerprint,
                     &plan.image,
                 ),
-                owned_paths: Vec::new(),
+                owned_paths: source_mount_paths(spec),
             },
         );
         Ok(Some(ReconstructedTerminalHandle {
@@ -1717,4 +1715,8 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
         Ok(Box::new(self.adopt_container(handle).await?))
     }
+}
+
+fn source_mount_paths(spec: &pc::SandboxSpec) -> Vec<String> {
+    spec.mounts.iter().map(|m| m.mount_path.clone()).collect()
 }
