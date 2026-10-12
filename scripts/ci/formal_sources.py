@@ -220,20 +220,89 @@ def source_facts(root: Path, *, with_index_tree: bool = False) -> dict:
     """Shared raw facts, not a receipt/schema or an atomic/ABA-proof snapshot.
 
     Repeat the same reader to refuse a changed axis during capture. Working
-    consumers can bind write-tree between these two reads; formal diagnostics
+    consumers bind a read-only index tree between these two reads; formal diagnostics
     retain their original shape and can still describe an unmerged index.
     The consumer views own working identity versus clean-release policy.
     """
     environment = _source_environment(root)
+    # Status/diff may refresh stat caches unless optional locks are disabled.
+    # Capturing evidence must leave even an unlocked caller's index untouched.
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
     def read(*arguments: str) -> bytes:
         return _git_output(root, environment, *arguments)
     facts = _source_facts(root, read)
-    index = read("write-tree") if with_index_tree else None
+    index = None
+    if with_index_tree:
+        revision = facts["revision"].decode().strip()
+        existing = set(read("ls-tree", "-r", "--name-only", "-z", revision).split(b"\0"))
+        staged = set(read("diff", "--cached", "--name-only", "-z", revision, "--").split(b"\0"))
+        algorithm = "sha256" if len(facts["tree"].strip()) == 64 else "sha1"
+        index = _index_tree(facts["index_entries"], existing, staged, algorithm)
     if facts != _source_facts(root, read):
         raise SourceError("Source changed while capturing Git source facts")
     if with_index_tree:
         facts["index_tree"] = index
     return facts
+
+
+def _index_tree(entries: bytes, existing: set[bytes], staged: set[bytes], algorithm: str) -> bytes:
+    """Git's index tree identity, without an index lock or an object write.
+
+    Working capture has already selected one exact Git root and its own hook
+    index. Its NUL-framed entries carry mode/object/stage/path. HEAD and staged
+    names distinguish a genuinely staged empty file from an intent-to-add,
+    which Git excludes from write-tree. Both extra reads remain inside the
+    existing before/after source fence; formal diagnostics need no tree.
+    """
+    def object_id(kind: bytes, body: bytes) -> bytes:
+        framed = kind + b" " + str(len(body)).encode("ascii") + b"\0" + body
+        return hashlib.new(algorithm, framed, usedforsecurity=False).digest()
+
+    empty_blob = object_id(b"blob", b"").hex().encode("ascii")
+    tree: dict = {}
+    for record in entries.split(b"\0"):
+        if not record:
+            continue
+        try:
+            header, path = record.split(b"\t", 1)
+            mode, blob, stage = header.split()
+            oid = bytes.fromhex(blob.decode("ascii"))
+            numeric_mode = int(mode, 8)
+        except (ValueError, UnicodeError) as error:
+            raise SourceError("Malformed Git index entry") from error
+        if stage != b"0":
+            raise SourceError("An unmerged index cannot qualify execution")
+        if len(oid) != len(object_id(b"blob", b"")) or numeric_mode not in {
+            0o100644, 0o100755, 0o120000, 0o160000, 0o40000,
+        }:
+            raise SourceError("Invalid Git index object or mode")
+        if path not in existing and path not in staged and blob == empty_blob:
+            continue
+        parts = path.rstrip(b"/").split(b"/")
+        if any(part in {b"", b".", b".."} for part in parts):
+            raise SourceError("Invalid Git index path")
+        node = tree
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+            if not isinstance(node, dict):
+                raise SourceError("Conflicting Git index directory and file")
+        if parts[-1] in node:
+            raise SourceError("Duplicate Git index path")
+        node[parts[-1]] = (numeric_mode, oid)
+
+    def identity(node: dict) -> bytes:
+        rows = []
+        for name, value in node.items():
+            if isinstance(value, dict):
+                mode, oid = 0o40000, identity(value)
+            else:
+                mode, oid = value
+            order = name + (b"/" if mode == 0o40000 else b"")
+            row = format(mode, "o").encode("ascii") + b" " + name + b"\0" + oid
+            rows.append((order, row))
+        return object_id(b"tree", b"".join(row for _, row in sorted(rows)))
+
+    return identity(tree).hex().encode("ascii") + b"\n"
 
 
 def _git_grep(root: Path, environment: dict[str, str], arguments: list[str]) -> bytes:

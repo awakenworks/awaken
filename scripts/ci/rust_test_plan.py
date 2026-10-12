@@ -500,7 +500,7 @@ else:
         # metadata now projects that same capture, with no second index/HEAD
         # authority. Cross a real index/HEAD amendment before capture2 (the
         # final planning fence) and refuse before printing any plan or effects.
-        for axis in ("write-tree", "rev-parse"):
+        for axis in ("index", "rev-parse"):
             with self.subTest(axis=axis), tempfile.TemporaryDirectory() as directory:
                 root, metadata = self.fixture_repository(directory)
                 (root / "crates/kernel/src/lib.rs").write_text("pub const VALUE: u8 = 2;\n")

@@ -71,7 +71,8 @@ def fixture_sources() -> list[str]:
     return sorted(formal_plan.script_closure(ROOT, FIXTURE_ROOTS))
 
 
-def prepare_source_fixture(root: Path, extra_sources: dict[str, str] | None = None) -> None:
+def prepare_source_fixture(root: Path, extra_sources: dict[str, str] | None = None,
+                           *, object_format: str | None = None) -> None:
     """Shared synthetic Git/receipt fixture; it never attests a real proof run."""
     root.mkdir()
     # The fixture copies the entry scripts' *dependency closure*, not a
@@ -87,7 +88,8 @@ def prepare_source_fixture(root: Path, extra_sources: dict[str, str] | None = No
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(source)
-    for arguments in (("init", "--quiet"), ("config", "core.autocrlf", "false"), ("add", "."),
+    initialize = ("init", "--quiet", *(("--object-format=" + object_format,) if object_format else ()))
+    for arguments in (initialize, ("config", "core.autocrlf", "false"), ("add", "."),
                       ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                        "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "fixture")):
         subprocess.run(["git", *arguments], cwd=root, check=True, capture_output=True,
@@ -876,7 +878,7 @@ class EvidenceTests(unittest.TestCase):
 
     def test_unmerged_diagnostics_and_invalid_roots_keep_their_distinct_boundaries(self):
         # S8: conflict stages still bind formal dirty diagnostics, while working
-        # write-tree refuses. No-repo preserves Git128; parent-repo subdirectory
+        # read-only tree admission refuses. No-repo preserves Git128; parent-repo subdirectory
         # must refuse source/blob/manifest instead of borrowing a clean parent.
         import rust_test_plan as planner
         with mock.patch.object(sys, "path", [str(ROOT / "scripts/release"), *sys.path]):
@@ -893,9 +895,8 @@ class EvidenceTests(unittest.TestCase):
         self.assertFalse(after["clean"])
         self.assertEqual(before["status_digest"], after["status_digest"])
         self.assertNotEqual(before["working_diff_digest"], after["working_diff_digest"])
-        with mock.patch.object(planner, "ROOT", self.root), self.assertRaises(subprocess.CalledProcessError) as refused:
+        with mock.patch.object(planner, "ROOT", self.root), self.assertRaisesRegex(formal_sources.SourceError, "unmerged index"):
             planner.source_snapshot()
-        self.assertEqual(refused.exception.returncode, 128)
         for relative, error in (("outside", subprocess.CalledProcessError), ("repo/subdirectory", ValueError)):
             directory = self.root.parent / relative
             directory.mkdir(exist_ok=True)
@@ -919,9 +920,9 @@ class EvidenceTests(unittest.TestCase):
         # digests. Cross late index/HEAD/untracked bytes during the shared read;
         # actual callback and exact capture refusal must both be observed.
         # S12 cause graph: formal versus working view selects no tree versus
-        # one bracketed write-tree, both with two raw reads. Stable inputs keep
+        # one bracketed read-only tree, both with two raw reads. Stable inputs keep
         # original facts/hash/tuple semantics; any persistent late axis rejects.
-        # Working additionally crosses a real index change at write-tree: its
+        # Working additionally crosses a real index change at the tree-name read: its
         # returned tree cannot belong to older facts. No phase fence is cached.
         import rust_test_plan as planner
         clean = source_snapshot(self.root)
@@ -939,11 +940,11 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual({key: value for key, value in facts.items() if key != "index_tree"}, default)
         self.assertEqual(facts["index_tree"], self.git("write-tree"))
         self.assertEqual(sum(call.args[2:] == ("status", "--porcelain=v1", "--untracked-files=all") for call in reads.call_args_list), 2)
-        self.assertEqual(sum(call.args[2:] == ("write-tree",) for call in reads.call_args_list), 1)
+        self.assertFalse(any(call.args[2:] == ("write-tree",) for call in reads.call_args_list))
         with mock.patch.object(planner, "ROOT", self.root):
             self.assertEqual(planner.source_snapshot(), (digest, facts["patch"]))
         for working, axis in ((working, axis) for working in (False, True)
-                              for axis in ("index", "revision", "untracked", *(("write-tree",) if working else ()))):
+                              for axis in ("index", "revision", "untracked", *(("tree-names",) if working else ()))):
             with self.subTest(working=working, axis=axis):
                 hit = False
                 if axis == "untracked":
@@ -951,14 +952,14 @@ class EvidenceTests(unittest.TestCase):
                 def read(root, environment, *arguments):
                     nonlocal hit
                     result = original_reader(root, environment, *arguments)
-                    boundary = ("write-tree",) if axis == "write-tree" else ("status", "--porcelain=v1", "--untracked-files=all")
+                    boundary = ("ls-tree", "-r", "--name-only", "-z", self.git("rev-parse", "HEAD").decode().strip()) if axis == "tree-names" else ("status", "--porcelain=v1", "--untracked-files=all")
                     if not hit and arguments == boundary:
                         hit = True
                         original = (self.root / "transitive.rs").read_bytes()
-                        if axis in {"index", "revision", "write-tree"}:
+                        if axis in {"index", "revision", "tree-names"}:
                             (self.root / "transitive.rs").write_text(axis + "\n")
                             self.git("add", ".")
-                        if axis in {"index", "write-tree"}:
+                        if axis in {"index", "tree-names"}:
                             (self.root / "transitive.rs").write_bytes(original)
                         if axis == "revision":
                             self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
@@ -971,6 +972,63 @@ class EvidenceTests(unittest.TestCase):
                         self.assertRaisesRegex(ValueError, "Source changed while capturing Git source facts"):
                     planner.working_subject() if working else source_snapshot(self.root)
                 self.assertTrue(hit)
+
+    def test_readonly_index_tree_matches_git_for_dirty_paths_modes_and_intent(self):
+        # I1 staged content + nested byte sorting + Unicode; I2 staged empty
+        # versus unstaged intent-to-add; I3 executable/symlink/gitlink modes;
+        # I4 a staged deletion. Every row compares with Git's actual tree.
+        import formal_sources
+        nested = self.root / "prefix"
+        nested.mkdir()
+        (nested / "Unicode 空格.rs").write_bytes(b"nested bytes\n")
+        (self.root / "prefix.txt").write_bytes(b"prefix file\n")
+        (self.root / "staged-empty.rs").write_bytes(b"")
+        self.git("add", ".")
+        (self.root / "intent.rs").write_bytes(b"not staged\n")
+        self.git("add", "-N", "intent.rs")
+        blob = self.git("rev-parse", ":transitive.rs").decode().strip()
+        head = self.git("rev-parse", "HEAD").decode().strip()
+        for mode, oid, name in (("100755", blob, "executable"), ("120000", blob, "symbolic-link"),
+                                ("160000", head, "submodule")):
+            self.git("update-index", "--add", "--cacheinfo", f"{mode},{oid},{name}")
+            expected = self.git("write-tree")
+            with mock.patch.object(formal_sources, "_git_output", wraps=formal_sources._git_output) as reads:
+                captured = formal_sources.source_facts(self.root, with_index_tree=True)
+            self.assertEqual(captured["index_tree"], expected, f"I1-I3 {mode}")
+            self.assertFalse(any(call.args[2:] == ("write-tree",) for call in reads.call_args_list))
+        self.git("update-index", "--force-remove", "transitive.rs")
+        self.assertEqual(formal_sources.source_facts(self.root, with_index_tree=True)["index_tree"],
+                         self.git("write-tree"), "I4 deletion")
+
+    def test_parallel_source_capture_never_takes_or_changes_the_callers_index_lock(self):
+        # I5 lock occupied + concurrent readers -> the same exact index tree;
+        # I6 neither index bytes nor the other owner's lock changes. This is an
+        # actual filesystem/Git conflict, not a mocked lock-success response.
+        from concurrent.futures import ThreadPoolExecutor
+        import formal_sources
+        expected = self.git("write-tree")
+        index = self.root / ".git/index"
+        index_bytes = index.read_bytes()
+        index_stat = index.stat().st_mtime_ns
+        lock = self.root / ".git/index.lock"
+        lock_bytes = b"owned by another source-capture process\n"
+        lock.write_bytes(lock_bytes)
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            captured = list(executor.map(lambda _: formal_sources.source_facts(self.root, with_index_tree=True), range(12)))
+        self.assertTrue(all(facts["index_tree"] == expected for facts in captured))
+        self.assertEqual(index.read_bytes(), index_bytes)
+        self.assertEqual(index.stat().st_mtime_ns, index_stat)
+        self.assertEqual(lock.read_bytes(), lock_bytes)
+
+    def test_readonly_index_tree_supports_the_git_sha256_object_format(self):
+        # I7 both supported Git object formats retain their actual identity;
+        # no SHA1-only truncation or repository object write is introduced.
+        import formal_sources
+        root = self.root.parent / "sha256-source"
+        prepare_source_fixture(root, object_format="sha256")
+        expected = subprocess.check_output(["git", "-C", str(root), "write-tree"], env=detached_git_environment())
+        self.assertEqual(len(expected.strip()), 64)
+        self.assertEqual(formal_sources.source_facts(root, with_index_tree=True)["index_tree"], expected)
 
     def test_git_normalized_windows_checkout_preserves_source_identity(self):
         # E1 a clean LF checkout completes; E2 Windows-style autocrlf checkout
