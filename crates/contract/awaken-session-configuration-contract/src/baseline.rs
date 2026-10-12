@@ -139,6 +139,9 @@ pub struct ControlSessionCreationInputs {
     /// explicitly before this complete intent is finalized.
     #[serde(default, skip_serializing_if = "SessionMutationPolicy::is_managed")]
     pub mutation_policy: SessionMutationPolicy,
+    /// Opaque source evidence; product/hosting verification owns its meaning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_origin: Option<crate::ApplicationOriginBinding>,
     pub environment: EnvironmentSnapshot,
     pub runtime_placement: SessionRuntimePlacement,
     pub agent_id: String,
@@ -203,6 +206,7 @@ impl SessionCreationIntent {
     pub fn finalize(self) -> Result<CompiledSessionCreation, SessionCreationFinalizeError> {
         let ControlSessionCreationInputs {
             mutation_policy,
+            application_origin,
             environment,
             runtime_placement,
             agent_id,
@@ -244,6 +248,7 @@ impl SessionCreationIntent {
             execution_model_ref,
             mutation_policy,
             system_prompt,
+            application_origin,
         );
         Ok(CompiledSessionCreation {
             baseline,
@@ -259,6 +264,9 @@ pub struct SessionBaseline {
     pub fingerprint: SessionBaselineFingerprint,
     #[serde(default, skip_serializing_if = "SessionMutationPolicy::is_managed")]
     pub mutation_policy: SessionMutationPolicy,
+    /// Frozen with the original root, never inferred from mutable metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_origin: Option<crate::ApplicationOriginBinding>,
     pub environment: EnvironmentSnapshot,
     pub runtime_placement: SessionRuntimePlacement,
     pub mcp_authoring: SessionMcpAuthoringContext,
@@ -349,6 +357,7 @@ impl SessionBaseline {
             execution_model_ref,
             mutation_policy,
             SessionSystemPromptSelection::Inherit,
+            None,
         )
     }
 
@@ -358,6 +367,7 @@ impl SessionBaseline {
         execution_model_ref: String,
         mutation_policy: SessionMutationPolicy,
         system_prompt: SessionSystemPromptSelection,
+        application_origin: Option<crate::ApplicationOriginBinding>,
     ) -> Self {
         #[derive(serde::Serialize)]
         struct Facts<'a> {
@@ -420,7 +430,7 @@ impl SessionBaseline {
                 &system_prompt,
             ))
         };
-        let fingerprint = SessionBaselineFingerprint(if mutation_policy.is_managed() {
+        let policy_fingerprint = if mutation_policy.is_managed() {
             authoring_fingerprint
         } else {
             crate::stable_fingerprint(&(
@@ -428,10 +438,19 @@ impl SessionBaseline {
                 authoring_fingerprint,
                 mutation_policy,
             ))
+        };
+        let fingerprint = SessionBaselineFingerprint(match &application_origin {
+            None => policy_fingerprint,
+            Some(origin) => crate::stable_fingerprint(&(
+                "session-application-origin-v1",
+                policy_fingerprint,
+                origin,
+            )),
         });
         Self {
             fingerprint,
             mutation_policy,
+            application_origin,
             environment,
             runtime_placement,
             mcp_authoring,
@@ -624,6 +643,7 @@ mod tests {
     fn control_inputs(network: SessionNetworkPolicy) -> ControlSessionCreationInputs {
         ControlSessionCreationInputs {
             mutation_policy: SessionMutationPolicy::Managed,
+            application_origin: None,
             environment: environment(1, network),
             runtime_placement: SessionRuntimePlacement::Local,
             agent_id: "agent".into(),
@@ -912,6 +932,91 @@ mod tests {
         assert_ne!(clear.fingerprint, inherited.fingerprint, "S2/E4");
         assert_ne!(replaced.fingerprint, inherited.fingerprint, "S3/E4");
         assert_ne!(replaced.fingerprint, clear.fingerprint, "S2/S3/E4");
+    }
+
+    #[test]
+    fn application_origin_is_frozen_without_changing_legacy_or_model_context() {
+        // Causes: C1 origin absent/present; C2 Managed/Frozen/FileResources;
+        // C3 one source, context fingerprint or evidence changes; C4 durable
+        // intent/baseline round-trip. Effects: E1 absence retains historical
+        // bytes/fingerprint; E2 complete origin survives finalization; E3 each
+        // changed binding changes fingerprint; E4 no evidence enters prompts.
+        // R1 !C1+any C2 => E1. R2 C1+any C2+C4 => E2+E4. R3 R2+C3 => E3.
+        // Source/evidence shape refusal is owned by the carrier's decision table.
+        let origin = |source: &str, digest: char, proof: &str| {
+            crate::ApplicationOriginBinding::new(
+                source.into(),
+                digest.to_string().repeat(64),
+                proof.into(),
+            )
+            .unwrap()
+        };
+        for policy in [
+            SessionMutationPolicy::Managed,
+            SessionMutationPolicy::Frozen,
+            SessionMutationPolicy::FileResources,
+        ] {
+            let mut old_inputs = control_inputs(SessionNetworkPolicy::Unrestricted);
+            old_inputs.mutation_policy = policy;
+            let old_intent = SessionCreationIntent {
+                control: old_inputs,
+            };
+            let old_wire = serde_json::to_value(&old_intent).unwrap();
+            assert!(
+                old_wire["control"].get("application_origin").is_none(),
+                "R1 intent"
+            );
+            let old = old_intent.clone().finalize().unwrap().baseline;
+            let old_baseline_wire = serde_json::to_value(&old).unwrap();
+            assert!(
+                old_baseline_wire.get("application_origin").is_none(),
+                "R1 baseline"
+            );
+            let legacy: SessionCreationIntent = serde_json::from_value(old_wire.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&legacy).unwrap(), old_wire, "R1 bytes");
+            assert_eq!(
+                legacy.finalize().unwrap().baseline.fingerprint,
+                old.fingerprint,
+                "R1 fingerprint"
+            );
+            let old_reload: SessionBaseline = serde_json::from_value(old_baseline_wire).unwrap();
+            assert_eq!(old_reload, old, "R1 legacy baseline");
+            let original = origin("application.interaction:v1", 'a', "original-proof");
+            let mut with_origin = old_intent.clone();
+            with_origin.control.application_origin = Some(original.clone());
+            let wire = serde_json::to_value(&with_origin).unwrap();
+            let accepted: SessionCreationIntent = serde_json::from_value(wire).unwrap();
+            let frozen = accepted.finalize().unwrap().baseline;
+            assert_eq!(frozen.application_origin, Some(original), "R2");
+            assert_eq!(frozen.prompts, old.prompts, "R2 model context");
+            assert!(
+                !frozen
+                    .prompts
+                    .iter()
+                    .any(|prompt| prompt.contains("original-proof")),
+                "R2 evidence excluded"
+            );
+            assert_ne!(frozen.fingerprint, old.fingerprint, "R2 fingerprint");
+            assert_eq!(
+                serde_json::from_value::<SessionBaseline>(serde_json::to_value(&frozen).unwrap())
+                    .unwrap(),
+                frozen,
+                "R2 durable round-trip"
+            );
+            for changed in [
+                origin("application.other:v1", 'a', "original-proof"),
+                origin("application.interaction:v1", 'b', "original-proof"),
+                origin("application.interaction:v1", 'a', "changed-proof"),
+            ] {
+                let mut next = old_intent.clone();
+                next.control.application_origin = Some(changed);
+                assert_ne!(
+                    next.finalize().unwrap().baseline.fingerprint,
+                    frozen.fingerprint,
+                    "R3 complete binding fence"
+                );
+            }
+        }
     }
 
     #[test]

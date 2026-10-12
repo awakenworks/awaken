@@ -601,6 +601,7 @@ mod tests {
                 control: awaken_session_configuration_contract::ControlSessionCreationInputs {
                     mutation_policy:
                         awaken_session_resource_contract::SessionMutationPolicy::Managed,
+                    application_origin: baseline.application_origin,
                     environment: baseline.environment,
                     runtime_placement:
                         awaken_session_configuration_contract::SessionRuntimePlacement::Local,

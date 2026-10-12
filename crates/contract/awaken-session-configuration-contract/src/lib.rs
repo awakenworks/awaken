@@ -1,6 +1,7 @@
 //! Immutable Session configuration and its resolution ports.
 
 mod agent_config;
+mod application_origin;
 mod baseline;
 mod dispatched_runtime;
 mod execution_context;
@@ -29,6 +30,7 @@ pub use agent_config::{
     preserve_runtime_agent_overrides, resolved_toolsets, toolset_policies, validate_agent_tools,
     validate_mcp_toolset_pairing,
 };
+pub use application_origin::{ApplicationOriginBinding, ApplicationOriginBindingError};
 pub use baseline::{
     CompiledSessionCreation, ControlSessionCreationInputs, EnvironmentCheckpointExpiryBehavior,
     EnvironmentFingerprint, EnvironmentIdleRetentionMode, EnvironmentIdleRetentionPolicy,

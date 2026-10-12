@@ -188,6 +188,7 @@ impl BuiltInDreamAgent {
                 owner_scope: request.workspace_id.clone(),
                 session_id: session_id.clone(),
                 mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Frozen,
+                application_origin: None,
                 agent_id: request.agent_id.clone(),
                 source_revision: None,
                 // Dream is a filesystem workflow. Pin the built-in local

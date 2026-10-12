@@ -665,6 +665,7 @@ mod runtime_session_store_tests {
         SessionCreationIntent {
             control: ControlSessionCreationInputs {
                 mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Managed,
+                application_origin: None,
                 environment: EnvironmentSnapshot {
                     environment_id: awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID
                         .into(),

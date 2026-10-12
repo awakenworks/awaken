@@ -24,8 +24,8 @@ Optimization bounded context
     `- PromotionReceiptRef?
 
   OptimizationJobStore             (new metadata repository)
-  OptimizationArtifactStore        (new governed content repository)
-    `- implements existing ContentEraser
+  governed content references       (existing Resources File/Artifact application)
+    `- extend existing governance and ContentEraser fan-out where needed
 
 Existing owners reached through ports
   awaken-eval                      dataset validation, runners, scorers
@@ -55,6 +55,24 @@ An optimization table must never contain a second current Agent config, latest
 Skill pointer, Outcome status, Run terminal status, credential material, or raw
 personal content.
 
+### Local first slice
+
+Before the online coordinator exists, `awaken-eval::skill_candidate` is an
+operator adapter over existing `FileContentSource` and Resources Skill ingestion.
+It reads a complete ZIP from a trusted Workspace-scoped logical File reference,
+checks the exact File id, byte count and content identity, canonicalizes the
+complete bundle, and verifies its frozen `skill_bundle_sha256`. The returned
+immutable in-memory value has no store, latest pointer or promotion method.
+This import is not a Run, sandbox, E2E or quality receipt.
+
+The reference is supplied by trusted orchestration after the ordinary artifact
+publication, not by a candidate's request. Resource reads keep the ordinary
+`SessionResource` purpose and caller fencing context; merely knowing a File id
+does not grant access. The first slice admits synthetic/non-personal content
+only. It adds no new read purpose, Pack wire, live Skill version or online API.
+Any existing execution adapter that still reads repository baseline files must
+be migrated and independently verified before generated-candidate acceptance.
+
 ## Core Identifiers And Pins
 
 Identifiers are opaque strings with stable prefixes on public wires:
@@ -64,7 +82,7 @@ OptimizationJobId("opt_...")
 CandidateId("cand_...")
 DatasetSnapshotId("ods_...")
 DatasetItemId("odi_...")
-OptimizationArtifactId("oart_...")
+type OptimizationArtifactId = FileId; // existing Resources identity, no optimizer id
 EvaluationRunId("oeval_...")
 PromotionReceiptId("oprom_...")
 ProcessorReceiptId("oproc_...")
@@ -390,26 +408,28 @@ struct SubjectLineage {
     derivation: LineageDerivation,
 }
 
-struct OptimizationArtifact {
+struct OptimizationArtifact {      // Resources-owned governed reference projection
     id: OptimizationArtifactId,
     workspace_id: String,
-    media_type: String,
-    ciphertext_ref: String,
-    plaintext_sha256: String,
-    size_bytes: u64,
     classification: DataClassification,
     processing: ProcessingEnvelope,
-    created_at: Timestamp,
-    deleted_at: Option<Timestamp>,
 }
 ```
+
+This is a projection of the existing File/Artifact owner, not another stored
+content entity. File identity, media type, byte count, content digest, creation
+and deletion state stay in Resources and are not copied into an optimization
+artifact table. Frozen candidate/evaluation pins may record their exact digest
+for reproducibility; they never become a competing current File identity.
 
 `DataClassification` distinguishes non-personal, personal, special-category,
 and demonstrated-anonymous content. Pseudonymized is a property of personal
 content, not an anonymous class. A candidate inherits the union of source
 lineage; only a reviewed anonymization transform can remove it.
 
-`OptimizationArtifactStore` must:
+The existing Resources File/Artifact application and its governance must be
+extended to meet the following online requirements; an optimization-specific
+byte store or independent eraser is forbidden:
 
 - authorize through trusted Workspace scope and enforce restriction/expiry on
   every read;
@@ -487,8 +507,10 @@ Target adapters are intentionally narrow:
 
 - Agent: read exact base revision, apply instruction replacement, call existing
   `put_config_if_revision_scoped`, then normal publication;
-- Skill: validate complete bundle, assign exactly the next non-reused ordinal,
-  call `SkillStore::append_version` once;
+- Skill: validate complete bundle, then extend the existing append command to
+  atomically check base version id, ordinal, bundle hash, latest pointer and
+  non-reused ordinal floor before appending once. A read followed by today's
+  ordinal-only `append_version` is not an unchanged-base CAS;
 - Outcome Judge: publish a normal tool-free Agent config/snapshot and update the
   composition's pinned Judge reference. It never writes an Outcome decision.
 

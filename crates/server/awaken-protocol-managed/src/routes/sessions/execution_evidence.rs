@@ -23,6 +23,7 @@ fn project_execution_evidence(
         session_revision: observation.session_revision,
         agent_id: observation.agent_id,
         agent_revision: observation.agent_revision,
+        application_origin: observation.application_origin,
         model: observation.model,
         execution_model_ref: observation.execution_model_ref,
         backend_ref: observation.backend_ref,
@@ -98,6 +99,14 @@ mod tests {
                 session_revision: 5,
                 agent_id: "agent-1".into(),
                 agent_revision: Some(3),
+                application_origin: Some(
+                    awaken_session_configuration_contract::ApplicationOriginBinding::new(
+                        "application.interaction:v1".into(),
+                        "a".repeat(64),
+                        "opaque-origin-proof".into(),
+                    )
+                    .unwrap(),
+                ),
                 model: "deepseek-v4-pro".into(),
                 execution_model_ref: "deepseek-v4-pro".into(),
                 backend_ref: Some("native".into()),
@@ -129,6 +138,13 @@ mod tests {
                 ],
             });
         assert_eq!(projected.backend_ref.as_deref(), Some("native"), "R1/E1");
+        // P3 immutable source carrier is projected exactly; it is non-bearer
+        // provenance and adds neither an execution claim nor a permission.
+        assert_eq!(
+            projected.application_origin.as_ref().unwrap().evidence(),
+            "opaque-origin-proof",
+            "P3"
+        );
         assert_eq!(projected.runs[0].run_id.0, "run-observed", "R1/E1");
         assert_eq!(
             projected.runs[0].idempotency_key.as_deref(),

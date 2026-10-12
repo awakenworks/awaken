@@ -9,6 +9,30 @@ state transitions, consistency, failures, retries, cancellation, and erasure.
 Static fields and ports are defined in the companion
 [data contracts](prompt-skill-optimization-data-contracts.md).
 
+## Local Evaluation Before The Coordinator
+
+ADR-0068's local synthetic first slice does not instantiate this durable Job
+state machine. Its operator adapter uses the same `awaken-eval`, Resources,
+Session/Run, Sandbox and Tool owners intended for the later coordinator:
+
+```text
+freeze baseline bundle + suite/model/tools/environment/scorer/runner
+  -> resolve exact candidate File and canonical bundle (no SkillStore write)
+  -> ordinary Session/Run in admitted sandbox with candidate bytes only
+  -> protected suite-owned oracles score fresh, bound execution observations
+  -> matched development comparison (at most three revision rounds)
+  -> select one candidate -> sealed holdout batch once
+  -> real product UI acceptance -> manual source review/adoption
+```
+
+Candidate import failure produces no execution or quality receipt. Missing
+sandbox capability, wrong materialization, stale pins, missing/partial/skipped
+tests or cleanup failure block acceptance; they cannot be repaired by invoking
+the checked-in corpus against baseline files. Holdout inputs and diagnostics
+never enter proposer/reviser context. Changing frozen execution or suite inputs
+starts a new baseline, not another pooled round. Online recovery, production
+promotion, personal-content processing and automatic publication remain deferred.
+
 ## State Structure
 
 Do not encode every concern in one combinatorial enum. Three orthogonal state
@@ -179,7 +203,7 @@ For each real case:
 ```text
 plan SandboxSpec
   -> prepare_environment(capabilities)       [fail closed]
-  -> SandboxProvider::create
+  -> ordinary Session realization -> SandboxProvider::claim_for_effect
   -> persist SandboxHandle before workload
   -> materialize candidate + split-scoped inputs
   -> spawn ordinary Agent/CLI or use Runtime + ToolExecutor
@@ -228,8 +252,10 @@ Recovery of `Promoting` reads the target by exact identity:
 - if target state is indeterminate/unreadable, remain `Promoting` with bounded
   recovery retries; never report promotion success.
 
-For Skill, ordinal assignment and latest-pointer movement stay atomic inside
-`SkillStore::append_version`. For Agent/Judge, config CAS and publication use the
+For Skill, ordinal assignment, latest-pointer movement and the full unchanged
+base-pin check stay atomic inside the existing Skill append authority; the
+current ordinal-only append must be strengthened before online promotion.
+For Agent/Judge, config CAS and publication use the
 existing config workflow. An unpublished draft is not a successful promotion.
 
 ## Cancellation

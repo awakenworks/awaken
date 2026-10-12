@@ -5516,6 +5516,7 @@ async fn realization_owner_follows_the_frozen_placement_decision_table() {
                 control: awaken_session_configuration_contract::ControlSessionCreationInputs {
                     mutation_policy:
                         awaken_session_resource_contract::SessionMutationPolicy::Managed,
+                    application_origin: baseline.application_origin,
                     environment: baseline.environment,
                     runtime_placement: SessionRuntimePlacement::Local,
                     agent_id: baseline.agent_id,
