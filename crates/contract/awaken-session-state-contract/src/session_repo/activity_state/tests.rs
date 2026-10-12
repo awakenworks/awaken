@@ -60,7 +60,7 @@ fn aggregate_activity_decision_table_preserves_exact_members_and_complete_frame(
                                     u64::try_from(requested).ok().filter(|epoch| *epoch > high);
                                 let actual = match request {
                                     Some(epoch) => {
-                                        value.begin_activity_epoch_at(epoch).then_some(epoch)
+                                        value.begin_activity_epoch_at(epoch, None).then_some(epoch)
                                     }
                                     None => value.begin_activity_epoch(),
                                 };
@@ -182,7 +182,9 @@ mod model_refinement {
     //! Every trait method the reducer or the proofs use is therefore exercised
     //! on both sets; `contains` and `len` are the comparison itself.
     use super::super::model::TwoSlotMembers;
-    use super::super::{ActivityMembers, ActivityState};
+    use super::super::{
+        ActivityAdmissionSource, ActivityMembers, ActivityState, SessionRunActivities,
+    };
     use super::SessionExecutionState;
     use proptest::prelude::*;
     use std::collections::BTreeSet;
@@ -221,6 +223,8 @@ mod model_refinement {
         model_epoch: u64,
         model: TwoSlotMembers,
         model_execution: SessionExecutionState,
+        real_history: Option<Box<SessionRunActivities>>,
+        model_history: Option<Box<SessionRunActivities>>,
     }
 
     impl Pair {
@@ -232,6 +236,8 @@ mod model_refinement {
                 model_epoch: seed,
                 model: TwoSlotMembers::default(),
                 model_execution: execution,
+                real_history: None,
+                model_history: None,
             }
         }
 
@@ -245,11 +251,13 @@ mod model_refinement {
                 epoch: &mut self.real_epoch,
                 active: &mut self.real,
                 execution: &mut self.real_execution,
+                history: &mut self.real_history,
             });
             let model = operation(&mut ActivityState {
                 epoch: &mut self.model_epoch,
                 active: &mut self.model,
                 execution: &mut self.model_execution,
+                history: &mut self.model_history,
             });
             assert_eq!(
                 model, real,
@@ -261,6 +269,10 @@ mod model_refinement {
 
         fn assert_same_state(&self, rule: &str) {
             assert_eq!(self.model_epoch, self.real_epoch, "{rule}: high-water");
+            assert_eq!(
+                self.model_history, self.real_history,
+                "{rule}: legacy history frame"
+            );
             assert_eq!(
                 self.model_execution, self.real_execution,
                 "{rule}: execution"
@@ -295,7 +307,7 @@ mod model_refinement {
         }
 
         fn exact(&mut self, epoch: u64) -> bool {
-            self.begin_activity_epoch_at(epoch)
+            self.begin_activity_epoch_at(epoch, ActivityAdmissionSource::Anonymous)
         }
 
         fn settle(&mut self, epoch: u64) -> Option<bool> {

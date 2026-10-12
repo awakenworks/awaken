@@ -1197,6 +1197,7 @@ impl SessionApplication {
             .recover_activity_for_operation(
                 &awaken_session_types::SessionId::from(session_id),
                 &failed.activity_operation_id,
+                None,
             )
             .await
             .map_err(crate::SessionActivityError::run_error)?

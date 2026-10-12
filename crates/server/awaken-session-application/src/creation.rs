@@ -85,6 +85,9 @@ impl CompleteSessionRoot {
 
     pub(super) fn from_fresh(session: PersistedSession) -> Result<Self, SessionCreationError> {
         if session.revision != awaken_session_types::SessionRevision(0)
+            || !session
+                .run_activities()
+                .is_some_and(|(records, unrecorded)| records.is_empty() && !unrecorded)
             || !session.environment_materialization().is_some_and(
                 awaken_session_state_contract::SessionEnvironmentMaterialization::is_empty,
             )

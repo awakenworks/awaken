@@ -16,3 +16,6 @@ text = '''The production initial-plan kernel exhausts arbitrary u64 root/activit
 
 [[bounds]]
 text = '''SessionInitialEventPlan content validation, BTreeSet/Vec mutation, serialization and SQLite/PostgreSQL insert/commit atomicity remain contract/adapter/runtime TCB. The kernel constrains the directly called create-only coordinate decision; it does not claim a scalar proof of the database engine or post-create wake delivery.'''
+
+[[bounds]]
+text = '''The coordinate kernel has no retained Run-history input and does not prove new history or membership. The installer alone selects the private RegisteredEventWake cause after validating the detached original batch, preserving fresh history without an irreversible anonymous-execution mark. Its native initial_event_installation_rejects_without_partial_root_mutation test covers atomic rejection, the retained wake anchor and rejection of a forged known-empty nonzero epoch without that anchor. Legacy missing history remains None; immutable-prefix, named/anonymous admission and actual CAS/replay laws have separate native tests, not a scalar mirror proof or enlarged loop profile.'''

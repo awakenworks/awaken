@@ -4513,6 +4513,7 @@ fn persisted(id: &str, self_hosted: bool, status: &str) -> PersistedSession {
     wire.as_object_mut()
         .unwrap()
         .remove("environment_materialization");
+    wire.as_object_mut().unwrap().remove("run_activities");
     serde_json::from_value(wire).unwrap()
 }
 

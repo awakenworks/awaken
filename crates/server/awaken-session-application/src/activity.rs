@@ -348,6 +348,8 @@ impl SessionApplication {
         &self,
         session_id: &awaken_session_types::SessionId,
         record: &IdempotencyRecord,
+        operation: &str,
+        source: Option<(&ThreadId, &RunId)>,
     ) -> Result<Option<(PersistedSession, u64)>, SessionActivityError> {
         let Some(epoch) = self.activity_operation_receipt(session_id, record).await? else {
             return Ok(None);
@@ -357,6 +359,9 @@ impl SessionApplication {
             .await
             .map_err(repository_failure)
             .map_err(SessionActivityError::mutation)?;
+        session
+            .validate_run_activity_replay(operation, epoch, source)
+            .map_err(|_| SessionActivityError::Conflict)?;
         Ok(Some((session.into_snapshot(), epoch)))
     }
 
@@ -367,6 +372,7 @@ impl SessionApplication {
         continue_committed_await: bool,
         now_ms: u64,
         admitted_after_commit_cursor: u64,
+        source: Option<(&str, &ThreadId, &RunId)>,
     ) -> Result<u64, SessionActivityError> {
         let epoch = match session.activity().open(
             exact_epoch,
@@ -374,6 +380,7 @@ impl SessionApplication {
             continue_committed_await,
             now_ms,
             admitted_after_commit_cursor,
+            source,
         ) {
             SessionActivityOpenPlan::Open(epoch) => epoch,
             SessionActivityOpenPlan::Terminal => return Err(SessionActivityError::Terminal),
@@ -418,6 +425,7 @@ impl SessionApplication {
         agent_id: &str,
         session_id: &awaken_session_types::SessionId,
         operation_id: &str,
+        source: (&ThreadId, &RunId),
     ) -> Result<(PersistedSession, u64), RunError> {
         if operation_id.trim().is_empty() {
             return Err(RunError::internal(
@@ -429,7 +437,7 @@ impl SessionApplication {
         // fresh policy so a response-loss repair can recover the original epoch
         // even if the Session subsequently reached a budget or terminal state.
         if let Some(committed) = self
-            .replayed_activity_operation(session_id, &record)
+            .replayed_activity_operation(session_id, &record, operation_id, Some(source))
             .await
             .map_err(SessionActivityError::run_error)?
         {
@@ -442,13 +450,21 @@ impl SessionApplication {
             .map_err(SessionActivityError::run_error)?;
         self.admit_run_session(&owner_scope, session_id.as_str(), agent_id)
             .await?;
-        self.begin_activity_for_operation(session_id, operation_id)
-            .await
-            .map_err(SessionActivityError::run_error)
+        self.begin_activity_for_operation_with_policy(
+            session_id,
+            operation_id,
+            false,
+            None,
+            None,
+            Some(source),
+        )
+        .await
+        .map_err(SessionActivityError::run_error)
     }
 
     /// Admit one driving event and return the committed aggregate carrying its
     /// monotonically increasing completion fence.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn begin_activity(
         &self,
         session_id: &awaken_session_types::SessionId,
@@ -492,6 +508,7 @@ impl SessionApplication {
                 false,
                 self.clock.now_ms(),
                 admitted_after,
+                None,
             )?;
             match self
                 .commit_session_snapshot_with_record(
@@ -516,13 +533,21 @@ impl SessionApplication {
     /// existing Session mutation receipt is the sole operation→epoch mapping:
     /// its committed root revision is the epoch, so exact retries (including a
     /// retry after settlement) return the same value without reopening activity.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn begin_activity_for_operation(
         &self,
         session_id: &awaken_session_types::SessionId,
         operation_id: &str,
     ) -> Result<(PersistedSession, u64), SessionActivityError> {
-        self.begin_activity_for_operation_with_policy(session_id, operation_id, false, None, None)
-            .await
+        self.begin_activity_for_operation_with_policy(
+            session_id,
+            operation_id,
+            false,
+            None,
+            None,
+            None,
+        )
+        .await
     }
 
     /// Open a fresh activity only while the Session root still matches the
@@ -532,6 +557,7 @@ impl SessionApplication {
         session_id: &awaken_session_types::SessionId,
         operation_id: &str,
         projected_revision: SessionRevision,
+        source: (&ThreadId, &RunId),
     ) -> Result<(PersistedSession, u64), SessionActivityError> {
         self.begin_activity_for_operation_with_policy(
             session_id,
@@ -539,6 +565,7 @@ impl SessionApplication {
             false,
             None,
             Some(projected_revision),
+            Some(source),
         )
         .await
     }
@@ -551,6 +578,7 @@ impl SessionApplication {
         &self,
         session_id: &awaken_session_types::SessionId,
         operation_id: &str,
+        source: Option<(&ThreadId, &RunId)>,
     ) -> Result<Option<(PersistedSession, u64)>, SessionActivityError> {
         if operation_id.trim().is_empty() {
             return Err(SessionActivityError::Unavailable(
@@ -558,7 +586,8 @@ impl SessionApplication {
             ));
         }
         let record = Self::activity_operation_record(session_id.as_str(), operation_id);
-        self.replayed_activity_operation(session_id, &record).await
+        self.replayed_activity_operation(session_id, &record, operation_id, source)
+            .await
     }
 
     /// Atomically replace an already-coordinated dispatch activity with the
@@ -570,6 +599,7 @@ impl SessionApplication {
         session_id: &awaken_session_types::SessionId,
         operation_id: &str,
         prior_activity_epoch: Option<u64>,
+        source: (&ThreadId, &RunId),
     ) -> Result<(PersistedSession, u64), SessionActivityError> {
         if prior_activity_epoch == Some(0) {
             return Err(SessionActivityError::Unavailable(
@@ -582,17 +612,19 @@ impl SessionApplication {
             true,
             prior_activity_epoch,
             None,
+            Some(source),
         )
         .await
     }
 
-    async fn begin_activity_for_operation_with_policy(
+    pub(crate) async fn begin_activity_for_operation_with_policy(
         &self,
         session_id: &awaken_session_types::SessionId,
         operation_id: &str,
         continue_committed_await: bool,
         prior_activity_epoch: Option<u64>,
         projected_revision: Option<SessionRevision>,
+        source: Option<(&ThreadId, &RunId)>,
     ) -> Result<(PersistedSession, u64), SessionActivityError> {
         if operation_id.trim().is_empty() {
             return Err(SessionActivityError::Unavailable(
@@ -601,13 +633,13 @@ impl SessionApplication {
         }
         let record = Self::activity_operation_record(session_id.as_str(), operation_id);
         if let Some(committed) = self
-            .replayed_activity_operation(session_id, &record)
+            .replayed_activity_operation(session_id, &record, operation_id, source)
             .await?
         {
             return Ok(committed);
         }
 
-        let projected_revision = match projected_revision {
+        let continuation_may_advance = match projected_revision {
             Some(projected_revision) => {
                 let projected_root = self
                     .session_aggregate(session_id)
@@ -620,36 +652,32 @@ impl SessionApplication {
                 ) {
                     return Err(SessionActivityError::Conflict);
                 }
-                let continuation_may_advance =
-                    !crate::realization::environment_admits_realization_effects(
-                        &projected_root.environment,
-                    );
-                let resident = self
-                    .ensure_environment_resident(session_id, self.clock.now_ms())
-                    .await
-                    .map_err(|error| match error {
-                        super::SessionContinuationError::Terminal => SessionActivityError::Terminal,
-                        error => SessionActivityError::Unavailable(error.to_string()),
-                    })?;
-                Some(if continuation_may_advance {
-                    resident.revision
-                } else {
-                    projected_revision
-                })
+                !crate::realization::environment_admits_realization_effects(
+                    &projected_root.environment,
+                )
             }
-            None => {
-                self.ensure_environment_resident(session_id, self.clock.now_ms())
-                    .await
-                    .map_err(|error| match error {
-                        super::SessionContinuationError::Terminal => SessionActivityError::Terminal,
-                        error => SessionActivityError::Unavailable(error.to_string()),
-                    })?;
-                None
-            }
+            None => false,
         };
+        // Admission receipt above still wins first. The projected branch alone
+        // reads and checks its pre-continuation revision; both paths then use
+        // the same existing continuation operation and error law exactly once.
+        let resident = self
+            .ensure_environment_resident(session_id, self.clock.now_ms())
+            .await
+            .map_err(|error| match error {
+                super::SessionContinuationError::Terminal => SessionActivityError::Terminal,
+                error => SessionActivityError::Unavailable(error.to_string()),
+            })?;
+        let projected_revision = projected_revision.map(|revision| {
+            if continuation_may_advance {
+                resident.revision
+            } else {
+                revision
+            }
+        });
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             if let Some(committed) = self
-                .replayed_activity_operation(session_id, &record)
+                .replayed_activity_operation(session_id, &record, operation_id, source)
                 .await?
             {
                 return Ok(committed);
@@ -667,7 +695,7 @@ impl SessionApplication {
             // committed after our pre-loop check but before this snapshot, its
             // durable receipt wins before we compile another epoch.
             if let Some(committed) = self
-                .replayed_activity_operation(session_id, &record)
+                .replayed_activity_operation(session_id, &record, operation_id, source)
                 .await?
             {
                 return Ok(committed);
@@ -692,6 +720,7 @@ impl SessionApplication {
                 continue_committed_await,
                 self.clock.now_ms(),
                 admitted_after,
+                source.map(|(thread, run)| (operation_id, thread, run)),
             )?;
             if let Some(prior_activity_epoch) = prior_activity_epoch {
                 // The new epoch was inserted first, so removing the old one can
@@ -728,6 +757,9 @@ impl SessionApplication {
                                 "replayed Session activity has no idempotency receipt".into(),
                             )
                         })?;
+                    session
+                        .validate_run_activity_replay(operation_id, epoch, source)
+                        .map_err(|_| SessionActivityError::Conflict)?;
                     return Ok((session, epoch));
                 }
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {

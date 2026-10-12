@@ -25,6 +25,7 @@ use crate::{SessionRealizationLease, SessionRevision};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod activity_state;
+pub use activity_state::SessionRunActivityAdmissionRecord;
 mod disposition;
 #[cfg(test)]
 mod event_history_tests;
@@ -139,6 +140,7 @@ mod mutation_tests {
             event_batches: Vec::new(),
             activity_epoch: 0,
             active_activity_epochs: Default::default(),
+            run_activities: None,
             running_interval: None,
             closed_runtime_intervals: Vec::new(),
             runtime_active_millis: 0,
@@ -206,6 +208,11 @@ mod mutation_tests {
         assert_eq!(prepared.disposition, SessionDisposition::Active, "C1/E1");
         assert_eq!(prepared.activity_epoch, 0, "C1/E1");
         assert!(prepared.active_activity_epochs.is_empty(), "C1/E1");
+        assert_eq!(
+            prepared.run_activities(),
+            Some((&[][..], false)),
+            "C1 fresh history is explicit, not domain closure"
+        );
         assert!(prepared.frozen_baseline().is_some(), "C1/E1");
         assert_eq!(prepared.title.as_deref(), Some("title"), "C1/E1");
         assert_eq!(prepared.metadata, metadata, "C1/E1");
@@ -222,7 +229,24 @@ mod mutation_tests {
         // Effects: R1 C1 installs batch revision and wake epoch together; R2
         // C2 rejects while every root byte stutters. This covers the production
         // mutation boundary; the Kani table exhausts its scalar eligibility.
-        let mut root = session("initial-plan", SessionRevision(0));
+        // R3 the registered wake keeps fresh coverage known because the exact
+        // original batch is retained atomically, not because an empty raw Run
+        // slice proves all executions. R4 known latest epoch without either a
+        // named admission or this batch anchor is a malformed import.
+        let fixture = session("initial-plan", SessionRevision(0));
+        let crate::SessionBaselineState::Preparing(intent) = fixture.baseline else {
+            unreachable!()
+        };
+        let mut root = PersistedSession::frozen_with_budget(
+            "initial-plan",
+            intent.finalize().unwrap().baseline,
+            Default::default(),
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
         let mut invalid = crate::SessionInitialEventPlan::compile(
             &crate::SessionId::from("initial-plan"),
             "initial:initial-plan",
@@ -258,6 +282,19 @@ mod mutation_tests {
         assert_eq!(batch.wake_activity_epoch, Some(1), "R1");
         assert_eq!(root.activity_epoch, 1, "R1");
         assert_eq!(root.active_activity_epochs, BTreeSet::from([1]), "R1");
+        assert_eq!(
+            root.run_activities(),
+            Some((&[][..], false)),
+            "R3 registered wake is not anonymous admission"
+        );
+        crate::SessionAggregate::try_from(root.clone()).expect("R3 exact batch anchor");
+        let mut forged = root;
+        forged.event_batches.clear();
+        assert_eq!(
+            crate::SessionAggregate::try_from(forged).unwrap_err(),
+            SessionMutationValidationError::ActivityHistoryMismatch,
+            "R4 no latest raw/batch anchor"
+        );
     }
 
     #[test]

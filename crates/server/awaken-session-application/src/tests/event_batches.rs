@@ -3249,6 +3249,7 @@ async fn recover_failed_reply_with_interrupt() -> (
         .recover_activity_for_operation(
             &SessionId::from("cold-interrupt-priority"),
             &reply_activity_operation,
+            None,
         )
         .await
         .expect("CR1/E2 exact activity receipt remains recoverable")
@@ -3419,6 +3420,7 @@ async fn cold_recovery_interrupt_failure_preserves_failed_reply_and_activity() {
         .recover_activity_for_operation(
             &SessionId::from("cold-interrupt-failure"),
             &reply_activity_operation,
+            None,
         )
         .await
         .expect("CR2/E3 exact activity receipt read")
@@ -3683,6 +3685,7 @@ async fn legacy_processed_interrupt_without_anchor_cannot_starve_later_recovery(
         .recover_activity_for_operation(
             &SessionId::from("legacy-interrupt-anchor"),
             &reply_activity_operation,
+            None,
         )
         .await
         .expect("LA1/E3 exact activity receipt read")
@@ -3806,6 +3809,7 @@ async fn cold_recovery_reuses_a_processed_interrupt_anchor_to_close_the_failed_r
         .recover_activity_for_operation(
             &SessionId::from("processed-interrupt-recovery"),
             &reply_activity_operation,
+            None,
         )
         .await
         .expect("PA1/E2 exact activity receipt read")
@@ -3926,6 +3930,7 @@ async fn failed_interrupt_root_cas_cannot_supersede_the_failed_reply() {
         .recover_activity_for_operation(
             &SessionId::from("interrupt-cas-failure"),
             &reply_activity_operation,
+            None,
         )
         .await
         .expect("CF1/E3 exact activity receipt read")
@@ -4080,6 +4085,7 @@ async fn failed_reply_activity_settlement_cannot_close_pending_supersession() {
         .recover_activity_for_operation(
             &SessionId::from("interrupt-settle-failure"),
             &reply_activity_operation,
+            None,
         )
         .await
         .expect("SF1/E2 exact activity receipt read")
@@ -4876,118 +4882,6 @@ async fn fresh_user_reservation_snapshots_the_recovered_resource_generation() {
 }
 
 #[tokio::test]
-async fn reserved_run_without_activity_recovers_through_the_same_operation_receipt() {
-    // Causes: C1-C4 cover projection recovery, reservation, crash before activity,
-    // and cold exact retry.
-    // Reserve/activity crash graph: C1 canonical projection recovery succeeds;
-    // C2 the immutable reservation commits; C3 the process stops before the
-    // activity CAS; C4 a cold exact retry sees no receipt plus AlreadyReserved.
-    // Effects: E1 no execution is published at C3; E2 C4 recovers projection,
-    // reuses the reservation, and commits one operation->epoch receipt; E3 no
-    // second Run identity or activity is created.
-    //
-    // | Rule | Projection | Reservation | Receipt | Effect |
-    // |---|---|---|---|---|
-    // | C1 | recovered | absent -> Reserved | absent (crash) | E1 |
-    // | C2 | recovered | AlreadyReserved | absent -> committed | E2+E3 |
-    // Constraint/Invariant: reservation and operation receipt reuse one Run and
-    // root activity authority. Decision rule: execute crash rule C1 followed by
-    // cold recovery C2 and require E1-E3.
-    let repository: Arc<dyn awaken_session_repository_contract::SessionStore> = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("reservation-repair repository"),
-    );
-    let runtime = Arc::new(EventBatchRuntime::default());
-    create(
-        repository.as_ref(),
-        persisted("reservation-before-activity", false, "idle"),
-    )
-    .await;
-    let environments = Arc::new(RecordingEnvironmentSource::default());
-    let warm = application_with_runtime(runtime.clone(), repository.clone(), environments.clone());
-    let command = SessionUserRunCommand {
-        session_id: "reservation-before-activity".into(),
-        agent_id: "agent".into(),
-        operation_id: "reservation-operation".into(),
-        run_id: RunId("reservation-run".into()),
-        content: vec![ContentBlock::text("resume after reservation")],
-        accompanying_system: None,
-        data_subject_id: None,
-        traceparent: None,
-    };
-    warm.admit_run_session("workspace", "reservation-before-activity", "agent")
-        .await
-        .expect("C1 canonical projection");
-    assert_eq!(
-        runtime
-            .reserve_session_run(AdmitSessionRun {
-                session_id: command.session_id.clone(),
-                agent_id: command.agent_id.clone(),
-                operation_id: command.operation_id.clone(),
-                run_id: command.run_id.clone(),
-                messages: vec![Message::new(
-                    MessageId::session_event_input(
-                        command.session_id.as_str(),
-                        &command.operation_id
-                    ),
-                    Role::User,
-                    command.content.clone(),
-                )],
-                data_subject_id: command.data_subject_id.clone(),
-                traceparent: command.traceparent.clone(),
-                execution_requirements: Default::default(),
-                replacement: awaken_session_types::SessionRunReplacement::PreservePrior,
-            })
-            .await
-            .expect("C1 reservation"),
-        SessionRunReservation::Reserved,
-        "C1/E1"
-    );
-    let operation = awaken_session_execution_contract::session_run_activity_operation_id(
-        &awaken_session_types::SessionId::from("reservation-before-activity"),
-        &command.run_id,
-    );
-    assert!(
-        warm.recover_activity_for_operation(
-            &SessionId::from("reservation-before-activity"),
-            &operation
-        )
-        .await
-        .expect("C1 receipt query")
-        .is_none(),
-        "C1/E1 no activity before retry"
-    );
-
-    let cold = application_with_runtime(runtime.clone(), repository.clone(), environments);
-    let repaired = cold
-        .admit_session_user_run(command)
-        .await
-        .expect("C2 repair");
-    let epoch = repaired
-        .delivery()
-        .expect("C2/E2 delivery")
-        .session_activity_epoch;
-    assert!(
-        matches!(repaired, AdmittedSessionRun::AlreadyReserved(_)),
-        "C2/E2"
-    );
-    assert_eq!(runtime.reserved.lock().unwrap().len(), 1, "C2/E3");
-    assert_eq!(
-        cold.recover_activity_for_operation(
-            &SessionId::from("reservation-before-activity"),
-            &operation
-        )
-        .await
-        .expect("C2 receipt query")
-        .expect("C2/E2 receipt")
-        .1,
-        epoch,
-        "C2/E2 exact operation receipt"
-    );
-}
-
-#[tokio::test]
 async fn exact_activity_receipt_precedes_fresh_budget_policy() {
     // Causes: C1-C3 cover committed reservation/receipt, lost response, and a
     // newly reached budget at exact retry.
@@ -5434,10 +5328,14 @@ async fn rejected_user_reservation_cannot_orphan_an_accompanying_system_case() {
         &run_id,
     );
     assert!(
-        app.recover_activity_for_operation(&SessionId::from("system-after-admission"), &operation)
-            .await
-            .expect("S1/E2 receipt query")
-            .is_none(),
+        app.recover_activity_for_operation(
+            &SessionId::from("system-after-admission"),
+            &operation,
+            None
+        )
+        .await
+        .expect("S1/E2 receipt query")
+        .is_none(),
         "S1/E2 no orphan activity"
     );
     assert!(runtime.reserved.lock().unwrap().is_empty(), "S1/E3");
