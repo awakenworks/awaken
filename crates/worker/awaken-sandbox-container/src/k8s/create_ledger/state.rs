@@ -209,6 +209,16 @@ impl Default for WorkerCreateLedgerState {
 }
 
 impl WorkerCreateLedgerState {
+    fn worker_group_is_sealed(&self, group: &str) -> bool {
+        self.worker_sealed && self.groups.get(group) == Some(&GroupAdmission::Sealed)
+    }
+
+    fn group_tickets<'a>(&'a self, group: &'a str) -> impl Iterator<Item = &'a CreateTicket> {
+        self.tickets
+            .values()
+            .filter(move |ticket| ticket.request.group == group)
+    }
+
     pub fn decode(bytes: &str) -> Result<Self, RuntimeError> {
         let state: Self = serde_json::from_str(bytes).map_err(backend)?;
         state.validate()?;
@@ -245,8 +255,7 @@ impl WorkerCreateLedgerState {
             }
             if ticket.origin == TicketOrigin::TerminalGuard
                 && (ticket.request.resource != "pods"
-                    || !self.worker_sealed
-                    || self.groups.get(&ticket.request.group) != Some(&GroupAdmission::Sealed)
+                    || !self.worker_group_is_sealed(&ticket.request.group)
                     || !valid_isolation_id(&ticket.isolation_id)
                     || matches!(
                         ticket.status,
@@ -261,8 +270,7 @@ impl WorkerCreateLedgerState {
             }
             if ticket.isolation_pending
                 && (!valid_isolation_id(&ticket.isolation_id)
-                    || !self.worker_sealed
-                    || self.groups.get(&ticket.request.group) != Some(&GroupAdmission::Sealed)
+                    || !self.worker_group_is_sealed(&ticket.request.group)
                     || matches!(
                         ticket.status,
                         TicketStatus::Finished(TicketResult::Isolated { .. })
@@ -400,9 +408,7 @@ impl WorkerCreateLedgerState {
                 "provider terminal guard cannot claim an original Pod Create result",
             ));
         }
-        if !valid_isolation_id(&ticket.isolation_id)
-            || !self.worker_sealed
-            || self.groups.get(&request.group) != Some(&GroupAdmission::Sealed)
+        if !valid_isolation_id(&ticket.isolation_id) || !self.worker_group_is_sealed(&request.group)
         {
             return Err(backend("Kubernetes Create isolation lacks a sealed Worker"));
         }
@@ -447,7 +453,7 @@ impl WorkerCreateLedgerState {
         request: &CreateTicketRequest,
     ) -> Result<(bool, bool), RuntimeError> {
         request.validate()?;
-        if !self.worker_sealed || self.groups.get(&request.group) != Some(&GroupAdmission::Sealed) {
+        if !self.worker_group_is_sealed(&request.group) {
             return Err(backend(
                 "Kubernetes Create isolation requires a sealed Worker group",
             ));
@@ -511,8 +517,7 @@ impl WorkerCreateLedgerState {
         request.validate()?;
         if request.resource != "pods"
             || !valid_isolation_id(isolation_id)
-            || !self.worker_sealed
-            || self.groups.get(&request.group) != Some(&GroupAdmission::Sealed)
+            || !self.worker_group_is_sealed(&request.group)
         {
             return Err(backend(
                 "terminal Pod guard requires one exact sealed Worker group",
@@ -566,13 +571,18 @@ impl WorkerCreateLedgerState {
     /// Worker-exit path may use this for physical name isolation; an open group
     /// never gains a second admission or Create executor.
     pub fn sealed_worker_group_tickets(&self, group: &str) -> Option<Vec<CreateTicket>> {
-        (self.worker_sealed && self.groups.get(group) == Some(&GroupAdmission::Sealed)).then(|| {
-            self.tickets
-                .values()
-                .filter(|ticket| ticket.request.group == group)
-                .cloned()
-                .collect()
-        })
+        self.worker_group_is_sealed(group)
+            .then(|| self.group_tickets(group).cloned().collect())
+    }
+
+    /// Read an already closed Worker group without changing admission. The
+    /// stronger Worker prerequisite composes with the sole group join law;
+    /// ordinary group-only callers retain their original semantics below.
+    pub fn join_sealed_worker_group(&self, group: &str) -> RequestJoin {
+        if !self.worker_sealed {
+            return RequestJoin::Unknown;
+        }
+        self.join_group(group)
     }
 
     pub fn join_group(&self, group: &str) -> RequestJoin {
@@ -580,11 +590,7 @@ impl WorkerCreateLedgerState {
             return RequestJoin::Unknown;
         }
         let mut completed = Vec::new();
-        for ticket in self
-            .tickets
-            .values()
-            .filter(|ticket| ticket.request.group == group)
-        {
+        for ticket in self.group_tickets(group) {
             if ticket.status == TicketStatus::InFlight || ticket.isolation_pending {
                 return RequestJoin::Unknown;
             }
@@ -783,6 +789,15 @@ mod tests {
         // exact result; E5 R never sends a second Create. Rules R1=A=>E1,
         // R2=A+C+!F=>E2+E3, R3=A+C+F=>E4, R4=C+A=>E2,
         // R5=A+R=>E5. Decode/encode simulates the durable CAS payload.
+        // Pure-query rules Q1 both seals+all finished -> original complete set;
+        // Q2 group-only seal -> Unknown for the stronger Worker query, while
+        // the original group-only join above remains Complete. Q3 a missing
+        // group -> Unknown without inserting it; Q7 cold/repeated reads retain
+        // identical bytes. A known sealed empty group is distinct from missing.
+        // Decode, guard/isolation admission and sealed snapshots use the same
+        // both-seal predicate; their existing negative cases retain errors.
+        // Snapshot and join borrow the same membership/order. Neither shared
+        // rule strengthens the ordinary group-only join or creates a group.
         let first = request("pod-a", 'a');
         let second = request("pod-b", 'b');
         let mut ledger = WorkerCreateLedgerState::default();
@@ -850,6 +865,26 @@ mod tests {
             "R3/E4"
         );
         assert_eq!(
+            restarted.join_sealed_worker_group("effect-a"),
+            RequestJoin::Unknown,
+            "Q2 group seal alone is not a Worker seal"
+        );
+        restarted.seal_worker();
+        let before = restarted.encode().unwrap();
+        let joined = restarted.join_sealed_worker_group("effect-a");
+        assert!(
+            matches!(&joined, RequestJoin::Complete(tickets) if tickets.len() == 1),
+            "Q1"
+        );
+        assert_eq!(
+            WorkerCreateLedgerState::decode(&before)
+                .unwrap()
+                .join_sealed_worker_group("effect-a"),
+            joined,
+            "Q7 cold exact read"
+        );
+        assert_eq!(restarted.encode().unwrap(), before, "Q7 no mutation");
+        assert_eq!(
             restarted.admit(&first, ISOLATION_ID).unwrap(),
             TicketAdmission::Sealed,
             "R2 sealed retry never forwards"
@@ -867,6 +902,24 @@ mod tests {
             RequestJoin::Complete(Vec::new()),
             "R4 no request admitted before close"
         );
+        assert_eq!(
+            close_first.join_sealed_worker_group("effect-a"),
+            RequestJoin::Unknown,
+            "Q2 ordinary group-only behavior remains distinct"
+        );
+        close_first.seal_worker();
+        let before = close_first.encode().unwrap();
+        assert_eq!(
+            close_first.join_sealed_worker_group("effect-a"),
+            RequestJoin::Complete(Vec::new()),
+            "Q1 explicit sealed empty group"
+        );
+        assert_eq!(
+            close_first.join_sealed_worker_group("never-observed"),
+            RequestJoin::Unknown,
+            "Q3 missing group cannot be manufactured"
+        );
+        assert_eq!(close_first.encode().unwrap(), before, "Q3/Q7 no new group");
     }
 
     #[test]
@@ -964,6 +1017,8 @@ mod tests {
         // E3 !S, absent/malformed A or changed UID rejects;
         // E4 replayed admission cannot replace A's nonce. Rules P1=A+S+P->E1,
         // P2=P1+I->E2, P3=!A|!S|!I->E3, P4=A+replay->E4.
+        // Q4 the pure stronger query also remains Unknown for InFlight and
+        // isolationPending; reading never finishes the original/reservation.
         let pod = request("pod-a", 'a');
         let mut state = WorkerCreateLedgerState::default();
         assert_eq!(
@@ -989,6 +1044,17 @@ mod tests {
         state.seal_group("effect-a").unwrap();
         assert_eq!(state.start_isolation(&pod).unwrap(), (true, true), "P1");
         assert_eq!(state.join_group("effect-a"), RequestJoin::Unknown, "P1");
+        let before = state.encode().unwrap();
+        assert_eq!(
+            state.join_sealed_worker_group("effect-a"),
+            RequestJoin::Unknown,
+            "Q4"
+        );
+        assert_eq!(
+            state.encode().unwrap(),
+            before,
+            "Q4 unchanged pending isolation"
+        );
         let mut state = WorkerCreateLedgerState::decode(&state.encode().unwrap()).unwrap();
         assert_eq!(
             state.start_isolation(&pod).unwrap(),
@@ -1031,6 +1097,11 @@ mod tests {
             refused.join_group("effect-a"),
             RequestJoin::Unknown,
             "P1 old 409 cannot join while reservation POST is pending"
+        );
+        assert_eq!(
+            refused.join_sealed_worker_group("effect-a"),
+            RequestJoin::Unknown,
+            "Q4 finished original still has pending isolation"
         );
         assert!(
             refused
