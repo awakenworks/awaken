@@ -241,6 +241,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "atomicwrites"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ef1bb8d1b645fe38d51dfc331d720fb5fc2c94b440c76cc79c80ff265ca33e3"
+dependencies = [
+ "rustix 0.38.44",
+ "tempfile",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1685,7 +1696,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-client"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=deb6878bb5b19dc1c69e3c6cd5aeb46190e480ab#deb6878bb5b19dc1c69e3c6cd5aeb46190e480ab"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=fd2b6599a6f896db2d295216d7749552f3191401#fd2b6599a6f896db2d295216d7749552f3191401"
 dependencies = [
  "awaken-iam-contract",
  "awaken-iam-core",
@@ -1702,7 +1713,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-contract"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=deb6878bb5b19dc1c69e3c6cd5aeb46190e480ab#deb6878bb5b19dc1c69e3c6cd5aeb46190e480ab"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=fd2b6599a6f896db2d295216d7749552f3191401#fd2b6599a6f896db2d295216d7749552f3191401"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -1714,7 +1725,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-core"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=deb6878bb5b19dc1c69e3c6cd5aeb46190e480ab#deb6878bb5b19dc1c69e3c6cd5aeb46190e480ab"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=fd2b6599a6f896db2d295216d7749552f3191401#fd2b6599a6f896db2d295216d7749552f3191401"
 dependencies = [
  "argon2",
  "awaken-iam-contract",
@@ -1730,7 +1741,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-host"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=deb6878bb5b19dc1c69e3c6cd5aeb46190e480ab#deb6878bb5b19dc1c69e3c6cd5aeb46190e480ab"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=fd2b6599a6f896db2d295216d7749552f3191401#fd2b6599a6f896db2d295216d7749552f3191401"
 dependencies = [
  "awaken-iam-client",
  "awaken-iam-contract",
@@ -1749,7 +1760,7 @@ dependencies = [
 [[package]]
 name = "awaken-iam-preset"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=deb6878bb5b19dc1c69e3c6cd5aeb46190e480ab#deb6878bb5b19dc1c69e3c6cd5aeb46190e480ab"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=fd2b6599a6f896db2d295216d7749552f3191401#fd2b6599a6f896db2d295216d7749552f3191401"
 dependencies = [
  "awaken-iam-contract",
  "awaken-iam-core",
@@ -1758,9 +1769,10 @@ dependencies = [
 [[package]]
 name = "awaken-iam-server"
 version = "0.1.2-dev"
-source = "git+https://github.com/awakenworks/awaken-iam.git?rev=deb6878bb5b19dc1c69e3c6cd5aeb46190e480ab#deb6878bb5b19dc1c69e3c6cd5aeb46190e480ab"
+source = "git+https://github.com/awakenworks/awaken-iam.git?rev=fd2b6599a6f896db2d295216d7749552f3191401#fd2b6599a6f896db2d295216d7749552f3191401"
 dependencies = [
  "async-trait",
+ "atomicwrites",
  "awaken-iam-client",
  "awaken-iam-contract",
  "awaken-iam-core",
