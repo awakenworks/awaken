@@ -16,6 +16,7 @@ use awaken_session_repository_contract::LifecycleOutbox as _;
 use awaken_session_state_contract::ManagedLifecycleFact;
 use awaken_session_types::SessionId;
 mod coordinated_resources;
+mod first_materialization;
 mod interval_admission;
 mod lost_root_cas_replay;
 mod unattempted_archive_witness;
@@ -1592,11 +1593,8 @@ async fn root_mutation_cause_effect_decision_table() {
     );
 }
 
-/// Session-root insertion graph. C1 identity is unused; C2 key/hash/payload
-/// exactly replay even when a fresh lowering differs; C3 an existing key carries another hash; C4 another key
-/// targets an existing identity. Effects are E1 one insert/revision advance,
-/// E2 replay of the current durable aggregate, E3 idempotency mismatch, and E4 identity
-/// conflict. The application is the only repository-result classifier.
+/// C1 -> E1 one insert/revision; C2 -> E2 durable replay despite different fresh lowering.
+/// C3 -> E3 hash mismatch; C4 -> E4 identity conflict. Only App classifies repository results.
 ///
 /// | Rule | Identity | Key/hash | Payload | Effect |
 /// |---|---|---|---|---|
@@ -1606,6 +1604,8 @@ async fn root_mutation_cause_effect_decision_table() {
 /// | C4 | existing | another key | any | E4 |
 #[tokio::test]
 async fn create_session_root_classifies_insert_replay_and_conflicts() {
+    use crate::SessionCreationError::{Conflict, IdempotencyMismatch};
+    use crate::creation::{CompleteSessionCreateResult, CompleteSessionRoot};
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .await
@@ -1615,7 +1615,18 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let original = persisted("create-root", false, "preparing");
+    // C0 legacy missing history is rejected independently, never backfilled.
+    assert!(
+        CompleteSessionRoot::from_fresh(persisted("create-root", false, "preparing")).is_err(),
+        "C0 legacy Unknown is not a new creation"
+    );
+    // C1-C4 use the actual fresh constructor's empty fact. The shared fixture
+    // has test observations/Idle state; this uninserted candidate is Preparing
+    // and unobserved so the application alone stamps its atomic create time.
+    let mut original = first_materialization::fresh_subject("create-root");
+    original.execution = SessionExecutionState::Preparing;
+    original.created_at_unix_ms = None;
+    original.updated_at_unix_ms = None;
     let payload = awaken_session_state_contract::SessionMutationPayload::Replace(original.clone());
     let record = awaken_session_state_contract::IdempotencyRecord {
         key: "create-root:one".into(),
@@ -1625,22 +1636,21 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
     let inserted = app
         .create_session_root(
             "workspace",
-            crate::creation::CompleteSessionRoot::from_fresh(original.clone()).unwrap(),
+            CompleteSessionRoot::from_fresh(original.clone()).unwrap(),
             record.clone(),
             Vec::new(),
         )
         .await
         .expect("C1");
-    let crate::creation::CompleteSessionCreateResult::Applied(inserted) = inserted else {
+    let CompleteSessionCreateResult::Applied(inserted) = inserted else {
         panic!("C1 must apply")
     };
-    let inserted = inserted.into_session();
+    let mut durable = inserted.into_session();
     assert_eq!(
-        inserted.revision,
+        durable.revision,
         awaken_session_types::SessionRevision(1),
         "C1"
     );
-    let mut durable = inserted.clone();
     durable.title = Some("durable-after-create".into());
     let durable = app
         .commit_session_snapshot_with_outcome(
@@ -1658,52 +1668,44 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
     let replayed = app
         .create_session_root(
             "workspace",
-            crate::creation::CompleteSessionRoot::from_fresh(lowered_again).unwrap(),
+            CompleteSessionRoot::from_fresh(lowered_again).unwrap(),
             record.clone(),
             Vec::new(),
         )
         .await
         .expect("C2");
-    let crate::creation::CompleteSessionCreateResult::Replayed(replayed) = replayed else {
+    let CompleteSessionCreateResult::Replayed(replayed) = replayed else {
         panic!("C2 must replay")
     };
-    let replayed = replayed.into_session();
-    assert_eq!(replayed, durable, "C2");
+    assert_eq!(replayed.into_session(), durable, "C2");
 
     let mut changed = original.clone();
     changed.title = Some("changed".into());
-    assert!(
-        matches!(
-            app.create_session_root(
+    // C3/C4 differ only in candidate/key/hash and the closed repository result;
+    // one shared call retains both original rejection rules and key values.
+    for (candidate, key, payload_hash, rule) in [
+        (changed, record.key, "changed-hash", "C3"),
+        (original, "create-root:another".into(), "another-hash", "C4"),
+    ] {
+        let result = app
+            .create_session_root(
                 "workspace",
-                crate::creation::CompleteSessionRoot::from_fresh(changed).unwrap(),
+                CompleteSessionRoot::from_fresh(candidate).unwrap(),
                 awaken_session_state_contract::IdempotencyRecord {
-                    key: record.key,
-                    payload_hash: "changed-hash".into(),
+                    key,
+                    payload_hash: payload_hash.into(),
                 },
                 Vec::new(),
             )
-            .await,
-            Err(crate::SessionCreationError::IdempotencyMismatch)
-        ),
-        "C3"
-    );
-    assert!(
-        matches!(
-            app.create_session_root(
-                "workspace",
-                crate::creation::CompleteSessionRoot::from_fresh(original).unwrap(),
-                awaken_session_state_contract::IdempotencyRecord {
-                    key: "create-root:another".into(),
-                    payload_hash: "another-hash".into(),
-                },
-                Vec::new(),
-            )
-            .await,
-            Err(crate::SessionCreationError::Conflict)
-        ),
-        "C4"
-    );
+            .await;
+        assert!(
+            matches!(
+                (rule, result),
+                ("C3", Err(IdempotencyMismatch)) | ("C4", Err(Conflict))
+            ),
+            "{rule}"
+        );
+    }
 }
 
 /// Profiled Repository-release cause/effect graph. C1 asserted owner scope is
@@ -7258,16 +7260,14 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
             .await
             .expect("session repository"),
     );
-    let mut session = persisted("binding-fence", false, "idle");
     let current = awaken_session_resource_contract::SessionRealizationLease {
         owner: "runtime-a".into(),
         runtime_incarnation: "runtime-a/boot-1".into(),
         epoch: 3,
         expires_at_unix_ms: u64::MAX,
     };
-    session.realization = Some(current.clone());
-    session.created_at_unix_ms = Some(100);
-    session.updated_at_unix_ms = Some(100);
+    let id = SessionId::from("binding-first-fresh");
+    let session = first_materialization::fresh_subject("binding-first-fresh");
     create(repo.as_ref(), session).await;
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(200));
     // B12 the selected faulting repository and clock prepare one sink before
@@ -7291,15 +7291,18 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         Arc::ptr_eq(&sink, &app.environment_binding_sink()),
         "B12 one selected sink"
     );
-    let before_binding = repo.get(&SessionId::from("binding-fence")).await.unwrap();
-
-    let first = receipt("binding-fence", "sandbox-a", Some(&current));
+    first_materialization::claim_subject(&app, repo.as_ref(), "binding-first-fresh", &current)
+        .await;
+    let first = receipt("binding-first-fresh", "sandbox-a", Some(&current));
     let first_intent = first.effect_intent().expect("B1 intent");
     assert_eq!(
         sink.authorize(&first_intent).await.expect("B1 authorize"),
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized,
+        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized {
+            intent: Box::new(first_intent.clone())
+        },
         "B1"
     );
+    let before_binding = repo.get(&id).await.unwrap();
     // B13 the CAS commits but its acknowledgement is lost. Retry must read back
     // exactly that root: one revision and the original observation survive.
     faulting.commit_then_conflict_once("bind-environment");
@@ -7309,15 +7312,12 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         "B13 fault consumed"
     );
     assert!(
-        original_repo
-            .get(&SessionId::from("binding-fence"))
-            .await
-            .is_err(),
+        original_repo.get(&id).await.is_err(),
         "B12 original repository untouched"
     );
     // B9 new binding advances the existing root observation at the same CAS;
     // B10 replay after clock advance changes neither the root nor its time.
-    let bound = repo.get(&SessionId::from("binding-fence")).await.unwrap();
+    let bound = repo.get(&id).await.unwrap();
     assert_eq!(
         bound.revision.0,
         before_binding.revision.0 + 1,
@@ -7331,13 +7331,14 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         sink.authorize(&first_intent).await.expect("B2 authorize"),
         awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
             binding: "sandbox-a".into(),
+            intent: Box::new(first_intent.clone()),
         },
         "B2"
     );
-    sink.persist(receipt("binding-fence", "sandbox-a", Some(&current)))
+    sink.persist(receipt("binding-first-fresh", "sandbox-a", Some(&current)))
         .await
         .expect("B2");
-    let replayed = repo.get(&SessionId::from("binding-fence")).await.unwrap();
+    let replayed = repo.get(&id).await.unwrap();
     assert_eq!(replayed, bound, "B10 exact replay");
     super::observation_refinement::root_step("binding-replay", &bound, &replayed, 300);
     let mut renewed_session = persisted("binding-renewed", false, "idle");
@@ -7371,13 +7372,9 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         epoch: 4,
         expires_at_unix_ms: u64::MAX,
     };
-    let revision_before_stale_replay = repo
-        .get(&SessionId::from("binding-fence"))
-        .await
-        .expect("B4")
-        .revision;
+    let revision_before_stale_replay = repo.get(&id).await.expect("B4").revision;
     let stale_error = sink
-        .persist(receipt("binding-fence", "sandbox-a", Some(&stale)))
+        .persist(receipt("binding-first-fresh", "sandbox-a", Some(&stale)))
         .await
         .expect_err("B4 stale equal-binding replay is fenced");
     assert_eq!(
@@ -7386,19 +7383,16 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         "B4"
     );
     assert_eq!(stale_error.code, "session_realization_stale", "B4");
-    let rejected = repo.get(&SessionId::from("binding-fence")).await.unwrap();
+    let rejected = repo.get(&id).await.unwrap();
     assert_eq!(rejected, bound, "B11 stale authority preserves full root");
     super::observation_refinement::root_step("binding-reject", &bound, &rejected, 300);
     assert_eq!(
-        repo.get(&SessionId::from("binding-fence"))
-            .await
-            .expect("B4")
-            .revision,
+        repo.get(&id).await.expect("B4").revision,
         revision_before_stale_replay,
         "B4 must not write"
     );
     let error = sink
-        .persist(receipt("binding-fence", "sandbox-b", Some(&stale)))
+        .persist(receipt("binding-first-fresh", "sandbox-b", Some(&stale)))
         .await
         .expect_err("B5 stale binding replacement is fenced");
     assert_eq!(
@@ -7411,10 +7405,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         expires_at_unix_ms: 0,
         ..current.clone()
     };
-    let mut expired_session = repo
-        .get(&SessionId::from("binding-fence"))
-        .await
-        .expect("B6 fixture");
+    let mut expired_session = repo.get(&id).await.expect("B6 fixture");
     expired_session.realization = Some(expired.clone());
     let expected_revision = expired_session.revision;
     let payload = awaken_session_state_contract::SessionMutationPayload::Replace(expired_session);
@@ -7437,7 +7428,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         awaken_session_state_contract::SessionMutationResult::Applied { .. }
     ));
     let expired_error = sink
-        .persist(receipt("binding-fence", "sandbox-a", Some(&expired)))
+        .persist(receipt("binding-first-fresh", "sandbox-a", Some(&expired)))
         .await
         .expect_err("B7 expired equal-binding replay is fenced");
     assert_eq!(
@@ -7447,7 +7438,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
     );
     assert_eq!(expired_error.code, "session_realization_stale", "B7");
     assert_eq!(
-        sink.persist(receipt("binding-fence", "sandbox-b", Some(&expired)))
+        sink.persist(receipt("binding-first-fresh", "sandbox-b", Some(&expired)))
             .await
             .expect_err("B8")
             .code,
@@ -7455,7 +7446,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         "B8"
     );
     assert_eq!(
-        repo.get(&SessionId::from("binding-fence"))
+        repo.get(&id)
             .await
             .expect("binding-fence Session")
             .environment
@@ -7516,9 +7507,19 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         .effect_intent()
         .expect("missing intent");
     assert_eq!(
-        sink.authorize(&absent).await.expect("missing lookup"),
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned,
-        "missing aggregate is the only Unowned rule"
+        sink.authorize(&absent).await.unwrap_err().code,
+        "session_environment_root_missing",
+        "B17 known lease cannot downgrade to Unowned"
+    );
+    let direct = receipt("binding-missing-direct", "sandbox", None)
+        .effect_intent()
+        .unwrap();
+    assert_eq!(
+        sink.authorize(&direct).await.unwrap(),
+        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned {
+            intent: Box::new(direct.clone())
+        },
+        "B18 direct missing root retains only its request value"
     );
 }
 

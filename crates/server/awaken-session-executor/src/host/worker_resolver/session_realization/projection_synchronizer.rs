@@ -406,16 +406,20 @@ mod tests {
         AdoptionModel, eager_environment, empty_frozen_projection_for_snapshot, test_activation,
     };
     use crate::session_environment::SandboxEnvironmentAccess as _;
-    use awaken_dispatch_contract::DispatchClaims;
-    use awaken_dispatch_contract::DispatchEnqueue;
+    use awaken_dispatch_contract::{
+        DispatchClaimOwnership, DispatchClaims, DispatchEnqueue, DispatchExecution,
+    };
     use awaken_sandbox_local::FilesystemHandleCodec as _;
     use std::sync::Arc;
 
-    /// Compatibility fixture for an aggregate-Unowned legacy claim. Returning
-    /// `Unowned` keeps production creation on its marker-free V1 path; any
-    /// attempted durable persist would prove that the scenario crossed into a
-    /// different authority row.
-    struct LegacyUnownedEnvironmentBindingSink;
+    /// Record an explicitly non-owning response without fabricating Root
+    /// history. Ordinary Run authority must bypass this port; Managed authority
+    /// must reject its response before a new physical effect.
+    #[derive(Default)]
+    struct LegacyUnownedEnvironmentBindingSink {
+        requested_kinds:
+            std::sync::Mutex<Vec<awaken_session_state_contract::SessionEnvironmentEffectKind>>,
+    }
 
     #[async_trait::async_trait]
     impl awaken_session_execution_contract::SessionEnvironmentBindingSink
@@ -423,12 +427,20 @@ mod tests {
     {
         async fn authorize(
             &self,
-            _intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
+            intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
         ) -> Result<
             awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
             awaken_session_types::RunError,
         > {
-            Ok(awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned)
+            self.requested_kinds
+                .lock()
+                .unwrap()
+                .push(intent.kind().clone());
+            Ok(
+                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned {
+                    intent: Box::new(intent.clone()),
+                },
+            )
         }
 
         async fn persist(
@@ -833,8 +845,11 @@ mod tests {
             let effect = host
                 .authorize_environment_effect_before_io(
                     thread,
-                    awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
-                    None,
+                    &host.realizer.new_environment_effect_intent(
+                        thread,
+                        awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                        None,
+                    ),
                 )
                 .await
                 .unwrap();
@@ -863,7 +878,11 @@ mod tests {
             );
             let candidate = host
                 .realizer
-                .begin_session_environment_preparation(thread, environment)
+                .begin_session_environment_preparation(
+                    thread,
+                    environment,
+                    Some(effect.authorization.intent()),
+                )
                 .unwrap();
             let identity = host
                 .persist_environment_before_publish(thread, &candidate)
@@ -1536,22 +1555,23 @@ mod tests {
         (environment, binding, sentinel)
     }
 
-    /// Claimed legacy-rebuild cause/effect graph: C1 an exact claim selects
-    /// RebuildFromCommittedTruth; C2 its slot owns a Ready, revoked
-    /// LegacyDirect V1 Environment A; C3 the delivery cache carries A's raw
-    /// binding while aggregate truth is still Unmaterialized. Effects: E1
-    /// dispose and confirm A before raw merge/projection installation; E2 the
-    /// resulting closed adoption follows the existing RebuildRequired path; E3
-    /// install a fresh Environment B and Hand without a retiring-identity
-    /// conflict; E4 preserve V1 compatibility where A and B have equal handles
-    /// but distinct Arcs, so no handle-only filter may discard B.
+    /// Legacy recovery decision table: C1 the exact current Run claim and Ready
+    /// revoked LegacyDirect V1 owner authorize disposal of A; C2 a complete
+    /// Managed projection and lease are subsequently installed; C3 the selected
+    /// Root port returns Unowned, supplying no original materialization fact.
+    /// Effects: E1 dispose/confirm A before the projection; E2 reject new
+    /// Adopt/Create before provider I/O; E3 retain only the projected raw binding,
+    /// with no Candidate, Resident, new root or durable binding persistence.
+    /// C1 and C2/C3 are separate authorization facts: rejecting new effects
+    /// cannot invalidate the completed exact old-owner disposal.
     ///
-    /// | Rule | claim | policy | revoked observation | raw binding | Effect |
-    /// |---|---|---|---|---|---|
-    /// | CR1 | yes | Rebuild | Ready V1 | A | E1 + E2 + E3 + E4 |
-    /// | CR2 | no | any | any | any | no claimed cleanup (merge unit L1-L4) |
-    /// | CR3 | yes | Continuity | any | any | no destructive recovery |
-    /// | CR4 | yes | Rebuild | closed/error | A | typed lifecycle table CP3 |
+    /// | Rule | C1 old Run/owner | C2 Managed | C3 Unowned | Effect |
+    /// |---|---|---|---|---|
+    /// | CR1 | exact + Ready | yes | yes | E1 + E2 + E3 |
+    /// | CR2 | no claim | any | any | no claimed cleanup (merge L1-L4) |
+    /// | CR3 | Continuity | any | any | no destructive recovery |
+    /// | CR4 | exact + closed/error | any | any | typed owner table CP3 |
+    /// Ordinary successful V1 recreation is OR1 below; it must not borrow C2.
     #[tokio::test]
     async fn claimed_rebuild_disposes_legacy_v1_before_projection_install() {
         use awaken_session_realization_contract::SessionProjectionSynchronizer as _;
@@ -1565,8 +1585,8 @@ mod tests {
             .build()
             .expect("validated Host dependencies");
         let managed = crate::ManagedHost::new(host.clone());
-        managed
-            .install_test_environment_binding_sink(Arc::new(LegacyUnownedEnvironmentBindingSink));
+        let sink = Arc::new(LegacyUnownedEnvironmentBindingSink::default());
+        managed.install_test_environment_binding_sink(sink.clone());
 
         let snapshot = test_activation(thread, "run-claimed-ready-v1").snapshot;
         let mut projection = frozen_projection();
@@ -1576,12 +1596,6 @@ mod tests {
             .expect("CR1 install exact frozen publication before the legacy owner");
         let (original, raw_binding, retired_sentinel) =
             revoked_legacy_v1_environment(host.as_ref(), thread).await;
-        let original_handle = original.lifecycle().handle();
-        let original_hand = original.agent_tools().tool_executor();
-
-        // CR4 the legacy recovery fixture must also exercise real binding CAS,
-        // not an unregistered claim previously hidden by the empty local slot.
-
         let dispatch = host.dispatch_store().unwrap();
         dispatch
             .enqueue(awaken_dispatch_contract::RunDispatch::new(
@@ -1595,13 +1609,22 @@ mod tests {
             .unwrap()
             .unwrap();
         let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
+        assert!(dispatch.claim_is_current(&claim).await.unwrap(), "CR1 C1");
+        assert!(
+            dispatch
+                .bind_sandbox(&claim, &raw_binding)
+                .await
+                .unwrap()
+                .applied(),
+            "CR1 C1 exact Run owns the original raw binding"
+        );
         let lease = awaken_session_resource_contract::SessionRealizationLease {
             owner: claim.owner.clone(),
             runtime_incarnation: "worker-a/boot-1".into(),
             epoch: claim.epoch,
             expires_at_unix_ms: u64::MAX,
         };
-        WorkerProjectionSynchronizer {
+        let error = WorkerProjectionSynchronizer {
             host: host.as_ref(),
             claim: Some(&claim),
             published_snapshot: Some(&snapshot),
@@ -1616,26 +1639,173 @@ mod tests {
             true,
         )
         .await
-        .expect("CR1/E1-E3 cleanup precedes merge and projection installation");
+        .expect_err("CR1 Managed authority cannot borrow an Unowned response");
+        assert_eq!(
+            error.code, "session_environment_owned_root_missing",
+            "CR1/E2 typed pending"
+        );
+        assert!(!retired_sentinel.exists(), "CR1/E1 exact old root disposed");
+        assert!(
+            !retired_sentinel.parent().unwrap().exists(),
+            "CR1/E3 no same-id physical creation after rejection"
+        );
+        assert_eq!(
+            original.sandbox_environment().status().await.unwrap(),
+            awaken_provisioning_contract::SandboxStatus::Terminated,
+            "CR1/E1 old owner is closed and no successor exists"
+        );
+        assert!(
+            host.realizer.session_environment(thread).await.is_none(),
+            "CR1/E3"
+        );
+        host.installed_sessions.read_realization(thread, |r| {
+            assert!(matches!(&r.environment_owner,
+                crate::environment_owner::SessionEnvironmentOwner::Preparing(
+                    crate::environment_owner::SessionEnvironmentPreparation::AwaitingAdoption { binding, .. }
+                ) if binding == &raw_binding), "CR1/E3 only exact projected binding remains");
+            assert!(r.environment_owner.unpublished_candidate().is_none(), "CR1/E3 no Candidate");
+            assert_eq!(r.authority.lease(), Some(&lease), "CR1 C2 remains Managed");
+        }).unwrap();
+        assert_eq!(
+            sink.requested_kinds.lock().unwrap().as_slice(),
+            &[awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt],
+            "CR1/E2 one rejected Adopt, zero new Create; persist would panic"
+        );
+    }
 
-        let rebuilt = host
-            .realizer
-            .session_environment(thread)
+    #[tokio::test]
+    async fn ordinary_resume_rebuilds_legacy_v1_under_its_exact_run_binding() {
+        // OR1 causes: C1 real SQLite Queue owns the current Run claim and A's
+        // raw binding; C2 exact Ready LegacyDirect A is Retiring; C3 only direct
+        // Environment/publication inputs exist (no baseline, Session marker or
+        // realization lease); C4 explicit resume selects the existing recovery.
+        // E1 C1+C2+C3+C4 observes/disposes A and canonically creates B with the
+        // same V1 handle but new Environment/Hand Arcs; E2 the exact claim fences
+        // Queue binding before publication; E3 no Root authorize/persist is used.
+        // CR1 above negates C3 and rejects the Unowned response. CP2/CP3 own old
+        // disposal/unknown observation rows; existing binding-fence cases own
+        // stale claim rejection. No new authorization or history is fabricated.
+        // | Rule | Run/old owner | New-effect authority | Trigger | Effect |
+        // |---|---|---|---|---|
+        // | OR1 | current/Ready | ordinary, no Session grant | explicit resume | E1-E3 |
+        // | CR1 | current/Ready | Managed + Unowned response | projection sync | dispose A, reject B |
+        // | CP1 | no authorized recovery | either | ordinary lookup | retain A |
+        // | CP3 | exact closed evidence | either | authorized recovery | consume only exact A |
+        // These rows reuse the existing owner and Queue; this fixture adds no
+        // Root CAS, history record, physical-domain proof or execution grant.
+        // ABA constraint: after same-id recreation old.status() may correctly
+        // reject B's different physical inode. Assert old Terminated at CP2's
+        // disposal boundary, not after OR1 installs B. The original sentinel,
+        // new Arcs and exact handle are the separate OR1 effects.
+        let thread = "ordinary-ready-v1-resume-rebuild";
+        let run = "ordinary-ready-v1-resume-run";
+        let storage = tempfile::tempdir().unwrap();
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
+        let store = Arc::new(
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+                .await
+                .unwrap(),
+        );
+        let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
             .await
-            .expect("CR1/E3 fresh Resident Environment B");
-        assert!(!Arc::ptr_eq(&original, &rebuilt), "CR1/E3 fresh Arc");
+            .with_store_dir(storage.path())
+            .await
+            .with_ephemeral_dispatch(store.clone()))
+        .build()
+        .unwrap();
+        let managed = crate::ManagedHost::new(host.clone());
+        let sink = Arc::new(LegacyUnownedEnvironmentBindingSink::default());
+        managed.install_test_environment_binding_sink(sink.clone());
+        let snapshot = test_activation(thread, run).snapshot;
+        host.register_thread_agent_projection(thread, snapshot.root_agent_id.0.as_str());
+        host.retain_session_publication(thread, Some(&snapshot))
+            .unwrap();
+        host.install_environment_projection(thread, &eager_environment())
+            .unwrap();
+        host.installed_sessions
+            .read(thread, |slot| {
+                assert!(slot.inputs.baseline.is_none(), "OR1 C3 no Managed baseline");
+                assert!(!slot.run.session_dispatch, "OR1 C3 ordinary Run");
+                assert!(
+                    matches!(
+                        &slot.realization.authority,
+                        crate::session_realizations::SessionRealizationAuthority::Uninstalled
+                    ),
+                    "OR1 C3 no fabricated realization lease"
+                );
+            })
+            .unwrap();
+        let (original, raw_binding, retired_sentinel) =
+            revoked_legacy_v1_environment(host.as_ref(), thread).await;
+        let original_handle = original.lifecycle().handle();
+        let original_hand = original.agent_tools().tool_executor();
+        let claimed = crate::host::worker_resolver::test_support::claim(
+            &store,
+            thread,
+            run,
+            "ordinary-worker",
+            0,
+            &clock,
+        )
+        .await;
+        let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
+        assert!(store.claim_is_current(&claim).await.unwrap(), "OR1 C1");
+        assert!(
+            store
+                .bind_sandbox(&claim, &raw_binding)
+                .await
+                .unwrap()
+                .applied(),
+            "OR1 C1"
+        );
+        host.installed_sessions
+            .update_run(thread, |state| state.dispatch_claim = Some(claim));
+        let resumed = host
+            .ctx_for_resume(thread)
+            .await
+            .expect("OR1 existing ordinary recovery");
+        let rebuilt = resumed.env.as_ref().expect("OR1 Resident Environment B");
+        assert!(!Arc::ptr_eq(&original, rebuilt), "OR1/E1 fresh Arc");
         assert_eq!(
             original_handle,
             rebuilt.lifecycle().handle(),
-            "CR1/E4 V1 recreates the same logical handle"
+            "OR1/E1 same V1 handle"
         );
         assert!(
             !Arc::ptr_eq(&original_hand, &rebuilt.agent_tools().tool_executor()),
-            "CR1/E3 same-id recreation publishes a fresh Hand"
+            "OR1/E1 fresh Hand"
         );
         assert!(
             !retired_sentinel.exists(),
-            "CR1/E1 old root is disposed before same-id recreation"
+            "OR1/E1 old root disposed before recreation"
+        );
+        assert!(
+            host.installed_sessions
+                .read_realization(thread, |r| r
+                    .environment_owner
+                    .resident()
+                    .is_some_and(|owned| Arc::ptr_eq(&owned, rebuilt)))
+                .unwrap(),
+            "OR1/E1 one published owner"
+        );
+        assert!(
+            sink.requested_kinds.lock().unwrap().is_empty(),
+            "OR1/E3 Root port unused; persist would panic"
+        );
+        // This reads the original Queue after expiry, without another bind that
+        // could repair a missing write. Equal V1 bytes are expected; their
+        // readback is delivery evidence, not physical-incarnation authority.
+        clock.set(2_002);
+        let readback = store
+            .claim("ordinary-readback", 60_000, &Default::default())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(readback.lease.run_id().0, run, "OR1/E2 same Run");
+        assert_eq!(
+            readback.sandbox.as_deref(),
+            Some(raw_binding.as_str()),
+            "OR1/E2 exact Queue binding"
         );
     }
 

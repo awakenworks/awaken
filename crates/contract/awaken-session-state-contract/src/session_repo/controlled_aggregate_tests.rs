@@ -4,7 +4,7 @@ use crate::{SessionActivityAdmissionPlan, SessionAggregate, SessionAggregateComm
 use awaken_lease_contract::fence::Epoch;
 use awaken_session_budget_contract::SessionBudgetState;
 
-fn root(execution: SessionExecutionState, revision: u64) -> SessionAggregate {
+fn fresh_root(execution: SessionExecutionState, revision: u64) -> SessionAggregate {
     let fixture = mutation_tests::session("controlled", SessionRevision(revision));
     let crate::SessionBaselineState::Preparing(intent) = fixture.baseline else {
         unreachable!()
@@ -23,6 +23,514 @@ fn root(execution: SessionExecutionState, revision: u64) -> SessionAggregate {
     dto.revision = SessionRevision(revision);
     dto.execution = execution;
     SessionAggregate::try_from(dto).unwrap()
+}
+
+fn root(execution: SessionExecutionState, revision: u64) -> SessionAggregate {
+    // Existing phase/authority tables own the historical missing-field shape;
+    // only the first-materialization table explicitly uses the fresh constructor.
+    let mut wire = serde_json::to_value(fresh_root(execution, revision).snapshot()).unwrap();
+    wire.as_object_mut()
+        .unwrap()
+        .remove("environment_materialization");
+    SessionAggregate::try_from(serde_json::from_value::<PersistedSession>(wire).unwrap()).unwrap()
+}
+
+#[test]
+fn first_materialization_is_write_ahead_immutable_and_never_backfilled() {
+    // Cause graph: C1 fresh-present-empty/legacy-missing; C2 exact live lease;
+    // C3 first/same effect/drift; C4 candidate renewal vs saved first expiry;
+    // C5 exact receipt vs unadmitted/rewritten receipt. Effects: R1 fresh+C2
+    // +first -> pending before I/O; R2 same+renewal -> unchanged original;
+    // R3 matching receipt -> origin; R4 legacy -> no new admission/history;
+    // R5 missing C2/drift/rewritten receipt -> no root mutation. Receipt
+    // admission remains the old pure authority for genuine legacy outcomes.
+    let mut fresh = fresh_root(SessionExecutionState::Preparing, 0);
+    let fingerprint = fresh
+        .frozen_baseline()
+        .unwrap()
+        .environment
+        .config_fingerprint
+        .0
+        .clone();
+    let lease = crate::SessionRealizationLease {
+        owner: "worker".into(),
+        runtime_incarnation: "worker:1:boot".into(),
+        epoch: 1,
+        expires_at_unix_ms: 500,
+    };
+    let intent = crate::SessionEnvironmentEffectIntent::new(
+        "controlled",
+        crate::SessionEnvironmentEffectKind::Create,
+        Some(lease.clone()),
+    )
+    .for_environment(fingerprint.clone());
+    let before = fresh.clone();
+    assert!(
+        fresh
+            .environment()
+            .admit_environment_effect("workspace", &intent, 1)
+            .is_err(),
+        "R5 no current lease"
+    );
+    assert_eq!(fresh, before);
+    fresh.assignment().claim(lease.clone(), false).unwrap();
+    let absent = crate::SessionEnvironmentEffectIntent::new(
+        "controlled",
+        crate::SessionEnvironmentEffectKind::Create,
+        None,
+    )
+    .for_environment(fingerprint.clone());
+    assert!(
+        fresh
+            .environment()
+            .admit_environment_effect("workspace", &absent, 1)
+            .is_err(),
+        "R5 no asserted lease"
+    );
+    let receipt = crate::SessionEnvironmentReceipt::from_intent(&intent, "binding").unwrap();
+    let before = fresh.clone();
+    assert!(
+        fresh
+            .environment()
+            .try_apply_environment_receipt("workspace", &receipt, 1)
+            .is_err(),
+        "R5 fresh receipt without admission"
+    );
+    assert_eq!(fresh, before);
+    // N1 known fresh-empty / N2 saved pending Create, crossed with Adopt and
+    // reservation, and with new admission / late receipt. Every row must be
+    // retryable Pending with identical Environment/fact/revision; a live lease
+    // or self-consistent receipt is not evidence of the missing original Create.
+    // N3 the exact first Create receipt remains the only pending->origin move.
+    for pending in [false, true] {
+        let mut subject = fresh.clone();
+        if pending {
+            subject
+                .environment()
+                .admit_environment_effect("workspace", &intent, 1)
+                .unwrap();
+        }
+        for kind in [
+            crate::SessionEnvironmentEffectKind::Adopt,
+            crate::SessionEnvironmentEffectKind::ResourceProjectionReservation {
+                transition_fingerprint: "pending".into(),
+            },
+        ] {
+            let late =
+                crate::SessionEnvironmentEffectIntent::new("controlled", kind, Some(lease.clone()))
+                    .for_environment(fingerprint.clone())
+                    .from_binding("binding");
+            let before = subject.clone();
+            assert_eq!(
+                subject
+                    .environment()
+                    .admit_environment_effect("workspace", &late, 1),
+                Err(crate::SessionEnvironmentReceiptError::MaterializationPending),
+                "N1/N2 admission pending={pending}"
+            );
+            assert_eq!(
+                subject.environment().try_apply_environment_receipt(
+                    "workspace",
+                    &crate::SessionEnvironmentReceipt::from_intent(&late, "binding").unwrap(),
+                    1
+                ),
+                Err(crate::SessionEnvironmentReceiptError::MaterializationPending),
+                "N1/N2 receipt pending={pending}"
+            );
+            assert_eq!(subject, before, "N1/N2 zero root mutation");
+        }
+    }
+    let (changed, authorization) = fresh
+        .environment()
+        .admit_environment_effect("workspace", &intent, 1)
+        .unwrap();
+    assert!(changed, "R1 write-ahead fact");
+    assert_eq!(authorization.intent(), &intent);
+    assert_eq!(
+        fresh
+            .environment_materialization
+            .as_deref()
+            .unwrap()
+            .pending(),
+        Some(&intent)
+    );
+    assert!(
+        fresh
+            .environment_materialization
+            .as_deref()
+            .unwrap()
+            .origin()
+            .is_none()
+    );
+    let mut renewed = lease.clone();
+    renewed.expires_at_unix_ms = 1_000;
+    fresh.assignment().claim(renewed.clone(), false).unwrap();
+    let renewed_intent = crate::SessionEnvironmentEffectIntent::new(
+        "controlled",
+        crate::SessionEnvironmentEffectKind::Create,
+        Some(renewed),
+    )
+    .for_environment(fingerprint.clone());
+    let before = fresh.clone();
+    let (changed, authorization) = fresh
+        .environment()
+        .admit_environment_effect("workspace", &renewed_intent, 700)
+        .unwrap();
+    assert!(!changed, "R2 no second history write");
+    assert_eq!(
+        authorization.intent(),
+        &intent,
+        "R2 original expiry survived expiry/renewal"
+    );
+    assert_eq!(fresh, before);
+    for axis in 0..4 {
+        let mut drift = intent.realization().unwrap().clone();
+        let mut fp = fingerprint.clone();
+        match axis {
+            0 => drift.owner = "foreign".into(),
+            1 => drift.runtime_incarnation = "worker:2:boot".into(),
+            2 => {
+                drift.epoch = awaken_lease_contract::fence::Epoch::from_persisted(drift.epoch)
+                    .and_then(awaken_lease_contract::fence::Epoch::next)
+                    .unwrap()
+                    .get()
+            }
+            _ => fp = "foreign-fingerprint".into(),
+        }
+        let proposed = crate::SessionEnvironmentEffectIntent::new(
+            "controlled",
+            crate::SessionEnvironmentEffectKind::Create,
+            Some(drift),
+        )
+        .for_environment(fp);
+        assert!(
+            fresh
+                .environment()
+                .admit_environment_effect("workspace", &proposed, 700)
+                .is_err(),
+            "R5 drift axis {axis}"
+        );
+        assert_eq!(fresh, before);
+    }
+    let rewritten =
+        crate::SessionEnvironmentReceipt::from_intent(&renewed_intent, "binding").unwrap();
+    assert!(
+        fresh
+            .environment()
+            .try_apply_environment_receipt("workspace", &rewritten, 700)
+            .is_err(),
+        "R5 no original-value rewrite"
+    );
+    assert_eq!(fresh, before);
+    assert!(
+        fresh
+            .environment()
+            .try_apply_environment_receipt("workspace", &receipt, 700)
+            .unwrap(),
+        "R3 matched completion"
+    );
+    let facts = fresh.environment_materialization.as_deref().unwrap();
+    assert_eq!(facts.origin(), Some(&intent));
+    assert!(facts.pending().is_none());
+    // N4 completed origin admits ordinary adoption without changing first
+    // history; N5 legacy None retains its old legal receipt join and stays None.
+    let adopt = crate::SessionEnvironmentEffectIntent::new(
+        "controlled",
+        crate::SessionEnvironmentEffectKind::Adopt,
+        fresh.realization.clone(),
+    )
+    .for_environment(fingerprint.clone())
+    .from_binding("binding");
+    let origin = fresh.environment_materialization().unwrap().clone();
+    fresh
+        .environment()
+        .admit_environment_effect("workspace", &adopt, 700)
+        .unwrap();
+    fresh
+        .environment()
+        .try_apply_environment_receipt(
+            "workspace",
+            &crate::SessionEnvironmentReceipt::from_intent(&adopt, "binding").unwrap(),
+            700,
+        )
+        .unwrap();
+    assert_eq!(
+        fresh.environment_materialization(),
+        Some(&origin),
+        "N4 origin is immutable"
+    );
+    let source_generation = fresh.environment.generation().unwrap().id().to_owned();
+    let rebuild = crate::SessionEnvironmentEffectIntent::new(
+        "controlled",
+        crate::SessionEnvironmentEffectKind::Rebuild {
+            source_generation_id: Some(source_generation),
+        },
+        fresh.realization.clone(),
+    )
+    .for_environment(fingerprint.clone())
+    .from_binding("binding");
+    let before = fresh.clone();
+    assert_eq!(
+        fresh
+            .environment()
+            .admit_environment_effect("workspace", &rebuild, 700),
+        Err(crate::SessionEnvironmentReceiptError::MaterializationPending),
+        "R7 full Rebuild remains closed"
+    );
+    assert_eq!(fresh, before);
+    let mut legacy_adopt = root(SessionExecutionState::Preparing, 0);
+    legacy_adopt
+        .assignment()
+        .claim(lease.clone(), false)
+        .unwrap();
+    let old_adopt = crate::SessionEnvironmentEffectIntent::new(
+        "controlled",
+        crate::SessionEnvironmentEffectKind::Adopt,
+        Some(lease.clone()),
+    )
+    .for_environment(fingerprint.clone())
+    .from_binding("binding");
+    legacy_adopt
+        .environment()
+        .try_apply_environment_receipt(
+            "workspace",
+            &crate::SessionEnvironmentReceipt::from_intent(&old_adopt, "binding").unwrap(),
+            1,
+        )
+        .unwrap();
+    assert!(
+        legacy_adopt.environment_materialization().is_none(),
+        "N5 no history backfill"
+    );
+    let mut legacy = root(SessionExecutionState::Preparing, 0);
+    legacy.assignment().claim(lease, false).unwrap();
+    let before = legacy.clone();
+    assert_eq!(
+        legacy
+            .environment()
+            .admit_environment_effect("workspace", &intent, 1),
+        Err(crate::SessionEnvironmentReceiptError::MaterializationUnknown),
+        "R4 original bad subject"
+    );
+    assert_eq!(legacy, before);
+    assert!(
+        legacy
+            .environment()
+            .try_apply_environment_receipt("workspace", &receipt, 1)
+            .unwrap(),
+        "R4 genuine legacy binding join"
+    );
+    assert!(
+        legacy.environment_materialization.is_none(),
+        "R4 no first history from receipt"
+    );
+}
+
+#[test]
+fn admitted_materialization_cannot_project_unattempted_archive_or_start_after_terminal_fence() {
+    // Causes A1 explicit fresh-empty but no archive receipt; A2 actual saved
+    // pending with no physical binding; A3 terminal root before first admission.
+    // Effects: empty satisfies only the old pure preparation predicate, never
+    // a no-Create witness; admitted history makes that predicate false even
+    // when all old counter/lease tests are made pristine; terminal denies new
+    // admission without changing the root. Legacy Fenced/Requested receipt
+    // joins remain covered by the unchanged late-receipt owner table.
+    let mut root = fresh_root(SessionExecutionState::Preparing, 0).into_snapshot();
+    if let crate::SessionBaselineState::Frozen(baseline) = &mut root.baseline {
+        baseline.mutation_policy = awaken_session_resource_contract::SessionMutationPolicy::Frozen;
+    }
+    root.created_at_unix_ms = Some(1);
+    assert!(
+        crate::session_is_unattempted_profiled_preparation(&root),
+        "A1 state predicate only"
+    );
+    let mut root = SessionAggregate::try_from(root).unwrap();
+    let lease = crate::SessionRealizationLease {
+        owner: "worker".into(),
+        runtime_incarnation: "worker:1:boot".into(),
+        epoch: 1,
+        expires_at_unix_ms: 500,
+    };
+    root.assignment().claim(lease.clone(), false).unwrap();
+    let intent = crate::SessionEnvironmentEffectIntent::new(
+        "controlled",
+        crate::SessionEnvironmentEffectKind::Create,
+        Some(lease),
+    )
+    .for_environment(
+        root.frozen_baseline()
+            .unwrap()
+            .environment
+            .config_fingerprint
+            .0
+            .clone(),
+    );
+    let mut terminal = root.snapshot().clone();
+    terminal.execution = SessionExecutionState::Terminated;
+    let mut terminal = SessionAggregate::try_from(terminal).unwrap();
+    let before = terminal.clone();
+    for kind in [
+        crate::SessionEnvironmentEffectKind::Create,
+        crate::SessionEnvironmentEffectKind::Adopt,
+        crate::SessionEnvironmentEffectKind::ResourceProjectionReservation {
+            transition_fingerprint: "pending".into(),
+        },
+        crate::SessionEnvironmentEffectKind::Rebuild {
+            source_generation_id: None,
+        },
+    ] {
+        let mut proposed = crate::SessionEnvironmentEffectIntent::new(
+            "controlled",
+            kind.clone(),
+            intent.realization().cloned(),
+        )
+        .for_environment(intent.environment_fingerprint().unwrap());
+        if !matches!(kind, crate::SessionEnvironmentEffectKind::Create) {
+            proposed = proposed.from_binding("binding");
+        }
+        assert_eq!(
+            terminal
+                .environment()
+                .admit_environment_effect("workspace", &proposed, 1),
+            Err(crate::SessionEnvironmentReceiptError::WrongPhase),
+            "A3 all kinds"
+        );
+        assert_eq!(terminal, before);
+    }
+    root.environment()
+        .admit_environment_effect("workspace", &intent, 1)
+        .unwrap();
+    let mut pristine_counters = root.into_snapshot();
+    pristine_counters.realization = None;
+    pristine_counters.realization_progress = Default::default();
+    assert!(
+        !crate::session_is_unattempted_profiled_preparation(&pristine_counters),
+        "A2 admitted pending is not no-Create"
+    );
+}
+
+#[test]
+fn materialization_intrinsic_and_replacement_laws_preserve_unknown_and_first_value() {
+    // Causes: V1 missing/null/present-empty serde; V2 valid original intent vs
+    // foreign Session/kind/source/fingerprint; V3 current lease changes after
+    // admission; V4 replacement reset/overwrite/promote. Effects: missing and
+    // null remain Unknown/omitted; first facts validate independently of current
+    // lease; malformed imports and fresh replacements cannot forge/reset history.
+    // The two raw negative variants below deliberately model corrupt storage;
+    // they are not admission fixtures and never authorize provider I/O.
+    let legacy = root(SessionExecutionState::Preparing, 0).into_snapshot();
+    let mut raw = serde_json::to_value(&legacy).unwrap();
+    assert!(
+        raw.get("environment_materialization").is_none(),
+        "V1 missing omitted"
+    );
+    raw["environment_materialization"] = serde_json::Value::Null;
+    let decoded: PersistedSession = serde_json::from_value(raw).unwrap();
+    assert_eq!(decoded, legacy, "V1 null unknown");
+    assert!(
+        serde_json::to_value(&decoded)
+            .unwrap()
+            .get("environment_materialization")
+            .is_none()
+    );
+    let mut fresh = fresh_root(SessionExecutionState::Preparing, 0);
+    assert!(
+        serde_json::to_value(fresh.snapshot())
+            .unwrap()
+            .get("environment_materialization")
+            .is_some(),
+        "V1 present-empty distinct"
+    );
+    assert!(
+        legacy
+            .validate_observation_replacement(fresh.snapshot())
+            .is_err(),
+        "V4 no unknown backfill"
+    );
+    let lease = crate::SessionRealizationLease {
+        owner: "worker".into(),
+        runtime_incarnation: "worker:1:boot".into(),
+        epoch: 1,
+        expires_at_unix_ms: 500,
+    };
+    fresh.assignment().claim(lease.clone(), false).unwrap();
+    let fingerprint = fresh
+        .frozen_baseline()
+        .unwrap()
+        .environment
+        .config_fingerprint
+        .0
+        .clone();
+    let intent = crate::SessionEnvironmentEffectIntent::new(
+        "controlled",
+        crate::SessionEnvironmentEffectKind::Create,
+        Some(lease),
+    )
+    .for_environment(fingerprint.clone());
+    let empty = fresh.snapshot().clone();
+    fresh
+        .environment()
+        .admit_environment_effect("workspace", &intent, 1)
+        .unwrap();
+    empty
+        .validate_observation_replacement(fresh.snapshot())
+        .unwrap();
+    assert!(
+        fresh.validate_observation_replacement(&empty).is_err(),
+        "V4 pending cannot reset"
+    );
+    let mut historic = fresh.snapshot().clone();
+    historic.realization = Some(crate::SessionRealizationLease {
+        owner: "replacement".into(),
+        runtime_incarnation: "replacement:2:boot".into(),
+        epoch: 9,
+        expires_at_unix_ms: 0,
+    });
+    crate::SessionEnvironmentMaterialization::validate_for(&historic).unwrap();
+    SessionAggregate::try_from(historic).unwrap();
+    for bad in [
+        crate::SessionEnvironmentEffectIntent::new(
+            "foreign",
+            crate::SessionEnvironmentEffectKind::Create,
+            intent.realization().cloned(),
+        )
+        .for_environment(fingerprint.clone()),
+        crate::SessionEnvironmentEffectIntent::new(
+            "controlled",
+            crate::SessionEnvironmentEffectKind::Adopt,
+            intent.realization().cloned(),
+        )
+        .for_environment(fingerprint)
+        .from_binding("binding"),
+    ] {
+        let mut raw = serde_json::to_value(fresh.snapshot()).unwrap();
+        raw["environment_materialization"]["pending"] = serde_json::to_value(&bad).unwrap();
+        let invalid: PersistedSession = serde_json::from_value(raw).unwrap();
+        assert!(
+            SessionAggregate::try_from(invalid).is_err(),
+            "V2 intrinsic rejection"
+        );
+    }
+    let mut overwritten = serde_json::to_value(fresh.snapshot()).unwrap();
+    let mut other = intent.realization().unwrap().clone();
+    other.expires_at_unix_ms += 1;
+    overwritten["environment_materialization"]["pending"] = serde_json::to_value(
+        crate::SessionEnvironmentEffectIntent::new(
+            "controlled",
+            crate::SessionEnvironmentEffectKind::Create,
+            Some(other),
+        )
+        .for_environment(intent.environment_fingerprint().unwrap()),
+    )
+    .unwrap();
+    let overwritten: PersistedSession = serde_json::from_value(overwritten).unwrap();
+    crate::SessionEnvironmentMaterialization::validate_for(&overwritten).unwrap();
+    assert!(
+        fresh
+            .validate_observation_replacement(&overwritten)
+            .is_err(),
+        "V4 full first value includes expiry"
+    );
 }
 
 #[test]

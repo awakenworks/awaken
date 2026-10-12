@@ -36,8 +36,17 @@ pub(crate) struct EnvironmentBindingPersistenceError {
         Option<crate::environment_owner::BoundSessionEnvironmentIdentity>,
 }
 
+impl From<HostError> for EnvironmentBindingPersistenceError {
+    fn from(error: HostError) -> Self {
+        Self {
+            error,
+            committed_identity: None,
+        }
+    }
+}
+
 pub(crate) struct AuthorizedSessionEnvironmentEffect {
-    pub(crate) intent: awaken_session_state_contract::SessionEnvironmentEffectIntent,
+    /// The contract result owns the operation's sole immutable intent.
     pub(crate) authorization: awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
     pub(crate) provider_fence: Option<awaken_provisioning_contract::SandboxEffectFence>,
     /// Captured before provider I/O; renewal can advance expiry but cannot

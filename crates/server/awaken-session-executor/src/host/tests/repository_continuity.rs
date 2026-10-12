@@ -144,6 +144,7 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
         revision: awaken_session_types::SessionRevision(1),
         baseline,
         agent_publication: None,
+        environment_materialization: None,
         environment: Default::default(),
         resource_revision: 1,
         resources,

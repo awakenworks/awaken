@@ -368,6 +368,15 @@ impl SharedHost {
             None,
         );
         self.installed_sessions.update_realization(thread, |r| {
+            // A same-handle ABA test replaces only the process-local Arc. Keep
+            // its existing Root-generated identity instead of downgrading it.
+            if let SessionEnvironmentOwner::Resident(owned) = &mut r.environment_owner
+                && owned.binding == binding
+                && owned.environment.lifecycle().handle() == environment.lifecycle().handle()
+            {
+                owned.environment = environment;
+                return;
+            }
             r.environment_owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
                 identity: BoundSessionEnvironmentIdentity::LegacyDirect(
                     LegacyDirectEnvironmentProvenance::Direct(receipt),
@@ -452,8 +461,11 @@ impl SharedHost {
                 authorized = self
                     .authorize_environment_effect_before_io(
                         thread,
-                        awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
-                        Some(encoded),
+                        &self.realizer.new_environment_effect_intent(
+                            thread,
+                            awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
+                            Some(encoded),
+                        ),
                     )
                     .await?;
                 &authorized
@@ -470,6 +482,7 @@ impl SharedHost {
         }
         if let awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
             binding,
+            ..
         } = &effect.authorization
             && binding != encoded
         {
@@ -500,21 +513,6 @@ impl SharedHost {
                     .provider_effect_authority(thread, fence)
             })
             .transpose()?;
-        let admit_original = || match (effect.provider_fence.as_ref(), authority.as_ref()) {
-            (Some(fence), Some(authority)) => {
-                awaken_provisioning_contract::with_current_sandbox_effect(fence, authority, |_| {
-                    Ok(())
-                })
-                .map_err(|error| {
-                    HostError::unavailable_classified(
-                        "session_environment_adoption_authority_lost",
-                        error.to_string(),
-                    )
-                })
-            }
-            (None, None) => Ok(()),
-            _ => unreachable!("fenced adoption always captures its authority"),
-        };
         let provider_effect = crate::session_environment::ProviderEffect::from_parts(
             effect.provider_fence.as_ref(),
             authority.as_ref().map(|authority| {
@@ -527,6 +525,14 @@ impl SharedHost {
                 error.to_string(),
             )
         })?;
+        let admit_original = || {
+            provider_effect.admit().map_err(|error| {
+                HostError::unavailable_classified(
+                    "session_environment_adoption_authority_lost",
+                    error.to_string(),
+                )
+            })
+        };
         let observation = provider
             .adoption()
             .observe_effective(
@@ -598,7 +604,7 @@ impl SharedHost {
                             // canonical binding/publication edge can suspend.
                             self.installed_sessions.update_realization(thread, |r| {
                                 r.environment_owner
-                                    .prepare_retiring_realization_adoption(retiring, environment.clone())
+                                    .prepare_retiring_realization_adoption(retiring, environment.clone(), Some(effect.authorization.intent()))
                             })?;
                         }
                         self.publish_session_environment_under_lifecycle(
@@ -642,6 +648,18 @@ impl SharedHost {
                         "session_environment_candidate_observation_closed",
                         "retained Session Environment Candidate is no longer Ready",
                     ));
+                }
+                // Ask the same Root before consuming the captured old owner.
+                // A pending Managed Rebuild must retain that exact owner;
+                // unowned direct Threads keep the original recovery policy.
+                if unavailable_policy == SessionEnvironmentUnavailablePolicy::Rebuild {
+                    self.authorize_environment_effect_before_io(
+                        thread,
+                        &self.realizer.new_environment_effect_intent(thread, awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild {
+                            source_generation_id: source_generation_id.map(str::to_owned),
+                        },
+                        Some(encoded)),
+                    ).await?;
                 }
                 exec.record_unavailable_session_environment_under_lifecycle(
                     UnavailableEnvironmentRecovery {

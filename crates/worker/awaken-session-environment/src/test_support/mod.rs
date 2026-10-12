@@ -189,17 +189,26 @@ impl awaken_container_contract::ContainerEnvironmentProvider for FakeContainerPr
 
     async fn create_environment_for_effect(
         &self,
-        _spec: &awaken_provisioning_contract::SandboxSpec,
-        _effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
-        _authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
-        _intent: awaken_container_contract::EnvironmentRealizationIntent,
+        spec: &awaken_provisioning_contract::SandboxSpec,
+        effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
+        authority: &dyn awaken_provisioning_contract::CurrentExecutionAuthority,
+        intent: awaken_container_contract::EnvironmentRealizationIntent,
     ) -> Result<
         std::sync::Arc<dyn awaken_container_contract::ContainerEnvironment>,
         awaken_provisioning_contract::SandboxError,
     > {
-        Err(awaken_provisioning_contract::SandboxError::unsupported(
-            "test double does not implement fenced Environment creation",
-        ))
+        // The fake allocates synchronously inside the original current-effect
+        // guard. It supplies no physical recovery or Kubernetes participant proof.
+        pc::with_current_sandbox_effect(effect_fence, authority, |_| Ok(()))?;
+        if !matches!(
+            intent,
+            awaken_container_contract::EnvironmentRealizationIntent::Create
+        ) {
+            return Err(pc::SandboxError::unsupported(
+                "test double does not implement fenced Environment rebuild",
+            ));
+        }
+        pc::with_current_sandbox_effect(effect_fence, authority, |_| self.create_environment(spec))
     }
     async fn adopt_environment_for_effect(
         &self,
@@ -282,18 +291,7 @@ impl awaken_container_contract::ContainerEnvironmentProvider for FakeContainerPr
         &self,
         spec: &pc::SandboxSpec,
     ) -> Result<Arc<dyn awaken_container_contract::ContainerEnvironment>, pc::SandboxError> {
-        self.creates
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.specs.lock().unwrap().push(spec.clone());
-        Ok(Arc::new(FakeContainer {
-            handle: current_fake_container_handle(spec),
-            disposals: self.disposals.clone(),
-            renews: self.renews.clone(),
-            hand_spawns: self.hand_spawns.clone(),
-            resident_channel_opens: self.resident_channel_opens.clone(),
-            fail_hand_spawn_at: self.fail_hand_spawn_at.clone(),
-            shared: self.shared.clone(),
-        }))
+        self.create_environment(spec)
     }
 
     async fn adopt_unattached_environment(
@@ -303,6 +301,26 @@ impl awaken_container_contract::ContainerEnvironmentProvider for FakeContainerPr
         self.adopts.fetch_add(1, Ordering::SeqCst);
         Ok(Arc::new(FakeContainer {
             handle: adoption.handle.clone(),
+            disposals: self.disposals.clone(),
+            renews: self.renews.clone(),
+            hand_spawns: self.hand_spawns.clone(),
+            resident_channel_opens: self.resident_channel_opens.clone(),
+            fail_hand_spawn_at: self.fail_hand_spawn_at.clone(),
+            shared: self.shared.clone(),
+        }))
+    }
+}
+
+impl FakeContainerProvider {
+    fn create_environment(
+        &self,
+        spec: &pc::SandboxSpec,
+    ) -> Result<Arc<dyn awaken_container_contract::ContainerEnvironment>, pc::SandboxError> {
+        self.creates
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.specs.lock().unwrap().push(spec.clone());
+        Ok(Arc::new(FakeContainer {
+            handle: current_fake_container_handle(spec),
             disposals: self.disposals.clone(),
             renews: self.renews.clone(),
             hand_spawns: self.hand_spawns.clone(),

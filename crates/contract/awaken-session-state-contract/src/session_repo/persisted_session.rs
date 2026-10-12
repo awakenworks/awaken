@@ -21,9 +21,15 @@ use crate::{
 /// join verified cleanup before returning a successful profiled release.
 #[must_use]
 pub fn session_is_unattempted_profiled_preparation(session: &PersistedSession) -> bool {
-    session.frozen_baseline().is_some_and(|baseline| {
-        baseline.mutation_policy == awaken_session_resource_contract::SessionMutationPolicy::Frozen
-    }) && session.created_at_unix_ms.is_some()
+    !session
+        .environment_materialization
+        .as_deref()
+        .is_some_and(crate::SessionEnvironmentMaterialization::has_admitted)
+        && session.frozen_baseline().is_some_and(|baseline| {
+            baseline.mutation_policy
+                == awaken_session_resource_contract::SessionMutationPolicy::Frozen
+        })
+        && session.created_at_unix_ms.is_some()
         && session.execution == SessionExecutionState::Preparing
         && !session.has_active_activities()
         && session.running_interval.is_none()
@@ -271,6 +277,10 @@ pub struct PersistedSession {
     /// interpreted only by the runtime that produced them; this aggregate owns
     /// their transition, not their substrate meaning.
     pub environment: crate::SessionEnvironmentState,
+    /// Absent is historical unknown. Only a fresh constructor establishes the
+    /// explicit empty fact before the original atomic root insert.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) environment_materialization: Option<Box<crate::SessionEnvironmentMaterialization>>,
     /// The only initial and hot MCP desired-state authority.
     pub mcp: crate::SessionMcpAttachmentSet,
     /// Durable resource activation state. Its `active` manifest is the exact,
@@ -296,6 +306,12 @@ pub struct PersistedSession {
 }
 
 impl PersistedSession {
+    /// Immutable first-effect provenance; absence is historical unknown.
+    #[must_use]
+    pub fn environment_materialization(&self) -> Option<&crate::SessionEnvironmentMaterialization> {
+        self.environment_materialization.as_deref()
+    }
+
     /// Construct a complete Session root after the creation compiler has
     /// consumed every authoring input. New creation persists this shape in one
     /// insert. Historical interrupted rows remain representable only through
@@ -330,6 +346,9 @@ impl PersistedSession {
             usage_cursor: Default::default(),
             budget,
             environment: Default::default(),
+            environment_materialization: Some(Box::new(
+                crate::SessionEnvironmentMaterialization::fresh(),
+            )),
             mcp,
             resources,
             realization: None,
@@ -1265,9 +1284,20 @@ impl PersistedSession {
         }
         receipt.verify()?;
         let intent = receipt.effect_intent()?;
+        if let Some(facts) = self.environment_materialization.as_deref() {
+            facts.validate_existing_origin_effect(&intent)?;
+        }
         let authorization = self.authorize_environment_effect(owner_scope, &intent, now_unix_ms)?;
-        self.environment
-            .apply_authorized_receipt(receipt, authorization)
+        if let Some(facts) = self.environment_materialization.as_deref() {
+            facts.validate_receipt(&intent)?;
+        }
+        let changed = self
+            .environment
+            .apply_authorized_receipt(receipt, authorization)?;
+        if changed && let Some(facts) = self.environment_materialization.as_deref_mut() {
+            facts.record_receipt(&intent);
+        }
+        Ok(changed)
     }
 
     #[must_use]

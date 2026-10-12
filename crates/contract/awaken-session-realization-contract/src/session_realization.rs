@@ -734,6 +734,7 @@ mod tests {
             baseline,
             agent_publication: None,
             environment,
+            environment_materialization: None,
             resource_revision: 7,
             resources: Default::default(),
             previous_resource_manifest: None,

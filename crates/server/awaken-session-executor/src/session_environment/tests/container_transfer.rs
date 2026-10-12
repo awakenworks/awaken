@@ -1,7 +1,6 @@
 //! Container environment revocation and rebinding under the Host's Session lifecycle.
 
 use super::*;
-use awaken_session_execution_contract::RealizationRuntime as _;
 
 #[tokio::test]
 async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner() {
@@ -35,11 +34,15 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         )
         .into_session_provider();
         let thread = "session-container";
-        let host = (crate::HostDependencies::ephemeral(
-            Arc::new(crate::no_model::NoModelConfiguredExecutor),
-            "stub",
-        )
-        .await)
+        let roots = crate::host::tests::ManagedSessionRootFixture::new().await;
+        let host = roots
+            .configure(
+                crate::HostDependencies::ephemeral(
+                    Arc::new(crate::no_model::NoModelConfiguredExecutor),
+                    "stub",
+                )
+                .await,
+            )
             .build()
             .expect("validated Host dependencies");
         let managed = managed_test_host(host.clone());
@@ -50,47 +53,111 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             &activation.snapshot,
         );
         projection.agent_publication = Some(activation.snapshot.clone());
-        managed
-            .install_session_projection(
-                thread,
-                projection.clone(),
-                awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
-            )
+        roots
+            .install_projection(&managed, thread, projection.clone())
             .await
             .unwrap();
         let spec = host
             .realizer
             .staging
             .sandbox_spec_for_provider(thread, &provider);
-        let original = Arc::new(provider.create(&spec).await.unwrap());
+        // W0: establish actual Root admission/binding before the revocation
+        // table. The selected fake provider does not invent durable authority:
+        // use the production sink's first CAS and generated receipt readback.
+        let intent = host.realizer.new_environment_effect_intent(
+            thread,
+            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+            None,
+        );
+        let effect = host
+            .authorize_environment_effect_before_io(thread, &intent)
+            .await
+            .unwrap();
+        // W0a causes: exact/foreign operation fence and Create/Rebuild intent.
+        // Exact Create is the only supported fake effect below. Foreign fence
+        // rejects before allocation; Rebuild stays Unsupported, never inventing
+        // original participant recovery. Both negative rules have zero creates.
+        let fence = effect.provider_fence.as_ref().unwrap();
+        let authority = effect.provider_authority.as_deref().unwrap();
+        let foreign = effect
+            .authorization
+            .intent()
+            .realization()
+            .unwrap()
+            .sandbox_effect_fence("foreign-fake-create")
+            .unwrap();
+        let denied =
+            awaken_container_contract::ContainerEnvironmentProvider::create_environment_for_effect(
+                fake.as_ref(),
+                &spec,
+                &foreign,
+                authority,
+                awaken_container_contract::EnvironmentRealizationIntent::Create,
+            )
+            .await;
+        assert!(
+            matches!(
+                denied,
+                Err(awaken_provisioning_contract::SandboxError::FenceRejected(_))
+            ),
+            "W0a foreign operation"
+        );
+        let denied =
+            awaken_container_contract::ContainerEnvironmentProvider::create_environment_for_effect(
+                fake.as_ref(),
+                &spec,
+                fence,
+                authority,
+                awaken_container_contract::EnvironmentRealizationIntent::Rebuild {
+                    source: Box::new(
+                        awaken_session_environment::test_support::current_fake_container_handle(
+                            &spec,
+                        ),
+                    ),
+                },
+            )
+            .await;
+        assert!(
+            matches!(
+                denied,
+                Err(awaken_provisioning_contract::SandboxError::Unsupported(_))
+            ),
+            "W0a no fake recovery proof"
+        );
+        assert_eq!(
+            fake.creates.load(Ordering::SeqCst),
+            0,
+            "W0a zero allocation"
+        );
+        let original = Arc::new(
+            provider
+                .realizer()
+                .create_effective_for_effect(
+                    &spec,
+                    crate::session_environment::ProviderEffect::from_parts(
+                        effect.provider_fence.as_ref(),
+                        effect.provider_authority.as_deref(),
+                    )
+                    .unwrap(),
+                    None,
+                    awaken_session_environment_contract::EnvironmentRealizationKind::Create,
+                )
+                .await
+                .unwrap(),
+        );
         let handle = original.lifecycle().handle();
         let binding = serde_json::to_string(&handle).unwrap();
-        let generation = awaken_session_state_contract::SandboxGeneration::new(
-            &awaken_session_types::SessionId::from(thread),
-            1,
-            u64::MAX,
-            "environment",
-            "image",
-        );
-        let identity = crate::installed_session::BoundSessionEnvironmentIdentity::Durable {
-            effect_id: "create-effect".into(),
-            generation: generation.clone(),
-        };
-        projection.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
-            binding: binding.clone(),
-            effect_id: Some("create-effect".into()),
-            generation: Some(generation),
-            idle_since_unix_ms: None,
-        };
-        host.install_session_environment_owner_projection(
-            thread,
-            "workspace",
-            &projection.environment,
-        )
-        .unwrap();
+        let identity = host
+            .persist_authorized_environment_binding(thread, binding.clone(), &effect)
+            .await
+            .unwrap_or_else(|failure| panic!("W0 actual binding CAS: {}", failure.error));
         let candidate = host
             .realizer
-            .begin_session_environment_adoption(thread, original.clone())
+            .begin_session_environment_preparation(
+                thread,
+                original.clone(),
+                Some(effect.authorization.intent()),
+            )
             .unwrap();
         host.realizer
             .publish_prepared_session_environment(thread, &candidate, identity)
@@ -136,14 +203,16 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             // W1/W2 new admitted work reinstalls the aggregate-owned Resource
             // transition through the production projection port. Publication
             // must execute its ordinary reconciliation, never a test-only ACK.
-            managed
-                .install_session_projection(
-                    thread,
-                    projection.clone(),
-                    awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
-                )
-                .await
-                .unwrap();
+            let advanced = roots.advance_assignment(&managed, thread).await.unwrap();
+            assert_eq!(
+                advanced
+                    .environment_materialization
+                    .as_deref()
+                    .unwrap()
+                    .origin(),
+                Some(effect.authorization.intent()),
+                "W2 next generation preserves the first Create"
+            );
             fake.shared.lock().unwrap().remove("__ready_observation");
             assert!(
                 host.adopt_bound_session_environment(

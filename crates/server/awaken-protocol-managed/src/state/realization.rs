@@ -48,7 +48,7 @@ mod tests {
     use awaken_session_application_contract::StepOutcome;
     use awaken_session_configuration_contract::{
         EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline, SessionBaselineInputs,
-        SessionBaselineState, SessionNetworkPolicy,
+        SessionNetworkPolicy,
     };
     use awaken_session_mcp_contract::{
         McpAttachmentDraft, McpAttachmentOrigin, McpAttachmentState, McpGenerationRef,
@@ -61,7 +61,6 @@ mod tests {
     };
     use awaken_session_execution_contract::{SessionRuntime, ToolPermissionDecision};
     use awaken_session_state_contract::{IdempotencyRecord, SessionResourceState};
-    use awaken_session_types::SessionRevision;
 
     struct NoopRuntime;
 
@@ -335,32 +334,23 @@ mod tests {
             Some(holder()),
         )
         .unwrap();
-        PersistedSession {
-            created_at_unix_ms: None,
-            updated_at_unix_ms: None,
-            session_id: id.into(),
-            revision: SessionRevision(0),
-            baseline: SessionBaselineState::Frozen(baseline),
-            title: None,
-            metadata: Default::default(),
-            tools: Default::default(),
-            event_batches: Vec::new(),
-            activity_epoch: 0,
-            active_activity_epochs: Default::default(),
-            running_interval: None,
-            closed_runtime_intervals: Vec::new(),
-            runtime_active_millis: 0,
-            usage_cursor: Default::default(),
-            budget: Default::default(),
-            environment: Default::default(),
-            mcp,
+        let mut legacy = PersistedSession::frozen_with_budget(
+            id,
+            baseline,
             resources,
-            realization: None,
-            realization_progress: Default::default(),
-            execution: SessionExecutionState::Preparing,
-            disposition: Default::default(),
-            terminal_cleanup: Default::default(),
-        }
+            mcp,
+            None,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        legacy.execution = SessionExecutionState::Preparing;
+        // This fixture models the pre-cutover missing field, not a fresh creation.
+        let mut wire = serde_json::to_value(legacy).unwrap();
+        wire.as_object_mut()
+            .unwrap()
+            .remove("environment_materialization");
+        serde_json::from_value(wire).unwrap()
     }
 
     async fn harness_for(

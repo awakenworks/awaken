@@ -4,7 +4,139 @@
 
 use super::*;
 
-struct NonOwningEnvironmentBindingSink;
+#[derive(Default)]
+struct NonOwningEnvironmentBindingSink {
+    authorize_calls: std::sync::atomic::AtomicUsize,
+}
+
+#[tokio::test]
+async fn candidate_retention_preserves_original_intent_and_never_invents_unknown() {
+    // Cause/effect graph: C1 original Create/Adopt/Rebuild intent is captured;
+    // C2 a matching Store identity is retained after publication failed;
+    // C3 the same Arc is offered with changed expiry/source/kind; C4 the
+    // legacy/terminal enrollment supplied no ordinary intent. Rules:
+    // I1=C1, with either C2 value => exact original kind/source/expiry;
+    // I2=C1+C3 => reject without owner mutation;
+    // I3=C4, with either C2 value => ordinary intent remains Unknown. A durable
+    // identity or ownership tag cannot create a pre-effect history record.
+    // This exercises the local ownership reducer, not physical admission proof.
+    use awaken_session_state_contract::{
+        SessionEnvironmentEffectIntent, SessionEnvironmentEffectKind,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let provider =
+        crate::session_environment::SandboxEnvironmentProvider::workdir(directory.path())
+            .into_session_provider();
+    let thread = "candidate-original-intent";
+    let owned = environment(&provider, thread).await;
+    let binding = serde_json::to_string(&owned.lifecycle().handle()).unwrap();
+    let lease = awaken_session_resource_contract::SessionRealizationLease {
+        owner: "original-worker".into(),
+        runtime_incarnation: "original-boot".into(),
+        epoch: 7,
+        expires_at_unix_ms: 100,
+    };
+    for kind in [
+        SessionEnvironmentEffectKind::Create,
+        SessionEnvironmentEffectKind::Adopt,
+        SessionEnvironmentEffectKind::Rebuild {
+            source_generation_id: Some("old-generation".into()),
+        },
+    ] {
+        let mut intent =
+            SessionEnvironmentEffectIntent::new(thread, kind.clone(), Some(lease.clone()));
+        if !matches!(kind, SessionEnvironmentEffectKind::Create) {
+            intent = intent.from_binding(binding.clone());
+        }
+        for retained in [false, true] {
+            let mut owner = SessionEnvironmentOwner::Vacant;
+            let mut candidate = owner
+                .begin_preparing(owned.clone(), kind.clone(), Some(&intent))
+                .unwrap();
+            if retained {
+                candidate = owner
+                    .retain_committed_candidate(&candidate, identity(thread))
+                    .unwrap();
+            }
+            assert_eq!(
+                candidate.ordinary_intent().unwrap(),
+                &intent,
+                "I1 first value"
+            );
+            assert_eq!(
+                *candidate.ordinary_intent().unwrap().kind(),
+                kind,
+                "I1 kind"
+            );
+            assert_eq!(
+                candidate.ordinary_intent().unwrap().source_binding(),
+                intent.source_binding(),
+                "I1 source"
+            );
+            let mut renewed = SessionEnvironmentEffectIntent::new(
+                thread,
+                kind.clone(),
+                Some(awaken_session_resource_contract::SessionRealizationLease {
+                    expires_at_unix_ms: 500,
+                    ..lease.clone()
+                }),
+            );
+            if let Some(source) = intent.source_binding() {
+                renewed = renewed.from_binding(source);
+            }
+            assert_eq!(
+                renewed.effect_id(),
+                intent.effect_id(),
+                "I2 same ID is not the same complete first value"
+            );
+            for changed in [
+                renewed,
+                intent.clone().from_binding("another-source"),
+                SessionEnvironmentEffectIntent::new(
+                    thread,
+                    SessionEnvironmentEffectKind::Adopt,
+                    Some(lease.clone()),
+                )
+                .from_binding("another-source"),
+            ] {
+                assert!(
+                    owner
+                        .begin_preparing(owned.clone(), changed.kind().clone(), Some(&changed))
+                        .is_err(),
+                    "I2 drift"
+                );
+                assert!(
+                    owner
+                        .unpublished_candidate()
+                        .unwrap()
+                        .exact_matches(&candidate),
+                    "I2 no mutation"
+                );
+            }
+        }
+    }
+    for kind in [
+        SessionEnvironmentEffectKind::Create,
+        SessionEnvironmentEffectKind::Adopt,
+    ] {
+        for retained in [false, true] {
+            let mut owner = SessionEnvironmentOwner::Vacant;
+            let mut candidate = owner
+                .begin_preparing(owned.clone(), kind.clone(), None)
+                .unwrap();
+            if retained {
+                candidate = owner
+                    .retain_committed_candidate(&candidate, identity(thread))
+                    .unwrap();
+            }
+            assert!(candidate.ordinary_intent().is_err(), "I3 Unknown");
+            assert!(
+                candidate.ordinary_intent().is_err(),
+                "I3 no inferred kind or source"
+            );
+        }
+    }
+}
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionEnvironmentBindingSink
@@ -12,12 +144,18 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
 {
     async fn authorize(
         &self,
-        _intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
+        intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
         awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
         awaken_session_types::RunError,
     > {
-        Ok(awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned)
+        self.authorize_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(
+            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned {
+                intent: Box::new(intent.clone()),
+            },
+        )
     }
 
     async fn persist(
@@ -28,6 +166,76 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
         awaken_session_types::RunError,
     > {
         panic!("a non-owning binding sink must not persist")
+    }
+}
+
+#[tokio::test]
+async fn unknown_candidate_retry_never_authorizes_or_relabels_its_owner() {
+    // C1 ordinary intent is Unknown; C2 candidate is hidden or retained behind
+    // RealizationRevocation. U1=C1 for each C2 => typed pending error, zero
+    // authorize/persist calls, exact same owner/Arc/intent. Revoked ownership
+    // must not bypass this guard by constructing a fresh Adopt. Terminal
+    // disposal keeps its separate existing grant and is covered by T rows.
+    for revoked in [false, true] {
+        let thread = "unknown-candidate-retry";
+        let directory = tempfile::tempdir().unwrap();
+        let provider =
+            crate::session_environment::SandboxEnvironmentProvider::workdir(directory.path())
+                .into_session_provider();
+        let owned = environment(&provider, thread).await;
+        let host = crate::HostDependencies::ephemeral(
+            Arc::new(crate::no_model::NoModelConfiguredExecutor),
+            "stub",
+        )
+        .await
+        .build()
+        .unwrap();
+        let sink = Arc::new(NonOwningEnvironmentBindingSink::default());
+        crate::ManagedHost::new(host.clone()).install_test_environment_binding_sink(sink.clone());
+        let candidate = host
+            .realizer
+            .begin_session_environment_preparation(thread, owned.clone(), None)
+            .unwrap();
+        let retirement = if revoked {
+            Some(
+                host.realizer
+                    .retire_current_environment(
+                        thread,
+                        SessionEnvironmentRetirementCause::RealizationRevocation,
+                        RetirementSelection::Exact(&owned),
+                    )
+                    .unwrap()
+                    .unwrap(),
+            )
+        } else {
+            None
+        };
+        let error = match host
+            .retry_session_environment_candidate_under_lifecycle(thread)
+            .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("U1 Unknown intent became ordinary authority"),
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("original ordinary effect intent"),
+            "U1 {error}"
+        );
+        assert_eq!(
+            sink.authorize_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "U1 zero authorize"
+        );
+        host.installed_sessions.read_realization(thread, |realization| {
+            if let Some(retirement) = &retirement {
+                assert!(matches!(&realization.environment_owner, SessionEnvironmentOwner::Retiring(current) if current.exact_matches(&retirement.owner)), "U1 exact retirement");
+            } else {
+                assert!(realization.environment_owner.unpublished_candidate().unwrap().exact_matches(&candidate), "U1 exact hidden owner");
+            }
+        }).unwrap();
     }
 }
 
@@ -47,6 +255,12 @@ async fn durable_adoption_without_an_owning_sink_preserves_exact_projected_ident
         let thread = format!("durable-adoption-{suffix}");
         let environment = environment(&provider, &thread).await;
         let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
+        let intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+            &thread,
+            awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
+            None,
+        )
+        .from_binding(binding.clone());
         let expected = BoundSessionEnvironmentIdentity::LegacyDirect(
             LegacyDirectEnvironmentProvenance::DurableBinding {
                 binding: binding.clone(),
@@ -72,12 +286,13 @@ async fn durable_adoption_without_an_owning_sink_preserves_exact_projected_ident
         )
         .expect("C1 exact durable projection");
         if install_non_owner {
-            crate::ManagedHost::new(host.clone())
-                .install_test_environment_binding_sink(Arc::new(NonOwningEnvironmentBindingSink));
+            crate::ManagedHost::new(host.clone()).install_test_environment_binding_sink(Arc::new(
+                NonOwningEnvironmentBindingSink::default(),
+            ));
         }
         let candidate = host
             .realizer
-            .begin_session_environment_adoption(&thread, environment)
+            .begin_session_environment_adoption(&thread, environment, Some(&intent))
             .expect("C2 hidden adoption candidate");
         assert_eq!(
             candidate.origin,
@@ -113,8 +328,19 @@ async fn ordinary_candidate_without_a_sink_gets_an_explicit_direct_receipt() {
             awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
         ),
     ] {
+        let mut intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+            thread,
+            kind.clone(),
+            None,
+        );
         let environment = environment(&provider, thread).await;
         let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
+        if matches!(
+            kind,
+            awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt
+        ) {
+            intent = intent.from_binding(binding.clone());
+        }
         let host = (crate::HostDependencies::ephemeral(
             Arc::new(crate::no_model::NoModelConfiguredExecutor),
             "stub",
@@ -124,10 +350,10 @@ async fn ordinary_candidate_without_a_sink_gets_an_explicit_direct_receipt() {
             .expect("validated Host dependencies");
         let candidate = match kind {
             awaken_session_state_contract::SessionEnvironmentEffectKind::Create => host
-                .realizer.begin_session_environment_preparation(thread, environment)
+                .realizer.begin_session_environment_preparation(thread, environment, Some(&intent))
                 .expect("O1 create candidate"),
             awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt => host
-                .realizer.begin_session_environment_adoption(thread, environment)
+                .realizer.begin_session_environment_adoption(thread, environment, Some(&intent))
                 .expect("O2 adoption candidate"),
             awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild { .. }
             | awaken_session_state_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation {
@@ -173,7 +399,7 @@ async fn durable_projection_cannot_publish_a_hidden_candidate() {
         .expect("validated Host dependencies");
     let candidate = host
         .realizer
-        .begin_session_environment_preparation(thread, environment.clone())
+        .begin_session_environment_preparation(thread, environment.clone(), None)
         .expect("C1 Candidate");
     let generation = generation(thread);
     let effect_id = "store-read-effect".to_string();
@@ -249,7 +475,7 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
         .unwrap();
         let candidate = host
             .realizer
-            .begin_session_environment_adoption(thread, environment.clone())
+            .begin_session_environment_adoption(thread, environment.clone(), None)
             .unwrap();
         if warm {
             host.realizer
@@ -265,7 +491,7 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
                     .unwrap()
                     .unwrap();
                 r.environment_owner
-                    .prepare_retiring_realization_adoption(&retiring, environment.clone())
+                    .prepare_retiring_realization_adoption(&retiring, environment.clone(), None)
                     .unwrap();
             });
         }
@@ -411,8 +637,11 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
         let effect = host
             .authorize_environment_effect_before_io(
                 thread,
-                awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
-                Some(&binding),
+                &host.realizer.new_environment_effect_intent(
+                    thread,
+                    awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
+                    Some(&binding),
+                ),
             )
             .await
             .unwrap();
@@ -430,7 +659,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
             let candidate = host.prepared_session_environment(thread).unwrap();
             let expected = candidate.durable_identity().cloned().unwrap();
             assert!(
-                matches!(&expected, BoundSessionEnvironmentIdentity::Durable { effect_id, .. } if effect_id == effect.intent.effect_id())
+                matches!(&expected, BoundSessionEnvironmentIdentity::Durable { effect_id, .. } if effect_id == effect.authorization.intent().effect_id())
             );
             for _ in 0..2 {
                 let error = host
@@ -471,7 +700,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
         assert!(host.installed_sessions.read_realization(thread, |r| matches!(&r.environment_owner,
             SessionEnvironmentOwner::Resident(owned) if matches!(&owned.identity,
                 BoundSessionEnvironmentIdentity::Durable { effect_id, generation }
-                    if effect_id == effect.intent.effect_id() && Some(generation) == source.generation()
+                    if effect_id == effect.authorization.intent().effect_id() && Some(generation) == source.generation()
             ) && owned.binding == binding
         )).unwrap(), "B direct/fenced paths publish the same current receipt");
         // Observe the persisted binding through the next claim; calling
@@ -503,6 +732,11 @@ async fn committed_hidden_create_candidate_is_terminally_retired_without_publica
     // D2=D1+C4=>E3. A mismatched replay is rejected by the Kani-proved closed
     // Candidate commit reducer and cannot relabel Create as Adopt.
     let thread = "committed-candidate-terminal-takeover";
+    let intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+        thread,
+        awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+        None,
+    );
     let root = tempfile::tempdir().unwrap();
     let provider = crate::session_environment::SandboxEnvironmentProvider::workdir(root.path())
         .into_session_provider();
@@ -516,7 +750,7 @@ async fn committed_hidden_create_candidate_is_terminally_retired_without_publica
         .expect("validated Host dependencies");
     let candidate = host
         .realizer
-        .begin_session_environment_preparation(thread, environment.clone())
+        .begin_session_environment_preparation(thread, environment.clone(), Some(&intent))
         .expect("C1 hidden Create Candidate");
     let identity = identity(thread);
     let committed = host
@@ -528,7 +762,7 @@ async fn committed_hidden_create_candidate_is_terminally_retired_without_publica
         UnboundSessionEnvironmentOrigin::DurableCreate(current) if current == &identity
     ));
     assert_eq!(
-        committed.effect_kind(),
+        *committed.ordinary_intent().unwrap().kind(),
         awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
         "E1"
     );
@@ -604,7 +838,24 @@ async fn candidate_revocation_and_projection_preserve_exact_commit_evidence() {
     for kind in [Create, Adopt] {
         for committed in [false, true] {
             let mut base = SessionEnvironmentOwner::Vacant;
-            let mut candidate = base.begin_preparing(owned.clone(), kind.clone()).unwrap();
+            let binding = serde_json::to_string(&owned.lifecycle().handle()).unwrap();
+            let mut intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+                "candidate-evidence",
+                kind.clone(),
+                None,
+            );
+            if kind == Adopt {
+                intent = intent.from_binding(binding.clone());
+            }
+            let adopt_intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+                "candidate-evidence",
+                Adopt,
+                None,
+            )
+            .from_binding(binding);
+            let mut candidate = base
+                .begin_preparing(owned.clone(), kind.clone(), Some(&intent))
+                .unwrap();
             let identity = identity("candidate-evidence");
             if committed {
                 candidate = base
@@ -684,7 +935,11 @@ async fn candidate_revocation_and_projection_preserve_exact_commit_evidence() {
                     }
                     assert!(
                         owner
-                            .prepare_retiring_realization_adoption(&retirement, foreign.clone())
+                            .prepare_retiring_realization_adoption(
+                                &retirement,
+                                foreign.clone(),
+                                Some(&adopt_intent)
+                            )
                             .is_err(),
                         "RA2 wrong target"
                     );
@@ -695,23 +950,34 @@ async fn candidate_revocation_and_projection_preserve_exact_commit_evidence() {
                     stale.cause = SessionEnvironmentRetirementCause::RecoveryDiscard;
                     assert!(
                         owner
-                            .prepare_retiring_realization_adoption(&stale, rebound.clone())
+                            .prepare_retiring_realization_adoption(
+                                &stale,
+                                rebound.clone(),
+                                Some(&adopt_intent)
+                            )
                             .is_err(),
                         "RA2 stale owner"
                     );
-                    let result =
-                        owner.prepare_retiring_realization_adoption(&retirement, rebound.clone());
+                    let result = owner.prepare_retiring_realization_adoption(
+                        &retirement,
+                        rebound.clone(),
+                        Some(&adopt_intent),
+                    );
                     if cause == SessionEnvironmentRetirementCause::RealizationRevocation {
                         result.expect("RA1");
                         let fresh = owner.unpublished_candidate().unwrap();
                         assert!(Arc::ptr_eq(&fresh.environment, &rebound));
                         assert_eq!(fresh.binding, candidate.binding);
-                        assert_eq!(fresh.effect_kind(), Adopt);
+                        assert_eq!(*fresh.ordinary_intent().unwrap().kind(), Adopt);
                         assert_eq!(fresh.durable_identity(), committed.then_some(&identity));
                         let fresh = fresh.clone();
                         assert!(
                             owner
-                                .prepare_retiring_realization_adoption(&retirement, rebound.clone())
+                                .prepare_retiring_realization_adoption(
+                                    &retirement,
+                                    rebound.clone(),
+                                    Some(&adopt_intent)
+                                )
                                 .is_err(),
                             "RA2 replay"
                         );
@@ -784,7 +1050,7 @@ async fn unacknowledged_candidate_adoption_requires_aggregate_authority() {
         .expect("validated Host dependencies");
     let candidate = host
         .realizer
-        .begin_session_environment_preparation(thread, environment.clone())
+        .begin_session_environment_preparation(thread, environment.clone(), None)
         .unwrap();
     let retirement = host
         .realizer
@@ -844,7 +1110,7 @@ async fn stale_unmaterialized_projection_cannot_unbind_a_candidate_or_resident()
         .expect("validated Host dependencies");
     let candidate = host
         .realizer
-        .begin_session_environment_preparation(thread, environment.clone())
+        .begin_session_environment_preparation(thread, environment.clone(), None)
         .expect("S1 Candidate");
 
     host.install_session_environment_owner_projection(

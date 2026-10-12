@@ -21,6 +21,10 @@ pub struct FrozenSessionProjection {
     pub agent_publication: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
     #[serde(default)]
     pub environment: crate::SessionEnvironmentState,
+    /// Exact root-owned original materialization facts, never a Worker cache truth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_materialization:
+        Option<Box<awaken_session_state_contract::SessionEnvironmentMaterialization>>,
     #[serde(default)]
     pub resource_revision: u64,
     pub resources: crate::ResolvedSessionResources,
@@ -103,6 +107,33 @@ pub enum FrozenResourceTransitionUse {
 }
 
 impl FrozenSessionProjection {
+    /// Read original provenance for cold observation; cleanup grants remain
+    /// separate. Domain failures are mapped at this existing realization port.
+    pub fn original_create_fence(
+        &self,
+        session_id: &str,
+    ) -> Result<awaken_provisioning_contract::SandboxEffectFence, crate::RunError> {
+        use awaken_session_state_contract::SessionEnvironmentReceiptError as Error;
+        awaken_session_state_contract::SessionEnvironmentMaterialization::original_create_fence(
+            self.environment_materialization.as_deref(),
+            session_id,
+        )
+        .map_err(|error| match error {
+            Error::MaterializationUnknown => crate::RunError::unavailable_classified(
+                "session_terminal_unmaterialized_origin_missing",
+                error.to_string(),
+            ),
+            Error::RealizationStale => crate::RunError::unavailable_classified(
+                "session_terminal_unmaterialized_origin_lease_missing",
+                error.to_string(),
+            ),
+            _ => crate::RunError::classified(
+                "session_terminal_unmaterialized_origin_incompatible",
+                error.to_string(),
+            ),
+        })
+    }
+
     #[must_use]
     pub fn session_init(&self) -> crate::SessionInit {
         crate::SessionInit {

@@ -1,5 +1,91 @@
 use super::*;
 
+#[tokio::test]
+async fn cold_unmaterialized_recovery_uses_the_saved_create_not_the_cleanup_lease() {
+    // C1 original first Create is saved by the controlled aggregate; C2 cleanup
+    // is delivered by another owner/incarnation/epoch; C3 historical omission.
+    // R1=C1+C2 => Provider receives exact original operation/fence, not C2's
+    // reconstructed Create. R2=C3+C2 => typed pending before any Provider input.
+    // The provider observation is a selected test port; these rows certify the
+    // cold input boundary, not foreign physical takeover or actual absence.
+    for known in [false, true] {
+        let thread = "cold-original-create";
+        let mut projection = remote_terminal_cleanup_projection();
+        let old_lease = awaken_session_resource_contract::SessionRealizationLease {
+            owner: "old-worker".into(),
+            runtime_incarnation: "old-boot".into(),
+            epoch: 3,
+            expires_at_unix_ms: 500,
+        };
+        let original = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+            thread,
+            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+            Some(old_lease.clone()),
+        )
+        .for_environment(projection.baseline.environment.config_fingerprint.0.clone());
+        if known {
+            let saved = fresh_terminal_fixture_before_create(thread, &mut projection, &old_lease);
+            assert_eq!(
+                saved.environment_materialization().unwrap().pending(),
+                Some(&original),
+                "R1 actual original admission"
+            );
+        }
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let probe = Arc::new(TerminalFenceRefreshProbe::default());
+        let provider = Arc::new(TerminalRecoveryProvider {
+            restored_disposals: Mutex::new(Vec::new()),
+            events: events.clone(),
+            scenario: TerminalRecoveryScenario::TotalAbsence,
+            fence_refresh_probe: Some(probe.clone()),
+        });
+        let (lease, effect) = terminal_recovery_effect(thread, "new-cleanup-worker");
+        let fence = effect.sandbox_effect_fence().unwrap();
+        let (host, _managed) = cold_host(provider, &fence).await;
+        let assignment = awaken_session_realization_contract::SessionTerminalCleanupAssignment {
+            session_id: thread.into(),
+            projection,
+            environment_creation_not_attempted: false,
+            authority: crate::installed_session::test_lease_receipt(lease),
+        };
+        host.install_test_terminal_cleanup_projection(&assignment)
+            .await
+            .unwrap();
+        let result = host
+            .prepare_terminal_cleanup_effect(
+                effect.clone(),
+                terminal_preparation_authorization(&effect, &assignment.projection),
+            )
+            .await;
+        if known {
+            result.unwrap();
+            let saved = old_lease
+                .sandbox_effect_fence(original.effect_id())
+                .unwrap();
+            assert_eq!(
+                probe.fences.lock().unwrap().as_slice(),
+                &[("original-create-input", saved)],
+                "R1 exact original identity"
+            );
+            assert_ne!(old_lease.owner, fence.owner(), "R1 changed cleanup owner");
+        } else {
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("R2 missing history became an input"),
+            };
+            assert_eq!(
+                error.code, "session_terminal_unmaterialized_origin_missing",
+                "R2 pending"
+            );
+            assert!(
+                probe.fences.lock().unwrap().is_empty(),
+                "R2 no Provider input"
+            );
+            assert!(events.lock().unwrap().is_empty(), "R2 no Provider effect");
+        }
+    }
+}
+
 async fn cold_host(
     provider: Arc<TerminalRecoveryProvider>,
     fence: &pc::SandboxEffectFence,

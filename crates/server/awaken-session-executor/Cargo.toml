@@ -107,6 +107,14 @@ test-support = [
 k8s-tests = ["awaken-sandbox-container/k8s"]
 
 [dev-dependencies]
+# Managed fixtures use the real Session Root/sink and its existing Store port.
+awaken-session-application.workspace = true
+awaken-session-repository-contract.workspace = true
+# Resource fixtures compose the same Environment catalog/Work owner as Coordinator.
+awaken-environment-application.workspace = true
+awaken-environment-execution-application.workspace = true
+awaken-executable-environment-catalog.workspace = true
+awaken-work-store = { workspace = true, features = ["test-support"] }
 awaken-coordinator-client.workspace = true
 # MCP relay tests call the relay over plain loopback HTTP.
 reqwest = { version = "0.12", default-features = false, features = ["json"] }

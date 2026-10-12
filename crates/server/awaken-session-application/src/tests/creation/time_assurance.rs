@@ -91,6 +91,10 @@ async fn application_creation_time_survives_process_crash_boundaries() {
             assert_eq!(durable.created_at_unix_ms, Some(100), "T7 creation");
             assert_eq!(durable.updated_at_unix_ms, Some(100), "T7 atomic root");
             assert!(durable.frozen_baseline().is_some(), "T7 complete root");
+            assert!(
+                durable.environment_materialization().unwrap().is_empty(),
+                "T7 fresh fact belongs to same atomic insert"
+            );
         }
         // Replay may complete later activation; it must never recreate the root
         // or replace the original creation time with the recovery clock.

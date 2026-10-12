@@ -5,11 +5,11 @@ use super::test_support::{
     ToggleBindingSink, adoption_dependencies, adoption_dependencies_at, adoption_host,
     adoption_host_at, adoption_host_over, available_local_environment_binding, claim,
     complete_managed_test_host, deferred_environment, eager_environment, empty_frozen_projection,
-    empty_frozen_projection_for_snapshot, frozen_projection_for_manifest,
-    install_complete_projection_for_snapshot, managed_test_host, prepare_deferred_session,
-    test_activation, with_empty_session_resources,
+    empty_frozen_projection_for_snapshot, frozen_projection_for_manifest, managed_test_host,
+    prepare_deferred_session, test_activation, with_empty_session_resources,
 };
 use super::*;
+use crate::host::tests::ManagedSessionRootFixture;
 use awaken_dispatch_contract as ingress;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshotId};
@@ -18,6 +18,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[path = "tests/trusted_host_admission.rs"]
 mod trusted_host_admission;
+
+#[path = "tests/resources.rs"]
+mod resources;
 
 #[tokio::test]
 async fn session_run_reservation_repair_skips_execution_realization() {
@@ -110,20 +113,36 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
     // | E1 | ephemeral | direct | child != parent, C4 | E1+E2 |
     use awaken_dispatch::WorkerResolver as _;
 
-    let host = adoption_host().await;
+    let roots = ManagedSessionRootFixture::new().await;
+    let host = roots
+        .configure(adoption_dependencies().await)
+        .build()
+        .expect("E1 Host with the selected real Root sink");
     let managed = managed_test_host(host.clone());
     let parent = awaken_agent_contract::agent::thread::Id("ephemeral-parent".into());
     let child = awaken_agent_contract::agent::thread::Id("ephemeral-child".into());
     let run = awaken_agent_contract::agent::run::Id("ephemeral-child-run".into());
     let activation = test_activation(&child.0, &run.0);
-    install_complete_projection_for_snapshot(
-        &managed,
-        &parent.0,
+    // C5 ephemeral foreground delivery does not remove Session authority:
+    // the same real SQLite Root is assigned before physical parent opening.
+    // Returned desired generation1, rather than the legacy declaration's0,
+    // supplies the child's exact Resource envelope. No new child Root or
+    // parent Runtime/plugin construction is authorized by boundary resolution.
+    let mut initial = empty_frozen_projection_for_snapshot(
         host.local_workspace(),
         eager_environment(),
         &activation.snapshot,
-    )
-    .await;
+    );
+    initial.agent_publication = Some(activation.snapshot.clone());
+    let projection = roots
+        .install_projection(&managed, &parent.0, initial)
+        .await
+        .expect("E1 actual parent Root/current lease before I/O");
+    let transition = projection
+        .resource_transition(
+            awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects,
+        )
+        .unwrap();
     let parent_ctx = host
         .ctx_for(&parent.0, None)
         .await
@@ -134,7 +153,14 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
         .enqueue(
             ingress::RunDispatch::new(activation)
                 .for_session(parent.clone())
-                .with_session_activity_epoch(7),
+                .with_session_activity_epoch(7)
+                .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
+                    awaken_tenancy::ScopeId::from(projection.workspace_id.as_str()),
+                ))
+                .with_session_resources(
+                    crate::dispatch_session_runtime::resource_envelope(transition.desired())
+                        .unwrap(),
+                ),
         )
         .await
         .expect("E1 child admission");
@@ -151,6 +177,19 @@ async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker
         .worker_for_claimed(&claimed)
         .await
         .expect("E1/E2 child boundary resolution");
+    assert!(
+        host.installed_sessions
+            .read_run(&parent.0, |state| state
+                .context
+                .as_ref()
+                .is_some_and(|context| Arc::ptr_eq(context, &parent_ctx)))
+            .unwrap(),
+        "E1/E2 boundary reuses the parent Runtime without rebuilding plugins"
+    );
+    assert!(
+        host.installed_sessions.read(&child.0, |_| ()).is_none(),
+        "E1/E2 no child Session slot or Root is constructed"
+    );
 }
 
 #[tokio::test]
@@ -160,7 +199,10 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     // Cause/effect graph: C1 foreground delivery is direct or durable; C2
     // this process is a local execution owner or coordinator-only; C3 a root
     // continuation has already been accepted into the dispatch queue; C4 the
-    // complete co-located Session projection precedes both context and claim.
+    // complete co-located Session projection precedes both context and claim;
+    // C5 the explicit fresh SQLite Root and current assignment are installed
+    // through the configured production binding sink before first Environment
+    // I/O. Direct foreground delivery does not select an Unowned grant.
     // Effects: E1 direct foreground remains non-durable; E2 a local direct
     // Session exposes and executes through its canonical claimed Worker; E3
     // durable foreground and claim resolution share the exact Worker `Arc`;
@@ -170,22 +212,26 @@ async fn claimed_root_worker_is_independent_from_foreground_delivery_durability(
     //
     // | Rule | Foreground | Local owner | Claimed root | Effect |
     // |---|---|---|---|---|
-    // | R1 | direct | yes | yes, C4 | E1+E2 |
+    // | R1 | direct | yes | yes, C4+C5 | E1+E2 |
     // | R2 | durable | yes | no | E3 |
     // | R3 | durable | no | yes | E4 |
     use awaken_dispatch::WorkerResolver as _;
 
-    let ephemeral = adoption_host().await;
+    let root_fixture = ManagedSessionRootFixture::new().await;
+    let ephemeral = root_fixture
+        .configure(adoption_dependencies().await)
+        .build()
+        .expect("R1 validated Root-backed Host dependencies");
     let ephemeral_managed = managed_test_host(ephemeral.clone());
     let session_id = "ephemeral-report-root";
-    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &ephemeral_managed,
-        session_id,
-        empty_frozen_projection(ephemeral.local_workspace(), eager_environment()),
-        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
-    )
-    .await
-    .expect("R1 install complete co-located Session projection");
+    root_fixture
+        .install_projection(
+            &ephemeral_managed,
+            session_id,
+            empty_frozen_projection(ephemeral.local_workspace(), eager_environment()),
+        )
+        .await
+        .expect("R1 install complete co-located Session projection");
     let direct = ephemeral
         .ctx_for(session_id, None)
         .await
@@ -342,7 +388,18 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
             .await
             .expect("dispatch store"),
     );
-    let host = adoption_host_over(store.clone()).await;
+    // D1 receiver stays Managed: the existing real Root owns its live lease
+    // and first Create CAS; ordinary Queue Work carries the returned Resource
+    // generation. It still supplies the only Agent/delegation publication.
+    let root_fixture = ManagedSessionRootFixture::new().await;
+    let host = root_fixture
+        .configure(
+            adoption_dependencies()
+                .await
+                .with_ephemeral_dispatch(store.clone()),
+        )
+        .build()
+        .expect("validated Root-backed Host dependencies");
     let managed = managed_test_host(host.clone());
     let resolver = HostWorkerResolver {
         host: Arc::downgrade(&host),
@@ -386,26 +443,37 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
         .expect("encode complete ordinary Runtime projection"),
     );
     let complete_activation = delegated("cold-delegation", "run-cold-delegation");
-    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &managed,
-        "cold-delegation",
-        empty_frozen_projection_for_snapshot(
-            host.local_workspace(),
-            deferred_environment(),
-            &complete_activation.snapshot,
-        ),
-        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
-    )
-    .await
-    .expect("D1 install complete cold Runtime projection");
+    let projection = root_fixture
+        .install_projection(
+            &managed,
+            "cold-delegation",
+            empty_frozen_projection_for_snapshot(
+                host.local_workspace(),
+                deferred_environment(),
+                &complete_activation.snapshot,
+            ),
+        )
+        .await
+        .expect("D1 install complete cold Runtime projection");
+    let transition = projection
+        .resource_transition(
+            awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects,
+        )
+        .expect("D1 exact Store-read initial Resource transition");
 
     store
-        .enqueue(with_empty_session_resources(
+        .enqueue(
             ingress::RunDispatch::new(complete_activation)
                 .with_agent_publications(vec![child])
-                .with_session_runtime(runtime.clone()),
-            host.local_workspace(),
-        ))
+                .with_session_runtime(runtime.clone())
+                .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
+                    awaken_tenancy::ScopeId::from(projection.workspace_id.as_str()),
+                ))
+                .with_session_resources(
+                    crate::dispatch_session_runtime::resource_envelope(transition.desired())
+                        .expect("D1 carry the Root's prepared Resource generation"),
+                ),
+        )
         .await
         .expect("enqueue D1");
     clock.set(now);
@@ -460,8 +528,11 @@ async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
 
 #[tokio::test]
 async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure() {
-    // Cause/effect graph: C0 the ordinary complete projection owns the baseline,
-    // exact empty Resource transition, and frozen model route before warmth;
+    // Cause/effect graph: C0 the explicit fresh Managed Root owns the baseline,
+    // exact initial Resource transition, current assignment, and frozen model
+    // route before warmth. Its production binding sink is configured before
+    // Host construction; the returned desired Resource revision is carried by
+    // the real Queue instead of assuming the pre-Create fixture's revision 0;
     // C1 an unclaimed warm context exists; C2 a claim
     // carries the same root but a different unversioned child publication;
     // C3 run/owner/lease epoch change while the publication closure and
@@ -471,8 +542,8 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
     // publications and effective fallback model captured by Runtime plugins;
     // E3 C3 reuses that Runtime; E4 C4 rebuilds it. Constraints: claim and
     // lease identity remain attempt context, while publication/model inputs
-    // are Runtime construction inputs. Rules K1=C1+C2=>E1+E2,
-    // K2=C3=>E3, K3=C4=>E4.
+    // are Runtime construction inputs. Rules K1=C0+C1+C2=>E1+E2,
+    // K2=C0+C3=>E3, K3=C0+C4=>E4.
     use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
 
     let child_v1 = awaken_runtime_contract::ExecutableAgentSnapshot::builder("researcher")
@@ -514,26 +585,42 @@ async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure()
             .await
             .expect("dispatch store"),
     );
-    let host = (adoption_dependencies()
-        .await
-        .with_ephemeral_dispatch(store.clone())
-        .with_agent_publications(Arc::new(catalog)))
-    .build()
-    .expect("validated Host dependencies");
+    let root_fixture = ManagedSessionRootFixture::new().await;
+    let host = root_fixture
+        .configure(
+            adoption_dependencies()
+                .await
+                .with_ephemeral_dispatch(store.clone())
+                .with_agent_publications(Arc::new(catalog)),
+        )
+        .build()
+        .expect("validated Root-backed Host dependencies");
     let managed = managed_test_host(host.clone());
-    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &managed,
-        "claimed-cache",
-        empty_frozen_projection_for_snapshot(host.local_workspace(), deferred_environment(), &root),
-        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
-    )
-    .await
-    .expect("K1 install complete warm projection");
+    let mut projection =
+        empty_frozen_projection_for_snapshot(host.local_workspace(), deferred_environment(), &root);
+    projection.agent_publication = Some(root.clone());
+    let projection = root_fixture
+        .install_projection(&managed, "claimed-cache", projection)
+        .await
+        .expect("K1 install complete warm projection");
     let warm = host
         .ctx_for_snapshot("claimed-cache", Some("agent-a"), Some(root))
         .await
         .expect("K1 warm unclaimed context");
-    let request = ingress::RunDispatch::new(activation).with_agent_publications(vec![child_v2]);
+    let transition = projection
+        .resource_transition(
+            awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects,
+        )
+        .expect("K1 exact Store-read initial Resource transition");
+    let request = ingress::RunDispatch::new(activation)
+        .with_agent_publications(vec![child_v2])
+        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
+            awaken_tenancy::ScopeId::from(projection.workspace_id.as_str()),
+        ))
+        .with_session_resources(
+            crate::dispatch_session_runtime::resource_envelope(transition.desired())
+                .expect("K1 carry the exact Root's prepared Resource generation"),
+        );
     store.enqueue(request).await.expect("enqueue K1");
     let now = awaken_time::system_clock().now().as_epoch_ms();
     clock.set(now);
@@ -883,33 +970,45 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
     );
     let thread = "cold-stdio-recovery";
     let realizer = Arc::new(RecordingMcpRealizer::default());
-    let host = (adoption_dependencies()
-        .await
-        .with_ephemeral_dispatch(store.clone())
-        .with_session_execution(
-            crate::SessionExecutionDependencies::default()
-                .with_mcp_attachment_realizer(realizer.clone()),
-        ))
-    .build()
-    .unwrap();
+    // S1 receiver obtains real Root/lease/first CAS without storing an Agent
+    // publication. The claim remains the exact backend/stdio snapshot source;
+    // the Queue receives the actual prepared Resource generation before claim.
+    let root_fixture = ManagedSessionRootFixture::new().await;
+    let host = root_fixture
+        .configure(
+            adoption_dependencies()
+                .await
+                .with_ephemeral_dispatch(store.clone())
+                .with_session_execution(
+                    crate::SessionExecutionDependencies::default()
+                        .with_mcp_attachment_realizer(realizer.clone()),
+                ),
+        )
+        .build()
+        .unwrap();
     realizer
         .required_physical_environment
         .set((Arc::downgrade(&host), thread.into()))
         .unwrap();
     let managed = complete_managed_test_host(crate::ManagedHost::new(host.clone()));
     let activation = test_activation(thread, "run-cold-stdio-recovery");
-    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &managed,
-        thread,
-        empty_frozen_projection_for_snapshot(
-            host.local_workspace(),
-            deferred_environment(),
-            &activation.snapshot,
-        ),
-        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
-    )
-    .await
-    .expect("S1 install complete cold Runtime coordinates");
+    let projection = root_fixture
+        .install_projection(
+            &managed,
+            thread,
+            empty_frozen_projection_for_snapshot(
+                host.local_workspace(),
+                deferred_environment(),
+                &activation.snapshot,
+            ),
+        )
+        .await
+        .expect("S1 install complete cold Runtime coordinates");
+    let transition = projection
+        .resource_transition(
+            awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects,
+        )
+        .expect("S1 exact Store-read initial Resource transition");
     let stage = awaken_session_mcp_contract::StageMcpAttachment {
         workspace_id: host.local_workspace().into(),
         generation: crate::test_mcp::mcp_fence(thread, "browser", 1, "worker-a", 1, u64::MAX),
@@ -935,10 +1034,17 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
         .expect("runtime envelope"),
     );
     store
-        .enqueue(with_empty_session_resources(
-            ingress::RunDispatch::new(activation).with_session_runtime(runtime),
-            host.local_workspace(),
-        ))
+        .enqueue(
+            ingress::RunDispatch::new(activation)
+                .with_session_runtime(runtime)
+                .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
+                    awaken_tenancy::ScopeId::from(projection.workspace_id.as_str()),
+                ))
+                .with_session_resources(
+                    crate::dispatch_session_runtime::resource_envelope(transition.desired())
+                        .expect("S1 carry the Root's prepared Resource generation"),
+                ),
+        )
         .await
         .expect("enqueue");
     let claimed = store
@@ -1529,208 +1635,6 @@ async fn malformed_resource_manifest_is_rejected_before_sandbox_creation() {
 }
 
 #[tokio::test]
-#[cfg_attr(
-    not(target_os = "linux"),
-    ignore = "requires Linux mount-namespace path fidelity"
-)]
-async fn live_file_replacement_requires_the_exact_resource_transition() {
-    let storage = tempfile::tempdir().expect("storage");
-    let mut raw_host = adoption_dependencies_at(storage.path()).await;
-    // Cause/effect decision table. Causes: C1 the Session is physically empty;
-    // C2 the complete Dispatch projection supplies the exact Empty->desired
-    // transition; C3 a following desired-only manifest is exact/different; C4
-    // the aggregate supplies the exact previous->desired transition; C5 an
-    // Environment is resident. Effects: E1 the canonical projection stages
-    // cold requirements and exact desired-only replay does not publish an
-    // active manifest; E2 physical create publishes generation 0; E3 a
-    // desired-only replacement fails with no logical/physical change; E4 the
-    // exact transition removes the File, clears every logical Runtime
-    // projection, performs no target activation, and only then publishes
-    // generation 2.
-    //
-    // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
-    // | F1 | T | yes | exact | n/a | F | E1 |
-    // | F2 | T | yes | exact | yes | T | E2 |
-    // | F3 | F | n/a | different | no | T | E3 |
-    // | F4 | F | n/a | n/a | yes | T | E4: physical + logical revocation |
-    // Workdir remains correctly ineligible for F1's immutability requirement.
-    raw_host.env.session_provider =
-        crate::session_environment::SandboxEnvironmentProvider::namespace_with_agent_stderr(
-            storage.path().join("sandboxes"),
-            false,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
-            "/bin/sh",
-            std::time::Duration::ZERO,
-        )
-        .into_session_provider();
-    let host = (raw_host).build().unwrap();
-    let managed = managed_test_host(host.clone());
-    let bytes = b"frozen worker input".to_vec();
-    let file_id = host
-        .file_application()
-        .expect("test startup installs File application")
-        .create_uploaded_file(
-            "workspace-a",
-            "input.bin".into(),
-            "application/octet-stream".into(),
-            &bytes,
-        )
-        .await
-        .expect("create file")
-        .id;
-    let manifest = awaken_session_resource_contract::SessionResourceManifest::new(
-        "workspace-a",
-        awaken_session_resource_contract::ResolvedSessionResources::try_new(
-            vec![awaken_session_resource_contract::ResolvedInput {
-                created_at_unix_ms: None,
-                updated_at_unix_ms: None,
-                binding_id: awaken_resource_contract::BindingId::new("file-binding"),
-                source: awaken_session_resource_contract::ResolvedInputSource::File {
-                    file_id: awaken_resource_contract::FileId::from(file_id.as_str()),
-                },
-                mount_path: "/uploads/input.bin".to_string(),
-                access: awaken_resource_contract::ResourceAccess::ReadOnly,
-                instructions: None,
-            }],
-            Vec::new(),
-        )
-        .unwrap(),
-    );
-
-    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &managed,
-        "thread-cold-resource",
-        frozen_projection_for_manifest(
-            ordinary_frozen_projection().baseline.environment,
-            &manifest,
-        ),
-        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
-    )
-    .await
-    .expect("F1 install the complete projection and proven Empty->desired transition");
-    host.install_dispatched_resources("thread-cold-resource", &manifest, None)
-        .await
-        .expect("F1 revalidate the exact desired manifest without republishing");
-    assert!(
-        active_manifest(&host, "thread-cold-resource").is_none(),
-        "F1 desired-only staging is not completion evidence"
-    );
-    let activation = test_activation("thread-cold-resource", "run-cold-resource");
-    host.ctx_for_snapshot(
-        "thread-cold-resource",
-        Some("agent-a"),
-        Some(activation.snapshot),
-    )
-    .await
-    .expect("open environment after resource install");
-
-    let mount = host
-        .realizer
-        .sandbox_spec("thread-cold-resource")
-        .mounts
-        .into_iter()
-        .find(|mount| mount.mount_id == file_id)
-        .expect("frozen File mount");
-    assert_eq!(mount.mount_path, "/mnt/session/uploads/uploads/input.bin");
-    assert_eq!(
-        mount.access,
-        awaken_provisioning_contract::MountAccess::ReadOnly
-    );
-    let awaken_provisioning_contract::MountSource::InlineBytes { contents, .. } = mount.source
-    else {
-        panic!("frozen File uses the binary-safe carried source")
-    };
-    assert_eq!(contents, bytes);
-    assert_eq!(
-        active_manifest(&host, "thread-cold-resource"),
-        Some(manifest.clone())
-    );
-
-    let cleared = awaken_session_resource_contract::SessionResourceManifest::at_revision(
-        "workspace-a",
-        2,
-        awaken_session_resource_contract::ResolvedSessionResources::default(),
-    );
-    let error = host
-        .install_dispatched_resources("thread-cold-resource", &cleared, None)
-        .await
-        .expect_err("F3 desired-only replacement must fail closed");
-    assert_eq!(error.code, "session_resource_transition_conflict", "F3");
-    assert_eq!(
-        active_manifest(&host, "thread-cold-resource"),
-        Some(manifest.clone()),
-        "F3 retains the active manifest"
-    );
-    assert!(
-        !host
-            .realizer
-            .session_environment("thread-cold-resource")
-            .await
-            .expect("F3 resident environment")
-            .harvest()
-            .list_frozen_mount_files("/mnt/session/uploads")
-            .await
-            .expect("F3 list live files")
-            .is_empty(),
-        "F3 does not remove the live File"
-    );
-
-    let transition = awaken_session_resource_contract::SessionResourceTransition::new(
-        manifest.clone(),
-        cleared.clone(),
-    )
-    .expect("F4 exact aggregate transition");
-    host.apply_dispatched_resource_transition("thread-cold-resource", &transition, None, None)
-        .await
-        .expect("F4 exact live replacement");
-    assert!(
-        host.realizer
-            .session_environment("thread-cold-resource")
-            .await
-            .expect("resident environment")
-            .harvest()
-            .list_frozen_mount_files("/mnt/session/uploads")
-            .await
-            .expect("list live files")
-            .is_empty(),
-        "F4 removes the stale physical projection"
-    );
-    assert!(
-        host.realizer
-            .sandbox_spec("thread-cold-resource")
-            .mounts
-            .is_empty(),
-        "F4 publishes the empty staged projection"
-    );
-    assert_eq!(
-        active_manifest(&host, "thread-cold-resource"),
-        Some(cleared),
-        "F4 publishes generation 2 only after realization"
-    );
-    let empty_projection = host
-        .installed_sessions
-        .read("thread-cold-resource", |slot| {
-            (
-                slot.realization.resources.mounts.is_empty(),
-                slot.realization.resources.prompts.is_empty(),
-                slot.realization.resources.resource_prompts.is_empty(),
-                slot.realization.resources.binding_checks.is_empty(),
-                slot.realization.resources.repositories.is_empty(),
-                slot.realization.memory_bindings.is_empty(),
-                slot.realization.memory.is_none(),
-                slot.realization.skills.as_ref().is_some_and(Vec::is_empty),
-                slot.run.context.is_none(),
-            )
-        })
-        .expect("F4 canonical Session slot");
-    assert_eq!(
-        empty_projection,
-        (true, true, true, true, true, true, true, true, true),
-        "F4 explicit empty is a complete Runtime revocation, not absent input"
-    );
-}
-
-#[tokio::test]
 async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
     // Producer/consumer cause/effect table: C1 the complete-projection producer
     // has installed an exact rev1→rev1 or rev1→rev2 transition; C2 active is
@@ -1866,124 +1770,6 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         }),
         Some(before_mismatch),
         "R3/E2 rejects without mutating correlated Resource state"
-    );
-}
-
-/// Desired-only versus exact-transition cause/effect decision table.
-/// Causes: C0 a complete Dispatch projection supplies the initial exact
-/// Empty->desired transition; C1 an active process-local generation exists; C2
-/// desired-only input is exact/different; C3 the aggregate supplies exact
-/// previous+desired.
-/// Effects: E1 exact input revalidates cold requirements without republishing;
-/// E2 every desired-only change rejects and retains the active generation; E3
-/// exact transition advances physical/logical state. Rules:
-/// R0=C0+!C1+exact=>E1; R1=C1+exact=>E1; R2=C1+different+!C3=>E2;
-/// R3=C1+different+C3=>E3. Revision ordering and Workspace alone never
-/// substitute for the aggregate transition.
-#[tokio::test]
-async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
-    let host = adoption_host().await;
-    let managed = managed_test_host(host.clone());
-    let claim = ingress::RunClaim {
-        run_id: RunId("run-generation-fence".into()),
-        owner: "worker-generation-fence".into(),
-        epoch: 1,
-    };
-    let revision_four = awaken_session_resource_contract::SessionResourceManifest::at_revision(
-        "workspace-a",
-        4,
-        awaken_session_resource_contract::ResolvedSessionResources::default(),
-    );
-    awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-        &managed,
-        "thread-generation-fence",
-        frozen_projection_for_manifest(
-            ordinary_frozen_projection().baseline.environment,
-            &revision_four,
-        ),
-        awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
-    )
-    .await
-    .expect("install the complete initial projection and exact transition");
-    host.install_dispatched_resources("thread-generation-fence", &revision_four, None)
-        .await
-        .expect("revalidate the exact desired manifest without republishing");
-    host.ctx_for_snapshot(
-        "thread-generation-fence",
-        Some("agent-a"),
-        Some(test_activation("thread-generation-fence", "open-generation-fence").snapshot),
-    )
-    .await
-    .expect("physically publish initial generation");
-
-    host.install_dispatched_resources("thread-generation-fence", &revision_four, Some(&claim))
-        .await
-        .expect("R1 exact replay revalidation");
-
-    for rejected in [
-        awaken_session_resource_contract::SessionResourceManifest::at_revision(
-            "workspace-a",
-            3,
-            awaken_session_resource_contract::ResolvedSessionResources::default(),
-        ),
-        awaken_session_resource_contract::SessionResourceManifest::at_revision(
-            "workspace-a",
-            4,
-            awaken_session_resource_contract::ResolvedSessionResources::try_new(
-                Vec::new(),
-                vec![awaken_session_resource_contract::ResolvedSkillBinding {
-                    kind: awaken_agent_contract::AgentSkillKind::Custom,
-                    skill_id: "different-same-generation".into(),
-                    version: 1,
-                    bundle_sha256: "sha256-different".into(),
-                }],
-            )
-            .unwrap(),
-        ),
-        awaken_session_resource_contract::SessionResourceManifest::at_revision(
-            "workspace-b",
-            5,
-            awaken_session_resource_contract::ResolvedSessionResources::default(),
-        ),
-    ] {
-        let result = host
-            .install_dispatched_resources("thread-generation-fence", &rejected, Some(&claim))
-            .await;
-        assert!(
-            result.is_err(),
-            "R2 rejects desired-only replacement: {rejected:?}"
-        );
-        assert_eq!(
-            active_manifest(&host, "thread-generation-fence"),
-            Some(revision_four.clone())
-        );
-    }
-
-    let revision_five = awaken_session_resource_contract::SessionResourceManifest::at_revision(
-        "workspace-a",
-        5,
-        awaken_session_resource_contract::ResolvedSessionResources::default(),
-    );
-    host.install_dispatched_resources("thread-generation-fence", &revision_five, Some(&claim))
-        .await
-        .expect_err("R2 newer desired-only generation still lacks previous");
-    let transition = awaken_session_resource_contract::SessionResourceTransition::new(
-        revision_four,
-        revision_five.clone(),
-    )
-    .expect("R3 exact transition");
-    host.apply_dispatched_resource_transition(
-        "thread-generation-fence",
-        &transition,
-        Some(&claim),
-        None,
-    )
-    .await
-    .expect("R3 exact transition advances generation");
-    assert_eq!(
-        active_manifest(&host, "thread-generation-fence"),
-        Some(revision_five),
-        "R3 publishes only after exact physical transition"
     );
 }
 
@@ -2362,26 +2148,42 @@ async fn recovery_mode_controls_the_production_adoption_seam() {
     // Adoption cause/effect decision table:
     // | rule | provider observation | recovery policy | resident | effect |
     // | A1 | Ready exact handle | continuity | absent | adopt exact binding |
-    // | A2 | definitively unavailable | rebuild | absent | RebuildRequired |
+    // | A2 | definitively unavailable | rebuild | absent | classify RebuildRequired; actual target pending without accepted closure/access |
     // | A3 | definitively unavailable | continuity | absent | fail, zero mutation |
     // The dead-resident companion test covers A2 with a resident Arc: only the
     // exact observed Arc is discarded before rebuild is projected. Parameter
     // aggregation must preserve these existing typed observations and effects.
+    // C4 the producer and consumer configure one real Root before Host build;
+    // replay reads its original Create/lease/binding rather than seeding a new
+    // scope or copying a binding into a fresh Unmaterialized projection.
     let storage = tempfile::tempdir().expect("storage");
     let thread = "thread-adoption";
-    let first = adoption_host_at(storage.path()).await;
+    let roots = ManagedSessionRootFixture::new().await;
+    let first = roots
+        .configure(adoption_dependencies_at(storage.path()).await)
+        .build()
+        .unwrap();
+    let first_managed = managed_test_host(first.clone());
     let projection = empty_frozen_projection(first.local_workspace(), eager_environment());
-    let encoded = available_local_environment_binding(&first, thread, &projection).await;
+    let installed = roots
+        .install_projection(&first_managed, thread, projection.clone())
+        .await
+        .unwrap();
+    let encoded = available_local_environment_binding(&first, thread, &installed).await;
     let handle: awaken_provisioning_contract::SandboxHandle =
         serde_json::from_str(&encoded).expect("A1 exact ready handle");
+    drop(first_managed);
     drop(first);
 
-    let replacement = adoption_host_at(storage.path()).await;
-    let _replacement_managed = managed_test_host(replacement.clone());
-    replacement
-        .install_frozen_session_projection(thread, projection, None, true, None)
+    let replacement = roots
+        .configure(adoption_dependencies_at(storage.path()).await)
+        .build()
+        .unwrap();
+    let replacement_managed = managed_test_host(replacement.clone());
+    roots
+        .install_projection(&replacement_managed, thread, projection)
         .await
-        .expect("A1 install exact consumer projection");
+        .expect("A1 replay the same Root and its original consumer identity");
     let run_id = RunId("run-adoption".into());
     let adopted = adopt_bound_sandbox(
         &replacement,
@@ -2406,30 +2208,112 @@ async fn recovery_mode_controls_the_production_adoption_seam() {
     );
 
     let missing_thread = "thread-missing";
-    let missing_projection = super::test_support::empty_frozen_projection(
+    let missing_initial = super::test_support::empty_frozen_projection(
         replacement.local_workspace(),
         super::test_support::eager_environment(),
     );
+    let missing_projection = roots
+        .install_projection(
+            &replacement_managed,
+            missing_thread,
+            missing_initial.clone(),
+        )
+        .await
+        .expect("A2 install the independent missing-row Root before original creation");
     let missing = super::test_support::unavailable_local_environment_binding(
         &replacement,
         missing_thread,
         &missing_projection,
     )
     .await;
-    let adopted = adopt_bound_sandbox(
-        &replacement,
-        Some(&missing),
-        missing_thread,
-        &run_id,
-        &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-        ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
-    )
-    .await
-    .expect("rebuild mode may replace a missing sandbox from committed truth");
+    // The Create helper committed original Root identity after installation.
+    // Replay that same initial declaration to install Store-read Resident and
+    // materialization; the old pre-Create projection is not recovery authority.
+    let current_missing = roots
+        .install_projection(&replacement_managed, missing_thread, missing_initial)
+        .await
+        .expect("A2 install original Root readback after physical loss");
     assert_eq!(
-        adopted,
-        crate::host::session::SessionEnvironmentAdoptionDisposition::RebuildRequired
+        current_missing.environment.binding(),
+        Some(missing.as_str()),
+        "A2 actual original source binding"
     );
+    let source_generation_id = current_missing.environment.generation().map(|g| g.id());
+    let refusal = replacement
+        .adopt_bound_session_environment(
+            missing_thread,
+            Some(&missing),
+            &replacement.realizer.env.session_provider,
+            source_generation_id,
+            true,
+        )
+        .await
+        .expect_err("A2 missing UID cannot substitute for original source closure/access");
+    assert_eq!(
+        refusal.kind,
+        crate::HostErrorKind::Unavailable,
+        "A2 retryable source wait"
+    );
+    assert_eq!(
+        refusal.code, "session_environment_materialization_pending",
+        "A2 canonical Root fence before source consumption"
+    );
+    assert_eq!(
+        refusal.message,
+        "Session materialization remains pending its exact original effect and source closure",
+        "A2 exact original-source refusal"
+    );
+    // The original Root guard runs before consuming a protected source owner.
+    // It therefore refuses recovery classification as well as a target effect
+    // until closure/access is accepted. Ordinary context opening separately
+    // requires prior adoption; its existing missing-binding precondition must
+    // reject before another effect, rather than bypassing the Root refusal.
+    let error = match replacement.ctx_for(missing_thread, None).await {
+        Ok(_) => panic!("A2 unknown source evidence cannot authorize target materialization"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.kind,
+        crate::HostErrorKind::Internal,
+        "A2 context requires the original binding to be adopted"
+    );
+    assert_eq!(error.code, "internal", "A2 existing context precondition");
+    assert_eq!(
+        error.message,
+        format!(
+            "Session {missing_thread} durable Environment was not adopted before context construction"
+        ),
+        "A2 no alternate construction path"
+    );
+    assert!(
+        replacement
+            .session_environment_handle(missing_thread)
+            .await
+            .is_none(),
+        "A2 zero replacement publication"
+    );
+    assert!(
+        !replacement
+            .storage_dir()
+            .unwrap()
+            .join("sandboxes")
+            .join(missing_thread)
+            .exists(),
+        "A2 zero target physical creation"
+    );
+    let after = roots
+        .read_projection(missing_thread, &current_missing)
+        .await
+        .unwrap();
+    assert_eq!(
+        after.environment, current_missing.environment,
+        "A2 original source binding/effect/generation retained"
+    );
+    assert_eq!(
+        after.environment_materialization, current_missing.environment_materialization,
+        "A2 original Create intent/history retained"
+    );
+
     assert!(
         adopt_bound_sandbox(
             &replacement,
@@ -2455,6 +2339,9 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
     // Decision table: A1 C1+C3(configured)=>E1 (covered by
     // recovery_mode_controls...); A2 C2+C3(trusted)=>E2; A3 either model
     // with its selected root absent=>E3 (covered by that test's missing row).
+    // C4 both Hosts share one configured actual Root/assignment; the source
+    // handle is created and committed under that original authority. Provider
+    // selection remains independent from Runtime/ACP adapter construction.
     let storage = tempfile::tempdir().expect("storage");
     let trusted_root = storage.path().join("trusted-local-sandboxes");
     let thread = "thread-backend-owned-adoption";
@@ -2474,21 +2361,28 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
     let mut activation = test_activation(thread, "fixture-backend-owned-adoption");
     activation.snapshot.resolved_spec.model_binding = candidate;
 
+    let roots = ManagedSessionRootFixture::new().await;
     let mut first = adoption_dependencies_at(storage.path()).await;
     first.env.backend_owned_session_provider = Some(
         crate::session_environment::SandboxEnvironmentProvider::workdir(&trusted_root)
             .into_session_provider(),
     );
-    let first = (first).build().unwrap();
+    let first = roots.configure(first).build().unwrap();
+    let first_managed = managed_test_host(first.clone());
 
     let projection = empty_frozen_projection_for_snapshot(
         first.local_workspace(),
         eager_environment(),
         &activation.snapshot,
     );
-    let encoded = available_local_environment_binding(&first, thread, &projection).await;
+    let installed = roots
+        .install_projection(&first_managed, thread, projection.clone())
+        .await
+        .unwrap();
+    let encoded = available_local_environment_binding(&first, thread, &installed).await;
     let handle: awaken_provisioning_contract::SandboxHandle =
         serde_json::from_str(&encoded).expect("A2 exact ready handle");
+    drop(first_managed);
     drop(first);
     assert!(
         trusted_root.join(thread).exists(),
@@ -2504,13 +2398,13 @@ async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
         crate::session_environment::SandboxEnvironmentProvider::workdir(&trusted_root)
             .into_session_provider(),
     );
-    let replacement = (replacement).build().unwrap();
+    let replacement = roots.configure(replacement).build().unwrap();
 
-    let _replacement_managed = managed_test_host(replacement.clone());
-    replacement
-        .install_frozen_session_projection(thread, projection, None, true, None)
+    let replacement_managed = managed_test_host(replacement.clone());
+    roots
+        .install_projection(&replacement_managed, thread, projection)
         .await
-        .expect("A2 install exact consumer projection");
+        .expect("A2 replay the original Root under the same provider selection");
     let adopted = adopt_bound_sandbox(
         &replacement,
         Some(&encoded),
@@ -2685,11 +2579,28 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
     // owner A; C2 spec-aware re-adoption yields owner B with the same handle;
     // C3 stale discard still names A. E1 exact Arc identity fences C3 and B
     // remains Resident. A legacy V1 fixture cannot prove C2 and is excluded.
+    // C0 an explicit same-Actor Root admits and commits the source Create
+    // before either adoption; no test fence supplies its original identity.
+    // C4 existing Resident + exact binding/handle retains Durable identity
+    // while the canonical test setter replaces only its Arc. A fresh empty
+    // slot has no original identity and remains the setter's legacy row.
+    // Rule C0+C1+C2+C4=>same Root identity; C3 cannot discard replacement B.
     let storage = tempfile::tempdir().expect("storage");
     let thread = "thread-environment-aba";
-    let host = adoption_host_at(storage.path()).await;
-    let _managed = managed_test_host(host.clone());
-    let projection = empty_frozen_projection(host.local_workspace(), eager_environment());
+    let roots = ManagedSessionRootFixture::new().await;
+    let host = roots
+        .configure(adoption_dependencies_at(storage.path()).await)
+        .build()
+        .unwrap();
+    let managed = managed_test_host(host.clone());
+    let projection = roots
+        .install_projection(
+            &managed,
+            thread,
+            empty_frozen_projection(host.local_workspace(), eager_environment()),
+        )
+        .await
+        .unwrap();
     let binding = available_local_environment_binding(&host, thread, &projection).await;
     adopt_bound_sandbox(
         &host,
@@ -2732,7 +2643,35 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
     );
     assert!(!Arc::ptr_eq(&observed, &replacement));
 
+    let original_identity = host
+        .installed_sessions
+        .read_realization(thread, |r| match &r.environment_owner {
+            crate::environment_owner::SessionEnvironmentOwner::Resident(bound) => {
+                bound.identity.clone()
+            }
+            _ => panic!("C1 exact original Resident owner"),
+        })
+        .expect("C1 original Root identity");
+    assert!(
+        matches!(
+            original_identity,
+            crate::environment_owner::BoundSessionEnvironmentIdentity::Durable { .. }
+        ),
+        "C0 original Root supplied Durable identity"
+    );
     host.install_test_resident_session_environment(thread, replacement.clone());
+    assert_eq!(
+        host.installed_sessions.read_realization(thread, |r| {
+            match &r.environment_owner {
+                crate::environment_owner::SessionEnvironmentOwner::Resident(bound) => {
+                    bound.identity.clone()
+                }
+                _ => panic!("C4 replacement remains Resident"),
+            }
+        }),
+        Some(original_identity),
+        "C4 same-handle Arc replacement preserves original Root identity"
+    );
 
     assert!(
         !host.discard_session_environment(thread, &observed).await,

@@ -21,6 +21,7 @@ impl FrozenProjectionReceipt {
             &(
                 &p.workspace_id,
                 &p.environment,
+                &p.environment_materialization,
                 p.resource_revision,
                 &p.tools,
                 &p.mcp,

@@ -19,19 +19,26 @@ fn memory_test_snapshot(agent: &str) -> awaken_runtime_contract::ExecutableAgent
     .expect("literal model reference")
 }
 
-async fn memory_test_host(model: Arc<dyn LlmExecutor>, agent: &str) -> Arc<SharedHost> {
+async fn memory_test_host(
+    model: Arc<dyn LlmExecutor>,
+    agent: &str,
+) -> (Arc<SharedHost>, ManagedSessionRootFixture) {
+    let roots = ManagedSessionRootFixture::new().await;
     let publications =
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([memory_test_snapshot(
             agent,
         )])
         .expect("valid Memory Agent publication");
-    (crate::host::with_test_resource_validation(with_test_memory_mounter(
+    let dependencies = crate::host::with_test_resource_validation(with_test_memory_mounter(
         crate::HostDependencies::ephemeral(model, "stub")
             .await
             .with_agent_publications(Arc::new(publications)),
-    )))
-    .build()
-    .expect("validated Host dependencies")
+    ));
+    let host = roots
+        .configure(dependencies)
+        .build()
+        .expect("validated Host dependencies");
+    (host, roots)
 }
 
 /// Install one complete Memory-enabled Session through the immutable Agent and
@@ -43,6 +50,7 @@ async fn memory_test_host(model: Arc<dyn LlmExecutor>, agent: &str) -> Arc<Share
 /// dispatch before any process-local Runtime slot derives a cached copy.
 async fn install_complete_memory_test_session(
     managed: &crate::ManagedHost,
+    roots: &ManagedSessionRootFixture,
     thread: &str,
     agent: &str,
     store: &str,
@@ -58,13 +66,15 @@ async fn install_complete_memory_test_session(
     }]);
     let mut init = bare_session(agent, managed.host.local_workspace());
     init.resources = resources.clone();
-    let manifest = awaken_session_resource_contract::SessionResourceManifest::new(
+    let projection = roots
+        .install_complete_test_session(managed, thread, init)
+        .await
+        .expect("real Root before Memory fixture projection");
+    let manifest = awaken_session_resource_contract::SessionResourceManifest::at_revision(
         managed.host.local_workspace(),
+        projection.resource_revision,
         resources.clone(),
     );
-    install_complete_test_session(managed, thread, init)
-        .await
-        .expect("install complete Memory Session projection");
     awaken_session_execution_contract::EnvironmentRuntime::apply_session_inputs(
         managed,
         thread,
@@ -72,7 +82,7 @@ async fn install_complete_memory_test_session(
             managed.host.local_workspace(),
             0,
             Default::default(),
-            0,
+            projection.resource_revision,
             resources,
         ),
     )
@@ -290,25 +300,35 @@ async fn published_compact_plugin_is_installed_from_the_immutable_agent() {
     let publications =
         awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot.clone()])
             .expect("one immutable published Agent");
+    let roots = ManagedSessionRootFixture::new().await;
     let (host, managed) = dispatch_test_host(
-        (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-            .await
-            .with_agent_publications(Arc::new(publications)))
-        .build()
-        .expect("validated Host dependencies"),
+        roots
+            .configure(
+                crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+                    .await
+                    .with_agent_publications(Arc::new(publications)),
+            )
+            .build()
+            .expect("validated Host dependencies"),
     );
     install_test_session_application(&host);
-    crate::host::worker_resolver::test_support::install_complete_projection_for_snapshot(
-        &managed,
-        "published-compact-thread",
-        host.local_workspace(),
-        session_environment(
-            awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
-            serde_json::json!({}),
-        ),
-        &snapshot,
-    )
-    .await;
+    // F4 the exact publication remains input authority; one real Root and
+    // assignment precede Run effects, without a mock authorization or ambient
+    // plugin override. The same existing snapshot compiler supplies the pin.
+    let mut projection =
+        crate::host::worker_resolver::test_support::empty_frozen_projection_for_snapshot(
+            host.local_workspace(),
+            session_environment(
+                awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
+                serde_json::json!({}),
+            ),
+            &snapshot,
+        );
+    projection.agent_publication = Some(snapshot.clone());
+    roots
+        .install_projection(&managed, "published-compact-thread", projection)
+        .await
+        .unwrap();
 
     let outcome = run_prepared_session_messages(
         &managed,
@@ -392,16 +412,56 @@ impl LlmExecutor for MemLoopModel {
 
 #[tokio::test]
 async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
+    use awaken_session_repository_contract::SessionRepository as _;
     // Test design. Causes: C1 Thread A extracts a durable memory into a shared
     // store; C2 fresh Thread B binds that store and runs. Effects: E1 C1 persists
     // the preference; E2 C2 recalls and uses it. Constraint/Invariant: transfer is
     // only through the Memory store, never copied Thread transcript. Decision rule:
     // write on A, drain extraction, then require recall-derived output on B.
-    let host = memory_test_host(Arc::new(MemLoopModel), "memory-agent").await;
+    // Root fixture causes: R1 one Store/Persistence is selected before Host;
+    // R2 both fresh roots exist/are exactly assigned before projection/I/O;
+    // R3 A's original Create has committed; R4 exact/changed fixture replay.
+    // | Rule | Root inputs | Saved origin | Effect |
+    // |---|---|---|---|
+    // | F1 | new A and B, same selected Store | present-empty | distinct roots, exact leases, no effects yet |
+    // | F2 | exact A replay | admitted A | same entire durable Root; no reset/reassignment |
+    // | F3 | changed A Resource input | admitted A | Store rejects occupied identity; no Replace/new origin |
+    // The production binding sink performs its real admission/binding CAS.
+    // This checks that selecting B never swaps A's Store, and a fixture cannot
+    // backfill history on read or pretend a Resource update is fresh creation.
+    let (host, roots) = memory_test_host(Arc::new(MemLoopModel), "memory-agent").await;
     let managed = managed_with_resource_source(host.clone());
     let store = test_memory_store_id();
-    install_complete_memory_test_session(&managed, "thread-1", "memory-agent", &store).await;
-    install_complete_memory_test_session(&managed, "thread-2", "memory-agent", &store).await;
+    install_complete_memory_test_session(&managed, &roots, "thread-1", "memory-agent", &store)
+        .await;
+    install_complete_memory_test_session(&managed, &roots, "thread-2", "memory-agent", &store)
+        .await;
+    for thread in ["thread-1", "thread-2"] {
+        let root = roots
+            .repository
+            .get(&awaken_session_types::SessionId::from(thread))
+            .await
+            .unwrap();
+        assert!(
+            root.environment_materialization().unwrap().is_empty(),
+            "F1 before provider I/O"
+        );
+        assert_eq!(
+            root.realization.as_ref().unwrap().runtime_incarnation,
+            roots.incarnation,
+            "F1 selected owner"
+        );
+        assert_eq!(
+            roots.repository.owner(&root.session_id).await.unwrap(),
+            host.local_workspace(),
+            "F1 actual Scope"
+        );
+        assert_eq!(
+            root.resources.desired_generation().0,
+            1,
+            "F1 canonical prepare revision"
+        );
+    }
     let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, t)];
 
     // Thread 1: the user states a preference; extraction saves it.
@@ -414,6 +474,40 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
     .await
     .expect("Thread 1 Run");
     assert!(host.drain_runtime(std::time::Duration::from_secs(10)).await);
+    let admitted = roots
+        .repository
+        .get(&awaken_session_types::SessionId::from("thread-1"))
+        .await
+        .unwrap();
+    assert!(
+        admitted
+            .environment_materialization()
+            .unwrap()
+            .origin()
+            .is_some(),
+        "F2 real first receipt committed"
+    );
+    install_complete_memory_test_session(&managed, &roots, "thread-1", "memory-agent", &store)
+        .await;
+    assert_eq!(
+        roots.repository.get(&admitted.session_id).await.unwrap(),
+        admitted,
+        "F2 exact whole-Root replay"
+    );
+    let mut changed = bare_session("memory-agent", host.local_workspace());
+    changed.resources = Default::default();
+    assert!(
+        roots
+            .install_complete_test_session(&managed, "thread-1", changed)
+            .await
+            .is_err(),
+        "F3 Resource update is not a new Root"
+    );
+    assert_eq!(
+        roots.repository.get(&admitted.session_id).await.unwrap(),
+        admitted,
+        "F3 original history retained"
+    );
     assert!(
         host.resources
             .memory_stores
@@ -469,13 +563,18 @@ async fn claimed_child_terminal_memory_uses_parent_physical_commit_partition() {
         let parent = format!("child-memory-parent-{warm}");
         let child = ThreadId(format!("child-memory-thread-{warm}"));
         let run = RunId(format!("child-memory-run-{warm}"));
-        let host = memory_test_host(Arc::new(MemLoopModel), "memory-agent").await;
+        let (host, roots) = memory_test_host(Arc::new(MemLoopModel), "memory-agent").await;
         let managed =
             managed_with_resource_source_using(host.clone(), install_recording_session_application);
         let memory_store = test_memory_store_id();
-        let manifest =
-            install_complete_memory_test_session(&managed, &parent, "memory-agent", &memory_store)
-                .await;
+        let manifest = install_complete_memory_test_session(
+            &managed,
+            &roots,
+            &parent,
+            "memory-agent",
+            &memory_store,
+        )
+        .await;
         if warm {
             host.ctx_for(&parent, Some("memory-agent"))
                 .await
@@ -714,6 +813,10 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
 /// ordinary unbound Managed Session sees no store.
 #[tokio::test]
 async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memory() {
+    // F6 fixture rule: one selected real Store owns all four distinct roots;
+    // each is assigned before its Run. Different Memory pins belong to
+    // different Session ids, so no root update, origin reset or sink swap can
+    // manufacture cross-store recall. Existing store-isolation effects remain.
     use awaken_session_configuration_contract::SessionInit;
 
     let snapshot = crate::config::server_config(
@@ -732,13 +835,16 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
     .expect("literal model reference");
     let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
         .expect("valid publication");
-    let host = (crate::host::with_test_resource_validation(with_test_memory_mounter(
+    let roots = ManagedSessionRootFixture::new().await;
+    let dependencies = crate::host::with_test_resource_validation(with_test_memory_mounter(
         crate::HostDependencies::ephemeral(Arc::new(MemLoopModel), "stub")
             .await
             .with_agent_publications(Arc::new(publications)),
-    )))
-    .build()
-    .expect("validated Host dependencies");
+    ));
+    let host = roots
+        .configure(dependencies)
+        .build()
+        .expect("validated Host dependencies");
     let unbound_store = test_memory_store_id();
     host.resources
         .memory_stores
@@ -782,8 +888,8 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
         }
     };
 
-    managed
-        .install_complete_test_session("managed-write-a", init("agent", Some(&store_a)))
+    roots
+        .install_complete_test_session(&managed, "managed-write-a", init("agent", Some(&store_a)))
         .await
         .unwrap();
     run_prepared_session(
@@ -825,8 +931,8 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
             .map(|message| block_text(&message.content))
             .unwrap_or_default()
     };
-    managed
-        .install_complete_test_session("managed-read-a", init("agent", Some(&store_a)))
+    roots
+        .install_complete_test_session(&managed, "managed-read-a", init("agent", Some(&store_a)))
         .await
         .unwrap();
     let same = run_prepared_session(
@@ -839,8 +945,8 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
     .unwrap();
     assert_eq!(reply(&same), "tea", "recall reads the same bound store");
 
-    managed
-        .install_complete_test_session("managed-read-b", init("agent", Some(&store_b)))
+    roots
+        .install_complete_test_session(&managed, "managed-read-b", init("agent", Some(&store_b)))
         .await
         .unwrap();
     let other = run_prepared_session(
@@ -853,8 +959,8 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
     .unwrap();
     assert_eq!(reply(&other), "ok", "store B cannot recall store A");
 
-    managed
-        .install_complete_test_session("managed-unbound", init("unmanaged-agent", None))
+    roots
+        .install_complete_test_session(&managed, "managed-unbound", init("unmanaged-agent", None))
         .await
         .unwrap();
     let unbound = run_prepared_session(
@@ -892,9 +998,17 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
 )]
 async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed() {
     use awaken_session_configuration_contract::SessionInit;
+    // F8 fixture rule: fresh Root/assignment precede lifecycle-blocked Runtime
+    // installation. Root desired revision1 remains the exact original command;
+    // local completion/ACK loss and cold/concurrent replay cannot change its
+    // first Create identity. R-MUT below intentionally has no accepted Root
+    // Resource update: changed requests must still fail at the Runtime pin.
+    // Runtime Resource ACK and Root activation are distinct evidence; these
+    // calls do not fabricate a Control activation receipt or commit Root.active.
 
     let sandbox_roots = tempfile::tempdir().unwrap();
-    let host = (crate::host::with_test_resource_validation(with_test_memory_mounter(
+    let roots = Arc::new(ManagedSessionRootFixture::new().await);
+    let dependencies = crate::host::with_test_resource_validation(with_test_memory_mounter(
         crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
             .await
             .with_fallback_session_environment_provider(
@@ -907,7 +1021,11 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
                 )
                 .into_session_provider(),
             ),
-    ))).build().expect("validated Host dependencies");
+    ));
+    let host = roots
+        .configure(dependencies)
+        .build()
+        .expect("validated Host dependencies");
     let store = test_memory_store_id();
     host.resources
         .memory_stores
@@ -945,9 +1063,10 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         .await;
     let preparing = tokio::spawn({
         let managed = managed.clone();
+        let roots = roots.clone();
         async move {
-            managed
-                .install_complete_test_session("memory-replay", init)
+            roots
+                .install_complete_test_session(&managed, "memory-replay", init)
                 .await
         }
     });
@@ -1150,6 +1269,9 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
 
 #[tokio::test]
 async fn published_agent_memory_config_can_disable_recall_and_extraction() {
+    // F7 fixture rule: the real Root owns the bound resource/assignment, while
+    // the exact immutable Agent owns both disabled behavior flags. Root
+    // admission cannot enable recall/extraction or move policy into Resources.
     // Cause/effect rule: C1 a bound MemoryStore makes content available; C2 the
     // published parent Agent selects the `memory` plugin with both behavior flags
     // false. C1+C2 -> neither recall context nor terminal extraction (one Agent
@@ -1175,13 +1297,16 @@ async fn published_agent_memory_config_can_disable_recall_and_extraction() {
     .expect("literal model reference");
     let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
         .expect("valid publication");
-    let host = (crate::host::with_test_resource_validation(with_test_memory_mounter(
+    let roots = ManagedSessionRootFixture::new().await;
+    let dependencies = crate::host::with_test_resource_validation(with_test_memory_mounter(
         crate::HostDependencies::ephemeral(Arc::new(MemLoopModel), "stub")
             .await
             .with_agent_publications(Arc::new(publications)),
-    )))
-    .build()
-    .expect("validated Host dependencies");
+    ));
+    let host = roots
+        .configure(dependencies)
+        .build()
+        .expect("validated Host dependencies");
     let store = test_memory_store_id();
     host.resources
         .memory_stores
@@ -1200,8 +1325,8 @@ async fn published_agent_memory_config_can_disable_recall_and_extraction() {
         initial_branch: None,
         initial_commit: None,
     }]);
-    managed
-        .install_complete_test_session("managed-policy", init)
+    roots
+        .install_complete_test_session(&managed, "managed-policy", init)
         .await
         .unwrap();
     let outcome = run_prepared_session(
@@ -1304,17 +1429,20 @@ async fn resume_ended_run_triggers_memory_extraction() {
             "assistant",
         )])
         .expect("valid Memory Agent publication");
-    let host = (crate::host::with_test_resource_validation(with_test_memory_mounter(
+    let roots = ManagedSessionRootFixture::new().await;
+    let dependencies = crate::host::with_test_resource_validation(with_test_memory_mounter(
         crate::HostDependencies::ephemeral(Arc::new(ResumeMemModel), "stub")
             .await
             .with_gate_override(write_confirmation_gate())
             .with_agent_publications(Arc::new(publications)),
-    )))
-    .build()
-    .expect("validated Host dependencies");
+    ));
+    let host = roots
+        .configure(dependencies)
+        .build()
+        .expect("validated Host dependencies");
     let managed = managed_with_resource_source(host.clone());
     let store = test_memory_store_id();
-    install_complete_memory_test_session(&managed, "t-res", "assistant", &store).await;
+    install_complete_memory_test_session(&managed, &roots, "t-res", "assistant", &store).await;
 
     // Run 1 awaits on the Ask-gated `write`.
     let r1 = run_prepared_session_messages(
@@ -1421,10 +1549,10 @@ async fn extraction_cursor_only_processes_new_messages() {
     // previously processed messages must never re-enter a later seed. Decision rule:
     // advance the cursor once, append new messages, and require only the
     // suffix effect documented below.
-    let host = memory_test_host(Arc::new(CursorModel), "memory-agent").await;
+    let (host, roots) = memory_test_host(Arc::new(CursorModel), "memory-agent").await;
     let managed = managed_with_resource_source(host.clone());
     let store = test_memory_store_id();
-    install_complete_memory_test_session(&managed, "t-cur", "memory-agent", &store).await;
+    install_complete_memory_test_session(&managed, &roots, "t-cur", "memory-agent", &store).await;
     let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, t)];
 
     run_prepared_session_messages(&managed, "memory-agent", "t-cur", user("alpha"))
@@ -1460,10 +1588,10 @@ async fn run_end_fires_background_memory_extraction() {
     // blocking the Run response; E2 draining background work persists the result.
     // Constraint/Invariant: committed Run end triggers exactly one background job.
     // Decision rule: end one Run, observe prompt return, then drain and require E2.
-    let host = memory_test_host(Arc::new(MemoryHostModel), "memory-agent").await;
+    let (host, roots) = memory_test_host(Arc::new(MemoryHostModel), "memory-agent").await;
     let managed = managed_with_resource_source(host.clone());
     let store = test_memory_store_id();
-    install_complete_memory_test_session(&managed, "t-mem", "memory-agent", &store).await;
+    install_complete_memory_test_session(&managed, &roots, "t-mem", "memory-agent", &store).await;
 
     let input = vec![Message::text(
         MessageId("u1".into()),

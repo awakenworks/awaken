@@ -144,6 +144,7 @@ mod mutation_tests {
             usage_cursor: Default::default(),
             budget: Default::default(),
             environment: Default::default(),
+            environment_materialization: None,
             mcp: Default::default(),
             resources: Default::default(),
             realization: None,
