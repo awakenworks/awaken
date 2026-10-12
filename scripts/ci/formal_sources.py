@@ -216,18 +216,23 @@ def _source_facts(root: Path, read: Callable[..., bytes]) -> dict:
     }
 
 
-def source_facts(root: Path) -> dict:
+def source_facts(root: Path, *, with_index_tree: bool = False) -> dict:
     """Shared raw facts, not a receipt/schema or an atomic/ABA-proof snapshot.
 
-    Repeat the same reader to refuse a changed axis during capture. The two
-    consumer views still own working identity versus clean-release policy.
+    Repeat the same reader to refuse a changed axis during capture. Working
+    consumers can bind write-tree between these two reads; formal diagnostics
+    retain their original shape and can still describe an unmerged index.
+    The consumer views own working identity versus clean-release policy.
     """
     environment = _source_environment(root)
     def read(*arguments: str) -> bytes:
         return _git_output(root, environment, *arguments)
     facts = _source_facts(root, read)
+    index = read("write-tree") if with_index_tree else None
     if facts != _source_facts(root, read):
         raise SourceError("Source changed while capturing Git source facts")
+    if with_index_tree:
+        facts["index_tree"] = index
     return facts
 
 

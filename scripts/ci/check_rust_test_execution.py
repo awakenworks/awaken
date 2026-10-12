@@ -98,8 +98,7 @@ def _write_receipt(path: Path, document: dict) -> None:
 def run_required(arguments: list[str], inventory: Path, results: Path, receipt: Path) -> int:
     """Adapt two focused commands to the existing sequence, never run a loop."""
     from crate_test import execute_commands
-    import formal_sources
-    from rust_test_plan import source_snapshot
+    from rust_test_plan import source_snapshot, working_subject
 
     try:
         commands, required = required_commands(arguments)
@@ -109,12 +108,11 @@ def run_required(arguments: list[str], inventory: Path, results: Path, receipt: 
         raise ValueError("required execution needs one fresh evidence directory")
     inventory.touch()
     results.touch()
-    digest, patch = source_snapshot()
-    facts = formal_sources.source_facts(ROOT)
-    index = formal_sources.git_output(ROOT, "write-tree").decode().strip()
+    digest, facts = working_subject()
+    index = facts["index_tree"].decode().strip()
     if source_snapshot()[0] != digest:
         raise ValueError("Source changed while binding required execution facts")
-    (receipt.parent / "working-tree.patch").write_bytes(patch)
+    (receipt.parent / "working-tree.patch").write_bytes(facts["patch"])
     document = {"schema_version": 1, "kind": "required-libtest", "full_gate": False,
                 "source_kind": "working-tree", "revision": facts["revision"].decode().strip(),
                 "source_digest": digest, "index_tree": index,
@@ -233,6 +231,8 @@ fi
         # actual shell must return child0/23, not charge waiting and return124.
         # Queue refusal75 starts no Cargo test or source-bound body. Only the
         # fixture Cargo protocol delays; the real deadline owns the clock.
+        # Revision/index/patch share the initial canonical capture; later
+        # fences stay fresh. Real Git and the2s/2.3s/15s values remain active.
         for status in (0, 23, 75):
             with self.subTest(status=status), tempfile.TemporaryDirectory() as temporary:
                 fixture = Path(temporary)
@@ -481,7 +481,7 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
         # snapshot call, never replace the digest with a fake value. Exact
         # cause and executed-prefix lengths0/1/1/2/2 distinguish late-axis faults.
         import rust_test_plan
-        original = rust_test_plan.source_snapshot
+        original = rust_test_plan.working_subject
         for boundary, count in ((3, 0), (4, 1), (5, 1), (6, 2), (7, 2)):
             with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as temporary:
                 fixture = Path(temporary)
@@ -502,7 +502,7 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
                     return original()
                 with mock.patch.dict(os.environ, values, clear=True), mock.patch(__name__ + ".ROOT", fixture), \
                      mock.patch.object(rust_test_plan, "ROOT", fixture), \
-                     mock.patch.object(rust_test_plan, "source_snapshot", side_effect=mutate_then_read):
+                     mock.patch.object(rust_test_plan, "working_subject", side_effect=mutate_then_read):
                     status = run_required(["-p", "critical", "--lib"], directory / "list.log", directory / "results.log", directory / "results.json")
                     errors = validate_receipt(directory / "list.log", directory / "results.log", status, directory / "results.json")["errors"]
                 self.assertTrue(errors)
@@ -525,7 +525,7 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
                         "--results", str(directory / "results.log"), "--receipt", str(directory / "results.json"),
                         "--", "-p", "critical", "--lib"]
                 with mock.patch.object(sys, "argv", argv), \
-                     mock.patch("rust_test_plan.source_snapshot", side_effect=subprocess.CalledProcessError(raw, ["git", "subject"])), \
+                     mock.patch("rust_test_plan.working_subject", side_effect=subprocess.CalledProcessError(raw, ["git", "subject"])), \
                      mock.patch.object(subprocess, "run", side_effect=AssertionError("dependent Cargo started")):
                     self.assertEqual(main(), expected)
 
