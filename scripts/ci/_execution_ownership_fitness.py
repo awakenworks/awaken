@@ -294,8 +294,8 @@ def repository_git_boundary_violations(sources: dict[str, str]) -> list[str]:
     for required in (
         "publish_sandbox_control_service",
         "REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH",
-        "sandbox.spawn(",
-        "spawn_agent_process(",
+        "run_repository_command(",
+        "sandbox.spawn_agent_process(",
     ):
         if required not in owner:
             errors.append(
@@ -450,7 +450,7 @@ def selftest() -> None:
     git_boundary = {
         CONTAINER_REPOSITORY_OWNER: (
             "publish_sandbox_control_service REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH "
-            "sandbox.spawn( spawn_agent_process("
+            "run_repository_command( sandbox.spawn_agent_process("
         ),
         SESSION_REPOSITORY_ADAPTER: (
             "Self::Workdir { .. } | Self::Namespace { .. } if credential.is_some() "
@@ -458,6 +458,13 @@ def selftest() -> None:
         ),
     }
     assert repository_git_boundary_violations(git_boundary) == [], "G1"
+    # G6 clone and push share one piped Sandbox executor; dropping its
+    # Sandbox spawn edge cannot pass merely by retaining the helper name.
+    missing_spawn = dict(git_boundary)
+    missing_spawn[CONTAINER_REPOSITORY_OWNER] = missing_spawn[CONTAINER_REPOSITORY_OWNER].replace(
+        "sandbox.spawn_agent_process(", ""
+    )
+    assert repository_git_boundary_violations(missing_spawn), "G6"
     git_boundary[CONTAINER_REPOSITORY_OWNER] += " clone_repo_bundle"
     assert repository_git_boundary_violations(git_boundary), "G2"
     git_boundary[CONTAINER_REPOSITORY_OWNER] = git_boundary[

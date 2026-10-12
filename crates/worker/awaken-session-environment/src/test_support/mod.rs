@@ -663,6 +663,7 @@ impl awaken_container_contract::ContainerEnvironment for FakeContainer {
     ) -> Result<awaken_container_contract::RuntimeAgentProcess, pc::SandboxError> {
         let (ours, theirs) = tokio::io::duplex(64 * 1024);
         let repository_export = command.argv.iter().any(|part| part == "awaken-repo-push");
+        let repository_import = command.argv.iter().any(|part| part == "awaken-repo-clone");
         if command.argv.iter().any(|part| part == "--stdio") {
             // P7 Container already exposes /mnt: preserve its deployed Hand
             // CLI rather than requiring the new local projection option. All
@@ -687,6 +688,19 @@ impl awaken_container_contract::ContainerEnvironment for FakeContainer {
                 let mut theirs = theirs;
                 let mut sink = Vec::new();
                 let _ = theirs.read_to_end(&mut sink).await;
+            });
+        } else if repository_import {
+            let observation = self
+                .shared
+                .lock()
+                .unwrap()
+                .get("__repository_import_observation")
+                .cloned()
+                .unwrap_or_default();
+            tokio::spawn(async move {
+                use tokio::io::AsyncWriteExt;
+                let mut theirs = theirs;
+                let _ = theirs.write_all(&observation).await;
             });
         } else if command.argv.iter().any(|part| part.contains("cat")) {
             let bytes = self
@@ -725,7 +739,15 @@ impl awaken_container_contract::ContainerEnvironment for FakeContainer {
                 let _ = theirs.read_to_end(&mut bytes).await;
             });
         }
-        let exit_code = if repository_export
+        let exit_code = if repository_import
+            && self
+                .shared
+                .lock()
+                .unwrap()
+                .contains_key("__fail_repository_import")
+        {
+            23
+        } else if repository_export
             && self
                 .shared
                 .lock()

@@ -167,23 +167,142 @@ pub(super) async fn provision(
     command
         .env
         .extend(repository_git_tls_env(&plan.transport_url, credential));
-    let result = match sandbox.spawn(command).await {
-        Ok(process) => process.wait().await,
-        Err(error) => Err(error),
-    };
+    let result = run_repository_command(sandbox, command, 16 * 1024).await;
     if let Some(publication) = publication {
         publication.close().await;
     }
-    let status = result?;
+    let (status, observation) = result?;
     if status.code == Some(0) {
         sandbox.record_owned_path(&plan.mount_path)?;
         Ok(())
     } else {
+        let observation = clone_failure_diagnosis(observation);
         Err(pc::SandboxError::backend(
             "provision",
-            format!("container Repository clone exited {:?}", status.code),
+            format!(
+                "container Repository clone exited {:?}; diagnosis={observation}",
+                status.code
+            ),
         ))
     }
+}
+
+// Drain the process channel through EOF: truncating the reader can block Git
+// on a full pipe. Keep only a bounded tail in memory, never persist raw output,
+// and return a closed vocabulary that cannot contain a URL or credential.
+struct RepositoryObservation {
+    tail: Vec<u8>,
+    truncated: bool,
+}
+
+async fn run_repository_command(
+    sandbox: &dyn awaken_container_contract::ContainerEnvironment,
+    command: pc::Command,
+    limit: usize,
+) -> Result<(pc::ExitStatus, Result<RepositoryObservation, ()>), pc::SandboxError> {
+    let mut process = sandbox.spawn_agent_process(command).await?;
+    let (observation, status) = tokio::join!(
+        read_repository_observation(&mut process.channel, limit),
+        process.process.wait()
+    );
+    status.map(|status| (status, observation))
+}
+
+async fn read_repository_observation(
+    reader: &mut (impl tokio::io::AsyncRead + Unpin),
+    limit: usize,
+) -> Result<RepositoryObservation, ()> {
+    let mut tail = Vec::with_capacity(limit);
+    let mut truncated = false;
+    let mut chunk = [0; 4096];
+    loop {
+        match reader.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(size) => {
+                let keep = size.min(limit);
+                let remove = (tail.len() + keep).saturating_sub(limit);
+                truncated |= remove != 0 || size > limit;
+                tail.drain(..remove);
+                tail.extend_from_slice(&chunk[size - keep..size]);
+            }
+            Err(_) => return Err(()),
+        }
+    }
+    Ok(RepositoryObservation { tail, truncated })
+}
+
+fn clone_failure_diagnosis(observation: Result<RepositoryObservation, ()>) -> &'static str {
+    let Ok(observation) = observation else {
+        return "observation_unavailable";
+    };
+    let text = String::from_utf8_lossy(&observation.tail).to_ascii_lowercase();
+    for (fragment, diagnosis) in [
+        ("requested url returned error: 401", "http_401"),
+        ("requested url returned error: 403", "http_403"),
+        ("requested url returned error: 404", "http_404"),
+        ("requested url returned error: 429", "http_429"),
+        ("requested url returned error: 500", "http_500"),
+        ("requested url returned error: 502", "http_502"),
+        ("requested url returned error: 503", "http_503"),
+        ("requested url returned error: 504", "http_504"),
+    ] {
+        if text.contains(fragment) {
+            return diagnosis;
+        }
+    }
+    for (diagnosis, fragments) in [
+        (
+            "dns",
+            &["could not resolve host", "could not resolve proxy"][..],
+        ),
+        (
+            "tls",
+            &[
+                "ssl certificate problem",
+                "certificate verify failed",
+                "server certificate verification failed",
+            ][..],
+        ),
+        (
+            "authentication",
+            &["authentication failed", "could not read username"][..],
+        ),
+        ("remote_missing", &["repository not found"][..]),
+        (
+            "transport",
+            &[
+                "connection reset",
+                "failed to connect",
+                "connection timed out",
+                "early eof",
+                "curl 92",
+            ][..],
+        ),
+        (
+            "disk",
+            &["no space left on device", "disk quota exceeded"][..],
+        ),
+        (
+            "checkout",
+            &["pathspec", "reference is not a tree", "invalid reference"][..],
+        ),
+        (
+            "destination_conflict",
+            &[
+                "repository destination is occupied",
+                "repository destination became occupied",
+            ][..],
+        ),
+        (
+            "retained_missing",
+            &["retained repository working tree is absent"][..],
+        ),
+    ] {
+        if fragments.iter().any(|fragment| text.contains(fragment)) {
+            return diagnosis;
+        }
+    }
+    "unclassified"
 }
 
 fn repository_clone_command(
@@ -207,7 +326,7 @@ fn repository_clone_command(
             "sh".into(),
             "-c".into(),
             concat!(
-                "set -eu; export GIT_TERMINAL_PROMPT=0; destination=$1; parent=$2; stage=$3; remote=$4; branch=$5; commit=$6; publisher=$7; helper=$8; socket=$9; intent=${10}; ",
+                "set -eu; exec 2>&1; export GIT_TERMINAL_PROMPT=0 LC_ALL=C; destination=$1; parent=$2; stage=$3; remote=$4; branch=$5; commit=$6; publisher=$7; helper=$8; socket=$9; intent=${10}; ",
                 "credential_helper=\"!$helper git-credential --socket $socket\"; stage_owned=0; ",
                 "cleanup() { if test \"$stage_owned\" = 1; then rm -rf -- \"$stage\"; fi; }; trap cleanup EXIT; ",
                 "is_occupied() { test -e \"$1\" || test -L \"$1\"; }; ",
@@ -242,7 +361,7 @@ fn repository_clone_command(
         ],
         cwd: pc::WorkspaceLayout::ROOT.into(),
         env: Vec::new(),
-        stdio: pc::Stdio::Null,
+        stdio: pc::Stdio::Piped,
     })
 }
 
@@ -271,29 +390,21 @@ pub(super) async fn push(
     command
         .env
         .extend(repository_git_tls_env(&plan.transport_url, credential));
-    let process = sandbox.spawn_agent_process(command).await;
-    let result = match process {
-        Ok(process) => {
-            let mut observation = String::new();
-            let mut channel = process.channel.take(64);
-            let (read, status) = tokio::join!(
-                channel.read_to_string(&mut observation),
-                process.process.wait()
-            );
-            match read {
-                Ok(_) => status.map(|status| (status, observation)),
-                Err(error) => Err(pc::SandboxError::backend(
-                    "push-observation",
-                    error.to_string(),
-                )),
-            }
-        }
-        Err(error) => Err(error),
-    };
+    let result = run_repository_command(sandbox, command, 64).await;
     if let Some(publication) = publication {
         publication.close().await;
     }
     let (status, observation) = result.map_err(pc::RepositoryPublicationError::Unavailable)?;
+    let observation = observation
+        .ok()
+        .filter(|observation| !observation.truncated)
+        .and_then(|observation| String::from_utf8(observation.tail).ok())
+        .ok_or_else(|| {
+            pc::RepositoryPublicationError::Unavailable(pc::SandboxError::backend(
+                "push-observation",
+                "Repository observation is unavailable or malformed",
+            ))
+        })?;
     match status.code {
         Some(0) if observation.is_empty() => {
             Ok(pc::RepositoryPublicationReceipt::new(plan, expectation))
@@ -410,6 +521,12 @@ fn repository_push_command(
 mod tests {
     use super::*;
 
+    async fn clone_failure_observation(
+        reader: &mut (impl tokio::io::AsyncRead + Unpin),
+    ) -> &'static str {
+        clone_failure_diagnosis(read_repository_observation(reader, 16 * 1024).await)
+    }
+
     #[test]
     fn only_private_gateway_git_operations_select_the_internal_ca() {
         // Causes: C1=Gateway capability vs upstream/no credential; C2=private
@@ -454,6 +571,234 @@ mod tests {
             initial_commit: None,
             access: pc::MountAccess::ReadWrite,
         }
+    }
+
+    #[tokio::test]
+    async fn failed_clone_reports_safe_diagnosis_without_publishing_raw_output() {
+        // C1=nonzero clone exit; C2=Git DNS failure containing a credential;
+        // E1=retain the exit status and diagnose DNS; E2=no raw output or secret
+        // escapes the Repository boundary. R1(C1,C2)->E1+E2, no success claim.
+        use crate::test_support::{FakeContainerProvider, spec};
+        use awaken_container_contract::ContainerEnvironmentProvider as _;
+        let shared = Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([
+            ("__fail_repository_import".into(), Vec::new()),
+            ("__repository_import_observation".into(), b"fatal: unable to access 'https://user:secret-fixture@example.invalid/': Could not resolve host: example.invalid\n".to_vec()),
+        ])));
+        let provider = FakeContainerProvider {
+            shared: shared.clone(),
+            ..Default::default()
+        };
+        let container = provider
+            .create_unattached_environment(&spec())
+            .await
+            .unwrap();
+        let error = provision(
+            container.as_ref(),
+            "publisher",
+            &plan(),
+            None,
+            &awaken_time::system_clock(),
+            pc::RepositoryRealizationIntent::Initialize,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("clone exited Some(23)"));
+        assert!(error.contains("diagnosis=dns"), "{error}");
+        assert!(!error.contains("secret-fixture"));
+        assert!(!error.contains("example.invalid"));
+        // R2 success with misleading diagnostic text must remain success:
+        // diagnostics cannot override the observed process outcome.
+        shared.lock().unwrap().remove("__fail_repository_import");
+        provision(
+            container.as_ref(),
+            "publisher",
+            &plan(),
+            None,
+            &awaken_time::system_clock(),
+            pc::RepositoryRealizationIntent::Initialize,
+        )
+        .await
+        .expect("R2 exit zero remains authoritative");
+    }
+
+    #[tokio::test]
+    async fn oversized_or_invalid_push_observation_cannot_publish_rejection() {
+        // C1=exit 42; C2=oversized output ending in valid ABSENT vs invalid
+        // UTF8 vs exact ABSENT. R1 oversized/invalid->Unavailable, never infer
+        // an exact remote observation from a truncated tail. R2 exact->Rejected.
+        // A MiB exceeds both the output bound and pipe capacity: it must drain.
+        use crate::test_support::{FakeContainerProvider, spec};
+        use awaken_container_contract::ContainerEnvironmentProvider as _;
+        let provider = FakeContainerProvider::default();
+        let container = provider
+            .create_unattached_environment(&spec())
+            .await
+            .unwrap();
+        let expectation = pc::RepositoryPublicationExpectation {
+            branch: "awf/work".into(),
+            commit: "1".repeat(40),
+            expected_prior_commit: Some("2".repeat(40)),
+        };
+        let mut large = vec![b'x'; 1024 * 1024];
+        large.extend_from_slice(b"ABSENT\n");
+        for (wire, unavailable) in [
+            (large, true),
+            (vec![0xff], true),
+            (b"ABSENT\n".to_vec(), false),
+        ] {
+            provider
+                .shared
+                .lock()
+                .unwrap()
+                .insert("__repository_export_observation".into(), wire);
+            let error = tokio::time::timeout(
+                Duration::from_secs(5),
+                push(
+                    container.as_ref(),
+                    "publisher",
+                    &plan(),
+                    &expectation,
+                    None,
+                    &awaken_time::system_clock(),
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap_err();
+            assert_eq!(
+                matches!(error, pc::RepositoryPublicationError::Unavailable(_)),
+                unavailable
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn clone_diagnosis_drains_large_output_and_only_returns_closed_categories() {
+        // C1=recognized/unknown stderr; C2=output exceeds the retained bound;
+        // C3=read failure. R1 recognized->fixed category; R2 unknown->unclassified;
+        // R3 large->drain through EOF, classify tail; R4 read error->unavailable.
+        // None permits raw text, secret disclosure, replay, or success inference.
+        for (raw, expected) in [
+            ("Could not resolve proxy: secret-fixture", "dns"),
+            ("SSL certificate problem: secret-fixture", "tls"),
+            (
+                "fatal: Authentication failed for secret-fixture",
+                "authentication",
+            ),
+            (
+                "The requested URL returned error: 403 secret-fixture",
+                "http_403",
+            ),
+            (
+                "fatal: repository not found secret-fixture",
+                "remote_missing",
+            ),
+            (
+                "The requested URL returned error: 503 secret-fixture",
+                "http_503",
+            ),
+            ("fatal: early EOF secret-fixture", "transport"),
+            ("No space left on device secret-fixture", "disk"),
+            ("error: pathspec secret-fixture did not match", "checkout"),
+            (
+                "Repository destination became occupied before publication",
+                "destination_conflict",
+            ),
+            (
+                "Retained Repository working tree is absent",
+                "retained_missing",
+            ),
+            ("unknown secret-fixture", "unclassified"),
+            ("", "unclassified"),
+        ] {
+            let mut reader = raw.as_bytes();
+            assert_eq!(clone_failure_observation(&mut reader).await, expected);
+        }
+        let (mut reader, mut writer) = tokio::io::duplex(1024);
+        // R1 also retains the exact allowlisted HTTP status for the owner to
+        // distinguish authorization, absence, throttling, and upstream failures.
+        for code in [401, 403, 404, 429, 500, 502, 503, 504] {
+            let raw = format!("fatal: The requested URL returned error: {code} secret-fixture");
+            assert_eq!(
+                clone_failure_observation(&mut raw.as_bytes()).await,
+                format!("http_{code}")
+            );
+        }
+        let producer = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            writer.write_all(&vec![b'x'; 1024 * 1024]).await.unwrap();
+            writer
+                .write_all(b"fatal: Connection reset by peer secret-fixture")
+                .await
+                .unwrap();
+        });
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                clone_failure_observation(&mut reader)
+            )
+            .await
+            .unwrap(),
+            "transport",
+            "R3 must drain beyond the pipe capacity"
+        );
+        producer.await.unwrap();
+        struct BrokenReader;
+        impl tokio::io::AsyncRead for BrokenReader {
+            fn poll_read(
+                self: std::pin::Pin<&mut Self>,
+                _: &mut std::task::Context<'_>,
+                _: &mut tokio::io::ReadBuf<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                std::task::Poll::Ready(Err(std::io::Error::other("secret-fixture")))
+            }
+        }
+        assert_eq!(
+            clone_failure_observation(&mut BrokenReader).await,
+            "observation_unavailable"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn clone_program_exposes_git_failure_and_removes_only_owned_staging() {
+        // R1 Initialize + known failed Git exit: preserve exit 128, forward
+        // stderr through the existing channel, remove owned staging, leave
+        // destination absent. Execute the emitted program with only Git replaced.
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let git = temp.path().join("git");
+        std::fs::write(&git, "#!/bin/sh\necho 'fatal: The requested URL returned error: 503 secret-fixture' >&2\nexit 128\n").unwrap();
+        std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut command = repository_clone_command(
+            &plan(),
+            "unused-publisher",
+            uuid::Uuid::nil(),
+            pc::RepositoryRealizationIntent::Initialize,
+        )
+        .unwrap();
+        let destination = temp.path().join("destination");
+        let stage = temp.path().join("stage");
+        command.argv[4] = destination.to_string_lossy().into_owned();
+        command.argv[5] = temp.path().to_string_lossy().into_owned();
+        command.argv[6] = stage.to_string_lossy().into_owned();
+        let output = std::process::Command::new(&command.argv[0])
+            .args(&command.argv[1..])
+            .env("PATH", format!("{}:/usr/bin:/bin", temp.path().display()))
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(128));
+        assert!(
+            output.stderr.is_empty(),
+            "Git stderr must reach stdout channel"
+        );
+        assert_eq!(
+            clone_failure_observation(&mut output.stdout.as_slice()).await,
+            "http_503"
+        );
+        assert!(!stage.exists());
+        assert!(!destination.exists());
     }
 
     #[test]
