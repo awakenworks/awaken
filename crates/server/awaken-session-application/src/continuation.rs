@@ -420,7 +420,7 @@ impl SessionApplication {
             match session.environment.clone() {
                 SessionEnvironmentState::Unmaterialized => return Ok(session.into_snapshot()),
                 SessionEnvironmentState::Resident { .. } => {
-                    if !self.requires_external_realization(&session) {
+                    if !session.requires_external_environment_owner() {
                         self.synchronize_resident_environment_projection(&owner_scope, &session)
                             .await?;
                     }
@@ -470,7 +470,7 @@ impl SessionApplication {
                     let committed = self
                         .commit_continuation(&owner_scope, session, "environment-restored")
                         .await?;
-                    if !self.requires_external_realization(&committed) {
+                    if !committed.requires_external_environment_owner() {
                         self.synchronize_resident_environment_projection(&owner_scope, &committed)
                             .await?;
                     }

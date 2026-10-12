@@ -13,3 +13,6 @@ mod registration;
 
 pub use image_realization::*;
 pub use registration::*;
+
+mod session_projection;
+pub use session_projection::{ResolvedSessionEnvironment, SessionEnvironmentProjectionSource};

@@ -675,48 +675,51 @@ fn assemble_session_plane(
     // The canonical Coordinator component owns Runtime background drain.
     // This process does not register a second drain for the same Host.
     let managed_host = Arc::new(ManagedHost::new(host.host.clone()));
-    let mut session_application =
-        awaken_session_application::SessionApplication::new_with_configuration(
-            managed_host.clone(),
-            managed_host.clone(),
-            host.session_persistence
-                .take()
-                .expect("Session persistence is consumed once by the Session application"),
-            execution.environment_execution.clone(),
-            awaken_session_application::SessionApplicationConfiguration {
-                execution_placement: base.placement,
-                local_realization_owner: host.host.dispatch_owner().to_string(),
-                ..Default::default()
-            },
-        );
-    session_application.set_credential_source(control.credential_source.clone());
-    if let Some(vault_state) = control.vault_state.as_ref() {
-        // AllInOne owns the Vault authority locally, so repository credentials
-        // supplied through the Managed Sessions API must enter through that
-        // same authority.  Merely installing it as a read source makes the
-        // protocol advertise authorization_token while rejecting every legal
-        // create/update request at the product router.
-        session_application.set_credential_material_ingress(vault_state.clone());
-    }
-    configure_session_resources(&mut session_application, resources);
+    let credentials = match control.vault_state.as_ref() {
+        Some(vault) => awaken_session_application::SessionCredentials::read_write(vault.clone()),
+        None => awaken_session_application::SessionCredentials::read_only(
+            control.credential_source.clone(),
+        ),
+    };
+    let session_resources =
+        awaken_session_application::SessionResources::catalog(resources.resource_registry.clone())
+            .with_retention(
+                resources.resource_authorities.reclamation(),
+                resources.resource_authorities.file_catalog(),
+                resources.resource_application.purge_scheduler(),
+            );
+    let mut builder = awaken_session_application::SessionApplication::builder(
+        managed_host.clone(),
+        managed_host.clone(),
+        host.session_persistence
+            .take()
+            .ok_or("Session persistence was already consumed")?,
+        execution.environment_execution.clone(),
+    )
+    .configuration(
+        awaken_session_application::SessionApplicationConfiguration {
+            execution_placement: base.placement,
+            local_realization_owner: host.host.dispatch_owner().to_string(),
+            ..Default::default()
+        },
+    )
+    .credentials(credentials)
+    .resources(session_resources)
+    .agent_profiles(base.agents.catalog.clone());
     if let Some(refresh) = resources.projection_refresh.clone() {
-        session_application
-            .set_executable_projection_refresh(refresh)
-            .expect("executable projection refresh binds once before Session sharing");
+        builder = builder.executable_projection_refresh(refresh);
     }
-    // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
-    // published agent's model sees the authoritative config-plane truth (M2).
-    session_application.set_config_source(base.agents.catalog.clone());
     if let Some(model_services) = &cloud.model_services {
-        session_application.set_model_publication_resolver(Arc::new(
+        builder = builder.model_overrides(Arc::new(
             awaken_config_service::ConfigSessionModelPublicationResolver::new(
                 model_services.publication_resolver.clone(),
             ),
         ));
     }
     if let Some(provider) = base.process.managed_services.list_price_provider.clone() {
-        session_application.set_managed_list_price_provider(provider);
+        builder = builder.managed_prices(provider);
     }
+    let session_application = builder.build().map_err(|error| error.to_string())?;
     let session_application = Arc::new(session_application);
     bind_session_lifecycle_hooks(base, host, &session_application)?;
     let event_batch_cutover_validation =
@@ -780,19 +783,6 @@ fn lifecycle_webhook_delivery(
             .webhooks
             .clone(),
     }
-}
-
-fn configure_session_resources(
-    session_application: &mut awaken_session_application::SessionApplication,
-    resources: &DeploymentAndResources,
-) {
-    session_application.set_resource_registry(resources.resource_registry.clone());
-    session_application
-        .set_resource_purge_scheduler(resources.resource_application.purge_scheduler());
-    session_application.set_resource_reference_authority(
-        resources.resource_authorities.reclamation(),
-        resources.resource_authorities.file_catalog(),
-    );
 }
 
 /// Wire the Environment image-build transition hint and the terminal Artifact

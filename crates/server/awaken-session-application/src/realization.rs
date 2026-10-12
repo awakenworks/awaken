@@ -254,7 +254,7 @@ impl SessionApplication {
                 "only a committed Resident Environment may be reprojected",
             ));
         }
-        if self.requires_external_realization(session) {
+        if session.requires_external_environment_owner() {
             return Err(RunError::internal(
                 "a Worker-owned Resident Environment cannot be projected by the local Runtime",
             ));
@@ -836,7 +836,7 @@ impl SessionApplication {
             if session.is_terminal() {
                 continue;
             }
-            if self.requires_external_realization(session) {
+            if session.requires_external_environment_owner() {
                 // Worker placement keeps the durable Session as authority and
                 // the Coordinator projection as a disposable cache. Creation
                 // can commit the root before projection I/O fails or its reply

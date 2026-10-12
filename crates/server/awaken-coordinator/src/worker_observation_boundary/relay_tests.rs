@@ -1,5 +1,5 @@
 use super::*;
-use awaken_session_application::SessionEnvironmentSource as _;
+use awaken_executable_environment_contract::SessionEnvironmentProjectionSource as _;
 use awaken_session_configuration_contract::{
     SessionBaseline, SessionBaselineInputs, SessionRuntimePlacement,
 };

@@ -1295,7 +1295,7 @@ impl SessionApplication {
                     return result;
                 }
                 if (!session.is_terminal()
-                    && self.requires_external_realization(&session)
+                    && session.requires_external_environment_owner()
                     && !session.resources.has_repository_retirements())
                     || !session.needs_resource_reconciliation()
                 {
@@ -1340,7 +1340,7 @@ impl SessionApplication {
         let session = self
             .ensure_repository_credentials_pinned(owner_scope, session)
             .await?;
-        if !session.is_terminal() && !self.requires_external_realization(&session) {
+        if !session.is_terminal() && !session.requires_external_environment_owner() {
             if session.execution != SessionExecutionState::Idle {
                 // Resource changes remain deferred while a Run owns execution.
                 // Select that existing rule before constructing the complete
@@ -1375,7 +1375,7 @@ impl SessionApplication {
     ) -> Result<SessionAggregate, SessionPreparationError> {
         let environment_runtime = self.runtime().environment();
 
-        if !session.is_terminal() && self.requires_external_realization(&session) {
+        if !session.is_terminal() && session.requires_external_environment_owner() {
             return if session.resources.pending.is_none()
                 && session.resources.has_repository_retirements()
             {

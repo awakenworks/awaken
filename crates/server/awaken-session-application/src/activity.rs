@@ -499,7 +499,7 @@ impl SessionApplication {
             // stronger realization phase until it converges: replacing it with
             // `running` would let a failed Stage look like an ordinary Run and
             // a later settlement could erase `activation_failed` back to idle.
-            let external = self.requires_external_realization(&session);
+            let external = session.requires_external_environment_owner();
             let admitted_after = self.interval_admission_cursor(&session).await?;
             Self::open_activity_on_snapshot(
                 &mut session,
@@ -711,7 +711,7 @@ impl SessionApplication {
                 .0
                 .checked_add(1)
                 .ok_or(SessionActivityError::EpochExhausted)?;
-            let external = self.requires_external_realization(&session);
+            let external = session.requires_external_environment_owner();
             let admitted_after = self.interval_admission_cursor(&session).await?;
             Self::open_activity_on_snapshot(
                 &mut session,

@@ -4372,7 +4372,9 @@ impl RecordingEnvironmentSource {
 }
 
 #[async_trait::async_trait]
-impl SessionEnvironmentSource for RecordingEnvironmentSource {
+impl awaken_executable_environment_contract::SessionEnvironmentProjectionSource
+    for RecordingEnvironmentSource
+{
     async fn get(
         &self,
         _environment_id: &str,
@@ -4398,7 +4400,10 @@ impl SessionEnvironmentSource for RecordingEnvironmentSource {
     ) -> Result<Option<ResolvedSessionEnvironment>, EnvironmentImageBuildError> {
         unreachable!("work dispatch consumes the frozen Session baseline")
     }
+}
 
+#[async_trait::async_trait]
+impl awaken_worker_contract::SessionWorkSource for RecordingEnvironmentSource {
     async fn enqueue_session_work(
         &self,
         _environment_id: &str,
@@ -4456,6 +4461,19 @@ impl SessionEnvironmentSource for RecordingEnvironmentSource {
                 awaken_time::Expiry::from_epoch_ms(now_ms.saturating_add(30_000)),
             )
         }))
+    }
+
+    async fn release_session_work(
+        &self,
+        _lease: &awaken_worker_contract::SessionWorkLease,
+    ) -> Result<bool, awaken_worker_contract::WorkQueueError> {
+        Ok(false)
+    }
+    async fn release_worker_session_work(
+        &self,
+        _worker_owner: &str,
+    ) -> Result<usize, awaken_worker_contract::WorkQueueError> {
+        Ok(0)
     }
 }
 
@@ -4713,6 +4731,7 @@ fn repository_publication_intent(
 /// | L4 | different | replacement | true | false | E4 epoch advances immediately |
 /// | L5 | any | any | true | true | invalid, no mutation |
 mod authority;
+mod construction;
 mod continuation;
 mod creation;
 mod event_batch_cutover_validation;

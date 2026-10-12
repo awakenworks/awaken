@@ -37,16 +37,11 @@ pub(super) enum TerminalCleanupRootClaim {
 }
 
 impl<'a> TerminalCleanupClaimScope<'a> {
-    pub(super) fn admits(
-        self,
-        application: &SessionApplication,
-        session: &PersistedSession,
-    ) -> bool {
+    pub(super) fn admits(self, session: &PersistedSession) -> bool {
         match self {
-            Self::External => application.requires_external_realization(session),
+            Self::External => session.requires_external_environment_owner(),
             Self::LocalSession(session_id) => {
-                session.session_id == session_id
-                    && !application.requires_external_realization(session)
+                session.session_id == session_id && !session.requires_external_environment_owner()
             }
         }
     }

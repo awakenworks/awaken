@@ -441,7 +441,9 @@ impl EnvironmentExecutionApplication {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_application::SessionEnvironmentSource for EnvironmentExecutionApplication {
+impl awaken_executable_environment_contract::SessionEnvironmentProjectionSource
+    for EnvironmentExecutionApplication
+{
     async fn get(
         &self,
         environment_id: &str,
@@ -455,15 +457,15 @@ impl awaken_session_application::SessionEnvironmentSource for EnvironmentExecuti
         runtime: Option<&str>,
         mcp_targets: &[awaken_session_mcp_contract::McpTarget],
     ) -> Result<
-        Option<awaken_session_application::ResolvedSessionEnvironment>,
+        Option<awaken_executable_environment_contract::ResolvedSessionEnvironment>,
         EnvironmentImageBuildError,
     > {
         Ok(
             Self::resolve_current_for_session(self, environment_id, runtime, mcp_targets)
                 .await?
-                .map(
-                    |snapshot| awaken_session_application::ResolvedSessionEnvironment { snapshot },
-                ),
+                .map(|snapshot| {
+                    awaken_executable_environment_contract::ResolvedSessionEnvironment { snapshot }
+                }),
         )
     }
 
@@ -474,18 +476,21 @@ impl awaken_session_application::SessionEnvironmentSource for EnvironmentExecuti
         runtime: Option<&str>,
         mcp_targets: &[awaken_session_mcp_contract::McpTarget],
     ) -> Result<
-        Option<awaken_session_application::ResolvedSessionEnvironment>,
+        Option<awaken_executable_environment_contract::ResolvedSessionEnvironment>,
         EnvironmentImageBuildError,
     > {
         Ok(
             Self::resolve_exact_for_session(self, environment_id, revision, runtime, mcp_targets)
                 .await?
-                .map(
-                    |snapshot| awaken_session_application::ResolvedSessionEnvironment { snapshot },
-                ),
+                .map(|snapshot| {
+                    awaken_executable_environment_contract::ResolvedSessionEnvironment { snapshot }
+                }),
         )
     }
+}
 
+#[async_trait::async_trait]
+impl awaken_worker_contract::SessionWorkSource for EnvironmentExecutionApplication {
     async fn enqueue_session_work(
         &self,
         environment_id: &str,
