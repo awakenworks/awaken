@@ -406,6 +406,19 @@ impl K8sWorkerCreateLedger {
         Ok(state.ticket(request).cloned())
     }
 
+    /// Read only the original ledger's already sealed Worker group. Missing,
+    /// foreign or corrupt physical evidence is never initialized or repaired.
+    /// The result joins admitted Creates only: it grants no execution stop,
+    /// participant absence, target access or Session cleanup authority.
+    pub async fn read_sealed_worker_group(
+        &self,
+        binding: K8sLedgerBinding<'_>,
+        group: &str,
+    ) -> Result<RequestJoin, RuntimeError> {
+        let (_, state) = self.load_exact(binding).await?;
+        Ok(state.join_sealed_worker_group(group))
+    }
+
     pub async fn finish_request(
         &self,
         binding: K8sLedgerBinding<'_>,
@@ -470,8 +483,7 @@ impl K8sWorkerCreateLedger {
             })
             .await?;
         }
-        let (_, state) = self.load_exact(binding).await?;
-        Ok(state.join_group(group))
+        self.read_sealed_worker_group(binding, group).await
     }
 
     /// Retain the original claim's Pod name in this same ledger when an exact
@@ -620,7 +632,14 @@ mod tests {
                         }
                         "GET" => stored.lock().unwrap().clone().map_or_else(
                             || (404, json!({"apiVersion":"v1","kind":"Status","status":"Failure","code":404,"reason":"NotFound"})),
-                            |value| (200, value),
+                            |value| {
+                                let status = if value["kind"].as_str() == Some("Status") {
+                                    u16::try_from(value["code"].as_u64().unwrap()).unwrap()
+                                } else {
+                                    200
+                                };
+                                (status, value)
+                            },
                         ),
                         "PUT" => {
                             let mut current = stored.lock().unwrap();
@@ -775,12 +794,25 @@ mod tests {
         // ledger UID rejects before mutation. Rules T1=C1+C2+C3=>E1,
         // T2=T1+replay=>E2, T3=T1+C4+!C5=>E3, T4=T3+C5=>E4,
         // T5=C6=>E5. No mock cleanup receipt is returned.
+        // Pure-read decision table: Q1 exact UID/header, both seals, finished
+        // requests -> exact complete set (including explicitly sealed empty);
+        // Q2 missing Worker seal / Q3 open or absent group -> Unknown;
+        // Q4 InFlight or isolationPending -> Unknown, without completing it;
+        // Q5 foreign UID/header/config, corrupt codec, 404 or 403 -> error,
+        // never an empty replacement ledger/group. Q6 a historical missing
+        // nonce remains missing in returned data, not a physical closure grant.
+        // Q7 a fresh adapter and repeat read return the same value/bytes.
+        // Every Q row performs exactly two GETs and no other HTTP method,
+        // preserving the server's entire original object and resourceVersion.
+        // The existing service supplies transport faults as Kubernetes Status
+        // replies; it is not a second ledger or a fabricated cleanup receipt.
         let Fixture {
             ledger,
             stored,
             calls,
             conflict,
         } = fixture(false);
+        let fingerprint = ledger.configuration_fingerprint().to_owned();
         let (name, uid) = ledger
             .initialize("awaken-system", "worker", "pod-uid")
             .await
@@ -791,7 +823,7 @@ mod tests {
             worker_uid: "pod-uid",
             ledger_name: &name,
             ledger_uid: &uid,
-            configuration_fingerprint: ledger.configuration_fingerprint(),
+            configuration_fingerprint: &fingerprint,
         };
         let request = CreateTicketRequest::new(
             "effect-a",
@@ -851,6 +883,9 @@ mod tests {
             matches!(ledger.seal_group_and_join(binding, "effect-a").await.unwrap(), RequestJoin::Complete(tickets) if tickets.len() == 1),
             "T4"
         );
+        let ticket = ledger.ticket_for(binding, &request).await.unwrap().unwrap();
+        ledger.seal_worker(binding).await.unwrap();
+        let original = stored.lock().unwrap().clone().unwrap();
 
         stored.lock().unwrap().as_mut().unwrap()["metadata"]["uid"] = json!("replacement-uid");
         let writes = calls
@@ -876,6 +911,110 @@ mod tests {
             writes,
             "T5 no foreign mutation"
         );
+
+        let client = ledger.client.clone();
+        drop(ledger);
+        let cold =
+            K8sWorkerCreateLedger::new(client, "awaken-control", "awaken-system", "provider-a")
+                .unwrap();
+        for cause in [
+            "complete",
+            "empty",
+            "worker-open",
+            "group-open",
+            "group-missing",
+            "in-flight",
+            "isolation-pending",
+            "foreign-uid",
+            "foreign-header",
+            "foreign-config",
+            "bad-codec",
+            "404",
+            "403",
+            "legacy-nonce",
+        ] {
+            let mut object = original.clone();
+            let mut state: Value =
+                serde_json::from_str(object["data"]["ledger"].as_str().unwrap()).unwrap();
+            let mut group = "effect-a";
+            let mut expected = Some(RequestJoin::Complete(vec![ticket.clone()]));
+            match cause {
+                "worker-open" => {
+                    state["worker_sealed"] = json!(false);
+                    expected = Some(RequestJoin::Unknown);
+                }
+                "group-open" => {
+                    state["groups"][group] = json!("open");
+                    expected = Some(RequestJoin::Unknown);
+                }
+                "group-missing" => {
+                    group = "never-observed";
+                    expected = Some(RequestJoin::Unknown);
+                }
+                "in-flight" => {
+                    state["tickets"][request.key()]["status"] = json!("in_flight");
+                    expected = Some(RequestJoin::Unknown);
+                }
+                "isolation-pending" => {
+                    state["tickets"][request.key()]["isolation_pending"] = json!(true);
+                    expected = Some(RequestJoin::Unknown);
+                }
+                "empty" => {
+                    state["tickets"] = json!({});
+                    expected = Some(RequestJoin::Complete(Vec::new()));
+                }
+                "foreign-uid" => {
+                    object["metadata"]["uid"] = json!("replacement-uid");
+                    expected = None;
+                }
+                "foreign-header" => {
+                    object["metadata"]["annotations"][WORKER_UID] = json!("foreign-pod");
+                    expected = None;
+                }
+                "foreign-config" => {
+                    object["metadata"]["annotations"][CONFIGURATION] = json!("foreign-config");
+                    expected = None;
+                }
+                "bad-codec" | "404" | "403" => expected = None,
+                "legacy-nonce" => {
+                    state["tickets"][request.key()]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("isolation_id");
+                    let mut historical = ticket.clone();
+                    historical.isolation_id.clear();
+                    expected = Some(RequestJoin::Complete(vec![historical]));
+                }
+                "complete" => {}
+                _ => unreachable!(),
+            }
+            object["data"]["ledger"] = json!(state.to_string());
+            if cause == "bad-codec" {
+                object["data"]["ledger"] = json!("not-json");
+            } else if cause == "403" {
+                object = json!({"apiVersion":"v1","kind":"Status","status":"Failure","code":403,"reason":"Forbidden"});
+            }
+            let before = (cause != "404").then_some(object);
+            *stored.lock().unwrap() = before.clone();
+            let first_call = calls.lock().unwrap().len();
+            for _ in 0..2 {
+                let observed = cold.read_sealed_worker_group(binding, group).await;
+                match &expected {
+                    Some(expected) => assert_eq!(observed.unwrap(), *expected, "Q1–Q7/{cause}"),
+                    None => assert!(observed.is_err(), "Q5/{cause}"),
+                }
+            }
+            assert_eq!(
+                &calls.lock().unwrap()[first_call..],
+                ["GET", "GET"],
+                "Q1–Q7/{cause} only GET"
+            );
+            assert_eq!(
+                *stored.lock().unwrap(),
+                before,
+                "Q1–Q7/{cause} exact bytes remain"
+            );
+        }
     }
 
     #[tokio::test]
