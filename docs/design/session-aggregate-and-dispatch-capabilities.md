@@ -96,3 +96,20 @@ The query roles project facts only. They do not prove physical execution or
 external requests closed, original-domain access, participant disposal or cleanup
 completion. Those facts and the full P0 safe-cleanup workflow remain pending until
 the existing owners supply exact evidence and the Session aggregate accepts it.
+
+Pool composition validates the resolver's required immutable dispatch queue
+before spawning any drain, renewal, depth or maintenance task. Empty lease owners
+are rejected at this same boundary. Every claim cycle verifies the queue again
+before claiming or entering the resolver, including its provider effects.
+Both ordinary and retry-exhausted resolution return a Worker; the Pool checks
+its exact queue identity before driving or terminalizing it. A resolver cannot
+override retry terminalization and bypass this shared execution boundary.
+
+The full durable claim, rather than the Worker's independent-claim default,
+supplies the Pool attempt's owner and renewal authority. Existing claim fences
+continue to protect commits and settlement. Resolver binding rejection is a
+construction error; dynamic Worker mismatch retains and defers the original
+request without committing or settling through the foreign queue. Process
+composition propagates construction errors before starting downstream services.
+Cause/effect matrices cover foreign resolver queues, empty owners, ordinary and
+retry-exhausted claims, foreign dynamic Workers and accepted same-queue execution.

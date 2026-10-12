@@ -838,7 +838,8 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
     .build()
     .expect("validated Host dependencies");
     let _managed = install_test_dispatch_runtime(&host);
-    host.ensure_dispatch_pool();
+    host.ensure_dispatch_pool()
+        .expect("valid test dispatch composition");
 
     let driver = host.clone();
     let mut run =
@@ -1209,7 +1210,8 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
         ctx.active_run.lock().unwrap().is_none(),
         "M1/C3 Managed admission has no foreground hint"
     );
-    host.ensure_dispatch_pool();
+    host.ensure_dispatch_pool()
+        .expect("valid test dispatch composition");
 
     host.interrupt(thread)
         .await

@@ -582,7 +582,9 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
         .build()
         .expect("validated Host dependencies");
     assert!(!ephemeral.dispatch.durable_ingress(), "T1 precondition");
-    ephemeral.ensure_dispatch_pool();
+    ephemeral
+        .ensure_dispatch_pool()
+        .expect("valid test dispatch composition");
     assert!(ephemeral.dispatch.dispatch_pool.get().is_some(), "T1/E1");
 
     let local_store = Arc::new(
@@ -607,7 +609,9 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
         "T2 Host reads the sole authority"
     );
     assert!(local.runs_local_dispatch_pool(), "local");
-    local.ensure_dispatch_pool();
+    local
+        .ensure_dispatch_pool()
+        .expect("valid test dispatch composition");
     assert!(local.dispatch.dispatch_pool.get().is_some(), "T2/E1");
 
     let coordinator_store = Arc::new(
@@ -628,7 +632,9 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
         "T3 one selected queue"
     );
     assert!(!coordinator.runs_local_dispatch_pool(), "coordinator");
-    coordinator.ensure_dispatch_pool();
+    coordinator
+        .ensure_dispatch_pool()
+        .expect("valid test dispatch composition");
     assert!(coordinator.dispatch.dispatch_pool.get().is_none(), "T3/E2");
 }
 
@@ -689,7 +695,9 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         .unwrap())
         .build()
         .unwrap();
-        worker.ensure_dispatch_pool();
+        worker
+            .ensure_dispatch_pool()
+            .expect("valid test dispatch composition");
         assert_eq!(
             worker.dispatch.dispatch_pool.get().unwrap().concurrency(),
             capacity,

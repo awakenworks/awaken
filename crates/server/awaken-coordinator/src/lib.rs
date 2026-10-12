@@ -653,7 +653,9 @@ async fn with_scenario_session_lifecycle(
     prepare_managed_lifecycle_delivery(&managed_state.managed, &managed_state.sessions, None, None)
         .map(|prepared| prepared.start(&lifecycle))
         .expect("scenario Managed lifecycle delivery binds before traffic");
-    coordinator_component::start_runtime_services(&host, dreams).await;
+    coordinator_component::start_runtime_services(&host, dreams)
+        .await
+        .expect("scenario dispatch composition binds before traffic");
     coordinator_component::register_session_lifecycle(&lifecycle, managed_state.sessions);
     coordinator_component::register_runtime_background_drain(&lifecycle, host);
     // The Router owns the same process-lifecycle handle as the Scenario surface.

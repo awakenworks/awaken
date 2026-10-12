@@ -1598,9 +1598,27 @@ async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
     let ttl = 600;
     f.lease.expires_at_unix_ms = f.now + ttl;
     let timing = awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(ttl);
+    // Each independent Session receives its initial Control assertion when it
+    // starts. Renewal runs during setup as it does in the real supervisor;
+    // constructing sixteen blocked reads must not consume the first lease
+    // before the test starts its renewal driver.
+    let stop_renewal = Arc::new(tokio::sync::Notify::new());
+    let driver_stop = stop_renewal.clone();
+    let host = f.host.clone();
+    let renewal = tokio::spawn(async move {
+        loop {
+            host.renew_due_session_realizations(timing).await.unwrap();
+            tokio::select! {
+                _ = driver_stop.notified() => break,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+            }
+        }
+    });
     let mut tasks = Vec::new();
     for index in 0..16 {
         let session = format!("soak-{index:02}");
+        f.lease.expires_at_unix_ms =
+            crate::terminal_repository_publication::runtime_unix_now_ms() + ttl;
         f.control
             .renewals
             .lock()
@@ -1615,7 +1633,6 @@ async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
     }
     let started = std::time::Instant::now();
     while started.elapsed() < std::time::Duration::from_millis(ttl * 10) {
-        f.host.renew_due_session_realizations(timing).await.unwrap();
         for (index, task) in tasks.iter().enumerate() {
             assert!(!task.is_finished(), "L1 session {index}");
             assert!(
@@ -1632,6 +1649,10 @@ async fn cold_staging_renews_for_ten_ttls_with_mixed_control_latency() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
+    // Join the same driver before the deliberate L2 overload; no two renewal
+    // loops overlap and every L1 Control failure propagates through this join.
+    stop_renewal.notify_one();
+    renewal.await.unwrap();
     f.control
         .renewal_delay_ms
         .lock()

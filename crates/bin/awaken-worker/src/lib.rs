@@ -1779,7 +1779,7 @@ impl WorkerNode {
             }
         }
         };
-        host.ensure_dispatch_pool();
+        host.ensure_dispatch_pool()?;
         let credential_probe = credential_liveness::spawn_probe(
             lifecycle.observations.clone(),
             lifecycle.credential_observation_resolver.clone(),
