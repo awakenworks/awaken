@@ -124,18 +124,18 @@ impl SharedHost {
     /// dispatch owner; asynchronous Session children use it in either deployment.
     /// A coordinator-only Host ([`crate::LocalExecution::RemoteWorkersOnly`])
     /// has no pool sizing and remains admission-only. Idempotent.
-    pub fn ensure_dispatch_pool(self: &Arc<Self>) {
+    pub fn ensure_dispatch_pool(self: &Arc<Self>) -> Result<(), awaken_dispatch_execution::Error> {
         let Some(sizing) = self.dispatch.execution.local.pool_sizing() else {
-            return;
+            return Ok(());
         };
         if self.dispatch.dispatch_pool.get().is_some() {
-            return;
+            return Ok(());
         }
         let Some(binding) = self.authority.dispatch_binding() else {
             // Postgres backend not yet initialised — a later `mount` after
             // Coordinator startup supplies the shared dispatch authority and
             // this Host owns only its process-local claimer.
-            return;
+            return Ok(());
         };
         let resolver: Arc<dyn WorkerResolver<AnyDispatchStore>> = Arc::new(HostWorkerResolver {
             host: Arc::downgrade(self),
@@ -160,8 +160,9 @@ impl SharedHost {
             concurrency,
             shared_wake,
             Some(completion),
-        );
+        )?;
         let _ = self.dispatch.dispatch_pool.set(Arc::new(pool));
+        Ok(())
     }
 
     /// Begin a graceful drain of the dispatch pool (scale-in / SIGTERM): stop

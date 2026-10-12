@@ -351,17 +351,17 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     // Test-runtime stack cause/effect decision table. C0 the ordinary libtest
     // thread uses its default stack; C1 every independent projection scenario
     // lives in one outer async state machine; C2 the same scenarios execute in
-    // their original order as bounded inner futures; C3 the primary Host,
+    // their original order as boxed inner futures; C3 the primary Host,
     // Managed adapter, recorder, and claim recorder remain shared. Effects: E0
     // C0+C1 overflows before the behavioral assertions can finish; E1 C0+C2+C3
     // retains every assertion and state dependency while bounding live future
-    // state to one scenario. The larger-stack run is diagnostic evidence only,
+    // state to shared fixtures and one heap-owned scenario. The larger-stack run is diagnostic evidence only,
     // never a test or product runtime requirement.
     //
     // | Rule | Default stack | Segmented | Shared primary state | Effect |
     // | S1 | yes | no  | yes | E0 (red baseline) |
     // | S2 | yes | yes | yes | E1 (all rules complete) |
-    async {
+    Box::pin(async {
         // Co-located Native baseline installation has the same immutable binding
         // rules as the claimed Worker projection. Decision table:
         // B1 valid first install without an early admission marker -> accept
@@ -520,10 +520,10 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 .unwrap_or(false),
             "B6/E4 Dispatch also clears the stale reservation envelope"
         );
-    }
+    })
     .await;
 
-    async {
+    Box::pin(async {
         // Fault-injection rule B6: any fallible Resource verification fails before
         // publishing the complete logical projection. No baseline, workspace,
         // Agent, manifest, prompt, or lease fragment may survive independently. An
@@ -572,7 +572,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 .unwrap_or(true),
             "B6 failed preparation cannot publish partial Session truth"
         );
-    }
+    })
     .await;
 
     let recorder = PromptRecorder::default();
@@ -594,7 +594,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
 
     let managed = crate::ManagedHost::new(host.clone());
 
-    async {
+    Box::pin(async {
         // Complete-install and unattempted Resource-amendment cause/effect table.
         // C0 the application calls the sole complete-projection port in Dispatch
         // mode; C1 a complete frozen dispatch projection already names generation
@@ -705,10 +705,10 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 .unwrap_or(false),
             "A2/E1 exact same-generation content replaces only the staged projection"
         );
-    }
+    })
     .await;
 
-    async {
+    Box::pin(async {
         // Prospective-layout decision rule: F1 a cold projection's Repository is
         // nested below a mount in the same not-yet-resident frozen baseline. F1 must
         // fail before the baseline, Environment, Resource manifest, Skill loader, or
@@ -754,10 +754,10 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             repository_claims.0.lock().unwrap().is_empty(),
             "F1 no Repository verifier effect"
         );
-    }
+    })
     .await;
 
-    async {
+    Box::pin(async {
         let frozen = projection("Use the bound Flow project.", true);
         host.install_frozen_session_projection("flow-thread", frozen.clone(), None, true, None)
             .await
@@ -765,7 +765,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         host.install_frozen_session_projection("flow-thread", frozen, None, true, None)
             .await
             .expect("same frozen fingerprint is idempotent");
-    }
+    })
     .await;
 
     // Branch request-context cause/effect graph: C1 the frozen baseline is
@@ -890,7 +890,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         );
     }
 
-    async {
+    Box::pin(async {
         // Cause graph: C1 frozen Session prompt; C2 current attempt context absent;
         // C3 activation already carries the exact explicit System message. Effects:
         // E1 project exactly one request-only context message; E2 leave Thread input
@@ -977,10 +977,10 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 .all(|message| message.text_content() != "Use the bound Flow project."),
             "E2 derived Session context must never enter a Thread delta"
         );
-    }
+    })
     .await;
 
-    async {
+    Box::pin(async {
         // Request-context decision rule C4: a frozen projection carries one
         // materialized source prefix. Effect E4: the model sees it before current
         // input while the target's committed Thread contains neither a copied source
@@ -1035,10 +1035,10 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 .all(|message| message.id.0 != "source-prefix"),
             "C4/E4 request context is not copied into target truth"
         );
-    }
+    })
     .await;
 
-    async {
+    Box::pin(async {
         let replacement = projection("different", true);
         assert!(
             host.install_frozen_session_projection("flow-thread", replacement, None, true, None)
@@ -1046,10 +1046,10 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 .is_err(),
             "a bound Session cannot switch frozen baselines"
         );
-    }
+    })
     .await;
 
-    async {
+    Box::pin(async {
         // Frozen-config / live-claim cause/effect decision table:
         // | Rule | Baseline/config | Claim epoch | Effect |
         // |---|---|---|---|
@@ -1097,7 +1097,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             vec![Some(1), Some(2)],
             "C2 must not retain the stale claim from C1"
         );
-    }
+    })
     .await;
 }
 

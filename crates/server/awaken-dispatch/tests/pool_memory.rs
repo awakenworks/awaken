@@ -230,6 +230,7 @@ impl WakeSignal for BlackholeWake {
 /// A resolver over a fixed thread → worker map, the test analogue of the host's
 /// session lookup. All workers share the pool's store and owner.
 struct MapResolver {
+    store: Arc<MemoryDispatchStore>,
     workers: HashMap<String, Arc<MemWorker>>,
 }
 
@@ -272,6 +273,7 @@ async fn standalone_reconciler_consumes_hints_and_recovers_lost_hints_by_polling
             ..Default::default()
         },
         Arc::new(MapResolver {
+            store: store.clone(),
             workers: HashMap::new(),
         }),
         None,
@@ -336,6 +338,7 @@ async fn dispatch_shutdown_does_not_depend_on_non_authoritative_publication() {
         let wake = Arc::new(UnavailableWake(std::sync::atomic::AtomicUsize::new(0)));
         let config = DispatchServiceConfig::default();
         let resolver = Arc::new(MapResolver {
+            store: store.clone(),
             workers: HashMap::new(),
         });
         tokio::time::timeout(Duration::from_millis(1), async {
@@ -356,7 +359,7 @@ async fn dispatch_shutdown_does_not_depend_on_non_authoritative_publication() {
                 }
                 1 => {
                     let pool = DispatchPool::spawn_with_wake(
-                        store,
+                        store.clone(),
                         clock,
                         "pool",
                         DEFAULT_LEASE_MS,
@@ -364,7 +367,8 @@ async fn dispatch_shutdown_does_not_depend_on_non_authoritative_publication() {
                         resolver,
                         1,
                         wake.clone(),
-                    );
+                    )
+                    .expect("valid test Pool binding");
                     let _local_fence = pool.begin_drain().await;
                     pool.shutdown().await;
                 }
@@ -399,6 +403,7 @@ async fn dispatch_shutdown_does_not_depend_on_non_authoritative_publication() {
         wake.clone(),
         DispatchServiceConfig::default(),
         Arc::new(MapResolver {
+            store: store.clone(),
             workers: HashMap::new(),
         }),
         None,
@@ -500,11 +505,13 @@ async fn durable_delivery_returns_when_notification_never_returns() {
                     DEFAULT_LEASE_MS,
                     config,
                     Arc::new(MapResolver {
+                        store: store.clone(),
                         workers: HashMap::new(),
                     }),
                     1,
                     wake,
-                );
+                )
+                .expect("valid test Pool binding");
                 pool.deliver(input.clone()).await.unwrap();
                 pool.shutdown().await;
             } else {
@@ -611,6 +618,10 @@ async fn service_full_batch_continues_without_waiting_for_poll_interval() {
 
 #[async_trait]
 impl WorkerResolver<MemoryDispatchStore> for MapResolver {
+    fn dispatch_store(&self) -> Result<Arc<MemoryDispatchStore>, Error> {
+        Ok(self.store.clone())
+    }
+
     async fn worker_for(
         &self,
         thread_id: &ThreadId,
@@ -632,6 +643,10 @@ struct GatedResolver {
 
 #[async_trait]
 impl WorkerResolver<MemoryDispatchStore> for GatedResolver {
+    fn dispatch_store(&self) -> Result<Arc<MemoryDispatchStore>, Error> {
+        Ok(self.worker.store().clone())
+    }
+
     async fn worker_for(
         &self,
         _thread_id: &ThreadId,
@@ -664,7 +679,7 @@ async fn worker_capacity_starts_at_physical_admission_not_claim_resolution() {
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
     let worker = worker_over(runtime, store.clone(), commit.clone());
     let pool = DispatchPool::spawn(
-        store,
+        store.clone(),
         system_clock(),
         "physical-capacity",
         DEFAULT_LEASE_MS,
@@ -675,7 +690,8 @@ async fn worker_capacity_starts_at_physical_admission_not_claim_resolution() {
             release: resolver_release.clone(),
         }),
         1,
-    );
+    )
+    .expect("valid test Pool binding");
     pool.submit(activation_on("capacity-run", "capacity-thread"))
         .await
         .unwrap();
@@ -748,6 +764,7 @@ async fn blocked_predecessor_does_not_consume_unrelated_execution_capacity() {
             ..Default::default()
         },
         Arc::new(MapResolver {
+            store: store.clone(),
             workers: HashMap::from([
                 ("thread-blocked".into(), worker.clone()),
                 ("thread-unrelated".into(), worker),
@@ -755,7 +772,8 @@ async fn blocked_predecessor_does_not_consume_unrelated_execution_capacity() {
         }),
         1,
         Arc::new(LocalWakeSignal::new()),
-    );
+    )
+    .expect("valid test Pool binding");
     pool.notify().await;
 
     assert!(
@@ -837,10 +855,12 @@ async fn blocked_predecessor_does_not_consume_unrelated_execution_capacity() {
 }
 
 struct RejectingResolver {
+    store: Arc<MemoryDispatchStore>,
     calls: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 struct NotReadyResolver {
+    store: Arc<MemoryDispatchStore>,
     calls: Arc<std::sync::atomic::AtomicUsize>,
 }
 
@@ -851,6 +871,10 @@ struct RecoveringBackpressureResolver {
 
 #[async_trait]
 impl WorkerResolver<MemoryDispatchStore> for RecoveringBackpressureResolver {
+    fn dispatch_store(&self) -> Result<Arc<MemoryDispatchStore>, Error> {
+        Ok(self.worker.store().clone())
+    }
+
     async fn worker_for(
         &self,
         _thread_id: &ThreadId,
@@ -872,6 +896,10 @@ impl WorkerResolver<MemoryDispatchStore> for RecoveringBackpressureResolver {
 
 #[async_trait]
 impl WorkerResolver<MemoryDispatchStore> for NotReadyResolver {
+    fn dispatch_store(&self) -> Result<Arc<MemoryDispatchStore>, Error> {
+        Ok(self.store.clone())
+    }
+
     async fn worker_for(
         &self,
         _thread_id: &ThreadId,
@@ -886,6 +914,10 @@ impl WorkerResolver<MemoryDispatchStore> for NotReadyResolver {
 
 #[async_trait]
 impl WorkerResolver<MemoryDispatchStore> for RejectingResolver {
+    fn dispatch_store(&self) -> Result<Arc<MemoryDispatchStore>, Error> {
+        Ok(self.store.clone())
+    }
+
     async fn worker_for(
         &self,
         _thread_id: &ThreadId,
@@ -913,6 +945,10 @@ struct ExhaustionResolver {
 
 #[async_trait]
 impl WorkerResolver<MemoryDispatchStore> for ExhaustionResolver {
+    fn dispatch_store(&self) -> Result<Arc<MemoryDispatchStore>, Error> {
+        Ok(self.terminal_worker.store().clone())
+    }
+
     async fn worker_for(
         &self,
         _thread_id: &ThreadId,
@@ -927,20 +963,22 @@ impl WorkerResolver<MemoryDispatchStore> for ExhaustionResolver {
         ))
     }
 
-    async fn terminalize_retry_exhausted(
+    async fn worker_for_retry_exhausted(
         &self,
-        claimed: &awaken_dispatch::Claimed,
-    ) -> Result<Option<(RunId, RunState)>, Error> {
+        _claimed: &awaken_dispatch::Claimed,
+    ) -> Result<Arc<MemWorker>, Error> {
         self.terminal_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.terminal_worker
-            .terminalize_retry_exhausted(claimed)
-            .await
+        Ok(self.terminal_worker.clone())
     }
 }
 
 #[async_trait]
 impl WorkerResolver<MemoryDispatchStore> for SettlingRejectingResolver {
+    fn dispatch_store(&self) -> Result<Arc<MemoryDispatchStore>, Error> {
+        Ok(self.worker.store().clone())
+    }
+
     async fn worker_for(
         &self,
         _thread_id: &ThreadId,
@@ -976,6 +1014,10 @@ async fn only_the_queue_owner_runs_maintenance_without_disabling_worker_drains()
 
 #[async_trait]
 impl WorkerResolver<FlakyDispatchStore> for FlakyResolver {
+    fn dispatch_store(&self) -> Result<Arc<FlakyDispatchStore>, Error> {
+        Ok(self.worker.store().clone())
+    }
+
     async fn worker_for(
         &self,
         _thread_id: &ThreadId,
@@ -986,6 +1028,7 @@ impl WorkerResolver<FlakyDispatchStore> for FlakyResolver {
 }
 
 struct GatedFlakyResolver {
+    store: Arc<FlakyDispatchStore>,
     worker: Option<Arc<FlakyWorker>>,
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Semaphore>,
@@ -993,6 +1036,10 @@ struct GatedFlakyResolver {
 
 #[async_trait]
 impl WorkerResolver<FlakyDispatchStore> for GatedFlakyResolver {
+    fn dispatch_store(&self) -> Result<Arc<FlakyDispatchStore>, Error> {
+        Ok(self.store.clone())
+    }
+
     async fn worker_for(
         &self,
         _thread_id: &ThreadId,
@@ -1201,7 +1248,8 @@ async fn idle_pool_uses_one_fallback_poller_independent_of_execution_capacity() 
         Arc::new(FlakyResolver { worker }),
         32,
         Arc::new(BlackholeWake),
-    );
+    )
+    .expect("valid test Pool binding");
 
     assert!(wait_for(|| store.claim_attempts() >= 1).await, "P1 poll");
     assert_eq!(store.claim_attempts(), 1, "P1");
@@ -1256,7 +1304,8 @@ async fn settled_predecessor_rearms_a_same_thread_successor_after_a_peer_consume
         Arc::new(FlakyResolver { worker }),
         2,
         Arc::new(BlackholeWake),
-    );
+    )
+    .expect("valid test Pool binding");
 
     assert!(
         wait_for(|| ran.load(Ordering::SeqCst) == 1).await,
@@ -1330,7 +1379,8 @@ async fn special_claim_error_blocks_the_same_tick_ordinary_claim() {
         Arc::new(FlakyResolver { worker }),
         1,
         Arc::new(BlackholeWake),
-    );
+    )
+    .expect("valid test Pool binding");
     assert!(
         wait_for(|| store.retry_exhaustion_claim_attempts() >= 1).await,
         "B1 special attempted"
@@ -1396,7 +1446,8 @@ async fn assert_recovered_claim_thread_concurrency(same_thread: bool) {
         Arc::new(FlakyResolver { worker }),
         2,
         Arc::new(BlackholeWake),
-    );
+    )
+    .expect("valid test Pool binding");
     let first_entered = wait_for(|| ran.load(Ordering::SeqCst) >= 1).await;
     let both_entered = wait_for(|| ran.load(Ordering::SeqCst) == 2).await;
     // Always release and join even on the regression path; a failed assertion
@@ -1479,11 +1530,13 @@ async fn failed_post_commit_observation_relinquishes_and_self_retries() {
             ..DispatchServiceConfig::default()
         },
         Arc::new(MapResolver {
+            store: store.clone(),
             workers: HashMap::from([("parent-session".to_string(), worker)]),
         }),
         1,
         wake,
-    );
+    )
+    .expect("valid test Pool binding");
     pool.notify().await;
 
     let drained = wait_for(|| store.dispatch_count() == 0).await;
@@ -1565,6 +1618,7 @@ async fn unavailable_settlement_observer_does_not_starve_an_independent_thread()
             ..DispatchServiceConfig::default()
         },
         Arc::new(MapResolver {
+            store: store.clone(),
             workers: HashMap::from([
                 ("parent-session".to_string(), worker.clone()),
                 ("healthy-thread".to_string(), worker),
@@ -1572,7 +1626,8 @@ async fn unavailable_settlement_observer_does_not_starve_an_independent_thread()
         }),
         1,
         Arc::new(BlackholeWake),
-    );
+    )
+    .expect("valid test Pool binding");
 
     let progressed = tokio::time::timeout(
         Duration::from_millis(500),
@@ -1663,7 +1718,8 @@ async fn pool_retains_one_renewal_guard_through_a_normal_drive() {
         Arc::new(FlakyResolver { worker }),
         1,
         Arc::new(BlackholeWake),
-    );
+    )
+    .expect("valid test Pool binding");
 
     assert!(
         yield_until(|| ran.load(Ordering::SeqCst) == 1).await,
@@ -1736,7 +1792,8 @@ async fn pool_retains_one_renewal_guard_through_cancellation() {
         },
         Arc::new(FlakyResolver { worker }),
         1,
-    );
+    )
+    .expect("valid test Pool binding");
     store
         .enqueue(RunDispatch::new(activation("one-renewal-cancel")))
         .await
@@ -1805,13 +1862,15 @@ async fn pool_stops_its_only_renewal_guard_after_resolution_failure() {
             ..Default::default()
         },
         Arc::new(GatedFlakyResolver {
+            store: store.clone(),
             worker: None,
             entered: entered.clone(),
             release: release.clone(),
         }),
         1,
         Arc::new(BlackholeWake),
-    );
+    )
+    .expect("valid test Pool binding");
     entered_wait.await;
     tokio::time::advance(Duration::from_millis(30)).await;
     assert!(
@@ -1878,13 +1937,15 @@ async fn expired_replaced_claim_stops_the_only_renewal_and_executes_no_effect() 
             ..Default::default()
         },
         Arc::new(GatedFlakyResolver {
+            store: store.clone(),
             worker: Some(worker),
             entered: entered.clone(),
             release: release.clone(),
         }),
         1,
         Arc::new(BlackholeWake),
-    );
+    )
+    .expect("valid test Pool binding");
     entered_wait.await;
     clock.set(91);
     assert!(
@@ -2460,6 +2521,7 @@ async fn pool_cancellation_is_admitted_then_drained_by_the_frozen_claim() {
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
     let resolver = Arc::new(MapResolver {
+        store: store.clone(),
         workers: HashMap::from([("cancel-thread".to_string(), worker)]),
     });
     let pool = DispatchPool::spawn(
@@ -2473,7 +2535,8 @@ async fn pool_cancellation_is_admitted_then_drained_by_the_frozen_claim() {
         },
         resolver,
         1,
-    );
+    )
+    .expect("valid test Pool binding");
 
     // Cause/effect: the request only admits a durable intent; the already-owned
     // drainer later resolves the frozen activation and commits the terminal fact.
@@ -2522,6 +2585,10 @@ struct RecordingResolver {
 
 #[async_trait]
 impl WorkerResolver<MemoryDispatchStore> for RecordingResolver {
+    fn dispatch_store(&self) -> Result<Arc<MemoryDispatchStore>, Error> {
+        self.inner.dispatch_store()
+    }
+
     async fn worker_for(
         &self,
         thread_id: &ThreadId,
@@ -2544,6 +2611,7 @@ async fn the_pool_forwards_a_claimed_runs_agent_to_the_resolver() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let resolver = Arc::new(RecordingResolver {
         inner: MapResolver {
+            store: store.clone(),
             workers: HashMap::from([("thread-m".to_string(), worker)]),
         },
         seen: seen.clone(),
@@ -2556,7 +2624,8 @@ async fn the_pool_forwards_a_claimed_runs_agent_to_the_resolver() {
         DispatchServiceConfig::default(),
         resolver,
         2,
-    );
+    )
+    .expect("valid test Pool binding");
 
     pool.submit(activation_on("run-m", "thread-m"))
         .await
@@ -2589,6 +2658,7 @@ async fn routing_drives_each_run_on_its_own_threads_runtime() {
     let worker_b = worker_over(text_runtime(), store.clone(), commit_b.clone());
 
     let resolver = Arc::new(MapResolver {
+        store: store.clone(),
         workers: HashMap::from([
             ("thread-a".to_string(), worker_a),
             ("thread-b".to_string(), worker_b),
@@ -2602,7 +2672,8 @@ async fn routing_drives_each_run_on_its_own_threads_runtime() {
         DispatchServiceConfig::default(),
         resolver,
         2,
-    );
+    )
+    .expect("valid test Pool binding");
 
     pool.submit(activation_on("run-a", "thread-a"))
         .await
@@ -2654,6 +2725,7 @@ async fn pool_uses_the_injected_wake_signal() {
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
     let resolver = Arc::new(MapResolver {
+        store: store.clone(),
         workers: HashMap::from([(harness::THREAD.to_string(), worker)]),
     });
     let wake = Arc::new(RecordingWake {
@@ -2674,7 +2746,8 @@ async fn pool_uses_the_injected_wake_signal() {
         resolver,
         1,
         wake.clone() as Arc<dyn WakeSignal>,
-    );
+    )
+    .expect("valid test Pool binding");
 
     pool.submit(activation("run-1")).await.unwrap();
 
@@ -2702,6 +2775,7 @@ async fn a_lost_wake_still_drains_through_the_poll_fallback_to_the_same_outcome(
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
     let resolver = Arc::new(MapResolver {
+        store: store.clone(),
         workers: HashMap::from([(harness::THREAD.to_string(), worker)]),
     });
 
@@ -2718,7 +2792,8 @@ async fn a_lost_wake_still_drains_through_the_poll_fallback_to_the_same_outcome(
         resolver,
         1,
         Arc::new(BlackholeWake) as Arc<dyn WakeSignal>,
-    );
+    )
+    .expect("valid test Pool binding");
 
     pool.submit(activation("run-1")).await.unwrap();
 
@@ -2765,6 +2840,7 @@ async fn pool_signals_completion_sink_on_settle() {
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
     let resolver = Arc::new(MapResolver {
+        store: store.clone(),
         workers: HashMap::from([(harness::THREAD.to_string(), worker)]),
     });
     let sink = Arc::new(RecordingSink::default());
@@ -2778,7 +2854,8 @@ async fn pool_signals_completion_sink_on_settle() {
         resolver,
         1,
         sink.clone() as Arc<dyn CompletionSink>,
-    );
+    )
+    .expect("valid test Pool binding");
 
     pool.submit(activation("run-1")).await.unwrap();
 
@@ -2808,6 +2885,7 @@ async fn dropped_wake_still_drains_via_poll() {
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
     let resolver = Arc::new(MapResolver {
+        store: store.clone(),
         workers: HashMap::from([(harness::THREAD.to_string(), worker)]),
     });
     let pool = DispatchPool::spawn(
@@ -2821,7 +2899,8 @@ async fn dropped_wake_still_drains_via_poll() {
         },
         resolver,
         1,
-    );
+    )
+    .expect("valid test Pool binding");
 
     // Enqueue directly — bypassing the pool's submit(), so no wake is delivered.
     store
@@ -2849,6 +2928,7 @@ async fn crashed_lease_is_recovered_and_redriven() {
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
     let resolver = Arc::new(MapResolver {
+        store: store.clone(),
         workers: HashMap::from([(harness::THREAD.to_string(), worker)]),
     });
 
@@ -2878,7 +2958,8 @@ async fn crashed_lease_is_recovered_and_redriven() {
         },
         resolver,
         1,
-    );
+    )
+    .expect("valid test Pool binding");
 
     // Past the crashed lease, nudge: the pool reclaims and drives the dispatch.
     clock.set(2_000);
@@ -2903,6 +2984,7 @@ async fn staged_cross_thread_delivery_is_relayed_at_least_once() {
     // make the timer unusable as an explanation, then require prompt delivery.
     let store = Arc::new(MemoryDispatchStore::new(system_clock()));
     let resolver = Arc::new(MapResolver {
+        store: store.clone(),
         workers: HashMap::new(),
     });
     let pool = DispatchPool::spawn(
@@ -2916,7 +2998,8 @@ async fn staged_cross_thread_delivery_is_relayed_at_least_once() {
         },
         resolver,
         1,
-    );
+    )
+    .expect("valid test Pool binding");
 
     let thread = ThreadId(harness::THREAD.to_string());
     let staged = PendingInput {
@@ -2968,6 +3051,7 @@ async fn a_resolver_error_is_swallowed_and_the_drain_survives() {
     let good_worker = worker_over(text_runtime(), store.clone(), commit.clone());
     // Only "thread-good" resolves; a run on "orphan-thread" has no worker.
     let resolver = Arc::new(MapResolver {
+        store: store.clone(),
         workers: HashMap::from([("thread-good".to_string(), good_worker)]),
     });
     let pool = DispatchPool::spawn(
@@ -2981,7 +3065,8 @@ async fn a_resolver_error_is_swallowed_and_the_drain_survives() {
         },
         resolver,
         1,
-    );
+    )
+    .expect("valid test Pool binding");
 
     // An orphan run whose thread has no worker: the pool claims it, then `worker_for`
     // errors. The claim is real, but admission rollback returns it to Pending and
@@ -3057,6 +3142,7 @@ async fn concurrency_drives_distinct_runs_in_parallel() {
     let worker_a = worker_over(rt_a, store.clone(), commit_a.clone());
     let worker_b = worker_over(rt_b, store.clone(), commit_b.clone());
     let resolver = Arc::new(MapResolver {
+        store: store.clone(),
         workers: HashMap::from([
             ("thread-a".to_string(), worker_a),
             ("thread-b".to_string(), worker_b),
@@ -3070,7 +3156,8 @@ async fn concurrency_drives_distinct_runs_in_parallel() {
         DispatchServiceConfig::default(),
         resolver,
         2,
-    );
+    )
+    .expect("valid test Pool binding");
 
     pool.submit(activation_on("run-a", "thread-a"))
         .await
@@ -3140,6 +3227,7 @@ async fn concurrency_two_never_enters_two_attempts_for_one_thread() {
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
     let worker = worker_over(runtime, store.clone(), commit);
     let resolver = Arc::new(MapResolver {
+        store: store.clone(),
         workers: HashMap::from([("thread-shared".to_string(), worker)]),
     });
     let pool = DispatchPool::spawn(
@@ -3150,7 +3238,8 @@ async fn concurrency_two_never_enters_two_attempts_for_one_thread() {
         DispatchServiceConfig::default(),
         resolver,
         2,
-    );
+    )
+    .expect("valid test Pool binding");
 
     let mut first_activation = activation_on("same-thread-1", "thread-shared");
     first_activation.input[0].id = awaken_agent_contract::agent::message::Id("same-input-1".into());
@@ -3258,6 +3347,7 @@ async fn shutdown_awaits_an_in_flight_drive() {
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
     let worker = worker_over(runtime, store.clone(), commit.clone());
     let resolver = Arc::new(MapResolver {
+        store: store.clone(),
         workers: HashMap::from([(harness::THREAD.to_string(), worker)]),
     });
     let pool = DispatchPool::spawn(
@@ -3268,7 +3358,8 @@ async fn shutdown_awaits_an_in_flight_drive() {
         DispatchServiceConfig::default(),
         resolver,
         1,
-    );
+    )
+    .expect("valid test Pool binding");
 
     pool.submit(activation("run-1")).await.unwrap();
     assert!(
@@ -3334,6 +3425,7 @@ async fn completion_sink_is_signalled_for_an_awaiting_run() {
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
     let worker = worker_over(runtime, store.clone(), commit.clone());
     let resolver = Arc::new(MapResolver {
+        store: store.clone(),
         workers: HashMap::from([(harness::THREAD.to_string(), worker)]),
     });
     let sink = Arc::new(RecordingSink::default());
@@ -3346,7 +3438,8 @@ async fn completion_sink_is_signalled_for_an_awaiting_run() {
         resolver,
         1,
         sink.clone() as Arc<dyn CompletionSink>,
-    );
+    )
+    .expect("valid test Pool binding");
 
     pool.submit(activation("run-1")).await.unwrap();
     assert!(
@@ -3381,6 +3474,7 @@ async fn every_drive_renews_its_exact_claim_until_settlement() {
         DispatchWorker::new(runtime, store.clone(), commit.clone(), "pool").with_lease_ms(100),
     );
     let resolver = Arc::new(MapResolver {
+        store: store.clone(),
         workers: HashMap::from([(harness::THREAD.to_string(), worker)]),
     });
     let clock = system_clock();
@@ -3398,7 +3492,8 @@ async fn every_drive_renews_its_exact_claim_until_settlement() {
         },
         resolver,
         1,
-    );
+    )
+    .expect("valid test Pool binding");
 
     pool.submit(activation("run-1")).await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), entered.notified())
@@ -3439,6 +3534,10 @@ async fn pool_renews_claim_while_worker_resolution_is_blocked() {
 
     #[async_trait]
     impl WorkerResolver<FlakyDispatchStore> for SlowResolver {
+        fn dispatch_store(&self) -> Result<Arc<FlakyDispatchStore>, Error> {
+            Ok(self.worker.store().clone())
+        }
+
         async fn worker_for(
             &self,
             _thread_id: &ThreadId,
@@ -3485,7 +3584,8 @@ async fn pool_renews_claim_while_worker_resolution_is_blocked() {
             release: release.clone(),
         }),
         1,
-    );
+    )
+    .expect("valid test Pool binding");
 
     pool.submit(activation("slow-resolution")).await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), entered.notified())
@@ -3554,11 +3654,13 @@ async fn renewal_stops_when_claim_resolution_fails() {
             ..Default::default()
         },
         Arc::new(RejectingResolver {
+            store: store.clone(),
             calls: calls.clone(),
         }),
         1,
         Arc::new(BlackholeWake),
-    );
+    )
+    .expect("valid test Pool binding");
 
     assert!(
         wait_for(|| calls.load(Ordering::SeqCst) == 1).await,
@@ -3608,6 +3710,10 @@ async fn assert_resolution_failure_isolation(failing_priority: i64) {
 
     #[async_trait]
     impl WorkerResolver<MemoryDispatchStore> for SelectiveResolver {
+        fn dispatch_store(&self) -> Result<Arc<MemoryDispatchStore>, Error> {
+            Ok(self.worker.store().clone())
+        }
+
         async fn worker_for(
             &self,
             thread: &ThreadId,
@@ -3657,7 +3763,8 @@ async fn assert_resolution_failure_isolation(failing_priority: i64) {
         }),
         1,
         Arc::new(BlackholeWake),
-    );
+    )
+    .expect("valid test Pool binding");
     let progressed = wait_for(|| commit.commit_count() > 0).await;
     pool.shutdown().await;
     assert!(
@@ -3681,6 +3788,10 @@ async fn many_equal_priority_resolution_failures_do_not_accumulate_global_backof
 
     #[async_trait]
     impl WorkerResolver<MemoryDispatchStore> for PrefixRejectingResolver {
+        fn dispatch_store(&self) -> Result<Arc<MemoryDispatchStore>, Error> {
+            Ok(self.worker.store().clone())
+        }
+
         async fn worker_for(
             &self,
             thread: &ThreadId,
@@ -3734,7 +3845,8 @@ async fn many_equal_priority_resolution_failures_do_not_accumulate_global_backof
         }),
         1,
         Arc::new(BlackholeWake),
-    );
+    )
+    .expect("valid test Pool binding");
 
     let progressed_without_global_backoff = tokio::time::timeout(
         Duration::from_millis(500),
@@ -3791,11 +3903,13 @@ async fn session_work_backpressure_defers_only_that_request_then_retries() {
             ..Default::default()
         },
         Arc::new(NotReadyResolver {
+            store: store.clone(),
             calls: calls.clone(),
         }),
         1,
         Arc::new(BlackholeWake),
-    );
+    )
+    .expect("valid test Pool binding");
 
     assert!(
         wait_for(|| calls.load(Ordering::SeqCst) == 1).await,
@@ -3866,7 +3980,8 @@ async fn assert_successive_resolution_failures_retry(concurrency: usize) {
         }),
         concurrency,
         Arc::new(BlackholeWake),
-    );
+    )
+    .expect("valid test Pool binding");
     // Explicit virtual-clock steps allow runnable drain tasks to settle before
     // each deadline. Test timing cannot be decided by host CPU load.
     assert!(yield_until(|| calls.load(Ordering::SeqCst) == 1).await);
@@ -3952,7 +4067,7 @@ async fn session_work_backpressure_rearms_one_retry_after_the_floor() {
         .unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let pool = DispatchPool::spawn_with_wake(
-        store,
+        store.clone(),
         system_clock(),
         "waiting-owner",
         DEFAULT_LEASE_MS,
@@ -3961,11 +4076,13 @@ async fn session_work_backpressure_rearms_one_retry_after_the_floor() {
             ..Default::default()
         },
         Arc::new(NotReadyResolver {
+            store: store.clone(),
             calls: calls.clone(),
         }),
         1,
         Arc::new(BlackholeWake),
-    );
+    )
+    .expect("valid test Pool binding");
 
     assert!(
         wait_for(|| calls.load(Ordering::SeqCst) == 1).await,
@@ -4046,7 +4163,8 @@ async fn returned_resolution_failure_commits_and_settles_when_resolver_owns_that
         }),
         2,
         sink.clone(),
-    );
+    )
+    .expect("valid test Pool binding");
 
     assert!(
         wait_for(|| sink.0.lock().unwrap().len() == runs.len()).await,
@@ -4143,7 +4261,8 @@ async fn drain_terminalizes_retry_exhaustion_without_execution_resolution() {
         }),
         1,
         Arc::new(BlackholeWake),
-    );
+    )
+    .expect("valid test Pool binding");
 
     assert!(
         wait_for(|| commit.run_state(&RunId("poison".into()))
@@ -4235,7 +4354,8 @@ async fn coordinator_maintenance_preserves_exhaustion_until_a_drainer_returns() 
         }),
         1,
         Arc::new(BlackholeWake),
-    );
+    )
+    .expect("valid test Pool binding");
     assert!(
         wait_for(|| commit.run_state(&RunId("poison".into()))
             == Some(RunState::Ended(
@@ -4275,6 +4395,7 @@ async fn begin_drain_stops_claiming_new_work() {
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
     let resolver = Arc::new(MapResolver {
+        store: store.clone(),
         workers: HashMap::from([("thread-d".to_string(), worker)]),
     });
     let pool = DispatchPool::spawn(
@@ -4285,7 +4406,8 @@ async fn begin_drain_stops_claiming_new_work() {
         DispatchServiceConfig::default(),
         resolver,
         2,
-    );
+    )
+    .expect("valid test Pool binding");
 
     // A run submitted while the pool is live drains normally.
     pool.submit(activation_on("run-live", "thread-d"))
@@ -4335,6 +4457,7 @@ async fn authority_suspension_is_reversible_but_drain_is_absorbing() {
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
     let resolver = Arc::new(MapResolver {
+        store: store.clone(),
         workers: HashMap::from([("thread-authority".to_string(), worker)]),
     });
     let pool = DispatchPool::spawn(
@@ -4345,7 +4468,8 @@ async fn authority_suspension_is_reversible_but_drain_is_absorbing() {
         DispatchServiceConfig::default(),
         resolver,
         1,
-    );
+    )
+    .expect("valid test Pool binding");
 
     assert!(pool.is_accepting().await, "A1 precondition");
     pool.suspend_admission().await;
@@ -4395,16 +4519,18 @@ async fn authority_suspension_does_not_cancel_an_in_flight_run() {
     let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
     let worker = worker_over(runtime, store.clone(), commit.clone());
     let pool = DispatchPool::spawn(
-        store,
+        store.clone(),
         system_clock(),
         "pool-in-flight-authority",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig::default(),
         Arc::new(MapResolver {
+            store: store.clone(),
             workers: HashMap::from([("thread-in-flight".to_string(), worker)]),
         }),
         1,
-    );
+    )
+    .expect("valid test Pool binding");
     pool.submit(activation_on("run-in-flight", "thread-in-flight"))
         .await
         .unwrap();
@@ -4428,3 +4554,143 @@ async fn authority_suspension_does_not_cancel_an_in_flight_run() {
 mod maintenance_observations;
 #[path = "pool_memory/queue_depth.rs"]
 mod queue_depth;
+
+struct BindingResolver {
+    store: Arc<MemoryDispatchStore>,
+    worker: Arc<MemWorker>,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl WorkerResolver<MemoryDispatchStore> for BindingResolver {
+    fn dispatch_store(&self) -> Result<Arc<MemoryDispatchStore>, Error> {
+        Ok(self.store.clone())
+    }
+
+    async fn worker_for(&self, _: &ThreadId, _: Option<&str>) -> Result<Arc<MemWorker>, Error> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(self.worker.clone())
+    }
+}
+
+#[tokio::test]
+async fn pool_binding_rejects_foreign_resolvers_and_empty_owners_before_effects() {
+    // B1 same queue + named owner -> construct and join; B2 foreign queue;
+    // B3 empty owner; B4 whitespace owner -> reject before task/claim/resolver
+    // entry. The resolver counter represents its pre-drive provider effects.
+    for (same_queue, owner, accepted) in [
+        (true, "pool-owner", true),
+        (false, "pool-owner", false),
+        (true, "", false),
+        (true, " ", false),
+    ] {
+        let store = Arc::new(MemoryDispatchStore::new(system_clock()));
+        let foreign = Arc::new(MemoryDispatchStore::new(system_clock()));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let declared = if same_queue {
+            store.clone()
+        } else {
+            foreign.clone()
+        };
+        let worker = worker_over(
+            text_runtime(),
+            declared.clone(),
+            Arc::new(MemoryCommitCoordinator::new(system_clock())),
+        );
+        let result = DispatchPool::spawn(
+            store.clone(),
+            system_clock(),
+            owner,
+            DEFAULT_LEASE_MS,
+            DispatchServiceConfig::default(),
+            Arc::new(BindingResolver {
+                store: declared,
+                worker,
+                calls: calls.clone(),
+            }),
+            1,
+        );
+        assert_eq!(
+            result.is_ok(),
+            accepted,
+            "queue={same_queue}, owner={owner:?}"
+        );
+        if let Ok(pool) = result {
+            pool.shutdown().await;
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(store.dispatch_count(), 0);
+        assert_eq!(foreign.dispatch_count(), 0);
+    }
+}
+
+#[tokio::test]
+async fn pool_validates_dynamic_workers_for_execution_and_retry_terminalization() {
+    // D1 ordinary / D2 retry-exhausted claim x exact/foreign Worker queue.
+    // Exact Workers use the Pool's full claim owner, even when their default
+    // independent-claim owner differs. Foreign Workers must never commit or
+    // settle on either queue; the original durable request is retained.
+    for exhausted in [false, true] {
+        for same_queue in [false, true] {
+            let clock = Arc::new(ManualClock::new(0));
+            let store = Arc::new(MemoryDispatchStore::new(clock.clone()));
+            let foreign = Arc::new(MemoryDispatchStore::new(clock.clone()));
+            let run = RunId("binding-run".into());
+            store
+                .enqueue(RunDispatch::new(activation_on(&run.0, "binding-thread")))
+                .await
+                .unwrap();
+            if exhausted {
+                store
+                    .claim("predecessor", 1, &Default::default())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                clock.set(2);
+            }
+            let commit = Arc::new(MemoryCommitCoordinator::new(system_clock()));
+            let selected = if same_queue {
+                store.clone()
+            } else {
+                foreign.clone()
+            };
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let worker = worker_over(text_runtime(), selected, commit.clone());
+            let pool = DispatchPool::spawn_with_wake(
+                store.clone(),
+                clock,
+                "binding-owner",
+                DEFAULT_LEASE_MS,
+                DispatchServiceConfig {
+                    max_attempts: if exhausted { 1 } else { 5 },
+                    terminal_reconciliation_interval: None,
+                    sample_dispatch_queue_depth: false,
+                    ..Default::default()
+                },
+                Arc::new(BindingResolver {
+                    store: store.clone(),
+                    worker,
+                    calls: calls.clone(),
+                }),
+                1,
+                Arc::new(BlackholeWake),
+            )
+            .expect("the declared immutable queue is correct");
+            assert!(wait_for(|| calls.load(std::sync::atomic::Ordering::SeqCst) > 0).await);
+            if same_queue {
+                assert!(wait_for(|| store.dispatch_count() == 0).await);
+                assert!(commit.commit_count() > 0);
+            }
+            pool.shutdown().await;
+            if !same_queue {
+                assert_eq!(
+                    commit.commit_count(),
+                    0,
+                    "foreign Worker cannot author truth"
+                );
+                assert_eq!(store.dispatch_count(), 1, "the original request survives");
+            }
+            assert_eq!(foreign.dispatch_count(), 0);
+        }
+    }
+}

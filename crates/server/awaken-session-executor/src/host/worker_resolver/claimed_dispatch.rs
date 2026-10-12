@@ -4,6 +4,7 @@
 
 use super::session_realization::WorkerMcpEffects;
 use super::*;
+use awaken_dispatch_execution::{DispatchWorker, Error};
 use awaken_session_configuration_contract::SessionRuntimeProjection;
 
 /// Project the already-installed frozen Session facts into claimed-dispatch
@@ -24,10 +25,7 @@ pub(super) async fn adopt_bound_sandbox(
     run_id: &RunId,
     provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
     recovery: awaken_dispatch_contract::WorkerRecoveryMode,
-) -> Result<
-    crate::host::session::SessionEnvironmentAdoptionDisposition,
-    awaken_dispatch_execution::Error,
-> {
+) -> Result<crate::host::session::SessionEnvironmentAdoptionDisposition, Error> {
     let provider = host
         .realizer
         .session_environment_provider_for_thread(expected_sandbox_id, provisioning)
@@ -51,7 +49,7 @@ pub(super) async fn adopt_bound_sandbox(
 fn decode_dispatched_projection(
     envelope: &awaken_dispatch_contract::SessionRuntimeEnvelope,
     run_id: &awaken_agent_contract::agent::run::Id,
-) -> Result<SessionRuntimeProjection, awaken_dispatch_execution::Error> {
+) -> Result<SessionRuntimeProjection, Error> {
     envelope
         .decode_with(SessionRuntimeProjection::decode)
         .map_err(|error| {
@@ -69,10 +67,7 @@ impl HostWorkerResolver {
         claimed: &awaken_dispatch_contract::Claimed,
         session_thread_id: &awaken_agent_contract::agent::thread::Id,
         publication_source: Arc<awaken_runtime_contract::StaticPublishedAgentSnapshots>,
-    ) -> Result<
-        Arc<awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>>,
-        awaken_dispatch_execution::Error,
-    > {
+    ) -> Result<Arc<DispatchWorker<AnyDispatchStore>>, Error> {
         crate::agent_runner::validate_child_tool_configuration(
             &claimed.request.activation.snapshot,
             claimed.request.activation.inherited_toolsets(),
@@ -148,7 +143,7 @@ impl HostWorkerResolver {
         host: &SharedHost,
         session_id: &str,
         stages: Vec<awaken_session_mcp_contract::StageMcpAttachment>,
-    ) -> Result<(), awaken_dispatch_execution::Error> {
+    ) -> Result<(), Error> {
         use awaken_session_execution_contract::McpAttachmentRealizer as _;
 
         let existing = host.active_mcp_projections(session_id);
@@ -224,6 +219,14 @@ impl HostWorkerResolver {
 
 #[async_trait::async_trait]
 impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
+    fn dispatch_store(&self) -> Result<Arc<AnyDispatchStore>, Error> {
+        self.host()?
+            .authority
+            .dispatch_binding()
+            .map(|binding| binding.queue())
+            .ok_or_else(|| Self::execution_error("dispatch backend is not initialized"))
+    }
+
     fn credential_realization_capabilities(
         &self,
     ) -> awaken_credential_contract::CredentialRealizationCapabilities {
@@ -237,10 +240,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         &self,
         thread_id: &awaken_agent_contract::agent::thread::Id,
         agent_id: Option<&str>,
-    ) -> Result<
-        Arc<awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>>,
-        awaken_dispatch_execution::Error,
-    > {
+    ) -> Result<Arc<DispatchWorker<AnyDispatchStore>>, Error> {
         let host = self.host()?;
         Self::require_local_execution(&host)?;
         self.resolve(&host, thread_id, agent_id.filter(|id| !id.is_empty()), None)
@@ -250,10 +250,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
     async fn worker_for_claimed(
         &self,
         claimed: &awaken_dispatch_contract::Claimed,
-    ) -> Result<
-        Arc<awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>>,
-        awaken_dispatch_execution::Error,
-    > {
+    ) -> Result<Arc<DispatchWorker<AnyDispatchStore>>, Error> {
         let host = self.host()?;
         Self::require_local_execution(&host)?;
         // Reservation repair owns no executable Run yet. It needs only the
@@ -262,12 +259,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         // here can both block repair and create effects before admission.
         if claimed.session_activity_admission_required {
             let thread_id = claimed.request.session_thread_id();
-            let commit = Arc::new(
-                host.authority
-                    .open_commit(&thread_id.0)
-                    .await
-                    .map_err(|error| Self::execution_error(error.to_string()))?,
-            );
+            let commit = Self::open_commit(&host, thread_id).await?;
             return Ok(Arc::new(
                 self.boundary_worker(&host, claimed, commit, None, false)
                     .await?,
@@ -500,16 +492,11 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
     async fn settle_claimed_resolution_failure(
         &self,
         claimed: &awaken_dispatch_contract::Claimed,
-        error: awaken_dispatch_execution::Error,
-    ) -> Result<Option<(RunId, RunState)>, awaken_dispatch_execution::Error> {
+        error: Error,
+    ) -> Result<Option<(RunId, RunState)>, Error> {
         let host = self.host()?;
         let thread_id = claimed.request.session_thread_id();
-        let commit = Arc::new(
-            host.authority
-                .open_commit(&thread_id.0)
-                .await
-                .map_err(|commit_error| Self::execution_error(commit_error.to_string()))?,
-        );
+        let commit = Self::open_commit(&host, thread_id).await?;
         let worker = self
             .boundary_worker(&host, claimed, commit, None, false)
             .await?;
@@ -518,32 +505,27 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             .await
     }
 
-    async fn terminalize_retry_exhausted(
+    async fn worker_for_retry_exhausted(
         &self,
         claimed: &awaken_dispatch_contract::Claimed,
-    ) -> Result<Option<(RunId, RunState)>, awaken_dispatch_execution::Error> {
+    ) -> Result<Arc<DispatchWorker<AnyDispatchStore>>, Error> {
         let host = self.host()?;
         let thread_id = claimed.request.session_thread_id();
-        let commit = Arc::new(
-            host.authority
-                .open_commit(&thread_id.0)
-                .await
-                .map_err(|error| Self::execution_error(error.to_string()))?,
-        );
+        let commit = Self::open_commit(&host, thread_id).await?;
         let worker = self
             .boundary_worker(&host, claimed, commit, None, false)
             .await?;
-        worker.terminalize_retry_exhausted(claimed).await
+        Ok(Arc::new(worker))
     }
 
     async fn reconcile_committed_terminals(
         &self,
         limit: usize,
-    ) -> Result<Vec<(RunId, RunState)>, awaken_dispatch_execution::Error> {
+    ) -> Result<Vec<(RunId, RunState)>, Error> {
         crate::host::dispatch_reconciliation::reconcile_committed_terminals(self, limit).await
     }
 
-    async fn reconcile_worker_evidence(&self) -> Result<(), awaken_dispatch_execution::Error> {
+    async fn reconcile_worker_evidence(&self) -> Result<(), Error> {
         self.host()?.reconcile_worker_evidence().await
     }
 }

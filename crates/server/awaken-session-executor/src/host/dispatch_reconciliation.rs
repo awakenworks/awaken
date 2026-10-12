@@ -39,12 +39,7 @@ impl HostWorkerResolver {
         awaken_dispatch_execution::Error,
     > {
         let thread_id = claimed.request.session_thread_id();
-        let commit = Arc::new(
-            host.authority
-                .open_commit(&thread_id.0)
-                .await
-                .map_err(|error| Self::execution_error(error.to_string()))?,
-        );
+        let commit = Self::open_commit(host, thread_id).await?;
         Ok(Arc::new(
             self.boundary_worker(host, claimed, commit, None, true)
                 .await?,
@@ -1039,7 +1034,10 @@ mod tests {
         };
         assert_eq!(
             resolver
-                .terminalize_retry_exhausted(&claimed,)
+                .worker_for_retry_exhausted(&claimed)
+                .await
+                .expect("exact retry boundary Worker")
+                .terminalize_retry_exhausted(&claimed)
                 .await
                 .expect("H1 terminalization"),
             Some((

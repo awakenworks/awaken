@@ -30,7 +30,8 @@ async fn queue_depth_sampling_is_independent_of_pool_width_and_fallback_poll() {
         Arc::new(FlakyResolver { worker }),
         16,
         Arc::new(BlackholeWake),
-    );
+    )
+    .expect("valid test Pool binding");
     for _ in 0..200 {
         if store.depth_reads() == 1 && store.claim_attempts() >= 1 {
             break;
@@ -79,7 +80,8 @@ async fn hosted_pool_does_not_duplicate_its_depth_observer() {
         Arc::new(FlakyResolver { worker }),
         16,
         Arc::new(BlackholeWake),
-    );
+    )
+    .expect("valid test Pool binding");
     for _ in 0..200 {
         if store.claim_attempts() >= 1 {
             break;

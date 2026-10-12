@@ -11,6 +11,9 @@ struct ObservedResolver {
 }
 #[async_trait]
 impl WorkerResolver<awaken_dispatch::AnyDispatchStore> for ObservedResolver {
+    fn dispatch_store(&self) -> Result<Arc<awaken_dispatch::AnyDispatchStore>, Error> {
+        Ok(self.worker.store().clone())
+    }
     async fn worker_for(
         &self,
         _thread: &ThreadId,
@@ -128,6 +131,7 @@ async fn check_case(
                 wake.clone(),
                 None,
             )
+            .expect("valid test Pool binding")
             .shutdown(),
         ),
         "reconciler" => {

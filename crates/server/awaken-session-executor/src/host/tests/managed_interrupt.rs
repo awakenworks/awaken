@@ -163,7 +163,8 @@ async fn interrupt_with_admission_suspended(
     let host = (host).build().expect("validated Host dependencies");
     install_recording_session_application(&host);
     let managed = install_test_dispatch_runtime(&host);
-    host.ensure_dispatch_pool();
+    host.ensure_dispatch_pool()
+        .expect("valid test dispatch composition");
 
     let mut activation =
         crate::host::worker_resolver::test_support::test_activation(thread, &run_id.0);
