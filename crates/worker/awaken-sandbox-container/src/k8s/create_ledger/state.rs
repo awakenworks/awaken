@@ -38,7 +38,10 @@ pub enum TicketResult {
 }
 
 impl TicketResult {
-    fn validate(&self) -> Result<(), RuntimeError> {
+    /// Validate the existing definitive-result shape. This does not establish
+    /// original request identity, isolation purpose or physical closure; those
+    /// remain with the caller and the ledger's controlled transitions.
+    pub fn validate(&self) -> Result<(), RuntimeError> {
         match self {
             Self::Created { uid } | Self::Isolated { uid }
                 if !uid.trim().is_empty() && uid.trim() == uid =>
@@ -928,10 +931,45 @@ mod tests {
         // U2 malformed/cross-group ticket or wrong version is rejected on
         // read; U3 whole Worker closure prevents new admissions but permits
         // an independent executor to complete a previously admitted request.
+        // U4 shared result law: Created/Isolated with exact nonblank UID ->
+        // validate; empty/blank/outer-spaced -> reject. Embedded controls and
+        // long opaque UIDs preserve this law's old semantics (not the handle,
+        // Worker coordinate or Package text profiles). Validation alone grants
+        // no Created/isolation purpose and does not mutate or complete a ticket.
+        // U5 the existing five definitive refusal codes validate; timeout,
+        // throttling and server errors do not. Broker and ledger consume this
+        // same partition; its original U1 transition assertions stay below.
+        for code in [400, 401, 403, 409, 422] {
+            assert!(
+                TicketResult::RejectedNoEffect { code }.validate().is_ok(),
+                "U5 {code}"
+            );
+        }
+        let long_uid = "u".repeat(4097);
+        for (uid, valid) in [
+            ("pod-uid", true),
+            ("", false),
+            (" \t ", false),
+            (" pod-uid ", false),
+            ("pod\nuid", true),
+            ("pod\0uid", true),
+            (long_uid.as_str(), true),
+        ] {
+            for result in [
+                TicketResult::Created { uid: uid.into() },
+                TicketResult::Isolated { uid: uid.into() },
+            ] {
+                assert_eq!(result.validate().is_ok(), valid, "U4 {result:?}");
+            }
+        }
         let first = request("pod-a", 'a');
         let mut ledger = WorkerCreateLedgerState::default();
         ledger.admit(&first, ISOLATION_ID).unwrap();
         for code in [408, 429, 500, 503] {
+            assert!(
+                TicketResult::RejectedNoEffect { code }.validate().is_err(),
+                "U1 result {code}"
+            );
             assert!(
                 ledger
                     .finish(&first, TicketResult::RejectedNoEffect { code })
