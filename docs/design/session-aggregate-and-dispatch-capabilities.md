@@ -143,3 +143,14 @@ Environment execution implements both roles and has no dependency on the Session
 application. Its former cross-context application exception is removed. The
 immutable configuration owns and validates the only logical realization-owner
 string; topology decisions read the frozen Session aggregate directly.
+
+Recorded permission attribution now uses `ScopedToolPermissionKey`: the SDK
+Thread id, a distinct committed Message or pending Run source, and the call id.
+The pure reducer preserves the first recorded decision for that exact source.
+It rejects historical source-kind aliases before converting to the compatible
+public ToolUse coordinates; it never selects a permission by audit order or
+policy strength. Existing public ids remain unchanged for unambiguous history.
+The protocol replaces its disposable permission index only after the whole
+reduction succeeds, retaining the previous index when a refresh is corrupt.
+The decision table crosses identical/different source bytes and forward/reverse
+audits, alongside Thread/Run/step reuse, replay and exact-prefix constraints.

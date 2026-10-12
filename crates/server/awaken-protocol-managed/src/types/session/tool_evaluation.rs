@@ -71,8 +71,8 @@ impl RecordedPermission {
         Ok(
             awaken_managed_session_events::recorded_tool_permissions(index)?
                 .into_iter()
-                .filter_map(|(key, recorded)| {
-                    Self::from_recorded(recorded).map(|recorded| (key, recorded))
+                .filter_map(|(key, fact)| {
+                    Self::from_recorded(fact).map(|view| (key.public_tool_coordinates(), view))
                 })
                 .collect(),
         )

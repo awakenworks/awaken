@@ -4,6 +4,9 @@
 //! Recorded gate decisions keyed by their Thread, committed source and call.
 
 use crate::{OrderIndex, ProjectionError};
+use awaken_agent_contract::agent::{
+    message::Id as MessageId, run::Id as RunId, thread::Id as ThreadId,
+};
 use awaken_agent_contract::audit::{
     kind::Kind,
     permission::{PermissionDecider, PermissionPolicy, PermissionReasonCode},
@@ -25,7 +28,53 @@ pub struct RecordedToolPermission {
 /// Call ids can repeat between Threads, Runs and steps. The existing public
 /// tool identity uses the owning Message id (or the exact pending Run id), so
 /// this index uses that same source rather than a second occurrence counter.
-pub type RecordedToolPermissions = HashMap<(String, String, String), RecordedToolPermission>;
+pub type RecordedToolPermissions = HashMap<ScopedToolPermissionKey, RecordedToolPermission>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ToolPermissionSource {
+    Message(MessageId),
+    PendingRun(RunId),
+}
+
+/// Exact owning Thread, source kind and call. Message and Run coordinates remain
+/// different identities even when a historical source used identical bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ScopedToolPermissionKey {
+    thread: ThreadId,
+    source: ToolPermissionSource,
+    call: String,
+}
+
+impl ScopedToolPermissionKey {
+    #[must_use]
+    pub fn message(thread: ThreadId, source: MessageId, call: String) -> Self {
+        Self {
+            thread,
+            source: ToolPermissionSource::Message(source),
+            call,
+        }
+    }
+
+    #[must_use]
+    pub fn pending_run(thread: ThreadId, source: RunId, call: String) -> Self {
+        Self {
+            thread,
+            source: ToolPermissionSource::PendingRun(source),
+            call,
+        }
+    }
+
+    /// Compatible protocol coordinates, admitted only after the reducer checks
+    /// that flattening source kinds cannot alias two different occurrences.
+    #[must_use]
+    pub fn public_tool_coordinates(&self) -> (String, String, String) {
+        let source = match &self.source {
+            ToolPermissionSource::Message(id) => &id.0,
+            ToolPermissionSource::PendingRun(id) => &id.0,
+        };
+        (self.thread.0.clone(), source.clone(), self.call.clone())
+    }
+}
 
 pub fn recorded_tool_permissions(
     index: &OrderIndex<'_>,
@@ -90,7 +139,7 @@ pub fn recorded_tool_permissions(
                     }
                     _ => {
                         latest = Some(cursor);
-                        source = Some(message.id.0.clone());
+                        source = Some(ToolPermissionSource::Message(message.id.clone()));
                     }
                 }
             }
@@ -101,7 +150,8 @@ pub fn recorded_tool_permissions(
                     "historical permission Message has no exact Run coordinate",
                 ));
             }
-            let source = source.unwrap_or_else(|| event.run_id.0.clone());
+            let source =
+                source.unwrap_or_else(|| ToolPermissionSource::PendingRun(event.run_id.clone()));
             let policy_decided = match event.payload.get("decided_by") {
                 None => true,
                 Some(label) => matches!(
@@ -118,7 +168,11 @@ pub fn recorded_tool_permissions(
                 .payload
                 .get("reason_code")
                 .and_then(|value| serde_json::from_value(value.clone()).ok());
-            let key = (snapshot.thread_id.0.clone(), source, call_id.to_string());
+            let key = ScopedToolPermissionKey {
+                thread: snapshot.thread_id.clone(),
+                source,
+                call: call_id.to_string(),
+            };
             let recorded = RecordedToolPermission {
                 decision,
                 policy,
@@ -147,6 +201,19 @@ pub fn recorded_tool_permissions(
                     }
                 }
             }
+        }
+    }
+    // The public ToolUse codec intentionally retains its existing source id.
+    // Historical Message/Run aliasing must fail before any disposable cache is
+    // replaced; it cannot be guessed from audit order or policy strength.
+    let mut public_sources = HashMap::new();
+    for key in decisions.keys() {
+        if let Some(previous) = public_sources.insert(key.public_tool_coordinates(), &key.source)
+            && previous != &key.source
+        {
+            return Err(ProjectionError::corrupt(
+                "permission Message and pending Run share an ambiguous public ToolUse coordinate",
+            ));
         }
     }
     Ok(decisions
@@ -189,6 +256,17 @@ mod tests {
             outcomes: &[],
             historical_pending: &historical_pending,
         }))
+    }
+
+    fn message_key(thread: &str, message: String) -> ScopedToolPermissionKey {
+        ScopedToolPermissionKey::message(ThreadId(thread.into()), MessageId(message), "call".into())
+    }
+    fn pending_key(thread: &str, run: &str) -> ScopedToolPermissionKey {
+        ScopedToolPermissionKey::pending_run(
+            ThreadId(thread.into()),
+            RunId(run.into()),
+            "call".into(),
+        )
     }
 
     fn snapshot(thread: &str) -> RunRecoverySnapshot {
@@ -240,20 +318,11 @@ mod tests {
         let backward = permissions([&child, &root].into_iter()).unwrap();
         assert_eq!(forward, backward);
         assert_eq!(
-            forward[&(
-                "root".into(),
-                MessageId::assistant(&RunId("run".into()), 1).0,
-                "call".into()
-            )]
-                .decision,
+            forward[&message_key("root", MessageId::assistant(&RunId("run".into()), 1).0)].decision,
             GateAuditDecision::Allow
         );
         assert_eq!(
-            forward[&(
-                "child".into(),
-                MessageId::assistant(&RunId("run".into()), 1).0,
-                "call".into()
-            )]
+            forward[&message_key("child", MessageId::assistant(&RunId("run".into()), 1).0)]
                 .decision,
             GateAuditDecision::Deny
         );
@@ -274,10 +343,7 @@ mod tests {
             ("run-b", 3, GateAuditDecision::Ask),
         ] {
             let source = MessageId::assistant(&RunId(run.into()), step).0;
-            assert_eq!(
-                decisions[&("thread".into(), source, "call".into())].decision,
-                decision
-            );
+            assert_eq!(decisions[&message_key("thread", source)].decision, decision);
         }
     }
     #[test]
@@ -295,18 +361,55 @@ mod tests {
         evidence.store_cursor = 2;
         let decisions = permissions([&evidence].into_iter()).unwrap();
         assert_eq!(
-            decisions[&(
-                "thread".into(),
-                MessageId::assistant(&RunId("run-a".into()), 1).0,
-                "call".into()
-            )]
+            decisions[&message_key("thread", MessageId::assistant(&RunId("run-a".into()), 1).0)]
                 .decision,
             GateAuditDecision::Deny
         );
         assert_eq!(
-            decisions[&("thread".into(), "run-b".into(), "call".into())].decision,
+            decisions[&pending_key("thread", "run-b")].decision,
             GateAuditDecision::Ask
         );
+    }
+
+    #[test]
+    fn equal_message_and_pending_run_source_ids_cannot_transfer_permissions() {
+        // P1 an earlier audit has no Message at its commit; P2 a later exact
+        // legacy Message has the same bytes as that Run id. The public source
+        // coordinate cannot distinguish them, so projection must refuse the
+        // ambiguity, never carry the earlier Allow onto the later occurrence.
+        // P3 distinct source bytes remain separate and keep both decisions.
+        // All rules cross forward/reverse audit enumeration.
+        for source in ["run", "different-message"] {
+            for reverse in [false, true] {
+                let mut evidence = snapshot("thread");
+                append(&mut evidence, "run", 2, "deny");
+                evidence.messages[0].id = MessageId(source.into());
+                let mut pending = evidence.events[0].clone();
+                pending.sequence = encode_run_lifecycle_cursor(1, 0).unwrap().0;
+                pending.payload["decision"] = serde_json::json!("allow");
+                evidence.events.insert(0, pending);
+                if reverse {
+                    evidence.events.reverse();
+                }
+                let result = permissions([&evidence].into_iter());
+                if source == "run" {
+                    assert!(result.is_err(), "P1+P2: distinct source kinds cannot alias");
+                } else {
+                    let decisions = result.expect("P3: disjoint sources");
+                    assert_eq!(decisions.len(), 2);
+                    assert!(
+                        decisions
+                            .values()
+                            .any(|permission| permission.decision == GateAuditDecision::Allow)
+                    );
+                    assert!(
+                        decisions
+                            .values()
+                            .any(|permission| permission.decision == GateAuditDecision::Deny)
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -333,7 +436,7 @@ mod tests {
         pending.message_commit_cursors.clear();
         let decisions = permissions([&pending].into_iter()).unwrap();
         assert_eq!(
-            decisions[&("thread".into(), "run".into(), "call".into())].decision,
+            decisions[&pending_key("thread", "run")].decision,
             GateAuditDecision::Deny
         );
     }
@@ -388,10 +491,7 @@ mod tests {
             let mut spoofed = evidence.clone();
             spoofed.messages[0].role = role;
             let index = permissions([&spoofed].into_iter()).unwrap();
-            assert!(
-                index.contains_key(&("thread".into(), "run".into(), "call".into())),
-                "R3"
-            );
+            assert!(index.contains_key(&pending_key("thread", "run")), "R3");
         }
         for cursor in [0, 2] {
             let mut invalid = evidence.clone();
@@ -419,12 +519,7 @@ mod tests {
         let index = permissions([&evidence].into_iter()).unwrap();
         assert_eq!(index.len(), 1, "R3");
         assert_eq!(
-            index[&(
-                "thread".into(),
-                MessageId::assistant(&RunId("run".into()), 3).0,
-                "call".into()
-            )]
-                .decision,
+            index[&message_key("thread", MessageId::assistant(&RunId("run".into()), 3).0)].decision,
             GateAuditDecision::Ask,
             "R3"
         );

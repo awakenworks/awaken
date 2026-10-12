@@ -105,6 +105,48 @@ async fn wire_tool_identity_and_permission_use_the_exact_selected_message_or_pen
         .unwrap()
         .clone();
     record.project_recorded_permissions(&index).unwrap();
+    // P4 the complete reducer rejects a historical source-kind collision before
+    // replacing the disposable cache. Every prior unambiguous wire decision
+    // must remain available after this failed refresh.
+    let retained_permissions = record.permission_decisions.clone();
+    let alias_run = RunId("legacy-alias".into());
+    let mut ambiguous = root.clone();
+    ambiguous.messages = vec![Message::new(
+        MessageId(alias_run.0.clone()),
+        Role::Assistant,
+        vec![ContentBlock::tool_use(
+            "same",
+            "read",
+            serde_json::json!({}),
+        )],
+    )];
+    ambiguous.message_commit_cursors = vec![20];
+    ambiguous.events = vec![
+        audit(10, alias_run.clone(), "allow"),
+        audit(20, alias_run, "deny"),
+    ];
+    let empty_children = Default::default();
+    let ambiguous_index = awaken_managed_session_events::OrderIndex::new(
+        awaken_managed_session_events::OrderEvidence {
+            session_id: &session.id,
+            batches: &[],
+            closed_intervals: &[],
+            budget_reach: &[],
+            parent_terminal: Default::default(),
+            lifecycle: &[],
+            root: Some(&ambiguous),
+            children: &empty_children,
+            links: &[],
+            outcomes: &[],
+            historical_pending: &historical,
+        },
+    );
+    assert!(
+        record
+            .project_recorded_permissions(&ambiguous_index)
+            .is_err()
+    );
+    assert_eq!(record.permission_decisions, retained_permissions);
     let pending = Pending {
         tool_use_id: "same".into(),
         name: "read".into(),

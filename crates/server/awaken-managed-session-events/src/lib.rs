@@ -99,4 +99,7 @@ pub use transcript_plan::{
 };
 pub use usage::{committed_thread_usage, session_usage_as_of};
 
-pub use permission::{RecordedToolPermission, RecordedToolPermissions, recorded_tool_permissions};
+pub use permission::{
+    RecordedToolPermission, RecordedToolPermissions, ScopedToolPermissionKey,
+    recorded_tool_permissions,
+};
