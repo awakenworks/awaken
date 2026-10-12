@@ -143,3 +143,206 @@ pub async fn assert_retirement(
 }
 
 use awaken_dispatch_testkit::ConformanceDispatch;
+
+/// GC is not an execution-close acknowledgement. One matrix runs against
+/// Memory, SQLite and PostgreSQL through their existing TTL test cases.
+pub async fn assert_purge_retains_occupied(
+    store: &impl ConformanceDispatch,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
+) {
+    // Causes: C1 a cancelled, expired row is dead-lettered; C2 its original
+    // physical slot is bound/unbound; C3 its entry is open/closing; C4 the
+    // cutoff is before/at its recorded dead-letter time; C5 an exact independent
+    // closure ACK has retired that slot. Effects: E1 ordinary empty rows obey
+    // the original TTL boundary; E2 either GC entry point retains every occupied
+    // row and the exact binding/Worker/epoch/physical reference; E3 only the
+    // original close+finish transition makes it eligible for GC.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+    // | G1 | yes | empty | open | before | no | E1 retain younger empty |
+    // | G2 | yes | empty | open | at | no | E1 remove only empty in mixed set |
+    // | G3 | yes | bound/unbound | open/closing | any | no | E2 retain exact slot |
+    // | G4 | yes | bound/unbound | closing | at | yes | E3 GC after exact ACK |
+    // These are storage-retention assertions, not fabricated provider stop,
+    // request-join, resource disposal, or whole-Session closure evidence.
+    let mut retained = Vec::new();
+    for (name, bound, closing) in [
+        ("purge-bound", true, false),
+        ("purge-bound-closing", true, true),
+        ("purge-unbound", false, false),
+        ("purge-unbound-closing", false, true),
+    ] {
+        let (claim, binding, worker) = if bound {
+            let (claim, binding, worker) =
+                super::attempt_binding::bound_claim(store, name, clock).await;
+            (claim, Some(binding), Some(worker))
+        } else {
+            store
+                .enqueue(RunDispatch::new(super::activation_on(name, name)))
+                .await
+                .unwrap();
+            clock.set(0);
+            let leased = store
+                .claim_run(
+                    &awaken_agent_contract::agent::run::Id(name.into()),
+                    name,
+                    60_000,
+                    &Default::default(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            (RunClaim::from(&leased.lease), None, None)
+        };
+        assert_eq!(
+            store.begin_attempt(&claim, binding.as_ref()).await.unwrap(),
+            A::Applied
+        );
+        if closing {
+            assert_eq!(store.close_attempt(&claim).await.unwrap(), S::Applied);
+        }
+        store.cancel(&claim.run_id).await.unwrap();
+        clock.set(0);
+        let successor = if let Some(worker) = worker {
+            store
+                .claim_run_compatible(&claim.run_id, &worker, 1)
+                .await
+                .unwrap()
+                .unwrap()
+        } else {
+            store
+                .claim_run(&claim.run_id, "purge-successor", 1, &Default::default())
+                .await
+                .unwrap()
+                .unwrap()
+        };
+        clock.advance_past(successor.lease.expires_ms()).await;
+        assert_eq!(
+            store
+                .quarantine_retry_exhausted(0, successor.lease.expires_ms().saturating_add(1))
+                .await
+                .unwrap(),
+            1
+        );
+        let original = store
+            .load_physical_attempt(&claim.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(original.claim, claim);
+        assert_eq!(
+            original.binding, binding,
+            "G3 original UID/provider/Worker reference"
+        );
+        assert_eq!(original.closing, closing);
+        retained.push((claim, original));
+    }
+
+    // Mix one collectible row with all four occupied shapes. The cutoff is
+    // taken from the actual lease and the existing dead-letter command, so the
+    // live PostgreSQL clock never borrows a test-only admission rule.
+    let (_, dead_lettered_at) = dead_letter_empty(store, "purge-empty-mixed", clock).await;
+    assert_eq!(
+        store
+            .purge_dead_letters_before(dead_lettered_at - 1)
+            .await
+            .unwrap(),
+        0,
+        "G1"
+    );
+    assert_eq!(
+        store
+            .purge_dead_letters_before(dead_lettered_at)
+            .await
+            .unwrap(),
+        1,
+        "G2 mixed set"
+    );
+    assert_eq!(
+        store.purge_dead_letters().await.unwrap(),
+        0,
+        "G3 unlimited GC"
+    );
+    assert_eq!(
+        store.purge_dead_letters_before(u64::MAX).await.unwrap(),
+        0,
+        "G3 expired GC"
+    );
+    for (claim, original) in &retained {
+        assert_eq!(
+            store
+                .load_physical_attempt(&claim.run_id)
+                .await
+                .unwrap()
+                .as_ref(),
+            Some(original),
+            "G3 exact original survives both entry points"
+        );
+        assert!(
+            awaken_dispatch::has_active_physical_attempt_for_owner(store, &claim.owner)
+                .await
+                .unwrap(),
+            "G3 GC cannot manufacture false occupancy"
+        );
+    }
+    for (claim, _) in &retained {
+        assert_eq!(store.close_attempt(claim).await.unwrap(), S::Applied);
+        assert_eq!(
+            store.finish_attempt_closure(claim).await.unwrap(),
+            S::Applied,
+            "G4 exact original closure ACK"
+        );
+        assert!(
+            store
+                .load_physical_attempt(&claim.run_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    for (claim, _) in &retained {
+        assert!(
+            !awaken_dispatch::has_active_physical_attempt_for_owner(store, &claim.owner)
+                .await
+                .unwrap(),
+            "G4 exact retired facts are truly absent; reads do not re-admit or mutate"
+        );
+    }
+    assert_eq!(
+        store.purge_dead_letters_before(u64::MAX).await.unwrap(),
+        retained.len(),
+        "G4 retired rows are now collectible"
+    );
+    assert!(store.dead_letters().await.unwrap().is_empty());
+}
+
+/// Create one genuinely empty dead letter through the existing Store commands.
+/// Used by the mixed GC rule and raw-storage corruption injections; it neither
+/// bypasses quarantine nor supplies any physical closure fact.
+pub async fn dead_letter_empty(
+    store: &impl ConformanceDispatch,
+    name: &str,
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
+) -> (awaken_agent_contract::agent::run::Id, u64) {
+    let run = awaken_agent_contract::agent::run::Id(name.into());
+    store
+        .enqueue(RunDispatch::new(super::activation_on(name, name)))
+        .await
+        .unwrap();
+    clock.set(0);
+    let leased = store
+        .claim_run(&run, "purge-empty", 1, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    clock.advance_past(leased.lease.expires_ms()).await;
+    let dead_lettered_at = leased.lease.expires_ms().saturating_add(1);
+    assert_eq!(
+        store
+            .quarantine_retry_exhausted(0, dead_lettered_at)
+            .await
+            .unwrap(),
+        1
+    );
+    (run, dead_lettered_at)
+}

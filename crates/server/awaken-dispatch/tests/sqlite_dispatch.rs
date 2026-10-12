@@ -719,11 +719,170 @@ async fn concurrent_recovery_yields_one_winner_on_sqlite() {
 
 #[tokio::test]
 async fn dead_letter_ttl_gc_on_sqlite() {
+    use awaken_dispatch::DispatchMaintenance as _;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("purge.db");
+    let path = path.to_str().unwrap();
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
-    let store = SqliteDispatchStore::open_in_memory(clock.clock())
+    let store = SqliteDispatchStore::open(path, clock.clock())
         .await
         .expect("open");
     harness::assert_dead_letter_ttl_gc(&store, &clock).await;
+    harness::attempt_retirement::assert_purge_retains_occupied(&store, &clock).await;
+
+    // SQLite cause/effect table. Q1 half owner/epoch input is refused by the
+    // original BEFORE UPDATE pair trigger (1811), leaving the genuinely empty
+    // row unchanged and collectible. Q2 an orphan binding is a CHECK-only
+    // storage fault, injected on this fixture connection; Q3 closing-only and
+    // Q4 malformed binding on a complete slot are representable raw facts.
+    // Q2..Q4 -> direct/exact/domain read error, never false, and both GC paths
+    // retain the exact original tuple. These are storage fault injections,
+    // not claims that historical production rows have been recovered.
+    //
+    // | Rule | cause | modern schema | observation | GC |
+    // | Q1 | owner-only/epoch-only | trigger refuses, no write | true empty | allowed |
+    // | Q2 | orphan binding | fixture-local CHECK fault | unavailable | retain |
+    // | Q3 | closing-only | raw update allowed | unavailable | retain |
+    // | Q4 | malformed complete binding | raw update allowed | unavailable | retain |
+    // The pure 16-row retained-fact table separately covers historical half
+    // pairs -> error; no trigger is dropped to fabricate their persisted form.
+    let connection = awaken_sqlite_pool::EmbeddedSqlite::file(path)
+        .open()
+        .await
+        .unwrap();
+    let raw = "SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, active_attempt_closing FROM runtime_dispatch WHERE run_id = ?1";
+    for (name, mutation) in [
+        (
+            "purge-owner-only",
+            "active_attempt_owner = 'retained-original-owner'",
+        ),
+        ("purge-epoch-only", "active_attempt_epoch = 1"),
+    ] {
+        let (run, _) = harness::attempt_retirement::dead_letter_empty(&store, name, &clock).await;
+        let before: (Option<String>, Option<i64>, Option<String>, bool) = sqlx::query_as(raw)
+            .bind(&run.0)
+            .fetch_one(&connection)
+            .await
+            .unwrap();
+        let error = sqlx::query(&format!(
+            "UPDATE runtime_dispatch SET {mutation} WHERE run_id = ?1"
+        ))
+        .bind(&run.0)
+        .execute(&connection)
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.as_database_error().unwrap().code().as_deref(),
+            Some("1811"),
+            "Q1 current pair trigger refuses the half slot"
+        );
+        let after: (Option<String>, Option<i64>, Option<String>, bool) = sqlx::query_as(raw)
+            .bind(&run.0)
+            .fetch_one(&connection)
+            .await
+            .unwrap();
+        assert_eq!(after, before, "Q1 rejection writes no physical facts");
+        assert!(
+            store.load_physical_attempt(&run).await.unwrap().is_none(),
+            "Q1 truly empty original"
+        );
+        assert!(
+            !store
+                .dispatch_summary(&run)
+                .await
+                .unwrap()
+                .unwrap()
+                .physical_attempt_active,
+            "Q1 summary agrees with exact empty read"
+        );
+    }
+    assert_eq!(
+        store.purge_dead_letters().await.unwrap(),
+        2,
+        "Q1 only the two never-occupied rows are collectible"
+    );
+
+    let mut snapshots = Vec::new();
+    for (name, mutation) in [
+        ("purge-orphan-binding", "active_attempt_binding = '{}'"),
+        ("purge-closing-only", "active_attempt_closing = TRUE"),
+        (
+            "purge-malformed-binding",
+            "active_attempt_owner = 'retained-original-owner', active_attempt_epoch = 1, active_attempt_binding = '{}'",
+        ),
+    ] {
+        let (run, _) = harness::attempt_retirement::dead_letter_empty(&store, name, &clock).await;
+        if name == "purge-orphan-binding" {
+            // Isolate the existing CHECK fault injection. This does not affect
+            // the pair triggers or the Store's own connection/constraints.
+            sqlx::query("PRAGMA ignore_check_constraints = ON")
+                .execute(&connection)
+                .await
+                .unwrap();
+        }
+        let write = sqlx::query(&format!(
+            "UPDATE runtime_dispatch SET {mutation} WHERE run_id = ?1"
+        ))
+        .bind(&run.0)
+        .execute(&connection)
+        .await;
+        if name == "purge-orphan-binding" {
+            sqlx::query("PRAGMA ignore_check_constraints = OFF")
+                .execute(&connection)
+                .await
+                .unwrap();
+        }
+        write.unwrap();
+        let snapshot: (Option<String>, Option<i64>, Option<String>, bool) = sqlx::query_as(raw)
+            .bind(&run.0)
+            .fetch_one(&connection)
+            .await
+            .unwrap();
+        assert!(
+            store.load_physical_attempt(&run).await.is_err(),
+            "Q2..Q4 retained facts are not absence"
+        );
+        assert!(
+            store.dispatch_summary(&run).await.is_err(),
+            "Q2..Q4 exact summary cannot erase residue"
+        );
+        assert!(
+            awaken_dispatch::has_active_physical_attempt_for_owner(
+                &store,
+                "retained-original-owner"
+            )
+            .await
+            .is_err(),
+            "Q2..Q4 original Coordinator domain query is unavailable, never false"
+        );
+        snapshots.push((run, snapshot));
+    }
+    assert_eq!(
+        snapshots.len(),
+        3,
+        "Q2..Q4 only representable storage faults were injected"
+    );
+    assert_eq!(
+        store.purge_dead_letters().await.unwrap(),
+        0,
+        "Q2..Q4 unlimited"
+    );
+    assert_eq!(
+        store.purge_dead_letters_before(u64::MAX).await.unwrap(),
+        0,
+        "Q2..Q4 expired"
+    );
+    for (run, before) in snapshots {
+        let after: (Option<String>, Option<i64>, Option<String>, bool) = sqlx::query_as(raw)
+            .bind(&run.0)
+            .fetch_one(&connection)
+            .await
+            .unwrap();
+        assert_eq!(
+            after, before,
+            "Q2..Q4 observation and GC preserve physical residue"
+        );
+    }
 }
 
 #[tokio::test]

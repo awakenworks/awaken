@@ -679,6 +679,44 @@ longer depends on the concrete Sandbox adapter across bounded contexts. The
 same client, endpoint, Registry identity and provider ticket ledger remain
 authoritative; this placement change adds no recovery or cleanup owner.
 
+## Amendment 2026-10-12: recover a complete original inline projection
+
+The existing brokered request join and original Pod result handoff have
+different responsibilities. The join closes every admitted Create for the
+Worker incarnation; the frozen Pod declaration and complete original RESULTS
+select this Session's participants. Finished tickets from another Session do
+not become members of this Session and are never read or deleted by its
+recovery. Duplicate tickets for the original Pod or PVC remain contradictory.
+
+For self-contained read-only Inline and InlineBytes inputs, handle-free
+recovery can now reuse the existing V3 participant set after verifying the
+original Pod UID, full immutable Pod projection and original effect stamps.
+Creation and recovery share the same projected object builder and stamping
+helper. Each member must have an exact Created ticket in the original group,
+namespace and name, with the retained UID. Live readback must also match its
+original nonce, request digest, Pod owner and immutable content. An already
+absent member retains its original ticket-backed UID; a later GET never
+supplies an original identity. Recovery does not create or publish objects.
+
+Missing or partial RESULTS, an absent original Pod, unsupported participants,
+or conflicting identity stays Unknown. The narrow joined-empty witness keeps
+its original meaning and cannot stand in for a missing rich handoff. Memory,
+Secret writeback, control and unresolved package or reference materialization
+still require their original retained evidence. The inline recovery result
+does not prove full execution closure, target access, physical disposal or
+Session completion. The existing terminal authorization, two-phase driver,
+UID disposal and Session receipt remain the sole path to completion.
+
+The original Dispatch maintenance commands must retain a dead-letter row
+while any physical slot, binding or closing fact remains. Both unlimited and
+time-windowed GC use the same empty-slot requirement. SQLite keeps its existing
+writer transaction; PostgreSQL freezes one candidate set under the original
+row locks before deleting pending input and dispatch rows. Historical unbound
+or corrupt facts are retained, rather than erased into a misleading empty
+observation. Only the original exact close/finish transition makes an occupied
+row collectible. This preserves evidence; it does not manufacture complete
+execution closure from an empty slot or a retired epoch.
+
 ## Amendment 2026-10-07: reconstruct one exact retained Pod/PVC pair
 
 The existing Worker-incarnation Create ledger and exact original Worker stop

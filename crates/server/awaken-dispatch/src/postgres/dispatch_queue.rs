@@ -123,6 +123,9 @@ impl PostgresDispatchStore {
             current
                 .try_get("active_attempt_binding")
                 .map_err(store_error)?,
+            current
+                .try_get("active_attempt_closing")
+                .map_err(store_error)?,
         )?;
         let assignment: Option<Json<WorkerAssignment>> =
             current.try_get("worker_assignment").map_err(store_error)?;
@@ -1173,45 +1176,55 @@ impl awaken_dispatch_contract::DispatchMaintenance for PostgresDispatchStore {
     }
 
     async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
-        let p = NS;
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
-        sqlx::query(&format!(
-            "DELETE FROM {p}_pending WHERE run_id IN \
-             (SELECT run_id FROM {p}_dispatch WHERE status = 'dead_letter')"
-        ))
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let result = sqlx::query(&format!(
-            "DELETE FROM {p}_dispatch WHERE status = 'dead_letter'"
-        ))
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        tx.commit().await.map_err(store_error)?;
-        Ok(result.rows_affected() as usize)
+        self.purge_dead_letters_with_cutoff(None).await
     }
 
     async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, DispatchError> {
-        let p = NS;
-        let cond = "status = 'dead_letter' AND dead_lettered_at IS NOT NULL \
-                    AND dead_lettered_at <= $1";
+        self.purge_dead_letters_with_cutoff(Some(cutoff_ms)).await
+    }
+}
+
+impl PostgresDispatchStore {
+    async fn purge_dead_letters_with_cutoff(
+        &self,
+        cutoff_ms: Option<u64>,
+    ) -> Result<usize, DispatchError> {
         let mut tx = self.pool.begin().await.map_err(store_error)?;
-        sqlx::query(&format!(
-            "DELETE FROM {p}_pending WHERE run_id IN \
-             (SELECT run_id FROM {p}_dispatch WHERE {cond})"
-        ))
-        .bind(crate::clock::db_millis(cutoff_ms))
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let result = sqlx::query(&format!("DELETE FROM {p}_dispatch WHERE {cond}"))
-            .bind(crate::clock::db_millis(cutoff_ms))
+        let p = NS;
+        // SQL projection of the same actually-empty physical slot used by
+        // settlement. Check every retained fact: historical unbound, torn
+        // owner/epoch, orphan binding and closing rows must survive GC.
+        let age = if cutoff_ms.is_some() {
+            " AND dead_lettered_at IS NOT NULL AND dead_lettered_at <= $1"
+        } else {
+            ""
+        };
+        let cond = format!(
+            "status = 'dead_letter' AND active_attempt_owner IS NULL \
+             AND active_attempt_epoch IS NULL AND active_attempt_binding IS NULL \
+             AND active_attempt_closing = FALSE{age}"
+        );
+        // Freeze one candidate set under the same Dispatch row locks as
+        // admission/requeue. Both deletes consume these exact ids, so a
+        // concurrent closure/requeue cannot change the set between them.
+        let candidates = format!("SELECT run_id FROM {p}_dispatch WHERE {cond} FOR UPDATE");
+        let mut candidates = sqlx::query_scalar::<_, String>(&candidates);
+        if let Some(cutoff_ms) = cutoff_ms {
+            candidates = candidates.bind(crate::clock::db_millis(cutoff_ms));
+        }
+        let candidates = candidates.fetch_all(&mut *tx).await.map_err(store_error)?;
+        sqlx::query(&format!("DELETE FROM {p}_pending WHERE run_id = ANY($1)"))
+            .bind(&candidates)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        let removed = sqlx::query(&format!("DELETE FROM {p}_dispatch WHERE run_id = ANY($1)"))
+            .bind(&candidates)
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
         tx.commit().await.map_err(store_error)?;
-        Ok(result.rows_affected() as usize)
+        Ok(removed.rows_affected() as usize)
     }
 }
 
@@ -1498,10 +1511,10 @@ impl awaken_dispatch_contract::DispatchControlReads for PostgresDispatchStore {
                 .map(|v| durable_u64("dispatch attempt epoch", v))
                 .transpose()?,
             row.try_get("active_attempt_binding").map_err(store_error)?,
+            closing,
         )
         .map(|attempt| {
             attempt.map(|mut attempt| {
-                attempt.closing = closing;
                 attempt.thread_id = Some(request.thread_id().clone());
                 attempt.session_thread_id = request.session_thread_id.clone();
                 attempt

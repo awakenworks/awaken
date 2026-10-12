@@ -604,11 +604,11 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                 return verified_package_build_result(&observed, &listed.items, &self.namespace);
             }
             if status.failed.unwrap_or_default() > 0 {
-                let _ = jobs.delete(&name, &DeleteParams::background()).await;
+                let _ = delete_exact_job(&jobs, &observed).await;
                 return Err(backend(format!("BuildKit Job `{name}` failed")));
             }
             if deadline.has_passed() {
-                let _ = jobs.delete(&name, &DeleteParams::background()).await;
+                let _ = delete_exact_job(&jobs, &observed).await;
                 return Err(backend(format!("BuildKit Job `{name}` timed out")));
             }
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -1033,6 +1033,231 @@ mod tests {
         assert_eq!(preconditions.resource_version.as_deref(), Some("7"));
         assert!(exact_job_delete_params(&observed_job("", "7")).is_err());
         assert!(exact_job_delete_params(&observed_job("uid-a", "")).is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn package_build_failures_delete_only_the_exact_observed_job() {
+        // Cause graph: C1 original run_job sees failure or its unchanged 1830s
+        // deadline; C2 observed A has UID+resourceVersion or either is missing;
+        // C3 DELETE sees A, same-name B, or absence; C4 DELETE returns normally,
+        // unavailable, or loses its response after removing A. Effects: E1 only
+        // exact A can be removed; E2 B is preserved; E3 missing coordinates emit
+        // no DELETE; E4 every row keeps the original failure/timeout error.
+        // | row (cross failure/timeout) | C2 | C3/C4 | effects |
+        // | same | exact | A/normal | E1,E4 |
+        // | replacement | exact | B/409 | E2,E4 |
+        // | response-loss | exact | remove A, B appears, response lost | E1,E2,E4 |
+        // | missing-uid/version | missing | A | E3,E4 |
+        // | already-gone | exact | absent/404 | E4, no removal |
+        // | unavailable | exact | A/503 | E4, no removal |
+        // Timeout advances the existing Tokio monotonic clock inside GET after
+        // run_job constructs its original deadline; no production clock or
+        // budget changes. The loss replay invokes the same helper with original
+        // observed A, never another run_job/new build or a GET of B as A proof.
+        // The API mock enforces real UID/RV preconditions; an unfenced mutant
+        // deletes current B and fails E2. This is adapter, not cluster evidence.
+        struct State {
+            current: Option<Job>,
+            deletes: Vec<serde_json::Value>,
+            removals: usize,
+            creates: usize,
+            reads: usize,
+        }
+        for timed_out in [false, true] {
+            for row in [
+                "same",
+                "replacement",
+                "response-loss",
+                "missing-uid",
+                "missing-version",
+                "already-gone",
+                "unavailable",
+            ] {
+                let builder = test_builder();
+                let (mut config, job, _) = builder
+                    .build_objects("registry.local/base@sha256:exact", &package_requirements())
+                    .unwrap();
+                config.metadata.uid = Some("config-a".into());
+                let desired = builder
+                    .bind_package_job(&config, job, PACKAGE_BUILD_JOB_KIND)
+                    .unwrap();
+                let name = desired.metadata.name.clone().unwrap();
+                let mut observed = desired.clone();
+                observed.metadata.uid = Some("job-a".into());
+                observed.metadata.resource_version = Some("7".into());
+                observed.status = Some(k8s_openapi::api::batch::v1::JobStatus {
+                    failed: Some(i32::from(!timed_out)),
+                    ..Default::default()
+                });
+                let mut successor = observed.clone();
+                successor.metadata.uid = Some("job-b".into());
+                successor.metadata.resource_version = Some("8".into());
+                successor.status = Some(Default::default());
+                let mut readback = observed.clone();
+                if row == "missing-uid" {
+                    readback.metadata.uid = None;
+                } else if row == "missing-version" {
+                    readback.metadata.resource_version = None;
+                }
+                let state = Arc::new(Mutex::new(State {
+                    current: Some(observed.clone()),
+                    deletes: Vec::new(),
+                    removals: 0,
+                    creates: 0,
+                    reads: 0,
+                }));
+                let service = tower::service_fn({
+                    let state = state.clone();
+                    let observed = observed.clone();
+                    let job_path = format!("/apis/batch/v1/namespaces/awaken-system/jobs/{name}");
+                    move |request: http::Request<Body>| {
+                        let state = state.clone();
+                        let observed = observed.clone();
+                        let readback = readback.clone();
+                        let successor = successor.clone();
+                        let job_path = job_path.clone();
+                        async move {
+                            let method = request.method().clone();
+                            assert_eq!(
+                                request.uri().path(),
+                                if method == http::Method::POST {
+                                    "/apis/batch/v1/namespaces/awaken-system/jobs"
+                                } else {
+                                    &job_path
+                                },
+                                "only the original package Job namespace/name"
+                            );
+                            let (code, value) = if method == http::Method::POST {
+                                state.lock().unwrap().creates += 1;
+                                (201, serde_json::to_value(observed).unwrap())
+                            } else if method == http::Method::GET {
+                                if timed_out {
+                                    tokio::time::advance(std::time::Duration::from_secs(
+                                        super::PACKAGE_BUILD_TIMEOUT_SECS as u64 + 30,
+                                    ))
+                                    .await;
+                                }
+                                let mut state = state.lock().unwrap();
+                                state.reads += 1;
+                                if row == "replacement" {
+                                    state.current = Some(successor);
+                                } else if row == "already-gone" {
+                                    state.current = None;
+                                }
+                                (200, serde_json::to_value(readback).unwrap())
+                            } else {
+                                assert_eq!(method, http::Method::DELETE);
+                                let body = request.into_body().collect_bytes().await.unwrap();
+                                let options: serde_json::Value =
+                                    serde_json::from_slice(&body).unwrap();
+                                let mut state = state.lock().unwrap();
+                                state.deletes.push(options.clone());
+                                let code = if row == "unavailable" {
+                                    503
+                                } else if let Some(current) = &state.current {
+                                    let uid = options["preconditions"]["uid"].as_str();
+                                    let version =
+                                        options["preconditions"]["resourceVersion"].as_str();
+                                    if uid.is_none_or(|uid| {
+                                        current.metadata.uid.as_deref() == Some(uid)
+                                    }) && version.is_none_or(|version| {
+                                        current.metadata.resource_version.as_deref()
+                                            == Some(version)
+                                    }) {
+                                        state.current = None;
+                                        state.removals += 1;
+                                        if row == "response-loss" {
+                                            state.current = Some(successor);
+                                            return Err(std::io::Error::new(
+                                                std::io::ErrorKind::ConnectionReset,
+                                                "injected exact DELETE response loss",
+                                            ));
+                                        }
+                                        200
+                                    } else {
+                                        409
+                                    }
+                                } else {
+                                    404
+                                };
+                                (
+                                    code,
+                                    serde_json::json!({
+                                        "apiVersion":"v1", "kind":"Status", "code":code,
+                                        "status":if code == 200 { "Success" } else { "Failure" },
+                                        "reason":if code == 409 { "Conflict" } else { "Unknown" },
+                                        "message":"exact package Job delete observation"
+                                    }),
+                                )
+                            };
+                            Ok::<_, std::io::Error>(
+                                http::Response::builder()
+                                    .status(code)
+                                    .body(Body::from(serde_json::to_vec(&value).unwrap()))
+                                    .unwrap(),
+                            )
+                        }
+                    }
+                });
+                let client = kube::Client::new(service, "default");
+                let provisioner = K8sPackageImageProvisioner::new(
+                    client,
+                    "awaken-system",
+                    "registry.local:5000/environments",
+                    Vec::new(),
+                    true,
+                )
+                .unwrap();
+                let error = provisioner.run_job(desired).await.unwrap_err();
+                let reason = if timed_out { "timed out" } else { "failed" };
+                assert_eq!(
+                    error.to_string(),
+                    super::backend(format!("BuildKit Job `{name}` {reason}")).to_string(),
+                    "{reason}/{row}: original build outcome, not cleanup success"
+                );
+                if row == "response-loss" {
+                    let jobs = kube::Api::namespaced(provisioner.client.clone(), "awaken-system");
+                    super::delete_exact_job(&jobs, &observed).await.unwrap();
+                }
+                let state = state.lock().unwrap();
+                let expected_uid = match row {
+                    "replacement" | "response-loss" => Some("job-b"),
+                    "same" | "already-gone" => None,
+                    _ => Some("job-a"),
+                };
+                assert_eq!(
+                    state
+                        .current
+                        .as_ref()
+                        .and_then(|job| job.metadata.uid.as_deref()),
+                    expected_uid,
+                    "{reason}/{row}: preserve every unowned successor"
+                );
+                assert_eq!(state.creates, 1, "{reason}/{row}: one original build");
+                assert_eq!(state.reads, 1, "{reason}/{row}: no read of B as A proof");
+                assert_eq!(
+                    state.removals,
+                    usize::from(matches!(row, "same" | "response-loss")),
+                    "{reason}/{row}: only A may be removed"
+                );
+                assert_eq!(
+                    state.deletes.len(),
+                    match row {
+                        "missing-uid" | "missing-version" => 0,
+                        "response-loss" => 2,
+                        _ => 1,
+                    },
+                    "{reason}/{row}: missing facts refuse DELETE"
+                );
+                for options in &state.deletes {
+                    assert_eq!(options["preconditions"]["uid"], "job-a", "{reason}/{row}");
+                    assert_eq!(
+                        options["preconditions"]["resourceVersion"], "7",
+                        "{reason}/{row}"
+                    );
+                }
+            }
+        }
     }
 
     #[tokio::test]

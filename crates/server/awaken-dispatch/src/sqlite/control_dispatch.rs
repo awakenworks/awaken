@@ -105,10 +105,10 @@ impl awaken_dispatch_contract::DispatchControlReads for SqliteDispatchStore {
                 .map(|v| durable_u64("dispatch attempt epoch", v))
                 .transpose()?,
             binding,
+            closing,
         )
         .map(|attempt| {
             attempt.map(|mut attempt| {
-                attempt.closing = closing;
                 attempt.thread_id = Some(request.thread_id().clone());
                 attempt.session_thread_id = request.session_thread_id.clone();
                 attempt

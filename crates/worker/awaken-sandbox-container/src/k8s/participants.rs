@@ -290,7 +290,166 @@ pub(super) async fn realize(
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
+
+fn stamp_desired<K: Resource<DynamicType = ()> + serde::Serialize>(
+    runtime: &K8sRuntime,
+    object: &mut K,
+    context: Option<(
+        &ContainerRealizationContext<'_>,
+        &pc::SandboxRealizationFingerprint,
+    )>,
+    restoration: Option<(&pc::SandboxRestorationEvidence, &str)>,
+) -> Result<(), RuntimeError> {
+    if let Some((context, fingerprint)) = context {
+        runtime.stamp_effect_evidence(object, context, fingerprint);
+    }
+    if let Some((evidence, fingerprint)) = restoration {
+        realization::stamp_restoration(object, evidence);
+        realization::stamp_restoration_plan(object, fingerprint);
+    }
+    stamp_realization(object)
+}
+
+/// One read-only membership/content verifier over the producer's same object
+/// projection. Complete Worker request closure is required but grants no other
+/// Session's resources. No current GET may supply an original UID.
+pub(super) async fn verify_joined_original(
+    runtime: &K8sRuntime,
+    pod: &Pod,
+    plan: &ContainerPlan,
+    original_pod: &super::CreateTicket,
+    tickets: &[super::CreateTicket],
+    projected: &KubernetesProjectedParticipants,
+    original: (
+        &ContainerRealizationContext<'_>,
+        &pc::SandboxRealizationFingerprint,
+    ),
+) -> Result<(), RuntimeError> {
+    use super::create_ledger::{
+        ISOLATION_ID_ANNOTATION, REQUEST_DIGEST_ANNOTATION, original_request_metadata_matches,
+    };
+    if original_pod.request.validate().is_err()
+        || projected.namespace != runtime.namespace
+        || projected.restoration().is_some()
+        || projected.terminal_only()
+        || projected.pod_uid != pod.metadata.uid.as_deref().unwrap_or("")
+    {
+        return Err(backend(
+            "original joined projection has another namespace, Pod or origin",
+        ));
+    }
+    let metadata_matches = |ticket: &super::CreateTicket, metadata: &ObjectMeta| {
+        !ticket.isolation_id.is_empty()
+            && original_request_metadata_matches(
+                &ticket.request,
+                &ticket.isolation_id,
+                metadata.name.as_deref(),
+                metadata.namespace.as_deref(),
+                metadata
+                    .annotations
+                    .as_ref()
+                    .and_then(|v| v.get(ISOLATION_ID_ANNOTATION))
+                    .map(String::as_str),
+                metadata
+                    .annotations
+                    .as_ref()
+                    .and_then(|v| v.get(REQUEST_DIGEST_ANNOTATION))
+                    .map(String::as_str),
+                metadata.deletion_timestamp.is_none(),
+            )
+    };
+    if !metadata_matches(original_pod, &pod.metadata) {
+        return Err(backend("original Pod ticket metadata differs"));
+    }
+    let owner = Some(pod_owner_reference(pod, &projected.pod_uid)?);
+    let expected_owner = ObjectMeta {
+        owner_references: owner.clone().map(|v| vec![v]),
+        ..Default::default()
+    };
+    let owner_fingerprint = owner_fingerprint(&expected_owner)?;
+    let id = runtime.realization_runtime_id(original.0.scope)?;
+    if declaration(pod)? != names(&id, plan) {
+        return Err(backend("original membership differs from the frozen plan"));
+    }
+    for mut desired in desired_objects(&id, plan, &owner) {
+        let (kind, name) = match &desired {
+            DesiredObject::ConfigMap(v) => {
+                (Kind::ConfigMap, v.metadata.name.clone().unwrap_or_default())
+            }
+            DesiredObject::Secret(v) => (Kind::Secret, v.metadata.name.clone().unwrap_or_default()),
+        };
+        let resource = match kind {
+            Kind::ConfigMap => "configmaps",
+            Kind::Secret => "secrets",
+        };
+        let object = projected
+            .objects
+            .iter()
+            .find(|v| v.kind == kind && v.name == name)
+            .ok_or_else(|| backend("original projected member is missing"))?;
+        let mut matching = tickets.iter().filter(|t| {
+            t.request.group == original_pod.request.group
+                && t.request.resource == resource
+                && t.request.namespace == projected.namespace
+                && t.request.name == name
+        });
+        let ticket = matching
+            .next()
+            .ok_or_else(|| backend("original projected ticket is missing"))?;
+        if matching.next().is_some()
+            || ticket.isolation_pending
+            || ticket.isolation_id.is_empty()
+            || ticket.request.validate().is_err()
+            || !matches!(&ticket.status, super::TicketStatus::Finished(super::TicketResult::Created { uid }) if uid == &object.uid)
+            || object.owner_references_fingerprint != owner_fingerprint
+        {
+            return Err(backend("original projected ticket UID or owner differs"));
+        }
+        macro_rules! verify {
+            ($desired:expr, $api:expr) => {{
+                stamp_desired(runtime, $desired, Some(original), None)?;
+                let observed = $api.get_opt(&name).await.map_err(backend)?;
+                if let Some(observed) = observed {
+                    if observed.metadata.uid.as_deref() != Some(object.uid.as_str())
+                        || !metadata_matches(ticket, &observed.metadata)
+                        || self::owner_fingerprint(&observed.metadata)?
+                            != object.owner_references_fingerprint
+                    {
+                        return Err(backend("original projected object identity differs"));
+                    }
+                    realization::verify_realization($desired, &observed, None)?;
+                    // The annotations bind the original request, but copying
+                    // those annotations cannot hide altered immutable bytes.
+                    // Values stay local and never enter an error or log.
+                    let expected_projection = serde_json::to_value(&*$desired).map_err(backend)?;
+                    let observed_projection = serde_json::to_value(&observed).map_err(backend)?;
+                    if ["data", "binaryData", "stringData", "immutable", "type"]
+                        .into_iter()
+                        .any(|field| {
+                            expected_projection.get(field) != observed_projection.get(field)
+                        })
+                    {
+                        return Err(backend(
+                            "original projected content differs from the frozen plan",
+                        ));
+                    }
+                    verify_projected_content(
+                        &observed.metadata,
+                        pod.metadata.name.as_deref().unwrap_or(""),
+                        &projected.pod_uid,
+                        original.0.attempt.as_str(),
+                    )?;
+                }
+            }};
+        }
+        match &mut desired {
+            DesiredObject::ConfigMap(v) => verify!(v, runtime.configmaps()),
+            DesiredObject::Secret(v) => verify!(v, runtime.secrets()),
+        }
+    }
+    Ok(())
+}
 
 pub(super) async fn create_objects(
     runtime: &K8sRuntime,
@@ -309,14 +468,7 @@ pub(super) async fn create_objects(
         admit()?;
         macro_rules! create {
             ($object:ident, $api:expr) => {{
-                if let Some((context, fingerprint)) = context {
-                    runtime.stamp_effect_evidence(&mut $object, context, fingerprint);
-                }
-                if let Some((evidence, fingerprint)) = restoration {
-                    realization::stamp_restoration(&mut $object, evidence);
-                    realization::stamp_restoration_plan(&mut $object, fingerprint);
-                }
-                stamp_realization(&mut $object)?;
+                stamp_desired(runtime, &mut $object, context, restoration)?;
                 original_result(&$api, &$object).await
             }};
         }

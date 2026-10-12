@@ -1195,51 +1195,52 @@ impl awaken_dispatch_contract::DispatchMaintenance for SqliteDispatchStore {
     }
 
     async fn purge_dead_letters(&self) -> Result<usize, DispatchError> {
-        let (_authority, mut conn) = self.with_conn().await?;
-        let p = NS;
-        let mut tx = immediate(&mut conn).await?;
-        sqlx::query(&format!(
-            "DELETE FROM {p}_pending WHERE run_id IN \
-             (SELECT run_id FROM {p}_dispatch WHERE status = 'dead_letter')"
-        ))
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let n = affected(
-            sqlx::query(&format!(
-                "DELETE FROM {p}_dispatch WHERE status = 'dead_letter'"
-            ))
-            .execute(&mut *tx)
-            .await
-            .map_err(store_error)?,
-        );
-        tx.commit().await.map_err(store_error)?;
-        Ok(n)
+        self.purge_dead_letters_with_cutoff(None).await
     }
 
     async fn purge_dead_letters_before(&self, cutoff_ms: u64) -> Result<usize, DispatchError> {
+        self.purge_dead_letters_with_cutoff(Some(cutoff_ms)).await
+    }
+}
+
+impl SqliteDispatchStore {
+    async fn purge_dead_letters_with_cutoff(
+        &self,
+        cutoff_ms: Option<u64>,
+    ) -> Result<usize, DispatchError> {
         let (_authority, mut conn) = self.with_conn().await?;
-        let p = NS;
-        let cond = "status = 'dead_letter' AND dead_lettered_at IS NOT NULL \
-                    AND dead_lettered_at <= ?1";
         let mut tx = immediate(&mut conn).await?;
-        sqlx::query(&format!(
+        let p = NS;
+        // SQL projection of the same actually-empty physical slot used by
+        // settlement. Check every retained fact: historical unbound, torn
+        // owner/epoch, orphan binding and closing rows must survive GC.
+        let age = if cutoff_ms.is_some() {
+            " AND dead_lettered_at IS NOT NULL AND dead_lettered_at <= ?1"
+        } else {
+            ""
+        };
+        let cond = format!(
+            "status = 'dead_letter' AND active_attempt_owner IS NULL \
+             AND active_attempt_epoch IS NULL AND active_attempt_binding IS NULL \
+             AND active_attempt_closing = FALSE{age}"
+        );
+        let pending = format!(
             "DELETE FROM {p}_pending WHERE run_id IN \
              (SELECT run_id FROM {p}_dispatch WHERE {cond})"
-        ))
-        .bind(crate::clock::db_millis(cutoff_ms))
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let n = affected(
-            sqlx::query(&format!("DELETE FROM {p}_dispatch WHERE {cond}"))
-                .bind(crate::clock::db_millis(cutoff_ms))
-                .execute(&mut *tx)
-                .await
-                .map_err(store_error)?,
         );
+        let mut pending = sqlx::query(&pending);
+        if let Some(cutoff_ms) = cutoff_ms {
+            pending = pending.bind(crate::clock::db_millis(cutoff_ms));
+        }
+        pending.execute(&mut *tx).await.map_err(store_error)?;
+        let rows = format!("DELETE FROM {p}_dispatch WHERE {cond}");
+        let mut rows = sqlx::query(&rows);
+        if let Some(cutoff_ms) = cutoff_ms {
+            rows = rows.bind(crate::clock::db_millis(cutoff_ms));
+        }
+        let removed = rows.execute(&mut *tx).await.map_err(store_error)?;
         tx.commit().await.map_err(store_error)?;
-        Ok(n)
+        Ok(affected(removed))
     }
 }
 

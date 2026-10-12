@@ -70,13 +70,40 @@ pub(crate) fn verify_physical_attempt_binding(
     Ok(())
 }
 
+/// Validate retained physical facts before either summary filtering or an
+/// exact read. Only a complete absence is empty; a torn pair, orphan binding
+/// or closing-only residue is unknown/corrupt, never absence evidence.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+pub(crate) fn observed_physical_attempt_is_present(
+    owner_present: bool,
+    epoch_present: bool,
+    binding_present: bool,
+    closing: bool,
+) -> Result<bool, DispatchError> {
+    use awaken_dispatch_contract::PhysicalAttemptSlot;
+    match PhysicalAttemptSlot::from_facts(owner_present, epoch_present, false, false) {
+        PhysicalAttemptSlot::Empty if !binding_present && !closing => Ok(false),
+        PhysicalAttemptSlot::Empty | PhysicalAttemptSlot::Corrupt => {
+            Err(corrupt_physical_attempt())
+        }
+        PhysicalAttemptSlot::ExactClaim | PhysicalAttemptSlot::OtherClaim => Ok(true),
+    }
+}
+
 #[cfg(feature = "durable")]
 pub(crate) fn decode_physical_attempt(
     run_id: &awaken_agent_contract::agent::run::Id,
     owner: Option<String>,
     epoch: Option<u64>,
     binding: Option<String>,
+    closing: bool,
 ) -> Result<Option<PhysicalAttempt>, DispatchError> {
+    observed_physical_attempt_is_present(
+        owner.is_some(),
+        epoch.is_some(),
+        binding.is_some(),
+        closing,
+    )?;
     match (owner, epoch, binding) {
         (None, None, None) => Ok(None),
         (Some(owner), Some(epoch), binding) => {
@@ -96,7 +123,7 @@ pub(crate) fn decode_physical_attempt(
                 binding,
                 thread_id: None,
                 session_thread_id: None,
-                closing: false,
+                closing,
             }))
         }
         _ => Err(corrupt_physical_attempt()),
@@ -209,6 +236,35 @@ mod physical_attempt_tests {
         // R8 exact -> Clear / Applied; R9 other -> Fenced; R10 torn -> Rejected.
         // The explicit table is independent of the production kernel; testing
         // against another call to that kernel would merely repeat its verdict.
+        // Retained-read decision table: V1 all four facts absent => false;
+        // V2 complete owner+epoch with any binding/closing => true; V3 a half
+        // pair or binding/closing residue on an empty pair => error. The
+        // literal 16-row table covers every combination, independently of the
+        // adapter projection; corrupt facts must never enter the false branch.
+        for (owner, epoch, binding, closing, expected) in [
+            (false, false, false, false, Some(false)),
+            (false, false, false, true, None),
+            (false, false, true, false, None),
+            (false, false, true, true, None),
+            (false, true, false, false, None),
+            (false, true, false, true, None),
+            (false, true, true, false, None),
+            (false, true, true, true, None),
+            (true, false, false, false, None),
+            (true, false, false, true, None),
+            (true, false, true, false, None),
+            (true, false, true, true, None),
+            (true, true, false, false, Some(true)),
+            (true, true, false, true, Some(true)),
+            (true, true, true, false, Some(true)),
+            (true, true, true, true, Some(true)),
+        ] {
+            let actual = observed_physical_attempt_is_present(owner, epoch, binding, closing);
+            match expected {
+                Some(expected) => assert_eq!(actual.unwrap(), expected, "V1/V2"),
+                None => assert!(actual.is_err(), "V3"),
+            }
+        }
         for current in [false, true] {
             for handoff in [false, true] {
                 for slot in [S::Empty, S::ExactClaim, S::OtherClaim, S::Corrupt] {

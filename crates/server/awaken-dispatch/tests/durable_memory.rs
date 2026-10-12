@@ -2770,6 +2770,7 @@ async fn dead_letter_ttl_gc_store_spec() {
     let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
     let store = MemoryDispatchStore::new(clock.clock());
     harness::assert_dead_letter_ttl_gc(&store, &clock).await;
+    harness::attempt_retirement::assert_purge_retains_occupied(&store, &clock).await;
 }
 
 #[tokio::test]
