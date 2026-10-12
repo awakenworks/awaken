@@ -1570,6 +1570,7 @@ async fn concurrent_recovery_yields_one_winner_on_postgres() {
 
 #[tokio::test]
 async fn dead_letter_ttl_gc_on_postgres() {
+    use awaken_dispatch::{DispatchControlReads as _, DispatchMaintenance as _};
     let Some(pool) = harness::schema_pool("t_pg_ttlgc").await else {
         return;
     };
@@ -1578,6 +1579,59 @@ async fn dead_letter_ttl_gc_on_postgres() {
         .expect("dispatch");
     harness::assert_dead_letter_ttl_gc(&store, &awaken_dispatch_testkit::AuthoritativeWallClock)
         .await;
+    harness::attempt_retirement::assert_purge_retains_occupied(
+        &store,
+        &awaken_dispatch_testkit::AuthoritativeWallClock,
+    )
+    .await;
+    // P1 the current pair constraint refuses a historical half-slot write;
+    // P2 malformed binding text on a complete occupied slot is representable.
+    // Both preserve the original row under unlimited/time-windowed GC. P2
+    // direct/exact/domain reads stay unavailable; before/after raw identity
+    // proves observation writes nothing. No production constraint is dropped.
+    let (run, _) = harness::attempt_retirement::dead_letter_empty(
+        &store,
+        "purge-pg-malformed",
+        &awaken_dispatch_testkit::AuthoritativeWallClock,
+    )
+    .await;
+    let error = sqlx::query("UPDATE runtime_dispatch SET active_attempt_owner = 'retained-original-owner' WHERE run_id = $1")
+        .bind(&run.0).execute(&pool).await.unwrap_err();
+    assert_eq!(
+        error.as_database_error().unwrap().code().as_deref(),
+        Some("23514"),
+        "P1 half-slot rejected"
+    );
+    sqlx::query("UPDATE runtime_dispatch SET active_attempt_owner = 'retained-original-owner', active_attempt_epoch = 1, active_attempt_binding = '{}' WHERE run_id = $1")
+        .bind(&run.0).execute(&pool).await.unwrap();
+    let before: (Option<String>, Option<i64>, Option<String>, bool) = sqlx::query_as("SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, active_attempt_closing FROM runtime_dispatch WHERE run_id = $1")
+        .bind(&run.0).fetch_one(&pool).await.unwrap();
+    assert!(
+        store.load_physical_attempt(&run).await.is_err(),
+        "P2 malformed is not absence"
+    );
+    assert!(
+        store.dispatch_summary(&run).await.is_err(),
+        "P2 exact summary preserves unknown"
+    );
+    assert!(
+        awaken_dispatch::has_active_physical_attempt_for_owner(
+            &store,
+            "retained-original-owner"
+        )
+        .await
+        .is_err(),
+        "P2 Coordinator domain query cannot report false from an unreadable binding"
+    );
+    assert_eq!(store.purge_dead_letters().await.unwrap(), 0, "P2 unlimited");
+    assert_eq!(
+        store.purge_dead_letters_before(u64::MAX).await.unwrap(),
+        0,
+        "P2 expired"
+    );
+    let after: (Option<String>, Option<i64>, Option<String>, bool) = sqlx::query_as("SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, active_attempt_closing FROM runtime_dispatch WHERE run_id = $1")
+        .bind(&run.0).fetch_one(&pool).await.unwrap();
+    assert_eq!(after, before, "P2 original physical residue survives");
 }
 
 #[tokio::test]

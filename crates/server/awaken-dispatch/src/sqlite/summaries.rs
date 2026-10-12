@@ -14,7 +14,10 @@ type DispatchSummaryRow = (
     i64,
     Option<String>,
     Option<i64>,
+    Option<String>,
     Option<i64>,
+    Option<String>,
+    bool,
 );
 
 impl SqliteDispatchStore {
@@ -62,7 +65,7 @@ impl SqliteDispatchStore {
             "ORDER BY created_at"
         };
         let sql = format!(
-            "SELECT run_id, thread_id, request, status, attempt_count, cancel_requested, sandbox, lease_until, active_attempt_epoch FROM {p}_dispatch \
+            "SELECT run_id, thread_id, request, status, attempt_count, cancel_requested, sandbox, lease_until, active_attempt_owner, active_attempt_epoch, active_attempt_binding, active_attempt_closing FROM {p}_dispatch \
              {suffix}"
         );
         let mut query = sqlx::query_as::<_, DispatchSummaryRow>(&sql);
@@ -80,12 +83,24 @@ impl SqliteDispatchStore {
             cancellation_requested,
             sandbox,
             lease_until,
+            active_attempt_owner,
             active_attempt_epoch,
+            active_attempt_binding,
+            active_attempt_closing,
         ) in rows
         {
             let cancellation_requested = cancellation_requested != 0;
             let sandbox_bound = sandbox.is_some();
-            let physical_attempt_active = active_attempt_epoch.is_some();
+            let physical_attempt_active = crate::dispatch::decode_physical_attempt(
+                &RunId(run_id.clone()),
+                active_attempt_owner,
+                active_attempt_epoch
+                    .map(|epoch| durable_u64("dispatch attempt epoch", epoch))
+                    .transpose()?,
+                active_attempt_binding,
+                active_attempt_closing,
+            )?
+            .is_some();
             let request = serde_json::from_str::<RunDispatch>(&request).map_err(json_err)?;
             let state = DispatchState::from_db(&status).ok_or_else(|| {
                 DispatchError::Rejected(format!("unknown persisted dispatch state {status}"))

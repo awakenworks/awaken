@@ -160,8 +160,8 @@ fn guarded_claim_row(
 }
 
 impl Row {
-    fn summary(&self, run_id: &RunId) -> DispatchSummary {
-        DispatchSummary {
+    fn summary(&self, run_id: &RunId) -> Result<DispatchSummary, DispatchError> {
+        Ok(DispatchSummary {
             run_id: run_id.clone(),
             thread_id: self.request.thread_id().clone(),
             session_thread_id: self.request.session_thread_id.clone(),
@@ -173,8 +173,8 @@ impl Row {
             cancellation_requested: self.cancellation_requested,
             attempt_count: self.attempt_count,
             sandbox_bound: self.sandbox.is_some(),
-            physical_attempt_active: self.active_attempt.is_some(),
-        }
+            physical_attempt_active: self.physical_attempt()?.is_some(),
+        })
     }
 
     fn transition(&self) -> DispatchTransition {
@@ -259,7 +259,20 @@ impl MemoryDispatchStore {
         let dead: Vec<RunId> = state
             .rows
             .iter()
-            .filter(|(_, row)| row.state == DispatchState::DeadLetter && keep(row))
+            .filter(|(_, row)| {
+                // GC shares the canonical empty-slot rule. A legacy unbound
+                // executor, orphan binding or closing residue retains this
+                // exact row; deleting it would manufacture physical absence.
+                row.state == DispatchState::DeadLetter
+                    && keep(row)
+                    && crate::dispatch::observed_physical_attempt_is_present(
+                        row.active_attempt.is_some(),
+                        row.active_attempt.is_some(),
+                        row.active_attempt_binding.is_some(),
+                        row.active_attempt_closing,
+                    )
+                    .is_ok_and(|present| !present)
+            })
             .map(|(run, _)| run.clone())
             .collect();
         for run in &dead {
@@ -1434,11 +1447,11 @@ impl awaken_dispatch_contract::DispatchReads for MemoryDispatchStore {
 
     async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
         let state = lock(&self.state)?;
-        Ok(state
+        state
             .order
             .iter()
             .filter_map(|run| state.rows.get(run).map(|row| row.summary(run)))
-            .collect())
+            .collect()
     }
 }
 
@@ -1572,16 +1585,12 @@ impl awaken_dispatch_contract::DispatchControlReads for MemoryDispatchStore {
         &self,
         run_id: &RunId,
     ) -> Result<Option<PhysicalAttempt>, DispatchError> {
-        let state = lock(&self.state)?;
-        Ok(state.rows.get(run_id).and_then(|row| {
-            row.active_attempt.as_ref().map(|claim| PhysicalAttempt {
-                claim: claim.clone(),
-                binding: row.active_attempt_binding.clone(),
-                thread_id: Some(row.request.thread_id().clone()),
-                session_thread_id: row.request.session_thread_id.clone(),
-                closing: row.active_attempt_closing,
-            })
-        }))
+        lock(&self.state)?
+            .rows
+            .get(run_id)
+            .map(Row::physical_attempt)
+            .transpose()
+            .map(Option::flatten)
     }
 
     async fn completion_events_after(
@@ -1617,10 +1626,11 @@ impl awaken_dispatch_contract::DispatchControlReads for MemoryDispatchStore {
         &self,
         run_id: &RunId,
     ) -> Result<Option<DispatchSummary>, DispatchError> {
-        Ok(lock(&self.state)?
+        lock(&self.state)?
             .rows
             .get(run_id)
-            .map(|row| row.summary(run_id)))
+            .map(|row| row.summary(run_id))
+            .transpose()
     }
 }
 

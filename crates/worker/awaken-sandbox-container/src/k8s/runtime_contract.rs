@@ -175,7 +175,8 @@ fn unmaterialized_absence_shape_is_closed(
 
 #[derive(Default)]
 struct JoinedOriginalTickets {
-    created_pod: Option<(String, String)>,
+    created_pod: Option<(CreateTicket, String)>,
+    other_tickets: Vec<CreateTicket>,
     created_claim_uid: Option<String>,
     isolated_pod: Option<(CreateTicket, String)>,
 }
@@ -211,7 +212,7 @@ fn joined_original_tickets(
                     && joined.created_pod.is_none()
                     && joined.isolated_pod.is_none() =>
             {
-                joined.created_pod = Some((uid.clone(), ticket.request.group.clone()));
+                joined.created_pod = Some((ticket.clone(), uid.clone()));
             }
             TicketStatus::Finished(TicketResult::Created { uid })
                 if claim_required
@@ -231,41 +232,93 @@ fn joined_original_tickets(
             {
                 joined.isolated_pod = Some((ticket.clone(), uid.clone()));
             }
+            TicketStatus::Finished(
+                TicketResult::Created { .. } | TicketResult::Isolated { .. },
+            ) => {
+                // A duplicate own-root/claim result is contradictory evidence,
+                // never another Session's closed request.
+                if ticket.request.namespace == namespace
+                    && ((ticket.request.resource == "pods" && ticket.request.name == pod_name)
+                        || (ticket.request.resource == "persistentvolumeclaims"
+                            && ticket.request.name == claim_name))
+                {
+                    return None;
+                }
+                joined.other_tickets.push(ticket.clone());
+            }
             _ => return None,
         }
+    }
+    if (joined.created_pod.is_none() || joined.isolated_pod.is_some())
+        && !joined.other_tickets.is_empty()
+    {
+        return None;
     }
     Some(joined)
 }
 
-fn joined_empty_evidence(
+async fn joined_original_evidence(
     runtime: &K8sRuntime,
+    scope: &str,
     pod: &Pod,
-    pod_uid: &str,
     claim_uid: Option<String>,
     predecessor: &ContainerEffectFence,
-    original_group: String,
+    joined: &JoinedOriginalTickets,
+    plan: &ContainerPlan,
 ) -> Result<MissingHandleTerminalEvidence, RuntimeError> {
-    // Only the already-checked Complete/narrow/original projection caller can
-    // emit this terminal fact. A conflicting new handoff is never overwritten.
+    let Some((original_pod, pod_uid)) = &joined.created_pod else {
+        return Ok(MissingHandleTerminalEvidence::Unknown);
+    };
+    let Ok((original_fence, adoption, realization, attempt)) =
+        creation::verify_interrupted_pod_projection(
+            runtime,
+            scope,
+            plan,
+            predecessor,
+            claim_uid.as_deref(),
+            pod,
+        )
+    else {
+        return Ok(MissingHandleTerminalEvidence::Unknown);
+    };
+    let intent = ContainerRealizationIntent::Create;
+    let context = ContainerRealizationContext::new(
+        scope,
+        &adoption,
+        Some(&original_fence),
+        &intent,
+        &attempt,
+    );
     let projected = match participants::retained(pod) {
-        Ok(Some(projected))
-            if projected.objects.is_empty() && projected.restoration().is_none() =>
-        {
+        Ok(Some(projected)) => {
+            if participants::verify_joined_original(
+                runtime,
+                pod,
+                plan,
+                original_pod,
+                &joined.other_tickets,
+                &projected,
+                (&context, &realization),
+            )
+            .await
+            .is_err()
+            {
+                return Ok(MissingHandleTerminalEvidence::Unknown);
+            }
             projected
         }
-        Ok(None) => crate::kubernetes_handle::KubernetesProjectedParticipants::joined_empty(
-            runtime.namespace.clone(),
-            pod_uid.to_owned(),
-            pod.metadata
-                .annotations
-                .as_ref()
-                .and_then(|values| values.get(SANDBOX_ATTEMPT_ANNOTATION))
-                .cloned()
-                .ok_or_else(|| backend("original Pod attempt is missing"))?,
-            predecessor.clone(),
-            original_group,
-        )
-        .map_err(backend)?,
+        Ok(None) if joined.other_tickets.is_empty() && plan.binds.is_empty() => {
+            // Preserve the original Complete/narrow/full-projection empty law.
+            // No missing/partial rich handoff is filled or written here.
+            crate::kubernetes_handle::KubernetesProjectedParticipants::joined_empty(
+                runtime.namespace.clone(),
+                pod_uid.clone(),
+                attempt.as_str().to_owned(),
+                predecessor.clone(),
+                original_pod.request.group.clone(),
+            )
+            .map_err(backend)?
+        }
         _ => return Ok(MissingHandleTerminalEvidence::Unknown),
     };
     Ok(MissingHandleTerminalEvidence::ExactIncarnation {
@@ -275,7 +328,7 @@ fn joined_empty_evidence(
             .clone()
             .ok_or_else(|| backend("original Pod name is missing"))?,
         runtime_handle: crate::ContainerContinuationHandle::KubernetesContinuationV3 {
-            pod_uid: pod_uid.to_owned(),
+            pod_uid: pod_uid.clone(),
             claim_uid,
             participants: Box::new(projected),
         },
@@ -674,14 +727,24 @@ impl ContainerRuntime for K8sRuntime {
         // an absence witness. A brokered rich attempt still seals its one
         // provider request ledger before returning Unknown, so the original
         // Worker cannot keep admitting physical Creates after terminal stop.
-        let reconstructible_shape = unmaterialized_absence_shape_is_closed(
+        let narrow_shape = unmaterialized_absence_shape_is_closed(
             !plan.packages.is_empty(),
             !plan.binds.is_empty(),
             !plan.memory_mounts.is_empty(),
             false,
         );
+        let reconstructible_shape = narrow_shape
+            || (plan.packages.is_empty()
+                && plan.memory_mounts.is_empty()
+                && plan.control_services.is_empty()
+                && plan.binds.iter().all(|bind| {
+                    bind.read_only
+                        && !bind.secret_writeback
+                        && bind.secret_content.is_none()
+                        && (bind.content.is_some() != bind.content_bytes.is_some())
+                }));
         let claim_required = continuation::claim_required(plan, self.continuation_volume.is_some());
-        let absence_shape_closed = reconstructible_shape && !claim_required;
+        let absence_shape_closed = narrow_shape && !claim_required;
         let Some(expected_effect_fence) = expected_effect_fence else {
             return Ok(MissingHandleTerminalEvidence::Unknown);
         };
@@ -695,10 +758,10 @@ impl ContainerRuntime for K8sRuntime {
             let RequestJoin::Complete(tickets) = joined else {
                 return Ok(MissingHandleTerminalEvidence::Unknown);
             };
-            // The join covers every ticket of this Worker incarnation. Only
-            // one exact Pod, optionally paired with its original retained
-            // claim, can enter the ordinary handle path. Any other successful
-            // or unresolved participant remains Unknown after a sampled 404.
+            // Whole-Worker closure and this Session's membership differ.
+            // One exact Pod/PVC and its retained frozen projected set select
+            // our members. Other finished requests confer no membership;
+            // unresolved requests or missing rich handoff remain Unknown.
             let Some(joined) = joined_original_tickets(
                 tickets,
                 &self.namespace,
@@ -723,12 +786,9 @@ impl ContainerRuntime for K8sRuntime {
             };
             JoinedOriginalTickets::default()
         };
-        let JoinedOriginalTickets {
-            created_pod,
-            created_claim_uid,
-            isolated_pod,
-        } = joined;
-        if !reconstructible_shape {
+        let created_claim_uid = &joined.created_claim_uid;
+        let isolated_pod = &joined.isolated_pod;
+        if !reconstructible_shape || (!narrow_shape && joined.created_pod.is_none()) {
             return Ok(MissingHandleTerminalEvidence::Unknown);
         }
         self.admit_plan(plan).await?;
@@ -744,9 +804,9 @@ impl ContainerRuntime for K8sRuntime {
                     claim_required,
                     absence_shape_closed,
                 },
-                created_claim_uid,
-                ticket,
-                uid,
+                created_claim_uid.clone(),
+                ticket.clone(),
+                uid.clone(),
             )
             .await;
         }
@@ -755,7 +815,7 @@ impl ContainerRuntime for K8sRuntime {
             .get_opt(&runtime_pod_name)
             .await
             .map_err(backend)?;
-        if let Some((pod_uid, original_group)) = created_pod {
+        if let Some((_, pod_uid)) = &joined.created_pod {
             let Some(pod) = pod else {
                 return Ok(MissingHandleTerminalEvidence::Unknown);
             };
@@ -784,26 +844,19 @@ impl ContainerRuntime for K8sRuntime {
             if pod.metadata.uid.as_deref() != Some(pod_uid.as_str())
                 || pod.metadata.deletion_timestamp.is_some()
                 || continuation::bound_claim_uid(&pod) != claim_uid.as_deref()
-                || creation::verify_interrupted_pod_projection(
-                    self,
-                    scope,
-                    plan,
-                    expected_effect_fence,
-                    claim_uid.as_deref(),
-                    &pod,
-                )
-                .is_err()
             {
                 return Ok(MissingHandleTerminalEvidence::Unknown);
             }
-            return joined_empty_evidence(
+            return joined_original_evidence(
                 self,
+                scope,
                 &pod,
-                &pod_uid,
                 claim_uid,
                 expected_effect_fence,
-                original_group,
-            );
+                &joined,
+                plan,
+            )
+            .await;
         }
         unmaterialized_after_join(
             self,

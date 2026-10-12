@@ -11,6 +11,8 @@ use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Notify, Semaphore};
 
+use super::participants::tests::ClosedProjectedRequests;
+
 #[tokio::test]
 async fn original_joined_empty_runs_the_provider_terminal_protocol_but_never_adopts_for_execution()
 {
@@ -21,26 +23,7 @@ async fn original_joined_empty_runs_the_provider_terminal_protocol_but_never_ado
     // cannot adopt for ordinary work or start an exec, while UID queries remain
     // available to the cleanup protocol. The fixture mocks the trusted original
     // Complete group; it does not qualify a real Registry exit or cluster.
-    use crate::k8s::{K8sCreateRequest, K8sCreateResponse, K8sCreateTransport};
     use awaken_container_contract::{ContainerEnvironmentAdoption, ContainerEnvironmentProvider};
-    struct OriginalGroup(Vec<CreateTicket>);
-    #[async_trait::async_trait]
-    impl K8sCreateTransport for OriginalGroup {
-        async fn create(
-            &self,
-            _request: K8sCreateRequest,
-        ) -> Result<K8sCreateResponse, RuntimeError> {
-            panic!("terminal protocol cannot Create");
-        }
-        async fn seal_predecessor(
-            &self,
-            _scope: &str,
-            _fence: &ContainerEffectFence,
-            _name: &str,
-        ) -> Result<RequestJoin, RuntimeError> {
-            Ok(RequestJoin::Complete(self.0.clone()))
-        }
-    }
     let (runtime, state, _, _, server) = fixture(0, false).await;
     let mut spec = crate::tests::spec("joined-provider");
     spec.mounts.clear();
@@ -79,7 +62,10 @@ async fn original_joined_empty_runs_the_provider_terminal_protocol_but_never_ado
         isolation_pending: false,
     };
     let runtime = runtime
-        .with_create_transport(Arc::new(OriginalGroup(vec![ticket])))
+        .with_create_transport(Arc::new(ClosedProjectedRequests {
+            tickets: Arc::new(Mutex::new(vec![ticket])),
+            complete: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        }))
         .unwrap();
     let fingerprint = crate::runtime::container_adoption_fingerprint(
         &spec,
@@ -194,6 +180,412 @@ async fn original_joined_empty_runs_the_provider_terminal_protocol_but_never_ado
     );
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
+}
+
+#[tokio::test]
+async fn complete_original_inline_handoff_uses_the_provider_disposal_protocol() {
+    // Cause/effect table: C1 real producer retained complete declaration/results
+    // and original POST UID tickets; C2 original RO text+binary frozen inputs,
+    // Pod UID/spec/fence and original member UIDs; C3 current terminal authority;
+    // C4 DELETE accepted but its reply lost; C5 Pod gone before disposal while
+    // original GC members survive; C6 replacement UID or missing ticket/results.
+    // RP1=C1+C2+C3 => provider prepare -> same durable preparation -> authorized
+    // exact-UID disposal -> all original objects absent. Preparation has zero
+    // physical deletes and retains both owned/excluded paths. RP2=RP1+C4 =>
+    // retry the same handle/receipt, never new Create or sampled replacement UID.
+    // RP3=RP1+C5 => pending until original GC absence, with zero orphan deletes.
+    // RP4=C6 => Unknown before preparation/delete; no partial/empty set.
+    // These real kube HTTP adapter calls mock the trusted closed group. They
+    // do not qualify Registry process exit, resource-domain access or a cluster.
+    use crate::ContainerHandleCodec as _;
+    use awaken_container_contract::ContainerEnvironmentProvider as _;
+    for row in [
+        "complete",
+        "delete-response-loss",
+        "gc-after-pod-loss",
+        "foreign-member",
+        "missing-ticket",
+        "missing-results",
+    ] {
+        let (mut source, state, reached, release, server) = fixture(0, false).await;
+        source.continuation_volume = None;
+        let scope = format!("rich-provider-{row}");
+        let mut spec = crate::tests::spec(&scope);
+        spec.mounts.clear();
+        spec.env.clear();
+        spec.control_services.clear();
+        spec.limits.pids = None;
+        spec.filesystem_continuity = pc::FilesystemContinuity::Ephemeral;
+        for (name, mount_source) in [
+            (
+                "text",
+                pc::MountSource::Inline {
+                    contents: "original text".into(),
+                },
+            ),
+            (
+                "binary",
+                pc::MountSource::InlineBytes {
+                    contents: vec![0xff, 0, 1],
+                    content_hash: None,
+                },
+            ),
+        ] {
+            spec.mounts.push(pc::MountRequirement {
+                mount_id: name.into(),
+                source: mount_source,
+                mount_path: format!("/mnt/{name}"),
+                access: pc::MountAccess::ReadOnly,
+                lifetime: pc::MountLifetime::PerRun,
+                required: true,
+            });
+        }
+        let clock = awaken_time::system_clock();
+        let image = "rich-provider-image";
+        let plan = crate::container_plan_with_allowlist(
+            &spec,
+            image,
+            &crate::environment_keepalive_command(),
+            None,
+            None,
+            Some(&clock),
+        )
+        .unwrap();
+        let original_tickets = Arc::new(Mutex::new(Vec::new()));
+        let mut recovery = K8sRuntime::for_test(state.lock().unwrap().server_addr);
+        recovery.clients.control = source.clients.control.clone();
+        let recovery = recovery
+            .with_create_transport(Arc::new(ClosedProjectedRequests {
+                tickets: original_tickets.clone(),
+                complete: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            }))
+            .unwrap();
+        let adoption = crate::runtime::container_adoption_fingerprint(
+            &spec,
+            &plan,
+            None,
+            &recovery.realization_configuration().unwrap(),
+        );
+        let realization =
+            crate::runtime::container_realization_fingerprint(&spec, &adoption, &plan.image);
+        let create =
+            pc::SandboxEffectFence::new("rich-create", "old-owner", "old-boot", 1, u64::MAX - 1)
+                .unwrap();
+        let terminal =
+            pc::SandboxEffectFence::new("rich-cleanup", "old-owner", "old-boot", 2, u64::MAX - 1)
+                .unwrap();
+        let original_authority = EffectAuthority::new(&create);
+        let attempt = ContainerCreateAttempt::new("original-rich-attempt");
+        let intent = ContainerRealizationIntent::Create;
+        let context = ContainerRealizationContext::new(
+            &spec.scope,
+            &adoption,
+            Some(&create),
+            &intent,
+            &attempt,
+        )
+        .with_effect(ContainerEffect::Fenced {
+            fence: &create,
+            authority: &original_authority,
+        });
+        let id = source.realization_runtime_id(&spec.scope).unwrap();
+        let mut pod = source.pod_for_effect(&id, &plan, Some(&create));
+        crate::k8s_package_realization::stamp_sandbox_release_annotations(
+            &mut pod,
+            &spec.scope,
+            &plan.image,
+        );
+        source.stamp_effect_evidence(&mut pod, &context, &realization);
+        participants::declare(&mut pod, &id, &plan).unwrap();
+        stamp_pod_realization(&mut pod).unwrap();
+        pod.metadata.uid = Some("pod-uid".into());
+        pod.metadata.resource_version = Some("1".into());
+        pod.metadata.namespace = Some("default".into());
+        pod.status = Some(serde_json::from_value(json!({"phase":"Succeeded"})).unwrap());
+        let nonce = "0123456789abcdef0123456789abcdef";
+        pod.metadata
+            .annotations
+            .as_mut()
+            .unwrap()
+            .insert(ISOLATION_ID_ANNOTATION.into(), nonce.into());
+        pod.metadata
+            .annotations
+            .as_mut()
+            .unwrap()
+            .insert(REQUEST_DIGEST_ANNOTATION.into(), "a".repeat(64));
+        let pod_name = pod.metadata.name.clone().unwrap();
+        original_tickets.lock().unwrap().push(CreateTicket {
+            request: CreateTicketRequest::new(
+                "old-group",
+                "pods",
+                "default",
+                &pod_name,
+                "a".repeat(64),
+            )
+            .unwrap(),
+            status: TicketStatus::Finished(TicketResult::Created {
+                uid: "pod-uid".into(),
+            }),
+            origin: Default::default(),
+            isolation_id: nonce.into(),
+            isolation_pending: false,
+        });
+        {
+            let mut state = state.lock().unwrap();
+            state.pod = Some(pod.clone());
+            state.claim = None;
+            state.projected.clear();
+            state.accept_projected_creates = true;
+        }
+        // Invoke the canonical producer: both member POST results and Pod UID/RV
+        // CAS publication happen through the same HTTP fixture as disposal.
+        let original_set = participants::realize(
+            &source,
+            pod,
+            &id,
+            &plan,
+            Some((&context, &realization)),
+            None,
+        )
+        .await
+        .unwrap();
+        let source_writes = {
+            let mut state = state.lock().unwrap();
+            state.accept_projected_creates = false;
+            original_tickets
+                .lock()
+                .unwrap()
+                .extend(state.created_tickets.clone());
+            state.writes.len()
+        };
+        assert_eq!(original_set.objects.len(), 2);
+        let first = &original_set.objects[0];
+        match row {
+            "foreign-member" => {
+                state
+                    .lock()
+                    .unwrap()
+                    .projected_behavior
+                    .insert(first.name.clone(), "replacement");
+            }
+            "missing-ticket" => {
+                original_tickets
+                    .lock()
+                    .unwrap()
+                    .retain(|t| t.request.name != first.name);
+            }
+            "missing-results" => {
+                state
+                    .lock()
+                    .unwrap()
+                    .pod
+                    .as_mut()
+                    .unwrap()
+                    .metadata
+                    .annotations
+                    .as_mut()
+                    .unwrap()
+                    .remove("awaken.dev/projected-object-results");
+            }
+            _ => {}
+        }
+        let provider = crate::ContainerProvider::new(Arc::new(recovery), image).with_clock(clock);
+        let terminal_authority = EffectAuthority::new(&terminal);
+        let result = provider
+            .prepare_terminal_environment_for_effect(
+                &spec,
+                None,
+                Some(&create),
+                &terminal,
+                &terminal_authority,
+            )
+            .await;
+        if matches!(row, "foreign-member" | "missing-ticket" | "missing-results") {
+            match result {
+                Err(error) => assert!(error.to_string().contains("container provider cannot dispose an in-flight restore without a durable handle"), "RP4/{row}: {error}"),
+                Ok(_) => panic!("RP4 incomplete or foreign original set cannot prepare/{row}"),
+            }
+            assert_eq!(
+                state.lock().unwrap().writes.len(),
+                source_writes,
+                "RP4 no mutation/{row}"
+            );
+            server.abort();
+            assert!(server.await.unwrap_err().is_cancelled());
+            continue;
+        }
+        let environment = Arc::new(result.unwrap().expect("RP1 exact original rich source"));
+        let handle = environment.handle();
+        assert!(
+            matches!(handle.container_payload().unwrap().runtime_handle.as_ref(),
+            Some(crate::ContainerContinuationHandle::KubernetesContinuationV3 { pod_uid, participants, .. })
+            if pod_uid == "pod-uid" && participants.as_ref() == &original_set && !participants.terminal_only())
+        );
+        let expected_paths = spec
+            .mounts
+            .iter()
+            .map(|m| m.mount_path.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            handle.owned_paths().unwrap(),
+            expected_paths,
+            "RP1 original owned paths"
+        );
+        assert_eq!(
+            handle
+                .container_payload()
+                .unwrap()
+                .continuation_excluded_paths,
+            expected_paths,
+            "RP1 original excluded paths"
+        );
+        let prepared = environment
+            .prepare_disposal_for_effect(&terminal, &terminal_authority)
+            .await
+            .unwrap();
+        let prepared = pc::SandboxDisposalPreparation::new(
+            prepared,
+            handle.realization_fingerprint().unwrap().as_str(),
+        )
+        .unwrap();
+        assert!(
+            prepared.authorize(terminal.clone()).is_err(),
+            "RP1 unrelated operation remains rejected"
+        );
+        assert_eq!(
+            state.lock().unwrap().writes.len(),
+            source_writes,
+            "RP1 preparation does not delete"
+        );
+        let source_fence = prepared.prepared_effect_fence();
+        let current = pc::SandboxEffectFence::new(
+            prepared.operation_id().unwrap(),
+            source_fence.owner(),
+            source_fence.runtime_incarnation(),
+            source_fence.epoch(),
+            source_fence.expires_at_unix_ms(),
+        )
+        .unwrap();
+        let current_authority = Arc::new(EffectAuthority::new(&current));
+        let authorization = prepared.authorize(current).unwrap();
+        if row == "delete-response-loss" {
+            state.lock().unwrap().cut_after_call = Some(format!(
+                "DELETE /api/v1/namespaces/default/configmaps/{}",
+                first.name
+            ));
+            let task = tokio::spawn({
+                let (environment, authorization, authority) = (
+                    environment.clone(),
+                    authorization.clone(),
+                    current_authority.clone(),
+                );
+                async move {
+                    environment
+                        .dispose_for_effect(&authorization, authority.as_ref())
+                        .await
+                }
+            });
+            tokio::time::timeout(Duration::from_secs(5), reached.notified())
+                .await
+                .unwrap();
+            assert!(
+                !state.lock().unwrap().projected.contains(&first.name),
+                "RP2 DELETE accepted before lost response"
+            );
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+            release.add_permits(1);
+        }
+        if row == "gc-after-pod-loss" {
+            let calls_before = {
+                let mut state = state.lock().unwrap();
+                state.pod = None;
+                state.calls.len()
+            };
+            let mut task = tokio::spawn({
+                let (environment, authorization, authority) = (
+                    environment.clone(),
+                    authorization.clone(),
+                    current_authority.clone(),
+                );
+                async move {
+                    environment
+                        .dispose_for_effect(&authorization, authority.as_ref())
+                        .await
+                }
+            });
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while state.lock().unwrap().calls.len() < calls_before + 3 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(
+                !task.is_finished(),
+                "RP3 surviving original members prevent completion"
+            );
+            assert_eq!(
+                state.lock().unwrap().writes.len(),
+                source_writes,
+                "RP3 no orphan deletes"
+            );
+            state.lock().unwrap().projected.clear(); // actual observed GC absence in this API fixture
+            tokio::time::timeout(Duration::from_secs(5), &mut task)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        } else {
+            environment
+                .dispose_for_effect(&authorization, current_authority.as_ref())
+                .await
+                .unwrap();
+        }
+        // Lost-return replay uses this same carrier and preparation, after all
+        // UIDs are gone. It neither republishes RESULTS nor reissues Create.
+        let completed_writes = state.lock().unwrap().writes.len();
+        environment
+            .dispose_for_effect(&authorization, current_authority.as_ref())
+            .await
+            .unwrap();
+        assert_eq!(environment.handle(), handle, "RP1/RP2 exact same handle");
+        {
+            let state = state.lock().unwrap();
+            assert!(
+                state.pod.is_none() && state.claim.is_none() && state.projected.is_empty(),
+                "RP1/RP3 complete physical set/{row}"
+            );
+            assert_eq!(
+                state.writes.len(),
+                completed_writes,
+                "RP2 replay has no writes"
+            );
+            assert_eq!(state.projected_lists, 0, "no sampled LIST membership");
+            if row != "gc-after-pod-loss" {
+                assert_eq!(
+                    state
+                        .writes
+                        .iter()
+                        .filter(|call| call.as_str() == "DELETE configmaps")
+                        .count(),
+                    2,
+                    "RP1/RP2 each original UID is deleted once"
+                );
+            }
+            assert_eq!(
+                state
+                    .writes
+                    .iter()
+                    .filter(|call| call.starts_with("POST "))
+                    .count(),
+                2,
+                "no new recovery Create"
+            );
+        }
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+    }
 }
 
 #[tokio::test]
@@ -488,6 +880,12 @@ struct ApiState {
     writes: Vec<String>,
     projected: std::collections::HashSet<String>,
     projected_behavior: std::collections::HashMap<String, &'static str>,
+    // Original POST responses for rich producer/terminal protocol cases.
+    // Old cleanup fixtures retain their existing typed skeleton fallback.
+    projected_objects: std::collections::HashMap<String, Value>,
+    accept_projected_creates: bool,
+    created_tickets: Vec<CreateTicket>,
+    cut_after_call: Option<String>,
     projected_lists: usize,
     projected_deleted: Arc<Semaphore>,
     release_conflict: bool,
@@ -612,6 +1010,42 @@ impl ApiState {
                     json!({"kind":"Status", "apiVersion":"v1", "status":"Success"}),
                 )
             }
+            ("POST", "configmaps" | "secrets") => {
+                assert!(
+                    self.accept_projected_creates,
+                    "cleanup cannot issue projected Create"
+                );
+                let mut object = body;
+                let name = object["metadata"]["name"].as_str().unwrap().to_owned();
+                assert!(!self.projected.contains(&name), "original POST occurs once");
+                let uid = format!("{name}-uid");
+                let nonce = "0123456789abcdef0123456789abcdef";
+                let digest = "b".repeat(64);
+                object["metadata"]["uid"] = uid.clone().into();
+                object["metadata"]["resourceVersion"] = "1".into();
+                object["metadata"]["namespace"] = "default".into();
+                object["metadata"]["annotations"][ISOLATION_ID_ANNOTATION] = nonce.into();
+                object["metadata"]["annotations"][REQUEST_DIGEST_ANNOTATION] =
+                    digest.clone().into();
+                self.created_tickets.push(CreateTicket {
+                    request: CreateTicketRequest::new(
+                        "old-group",
+                        resource,
+                        "default",
+                        &name,
+                        digest,
+                    )
+                    .unwrap(),
+                    status: TicketStatus::Finished(TicketResult::Created { uid }),
+                    origin: Default::default(),
+                    isolation_id: nonce.into(),
+                    isolation_pending: false,
+                });
+                self.projected.insert(name.clone());
+                self.projected_objects.insert(name, object.clone());
+                self.writes.push(call);
+                (201, object)
+            }
             ("GET", "configmaps" | "secrets") => {
                 let kind = if resource == "configmaps" {
                     "ConfigMap"
@@ -619,12 +1053,12 @@ impl ApiState {
                     "Secret"
                 };
                 let object = |name: &str| {
-                    let mut object = json!({"kind":kind,"apiVersion":"v1","metadata":{
+                    let mut object = self.projected_objects.get(name).cloned().unwrap_or_else(|| json!({"kind":kind,"apiVersion":"v1","metadata":{
                         "name":name,"uid":format!("{name}-uid"),"resourceVersion":"1",
                         "annotations":{SANDBOX_ATTEMPT_ANNOTATION:"attempt"},
                         "labels":{crate::SANDBOX_ATTEMPT_LABEL:k8s_attempt_label("attempt")},
                         "ownerReferences":[{"apiVersion":"v1","kind":"Pod","name":"awaken-cleanup","uid":"pod-uid","controller":true}]
-                    }});
+                    }}));
                     match self.projected_behavior.get(name).copied() {
                         Some("replacement") => object["metadata"]["uid"] = "replacement-uid".into(),
                         Some("missing-uid") => {
@@ -664,8 +1098,15 @@ impl ApiState {
             }
             ("DELETE", "configmaps" | "secrets") => {
                 let name = path.split('/').nth(6).unwrap();
-                assert_eq!(body["preconditions"]["uid"], format!("{name}-uid"));
-                assert_eq!(body["preconditions"]["resourceVersion"], "1");
+                let metadata = self.projected_objects.get(name).map(|v| &v["metadata"]);
+                assert_eq!(
+                    body["preconditions"]["uid"],
+                    metadata.map_or_else(|| json!(format!("{name}-uid")), |v| v["uid"].clone())
+                );
+                assert_eq!(
+                    body["preconditions"]["resourceVersion"],
+                    metadata.map_or_else(|| json!("1"), |v| v["resourceVersion"].clone())
+                );
                 assert!(self.projected.contains(name));
                 if self.projected_behavior.get(name) != Some(&"finalizer") {
                     self.projected.remove(name);
@@ -1061,6 +1502,10 @@ async fn fixture_with_cut(
             .into_iter()
             .collect(),
         projected_behavior: Default::default(),
+        projected_objects: Default::default(),
+        accept_projected_creates: false,
+        created_tickets: Vec::new(),
+        cut_after_call: None,
         projected_lists: 0,
         projected_deleted: Arc::new(Semaphore::new(0)),
         release_conflict: conflict,
@@ -1079,12 +1524,22 @@ async fn fixture_with_cut(
                 notify.notify_one();
                 let _permit = resume.acquire().await.unwrap();
             }
-            let (status, response, count) = {
+            let (status, response, count, selected_cut) = {
                 let mut state = serving.lock().unwrap();
                 let (status, response) = state.response(&method, &path, body);
-                (status, response.to_string(), state.calls.len())
+                let selected_cut =
+                    state.cut_after_call.as_deref() == Some(&format!("{method} {path}"));
+                if selected_cut {
+                    state.cut_after_call = None;
+                }
+                (
+                    status,
+                    response.to_string(),
+                    state.calls.len(),
+                    selected_cut,
+                )
             };
-            if !pause_before_effect && count == cut {
+            if !pause_before_effect && (count == cut || selected_cut) {
                 notify.notify_one();
                 let _permit = resume.acquire().await.unwrap();
             }

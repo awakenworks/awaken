@@ -122,3 +122,31 @@ impl MemoryDispatchStore {
         Ok(SettleOutcome::Applied)
     }
 }
+
+// The one typed observation of these same retained slot facts. Summary and
+// exact reads share it; neither projection can erase orphan/closing residue.
+impl Row {
+    pub(super) fn physical_attempt(&self) -> Result<Option<PhysicalAttempt>, DispatchError> {
+        crate::dispatch::observed_physical_attempt_is_present(
+            self.active_attempt.is_some(),
+            self.active_attempt.is_some(),
+            self.active_attempt_binding.is_some(),
+            self.active_attempt_closing,
+        )?;
+        self.active_attempt
+            .as_ref()
+            .map(|claim| {
+                if let Some(binding) = &self.active_attempt_binding {
+                    binding.validate_for(claim)?;
+                }
+                Ok(PhysicalAttempt {
+                    claim: claim.clone(),
+                    binding: self.active_attempt_binding.clone(),
+                    thread_id: Some(self.request.thread_id().clone()),
+                    session_thread_id: self.request.session_thread_id.clone(),
+                    closing: self.active_attempt_closing,
+                })
+            })
+            .transpose()
+    }
+}
