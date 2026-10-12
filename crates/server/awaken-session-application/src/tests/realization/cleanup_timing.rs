@@ -38,6 +38,7 @@ async fn live_session_usage_projects_the_same_clock_that_opened_its_root_interva
         false,
         clock.now_ms(),
         0,
+        None,
     )
     .unwrap();
     create(repo.as_ref(), session.into_snapshot()).await;

@@ -8,7 +8,74 @@ use super::{SessionExecutionState, SessionExecutionTransitionError};
 #[cfg(test)]
 mod tests;
 
+use awaken_agent_contract::agent::{run::Id as RunId, thread::Id as ThreadId};
+use awaken_lease_contract::fence::Epoch;
 use std::collections::BTreeSet;
+
+/// One original, pre-effect activity admission. Data alone grants no execution.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRunActivityAdmissionRecord {
+    pub(super) operation_id: String,
+    pub(super) activity_epoch: Epoch,
+    pub(super) thread_id: ThreadId,
+    pub(super) run_id: RunId,
+}
+
+impl SessionRunActivityAdmissionRecord {
+    pub fn operation_id(&self) -> &str {
+        &self.operation_id
+    }
+    pub fn activity_epoch(&self) -> Epoch {
+        self.activity_epoch
+    }
+    pub fn thread_id(&self) -> &ThreadId {
+        &self.thread_id
+    }
+    pub fn run_id(&self) -> &RunId {
+        &self.run_id
+    }
+}
+
+/// Retained facts of the existing Root, not another activity/child registry.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SessionRunActivities {
+    pub(super) records: Vec<SessionRunActivityAdmissionRecord>,
+    pub(super) unrecorded: bool,
+}
+
+/// Cause supplied only by the existing Root reducers. A registered Event wake
+/// drives an already-retained batch; it is not anonymous execution admission.
+pub(super) enum ActivityAdmissionSource<'a> {
+    Named(&'a str, &'a ThreadId, &'a RunId),
+    Anonymous,
+    RegisteredEventWake,
+}
+
+impl SessionRunActivities {
+    pub(super) const fn fresh() -> Self {
+        Self {
+            records: Vec::new(),
+            unrecorded: false,
+        }
+    }
+
+    pub(super) fn valid(&self, activity_epoch: Option<Epoch>) -> bool {
+        let mut operations = BTreeSet::new();
+        let mut previous = None;
+        self.records.iter().all(|record| {
+            let valid = previous.is_none_or(|previous| record.activity_epoch > previous)
+                && activity_epoch.is_some_and(|maximum| record.activity_epoch <= maximum)
+                && !record.operation_id.trim().is_empty()
+                && !record.thread_id.0.trim().is_empty()
+                && !record.run_id.0.trim().is_empty()
+                && operations.insert(record.operation_id.as_str());
+            previous = Some(record.activity_epoch);
+            valid
+        })
+    }
+}
 
 #[cfg(any(test, kani))]
 mod model;
@@ -66,6 +133,7 @@ pub(super) struct ActivityState<'a, Members: ActivityMembers = BTreeSet<u64>> {
     pub(super) epoch: &'a mut u64,
     pub(super) active: &'a mut Members,
     pub(super) execution: &'a mut SessionExecutionState,
+    pub(super) history: &'a mut Option<Box<SessionRunActivities>>,
 }
 
 impl<Members: ActivityMembers> ActivityState<'_, Members> {
@@ -89,17 +157,53 @@ impl<Members: ActivityMembers> ActivityState<'_, Members> {
 
     pub(super) fn begin_activity_epoch(&mut self) -> Option<u64> {
         let next = self.epoch.checked_add(1)?;
-        *self.epoch = next;
-        self.active.insert(next);
-        Some(next)
+        self.begin_activity_epoch_at(next, ActivityAdmissionSource::Anonymous)
+            .then_some(next)
     }
 
-    pub(super) fn begin_activity_epoch_at(&mut self, epoch: u64) -> bool {
-        if epoch == 0 || epoch <= *self.epoch {
+    pub(super) fn begin_activity_epoch_at(
+        &mut self,
+        epoch: u64,
+        source: ActivityAdmissionSource<'_>,
+    ) -> bool {
+        let Ok(admission_epoch) = Epoch::try_from(epoch) else {
+            return false;
+        };
+        if epoch <= *self.epoch {
+            return false;
+        }
+        if let ActivityAdmissionSource::Named(operation, thread, run) = &source
+            && (operation.trim().is_empty()
+                || thread.0.trim().is_empty()
+                || run.0.trim().is_empty()
+                || self.history.as_deref().is_some_and(|history| {
+                    history
+                        .records
+                        .iter()
+                        .any(|record| record.operation_id == *operation)
+                }))
+        {
+            return false;
+        }
+        if !self.active.insert(epoch) {
             return false;
         }
         *self.epoch = epoch;
-        self.active.insert(epoch)
+        if let Some(history) = self.history.as_deref_mut() {
+            match source {
+                ActivityAdmissionSource::Named(operation, thread, run) => {
+                    history.records.push(SessionRunActivityAdmissionRecord {
+                        operation_id: operation.to_owned(),
+                        activity_epoch: admission_epoch,
+                        thread_id: thread.clone(),
+                        run_id: run.clone(),
+                    })
+                }
+                ActivityAdmissionSource::Anonymous => history.unrecorded = true,
+                ActivityAdmissionSource::RegisteredEventWake => {}
+            }
+        }
+        true
     }
 
     pub(super) fn settle_activity_epoch(&mut self, expected_epoch: u64) -> Option<bool> {

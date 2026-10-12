@@ -197,6 +197,8 @@ pub enum SessionMutationValidationError {
     RuntimeIntervalStateMismatch,
     #[error("Session active activity epochs are inconsistent with execution state or fence")]
     ActiveActivityStateMismatch,
+    #[error("Session retained activity admissions are inconsistent or were rewritten")]
+    ActivityHistoryMismatch,
     #[error("Session original materialization fact is inconsistent with its root")]
     EnvironmentMaterializationMismatch,
     #[error("Session replacement erased, reset or overwrote original materialization history")]
@@ -233,6 +235,21 @@ pub(crate) fn validate_aggregate_state(
     session: &PersistedSession,
 ) -> Result<(), SessionMutationValidationError> {
     crate::SessionEnvironmentMaterialization::validate_for(session)?;
+    if session.run_activities.as_deref().is_some_and(|history| {
+        !history.valid(awaken_lease_contract::fence::Epoch::try_from(session.activity_epoch).ok())
+            || (!history.unrecorded
+                && session.activity_epoch != 0
+                && !history
+                    .records
+                    .iter()
+                    .any(|record| record.activity_epoch.get() == session.activity_epoch)
+                && !session
+                    .event_batches
+                    .iter()
+                    .any(|batch| batch.wake_activity_epoch == Some(session.activity_epoch)))
+    }) {
+        return Err(SessionMutationValidationError::ActivityHistoryMismatch);
+    }
     if session.running_interval.is_some() && session.execution != SessionExecutionState::Running {
         return Err(SessionMutationValidationError::RuntimeIntervalStateMismatch);
     }
@@ -366,7 +383,34 @@ impl PersistedSession {
             self.updated_at_unix_ms,
             replacement.updated_at_unix_ms,
         )?;
-        crate::SessionEnvironmentMaterialization::validate_replacement(self, replacement)
+        crate::SessionEnvironmentMaterialization::validate_replacement(self, replacement)?;
+        let mismatch = || SessionMutationValidationError::ActivityHistoryMismatch;
+        match (
+            self.run_activities.as_deref(),
+            replacement.run_activities.as_deref(),
+        ) {
+            (None, None) => Ok(()),
+            (None, Some(_)) | (Some(_), None) => Err(mismatch()),
+            (Some(before), Some(after)) => {
+                if replacement.activity_epoch < self.activity_epoch
+                    || after.records.len() < before.records.len()
+                    || after.records[..before.records.len()] != before.records
+                    || (before.unrecorded && !after.unrecorded)
+                    || (self.is_terminal()
+                        && (before != after || self.activity_epoch != replacement.activity_epoch))
+                    || (!before.unrecorded
+                        && after.unrecorded
+                        && replacement.activity_epoch <= self.activity_epoch)
+                    || after.records[before.records.len()..].iter().any(|record| {
+                        record.activity_epoch.get() <= self.activity_epoch
+                            || record.activity_epoch.get() > replacement.activity_epoch
+                    })
+                {
+                    return Err(mismatch());
+                }
+                Ok(())
+            }
+        }
     }
 }
 

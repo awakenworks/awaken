@@ -1,6 +1,10 @@
 use super::model::TwoSlotMembers;
 use super::*;
 
+// These original scalar/member proofs use legacy None history. They make no
+// claim about retained Run membership; named/sticky-history laws have native
+// decision-table tests at the same production reducer.
+
 // A0/A1 partition: any historical u64 scalar, one real Next admission into the
 // empty persisted activity set. Exhaustion stutters; otherwise exactly the
 // mathematical successor becomes the sole member, with execution unchanged.
@@ -16,10 +20,12 @@ fn activity_next_epoch_inserts_exact_checked_successor() {
     let mut epoch = seed;
     let mut active = BTreeSet::new();
     let mut execution = SessionExecutionState::Idle;
+    let mut history = None;
     let actual = ActivityState {
         epoch: &mut epoch,
         active: &mut active,
         execution: &mut execution,
+        history: &mut history,
     }
     .begin_activity_epoch();
     if seed == u64::MAX {
@@ -60,12 +66,14 @@ fn activity_exact_epoch_inserts_only_fresh_positive_member() {
     let mut epoch = seed;
     let mut active = BTreeSet::new();
     let mut execution = SessionExecutionState::Idle;
+    let mut history = None;
     let actual = ActivityState {
         epoch: &mut epoch,
         active: &mut active,
         execution: &mut execution,
+        history: &mut history,
     }
-    .begin_activity_epoch_at(requested);
+    .begin_activity_epoch_at(requested, ActivityAdmissionSource::Anonymous);
     assert!(
         actual == (requested > seed),
         "E1 exact admission requires a fresh positive epoch"
@@ -103,10 +111,12 @@ fn activity_terminal_transition_clears_one_real_member() {
     let mut epoch = kani::any::<u64>();
     let mut active = BTreeSet::new();
     let mut execution = SessionExecutionState::Running;
+    let mut history = None;
     let mut state = ActivityState {
         epoch: &mut epoch,
         active: &mut active,
         execution: &mut execution,
+        history: &mut history,
     };
     let admitted = state.begin_activity_epoch();
     let high = *state.epoch;
@@ -125,10 +135,12 @@ fn activity_two_slot_terminal_transition_clears_members() {
     let mut epoch = kani::any::<u64>();
     let mut active = TwoSlotMembers::default();
     let mut execution = SessionExecutionState::Running;
+    let mut history = None;
     let mut state = ActivityState {
         epoch: &mut epoch,
         active: &mut active,
         execution: &mut execution,
+        history: &mut history,
     };
     let _ = state.begin_activity_epoch();
     let _ = state.begin_activity_epoch();
@@ -215,7 +227,7 @@ fn check_admission<const EXACT: bool, Members: ActivityMembers>(
     let admitted = u64::try_from(requested).ok().filter(|value| *value > high);
     let actual = if EXACT {
         state
-            .begin_activity_epoch_at(requested as u64)
+            .begin_activity_epoch_at(requested as u64, ActivityAdmissionSource::Anonymous)
             .then_some(requested as u64)
     } else {
         state.begin_activity_epoch()
@@ -237,10 +249,12 @@ fn check_admission_pair<const FIRST_EXACT: bool, const SECOND_EXACT: bool>() {
     let mut epoch: u64 = kani::any();
     let mut active = TwoSlotMembers::default();
     let mut execution = SessionExecutionState::Idle;
+    let mut history = None;
     let mut state = ActivityState {
         epoch: &mut epoch,
         active: &mut active,
         execution: &mut execution,
+        history: &mut history,
     };
     let mut members = [None; 2];
     check_admission::<FIRST_EXACT, _>(&mut state, &mut members, 0);

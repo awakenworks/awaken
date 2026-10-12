@@ -216,6 +216,7 @@ pub struct SessionApplication {
     >,
     local_realization_owner: String,
     runtime_incarnation: String,
+    #[cfg(any(test, feature = "test-support"))]
     mutation_sequence: AtomicU64,
     lifecycle_supervisor_started: AtomicBool,
     lifecycle_wakeup: tokio::sync::Notify,
@@ -324,6 +325,7 @@ impl SessionApplication {
                 APPLICATION_INCARNATION_SEQ.fetch_add(1, Ordering::Relaxed)
             ),
             local_realization_locks: Arc::default(),
+            #[cfg(any(test, feature = "test-support"))]
             mutation_sequence: AtomicU64::new(0),
             lifecycle_supervisor_started: AtomicBool::new(false),
             lifecycle_wakeup: tokio::sync::Notify::new(),

@@ -250,6 +250,11 @@ pub struct PersistedSession {
     /// new admission supersedes that unknowable crash-orphan and starts the
     /// explicit set at its successor epoch.
     pub active_activity_epochs: BTreeSet<u64>,
+    /// Original named admissions survive activity settlement and terminal fencing.
+    /// Missing history is legacy unknown; a fresh empty history is not a full
+    /// execution-domain or physical-closure proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) run_activities: Option<Box<super::activity_state::SessionRunActivities>>,
     /// One continuous authoritative Running interval. It is persisted in the
     /// aggregate so process recovery and overlapping driving events cannot
     /// fabricate gaps or emit two customer-usage intervals.
@@ -340,6 +345,9 @@ impl PersistedSession {
             event_batches: Vec::new(),
             activity_epoch: 0,
             active_activity_epochs: BTreeSet::new(),
+            run_activities: Some(Box::new(
+                super::activity_state::SessionRunActivities::fresh(),
+            )),
             running_interval: None,
             closed_runtime_intervals: Vec::new(),
             runtime_active_millis: 0,
@@ -386,9 +394,15 @@ impl PersistedSession {
                 source_commit_cursor: 0,
             })?;
         plan.batch.wake_activity_epoch = Some(wake_activity_epoch);
-        self.activity_epoch = wake_activity_epoch;
-        let inserted = self.active_activity_epochs.insert(wake_activity_epoch);
-        debug_assert!(inserted, "fresh initial activity epoch is unique");
+        // This wake only drives the validated batch committed beside it. User
+        // and exact Reply lowering retain their named admissions before effect;
+        // the batch itself remains the sole other Event-command provenance.
+        if !self.activity_state().begin_activity_epoch_at(
+            wake_activity_epoch,
+            super::activity_state::ActivityAdmissionSource::RegisteredEventWake,
+        ) {
+            return Err(crate::SessionEventBatchError::ProgressMismatch);
+        }
         self.event_batches.push(plan.batch);
         Ok(())
     }
@@ -416,8 +430,22 @@ impl PersistedSession {
     /// application mutation. The revision is monotonic and therefore remains in
     /// the same fencing domain as ordinary activity epochs without an auxiliary
     /// operation-to-epoch registry.
-    pub fn begin_activity_epoch_at(&mut self, epoch: u64) -> bool {
-        self.activity_state().begin_activity_epoch_at(epoch)
+    pub fn begin_activity_epoch_at(
+        &mut self,
+        epoch: u64,
+        source: Option<(
+            &str,
+            &awaken_agent_contract::ThreadId,
+            &awaken_agent_contract::RunId,
+        )>,
+    ) -> bool {
+        let source = match source {
+            Some((operation, thread, run)) => {
+                super::activity_state::ActivityAdmissionSource::Named(operation, thread, run)
+            }
+            None => super::activity_state::ActivityAdmissionSource::Anonymous,
+        };
+        self.activity_state().begin_activity_epoch_at(epoch, source)
     }
 
     /// Settle one admitted activity epoch.
@@ -436,7 +464,45 @@ impl PersistedSession {
             epoch: &mut self.activity_epoch,
             active: &mut self.active_activity_epochs,
             execution: &mut self.execution,
+            history: &mut self.run_activities,
         }
+    }
+
+    /// Read-only raw facts. The flag means some admitted activity had no raw
+    /// Run identity; neither its absence nor an empty slice proves full closure.
+    pub fn run_activities(&self) -> Option<(&[super::SessionRunActivityAdmissionRecord], bool)> {
+        self.run_activities
+            .as_deref()
+            .map(|history| (history.records.as_slice(), history.unrecorded))
+    }
+
+    /// Replay never repairs missing history. Only an already retained named
+    /// operation can reject different raw coordinates under the same receipt.
+    pub fn validate_run_activity_replay(
+        &self,
+        operation: &str,
+        epoch: impl TryInto<awaken_lease_contract::fence::Epoch>,
+        source: Option<(
+            &awaken_agent_contract::ThreadId,
+            &awaken_agent_contract::RunId,
+        )>,
+    ) -> Result<(), super::SessionMutationValidationError> {
+        let epoch = epoch
+            .try_into()
+            .map_err(|_| super::SessionMutationValidationError::ActivityHistoryMismatch)?;
+        if let Some(history) = self.run_activities.as_deref()
+            && let Some(record) = history
+                .records
+                .iter()
+                .find(|record| record.operation_id == operation)
+            && (record.activity_epoch != epoch
+                || source.is_some_and(|(thread, run)| {
+                    record.thread_id != *thread || record.run_id != *run
+                }))
+        {
+            return Err(super::SessionMutationValidationError::ActivityHistoryMismatch);
+        }
+        Ok(())
     }
 
     /// Join one successfully applied Dispatch settlement to its exact retained

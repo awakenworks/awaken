@@ -192,6 +192,7 @@ impl SessionApplication {
     /// no external idempotency key. The identity remains stable across this
     /// call's root-CAS retries, while two genuinely distinct concurrent calls
     /// can never collapse merely because their compiled snapshots are equal.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn fresh_mutation_record(
         &self,
         session_id: &str,

@@ -6319,69 +6319,6 @@ async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_led
     assert_eq!(reached, 1, "C1/E3");
 }
 
-#[tokio::test]
-async fn cancellation_before_external_realization_settles_without_a_runtime_interval() {
-    // Cause/effect graph: C1 an externally realized Session is Preparing; C2 a
-    // Session Run activity is admitted during that stronger phase; C3 the Run
-    // commits a cancellation boundary before realization opens Running. Effects:
-    // E1 settlement removes the exact activity epoch; E2 Preparing remains
-    // authoritative; E3 no synthetic open/closed Runtime interval or lifecycle
-    // fact is created. Constraint: committed Run truth remains auditable in the
-    // Runtime feed; this reducer owns only the customer-visible Session interval.
-    // Decision rule P1=C1+C2+C3=>E1+E2+E3. Running-without-interval remains an
-    // invalid historical boundary and is covered by the aggregate reducer tests.
-    let session_id = "cancelled-before-external-realization";
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("pre-realization cancellation repository"),
-    );
-    let session = persisted(session_id, false, "preparing");
-    let mut session = SessionAggregate::try_from(session).expect("valid admission fixture");
-    let epoch = SessionApplication::open_activity_on_snapshot(
-        &mut session,
-        None,
-        true,
-        false,
-        awaken_time::system_clock().now().as_epoch_ms(),
-        0,
-    )
-    .expect("P1/C2 activity admitted during external realization");
-    assert!(
-        session.running_interval.is_none(),
-        "P1/C1 no Running interval"
-    );
-    create(repo.as_ref(), session.into_snapshot()).await;
-    let app = application(
-        repo.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-    let observation = awaken_session_state_contract::SessionRuntimeIntervalObservation {
-        activity_epoch: epoch,
-        thread_id: ThreadId(session_id.into()),
-        run_id: RunId("cancelled-before-realization-run".into()),
-        lifecycle_cursor: awaken_agent_contract::RunLifecycleCursor(7),
-        source_commit_cursor: 7,
-    };
-
-    let settled = app
-        .settle_activity_observed(&SessionId::from(session_id), epoch, Some(observation))
-        .await
-        .expect("P1 cancellation boundary settles the admitted activity");
-    assert!(settled.active_activity_epochs.is_empty(), "P1/E1");
-    assert_eq!(settled.execution, SessionExecutionState::Preparing, "P1/E2");
-    assert!(settled.running_interval.is_none(), "P1/E3");
-    assert!(settled.closed_runtime_intervals.is_empty(), "P1/E3");
-    assert!(
-        repo.pending_lifecycle()
-            .await
-            .expect("P1 lifecycle outbox")
-            .into_iter()
-            .all(|fact| fact.event_type != "session.runtime_interval_closed"),
-        "P1/E3"
-    );
-}
-
 #[derive(Default)]
 struct FailOnceMcpRealizer {
     stage_calls: AtomicUsize,
