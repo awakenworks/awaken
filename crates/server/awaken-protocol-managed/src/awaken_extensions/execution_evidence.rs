@@ -21,6 +21,9 @@ pub struct SessionExecutionEvidence {
     pub agent_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_revision: Option<u64>,
+    /// Original non-bearer provenance, not mutable metadata or a current grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_origin: Option<awaken_session_configuration_contract::ApplicationOriginBinding>,
     pub model: String,
     pub execution_model_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -77,6 +80,14 @@ mod tests {
             session_revision: 4,
             agent_id: "agent-1".into(),
             agent_revision: Some(7),
+            application_origin: Some(
+                awaken_session_configuration_contract::ApplicationOriginBinding::new(
+                    "application.interaction:v1".into(),
+                    "a".repeat(64),
+                    "opaque-origin-proof".into(),
+                )
+                .unwrap(),
+            ),
             model: "deepseek-v4-pro".into(),
             execution_model_ref: "deepseek-v4-pro".into(),
             backend_ref: Some("acp:claude".into()),
@@ -103,6 +114,10 @@ mod tests {
 
         let mut historical = wire.clone();
         historical.as_object_mut().unwrap().remove("agent_revision");
+        historical
+            .as_object_mut()
+            .unwrap()
+            .remove("application_origin");
         historical.as_object_mut().unwrap().remove("backend_ref");
         historical["runs"][0]
             .as_object_mut()
@@ -111,6 +126,10 @@ mod tests {
         let historical = serde_json::from_value::<SessionExecutionEvidence>(historical)
             .expect("R2 optional coordinates");
         assert_eq!(historical.agent_revision, None, "R2/E2");
+        assert_eq!(
+            historical.application_origin, None,
+            "R2 legacy has no invented origin"
+        );
         assert_eq!(historical.backend_ref, None, "R2/E2");
         assert_eq!(historical.runs[0].idempotency_key, None, "R2/E2");
 
@@ -140,6 +159,7 @@ mod tests {
                 session_revision: 1,
                 agent_id: "agent".into(),
                 agent_revision: None,
+                application_origin: None,
                 model: "model".into(),
                 execution_model_ref: "model".into(),
                 backend_ref: None,

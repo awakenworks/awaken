@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-08-02
-- Amended by: [ADR-0075](0075-unified-managed-session-worker-execution.md) (the current Worker-placement decision; replaces the late Worker-authored Session-input path), ADR-0083 (Cloud create returns after the durable root), ADR-0085 (ACP instructions and time context)
+- Amended by: [ADR-0075](0075-unified-managed-session-worker-execution.md) (the current Worker-placement decision; replaces the late Worker-authored Session-input path), ADR-0083 (Cloud create returns after the durable root), ADR-0085 (ACP instructions and time context), [ADR-0093](0093-immutable-application-origin-provenance.md)
 
 ## Context
 

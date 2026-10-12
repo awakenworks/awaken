@@ -47,6 +47,7 @@ fn profiled_observed_session(id: &str) -> PersistedSession {
     let compiled = SessionCreationIntent {
         control: ControlSessionCreationInputs {
             mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Frozen,
+            application_origin: source.application_origin,
             environment: source.environment,
             runtime_placement: source.runtime_placement,
             agent_id: source.agent_id,

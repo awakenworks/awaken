@@ -533,6 +533,7 @@ fn creation_command(session_id: &str) -> CreateSessionCommand {
         intent: awaken_session_configuration_contract::SessionCreationIntent {
             control: awaken_session_configuration_contract::ControlSessionCreationInputs {
                 mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Managed,
+                application_origin: None,
                 environment,
                 runtime_placement:
                     awaken_session_configuration_contract::SessionRuntimePlacement::Local,
@@ -1740,6 +1741,7 @@ fn profiled_session_command(session_id: &str, model: Option<&str>) -> CreateProf
         owner_scope: "workspace".into(),
         session_id: session_id.into(),
         mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Managed,
+        application_origin: None,
         agent_id: "profiled".into(),
         source_revision: None,
         environment_id: None,
@@ -1787,6 +1789,17 @@ async fn assert_profiled_realization_and_environment_rules(
 
     let mut explicit_environment = profiled_session_command("profiled-realized", None);
     explicit_environment.environment_id = Some("project-environment".into());
+    // Origin cause/effect rules O1/O2: a valid application carrier is supplied
+    // before create -> the same complete durable baseline retains it on
+    // readback; it is never appended to model-visible context. This assertion
+    // shares the existing real persistence matrix rather than a shadow store.
+    let origin = awaken_session_configuration_contract::ApplicationOriginBinding::new(
+        "application.interaction:v1".into(),
+        "a".repeat(64),
+        "opaque-origin-proof.not-model-context".into(),
+    )
+    .unwrap();
+    explicit_environment.application_origin = Some(origin.clone());
     let realized = available
         .create_profiled_session(explicit_environment)
         .await
@@ -1798,6 +1811,26 @@ async fn assert_profiled_realization_and_environment_rules(
         "P1/E1"
     );
     let baseline = realized.frozen_baseline().expect("P1 frozen baseline");
+    assert_eq!(baseline.application_origin.as_ref(), Some(&origin), "O1");
+    assert_eq!(
+        repository
+            .get(&realized.session_id)
+            .await
+            .unwrap()
+            .frozen_baseline()
+            .unwrap()
+            .application_origin
+            .as_ref(),
+        Some(&origin),
+        "O1 persisted readback"
+    );
+    assert!(
+        !baseline
+            .prompts
+            .iter()
+            .any(|prompt| prompt.contains(origin.evidence())),
+        "O2 no model context"
+    );
     assert_eq!(baseline.mounts.len(), 1, "P1/E1");
     assert_eq!(baseline.env.len(), 1, "P1/E1");
     assert_eq!(
@@ -1823,6 +1856,59 @@ async fn assert_profiled_realization_and_environment_rules(
         awaken_session_configuration_contract::SessionNetworkPolicy::None,
         "P1/E1"
     );
+    // O3/O4: metadata can be patched or cleared, including application-looking
+    // principal/proof labels, but those presentation writes cannot replace the
+    // original baseline carrier. Observe the real root CAS and its readback;
+    // hosting attribution must consume that root, never these mutable labels.
+    for (index, metadata) in [
+        SessionMetadataUpdate::Patch(std::collections::BTreeMap::from([
+            (
+                "flow.interaction_principal".into(),
+                Some("account:another".into()),
+            ),
+            (
+                "application_origin".into(),
+                Some("forged-metadata-proof".into()),
+            ),
+        ])),
+        SessionMetadataUpdate::Clear,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let before = repository.get(&realized.session_id).await.unwrap();
+        let updated = available
+            .update_session(
+                &realized.session_id,
+                SessionUpdateCommand {
+                    title: None,
+                    metadata: Some(metadata),
+                    budget: None,
+                    tools: None,
+                    mcp_update: None,
+                    idempotency_key: Some(format!("origin-metadata-{index}")),
+                    request_fingerprint: format!("origin-metadata-{index}"),
+                    if_match: Some(before.revision),
+                },
+            )
+            .await
+            .expect("O3/O4 metadata mutation");
+        let after = repository.get(&realized.session_id).await.unwrap();
+        assert_eq!(
+            after.revision, updated.command_revision,
+            "O3/O4 committed receipt"
+        );
+        assert_eq!(
+            after.frozen_baseline(),
+            before.frozen_baseline(),
+            "O3/O4 immutable origin and fingerprint"
+        );
+        assert_eq!(
+            after.frozen_baseline().unwrap().application_origin.as_ref(),
+            Some(&origin),
+            "O3/O4 not metadata-derived"
+        );
+    }
     // N7: blank-only Environment and request restrictions previously froze an
     // Allowlist([""]) instead of canonical None. SQLite must persist
     // the exact deny fact; replay/projection must not reconstruct another form.

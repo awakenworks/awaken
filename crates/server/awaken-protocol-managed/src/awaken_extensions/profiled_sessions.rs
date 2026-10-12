@@ -78,6 +78,9 @@ impl ProfiledSessionMode {
 pub struct ProfiledSessionCreate {
     pub session_id: String,
     pub mode: ProfiledSessionMode,
+    /// Non-bearer evidence interpreted only by its application/hosting owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_origin: Option<awaken_session_configuration_contract::ApplicationOriginBinding>,
     pub agent_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_revision: Option<u64>,
@@ -232,6 +235,7 @@ mod tests {
         let request = ProfiledSessionCreate {
             session_id: "session-a".into(),
             mode: ProfiledSessionMode::WorkUnit,
+            application_origin: None,
             agent_id: "agent-a".into(),
             source_revision: Some(2),
             environment_id: Some("environment-a".into()),
@@ -271,6 +275,31 @@ mod tests {
             tools: None,
         };
         let encoded = serde_json::to_value(&request).unwrap();
+        // R8 historical origin omission preserves the existing request bytes;
+        // R9 explicit valid origin round-trips through its single owner codec;
+        // R10 malformed origin rejects before invoking the Session composer.
+        assert!(encoded.get("application_origin").is_none(), "R8");
+        let mut with_origin = request.clone();
+        with_origin.application_origin = Some(
+            awaken_session_configuration_contract::ApplicationOriginBinding::new(
+                "application.interaction:v1".into(),
+                "a".repeat(64),
+                "opaque.origin-proof".into(),
+            )
+            .unwrap(),
+        );
+        let mut origin_wire = serde_json::to_value(&with_origin).unwrap();
+        assert_eq!(
+            serde_json::from_value::<ProfiledSessionCreate>(origin_wire.clone()).unwrap(),
+            with_origin,
+            "R9"
+        );
+        origin_wire["application_origin"]["context_fingerprint"] =
+            serde_json::json!("not-a-fingerprint");
+        assert!(
+            serde_json::from_value::<ProfiledSessionCreate>(origin_wire).is_err(),
+            "R10"
+        );
         assert_eq!(
             serde_json::from_value::<ProfiledSessionCreate>(encoded.clone()).unwrap(),
             request,

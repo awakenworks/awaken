@@ -254,15 +254,37 @@ candidate hash and never appends a second Skill version or Agent revision.
 
 ### D9: Delivery is staged by capability
 
-Required first slice:
+Required first slice (local synthetic evaluation, not an online Job):
 
 1. keep all CLI/offline evaluation in `awaken-eval` and remove old harness
    callers;
-2. implement the contracts and durable state machine in the control plane;
-3. support `AgentInstructions` and `SkillBundle` with synthetic or governed
-   datasets, deterministic replay, and sandboxed offline real runs;
-4. promote through AgentConfig CAS/publication and `SkillStore::append_version`;
-5. register optimization artifact storage in ADR-0050 erasure fan-out.
+2. retrieve complete candidate Skill bundles by exact Workspace-scoped
+   File/Artifact references through `FileContentSource`; reuse the Resources
+   bundle canonicalizer and hash, without inserting candidate Skill versions;
+3. invoke the same evaluator through an operator/CLI adapter and ordinary
+   Session/Run, Sandbox and Tool ports; freeze bundle, suite, model, tool,
+   environment, runner and scorer identities before the baseline;
+4. keep proposer inputs separate from protected oracles and the sealed test;
+   run matched development repetitions and one sealed selected-candidate batch;
+5. adopt a winner only by reviewed source change. No production publication,
+   automatic promotion, candidate-supplied host path or fabricated receipt.
+
+This slice does not require `OptimizationJobStore`, HTTP endpoints, online
+privacy processing or live target CAS. It is not a second optimizer: the later
+coordinator invokes these same evaluators rather than replacing them. A verified
+candidate import alone proves immutable bytes, not sandbox execution, behavioral
+quality or eligibility; those need their own fresh, bound terminal evidence.
+
+Required online slice:
+
+1. implement the contracts and durable state machine in the control plane;
+2. reuse the existing Resources File/Artifact application for governed content,
+   adding only optimization metadata/references and missing governance there;
+3. support target-owned AgentConfig CAS/publication and atomic Skill promotion
+   against the full unchanged base pin; an unfenced `append_version` is not
+   sufficient;
+4. complete ADR-0050 purpose, privacy, retention and erasure admission before
+   online personal-content use.
 
 Required second slice:
 
@@ -313,6 +335,9 @@ Explicitly deferred:
   visible immutable resource history and creates a second meaning for latest.
 - **A second optimization-specific sandbox/tool layer.** Rejected; existing
   provisioning and `ToolExecutor` seams already own those responsibilities.
+- **A second optimization blob or Skill repository.** Rejected; candidate bytes
+  stay governed Files/Artifacts and reuse Resources ingestion and content
+  identities. Optimization owns only lineage and comparison metadata.
 - **Proxy-variable egress controls.** Rejected as bypassable by arbitrary
   workloads.
 - **Delete personal fields only from the final dataset.** Rejected because raw

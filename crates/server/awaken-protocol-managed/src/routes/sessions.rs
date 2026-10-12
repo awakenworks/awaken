@@ -1274,6 +1274,7 @@ pub async fn create_profiled_session(
             owner_scope,
             session_id: body.session_id,
             mutation_policy,
+            application_origin: body.application_origin,
             agent_id: body.agent_id,
             source_revision: body.source_revision,
             environment_id: body.environment_id,

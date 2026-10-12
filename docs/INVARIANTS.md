@@ -116,6 +116,13 @@ and its Kani proof; archived Memory denial belongs to
 HTTP port. A copied Resource dispatch on a different Thread cannot replace
 Session Work authority, so it is not used as positive execution evidence.
 
+G42 also covers the optional `ApplicationOriginBinding` in the same creation
+intent/baseline owner, as specified by the
+[ADR-0093](adr/0093-immutable-application-origin-provenance.md).
+Carrier, legacy-shape and fingerprint decision tables and profiled persistence
+readback are source tests, not a proof of issuer trust or commercial permission.
+Those composition and deployed gates remain required before product exposure.
+
 ## DDD Review Checklist
 
 Before implementing a design, answer these questions:
