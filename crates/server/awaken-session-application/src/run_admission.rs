@@ -489,7 +489,7 @@ impl SessionApplication {
         )
         .await
         .map_err(|error| SessionProjectionRecoveryError::Rejected(preparation_error(error)))?;
-        let requires_external_realization = self.requires_external_realization(&session);
+        let requires_external_realization = session.requires_external_environment_owner();
         let session = if requires_external_realization {
             self.install_dispatch_projection(&owner, &session)
                 .await
@@ -571,7 +571,7 @@ impl SessionApplication {
                     )
                 })?;
         }
-        if !self.requires_external_realization(&recovered.session)
+        if !recovered.session.requires_external_environment_owner()
             && !recovered.session.execution.admits_activity()
         {
             return Err(RunError::unavailable_classified(

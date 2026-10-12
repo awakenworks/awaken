@@ -113,3 +113,44 @@ request without committing or settling through the foreign queue. Process
 composition propagates construction errors before starting downstream services.
 Cause/effect matrices cover foreign resolver queues, empty owners, ordinary and
 retry-exhausted claims, foreign dynamic Workers and accepted same-queue execution.
+
+Session process configuration and optional application features are installed by
+the consuming `SessionApplicationBuilder`. Production exposes no setters for
+credentials, models, Resources, Environment source or projection refresh.
+Invalid realization owners and zero retry budgets return a typed build error
+before reading the clock or creating the runtime incarnation. Fixture-only
+constructors and setters remain behind `test-support`.
+
+`SessionCredentials::read_write` accepts one authority implementing both the
+read source and material ingress, preserving the exact instance for both roles. `SessionResources::with_retention` requires the reference index, File
+catalog and purge scheduler together; a catalog-only process can explicitly
+leave retention disabled. CLI and scenario assembly use these capability
+values. The constructor preserves the existing Store/Clock and binding-sink
+identity. Tests cross invalid configuration, normalized owners, exact creation
+replay, disabled retention, authority failure before root CAS and recovery.
+
+The four write-once lifecycle, Worker observation, dispatch observation and
+preparation-compiler bindings remain a separate process-composition phase.
+Their removal from the shared application mutation surface is still pending.
+
+Session credential SPIs, process configuration and reconciliation DTOs have one
+definition in `awaken-session-application-contract`. Environment projection
+queries are owned by `awaken-executable-environment-contract`, while Session
+Work commands and leases are owned by `awaken-worker-contract`. The application
+combines these required roles at construction and keeps compatible root exports.
+All Work methods require an implementation, including release operations.
+Environment execution implements both roles and has no dependency on the Session
+application. Its former cross-context application exception is removed. The
+immutable configuration owns and validates the only logical realization-owner
+string; topology decisions read the frozen Session aggregate directly.
+
+Recorded permission attribution now uses `ScopedToolPermissionKey`: the SDK
+Thread id, a distinct committed Message or pending Run source, and the call id.
+The pure reducer preserves the first recorded decision for that exact source.
+It rejects historical source-kind aliases before converting to the compatible
+public ToolUse coordinates; it never selects a permission by audit order or
+policy strength. Existing public ids remain unchanged for unambiguous history.
+The protocol replaces its disposable permission index only after the whole
+reduction succeeds, retaining the previous index when a refresh is corrupt.
+The decision table crosses identical/different source bytes and forward/reverse
+audits, alongside Thread/Run/step reuse, replay and exact-prefix constraints.

@@ -19,7 +19,6 @@ awaken-iam-core.workspace = true
 awaken-credential-contract.workspace = true
 awaken-environment-contract.workspace = true
 awaken-executable-environment-contract.workspace = true
-awaken-session-application.workspace = true
 awaken-session-configuration-contract.workspace = true
 awaken-session-mcp-contract.workspace = true
 awaken-session-types.workspace = true

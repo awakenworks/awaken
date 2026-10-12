@@ -8,9 +8,6 @@ use awaken_credential_contract::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialBinding, CredentialRef,
     CredentialSourceId, CredentialTarget, CredentialUsage, PlaintextHolder,
 };
-use awaken_environment_contract::EnvItem;
-use awaken_executable_environment_contract::EnvironmentImageBuildError;
-use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
 use awaken_session_mcp_contract::McpTarget;
 
 /// Exact credential execution decision already selected by Session.
@@ -155,78 +152,4 @@ pub trait CredentialMaterialIngress: Send + Sync {
         &self,
         command: CredentialMaterialRetirementCommand,
     ) -> Result<(), String>;
-}
-
-/// Exact executable Environment projection resolved for one Session creation.
-pub struct ResolvedSessionEnvironment {
-    pub snapshot: awaken_session_configuration_contract::EnvironmentSnapshot,
-}
-
-/// Coordinator projection consumed by Session compilation. Environment HTTP
-/// routes may use the same concrete adapter, but their wire types stay outside
-/// this service contract.
-#[async_trait::async_trait]
-pub trait SessionEnvironmentSource: Send + Sync {
-    async fn get(
-        &self,
-        environment_id: &str,
-    ) -> Result<Option<EnvItem>, ExecutableEnvironmentRegistrationError>;
-
-    async fn resolve_current_for_session(
-        &self,
-        environment_id: &str,
-        runtime: Option<&str>,
-        mcp_targets: &[McpTarget],
-    ) -> Result<Option<ResolvedSessionEnvironment>, EnvironmentImageBuildError>;
-
-    async fn resolve_exact_for_session(
-        &self,
-        environment_id: &str,
-        revision: u64,
-        runtime: Option<&str>,
-        mcp_targets: &[McpTarget],
-    ) -> Result<Option<ResolvedSessionEnvironment>, EnvironmentImageBuildError>;
-
-    async fn enqueue_session_work(
-        &self,
-        environment_id: &str,
-        session_id: &str,
-    ) -> Result<String, awaken_worker_contract::WorkQueueError>;
-
-    async fn wake_session_work(
-        &self,
-        environment_id: &str,
-        session_id: &str,
-    ) -> Result<String, awaken_worker_contract::WorkQueueError>;
-
-    async fn retire_session_work(
-        &self,
-        environment_id: &str,
-        session_id: &str,
-    ) -> Result<Option<awaken_worker_contract::WorkItem>, awaken_worker_contract::WorkQueueError>;
-
-    async fn release_session_work(
-        &self,
-        _lease: &awaken_worker_contract::SessionWorkLease,
-    ) -> Result<bool, awaken_worker_contract::WorkQueueError> {
-        Ok(false)
-    }
-
-    async fn acquire_session_work(
-        &self,
-        environment_id: &str,
-        session_id: &str,
-        worker_owner: &str,
-        now_ms: u64,
-    ) -> Result<
-        Option<awaken_worker_contract::SessionWorkLease>,
-        awaken_worker_contract::WorkQueueError,
-    >;
-
-    async fn release_worker_session_work(
-        &self,
-        _worker_owner: &str,
-    ) -> Result<usize, awaken_worker_contract::WorkQueueError> {
-        Ok(0)
-    }
 }

@@ -1562,3 +1562,6 @@ mod tests {
         }
     }
 }
+
+mod session_work_source;
+pub use session_work_source::SessionWorkSource;

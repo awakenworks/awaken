@@ -262,7 +262,7 @@ impl SessionApplication {
             )
             .await
             .map(crate::SessionAggregate::into_snapshot)
-        } else if self.requires_external_realization(&outcome.session) {
+        } else if outcome.session.requires_external_environment_owner() {
             self.dispatch_session_work(&outcome.session)
                 .await
                 .map(|_| outcome.session.clone())

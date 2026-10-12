@@ -44,3 +44,16 @@ pub use run_coordination::{
 };
 pub use step_outcome::StepOutcome;
 pub use usage::session_usage_from_thread_usage;
+
+mod composition;
+mod session_services;
+pub use composition::{
+    SessionApplicationBuildError, SessionApplicationConfiguration, SessionExecutionPlacement,
+    WorkDispatchFailure, WorkDispatchReconciliation, runtime_placement_for_topology,
+};
+pub use session_services::{
+    CredentialMaterialIngress, CredentialMaterialIngressCommand, CredentialMaterialIngressReceipt,
+    CredentialMaterialInput, CredentialMaterialRetirementCommand,
+    CredentialMaterialRotationCommand, CredentialPlaintext, SessionCredentialAccessRequest,
+    SessionCredentialSource, SessionParticipantProvenance,
+};

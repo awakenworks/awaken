@@ -22,6 +22,9 @@ use awaken_session_types::RunError;
 
 pub use awaken_session_execution_contract::SessionExecutor;
 
+mod construction;
+pub use construction::{SessionApplicationBuilder, SessionCredentials, SessionResources};
+
 mod recovery_scan;
 use recovery_scan::scan_recovery_candidates;
 
@@ -147,15 +150,13 @@ impl SessionRecoveryCandidates {
 
 mod mutation;
 mod recovery_sweep;
-pub use mutation::{SessionMutationError, SnapshotCommit};
-mod session_services;
-pub use session_services::{
+pub use awaken_session_application_contract::{
     CredentialMaterialIngress, CredentialMaterialIngressCommand, CredentialMaterialIngressReceipt,
     CredentialMaterialInput, CredentialMaterialRetirementCommand,
-    CredentialMaterialRotationCommand, CredentialPlaintext, ResolvedSessionEnvironment,
-    SessionCredentialAccessRequest, SessionCredentialSource, SessionEnvironmentSource,
-    SessionParticipantProvenance,
+    CredentialMaterialRotationCommand, CredentialPlaintext, SessionCredentialAccessRequest,
+    SessionCredentialSource, SessionParticipantProvenance,
 };
+pub use mutation::{SessionMutationError, SnapshotCommit};
 mod event_batch_cutover_validation;
 pub use event_batch_cutover_validation::{
     SessionEventBatchCutoverValidationSnapshot, SessionEventBatchCutoverValidationSource,
@@ -247,3 +248,26 @@ pub use terminal::{
 mod tests;
 
 use awaken_session_state_contract::SessionAggregate;
+
+pub use awaken_session_application_contract::{
+    SessionApplicationBuildError, SessionApplicationConfiguration, SessionExecutionPlacement,
+    WorkDispatchFailure, WorkDispatchReconciliation, runtime_placement_for_topology,
+};
+
+pub use awaken_executable_environment_contract::ResolvedSessionEnvironment;
+use awaken_executable_environment_contract::SessionEnvironmentProjectionSource;
+use awaken_worker_contract::SessionWorkSource;
+/// One required Environment assembly, with query and Work roles from their owners.
+/// A query-only provider cannot supply the complete application capability.
+///
+/// ```compile_fail
+/// use awaken_executable_environment_contract::SessionEnvironmentProjectionSource;
+/// use awaken_session_application::SessionEnvironmentSource;
+/// fn complete<T: SessionEnvironmentSource>() {}
+/// fn query_only<T: SessionEnvironmentProjectionSource>() { complete::<T>(); }
+/// ```
+pub trait SessionEnvironmentSource: SessionEnvironmentProjectionSource + SessionWorkSource {}
+impl<T: SessionEnvironmentProjectionSource + SessionWorkSource + ?Sized> SessionEnvironmentSource
+    for T
+{
+}

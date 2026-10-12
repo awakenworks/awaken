@@ -15,27 +15,6 @@ use awaken_session_state_contract::{
     SessionRepositoryError,
 };
 use awaken_time::WallClockExt;
-/// Process-level execution topology interpreted by the Session application.
-/// The selected value is frozen into every newly admitted Session; protocol
-/// adapters never inspect or override it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SessionExecutionPlacement {
-    #[default]
-    LocalWorker,
-    RegisteredWorker,
-}
-
-/// Freeze process topology into the only two executable Session placements.
-#[must_use]
-pub const fn runtime_placement_for_topology(
-    topology: SessionExecutionPlacement,
-) -> SessionRuntimePlacement {
-    match topology {
-        SessionExecutionPlacement::LocalWorker => SessionRuntimePlacement::Local,
-        SessionExecutionPlacement::RegisteredWorker => SessionRuntimePlacement::Worker,
-    }
-}
-
 /// Reject a frozen topology whose idle policy would require Coordinator-local
 /// continuation effects against a Worker-owned Environment. External Workers
 /// have one realization/terminal-cleanup claim path, but no claim-fenced
@@ -89,46 +68,6 @@ mod environment_owner_kani_proof {
             SessionPlacementClass::new(frozen, kani::any()).requires_external_environment_owner(),
             registered
         );
-    }
-}
-
-/// One failed durable Session-to-WorkQueue projection. The durable Session
-/// remains authoritative and a later reconciliation may retry this failure.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkDispatchFailure {
-    pub session_id: String,
-    pub environment_id: String,
-    pub message: String,
-}
-
-/// Result of one complete reconciliation scan.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct WorkDispatchReconciliation {
-    pub settled: usize,
-    pub failures: Vec<WorkDispatchFailure>,
-    pub quarantined: Vec<awaken_session_state_contract::SessionRecoveryQuarantine>,
-    pub pending: usize,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionApplicationConfiguration {
-    pub execution_placement: SessionExecutionPlacement,
-    /// Stable logical owner for the co-located Runtime. The process-unique
-    /// incarnation remains separate so a restart can fence its predecessor
-    /// without impersonating a different owner.
-    pub local_realization_owner: String,
-    /// Maximum fenced assignments allowed for initial Environment
-    /// realization before the aggregate enters `activation_failed`.
-    pub realization_retry_budget: u32,
-}
-
-impl Default for SessionApplicationConfiguration {
-    fn default() -> Self {
-        Self {
-            execution_placement: SessionExecutionPlacement::default(),
-            local_realization_owner: "local-runtime".into(),
-            realization_retry_budget: 3,
-        }
     }
 }
 
@@ -214,7 +153,6 @@ pub struct SessionApplication {
             Arc<tokio::sync::Mutex<Option<awaken_session_state_contract::SessionScanCursor>>>,
         >,
     >,
-    local_realization_owner: String,
     runtime_incarnation: String,
     #[cfg(any(test, feature = "test-support"))]
     mutation_sequence: AtomicU64,
@@ -228,6 +166,17 @@ pub struct SessionApplication {
 static APPLICATION_INCARNATION_SEQ: AtomicU64 = AtomicU64::new(0);
 
 impl SessionApplication {
+    /// Consume process services before sharing the canonical application.
+    #[must_use]
+    pub fn builder(
+        runtime: impl Into<crate::SessionExecutor>,
+        mcp: Arc<dyn McpAttachmentRealizer>,
+        persistence: SessionPersistence,
+        environments: Arc<dyn SessionEnvironmentSource>,
+    ) -> SessionApplicationBuilder {
+        SessionApplicationBuilder::new(runtime, mcp, persistence, environments)
+    }
+
     /// Install the existing clock port before sharing the application.
     #[must_use]
     #[cfg(any(test, feature = "test-support"))]
@@ -247,13 +196,10 @@ impl SessionApplication {
         self.clock.clone()
     }
 
-    pub(crate) fn realization_retry_budget(&self) -> u32 {
-        self.configuration.realization_retry_budget.max(1)
-    }
-
     /// `clock` is the process's one wall clock, chosen by the composition that
     /// builds this application.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new(
         runtime: impl Into<crate::SessionExecutor>,
         mcp_realizer: Arc<dyn McpAttachmentRealizer>,
@@ -272,8 +218,22 @@ impl SessionApplication {
     /// `clock` stamps every Session fact this application writes and judges
     /// every lease it holds; the composition passes the process's one clock.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new_with_configuration(
         runtime: impl Into<crate::SessionExecutor>,
+        mcp_realizer: Arc<dyn McpAttachmentRealizer>,
+        persistence: SessionPersistence,
+        environments: Arc<dyn SessionEnvironmentSource>,
+        configuration: SessionApplicationConfiguration,
+    ) -> Self {
+        Self::builder(runtime, mcp_realizer, persistence, environments)
+            .configuration(configuration)
+            .build()
+            .expect("fixture Session application configuration is valid")
+    }
+
+    fn new_inner(
+        runtime: crate::SessionExecutor,
         mcp_realizer: Arc<dyn McpAttachmentRealizer>,
         persistence: SessionPersistence,
         environments: Arc<dyn SessionEnvironmentSource>,
@@ -289,15 +249,10 @@ impl SessionApplication {
         let sessions_repo: Arc<dyn SessionRepository> = store;
         // The incarnation stem: this application's start instant on its clock.
         let started_at = clock.now().as_unix_nanos();
-        let local_realization_owner = configuration.local_realization_owner.trim().to_string();
-        assert!(
-            !local_realization_owner.is_empty(),
-            "local Session realization owner must not be empty"
-        );
         Self {
             clock,
             configuration,
-            runtime: runtime.into(),
+            runtime,
             mcp_realizer,
             credential_source: None,
             credential_material_ingress: None,
@@ -318,7 +273,6 @@ impl SessionApplication {
             dispatch_observations: OnceLock::new(),
             session_preparation_placement: OnceLock::new(),
             session_preparation_cursors: tokio::sync::Mutex::new(BTreeMap::new()),
-            local_realization_owner,
             runtime_incarnation: format!(
                 "session:{}:{started_at}:{}",
                 std::process::id(),
@@ -343,6 +297,7 @@ impl SessionApplication {
 
     /// Resolve the sole physical-realization owner from the immutable baseline.
     #[must_use]
+    #[cfg(test)]
     pub fn requires_external_realization(&self, session: &PersistedSession) -> bool {
         session.requires_external_environment_owner()
     }
@@ -541,7 +496,7 @@ impl SessionApplication {
     /// incarnation in Session realization leases.
     #[must_use]
     pub fn local_realization_owner(&self) -> &str {
-        &self.local_realization_owner
+        &self.configuration.local_realization_owner
     }
 
     /// Serialize this process's own realization drivers for one Session.
@@ -665,10 +620,12 @@ impl SessionApplication {
         ));
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn replace_environment_source(&mut self, source: Arc<dyn SessionEnvironmentSource>) {
         self.environments = source;
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_managed_list_price_provider(
         &mut self,
         provider: Arc<dyn awaken_session_budget_contract::ManagedListPriceProvider>,
@@ -737,6 +694,7 @@ impl SessionApplication {
     /// Bind the one executable-projection reconciliation operation used by
     /// request and autonomous Session boundaries. Duplicate installation is an
     /// error instead of allowing two freshness authorities to overlap.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_executable_projection_refresh(
         &mut self,
         refresh: Arc<awaken_session_application_contract::ExecutableProjectionRefresh>,
@@ -762,6 +720,7 @@ impl SessionApplication {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_resource_purge_scheduler(
         &mut self,
         scheduler: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
@@ -773,6 +732,7 @@ impl SessionApplication {
     /// active+pending retention set. These authorities are paired so logical
     /// File ids and physical blob identities can never be sourced from
     /// different Resource components.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_resource_reference_authority(
         &mut self,
         references: Arc<dyn awaken_resource_contract::ResourceReferenceIndex>,
@@ -782,14 +742,17 @@ impl SessionApplication {
         self.resource_files = Some(files);
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_credential_source(&mut self, source: Arc<dyn SessionCredentialSource>) {
         self.credential_source = Some(source);
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_credential_material_ingress(&mut self, ingress: Arc<dyn CredentialMaterialIngress>) {
         self.credential_material_ingress = Some(ingress);
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_config_source(
         &mut self,
         source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
@@ -797,6 +760,7 @@ impl SessionApplication {
         self.config_source = Some(source);
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_model_publication_resolver(
         &mut self,
         resolver: Arc<dyn awaken_session_configuration_contract::SessionModelPublicationResolver>,
@@ -991,6 +955,7 @@ impl SessionApplication {
         Ok(models.into_iter().collect())
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_resource_registry(
         &mut self,
         catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
