@@ -620,7 +620,9 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
                     store.as_ref(),
                     &directory,
                     stop.as_ref(),
-                    Some(&recovery),
+                    Some(&awaken_dispatch::PhysicalAttemptRecoveryRead::new(
+                        &recovery,
+                    )),
                     &next,
                     100 + TTL + 1,
                 )

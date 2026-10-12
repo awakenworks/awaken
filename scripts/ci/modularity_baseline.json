@@ -22,7 +22,7 @@
     },
     "awaken-session-executor::SharedHost": {
       "files": 41,
-      "methods": 267,
+      "methods": 266,
       "reason": "slice H: each of the eleven session-runtime roles gets one owning component (plan 10.3 item 11)"
     },
     "awaken-runtime::Runtime": {
@@ -266,7 +266,7 @@
     "awaken-control::credential_refresh.rs::run_exchange": 162,
     "awaken-control::lib.rs::control_router": 181,
     "awaken-control::webhook_authoring.rs::put_subscription": 157,
-    "awaken-coordinator::lib.rs::mount_with_managed_over_and_models": 393,
+    "awaken-coordinator::lib.rs::mount_with_managed_over_and_models": 391,
     "awaken-credential-store::postgres.rs::commit_managed_mutation": 275,
     "awaken-credential-store::sqlite/managed.rs::commit_managed_mutation": 244,
     "awaken-dispatch-execution::worker.rs::drive_claimed_inner": 594,

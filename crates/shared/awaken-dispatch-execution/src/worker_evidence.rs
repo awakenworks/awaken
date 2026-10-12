@@ -1,9 +1,58 @@
 //! Exact closed-idle Worker retirement port for the process maintenance scan.
 
+use awaken_dispatch_contract::dispatch::PhysicalAttempt;
 use awaken_dispatch_contract::{
-    DispatchControlReads, DispatchReads, WorkerDirectory, WorkerIdentity,
+    DispatchControlReads, DispatchReads, DispatchSummary, WorkerDirectory, WorkerIdentity,
 };
 use awaken_session_execution_contract::ApplicationError;
+
+/// Borrow the existing Execution-owned SDK source for one reconciliation call.
+/// Consumers receive the published snapshot value, never the engine SPI or a
+/// cached prefix. The original physical slot selects all read coordinates.
+pub struct PhysicalAttemptRecoveryRead<'a> {
+    source: &'a dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource,
+}
+
+impl<'a> PhysicalAttemptRecoveryRead<'a> {
+    pub fn new(
+        source: &'a dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource,
+    ) -> Self {
+        Self { source }
+    }
+
+    pub async fn snapshot_for(
+        &self,
+        attempt: &PhysicalAttempt,
+    ) -> Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, ApplicationError>
+    {
+        let thread = attempt.thread_id.as_ref().ok_or_else(|| {
+            ApplicationError::invalid("physical attempt recovery requires an exact logical Thread")
+        })?;
+        let partition = attempt.session_thread_id.as_ref().unwrap_or(thread);
+        self.source
+            .recovery_snapshot_in_session(partition, thread, &attempt.claim.run_id)
+            .await
+            .map_err(|error| ApplicationError::unavailable(error.to_string()))
+    }
+}
+
+/// Lower the sole SDK terminal predicate at the Execution boundary. This is a
+/// fresh read from the supplied committed view, not caller-provided stop proof.
+pub fn committed_terminal_ready(
+    reader: &dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView,
+    summary: &DispatchSummary,
+) -> Result<bool, ApplicationError> {
+    use awaken_runtime_contract::terminal::{
+        CommittedTerminalProjection, committed_terminal_projection,
+    };
+    match committed_terminal_projection(reader, &summary.run_id, &summary.thread_id) {
+        CommittedTerminalProjection::Nonterminal => Ok(false),
+        CommittedTerminalProjection::Exact(_) => Ok(true),
+        CommittedTerminalProjection::IdentityConflict => Err(ApplicationError::invalid(
+            "terminal closure names another committed Run or Thread",
+        )),
+    }
+}
 
 /// The Host scans and expires Registry records; Coordinator Ingress retains the
 /// sole physical-stop and exact evidence-release implementation. This port
@@ -25,6 +74,54 @@ pub trait WorkerEvidenceRelease: Send + Sync {
         identity: &WorkerIdentity,
         now_ms: u64,
     ) -> Result<(), ApplicationError>;
+}
+
+/// Trusted Coordinator-selected terminal maintenance role. The original idle
+/// leaf stays narrow: only this explicit role can request independently proven
+/// closure of an occupied terminal attempt. Ingress alone constructs the private
+/// stop commands/receipts; this role returns only terminal-claim readiness.
+/// Worker JSON and committed-terminal DTOs cannot provide an implementation.
+/// Cause/compile-surface table: C1 only the existing idle leaf is selected ->
+/// no terminal method; C2 a Worker queue view is supplied -> no local physical
+/// authority. Both reject at the boundary, before any private stop command.
+///
+/// ```compile_fail
+/// use awaken_dispatch_execution::{AnyCoordinatorDispatch, WorkerEvidenceRelease};
+/// use awaken_dispatch_contract::{DispatchSummary, WorkerDirectory};
+/// use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+/// async fn idle_only(
+///     source: &dyn WorkerEvidenceRelease, queue: &AnyCoordinatorDispatch,
+///     directory: &dyn WorkerDirectory, reader: &dyn CommittedThreadView,
+///     summary: &DispatchSummary,
+/// ) {
+///     let recovery: Option<&awaken_dispatch_execution::PhysicalAttemptRecoveryRead<'_>> = None;
+///     let _ = source.reconcile_terminal_attempt(queue, directory, reader, summary, recovery, 0).await;
+/// }
+/// ```
+/// ```compile_fail
+/// use awaken_dispatch_execution::{AnyDispatchStore, WorkerTerminalReconciliation};
+/// use awaken_dispatch_contract::{DispatchSummary, WorkerDirectory};
+/// use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+/// async fn worker_queue(
+///     source: &dyn WorkerTerminalReconciliation, queue: &AnyDispatchStore,
+///     directory: &dyn WorkerDirectory, reader: &dyn CommittedThreadView,
+///     summary: &DispatchSummary,
+/// ) {
+///     let recovery: Option<&awaken_dispatch_execution::PhysicalAttemptRecoveryRead<'_>> = None;
+///     let _ = source.reconcile_terminal_attempt(queue, directory, reader, summary, recovery, 0).await;
+/// }
+/// ```
+#[async_trait::async_trait]
+pub trait WorkerTerminalReconciliation: WorkerEvidenceRelease {
+    async fn reconcile_terminal_attempt(
+        &self,
+        dispatch: &awaken_dispatch_erasure::AnyCoordinatorDispatch,
+        directory: &dyn WorkerDirectory,
+        reader: &dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView,
+        summary: &awaken_dispatch_contract::DispatchSummary,
+        recovery: Option<&PhysicalAttemptRecoveryRead<'_>>,
+        now_ms: u64,
+    ) -> Result<bool, ApplicationError>;
 }
 
 /// Read-only physical-slot discovery supplied by the local Coordinator.

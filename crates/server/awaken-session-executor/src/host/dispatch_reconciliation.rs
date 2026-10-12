@@ -8,7 +8,6 @@
 
 use super::{HostWorkerResolver, SharedHost};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
-use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch_erasure::AnyDispatchStore;
 use awaken_dispatch_execution::DEFAULT_LEASE_MS;
 use std::sync::Arc;
@@ -24,7 +23,7 @@ pub(crate) struct TerminalReconciliationState {
     pub(super) terminal_scan: awaken_dispatch_execution::TerminalReconciliationScan,
     pub(super) worker_evidence: std::sync::OnceLock<(
         Arc<dyn awaken_dispatch_contract::WorkerDirectory>,
-        Arc<dyn awaken_dispatch_execution::WorkerEvidenceRelease>,
+        Arc<dyn awaken_dispatch_execution::WorkerTerminalReconciliation>,
     )>,
     pub(super) worker_evidence_after: tokio::sync::Mutex<Option<String>>,
 }
@@ -51,7 +50,7 @@ impl HostWorkerResolver {
         host: &SharedHost,
         claimed: &awaken_dispatch_contract::Claimed,
         commit: Arc<crate::store::HostCommit>,
-        context: Option<awaken_runtime_contract::RuntimeRunContext>,
+        mut context: Option<awaken_runtime_contract::RuntimeRunContext>,
         install_cancellation_executor: bool,
     ) -> Result<
         awaken_dispatch_execution::DispatchWorker<AnyDispatchStore>,
@@ -69,12 +68,10 @@ impl HostWorkerResolver {
             claimed.lease.owner().to_owned(),
         );
         if let Some(observer) = host.dispatch_settlement_observer() {
-            worker = worker.with_settlement_observer(observer);
+            worker = worker
+                .with_settlement_observer(observer.clone())
+                .with_session_run_admission_observer(observer);
         }
-        if let Some(observer) = host.session_run_admission_observer() {
-            worker = worker.with_session_run_admission_observer(observer);
-        }
-        let mut context = context;
         if host.authority.observes_terminal_memory_locally()
             && let Some(observer) = host
                 .dispatched_memory_terminal_observer(&claimed.request, commit.clone())
@@ -154,7 +151,39 @@ pub(super) async fn reconcile_committed_terminals(
                         .await
                         .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?,
                 );
-                if !matches!(commit.run_state(&row.run_id), Some(RunState::Ended(_))) {
+                // Temporary recovery holds this Host only during one candidate;
+                // the selected neutral adapter stores no Host/recovery back-edge.
+                let recovery = host.worker_recovery_source();
+                let attempt_recovery =
+                    awaken_dispatch_execution::PhysicalAttemptRecoveryRead::new(recovery.as_ref());
+                let ready = match host.dispatch.terminal_reconciliation.worker_evidence.get() {
+                    Some((directory, terminal)) => tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        terminal.reconcile_terminal_attempt(
+                            store.as_ref(),
+                            directory.as_ref(),
+                            commit.as_ref(),
+                            &row,
+                            Some(&attempt_recovery),
+                            awaken_time::WallClockExt::now_ms(host.clock.as_ref()),
+                        ),
+                    )
+                    .await
+                    .map_err(|_| {
+                        HostWorkerResolver::execution_error("terminal physical closure timed out")
+                    })?
+                    .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?,
+                    // A missing trusted role never observes/stops an occupied
+                    // domain. Preserve only original canonical empty recovery;
+                    // the atomic Store claim still excludes a concurrent slot.
+                    None => awaken_dispatch_execution::committed_terminal_ready(
+                        commit.as_ref(),
+                        &row,
+                    )
+                    .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?
+                        && !row.physical_attempt_active,
+                };
+                if !ready {
                     return Ok(None);
                 }
 
@@ -210,6 +239,10 @@ mod tests {
     struct IdleEvidence {
         released: std::sync::Mutex<Vec<awaken_dispatch_contract::WorkerIdentity>>,
         fail_first: std::sync::atomic::AtomicBool,
+        stops:
+            std::sync::Mutex<Vec<awaken_dispatch_contract::dispatch::AttemptExecutionBinding>>,
+        attempts: std::sync::Mutex<Vec<awaken_dispatch_contract::dispatch::PhysicalAttempt>>,
+        complete: std::sync::atomic::AtomicBool,
     }
 
     #[async_trait]
@@ -251,18 +284,44 @@ mod tests {
         }
         async fn stop_closed_worker(
             &self,
-            _: &awaken_dispatch::ClosedWorkerExecution,
+            command: &awaken_dispatch::ClosedWorkerExecution,
         ) -> Result<
             awaken_dispatch::WorkerProcessStopStatus,
             awaken_session_execution_contract::ApplicationError,
         > {
-            panic!("idle maintenance cannot issue a physical stop")
+            self.stops.lock().unwrap().push(command.binding().clone());
+            command.observed_exit("durable-exit")
+        }
+        async fn close_attempt_execution(
+            &self,
+            command: &awaken_dispatch::ClosedAttemptExecution,
+            recovery: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+        ) -> Result<
+            awaken_dispatch::AttemptStopStatus,
+            awaken_session_execution_contract::ApplicationError,
+        > {
+            assert_eq!(recovery.claimed_run_id, command.attempt().claim.run_id);
+            assert_eq!(
+                Some(&recovery.thread_id),
+                command.attempt().thread_id.as_ref()
+            );
+            self.attempts
+                .lock()
+                .unwrap()
+                .push(command.attempt().clone());
+            if self.complete.load(Ordering::SeqCst) {
+                command.observed_all_execution_stopped("all-original-participants-terminal")
+            } else {
+                Ok(awaken_dispatch::AttemptStopStatus::Unknown)
+            }
         }
     }
 
     #[tokio::test]
     async fn idle_retention_retries_expired_originals_without_starving_later_workers() {
-        // M0 one injected Ingress release adapter owns the provider action;
+        // M0 one injected Ingress adapter crosses the neutral idle leaf; its
+        // explicit terminal role shares the same Source Arc and is not invoked
+        // by idle maintenance. Host has no production Ingress implementation edge;
         // Causes: C1 expired exact registration; C2 no Dispatch slot; C3
         // independent process exit; C4 first provider release fails; C5 later
         // Worker waits; C6 retry after Registry already stored exit.
@@ -311,6 +370,9 @@ mod tests {
         let source = Arc::new(IdleEvidence {
             released: Default::default(),
             fail_first: std::sync::atomic::AtomicBool::new(true),
+            stops: Default::default(),
+            attempts: Default::default(),
+            complete: std::sync::atomic::AtomicBool::new(false),
         });
         host.bind_worker_evidence_reconciliation(
             directory.clone(),
@@ -335,6 +397,14 @@ mod tests {
         assert_eq!(
             *source.released.lock().unwrap(),
             [identities[1].clone(), identities[0].clone()]
+        );
+        assert!(
+            source.stops.lock().unwrap().is_empty(),
+            "M0 idle retention cannot stop an attempt"
+        );
+        assert!(
+            source.attempts.lock().unwrap().is_empty(),
+            "M0 narrow adapter cannot close a domain"
         );
         for identity in identities {
             let record = directory.incarnation(&identity).await.unwrap().unwrap();
@@ -698,17 +768,399 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn host_terminal_scan_closes_original_occupancy_without_a_successor_or_environment() {
+        // Causes: C1 exact committed Ended; C2 original bound occupied slot;
+        // C3 expired/closed original Worker; C4 same trusted startup source;
+        // C5 full domain evidence. C4 is the explicit neutral terminal role;
+        // private proof construction remains in its Ingress adapter/kernel.
+        // C2 also requires real Registry Ready+compatible claim -> exact typed
+        // WorkerAssignment; merely spelling its lease-owner string does not
+        // authorize a bound physical attempt. The original binding law stays.
+        // Effects: E0 no stop or mutation; E1 local
+        // exit persists but Unknown domain keeps exact closing slot; E2 full
+        // evidence atomically retires old then ordinary terminal claim settles
+        // Done, no execution/Environment. E3 later cadence retries same old
+        // binding, never new Worker/source coordinates. No successor is claimed
+        // before maintenance. The original physical and logical lease differ.
+        // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+        // | O0 | no | yes | yes | yes | yes | E0 |
+        // | O1 | yes | yes | live | yes | yes | E0 |
+        // | O2 | yes | yes | yes | absent | yes | E0 |
+        // O2e absent role + canonical Ended + empty slot => original fenced
+        // terminal claim/settle only (the existing empty legacy case below).
+        // Missing role is not a fake provider or an independent exit receipt;
+        // concurrent hidden occupancy still makes the Store claim fail closed.
+        // | O3 | yes | yes | yes | yes | unknown then complete | E1 then E2+E3 |
+        // | O4 | yes | yes | yes | yes | complete | E2 |
+        // O5 occupied execution cannot relinquish/supersede: original Leased
+        // identity/occupancy survive the new Pending successor. Only canonical
+        // Ended+independent complete old evidence can retire/settle the old Run;
+        // successor stays Pending, never executes or creates an Environment.
+        // O6 cancelled+expired occupied DeadLetter => close original occupancy
+        // only, retain sealed delivery, zero Done/requeue. Superseded+occupied
+        // is not public-law reachable and belongs to scanner read-fault coverage.
+        use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
+        use awaken_dispatch_contract::{
+            DispatchAdministration as _, DispatchEnqueue as _, DispatchMaintenance as _,
+            WorkerDirectory as _,
+        };
+        // Keep the large owned test workflow at the same boxed async boundary
+        // used by other Host fixture tests; default thread stack stays unchanged.
+        Box::pin(async {
+            for rule in [
+                "nonterminal",
+                "live",
+                "unbound-source",
+                "unknown",
+                "complete",
+                "supersession-rejected",
+                "dead-letter",
+            ] {
+                let storage = tempfile::tempdir().unwrap();
+                let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
+                let store = Arc::new(
+                    awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock.clone())
+                        .await
+                        .unwrap(),
+                );
+                let directory = Arc::new(awaken_worker_registry::MemoryWorkerDirectory::new());
+                // Registered placement must come from actual Registry state,
+                // not an owner string. Publish the existing protocol manifest,
+                // heartbeat Ready, then let claim_run_compatible freeze the
+                // exact WorkerAssignment before binding the physical attempt.
+                let mut manifest = awaken_dispatch_contract::WorkerManifest::default();
+                manifest.runtime_protocol.min = 1;
+                manifest.runtime_protocol.max =
+                    awaken_dispatch_contract::CURRENT_RUNTIME_PROTOCOL_VERSION;
+                let registry_ttl = if rule == "live" { u64::MAX } else { 1 };
+                let identity = directory
+                    .register(
+                        awaken_dispatch_contract::WorkerRegistration {
+                            worker_id: "orphan-original".into(),
+                            incarnation_id: "old-boot".into(),
+                            manifest,
+                            create_ledger: None,
+                        },
+                        0,
+                        registry_ttl,
+                    )
+                    .await
+                    .unwrap()
+                    .snapshot
+                    .identity;
+                assert_eq!(
+                    directory
+                        .heartbeat(
+                            &identity,
+                            awaken_dispatch_contract::WorkerHeartbeat {
+                                sequence: 1,
+                                ready: true,
+                                in_flight: 0,
+                                warm_environment_shapes: Default::default(),
+                                credential_observations: Default::default(),
+                                acp_capability_observations: Default::default(),
+                            },
+                            0,
+                            registry_ttl
+                        )
+                        .await
+                        .unwrap(),
+                    awaken_dispatch_contract::RegistryMutation::Applied
+                );
+                let worker = directory
+                    .incarnation(&identity)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .snapshot;
+                let run_id = RunId("orphan-run".into());
+                store
+                    .enqueue(
+                        awaken_dispatch_contract::RunDispatch::new(test_activation(
+                            "orphan-thread",
+                            &run_id.0,
+                        ))
+                        .with_placement(
+                            awaken_dispatch_contract::PlacementRequirements::remote_required(),
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                let claimed = store
+                    .claim_run_compatible(&run_id, &worker, 1_000)
+                    .await
+                    .unwrap()
+                    .expect("actual registered placement");
+                assert_eq!(
+                    claimed.assignment.as_ref().unwrap().identity,
+                    identity,
+                    "C2 exact registered assignment"
+                );
+                let old = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
+                let binding = awaken_dispatch_contract::dispatch::AttemptExecutionBinding::new(
+                    identity,
+                    "fixture-process",
+                    "original-execution",
+                )
+                .unwrap();
+                assert_eq!(
+                    store.begin_attempt(&old, Some(&binding)).await.unwrap(),
+                    awaken_dispatch_contract::AttemptAdmission::Applied
+                );
+                let original = store
+                    .load_physical_attempt(&old.run_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if ["supersession-rejected", "dead-letter"].contains(&rule) {
+                    if rule == "supersession-rejected" {
+                        assert_eq!(
+                            store.relinquish_claim(&old).await.unwrap(),
+                            awaken_dispatch_contract::SettleOutcome::Fenced,
+                            "O5 original executing claim cannot become Pending"
+                        );
+                        store
+                            .enqueue_with(
+                                awaken_dispatch_contract::RunDispatch::new(test_activation(
+                                    "orphan-thread",
+                                    "later-delivery",
+                                )),
+                                awaken_dispatch_contract::SubmitOptions {
+                                    supersede: true,
+                                    ..Default::default()
+                                },
+                            )
+                            .await
+                            .unwrap();
+                        assert_eq!(
+                            store.load_physical_attempt(&old.run_id).await.unwrap(),
+                            Some(original.clone()),
+                            "O5 supersede cannot rewrite original physical owner"
+                        );
+                        let row = store.dispatch_summary(&old.run_id).await.unwrap().unwrap();
+                        assert_eq!(
+                            row.state,
+                            awaken_dispatch_contract::DispatchState::Leased,
+                            "O5 old delivery is not Superseded"
+                        );
+                        assert!(!row.cancellation_requested, "O5 no cancellation invented");
+                        assert_eq!(
+                            store
+                                .dispatch_summary(&RunId("later-delivery".into()))
+                                .await
+                                .unwrap()
+                                .unwrap()
+                                .state,
+                            awaken_dispatch_contract::DispatchState::Pending,
+                            "O5 successor exists only as Pending work"
+                        );
+                    } else {
+                        store.cancel(&old.run_id).await.unwrap();
+                        let quarantine = store
+                            .claim_run(&old.run_id, "quarantine-owner", 1, &Default::default())
+                            .await
+                            .unwrap()
+                            .unwrap();
+                        clock.set(quarantine.lease.expires_ms() + 1);
+                        assert_eq!(
+                            store
+                                .quarantine_retry_exhausted(0, quarantine.lease.expires_ms() + 1)
+                                .await
+                                .unwrap(),
+                            1
+                        );
+                    }
+                }
+                clock.set(claimed.lease.expires_ms() + 1);
+                let mut dependencies =
+                    crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub").await;
+                dependencies.clock = clock.clone();
+                let mut dependencies = dependencies
+                    .with_store_dir(storage.path())
+                    .await
+                    .with_ephemeral_dispatch(store.clone());
+                dependencies.execution.ingress = crate::RunIngress::Durable;
+                dependencies.execution.local = crate::LocalExecution::RemoteWorkersOnly;
+                let host = dependencies.build().unwrap();
+                if rule != "nonterminal" {
+                    let commit = host.authority.open_commit("orphan-thread").await.unwrap();
+                    commit_run(
+                        &commit,
+                        &ThreadId("orphan-thread".into()),
+                        RunDisposition::ended(old.run_id.clone(), EndCause::NaturalEnd),
+                        Vec::new(),
+                        Vec::new(),
+                    )
+                    .await
+                    .unwrap();
+                }
+                let source = Arc::new(IdleEvidence {
+                    released: Default::default(),
+                    fail_first: std::sync::atomic::AtomicBool::new(false),
+                    stops: Default::default(),
+                    attempts: Default::default(),
+                    complete: std::sync::atomic::AtomicBool::new(rule != "unknown"),
+                });
+                if rule != "unbound-source" {
+                    host.bind_worker_evidence_reconciliation(
+                        directory,
+                        Arc::new(awaken_dispatch::WorkerEvidenceReleaseAdapter::new(
+                            source.clone(),
+                        )),
+                    )
+                    .unwrap();
+                }
+                let resolver = HostWorkerResolver {
+                    host: Arc::downgrade(&host),
+                };
+                let completed = reconcile_committed_terminals(&resolver, 8).await.unwrap();
+                if ["nonterminal", "live", "unbound-source"].contains(&rule) {
+                    assert!(completed.is_empty(), "{rule}");
+                    assert_eq!(
+                        store.load_physical_attempt(&old.run_id).await.unwrap(),
+                        Some(original),
+                        "{rule}"
+                    );
+                    assert!(source.stops.lock().unwrap().is_empty(), "{rule}");
+                    assert!(source.attempts.lock().unwrap().is_empty(), "{rule}");
+                } else {
+                    if rule == "unknown" {
+                        assert!(completed.is_empty(), "O3");
+                        let closing = store
+                            .load_physical_attempt(&old.run_id)
+                            .await
+                            .unwrap()
+                            .unwrap();
+                        assert!(closing.closing, "O3");
+                        assert_eq!(closing.claim, old, "O3 original identity");
+                        assert!(
+                            store
+                                .attempt_closure_records_after(
+                                    awaken_dispatch_contract::DispatchCursor(0),
+                                    10,
+                                    Some(&old.run_id)
+                                )
+                                .await
+                                .unwrap()
+                                .events
+                                .is_empty(),
+                            "O3 no receipt"
+                        );
+                        source.complete.store(true, Ordering::SeqCst);
+                        assert_eq!(
+                            reconcile_committed_terminals(&resolver, 8)
+                                .await
+                                .unwrap()
+                                .len(),
+                            1,
+                            "O3 retry"
+                        );
+                        assert_eq!(source.attempts.lock().unwrap().len(), 2, "O3 same domain");
+                    } else if rule == "dead-letter" {
+                        assert!(
+                            completed.is_empty(),
+                            "O6 closure alone cannot settle sealed delivery"
+                        );
+                    } else {
+                        assert_eq!(completed.len(), 1, "O4");
+                    }
+                    assert!(
+                        store
+                            .load_physical_attempt(&old.run_id)
+                            .await
+                            .unwrap()
+                            .is_none(),
+                        "O3/O4/O5"
+                    );
+                    assert_eq!(
+                        *source.stops.lock().unwrap(),
+                        [binding],
+                        "one original stop"
+                    );
+                    if rule == "dead-letter" {
+                        let row = store.dispatch_summary(&old.run_id).await.unwrap().unwrap();
+                        assert_eq!(
+                            row.state,
+                            awaken_dispatch_contract::DispatchState::DeadLetter,
+                            "O6 original sealed delivery state"
+                        );
+                        assert!(!row.physical_attempt_active, "O6 physical closure only");
+                        assert!(
+                            store
+                                .completion_events_after(0, 10)
+                                .await
+                                .unwrap()
+                                .is_empty(),
+                            "O6 no Done"
+                        );
+                    } else {
+                        let rows = store.list_dispatches().await.unwrap();
+                        if rule == "supersession-rejected" {
+                            assert_eq!(rows.len(), 1, "O5 only original terminal Run was settled");
+                            assert_eq!(
+                                rows[0].run_id,
+                                RunId("later-delivery".into()),
+                                "O5 exact successor remains"
+                            );
+                            assert_eq!(
+                                rows[0].state,
+                                awaken_dispatch_contract::DispatchState::Pending,
+                                "O5 no successor execution"
+                            );
+                            assert!(
+                                !rows[0].physical_attempt_active,
+                                "O5 no successor physical owner"
+                            );
+                        } else {
+                            assert!(rows.is_empty(), "ordinary Done after closure");
+                        }
+                        assert_eq!(
+                            store.completion_events_after(0, 10).await.unwrap().len(),
+                            1,
+                            "ordinary settlement"
+                        );
+                    }
+                    let closure = store
+                        .attempt_closure_records_after(
+                            awaken_dispatch_contract::DispatchCursor(0),
+                            10,
+                            Some(&old.run_id),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(closure.events.len(), 1, "one original fact");
+                    assert_eq!(
+                        closure.events[0].record.attempt().claim,
+                        old,
+                        "retained original identity"
+                    );
+                }
+                assert!(
+                    host.realizer
+                        .session_environment("orphan-thread")
+                        .await
+                        .is_none(),
+                    "environment-free {rule}"
+                );
+            }
+        })
+        .await;
+    }
+
     /// Cause/effect decision table for Host-wide legacy reconciliation:
     ///
     /// | Rule | Host role | Dispatch | Thread commit | Expected effect |
     /// |------|-----------|----------|---------------|-----------------|
     /// | R0 | local pool | any | any | no duplicate coordinator daemon |
     /// | R1 | coordinator-only | Awaiting | no terminal Run | preserve row and Session state |
-    /// | R2 | coordinator-only | Awaiting | exact Run Ended | environment-free fenced Done |
+    /// | R2 | coordinator-only/no terminal role | Awaiting + empty physical slot | exact Run Ended | environment-free fenced Done |
     /// | R3 | coordinator-only + R2 | exact settlement | exact terminal | completion tombstone, no Sandbox |
     ///
     /// Constraints: each row is read through its own Thread commit boundary;
     /// neither queue metadata nor environment availability can prove outcome.
+    /// R2 is O2e above: no injected terminal role permits no stop or proof;
+    /// the original atomic claim is still the empty-slot delivery authority.
     #[tokio::test]
     async fn host_reconciles_only_exact_committed_terminals_without_opening_sessions() {
         use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};

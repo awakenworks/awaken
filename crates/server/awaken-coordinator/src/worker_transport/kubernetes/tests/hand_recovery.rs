@@ -290,7 +290,9 @@ async fn lost_hand_result_keeps_opaque_occupied_but_exact_contained_exit_retires
             &store,
             &directory,
             stops.as_ref(),
-            Some(commit.as_ref()),
+            Some(&awaken_dispatch::PhysicalAttemptRecoveryRead::new(
+                commit.as_ref(),
+            )),
             &next,
             200,
         )
@@ -317,7 +319,9 @@ async fn lost_hand_result_keeps_opaque_occupied_but_exact_contained_exit_retires
             &store,
             &directory,
             stops.as_ref(),
-            Some(commit.as_ref()),
+            Some(&awaken_dispatch::PhysicalAttemptRecoveryRead::new(
+                commit.as_ref(),
+            )),
             &next,
             200,
         )

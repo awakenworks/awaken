@@ -225,11 +225,12 @@ impl SharedHost {
     }
 
     /// Bind the exact transport/Registry owners before maintenance startup.
-    /// Retention retry joins the original Dispatch reconciliation schedule.
+    /// One neutral adapter owns two explicit maintenance purposes on the
+    /// existing cadence; the Host never imports their Ingress implementation.
     pub fn bind_worker_evidence_reconciliation(
         &self,
         directory: Arc<dyn awaken_dispatch_contract::WorkerDirectory>,
-        source: Arc<dyn awaken_dispatch_execution::WorkerEvidenceRelease>,
+        source: Arc<dyn awaken_dispatch_execution::WorkerTerminalReconciliation>,
     ) -> Result<(), HostError> {
         self.dispatch
             .terminal_reconciliation
@@ -278,17 +279,8 @@ impl SharedHost {
         for record in records.into_iter().skip(start).take(1) {
             let identity = &record.snapshot.identity;
             *after = Some(identity.worker_id.clone());
-            if record.snapshot.expires_at_ms <= now {
-                directory
-                    .expire_incarnation(identity, now)
-                    .await
-                    .map_err(|e| HostWorkerResolver::execution_error(e.to_string()))?;
-            }
-            // Registry expiry applies to every exact incarnation. Provider
-            // ownership controls evidence operations, never lease closure.
-            if !source.owns_worker_evidence(identity) {
-                continue;
-            }
+            // Ingress closes the exact Registry incarnation before optional
+            // provider ownership. This scan owns only cadence and cursor.
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
                 source.release_closed_idle_worker_evidence(

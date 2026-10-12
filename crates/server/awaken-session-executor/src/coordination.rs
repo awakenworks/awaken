@@ -57,22 +57,13 @@ impl crate::SharedHost {
         })
     }
 
+    /// Select the endpoint once and share its immutable observer across the
+    /// two existing admission/settlement roles on each Worker.
     pub(crate) fn dispatch_settlement_observer(
         &self,
-    ) -> Option<Arc<dyn awaken_dispatch_contract::DispatchSettlementObserver>> {
-        self.coordination_endpoint().map(|endpoint| {
-            Arc::new(HostDispatchSettlementObserver::new(endpoint))
-                as Arc<dyn awaken_dispatch_contract::DispatchSettlementObserver>
-        })
-    }
-
-    pub(crate) fn session_run_admission_observer(
-        &self,
-    ) -> Option<Arc<dyn awaken_dispatch_execution::SessionRunAdmissionObserver>> {
-        self.coordination_endpoint().map(|endpoint| {
-            Arc::new(HostDispatchSettlementObserver::new(endpoint))
-                as Arc<dyn awaken_dispatch_execution::SessionRunAdmissionObserver>
-        })
+    ) -> Option<Arc<HostDispatchSettlementObserver>> {
+        self.coordination_endpoint()
+            .map(|endpoint| Arc::new(HostDispatchSettlementObserver::new(endpoint)))
     }
 }
 
@@ -874,6 +865,17 @@ mod tests {
         }
     }
 
+    fn assert_one_observer_roles(observer: &Arc<HostDispatchSettlementObserver>) {
+        let settlement: Arc<dyn DispatchSettlementObserver> = observer.clone();
+        let admission: Arc<dyn awaken_dispatch_execution::SessionRunAdmissionObserver> =
+            observer.clone();
+        assert_eq!(
+            Arc::as_ptr(&settlement) as *const (),
+            Arc::as_ptr(&admission) as *const (),
+            "O1 one observer allocation for two unchanged roles"
+        );
+    }
+
     #[tokio::test]
     async fn dead_local_coordination_falls_through_to_the_remote_authority() {
         // Constraint/Invariant: the authoritative inputs and ownership boundaries
@@ -902,6 +904,16 @@ mod tests {
             .bind_agent_coordination(local_port.clone())
             .expect("test coordination port binds once");
         assert!(shared.require_agent_coordination().is_ok(), "B2");
+        // O1a live Local -> the sole factory selects Local once, then both
+        // existing roles project the same allocation. Retained observer Weak
+        // cannot prevent the following B3 drop/fallback transition.
+        let observer = host.dispatch_settlement_observer().expect("B2/O1a");
+        assert!(
+            matches!(&observer.endpoint, CoordinationEndpoint::Local(_)),
+            "O1a"
+        );
+        assert_one_observer_roles(&observer);
+        drop(observer);
         drop(local_port);
         drop(local);
         assert!(shared.require_agent_coordination().is_err(), "B3");
@@ -913,7 +925,17 @@ mod tests {
             ),
             "R2/E1-E2"
         );
-        assert!(host.dispatch_settlement_observer().is_some(), "R2/E1");
+        // O1 one selected endpoint/allocation serves both existing observer
+        // roles. Sharing data does not merge their admission/settlement commands.
+        // C1 local Weak dead + remote live => Remote for both; C2 both role
+        // projections come from one factory Arc => identical allocation, no
+        // second endpoint selection can change between the two installations.
+        let observer = host.dispatch_settlement_observer().expect("R2/E1");
+        assert!(
+            matches!(&observer.endpoint, CoordinationEndpoint::Remote { .. }),
+            "R2/E1"
+        );
+        assert_one_observer_roles(&observer);
     }
 
     #[tokio::test]

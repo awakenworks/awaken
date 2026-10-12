@@ -681,7 +681,9 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
                 &store,
                 &directory,
                 stop.as_ref(),
-                Some(recovery.as_ref()),
+                Some(&awaken_dispatch::PhysicalAttemptRecoveryRead::new(
+                    recovery.as_ref(),
+                )),
                 &next,
                 200,
             )

@@ -19,7 +19,9 @@ pub struct TerminalReconciliationScan {
 impl TerminalReconciliationScan {
     /// Inspect at most `min(limit, 256)` IDs, including nonterminal, disappeared
     /// and unreadable rows. A concurrent scan yields rather than queues. Each
-    /// candidate must still be verified and settled through its current claim.
+    /// candidate must still be verified by committed Thread truth. Occupied
+    /// rows may only progress original physical closure; delivery settlement
+    /// continues to require its ordinary current terminal-recovery claim.
     pub async fn reconcile<S, F, Fut>(
         &self,
         store: &S,
@@ -45,10 +47,12 @@ impl TerminalReconciliationScan {
                 let Some(row) = store.dispatch_summary(run_id).await? else {
                     return Ok(None);
                 };
-                if !matches!(
-                    row.state,
-                    DispatchState::Pending | DispatchState::Awaiting | DispatchState::Leased
-                ) {
+                if !row.physical_attempt_active
+                    && !matches!(
+                        row.state,
+                        DispatchState::Pending | DispatchState::Awaiting | DispatchState::Leased
+                    )
+                {
                     return Ok(None);
                 }
                 reconcile(row).await
