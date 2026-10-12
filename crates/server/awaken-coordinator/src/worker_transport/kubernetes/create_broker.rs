@@ -106,14 +106,16 @@ fn current_create_worker(
 fn original_readback_matches(
     object: &Value,
     ticket: &CreateTicketRequest,
-    uid: &str,
+    result: &TicketResult,
     nonce: &str,
 ) -> bool {
+    let TicketResult::Created { uid } = result else {
+        return false;
+    };
     let metadata = &object["metadata"];
-    !uid.trim().is_empty()
-        && uid.trim() == uid
+    result.validate().is_ok()
         && !nonce.is_empty()
-        && metadata["uid"].as_str() == Some(uid)
+        && metadata["uid"].as_str() == Some(uid.as_str())
         && original_request_metadata_matches(
             ticket,
             nonce,
@@ -475,7 +477,7 @@ impl K8sCreateBroker {
             TicketAdmission::InFlight => Err(ApplicationError::unavailable(
                 "Worker Create request remains InFlight",
             )),
-            TicketAdmission::Finished(TicketResult::Created { uid }) => {
+            TicketAdmission::Finished(result @ TicketResult::Created { .. }) => {
                 let ticket = self
                     .ledger
                     .ticket_for(ledger_binding, &validated.ticket)
@@ -488,10 +490,11 @@ impl K8sCreateBroker {
                     })?;
                 if ticket.isolation_id.is_empty()
                     || ticket.isolation_pending
-                    || ticket.status
-                        != awaken_sandbox_container::k8s::TicketStatus::Finished(
-                            TicketResult::Created { uid: uid.clone() },
-                        )
+                    || !matches!(
+                        &ticket.status,
+                        awaken_sandbox_container::k8s::TicketStatus::Finished(existing)
+                            if existing == &result
+                    )
                 {
                     return Err(ApplicationError::unavailable(
                         "original Create result is not joined",
@@ -521,7 +524,7 @@ impl K8sCreateBroker {
                 if !original_readback_matches(
                     &object,
                     &validated.ticket,
-                    &uid,
+                    &result,
                     &ticket.isolation_id,
                 ) {
                     return Err(ApplicationError::unavailable(
@@ -702,25 +705,26 @@ impl K8sCreateBroker {
                     "Worker Create API result names another object",
                 ));
             }
-            let uid = metadata
-                .get("uid")
-                .and_then(Value::as_str)
-                .filter(|uid| !uid.trim().is_empty() && uid.trim() == *uid)
-                .ok_or_else(|| {
-                    ApplicationError::unavailable("Worker Create API result lacks UID")
-                })?;
-            if !original_readback_matches(&object, &create.ticket, uid, &admitted.isolation_id) {
+            let uid = metadata.get("uid").and_then(Value::as_str).ok_or_else(|| {
+                ApplicationError::unavailable("Worker Create API result lacks UID")
+            })?;
+            let result = TicketResult::Created { uid: uid.into() };
+            result
+                .validate()
+                .map_err(|_| ApplicationError::unavailable("Worker Create API result lacks UID"))?;
+            if !original_readback_matches(&object, &create.ticket, &result, &admitted.isolation_id)
+            {
                 return Err(ApplicationError::unavailable(
                     "Worker Create API result changed its admitted identity",
                 ));
             }
-            TicketResult::Created { uid: uid.into() }
-        } else if matches!(status, 400 | 401 | 403 | 409 | 422) {
-            TicketResult::RejectedNoEffect { code: status }
+            result
         } else {
-            return Err(ApplicationError::unavailable(
-                "Worker Create API outcome is not definitive",
-            ));
+            let result = TicketResult::RejectedNoEffect { code: status };
+            result.validate().map_err(|_| {
+                ApplicationError::unavailable("Worker Create API outcome is not definitive")
+            })?;
+            result
         };
         self.ledger
             .finish_request(
@@ -887,6 +891,11 @@ mod tests {
         // Fresh201 and Finished(Created) use this matcher; an Isolated UID
         // cannot replace the original UID. Response-loss replay's one-POST
         // end-to-end case remains in worker_response_loss below.
+        // B4 delegates definitive-result validation to its existing owner:
+        // expected empty/blank/spaced -> refuse; exact embedded controls and
+        // long opaque UIDs retain this raw reader's old acceptance. B5 valid
+        // Isolated/Rejected result shapes -> refuse original-Create purpose,
+        // never borrow a reservation UID or turn a refusal into Created.
         let ticket =
             CreateTicketRequest::new("group", "pods", "sandbox-ns", "sandbox-pod", "a".repeat(64))
                 .unwrap();
@@ -909,6 +918,12 @@ mod tests {
             "uid-wrong",
             "uid-spaced",
             "expected-spaced",
+            "expected-empty",
+            "expected-blank",
+            "expected-control",
+            "expected-long",
+            "result-isolated",
+            "result-rejected",
             "nonce-empty",
             "name-malformed",
             "annotations-malformed",
@@ -917,7 +932,9 @@ mod tests {
             "delete-null",
         ] {
             let mut object = original.clone();
-            let mut uid = "original-uid";
+            let mut result = TicketResult::Created {
+                uid: "original-uid".into(),
+            };
             let mut expected_nonce = nonce;
             match row {
                 "name" => object["metadata"]["name"] = "other".into(),
@@ -941,10 +958,25 @@ mod tests {
                 "uid-blank" => object["metadata"]["uid"] = " \t ".into(),
                 "uid-wrong" => object["metadata"]["uid"] = "reserved-uid".into(),
                 "uid-spaced" => object["metadata"]["uid"] = " original-uid ".into(),
-                "expected-spaced" => {
-                    uid = " original-uid ";
-                    object["metadata"]["uid"] = uid.into();
+                "expected-spaced" | "expected-empty" | "expected-blank" | "expected-control"
+                | "expected-long" => {
+                    let uid = match row {
+                        "expected-spaced" => " original-uid ".into(),
+                        "expected-empty" => String::new(),
+                        "expected-blank" => " \t ".into(),
+                        "expected-control" => "original\nuid\0".into(),
+                        "expected-long" => "u".repeat(4097),
+                        _ => unreachable!(),
+                    };
+                    object["metadata"]["uid"] = Value::String(uid.clone());
+                    result = TicketResult::Created { uid };
                 }
+                "result-isolated" => {
+                    result = TicketResult::Isolated {
+                        uid: "original-uid".into(),
+                    };
+                }
+                "result-rejected" => result = TicketResult::RejectedNoEffect { code: 403 },
                 "nonce-empty" => {
                     expected_nonce = "";
                     object["metadata"]["annotations"][ISOLATION_ID_ANNOTATION] = "".into();
@@ -963,10 +995,15 @@ mod tests {
                 _ => {}
             }
             assert_eq!(
-                original_readback_matches(&object, &ticket, uid, expected_nonce),
+                original_readback_matches(&object, &ticket, &result, expected_nonce),
                 matches!(
                     row,
-                    "exact" | "unrelated-malformed" | "isolation-marker" | "delete-null"
+                    "exact"
+                        | "unrelated-malformed"
+                        | "isolation-marker"
+                        | "delete-null"
+                        | "expected-control"
+                        | "expected-long"
                 ),
                 "B1-B3/{row}"
             );
