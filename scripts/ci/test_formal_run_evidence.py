@@ -918,25 +918,47 @@ class EvidenceTests(unittest.TestCase):
         # S1/S6/S9/S11: the clean legacy five fields retain empty Git-byte
         # digests. Cross late index/HEAD/untracked bytes during the shared read;
         # actual callback and exact capture refusal must both be observed.
+        # S12 cause graph: formal versus working view selects no tree versus
+        # one bracketed write-tree, both with two raw reads. Stable inputs keep
+        # original facts/hash/tuple semantics; any persistent late axis rejects.
+        # Working additionally crosses a real index change at write-tree: its
+        # returned tree cannot belong to older facts. No phase fence is cached.
+        import rust_test_plan as planner
         clean = source_snapshot(self.root)
         self.assertEqual(set(clean), {"commit", "tree", "clean", "working_diff_digest", "status_digest"})
         self.assertEqual((clean["working_diff_digest"], clean["status_digest"]), (digest_bytes(b""),) * 2)
         original_reader = formal_sources._git_output
-        for axis in ("index", "revision", "untracked"):
-            with self.subTest(axis=axis):
+        with mock.patch.object(formal_sources, "_git_output", wraps=original_reader) as reads:
+            default = formal_sources.source_facts(self.root)
+        self.assertEqual(set(default), {"revision", "tree", "index_entries", "staged", "working", "patch", "untracked", "status"})
+        self.assertEqual(sum(call.args[2:] == ("status", "--porcelain=v1", "--untracked-files=all") for call in reads.call_args_list), 2)
+        self.assertFalse(any(call.args[2:] == ("write-tree",) for call in reads.call_args_list))
+        with mock.patch.object(planner, "ROOT", self.root), \
+                mock.patch.object(formal_sources, "_git_output", wraps=original_reader) as reads:
+            digest, facts = planner.working_subject()
+        self.assertEqual({key: value for key, value in facts.items() if key != "index_tree"}, default)
+        self.assertEqual(facts["index_tree"], self.git("write-tree"))
+        self.assertEqual(sum(call.args[2:] == ("status", "--porcelain=v1", "--untracked-files=all") for call in reads.call_args_list), 2)
+        self.assertEqual(sum(call.args[2:] == ("write-tree",) for call in reads.call_args_list), 1)
+        with mock.patch.object(planner, "ROOT", self.root):
+            self.assertEqual(planner.source_snapshot(), (digest, facts["patch"]))
+        for working, axis in ((working, axis) for working in (False, True)
+                              for axis in ("index", "revision", "untracked", *(("write-tree",) if working else ()))):
+            with self.subTest(working=working, axis=axis):
                 hit = False
                 if axis == "untracked":
                     (self.root / "fresh.rs").write_bytes(b"first bytes")
                 def read(root, environment, *arguments):
                     nonlocal hit
                     result = original_reader(root, environment, *arguments)
-                    if not hit and arguments == ("status", "--porcelain=v1", "--untracked-files=all"):
+                    boundary = ("write-tree",) if axis == "write-tree" else ("status", "--porcelain=v1", "--untracked-files=all")
+                    if not hit and arguments == boundary:
                         hit = True
                         original = (self.root / "transitive.rs").read_bytes()
-                        if axis in {"index", "revision"}:
+                        if axis in {"index", "revision", "write-tree"}:
                             (self.root / "transitive.rs").write_text(axis + "\n")
                             self.git("add", ".")
-                        if axis == "index":
+                        if axis in {"index", "write-tree"}:
                             (self.root / "transitive.rs").write_bytes(original)
                         if axis == "revision":
                             self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
@@ -944,9 +966,10 @@ class EvidenceTests(unittest.TestCase):
                         if axis == "untracked":
                             (self.root / "fresh.rs").write_bytes(b"second bytes")
                     return result
-                with mock.patch.object(formal_sources, "_git_output", side_effect=read), \
+                with mock.patch.object(planner, "ROOT", self.root), \
+                        mock.patch.object(formal_sources, "_git_output", side_effect=read), \
                         self.assertRaisesRegex(ValueError, "Source changed while capturing Git source facts"):
-                    source_snapshot(self.root)
+                    planner.working_subject() if working else source_snapshot(self.root)
                 self.assertTrue(hit)
 
     def test_git_normalized_windows_checkout_preserves_source_identity(self):

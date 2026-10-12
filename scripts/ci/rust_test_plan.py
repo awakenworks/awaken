@@ -72,23 +72,21 @@ def source_digest(revision: bytes, index: bytes, staged: bytes, working: bytes, 
     return formal_sources.framed_digest((revision, index, staged, working, *formal_sources.untracked_parts(untracked)))
 
 
-def untracked_sources() -> dict[str, bytes]:
-    """The one byte reader used by subject identity and ordinary diagnostics."""
-    return formal_sources.untracked_sources(ROOT)
-
-
-def source_snapshot() -> tuple[str, bytes]:
-    """Working subject plus its exact index; retain the existing digest/patch API.
+def working_subject() -> tuple[str, dict]:
+    """Project one stable working capture into its original digest and facts.
 
     Index and WT deltas are independent: they may cancel in HEAD->WT. The
     returned diagnostic patch remains HEAD->WT; its digest also binds the index,
     both deltas and untracked bytes. A local run never qualifies a staged commit.
     """
-    facts = formal_sources.source_facts(ROOT)
-    index = git_output("write-tree")
-    if facts != formal_sources.source_facts(ROOT):
-        raise ValueError("Source changed while capturing the working subject and index")
-    return source_digest(facts["revision"], index, facts["staged"], facts["working"], facts["untracked"]), facts["patch"]
+    facts = formal_sources.source_facts(ROOT, with_index_tree=True)
+    return source_digest(facts["revision"], facts["index_tree"], facts["staged"], facts["working"], facts["untracked"]), facts
+
+
+def source_snapshot() -> tuple[str, bytes]:
+    """Retain the original digest/patch API over the same working capture."""
+    digest, facts = working_subject()
+    return digest, facts["patch"]
 
 
 def changed_sources(base: str) -> list[str]:
@@ -499,30 +497,27 @@ else:
 
     def test_plan_only_cannot_mix_late_index_or_revision_with_the_old_digest(self) -> None:
         # Q10/Q11: --base without --run still owns a source-bound plan. Initial
-        # capture now delegates raw facts to the shared owner. The planner's
-        # first HEAD read / second write-tree read is its diagnostic fact.
-        # Cross late index/HEAD amendment there and require refusal before any
-        # plan is printed, not just the later execution-entrance refusal.
+        # metadata now projects that same capture, with no second index/HEAD
+        # authority. Cross a real index/HEAD amendment before capture2 (the
+        # final planning fence) and refuse before printing any plan or effects.
         for axis in ("write-tree", "rev-parse"):
             with self.subTest(axis=axis), tempfile.TemporaryDirectory() as directory:
                 root, metadata = self.fixture_repository(directory)
                 (root / "crates/kernel/src/lib.rs").write_text("pub const VALUE: u8 = 2;\n")
-                original_git, original_output = git_output, subprocess.check_output
+                original_subject, original_output = working_subject, subprocess.check_output
                 axis_reads = 0
-                diagnostic_read = 2 if axis == "write-tree" else 1
+                diagnostic_read = 2
                 calls = []
-                def git_read(*arguments):
+                def read_subject():
                     nonlocal axis_reads
-                    result = original_git(*arguments)
-                    if arguments == (axis,) or arguments == (axis, "HEAD"):
-                        axis_reads += 1
-                        if axis_reads == diagnostic_read:
-                            source = root / "crates/other/src/lib.rs"
-                            source.write_text("pub const VALUE: u8 = 3;\n")
-                            self.git(root, "add", str(source))
-                            if axis == "rev-parse":
-                                self.git(root, "commit", "--quiet", "-m", "late fixture revision")
-                    return result
+                    axis_reads += 1
+                    if axis_reads == diagnostic_read:
+                        source = root / "crates/other/src/lib.rs"
+                        source.write_text("pub const VALUE: u8 = 3;\n")
+                        self.git(root, "add", str(source))
+                        if axis == "rev-parse":
+                            self.git(root, "commit", "--quiet", "-m", "late fixture revision")
+                    return original_subject()
                 def output(command, **kwargs):
                     if command[0] == "cargo":
                         calls.append(command[1])
@@ -531,7 +526,7 @@ else:
                 printed, errors = io.StringIO(), io.StringIO()
                 with mock.patch.dict(globals(), ROOT=root, PROFILE=root / ".config/rust-tests.toml"), \
                         mock.patch.object(sys, "argv", [__file__, "--base", "HEAD"]), \
-                        mock.patch.dict(globals(), git_output=git_read), \
+                        mock.patch.dict(globals(), working_subject=read_subject), \
                         mock.patch.object(subprocess, "check_output", side_effect=output), \
                         contextlib.redirect_stdout(printed), contextlib.redirect_stderr(errors):
                     self.assertNotEqual(main(), 0)
@@ -753,7 +748,7 @@ def main() -> int:
     try:
         # Bind the selection before reading base, feature profile or metadata.
         # The later equality check must not bless a new subject with an old plan.
-        fingerprint, patch = source_snapshot()
+        fingerprint, facts = working_subject()
         base = git_output("rev-parse", "--verify", "--end-of-options", args.base + "^{commit}").decode().strip()
         changed = changed_sources(base)
         if args.check_command is not None and args.check_command[:2] != ["cargo", "check"]:
@@ -778,14 +773,14 @@ def main() -> int:
                 raise crate_test.PlanError("; ".join(errors))
             commands = crate_test.plan_packages(metadata, feature_names, companions, selected, []) if selected else []
             command = commands[-1] if commands else []
-        plan = {"schema_version": 1, "kind": "local-affected", "revision": git_output("rev-parse", "HEAD").decode().strip(), "base": base, "changed": changed, "selected_packages": selected, "reason": reason, "command": command if selected else [], "full_gate": False,
-                "source_kind": "working-tree", "source_digest": fingerprint, "index_tree": git_output("write-tree").decode().strip(),
-                "untracked_files": {name: hashlib.sha256(data).hexdigest() for name, data in untracked_sources().items()}}
+        plan = {"schema_version": 1, "kind": "local-affected", "revision": facts["revision"].decode().strip(), "base": base, "changed": changed, "selected_packages": selected, "reason": reason, "command": command if selected else [], "full_gate": False,
+                "source_kind": "working-tree", "source_digest": fingerprint, "index_tree": facts["index_tree"].decode().strip(),
+                "untracked_files": {name: hashlib.sha256(data).hexdigest() for name, data in facts["untracked"].items()}}
         if original is not None:
             plan.update(kind="local-affected-check", original_command=original)
         plan["commands"] = commands
-        # Every diagnostic fact above is read before this final planning fence,
-        # including no-run/no-work plans; none may mix a later axis with digest.
+        # Metadata projects the first capture. This fresh final fence still
+        # refuses any late source axis, including no-run/no-work plans.
         if source_snapshot()[0] != fingerprint:
             raise ValueError("Source changed during affected planning; no execution started")
         if original is not None and crate_test.native_graph_reason(ROOT, environment) != target_reason:
@@ -796,7 +791,7 @@ def main() -> int:
         directory = Path(environment["CARGO_TARGET_DIR"]) / "test-timings"
         directory.mkdir(parents=True, exist_ok=True)
         receipt = directory / f"affected-{time.time_ns()}.json"
-        receipt.with_suffix(".patch").write_bytes(patch)
+        receipt.with_suffix(".patch").write_bytes(facts["patch"])
         if source_snapshot()[0] != fingerprint:
             raise ValueError("Source changed before affected execution; no execution started")
         if original is not None and crate_test.native_graph_reason(ROOT, environment) != target_reason:
