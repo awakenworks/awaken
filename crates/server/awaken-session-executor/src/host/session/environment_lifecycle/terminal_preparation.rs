@@ -151,8 +151,11 @@ impl SharedHost {
             );
             admit()?;
             sessions.update_realization(thread, |r| {
-                r.environment_owner
-                    .prepare_retiring_realization_adoption(&retiring, fresh.clone())?;
+                r.environment_owner.prepare_retiring_realization_adoption(
+                    &retiring,
+                    fresh.clone(),
+                    None,
+                )?;
                 let SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(
                     candidate,
                 )) = &r.environment_owner
@@ -207,7 +210,7 @@ impl SharedHost {
             | BoundEnvironmentPreparationMode::TerminalRepositoryPublication => {
                 if adopted {
                     let candidate =
-                        exec.begin_session_environment_adoption(thread, environment.clone())?;
+                        exec.begin_session_environment_adoption(thread, environment.clone(), None)?;
                     let crate::environment_owner::UnboundSessionEnvironmentOrigin::AdoptionFrom(
                         identity,
                     ) = &candidate.origin
@@ -291,7 +294,11 @@ impl SharedHost {
                         // scope. Keep that exact current handle as the existing
                         // Unbound retirement owner; it gains no durable binding
                         // and can only be disposed by this terminal fence.
-                        exec.begin_session_environment_preparation(thread, environment.clone())?;
+                        exec.begin_session_environment_preparation(
+                            thread,
+                            environment.clone(),
+                            None,
+                        )?;
                         exec.retire_exact_environment(
                             thread,
                             cause,
@@ -557,21 +564,15 @@ impl SharedHost {
     /// harvest without writing an ordinary Environment Adopt receipt. The
     /// terminal command and realization generation are the only authority;
     /// this method publishes an Arc only into the process-local teardown slot.
+    /// The result owns its state projection; the complete immutable projection
+    /// remains available for original-history queries.
     pub(super) async fn prepare_terminal_environment_under_lifecycle(
         &self,
         thread: &str,
         effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
         mode: BoundEnvironmentPreparationMode,
     ) -> Result<TerminalEnvironmentPreparation, HostError> {
-        let (
-            assignment,
-            owner,
-            previous_resources,
-            workspace_id,
-            checkpoint_policy,
-            realization_lease,
-            environment_fingerprint,
-        ) = self
+        let (assignment, owner, previous_resources, workspace_id, checkpoint_policy) = self
             .installed_sessions
             .read(thread, |slot| {
                 let baseline = slot.inputs.baseline.as_ref();
@@ -582,8 +583,6 @@ impl SharedHost {
                     r.previous_resources(),
                     slot.inputs.workspace.clone(),
                     baseline.map(|baseline| baseline.environment.idle_retention.clone()),
-                    r.authority.lease().cloned(),
-                    baseline.map(|baseline| baseline.environment.config_fingerprint.0.clone()),
                 )
             })
             .ok_or_else(|| {
@@ -598,7 +597,7 @@ impl SharedHost {
                 "terminal cleanup has no frozen aggregate Environment state",
             )
         })?;
-        let state = assignment.projection.environment;
+        let state = assignment.projection.environment.clone();
         let pending_checkpoint = if matches!(
             &state,
             awaken_session_state_contract::SessionEnvironmentState::Suspending {
@@ -639,6 +638,13 @@ impl SharedHost {
             assignment.environment_creation_not_attempted,
             &state,
             matches!(owner, SessionEnvironmentOwner::Vacant),
+            assignment
+                .projection
+                .environment_materialization
+                .as_deref()
+                .is_some_and(
+                    awaken_session_state_contract::SessionEnvironmentMaterialization::has_admitted,
+                ),
         )
         .map_err(crate::managed_adapter_error::from_run_error)?;
         // An Adoption Candidate knows a durable binding even when the new effect
@@ -726,27 +732,10 @@ impl SharedHost {
                     pending_checkpoint,
                 });
             }
-            let realization_lease = realization_lease.ok_or_else(|| {
-                HostError::unavailable_classified(
-                    "session_terminal_unmaterialized_lease_missing",
-                    "unmaterialized terminal Environment has no realization lease",
-                )
-            })?;
-            let environment_fingerprint = environment_fingerprint.ok_or_else(|| {
-                HostError::unavailable_classified(
-                    "session_terminal_unmaterialized_fingerprint_missing",
-                    "unmaterialized terminal Environment has no frozen fingerprint",
-                )
-            })?;
-            let create_intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
-                thread,
-                awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
-                Some(realization_lease.clone()),
-            )
-            .for_environment(environment_fingerprint);
-            let expected_effect_fence = realization_lease
-                .sandbox_effect_fence(create_intent.effect_id())
-                .map_err(|error| HostError::internal(error.to_string()))?;
+            let expected_effect_fence = assignment
+                .projection
+                .original_create_fence(thread)
+                .map_err(crate::host_error::from_run_error)?;
             let provider = self.projected_session_environment_provider(thread, None)?;
             let spec = self.realizer.session_environment_adoption_spec(
                 thread,

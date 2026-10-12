@@ -454,6 +454,53 @@ async fn claim_authority(
     })
 }
 
+/// Distinguish the authority assertion from the immutable Environment operation
+/// coordinates without creating another authentication path.
+#[derive(Clone, Copy)]
+enum RealizationAuthorityPurpose {
+    /// Environment intents/receipts retain their original lease coordinates.
+    /// The repository-backed Session Root applies the current exact/live,
+    /// nonregressed renewal law; this boundary must not decide that law again.
+    EnvironmentEffect,
+    /// Ordinary control commands still require a live asserted lease.
+    ActiveControl,
+}
+
+async fn verify_session_realization_authority(
+    service: &WorkerDispatchService,
+    worker: &VerifiedWorkerContext,
+    identity: &WorkerIdentity,
+    session_id: &str,
+    lease: &awaken_session_resource_contract::SessionRealizationLease,
+    purpose: RealizationAuthorityPurpose,
+) -> Result<(), RealizationHttpError> {
+    verify_worker_identity(worker, identity)
+        .map_err(HostError::bad_request)
+        .map_err(RealizationHttpError::from)?;
+    let authority = claim_authority(service, worker, Some(identity), false).await?;
+    if lease.owner != identity.worker_id
+        || lease.runtime_incarnation != identity.lease_owner()
+        || (matches!(purpose, RealizationAuthorityPurpose::ActiveControl)
+            && !awaken_session_realization_contract::realization_lease_is_live_at(
+                lease.expires_at_unix_ms,
+                authority.now_ms,
+            ))
+    {
+        return Err(RealizationHttpError::from(HostError::bad_request(
+            "Session realization lease is not owned by the authenticated Worker incarnation",
+        )));
+    }
+    session_realization::acquire_session_work_owner(
+        service,
+        session_id,
+        &identity.lease_owner(),
+        authority.now_ms,
+        awaken_worker_contract::SessionWorkAcquisition::RealizationRenewal,
+    )
+    .await?;
+    Ok(())
+}
+
 /// Progress one exact blocked claim through the canonical independent-stop
 /// application service. Both physical admission and terminal recovery use this
 /// helper so HTTP routing cannot grow two subtly different stop protocols.

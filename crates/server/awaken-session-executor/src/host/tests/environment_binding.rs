@@ -2,6 +2,181 @@
 
 use super::*;
 
+#[tokio::test]
+async fn captured_environment_intent_survives_renewal_without_rebuilding_adopt() {
+    // C1 an Adopt was admitted with expiry60k; C2 installed authority is120k;
+    // C3 incoming request is the original60k or fresh120k value; C4 the sink
+    // returns the exact earlier admitted value. R1=C1+C2+either C3+C4 => the
+    // authorization carries C1 bytes and the provider fence uses C1 expiry,
+    // while the existing current-effect kernel grants the current authority.
+    // This tests the Host request boundary; real Root CAS is covered by the
+    // repository-backed admission tests, not this selected recording port.
+    let thread = "captured-adopt-renewal";
+    let host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+        .await
+        .build()
+        .unwrap();
+    let sink = Arc::new(ResponseLossBindingSink::default());
+    crate::ManagedHost::new(host.clone()).install_test_environment_binding_sink(sink.clone());
+    let original_lease = awaken_session_resource_contract::SessionRealizationLease {
+        owner: "worker".into(),
+        runtime_incarnation: "boot".into(),
+        epoch: 1,
+        expires_at_unix_ms: 60_000,
+    };
+    let original = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+        thread,
+        awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
+        Some(original_lease.clone()),
+    )
+    .from_binding("original-source");
+    let proof = awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
+        awaken_session_resource_contract::SessionRealizationLease {
+            expires_at_unix_ms: 120_000,
+            ..original_lease
+        },
+        0,
+    )
+    .unwrap()
+    .observed(awaken_authority_clock::authority_proof_started().unwrap());
+    host.installed_sessions.update_realization(thread, |r| {
+        r.authority = crate::installed_session::SessionRealizationAuthority::Live(proof);
+    });
+    *sink.original_intent.lock().unwrap() = Some(original.clone());
+    for request_expiry in [60_000, 120_000] {
+        let requested = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+            thread,
+            awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
+            Some(awaken_session_resource_contract::SessionRealizationLease {
+                expires_at_unix_ms: request_expiry,
+                ..original.realization().unwrap().clone()
+            }),
+        )
+        .from_binding("original-source");
+        let effect = host
+            .authorize_environment_effect_before_io(thread, &requested)
+            .await
+            .unwrap();
+        assert_eq!(
+            effect.authorization.intent(),
+            &original,
+            "R1 complete original value"
+        );
+        assert_eq!(
+            effect.provider_fence.as_ref().unwrap().expires_at_unix_ms(),
+            60_000,
+            "R1 original expiry"
+        );
+        assert_eq!(
+            sink.authorize_calls.load(Ordering::SeqCst),
+            if request_expiry == 60_000 { 1 } else { 2 },
+            "R1 one authority call per request"
+        );
+        awaken_provisioning_contract::with_current_sandbox_effect(
+            effect.provider_fence.as_ref().unwrap(),
+            effect.provider_authority.as_deref().unwrap(),
+            |guard| {
+                assert_eq!(guard.fence().expires_at_unix_ms(), 120_000);
+                Ok(())
+            },
+        )
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn managed_projection_without_a_lease_never_falls_back_to_unowned() {
+    // Causes C1 Session marker; C2 retained Control-frozen baseline; C3 no
+    // realization lease; C4 no sink/explicit nonowner; C5 authority Closed.
+    // M1=(C1||C2)+C3+either C4 => pending, zero persistence/provider effects;
+    // M2=!C1+!C2+C3+no sink => ordinary Direct Unowned;
+    // M3=C5 => reject before consulting any sink, even with marker cleared.
+    // C2 without C1 is the existing revocation-retention input, not a fresh
+    // ordinary configuration. Cross both C4 values with each Managed source.
+    for (marker, baseline, closed) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (true, true, false),
+        (false, true, true),
+        (true, false, true),
+    ] {
+        let thread = "managed-root-missing";
+        let host = crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+            .await
+            .build()
+            .unwrap();
+        host.installed_sessions.update(thread, |slot| {
+            slot.run.session_dispatch = marker;
+            if baseline {
+                slot.replace_frozen_with(|next| {
+                    next.baseline = Some(remote_terminal_cleanup_projection().baseline)
+                });
+            }
+            if closed {
+                slot.realization.authority =
+                    crate::installed_session::SessionRealizationAuthority::Closed(None);
+            }
+        });
+        let intent = host.realizer.new_environment_effect_intent(
+            thread,
+            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+            None,
+        );
+        let missing = host
+            .authorize_environment_effect_before_io(thread, &intent)
+            .await;
+        if !marker && !baseline && !closed {
+            assert!(
+                matches!(
+                    missing.unwrap().authorization,
+                    awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned { .. }
+                ),
+                "M2"
+            );
+            continue;
+        }
+        assert!(missing.is_err(), "M1/M3 absent sink");
+        let sink = Arc::new(BindingOrderSink {
+            host: Arc::downgrade(&host),
+            authorize_calls: AtomicUsize::new(0),
+            calls: AtomicUsize::new(0),
+            observed_before_publish: AtomicBool::new(false),
+            fail: false,
+            require_realization: false,
+            owned_session_id: Some("another-root".into()),
+            committed_environment: None,
+        });
+        crate::ManagedHost::new(host.clone()).install_test_environment_binding_sink(sink.clone());
+        let error = match host
+            .authorize_environment_effect_before_io(thread, &intent)
+            .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("M1/M3 lost Managed Root became Unowned"),
+        };
+        assert_eq!(
+            error.code,
+            if closed {
+                "session_environment_realization_closed"
+            } else {
+                "session_environment_owned_root_missing"
+            },
+            "M1/M3"
+        );
+        assert_eq!(sink.calls.load(Ordering::SeqCst), 0, "M1 zero persistence");
+        assert_eq!(
+            sink.authorize_calls.load(Ordering::SeqCst),
+            usize::from(!closed),
+            "M3 closes before any sink query"
+        );
+        assert!(
+            host.realizer.session_environment(thread).await.is_none(),
+            "M1/M3 zero provider I/O"
+        );
+    }
+}
+
 struct MovingRealizationFenceSink {
     authorize_calls: AtomicUsize,
     calls: AtomicUsize,
@@ -10,6 +185,11 @@ struct MovingRealizationFenceSink {
 
 #[derive(Default)]
 struct ResponseLossBindingSink {
+    // A recording boundary can observe the real selected authority; it does
+    // not retain a second Root or fabricate a committed generation.
+    delegate: Option<Arc<dyn awaken_session_execution_contract::SessionEnvironmentBindingSink>>,
+    original_intent:
+        std::sync::Mutex<Option<awaken_session_state_contract::SessionEnvironmentEffectIntent>>,
     authorize_calls: AtomicUsize,
     persist_calls: AtomicUsize,
     committed: std::sync::Mutex<Option<(String, String)>>,
@@ -25,16 +205,30 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Respon
         awaken_session_types::RunError,
     > {
         self.authorize_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(delegate) = &self.delegate {
+            return delegate.authorize(intent).await;
+        }
+        let original = self
+            .original_intent
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| intent.clone());
         if let Some((effect_id, binding)) = self.committed.lock().unwrap().as_ref()
             && effect_id == intent.effect_id()
         {
             Ok(
                 awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
                     binding: binding.clone(),
+                    intent: Box::new(original.clone()),
                 },
             )
         } else {
-            Ok(awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized)
+            Ok(
+                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized {
+                    intent: Box::new(original.clone()),
+                },
+            )
         }
     }
 
@@ -46,6 +240,9 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Respon
         awaken_session_types::RunError,
     > {
         self.persist_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(delegate) = &self.delegate {
+            return delegate.persist(receipt).await;
+        }
         let mut committed = self.committed.lock().unwrap();
         if committed.as_ref() == Some(&(receipt.effect_id.clone(), receipt.binding.clone())) {
             return Ok(test_committed_environment(receipt));
@@ -69,7 +266,11 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Moving
         self.authorize_calls.fetch_add(1, Ordering::SeqCst);
         let asserted_epoch = intent.realization().map_or(0, |lease| lease.epoch);
         if asserted_epoch == self.accepted_epoch.load(Ordering::SeqCst) {
-            Ok(awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized)
+            Ok(
+                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized {
+                    intent: Box::new(intent.clone()),
+                },
+            )
         } else {
             Err(awaken_session_types::RunError::unavailable_classified(
                 "session_realization_stale",
@@ -141,15 +342,18 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
     let ordinary = host
         .authorize_environment_effect_before_io(
             thread,
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
-            None,
+            &host.realizer.new_environment_effect_intent(
+                thread,
+                awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                None,
+            ),
         )
         .await
         .expect("R1 ordinary authorization");
     assert!(
         matches!(
             ordinary.authorization,
-            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned
+            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned { .. }
         ),
         "R1/E1"
     );
@@ -160,15 +364,18 @@ async fn claimed_ordinary_environment_uses_the_run_binding_not_the_session_root(
     let managed = host
         .authorize_environment_effect_before_io(
             thread,
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
-            None,
+            &host.realizer.new_environment_effect_intent(
+                thread,
+                awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                None,
+            ),
         )
         .await
         .expect("R2 Managed authorization");
     assert!(
         matches!(
             managed.authorization,
-            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized
+            awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized { .. }
         ),
         "R2/E2"
     );
@@ -283,11 +490,17 @@ async fn already_applied_create_adopts_under_the_existing_lifecycle_lock() {
     // or recursive lock acquisition; one idempotent Store read returns the
     // aggregate-generated Resident identity. The shared fixture owns
     // projection/spec/fence construction; this row varies only response loss.
+    // The original fixture first CAS is real; the existing counter port delegates
+    // to that same Root on replay, without synthesizing intent/generation.
     let storage = tempfile::tempdir().unwrap();
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-        .await
-        .with_store_dir(storage.path())
-        .await)
+    let roots = ManagedSessionRootFixture::new().await;
+    let host = roots
+        .configure(
+            crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+                .await
+                .with_store_dir(storage.path())
+                .await,
+        )
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&host);
@@ -300,23 +513,22 @@ async fn already_applied_create_adopts_under_the_existing_lifecycle_lock() {
             crate::host::worker_resolver::test_support::eager_environment(),
             &activation.snapshot,
         );
+    let managed = install_test_dispatch_runtime(&host);
+    roots
+        .install_projection(&managed, thread, projection.clone())
+        .await
+        .unwrap();
     let binding = crate::host::worker_resolver::test_support::available_local_environment_binding(
         &host,
         thread,
         &projection,
     )
     .await;
-    let intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
-        thread,
-        awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
-        None,
-    )
-    .for_environment(projection.baseline.environment.config_fingerprint.0.clone());
     let sink = Arc::new(ResponseLossBindingSink {
-        committed: std::sync::Mutex::new(Some((intent.effect_id().to_string(), binding.clone()))),
+        delegate: Some(roots.binding_sink.clone()),
         ..Default::default()
     });
-    install_test_dispatch_runtime(&host).install_test_environment_binding_sink(sink.clone());
+    managed.install_test_environment_binding_sink(sink.clone());
 
     let context = tokio::time::timeout(
         std::time::Duration::from_secs(1),

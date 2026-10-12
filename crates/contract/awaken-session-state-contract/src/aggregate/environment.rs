@@ -1,9 +1,77 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: The existing Session aggregate owns Environment admission, first intent and receipt
+// @formal reason: transitions. Its caller commits the controlled mutation before provider I/O; admission
+// @formal reason: and late receipt use the same materialization law. Original request closure and domain
+// @formal reason: access remain physical evidence, so unknown Managed Rebuild stays pending, not proved.
 use super::{
     CheckpointReceipt, QuiescenceReceipt, RestoreReceipt, SessionEnvironmentOperation,
     SessionEnvironmentOperations, SessionEnvironmentTransitionError, SourceDisposedReceipt,
 };
 
 impl SessionEnvironmentOperations<'_> {
+    /// Admit the exact first value before provider I/O through the same root CAS.
+    pub fn admit_environment_effect(
+        &mut self,
+        owner_scope: &str,
+        intent: &crate::SessionEnvironmentEffectIntent,
+        now_unix_ms: u64,
+    ) -> Result<
+        (bool, crate::SessionEnvironmentEffectAuthorization),
+        crate::SessionEnvironmentReceiptError,
+    > {
+        let session = &mut self.aggregate.state;
+        if session.is_terminal() {
+            return Err(crate::SessionEnvironmentReceiptError::WrongPhase);
+        }
+        if let Some(facts) = session.environment_materialization.as_deref() {
+            facts.validate_existing_origin_effect(intent)?;
+        }
+        let authorization =
+            session.authorize_environment_effect(owner_scope, intent, now_unix_ms)?;
+        match intent.kind() {
+            crate::SessionEnvironmentEffectKind::Rebuild { .. } => {
+                // Source closure/access is not available in this slice. A
+                // target receipt or current lease cannot supply it.
+                Err(crate::SessionEnvironmentReceiptError::MaterializationPending)
+            }
+            crate::SessionEnvironmentEffectKind::Create => {
+                if session.realization.is_none() || intent.realization().is_none() {
+                    return Err(crate::SessionEnvironmentReceiptError::RealizationStale);
+                }
+                let facts = session
+                    .environment_materialization
+                    .as_deref()
+                    .ok_or(crate::SessionEnvironmentReceiptError::MaterializationUnknown)?;
+                if let Some(first) = facts.pending().or_else(|| facts.origin()) {
+                    if first.effect_id() != intent.effect_id() {
+                        return Err(crate::SessionEnvironmentReceiptError::MaterializationPending);
+                    }
+                    // Checking the saved assertion also prevents a shortened
+                    // candidate expiry from borrowing a grant below first.
+                    let original =
+                        session.authorize_environment_effect(owner_scope, first, now_unix_ms)?;
+                    return Ok((false, original));
+                }
+                if !matches!(
+                    authorization,
+                    crate::SessionEnvironmentEffectAuthorization::Authorized { .. }
+                ) {
+                    return Err(crate::SessionEnvironmentReceiptError::InvalidTransition);
+                }
+                session
+                    .environment_materialization
+                    .as_deref_mut()
+                    .expect("fresh materialization fact was checked")
+                    .admit_first(intent);
+                Ok((true, authorization))
+            }
+            crate::SessionEnvironmentEffectKind::Adopt
+            | crate::SessionEnvironmentEffectKind::ResourceProjectionReservation { .. } => {
+                Ok((false, authorization))
+            }
+        }
+    }
+
     /// Apply the canonical PersistedSession::record_source_release_prepared law.
     pub fn record_source_release_prepared(
         &mut self,

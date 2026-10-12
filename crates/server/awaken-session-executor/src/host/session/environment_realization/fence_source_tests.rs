@@ -595,9 +595,8 @@ async fn adoption_forwards_original_authority_across_observation_and_provider_wa
                 let effect = AuthorizedSessionEnvironmentEffect {
                     provider_authority: Some(Arc::new(host.realizer.session_environment_effect_fence_source("session", &initial).unwrap())),
                     provider_fence: Some(initial),
-                    intent,
                     authorization:
-                        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized,
+                        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized { intent: Box::new(intent) },
                 };
                 let adopt = host.adopt_bound_session_environment_under_lifecycle(
                     "session",
@@ -808,7 +807,7 @@ async fn provider_fence_source_is_wired_across_preparation_and_provider_awaits()
 async fn environment_receipt_refreshes_only_the_captured_live_generation() {
     // Cause/effect graph: C1 direct/registered Worker; C2 exact/renewed lease;
     // C3 owner/incarnation/epoch/expiry changed; C4 closed/removed/ABA slot;
-    // C5 Worker closed/zero. E1 exact or monotonic renewal => fresh receipt,
+    // C5 Worker closed/zero. E1 exact or monotonic renewal => original receipt,
     // identical effect/binding/context; E2 all loss/reassignment rows => reject.
     // R1 exact, R2 renewed (old Control expiry can already be stale), R3 each
     // independent negated authority predicate; no sleeps or wall-clock guesses.
@@ -847,9 +846,8 @@ async fn environment_receipt_refreshes_only_the_captured_live_generation() {
                 .session_environment_effect_fence_source("session", &initial)
                 .unwrap();
             let effect = AuthorizedSessionEnvironmentEffect {
-                intent,
                 authorization:
-                    awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized,
+                    awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized { intent: Box::new(intent) },
                 provider_fence: Some(initial),
                 provider_authority: Some(Arc::new(authority)),
             };
@@ -902,7 +900,7 @@ async fn environment_receipt_refreshes_only_the_captured_live_generation() {
             );
             if let Ok(receipt) = receipt {
                 receipt.verify().unwrap();
-                assert_eq!(receipt.effect_id, effect.intent.effect_id());
+                assert_eq!(receipt.effect_id, effect.authorization.intent().effect_id());
                 assert_eq!(receipt.binding, "binding");
                 assert_eq!(
                     receipt.environment_fingerprint.as_deref(),
@@ -910,7 +908,8 @@ async fn environment_receipt_refreshes_only_the_captured_live_generation() {
                 );
                 assert_eq!(
                     receipt.realization.as_ref().unwrap().expires_at_unix_ms,
-                    if rule == "renewed" { 120_000 } else { 60_000 }
+                    60_000,
+                    "R1/R2 original expiry is immutable even under renewed authority"
                 );
                 if rule == "renewed" {
                     assert!(
@@ -920,8 +919,11 @@ async fn environment_receipt_refreshes_only_the_captured_live_generation() {
                     );
                     assert!(
                         awaken_session_resource_contract::realization_lease_authorizes(
+                            &awaken_session_resource_contract::SessionRealizationLease {
+                                expires_at_unix_ms: 120_000,
+                                ..lease()
+                            },
                             receipt.realization.as_ref().unwrap(),
-                            effect.intent.realization().unwrap(),
                             90_000
                         )
                     );

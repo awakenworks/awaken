@@ -113,8 +113,7 @@ impl SharedHost {
 mod tests {
     use super::*;
     use crate::host::worker_resolver::test_support::{
-        AdoptionModel, eager_environment, install_complete_projection_for_snapshot,
-        test_activation, with_empty_session_resources,
+        AdoptionModel, eager_environment, empty_frozen_projection_for_snapshot, test_activation,
     };
     use awaken_dispatch::WorkerResolver as _;
     use awaken_dispatch_contract::DispatchClaims;
@@ -152,27 +151,43 @@ mod tests {
                 .await
                 .expect("dispatch store"),
         );
-        let host = (crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
-            .await
-            .with_ephemeral_dispatch(store.clone()))
-        .build()
-        .expect("validated Host dependencies");
+        let roots = crate::host::tests::ManagedSessionRootFixture::new().await;
+        let host = roots
+            .configure(
+                crate::HostDependencies::ephemeral(Arc::new(AdoptionModel), "stub")
+                    .await
+                    .with_ephemeral_dispatch(store.clone()),
+            )
+            .build()
+            .expect("validated Host dependencies");
         let managed = crate::ManagedHost::new(host.clone());
-        install_complete_projection_for_snapshot(
-            &managed,
-            parent_thread,
+        let mut initial = empty_frozen_projection_for_snapshot(
             host.local_workspace(),
             eager_environment(),
             &parent,
-        )
-        .await;
-        let request = with_empty_session_resources(
-            awaken_dispatch_contract::RunDispatch::new(test_activation(
-                child_thread,
-                "run-cold-physical-child",
-            ))
-            .for_session(ThreadId(parent_thread.into())),
-            host.local_workspace(),
+        );
+        initial.agent_publication = Some(parent.clone());
+        let projection = roots
+            .install_projection(&managed, parent_thread, initial)
+            .await
+            .expect("S1 actual parent Root and current lease");
+        let transition = projection
+            .resource_transition(
+                awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects,
+            )
+            .unwrap();
+        // C4 requires real parent authority while preserving the child-only
+        // publication closure; never instantiate the parent's auxiliary plugins.
+        let request = awaken_dispatch_contract::RunDispatch::new(test_activation(
+            child_thread,
+            "run-cold-physical-child",
+        ))
+        .for_session(ThreadId(parent_thread.into()))
+        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
+            awaken_tenancy::ScopeId::from(projection.workspace_id.as_str()),
+        ))
+        .with_session_resources(
+            crate::dispatch_session_runtime::resource_envelope(transition.desired()).unwrap(),
         );
         store.enqueue(request).await.expect("enqueue S1");
         let claimed = store

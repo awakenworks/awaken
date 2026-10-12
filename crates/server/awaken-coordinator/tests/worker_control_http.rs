@@ -759,3 +759,415 @@ use awaken_dispatch::{
 };
 
 use awaken_dispatch_http::WorkerDispatchAuthority;
+
+mod environment_renewal {
+    use super::*;
+    use awaken_session_configuration_contract::{
+        EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline, SessionBaselineInputs,
+        SessionRuntimePlacement,
+    };
+    use awaken_session_repository_contract::SessionRepository;
+    use awaken_session_resource_contract::SessionRealizationLease;
+    use awaken_session_state_contract::{
+        IdempotencyRecord, PersistedSession, SessionEnvironmentEffectAuthorization,
+        SessionEnvironmentEffectIntent, SessionEnvironmentEffectKind, SessionEnvironmentReceipt,
+        SessionEnvironmentState,
+    };
+    use awaken_worker_contract::{
+        SessionWorkAcquisition, SessionWorkLease, SessionWorkLeaseAuthority, SessionWorkOwnership,
+        WorkQueueError,
+    };
+
+    // This fixture supplies a selected Work-port observation. It owns no Work
+    // queue or authorization algorithm; the production permits_effect_for law
+    // decides whether the exact or foreign lease permits entering the real Root.
+    struct ObservedWork(SessionWorkOwnership);
+
+    #[async_trait::async_trait]
+    impl SessionWorkLeaseAuthority for ObservedWork {
+        async fn acquire_session_work(
+            &self,
+            _session_id: &awaken_session_types::SessionId,
+            _worker_owner: &str,
+            _now_ms: u64,
+            _acquisition: SessionWorkAcquisition,
+        ) -> Result<SessionWorkOwnership, WorkQueueError> {
+            Ok(self.0.clone())
+        }
+        async fn release_session_work(
+            &self,
+            _lease: &SessionWorkLease,
+        ) -> Result<bool, WorkQueueError> {
+            Ok(false)
+        }
+        async fn release_worker_session_work(
+            &self,
+            _worker_owner: &str,
+        ) -> Result<usize, WorkQueueError> {
+            Ok(0)
+        }
+    }
+
+    fn root(session_id: &str, lease: SessionRealizationLease) -> PersistedSession {
+        let environment = EnvironmentSnapshot {
+            environment_id: "environment-renewal".into(),
+            revision: awaken_environment_contract::EnvironmentRevision(1),
+            self_hosted: false,
+            config_fingerprint: EnvironmentFingerprint("environment-context".into()),
+            sandbox: Default::default(),
+            sandbox_provisioning: Default::default(),
+            idle_retention: Default::default(),
+            packages: Default::default(),
+            prepared_image: None,
+            network: awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
+            credential_realization:
+                awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
+        };
+        let baseline = SessionBaseline::compile(SessionBaselineInputs {
+            environment,
+            runtime_placement: SessionRuntimePlacement::Local,
+            mcp_authoring: Default::default(),
+            agent_id: "agent".into(),
+            agent_revision: None,
+            model_override: None,
+            model: "model".into(),
+            runtime: None,
+            delegate_ids: Vec::new(),
+            toolsets: Vec::new(),
+            mounts: Vec::new(),
+            env: Vec::new(),
+            prompts: Vec::new(),
+            transcript_prefix: None,
+        });
+        let mut root = PersistedSession::frozen_with_budget(
+            session_id,
+            baseline,
+            Default::default(),
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        root.realization = Some(lease);
+        root
+    }
+
+    #[tokio::test]
+    async fn environment_http_preserves_original_expiry_under_current_root_renewal() {
+        // Causes: A authenticated exact Worker identity; R current Registry is
+        // live; W exact Work ownership; L Root owner/incarnation/epoch is exact;
+        // M Root expiry is nonregressed; C Root lease is live; O original expiry
+        // is live/expired. Both original intent and receipt use the same bytes.
+        // Effects: E1 only A+R+W+L+M+C admits the original intent with one CAS,
+        // then persists the binding with one separate CAS; replay leaves
+        // Root revision/identity unchanged; E2 every missing condition rejects
+        // authorization and persistence without a Root mutation. O is NOT a
+        // precondition for these Environment operations. Decision rules:
+        // | rule | O | negated cause | effect |
+        // | E1 | expired | none | authorize, persist, exact replay |
+        // | E2 | expired | C (Root expired) | reject |
+        // | E3 | live | M (Root regressed) | reject |
+        // | E4 | expired | L incarnation | reject |
+        // | E5 | expired | L epoch | reject |
+        // | E8 | expired | L owner | reject |
+        // | E6 | expired | R (Registry expired) | reject |
+        // | E7 | expired | W (foreign Work) | reject |
+        // The real SQLite RepositoryEnvironmentBindingSink owns Root law/CAS;
+        // no test sink, renewed receipt, fabricated Grant or second timer exists.
+        for rule in [
+            "renewed",
+            "root-expired",
+            "regressed",
+            "incarnation",
+            "epoch",
+            "owner",
+            "registry-expired",
+            "work-foreign",
+        ] {
+            let clock = Arc::new(ManualClock::new(100));
+            let directory = Arc::new(MemoryWorkerDirectory::new());
+            let registry = awaken_worker_registry::WorkerDirectory::register(
+                directory.as_ref(),
+                awaken_worker_contract::WorkerRegistration {
+                    worker_id: format!("worker-{rule}"),
+                    incarnation_id: "original-boot".into(),
+                    manifest: current_manifest(),
+                    create_ledger: None,
+                },
+                100,
+                if rule == "registry-expired" {
+                    40
+                } else {
+                    1_000
+                },
+            )
+            .await
+            .unwrap();
+            let identity = registry.snapshot.identity;
+            let session_id = format!("environment-{rule}");
+            let original = SessionRealizationLease {
+                owner: identity.worker_id.clone(),
+                runtime_incarnation: identity.lease_owner(),
+                epoch: 7,
+                expires_at_unix_ms: if rule == "regressed" { 300 } else { 120 },
+            };
+            let mut current = SessionRealizationLease {
+                expires_at_unix_ms: 500,
+                ..original.clone()
+            };
+            match rule {
+                "root-expired" => current.expires_at_unix_ms = 150,
+                "regressed" => current.expires_at_unix_ms = 200,
+                "incarnation" => current.runtime_incarnation = "new-root-incarnation".into(),
+                "epoch" => {
+                    current.epoch =
+                        awaken_lease_contract::fence::Epoch::from_persisted(current.epoch)
+                            .unwrap()
+                            .next()
+                            .unwrap()
+                            .get();
+                }
+                "owner" => current.owner = "foreign-root-owner".into(),
+                _ => {}
+            }
+            let repository = Arc::new(
+                awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                    .await
+                    .unwrap(),
+            );
+            repository
+                .create(
+                    "workspace",
+                    root(&session_id, current.clone()),
+                    IdempotencyRecord {
+                        key: format!("create:{session_id}"),
+                        payload_hash: format!("payload:{session_id}"),
+                    },
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+            let before = repository.get(&session_id.clone().into()).await.unwrap();
+            let sink = Arc::new(
+                awaken_session_application::RepositoryEnvironmentBindingSink::new(
+                    repository.clone(),
+                    clock.clone(),
+                ),
+            );
+            let work = SessionWorkLease::granted(
+                format!("work:{session_id}"),
+                "environment-renewal",
+                session_id.clone().into(),
+                if rule == "work-foreign" {
+                    "foreign-owner".into()
+                } else {
+                    identity.lease_owner()
+                },
+                awaken_lease_contract::fence::Epoch::FIRST,
+                awaken_time::Expiry::from_epoch_ms(1_000),
+            );
+            let service = WorkerDispatchService::new(
+                Arc::new(MemoryDispatchStore::new(clock.clone()))
+                    as Arc<dyn WorkerDispatchAuthority>,
+                Arc::new(HeaderWorkerAuthenticator),
+                clock.clone(),
+                Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+            )
+            .with_worker_directory(directory, 1_000)
+            .with_session_work_authority(Arc::new(ObservedWork(SessionWorkOwnership::Leased(work))))
+            .with_session_environment_bindings(sink);
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                axum::serve(
+                    listener,
+                    dispatch_transport_router_with_service(Arc::new(service)),
+                )
+                .await
+                .unwrap();
+            });
+            let client = WorkerControlClient::new(
+                WorkerUpstream::new(format!("http://{address}"))
+                    .with_worker_id(identity.worker_id.clone()),
+            );
+            clock.set(150);
+            assert_eq!(
+                awaken_session_resource_contract::realization_lease_is_live_at(
+                    original.expires_at_unix_ms,
+                    150
+                ),
+                rule == "regressed",
+                "{rule}: original expiry truly crosses the authority clock"
+            );
+            let intent = SessionEnvironmentEffectIntent::new(
+                session_id.clone(),
+                SessionEnvironmentEffectKind::Create,
+                Some(original.clone()),
+            )
+            .for_environment("environment-context");
+            let receipt =
+                SessionEnvironmentReceipt::from_intent(&intent, "original-binding").unwrap();
+            let original_receipt = serde_json::to_value(&receipt).unwrap();
+            let authorization = client
+                .authorize_session_environment_effect(&identity, &intent)
+                .await;
+            let admitted = repository.get(&session_id.clone().into()).await.unwrap();
+            let persistence = client
+                .persist_session_environment_receipt(&identity, &receipt)
+                .await;
+            let committed = repository.get(&session_id.clone().into()).await.unwrap();
+            let replay = if rule == "renewed" {
+                Some(
+                    client
+                        .persist_session_environment_receipt(&identity, &receipt)
+                        .await,
+                )
+            } else {
+                None
+            };
+            let replayed = repository.get(&session_id.clone().into()).await.unwrap();
+            server.abort();
+            let _ = server.await;
+            if rule == "renewed" {
+                assert_eq!(
+                    authorization.unwrap(),
+                    SessionEnvironmentEffectAuthorization::Authorized {
+                        intent: Box::new(intent.clone())
+                    },
+                    "E1"
+                );
+                assert_eq!(
+                    admitted.revision.0,
+                    before.revision.0 + 1,
+                    "E1 first admission CAS precedes persistence"
+                );
+                assert_eq!(
+                    admitted.environment_materialization().unwrap().pending(),
+                    Some(&intent),
+                    "E1 exact first intent saved before binding"
+                );
+                assert!(
+                    matches!(persistence.unwrap(), SessionEnvironmentState::Resident { ref binding, .. } if binding == "original-binding"),
+                    "E1 persisted exact binding"
+                );
+                replay.unwrap().unwrap();
+                assert_eq!(
+                    committed.revision.0,
+                    admitted.revision.0 + 1,
+                    "E1 one binding CAS after the separate admission CAS"
+                );
+                assert_eq!(
+                    committed.environment_materialization().unwrap().origin(),
+                    Some(&intent),
+                    "E1 original origin survives"
+                );
+                assert_eq!(
+                    replayed, committed,
+                    "E1 replay does not rewrite Root identity or expiry"
+                );
+                assert_eq!(
+                    committed.realization,
+                    Some(current),
+                    "E1 current Root renewal is retained"
+                );
+            } else {
+                assert!(authorization.is_err(), "{rule}: E2 authorize rejects");
+                assert!(persistence.is_err(), "{rule}: E2 persist rejects");
+                assert_eq!(admitted, before, "{rule}: E2 no admission mutation");
+                assert_eq!(committed, before, "{rule}: E2 no Root mutation");
+            }
+            assert_eq!(
+                serde_json::to_value(&receipt).unwrap(),
+                original_receipt,
+                "{rule}: original receipt bytes/expiry/identity are never refreshed"
+            );
+            assert_eq!(
+                receipt.realization,
+                Some(original),
+                "{rule}: retained original lease"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn active_realization_http_still_rejects_expired_assertions() {
+        // C1 exact Registry/Worker identity is live; C2 the submitted realization
+        // lease is already expired; C3 activate/ack/fail share the same boundary.
+        // Rule A1=C1+C2 for each C3 => HTTP400 before any Control port call.
+        // A missing Control port would instead yield HTTP500, so this rejects
+        // widening the Environment exception to ordinary active controls.
+        let clock = Arc::new(ManualClock::new(100));
+        let directory = Arc::new(MemoryWorkerDirectory::new());
+        let registered = awaken_worker_registry::WorkerDirectory::register(
+            directory.as_ref(),
+            awaken_worker_contract::WorkerRegistration {
+                worker_id: "active-worker".into(),
+                incarnation_id: "boot".into(),
+                manifest: current_manifest(),
+                create_ledger: None,
+            },
+            100,
+            1_000,
+        )
+        .await
+        .unwrap();
+        let identity = registered.snapshot.identity;
+        let service = WorkerDispatchService::new(
+            Arc::new(MemoryDispatchStore::new(clock.clone())) as Arc<dyn WorkerDispatchAuthority>,
+            Arc::new(HeaderWorkerAuthenticator),
+            clock.clone(),
+            Arc::new(FixedWorkerLeasePolicy::new(1_000)),
+        )
+        .with_worker_directory(directory, 1_000)
+        .with_session_work_authority(Arc::new(ObservedWork(SessionWorkOwnership::NotRequired)));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                dispatch_transport_router_with_service(Arc::new(service)),
+            )
+            .await
+            .unwrap();
+        });
+        let lease = SessionRealizationLease {
+            owner: identity.worker_id.clone(),
+            runtime_incarnation: identity.lease_owner(),
+            epoch: 1,
+            expires_at_unix_ms: 100,
+        };
+        clock.set(150);
+        let http = awaken_outbound_http::InternalHttpClient::new(std::time::Duration::from_secs(5))
+            .unwrap();
+        let mut responses = Vec::new();
+        for operation in ["activate", "acknowledge", "fail"] {
+            let mut command = serde_json::json!({"session_id":"active-session", "lease":lease});
+            if operation == "fail" {
+                command["reason"] = serde_json::json!("failure");
+            }
+            let response = http
+                .send(
+                    &awaken_outbound_http::JsonRequest::post(format!(
+                        "http://{address}/v1/worker/session/realization/{operation}"
+                    ))
+                    .header("x-awaken-worker-id", identity.worker_id.clone())
+                    .json_body(
+                        serde_json::json!({"identity":identity,"command":command}).to_string(),
+                    ),
+                )
+                .await
+                .unwrap();
+            responses.push((operation, response.status(), response.body().to_owned()));
+        }
+        server.abort();
+        let _ = server.await;
+        for (operation, status, body) in responses {
+            assert_eq!(status, 400, "A1 {operation}: {body}");
+            assert!(
+                body.contains("Session realization lease is not owned"),
+                "A1 {operation}: authorization, not DTO failure"
+            );
+        }
+    }
+}

@@ -323,6 +323,7 @@ mod tests {
         fn candidate(environment: Arc<SessionEnvironment>) -> SessionEnvironmentOwner {
             SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(
                 UnboundSessionEnvironment {
+                    intent: None,
                     binding: serde_json::to_string(&environment.lifecycle().handle()).unwrap(),
                     environment,
                     origin: UnboundSessionEnvironmentOrigin::New,

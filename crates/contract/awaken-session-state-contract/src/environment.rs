@@ -12,6 +12,7 @@
 mod continuation;
 mod effect_intent;
 mod generation;
+mod materialization;
 mod receipt_admission;
 
 use crate::SessionId;
@@ -30,6 +31,7 @@ use generation::{
     checkpoint_receipt_admitted, quiescence_receipt_admitted, restore_receipt_admitted,
     source_disposal_receipt_admitted, source_release_preparation_receipt_admitted,
 };
+pub use materialization::SessionEnvironmentMaterialization;
 use receipt_admission::reservation_binding_is_monotonic;
 pub use receipt_admission::{
     SessionEnvironmentReceiptError, SessionEnvironmentReceiptRecoveryAction,
@@ -133,6 +135,27 @@ pub enum SessionEnvironmentState {
 }
 
 impl SessionEnvironmentState {
+    /// Confirm a Store-read Resident against an already verified receipt. This
+    /// does not authorize a phase transition or grant current execution rights.
+    pub fn committed_receipt_generation(
+        &self,
+        receipt: &SessionEnvironmentReceipt,
+    ) -> Result<&SandboxGeneration, SessionEnvironmentReceiptError> {
+        let Self::Resident {
+            binding,
+            effect_id: Some(effect_id),
+            generation: Some(generation),
+            ..
+        } = self
+        else {
+            return Err(SessionEnvironmentReceiptError::RequiresResident);
+        };
+        if binding != &receipt.binding || effect_id != &receipt.effect_id {
+            return Err(SessionEnvironmentReceiptError::Mismatch);
+        }
+        Ok(generation)
+    }
+
     #[must_use]
     pub fn binding(&self) -> Option<&str> {
         match self {
@@ -327,6 +350,7 @@ impl SessionEnvironmentState {
         {
             return Ok(SessionEnvironmentEffectAuthorization::AlreadyApplied {
                 binding: binding.clone(),
+                intent: Box::new(intent.clone()),
             });
         }
 
@@ -382,7 +406,9 @@ impl SessionEnvironmentState {
             }
         }
 
-        Ok(SessionEnvironmentEffectAuthorization::Authorized)
+        Ok(SessionEnvironmentEffectAuthorization::Authorized {
+            intent: Box::new(intent.clone()),
+        })
     }
 
     /// Apply one ordinary Environment receipt through the aggregate's closed
@@ -411,7 +437,8 @@ impl SessionEnvironmentState {
         receipt: &SessionEnvironmentReceipt,
         authorization: SessionEnvironmentEffectAuthorization,
     ) -> Result<bool, SessionEnvironmentReceiptError> {
-        if let SessionEnvironmentEffectAuthorization::AlreadyApplied { binding } = authorization {
+        if let SessionEnvironmentEffectAuthorization::AlreadyApplied { binding, .. } = authorization
+        {
             if binding != receipt.binding {
                 return Err(
                     if matches!(
@@ -440,7 +467,7 @@ impl SessionEnvironmentState {
         }
         if matches!(
             authorization,
-            SessionEnvironmentEffectAuthorization::Unowned
+            SessionEnvironmentEffectAuthorization::Unowned { .. }
         ) {
             return Err(SessionEnvironmentReceiptError::InvalidTransition);
         }
@@ -589,7 +616,7 @@ impl SessionEnvironmentReceipt {
             self.kind.clone(),
             self.realization.clone(),
         )
-        .with_receipt_context(
+        .for_frozen_coordinates(
             self.source_binding.clone(),
             self.environment_fingerprint.clone(),
         );
@@ -843,6 +870,116 @@ mod tests {
         match source_binding {
             Some(source) => receipt.from_binding(source),
             None => receipt,
+        }
+    }
+
+    #[test]
+    fn committed_receipt_requires_resident_and_every_store_identity_axis() {
+        // C1 Resident; C2 effect present; C3 generation present; C4 exact binding;
+        // C5 exact effect. Rule S1=all five -> return Store generation;
+        // S2=any false -> reject. All 32 rows are reachable readback inputs.
+        // S3 continuation can expose matching binding/effect/generation getters
+        // but is not a Resident readback and cannot confirm ordinary publication.
+        let receipt = environment_receipt(SessionEnvironmentEffectKind::Create, "source", None);
+        for row in 0..32 {
+            let state = if row & 1 == 0 {
+                SessionEnvironmentState::Unmaterialized
+            } else {
+                SessionEnvironmentState::Resident {
+                    binding: if row & 8 != 0 {
+                        receipt.binding.clone()
+                    } else {
+                        "other".into()
+                    },
+                    effect_id: (row & 2 != 0).then(|| {
+                        if row & 16 != 0 {
+                            receipt.effect_id.clone()
+                        } else {
+                            "other".into()
+                        }
+                    }),
+                    generation: (row & 4 != 0).then(generation),
+                    idle_since_unix_ms: None,
+                }
+            };
+            let actual = state.committed_receipt_generation(&receipt);
+            assert_eq!(actual.is_ok(), row == 31, "S1/S2 row={row}");
+            if row == 31 {
+                assert_eq!(actual.unwrap(), &generation());
+            }
+        }
+        let suspended = SessionEnvironmentState::Suspending {
+            operation: SessionEnvironmentOperation {
+                effect_id: receipt.effect_id.clone(),
+                activity_epoch: 1,
+                started_at_unix_ms: 1,
+                realization: None,
+            },
+            source_effect_id: Box::new(receipt.effect_id.clone()),
+            source_binding: receipt.binding.clone(),
+            generation: generation(),
+            suspend_phase: SuspendPhase::Quiescing,
+            checkpoint: None,
+            source_release_preparation: None,
+        };
+        assert_eq!(suspended.binding(), Some(receipt.binding.as_str()));
+        assert_eq!(suspended.effect_id(), Some(receipt.effect_id.as_str()));
+        assert_eq!(suspended.generation(), Some(&generation()));
+        assert!(
+            suspended.committed_receipt_generation(&receipt).is_err(),
+            "S3"
+        );
+    }
+
+    #[test]
+    fn authorization_readback_preserves_expiry_but_rejects_operation_drift() {
+        // C1 original expiry < request expiry; C2 same Session/effect; C3 result
+        // variant Unowned/Authorized/AlreadyApplied. A1=C2+either C1+any C3 ->
+        // preserve original expiry. A2=!C2 -> reject for every variant. The
+        // result is identity confirmation only, never a current execution grant.
+        let original = SessionEnvironmentEffectIntent::new(
+            "s1",
+            SessionEnvironmentEffectKind::Create,
+            Some(realization(100)),
+        );
+        for variant in 0..3 {
+            let result = match variant {
+                0 => SessionEnvironmentEffectAuthorization::Unowned {
+                    intent: Box::new(original.clone()),
+                },
+                1 => SessionEnvironmentEffectAuthorization::Authorized {
+                    intent: Box::new(original.clone()),
+                },
+                _ => SessionEnvironmentEffectAuthorization::AlreadyApplied {
+                    binding: "source".into(),
+                    intent: Box::new(original.clone()),
+                },
+            };
+            for expiry in [100, 200] {
+                let request = SessionEnvironmentEffectIntent::new(
+                    "s1",
+                    SessionEnvironmentEffectKind::Create,
+                    Some(realization(expiry)),
+                );
+                result.verify_for(&request).unwrap();
+                assert_eq!(result.intent(), &original, "A1");
+            }
+            for request in [
+                SessionEnvironmentEffectIntent::new(
+                    "other",
+                    SessionEnvironmentEffectKind::Create,
+                    Some(realization(100)),
+                ),
+                SessionEnvironmentEffectIntent::new(
+                    "s1",
+                    SessionEnvironmentEffectKind::Adopt,
+                    Some(realization(100)),
+                )
+                .from_binding("source"),
+                original.clone().for_environment("other-fingerprint"),
+            ] {
+                assert!(result.verify_for(&request).is_err(), "A2 variant={variant}");
+            }
         }
     }
 
@@ -1367,6 +1504,8 @@ mod tests {
             Error::RealizationStale,
             Error::WrongPhase,
             Error::ResourceTransitionMismatch,
+            Error::MaterializationUnknown,
+            Error::MaterializationPending,
         ] {
             assert_eq!(error.recovery_action(), Action::Retry, "{error}");
         }

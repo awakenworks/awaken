@@ -223,6 +223,7 @@ mod tests {
             revision: awaken_session_types::SessionRevision(1),
             baseline,
             agent_publication: Some(root.clone()),
+            environment_materialization: None,
             environment: Default::default(),
             resource_revision: manifest.revision,
             resources: manifest.resources.clone(),
@@ -502,7 +503,7 @@ mod tests {
         let thread = "cold-durable-terminal";
         let run = RunId("cold-durable-terminal-run".into());
         let store_id = "cold-durable-terminal-memory";
-        let manifest = claimed_memory_manifest(store_id);
+        let declared_memory = claimed_memory_manifest(store_id);
         let (snapshot, override_candidate, extractor) = claimed_memory_snapshot();
         let root_publication = snapshot.clone();
         let activation =
@@ -521,24 +522,19 @@ mod tests {
                 .with_agent_publications(publications.clone()))
             .build()
             .expect("validated Host dependencies");
-        admission
-            .realizer
-            .staging
-            .register_thread_resource_manifest(thread, manifest.clone());
-        let dispatch = admission
-            .resolved_dispatch(activation)
-            .expect("production root dispatch decoration");
-
         let queue = Arc::new(
             awaken_dispatch::open_sqlite_dispatch_store_in_memory(awaken_time::system_clock())
                 .await
                 .expect("durable dispatch store"),
         );
+        let roots = crate::host::tests::ManagedSessionRootFixture::new().await;
         let host = ((crate::host::with_test_memory_mounter(
-            crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
-                .await
-                .with_ephemeral_dispatch(queue.clone())
-                .with_agent_publications(publications),
+            roots.configure(
+                crate::HostDependencies::ephemeral(Arc::new(crate::host::MemoryHostModel), "stub")
+                    .await
+                    .with_ephemeral_dispatch(queue.clone())
+                    .with_agent_publications(publications),
+            ),
         ))
         .with_session_execution(
             crate::SessionExecutionDependencies::default()
@@ -554,14 +550,30 @@ mod tests {
             .session_application_bindings()
             .bind_agent_coordination(application.clone())
             .expect("C5 install canonical Session application authority");
-        awaken_session_execution_contract::RealizationRuntime::install_session_projection(
-            &managed,
-            thread,
-            claimed_memory_projection(&root_publication, &override_candidate, &manifest),
-            awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
-        )
-        .await
-        .expect("C5 install complete frozen Session projection");
+        // Two original boundaries remain: ordinary Queue Work is produced from
+        // its Resource carrier; the receiver is Managed and must own a real
+        // Root/lease/first CAS. Prepare that new Root before any Work exists;
+        // the template's7 is not old history or a trusted receipt to rewrite.
+        let mut initial =
+            claimed_memory_projection(&root_publication, &override_candidate, &declared_memory);
+        initial.resource_revision = 0;
+        initial.previous_resource_manifest = None;
+        let committed = roots
+            .install_projection(&managed, thread, initial)
+            .await
+            .expect("C5 install complete frozen Session projection");
+        let manifest = awaken_session_resource_contract::SessionResourceManifest::at_revision(
+            committed.workspace_id.clone(),
+            committed.resource_revision,
+            committed.resources.clone(),
+        );
+        admission
+            .realizer
+            .staging
+            .register_thread_resource_manifest(thread, manifest);
+        let dispatch = admission
+            .resolved_dispatch(activation)
+            .expect("production root dispatch decoration");
         let commit = ThreadCommit::assemble(
             ThreadId(thread.into()),
             RunDisposition::ended(run.clone(), EndCause::NaturalEnd),

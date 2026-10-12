@@ -130,6 +130,26 @@ fn snapshot_commit_receipt(
     }
 }
 
+/// The sole full-snapshot key/hash compiler for application commands and
+/// Environment admission/receipts. Unlike default Create request identity,
+/// this fingerprint retains all server-owned materialization facts.
+/// The existing B16 CAS-race and T6 old-create-replay cause tables cover the
+/// distinction: different first expiry is a different snapshot command;
+/// missing/present-empty is excluded only from default Create request identity.
+pub(crate) fn compile_session_snapshot_idempotency(
+    session: &SessionAggregate,
+    operation: &str,
+) -> IdempotencyRecord {
+    let payload_hash = SessionMutationPayload::Replace(session.snapshot().clone()).stable_hash();
+    IdempotencyRecord {
+        key: format!(
+            "session:{operation}:{}:{}:{payload_hash}",
+            session.session_id, session.revision.0
+        ),
+        payload_hash,
+    }
+}
+
 /// Shared replacement boundary for application commands and Runtime binding
 /// receipts. Idempotency is compiled before observation; the repository remains
 /// the sole CAS owner. Callers retain their domain-specific retry/error policy.
@@ -313,35 +333,14 @@ impl SessionApplication {
         // Keep the shared aggregate-owning future off each caller's stack, as
         // at the existing creation boundary. Polling/cancellation remain inline
         // with this caller; no task or retry owner is detached.
-        Box::pin(self.compile_session_snapshot_idempotency(
+        let idempotency = compile_session_snapshot_idempotency(&session, operation);
+        Box::pin(self.commit_session_snapshot_with_record(
             owner_scope,
             session,
-            operation,
+            idempotency,
             lifecycle_facts,
         ))
         .await
-    }
-
-    /// The sole snapshot idempotency compiler.
-    async fn compile_session_snapshot_idempotency(
-        &self,
-        owner_scope: &str,
-        session: SessionAggregate,
-        operation: &str,
-        lifecycle_facts: Vec<ManagedLifecycleFact>,
-    ) -> Result<SnapshotCommit, SessionMutationError> {
-        let expected_revision = session.revision;
-        let payload = SessionMutationPayload::Replace(session.snapshot().clone());
-        let payload_hash = payload.stable_hash();
-        let idempotency = IdempotencyRecord {
-            key: format!(
-                "session:{operation}:{}:{}:{payload_hash}",
-                session.session_id, expected_revision.0
-            ),
-            payload_hash,
-        };
-        self.commit_session_snapshot_with_record(owner_scope, session, idempotency, lifecycle_facts)
-            .await
     }
 
     pub async fn commit_session_snapshot_with_record(

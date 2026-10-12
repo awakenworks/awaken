@@ -820,12 +820,9 @@ async fn sqlite_migration_startup_is_concurrent_and_replay_safe() {
 pub(crate) fn sample(id: &str) -> PersistedSession {
     let mut metadata = BTreeMap::new();
     metadata.insert("team".to_string(), "research".to_string());
-    PersistedSession {
-        created_at_unix_ms: None,
-        updated_at_unix_ms: None,
-        session_id: SessionId::from(id),
-        revision: Default::default(),
-        baseline: SessionBaselineState::Frozen(SessionBaseline::compile(
+    let mut legacy = PersistedSession::frozen_with_budget(
+        SessionId::from(id),
+        SessionBaseline::compile(
             awaken_session_configuration_contract::SessionBaselineInputs {
                 environment: EnvironmentSnapshot {
                     environment_id: "env_local".into(),
@@ -868,31 +865,8 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
                 prompts: Vec::new(),
                 transcript_prefix: None,
             },
-        )),
-        title: Some("My session".to_string()),
-        metadata,
-        tools: Default::default(),
-        budget: Default::default(),
-        event_batches: Vec::new(),
-        activity_epoch: 0,
-        active_activity_epochs: Default::default(),
-        running_interval: None,
-        closed_runtime_intervals: Vec::new(),
-        runtime_active_millis: 0,
-        usage_cursor: Default::default(),
-        environment: Default::default(),
-        mcp: SessionMcpAttachmentSet::from_initial(
-            vec![McpAttachmentDraft {
-                name: "calc".into(),
-                target: McpTarget::parse_http("https://x").unwrap(),
-                credential: None,
-                prompts_as_skills: false,
-                origin: McpAttachmentOrigin::Session,
-            }],
-            None,
-        )
-        .unwrap(),
-        resources: awaken_session_state_contract::SessionResourceState::from_active(
+        ),
+        awaken_session_state_contract::SessionResourceState::from_active(
             serde_json::from_value(serde_json::json!({
                 "inputs": [{
                     "binding_id": "input-file",
@@ -903,12 +877,29 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
             }))
             .unwrap(),
         ),
-        realization: None,
-        realization_progress: Default::default(),
-        execution: SessionExecutionState::Idle,
-        disposition: Default::default(),
-        terminal_cleanup: Default::default(),
-    }
+        SessionMcpAttachmentSet::from_initial(
+            vec![McpAttachmentDraft {
+                name: "calc".into(),
+                target: McpTarget::parse_http("https://x").unwrap(),
+                credential: None,
+                prompts_as_skills: false,
+                origin: McpAttachmentOrigin::Session,
+            }],
+            None,
+        )
+        .unwrap(),
+        Some("My session".to_string()),
+        metadata,
+        Default::default(),
+        Default::default(),
+    );
+    legacy.execution = SessionExecutionState::Idle;
+    // This fixture models the pre-cutover missing field, not a fresh creation.
+    let mut wire = serde_json::to_value(legacy).unwrap();
+    wire.as_object_mut()
+        .unwrap()
+        .remove("environment_materialization");
+    serde_json::from_value(wire).unwrap()
 }
 
 fn sample_with_credential_source(id: &str, source_id: &str) -> PersistedSession {

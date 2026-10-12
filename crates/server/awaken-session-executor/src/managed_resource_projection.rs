@@ -722,16 +722,17 @@ impl crate::ManagedHost {
                     .host
                     .authorize_environment_effect_before_io(
                         thread,
-                        awaken_session_state_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation {
+                        &self.host.realizer.new_environment_effect_intent(thread, awaken_session_state_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation {
                             transition_fingerprint: transition.operation_fingerprint(),
                         },
-                        Some(&source_binding),
+                        Some(&source_binding)),
                     )
                     .await
                     .map_err(crate::host_error::to_run_error)?;
                 match &effect.authorization {
                     awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
                         binding,
+                        ..
                     } if binding == &source_binding => {}
                     awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
                         ..
@@ -740,8 +741,8 @@ impl crate::ManagedHost {
                             "root-committed Resource reservation does not match the live Environment",
                         ));
                     }
-                    awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized
-                    | awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned => {
+                    awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized { .. }
+                    | awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned { .. } => {
                         for path in reserved_paths {
                             environment
                                 .projection().reserve_owned_path(&path)

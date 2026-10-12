@@ -7,12 +7,11 @@ use super::*;
 #[tokio::test]
 async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
     use crate::host::worker_resolver::test_support::{
-        AdoptionModel, eager_environment, install_complete_projection_for_snapshot,
-        managed_test_host, test_activation,
+        AdoptionModel, eager_environment, managed_test_host, test_activation,
     };
 
-    // Resume recovery cause/effect table: C1 a canonical Managed fixture owns a
-    // cached Runtime around one aggregate-Unowned LegacyDirect Environment; C2
+    // Resume recovery cause/effect table: C1 ordinary execution owns a cached
+    // Runtime around one aggregate-Unowned LegacyDirect Environment; C2
     // realization revocation moves that owner to Retiring and clears the cache
     // through the one retirement transition; C3 the resume helper requests a
     // context. Effects: E1 C2 leaves no cached Runtime to reuse; E2 C3 performs
@@ -27,16 +26,16 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
         .await)
         .build()
         .expect("validated Host dependencies");
-    let managed = managed_test_host(host.clone());
+    let _managed = managed_test_host(host.clone());
     let snapshot = test_activation(thread, "cached-resume-publication").snapshot;
-    install_complete_projection_for_snapshot(
-        &managed,
-        thread,
-        "workspace",
-        eager_environment(),
-        &snapshot,
-    )
-    .await;
+    // C1 is ordinary local ownership: install its exact configuration and
+    // publication without a Control-frozen baseline/Session execution marker.
+    host.register_thread_workspace(thread, "workspace");
+    host.register_thread_agent_projection(thread, snapshot.root_agent_id.0.as_str());
+    host.retain_session_publication(thread, Some(&snapshot))
+        .unwrap();
+    host.install_environment_projection(thread, &eager_environment())
+        .unwrap();
     let provider = host
         .projected_session_environment_provider(thread, None)
         .expect("RR1 canonical projected provider");
@@ -64,6 +63,19 @@ async fn resume_rebuilds_instead_of_reusing_a_cached_quiesced_runtime() {
         .await
         .expect("RR1 cached Runtime");
     assert!(Arc::ptr_eq(cached.env.as_ref().unwrap(), &environment));
+    host.installed_sessions
+        .read(thread, |slot| {
+            assert!(
+                slot.inputs.baseline.is_none(),
+                "RR1 ordinary, no Root projection"
+            );
+            assert!(!slot.run.session_dispatch, "RR1 no Managed grant");
+            assert!(
+                slot.realization.authority.lease().is_none(),
+                "RR1 no fake lease"
+            );
+        })
+        .unwrap();
 
     let lifecycle = host
         .installed_sessions

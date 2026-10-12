@@ -505,18 +505,24 @@ async fn managed_session_ignores_unbound_host_skill_sources() {
 /// deferred Hand; the invoking Run blocks until materialization completes.
 #[tokio::test]
 async fn on_tool_use_runtime_hand_call_materializes_before_tool_execution() {
+    // This is the Managed L3 row: a real fresh Root/controlled claim/production
+    // sink owns first Create CAS before the Runtime tool. Direct L2 remains
+    // non-Managed and environment-free; no synthesized grant covers this row.
     // Test design. Causes: C1 a Runtime Hand tool is selected on a lazy Session.
     // Effects: E1 Environment materialization completes before the tool effect;
     // E2 exactly one Environment is persisted. Constraint/Invariant: placement
     // precedes Hand execution. Decision rule: exercise C1 and assert E1 ordering/E2.
     use awaken_session_configuration_contract::SessionInit;
-    let host = (crate::HostDependencies::ephemeral(Arc::new(HandReadModel), "stub").await)
+    let roots = ManagedSessionRootFixture::new().await;
+    let host = roots
+        .configure(crate::HostDependencies::ephemeral(Arc::new(HandReadModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&host);
     let managed = install_test_dispatch_runtime(&host);
-    managed
+    roots
         .install_complete_test_session(
+            &managed,
             "deferred-runtime-hand",
             SessionInit {
                 workspace_id: host.local_workspace().into(),

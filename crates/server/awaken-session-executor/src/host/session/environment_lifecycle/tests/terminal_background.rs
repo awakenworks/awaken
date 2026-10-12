@@ -501,7 +501,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         .build()
         .expect("validated Host dependencies");
     let activation = test_activation(thread, "terminal-unmaterialized");
-    let projection = empty_frozen_projection_for_snapshot(
+    let mut projection = empty_frozen_projection_for_snapshot(
         "workspace",
         eager_environment(),
         &activation.snapshot,
@@ -516,6 +516,10 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         epoch: 1,
         expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
     };
+    // U1 requires the fresh root's original admission before physical I/O;
+    // historical omission remains the explicit negative row in the cold table.
+    let mut aggregate =
+        crate::host::tests::fresh_terminal_fixture_before_create(thread, &mut projection, &lease);
     host.install_test_terminal_cleanup_projection(
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
             environment_creation_not_attempted: false,
@@ -554,19 +558,6 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         .join("unpublished.txt");
     std::fs::create_dir_all(output.parent().unwrap()).unwrap();
     std::fs::write(&output, b"unpublished source must not become an Artifact").unwrap();
-    let mut aggregate = awaken_session_state_contract::PersistedSession::frozen_with_budget(
-        thread,
-        projection.baseline.clone(),
-        awaken_session_state_contract::SessionResourceState::from_active(
-            projection.resources.clone(),
-        ),
-        Default::default(),
-        None,
-        Default::default(),
-        Default::default(),
-        Default::default(),
-    );
-    aggregate.realization = Some(lease.clone());
     assert!(aggregate.ensure_terminal_cleanup_fence());
     aggregate
         .freeze_terminal_cleanup_targets(std::iter::empty(), 0, 0)

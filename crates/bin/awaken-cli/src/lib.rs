@@ -717,32 +717,25 @@ mod runtime_session_store_tests {
     }
 
     pub(super) fn session(id: &awaken_session_types::SessionId) -> PersistedSession {
-        PersistedSession {
-            created_at_unix_ms: None,
-            updated_at_unix_ms: None,
-            session_id: id.clone(),
-            revision: Default::default(),
-            baseline: SessionBaselineState::Preparing(creation_intent()),
-            title: None,
-            metadata: Default::default(),
-            tools: Default::default(),
-            budget: Default::default(),
-            event_batches: Vec::new(),
-            activity_epoch: 0,
-            active_activity_epochs: Default::default(),
-            running_interval: None,
-            closed_runtime_intervals: Vec::new(),
-            runtime_active_millis: 0,
-            usage_cursor: Default::default(),
-            environment: Default::default(),
-            mcp: Default::default(),
-            resources: Default::default(),
-            realization: None,
-            realization_progress: Default::default(),
-            execution: awaken_session_state_contract::SessionExecutionState::Idle,
-            disposition: Default::default(),
-            terminal_cleanup: Default::default(),
-        }
+        let intent = creation_intent();
+        let mut legacy = PersistedSession::frozen_with_budget(
+            id.clone(),
+            intent.clone().finalize().unwrap().baseline,
+            Default::default(),
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
+        legacy.baseline = SessionBaselineState::Preparing(intent);
+        legacy.execution = awaken_session_state_contract::SessionExecutionState::Idle;
+        // Interrupted preparation is historical wire input, never a new Create.
+        let mut wire = serde_json::to_value(legacy).unwrap();
+        wire.as_object_mut()
+            .unwrap()
+            .remove("environment_materialization");
+        serde_json::from_value(wire).unwrap()
     }
 
     #[tokio::test]

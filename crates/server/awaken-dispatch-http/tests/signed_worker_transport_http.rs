@@ -133,15 +133,16 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink
         self.intents.lock().unwrap().push(intent.clone());
         match self.mode.lock().unwrap().clone() {
             EnvironmentAuthorizationMode::Authorized => {
-                Ok(awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized)
+                Ok(awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized { intent: Box::new(intent.clone()) })
             }
             EnvironmentAuthorizationMode::AlreadyApplied(binding) => Ok(
                 awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
                     binding,
+                    intent: Box::new(intent.clone()),
                 },
             ),
             EnvironmentAuthorizationMode::Unowned => {
-                Ok(awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned)
+                Ok(awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned { intent: Box::new(intent.clone()) })
             }
             EnvironmentAuthorizationMode::Unavailable => {
                 Err(awaken_session_types::RunError::unavailable_classified(
@@ -302,6 +303,7 @@ fn frozen_projection() -> awaken_session_realization_contract::FrozenSessionProj
         revision: awaken_session_types::SessionRevision(2),
         baseline,
         agent_publication: None,
+        environment_materialization: None,
         environment: Default::default(),
         resource_revision: 0,
         resources: Default::default(),
@@ -1437,7 +1439,9 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         )
         .await
         .expect("B1 authorized root effect"),
-        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized,
+        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized {
+            intent: Box::new(environment_intent.clone())
+        },
         "B1"
     );
 
@@ -1452,6 +1456,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .expect("B2 response-loss readback"),
         awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
             binding: "sandbox-binding-v2".into(),
+            intent: Box::new(environment_intent.clone()),
         },
         "B2"
     );

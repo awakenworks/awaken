@@ -44,11 +44,7 @@ impl SharedHost {
         candidate: &UnboundSessionEnvironment,
     ) -> Result<BoundSessionEnvironmentIdentity, HostError> {
         let effect = self
-            .authorize_environment_effect_before_io(
-                thread,
-                candidate.effect_kind(),
-                candidate.source_binding(),
-            )
+            .authorize_environment_effect_before_io(thread, candidate.ordinary_intent()?)
             .await?;
         self.persist_authorized_environment_before_publish(thread, candidate, &effect)
             .await
@@ -57,15 +53,45 @@ impl SharedHost {
 }
 
 impl crate::environment_holding::EnvironmentHolding {
+    /// Compile a new request from the installed projection. This is input
+    /// construction only; the binding authority must still admit it durably.
+    pub(crate) fn new_environment_effect_intent(
+        &self,
+        thread: &str,
+        kind: awaken_session_state_contract::SessionEnvironmentEffectKind,
+        source_binding: Option<&str>,
+    ) -> awaken_session_state_contract::SessionEnvironmentEffectIntent {
+        let (realization, environment_fingerprint) = self
+            .sessions
+            .modify_session(thread, |slot| {
+                (
+                    slot.realization.authority.lease().cloned(),
+                    slot.inputs
+                        .baseline
+                        .as_ref()
+                        .map(|baseline| baseline.environment.config_fingerprint.0.clone()),
+                )
+            })
+            .unwrap_or_default();
+        awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+            thread,
+            kind,
+            realization,
+        )
+        .for_frozen_coordinates(source_binding.map(str::to_owned), environment_fingerprint)
+    }
+
     pub(crate) fn begin_session_environment_adoption(
         &self,
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
+        intent: Option<&awaken_session_state_contract::SessionEnvironmentEffectIntent>,
     ) -> Result<UnboundSessionEnvironment, HostError> {
         self.begin_session_environment_candidate(
             thread,
             environment,
             awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
+            intent,
         )
     }
 
@@ -74,12 +100,18 @@ impl crate::environment_holding::EnvironmentHolding {
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
         kind: awaken_session_state_contract::SessionEnvironmentEffectKind,
+        intent: Option<&awaken_session_state_contract::SessionEnvironmentEffectIntent>,
     ) -> Result<UnboundSessionEnvironment, HostError> {
+        if intent.is_some_and(|intent| intent.session_id().as_str() != thread) {
+            return Err(HostError::internal(
+                "candidate intent names another Session",
+            ));
+        }
         self.sessions.update_session(thread, |slot| {
-            let candidate = slot
-                .realization
-                .environment_owner
-                .begin_preparing(environment, kind)?;
+            let candidate =
+                slot.realization
+                    .environment_owner
+                    .begin_preparing(environment, kind, intent)?;
             #[cfg(target_os = "linux")]
             self.execution
                 .bind(thread, slot.realization, &candidate.environment)?;
@@ -91,11 +123,16 @@ impl crate::environment_holding::EnvironmentHolding {
         &self,
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
+        intent: Option<&awaken_session_state_contract::SessionEnvironmentEffectIntent>,
     ) -> Result<UnboundSessionEnvironment, HostError> {
         self.begin_session_environment_candidate(
             thread,
             environment,
-            awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+            intent.map_or(
+                awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+                |intent| intent.kind().clone(),
+            ),
+            intent,
         )
     }
 

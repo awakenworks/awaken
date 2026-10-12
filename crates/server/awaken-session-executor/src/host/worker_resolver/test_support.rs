@@ -231,6 +231,7 @@ fn empty_frozen_projection_with_model(
         revision: awaken_session_types::SessionRevision(1),
         baseline,
         agent_publication: None,
+        environment_materialization: None,
         environment: Default::default(),
         resource_revision: 0,
         resources: Default::default(),
@@ -267,56 +268,92 @@ pub(super) fn complete_managed_test_host(managed: crate::ManagedHost) -> crate::
     managed
 }
 
-/// Produce the sole valid ready Local-Environment fixture through the complete
-/// frozen projection and provider-effective creation path used in production.
-/// C1 the aggregate projection is complete; C2 its immutable model selects the
-/// provider; C3 creation carries a current effect fence. E1 the returned V2
-/// binding owns the exact spec fingerprint and physical incarnation required by
-/// cold adoption. Tests never reconstruct handle payload or provider evidence.
+/// Produce a ready Local Environment under the caller's already-installed
+/// original Root. C1 the same fixture configured the production sink before
+/// Host build; C2 its Store-read projection/lease is installed; C3 the immutable
+/// model selects the provider. E1 the original Create is admitted before I/O;
+/// E2 only its captured current authority reaches the provider; E3 canonical
+/// persistence/readback supplies Durable identity. An exact already-applied
+/// Create reuses its binding without a second create. Missing/unowned Root
+/// evidence is a fixture error, never a hand-made fence or historical seed.
 pub(crate) async fn available_local_environment_binding(
     host: &crate::host::SharedHost,
     thread: &str,
     projection: &awaken_session_realization_contract::FrozenSessionProjection,
 ) -> String {
-    host.install_frozen_session_projection(thread, projection.clone(), None, true, None)
+    let intent = host.realizer.new_environment_effect_intent(
+        thread,
+        awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+        None,
+    );
+    let effect = host
+        .authorize_environment_effect_before_io(thread, &intent)
         .await
-        .expect("install exact available-Environment projection");
-    let provider = host
-        .projected_session_environment_provider(thread, None)
-        .expect("select available-Environment provider from frozen projection");
-    let spec = host
-        .realizer
-        .staging
-        .sandbox_spec_for_resolved_resources_and_provider(thread, &projection.resources, provider);
-    let spec = host
-        .realizer
-        .validate_session_environment_capabilities(provider, &spec)
-        .expect("validate exact available-Environment fixture spec");
-    let create_fence = awaken_provisioning_contract::SandboxEffectFence::new(
-        format!("fixture-create:{thread}"),
-        "runtime-host-test",
-        "runtime-host-test",
-        1,
-        u64::MAX,
-    )
-    .expect("create available-Environment fixture fence");
-    let environment = provider
-        .realizer()
-        .create_effective_for_effect(
-            &spec,
-            crate::session_environment::ProviderEffect::Fenced {
-                fence: &create_fence,
-                authority: &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                    &create_fence,
-                ),
-            },
-            None,
-            awaken_session_environment_contract::EnvironmentRealizationKind::Create,
-        )
+        .expect("admit original available-Environment Create under its existing Root");
+    let (binding, environment) = match &effect.authorization {
+        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned {
+            ..
+        } => {
+            panic!("available-Environment fixture requires its actual Managed Root")
+        }
+        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
+            binding,
+            ..
+        } => (binding.clone(), None),
+        awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized {
+            ..
+        } => {
+            let provider = host
+                .projected_session_environment_provider(thread, None)
+                .expect("select available-Environment provider from frozen projection");
+            let spec = host
+                .realizer
+                .staging
+                .sandbox_spec_for_resolved_resources_and_provider(
+                    thread,
+                    &projection.resources,
+                    provider,
+                );
+            let spec = host
+                .realizer
+                .validate_session_environment_capabilities(provider, &spec)
+                .expect("validate exact available-Environment fixture spec");
+            let provider_effect = crate::session_environment::ProviderEffect::from_parts(
+                effect.provider_fence.as_ref(),
+                effect.provider_authority.as_deref(),
+            )
+            .expect("original captured available-Environment authority");
+            let environment = provider
+                .realizer()
+                .create_effective_for_effect(
+                    &spec,
+                    provider_effect,
+                    None,
+                    awaken_session_environment_contract::EnvironmentRealizationKind::Create,
+                )
+                .await
+                .expect("create typed available-Environment fixture");
+            let binding = serde_json::to_string(&environment.lifecycle().handle())
+                .expect("serialize typed available-Environment fixture");
+            (binding, Some(environment))
+        }
+    };
+    let identity = host
+        .persist_authorized_environment_binding(thread, binding.clone(), &effect)
         .await
-        .expect("create typed available-Environment fixture");
-    let binding = serde_json::to_string(&environment.lifecycle().handle())
-        .expect("serialize typed available-Environment fixture");
+        .unwrap_or_else(|failure| {
+            panic!(
+                "read original available-Environment identity: {}",
+                failure.error
+            )
+        });
+    assert!(
+        matches!(
+            identity,
+            crate::environment_owner::BoundSessionEnvironmentIdentity::Durable { .. }
+        ),
+        "the original Root is the sole available-Environment identity owner"
+    );
     drop(environment);
     binding
 }
@@ -411,7 +448,7 @@ pub(super) fn committed_environment(
 impl awaken_session_execution_contract::SessionEnvironmentBindingSink for ToggleBindingSink {
     async fn authorize(
         &self,
-        _intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
+        intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
         awaken_session_state_contract::SessionEnvironmentEffectAuthorization,
         awaken_session_types::RunError,
@@ -426,9 +463,10 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Toggle
             Some(binding) => Ok(
                 awaken_session_state_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
                     binding,
+                    intent: Box::new(intent.clone()),
                 },
             ),
-            None => Ok(awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized),
+            None => Ok(awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized { intent: Box::new(intent.clone()) }),
         }
     }
 
@@ -506,7 +544,9 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Blocki
         match &self.delegate {
             Some(delegate) => delegate.authorize(intent).await,
             None => Ok(
-                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized,
+                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized {
+                    intent: Box::new(intent.clone()),
+                },
             ),
         }
     }

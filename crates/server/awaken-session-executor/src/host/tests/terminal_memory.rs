@@ -1631,7 +1631,7 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
                     .unwrap(),
             );
             host.realizer
-                .begin_session_environment_preparation(thread, environment.clone())
+                .begin_session_environment_preparation(thread, environment.clone(), None)
                 .unwrap();
             retained = Some(environment);
             if unmaterialized {
@@ -1735,7 +1735,11 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
         .expect("validated Host dependencies");
     let managed = managed_with_resource_source(host.clone());
 
-    let projection = terminal_memory_projection();
+    let mut projection = terminal_memory_projection();
+    let (lease, effect) = terminal_recovery_effect(thread, "legacy-memory-worker");
+    // HM0b adds C4: the first request was already saved before any provider
+    // effect. The separate missing-history row remains pending/zero-I/O.
+    fresh_terminal_fixture_before_create(thread, &mut projection, &lease);
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         &managed,
         thread,
@@ -1744,7 +1748,7 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
     )
     .await
     .expect("HM0b install frozen writable Memory input");
-    let (lease, effect) = terminal_recovery_effect(thread, "legacy-memory-worker");
+
     host.install_test_terminal_cleanup_projection(
         &awaken_session_realization_contract::SessionTerminalCleanupAssignment {
             environment_creation_not_attempted: false,
@@ -1947,7 +1951,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 .unwrap()
                 .unwrap();
             host.realizer
-                .begin_session_environment_preparation(&thread, Arc::new(environment))
+                .begin_session_environment_preparation(&thread, Arc::new(environment), None)
                 .unwrap();
             if unmaterialized {
                 projection.environment =

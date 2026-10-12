@@ -644,13 +644,17 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
 }
 
 /// Committed-query cause/effect graph after execution provisioning fails:
-/// C1 a frozen File plus a CPU limit is staged; C2 Workdir cannot enforce limits;
+/// C1 a read-only frozen File plus a CPU limit is staged; C2 Workdir cannot
+/// enforce read-only mounts or limits;
 /// C3 a side-effect-free reservation projection occurs; C4 no runtime/environment
 /// becomes resident; C5 a committed-state GET follows. C1+C2+C3 cause E1 the
 /// reservation to reject before any physical effect. C1+C2
 /// cause E2 executable Run construction to fail. C4+C5 cause E3 the query to open only
 /// committed truth, return the empty page, and leave the execution environment
-/// absent instead of retrying the failing provisioning.
+/// absent instead of retrying the failing provisioning. The canonical prepare
+/// kernel validates reservation mounts before limits. Direct Run construction
+/// independently rejects the unsupported CPU limit; neither edge may provision
+/// an Environment (both requested guarantees remain unchanged).
 ///
 /// | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
 /// |---|---|---|---|---|---|---|
@@ -659,11 +663,22 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
 /// | Q3 | T | T | F | T | T | E3 query succeeds/no env |
 #[tokio::test]
 async fn committed_queries_do_not_provision_a_failed_session_environment() {
+    // Managed physical row: real SQLite Root + controlled live lease + the
+    // production binding sink precede first I/O. Installation itself has no
+    // provider effect; the original denial/lazy/coordination assertions below
+    // retain their causes and cannot borrow a fabricated Authorized result.
     let mut deployment = crate::DeploymentConfig::ephemeral();
     deployment.sandbox_tier = crate::SandboxTier::Local;
+    let roots = ManagedSessionRootFixture::new().await;
     let host = (crate::host::with_test_resource_validation(
-        crate::HostDependencies::ephemeral_with_deployment(Arc::new(OkModel), "stub", deployment)
+        roots.configure(
+            crate::HostDependencies::ephemeral_with_deployment(
+                Arc::new(OkModel),
+                "stub",
+                deployment,
+            )
             .await,
+        ),
     ))
     .build()
     .expect("validated Host dependencies");
@@ -680,8 +695,9 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
         .await
         .expect("create File")
         .id;
-    managed
+    roots
         .install_complete_test_session(
+            &managed,
             "t-query-after-provisioning-denial",
             awaken_session_configuration_contract::SessionInit {
                 workspace_id: host.local_workspace().into(),
@@ -713,11 +729,13 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
         .ctx_for_session_coordination("t-query-after-provisioning-denial", Some("assistant"))
         .await
     {
-        Ok(_) => panic!("Q1 reservation must reject unsupported limits"),
+        Ok(_) => panic!("Q1 reservation must reject unsupported read-only mounts"),
         Err(error) => error,
     };
     assert!(
-        reservation_error.message.contains("resource limits"),
+        reservation_error
+            .message
+            .contains("backend does not enforce read-only"),
         "Q1: {reservation_error}"
     );
     assert!(
@@ -740,10 +758,15 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
     )
     .await
     {
-        Ok(_) => panic!("Workdir must reject the read-only File"),
+        Ok(_) => panic!("Workdir must reject unsupported resource limits"),
         Err(error) => error,
     };
-    assert!(error.message.contains("resource limits"), "Q2: {error}");
+    assert!(
+        error
+            .message
+            .contains("resource limits requested but backend cannot enforce them"),
+        "Q2: {error}"
+    );
     assert!(
         host.realizer
             .session_environment("t-query-after-provisioning-denial")
@@ -851,13 +874,19 @@ async fn frozen_environment_network_follows_the_decision_table() {
 /// remains authoritative even if a retained blob contains a conflicting legacy field.
 #[tokio::test]
 async fn install_test_session_init_overlays_the_environment_sandbox_onto_the_spec() {
+    // Managed physical row: real SQLite Root + controlled live lease + the
+    // production binding sink precede first I/O. Installation itself has no
+    // provider effect; the original denial/lazy/coordination assertions below
+    // retain their causes and cannot borrow a fabricated Authorized result.
     // Constraint/Invariant: the authoritative inputs and ownership boundaries
     // documented here remain the only decision source; no parallel path is admitted.
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
     use awaken_provisioning_contract::{IsolationClass, NetworkPolicy};
     use awaken_session_configuration_contract::SessionInit;
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let roots = ManagedSessionRootFixture::new().await;
+    let host = roots
+        .configure(crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&host);
@@ -883,8 +912,8 @@ async fn install_test_session_init_overlays_the_environment_sandbox_onto_the_spe
             }),
         ),
     };
-    managed
-        .install_complete_test_session("t-sb", init)
+    roots
+        .install_complete_test_session(&managed, "t-sb", init)
         .await
         .unwrap();
 
@@ -930,8 +959,8 @@ async fn install_test_session_init_overlays_the_environment_sandbox_onto_the_spe
             serde_json::json!({}),
         ),
     };
-    managed
-        .install_complete_test_session("t-bare", bare)
+    roots
+        .install_complete_test_session(&managed, "t-bare", bare)
         .await
         .unwrap();
     assert_eq!(
@@ -965,17 +994,24 @@ async fn install_test_session_init_overlays_the_environment_sandbox_onto_the_spe
 /// readiness before execution. Decision table: L1=C1+C2=>E1; L2=C1+C3=>E2.
 #[tokio::test]
 async fn install_test_session_init_is_lazy_and_first_run_materializes_the_environment() {
+    // Managed physical row: real SQLite Root + controlled live lease + the
+    // production binding sink precede first I/O. Installation itself has no
+    // provider effect; the original denial/lazy/coordination assertions below
+    // retain their causes and cannot borrow a fabricated Authorized result.
     // Constraint/Invariant: Session preparation records intent but only the first
     // executable Run may create the Environment. Decision rule: observe zero live
     // effects after prepare, then exactly one materialization on first Run.
     use awaken_session_configuration_contract::SessionInit;
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
+    let roots = ManagedSessionRootFixture::new().await;
+    let host = roots
+        .configure(crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
         .build()
         .expect("validated Host dependencies");
     install_test_session_application(&host);
     let managed = install_test_dispatch_runtime(&host);
-    managed
+    roots
         .install_complete_test_session(
+            &managed,
             "lazy-environment",
             SessionInit {
                 workspace_id: host.local_workspace().into(),
@@ -1294,6 +1330,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
             revision: awaken_session_types::SessionRevision(1),
             baseline,
             agent_publication: None,
+            environment_materialization: None,
             environment: Default::default(),
             resource_revision: 0,
             resources,
@@ -1589,6 +1626,10 @@ async fn on_tool_use_text_only_run_keeps_the_environment_absent() {
 /// exercises !C4=>E4, then C4=>E2, and C4+duplicate=>E5.
 #[tokio::test]
 async fn on_tool_use_published_delegate_forces_one_eager_environment() {
+    // Managed physical row: real SQLite Root + controlled live lease + the
+    // production binding sink precede first I/O. Installation itself has no
+    // provider effect; the original denial/lazy/coordination assertions below
+    // retain their causes and cannot borrow a fabricated Authorized result.
     // Constraint/Invariant: the published delegate requirement is frozen before
     // execution and may materialize exactly one Environment. Decision rule:
     // execute the delegate-demand partition and require one eager realization.
@@ -1613,14 +1654,19 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
         .build();
     let publications = StaticPublishedAgentSnapshots::try_new([parent, child])
         .expect("one authoritative publication catalog");
-    let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
-        .await
-        .with_agent_publications(Arc::new(publications)))
-    .build()
-    .expect("validated Host dependencies");
+    let roots = ManagedSessionRootFixture::new().await;
+    let host = roots
+        .configure(
+            crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub")
+                .await
+                .with_agent_publications(Arc::new(publications)),
+        )
+        .build()
+        .expect("validated Host dependencies");
     let managed = install_test_dispatch_runtime(&host);
-    managed
+    roots
         .install_complete_test_session(
+            &managed,
             "deferred-delegate",
             SessionInit {
                 workspace_id: host.local_workspace().into(),

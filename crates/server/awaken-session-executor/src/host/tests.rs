@@ -210,6 +210,8 @@ use awaken_sandbox_container::ContainerHandleCodec as _;
 use awaken_session_execution_contract::{EnvironmentRuntime, TerminalCleanupRuntime};
 use awaken_session_types::SessionId;
 mod claimed_dispatch;
+mod managed_root;
+pub(crate) use managed_root::ManagedSessionRootFixture;
 mod cold_terminal_cleanup;
 mod compaction_memory;
 mod context_construction;
@@ -1097,15 +1099,14 @@ fn dispatch_test_host(host: Arc<SharedHost>) -> (Arc<SharedHost>, crate::Managed
     (host, managed)
 }
 
-/// Install the complete projection corresponding to legacy `SessionInit` test
+/// Compile the one complete projection corresponding to `SessionInit` test
 /// data. C1 empty/nonempty initial Resources and C2 absent/present model
 /// coordinates produce E1 one baseline plus E2 the exact Empty->desired
-/// transition through `SessionRuntime`; no caller reconstructs slot fields.
-async fn install_complete_test_session(
+/// transition input; neither compilation nor Dispatch installation grants I/O.
+fn compile_complete_test_session_projection(
     managed: &crate::ManagedHost,
-    thread: &str,
     init: awaken_session_configuration_contract::SessionInit,
-) -> Result<(), awaken_session_types::RunError> {
+) -> awaken_session_realization_contract::FrozenSessionProjection {
     let awaken_session_configuration_contract::SessionInit {
         workspace_id,
         agent_id,
@@ -1187,22 +1188,33 @@ async fn install_complete_test_session(
         0,
         awaken_session_resource_contract::ResolvedSessionResources::default(),
     );
+    awaken_session_realization_contract::FrozenSessionProjection {
+        workspace_id,
+        revision: awaken_session_types::SessionRevision(1),
+        baseline,
+        agent_publication: publication,
+        environment_materialization: None,
+        environment: Default::default(),
+        resource_revision,
+        resources,
+        previous_resource_manifest: Some(previous),
+        tools,
+        mcp: Vec::new(),
+        request_context: Vec::new(),
+    }
+}
+
+/// Install Dispatch facts only. Physical Managed tests must select the real
+/// Root fixture before Host construction rather than acquire an Unowned grant.
+async fn install_complete_test_session(
+    managed: &crate::ManagedHost,
+    thread: &str,
+    init: awaken_session_configuration_contract::SessionInit,
+) -> Result<(), awaken_session_types::RunError> {
     awaken_session_execution_contract::RealizationRuntime::install_session_projection(
         managed,
         thread,
-        awaken_session_realization_contract::FrozenSessionProjection {
-            workspace_id,
-            revision: awaken_session_types::SessionRevision(1),
-            baseline,
-            agent_publication: publication,
-            environment: Default::default(),
-            resource_revision,
-            resources,
-            previous_resource_manifest: Some(previous),
-            tools,
-            mcp: Vec::new(),
-            request_context: Vec::new(),
-        },
+        compile_complete_test_session_projection(managed, init),
         awaken_session_realization_contract::SessionProjectionInstallMode::Dispatch,
     )
     .await
@@ -1325,14 +1337,22 @@ impl awaken_session_execution_contract::SessionEnvironmentBindingSink for Bindin
             .as_deref()
             .is_some_and(|owned| owned != intent.session_id())
         {
-            Ok(awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned)
+            Ok(
+                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Unowned {
+                    intent: Box::new(intent.clone()),
+                },
+            )
         } else if self.require_realization && intent.realization().is_none() {
             Err(awaken_session_types::RunError::unavailable_classified(
                 "session_realization_stale",
                 "replacement realization is not installed",
             ))
         } else {
-            Ok(awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized)
+            Ok(
+                awaken_session_state_contract::SessionEnvironmentEffectAuthorization::Authorized {
+                    intent: Box::new(intent.clone()),
+                },
+            )
         }
     }
 
@@ -1607,11 +1627,20 @@ impl awaken_container_contract::ContainerEnvironmentProvider for TerminalRecover
         &self,
         _spec: &pc::SandboxSpec,
         handle: Option<&pc::SandboxHandle>,
-        _expected_effect_fence: Option<&pc::SandboxEffectFence>,
+        expected_effect_fence: Option<&pc::SandboxEffectFence>,
         terminal_effect_fence: &pc::SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Option<Arc<dyn awaken_container_contract::ContainerEnvironment>>, pc::SandboxError>
     {
+        // Input observation only: this does not certify the source domain or
+        // grant disposal. The existing effect guard below remains required.
+        if let (Some(probe), Some(original)) = (&self.fence_refresh_probe, expected_effect_fence) {
+            probe
+                .fences
+                .lock()
+                .unwrap()
+                .push(("original-create-input", original.clone()));
+        }
         pc::with_current_sandbox_effect::<
             Option<Arc<dyn awaken_container_contract::ContainerEnvironment>>,
         >(terminal_effect_fence, authority, |_| match self.scenario {
@@ -2213,6 +2242,55 @@ pub(super) fn disposing_terminal_environment(
     (state, preparation, receipt)
 }
 
+/// Build a fresh selected Control fixture before its first physical Create.
+/// This uses the real admission law; it never repairs a historical Store row.
+pub(super) fn fresh_terminal_fixture_before_create(
+    session_id: &str,
+    projection: &mut awaken_session_realization_contract::FrozenSessionProjection,
+    lease: &awaken_session_resource_contract::SessionRealizationLease,
+) -> awaken_session_state_contract::PersistedSession {
+    assert!(matches!(
+        projection.environment,
+        awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
+    ));
+    let mut root = awaken_session_state_contract::PersistedSession::frozen_with_budget(
+        session_id,
+        projection.baseline.clone(),
+        awaken_session_state_contract::SessionResourceState::from_active(
+            projection.resources.clone(),
+        ),
+        Default::default(),
+        None,
+        Default::default(),
+        projection.tools.clone(),
+        Default::default(),
+    );
+    // The selected Control input supplies the current lease; admission must
+    // validate it and save the first full request before the provider is called.
+    root.realization = Some(lease.clone());
+    let intent = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
+        session_id,
+        awaken_session_state_contract::SessionEnvironmentEffectKind::Create,
+        Some(lease.clone()),
+    )
+    .for_environment(projection.baseline.environment.config_fingerprint.0.clone());
+    let mut aggregate = awaken_session_state_contract::SessionAggregate::try_from(root).unwrap();
+    let (changed, authorized) = aggregate
+        .environment()
+        .admit_environment_effect(&projection.workspace_id, &intent, 0)
+        .unwrap();
+    assert!(
+        changed,
+        "fresh fixture saves first request before provider I/O"
+    );
+    assert_eq!(authorized.intent(), &intent);
+    projection.environment_materialization = aggregate
+        .environment_materialization()
+        .cloned()
+        .map(Box::new);
+    aggregate.snapshot().clone()
+}
+
 fn terminal_test_session(
     session_id: &str,
     projection: &awaken_session_realization_contract::FrozenSessionProjection,
@@ -2234,6 +2312,20 @@ fn terminal_test_session(
     );
     session.environment = projection.environment.clone();
     session.realization = Some(lease);
+    // Import exactly the selected Control snapshot's existing fact. Known
+    // fixtures saved it before I/O; an omitted historical field stays omitted.
+    // This is fixture decoding, not a new admission or history-repair command.
+    let mut wire = serde_json::to_value(session).unwrap();
+    match &projection.environment_materialization {
+        Some(fact) => wire["environment_materialization"] = serde_json::to_value(fact).unwrap(),
+        None => {
+            wire.as_object_mut()
+                .unwrap()
+                .remove("environment_materialization");
+        }
+    }
+    let mut session: awaken_session_state_contract::PersistedSession =
+        serde_json::from_value(wire).unwrap();
     match publication {
         Some(intent) => {
             session
@@ -2402,6 +2494,7 @@ fn remote_terminal_cleanup_projection_with_idle_retention(
         revision: awaken_session_types::SessionRevision(1),
         baseline,
         agent_publication: None,
+        environment_materialization: None,
         environment: Default::default(),
         resource_revision: 0,
         resources: Default::default(),

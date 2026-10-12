@@ -265,6 +265,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             revision: awaken_session_types::SessionRevision(2),
             baseline,
             agent_publication: None,
+            environment_materialization: None,
             environment: Default::default(),
             resource_revision: 7,
             resources: awaken_session_resource_contract::ResolvedSessionResources::default(),
@@ -577,13 +578,18 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     let recorder = PromptRecorder::default();
     let observed = recorder.0.clone();
     let repository_claims = Arc::new(RepositoryClaimRecorder::default());
-    let host = ((crate::HostDependencies::ephemeral(Arc::new(recorder), "stub").await)
-        .with_session_execution(
-            crate::SessionExecutionDependencies::default()
-                .with_repository_binding_verifier(repository_claims.clone()),
-        ))
-    .build()
-    .expect("validated Host dependencies");
+    let roots = ManagedSessionRootFixture::new().await;
+    let host = roots
+        .configure(
+            crate::HostDependencies::ephemeral(Arc::new(recorder), "stub")
+                .await
+                .with_session_execution(
+                    crate::SessionExecutionDependencies::default()
+                        .with_repository_binding_verifier(repository_claims.clone()),
+                ),
+        )
+        .build()
+        .expect("validated Host dependencies");
     install_test_session_application(&host);
 
     let managed = crate::ManagedHost::new(host.clone());
@@ -896,30 +902,29 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         // | P3   | 1  | 1  | 1  | 0 (deduplicate) |
         // | P4   | 1  | later Run | 0 | E1 again, never from history |
         host.run(None, "no-baseline", user("P1")).await.expect("P1");
-        host.install_frozen_session_projection(
-            "prompt-thread",
-            projection("Use the bound Flow project.", false),
-            None,
-            true,
-            None,
-        )
-        .await
-        .expect("P2/P4 projection");
+        // P2-P4 are fresh physical subjects, not the metadata-only generation7
+        // rows above. Real Root preparation chooses their first Resource
+        // generation; the original baseline/prompt and all assertions survive.
+        let mut first = projection("Use the bound Flow project.", false);
+        first.resource_revision = 0;
+        first.previous_resource_manifest = None;
+        roots
+            .install_projection(&managed, "prompt-thread", first)
+            .await
+            .expect("P2/P4 projection");
         host.run_thread_extension_after_admission(None, "prompt-thread", user("P2"))
             .await
             .expect("P2");
         host.run_thread_extension_after_admission(None, "prompt-thread", user("P4"))
             .await
             .expect("P4");
-        host.install_frozen_session_projection(
-            "deduplicated",
-            projection("exact prompt", false),
-            None,
-            true,
-            None,
-        )
-        .await
-        .expect("P3 projection");
+        let mut first = projection("exact prompt", false);
+        first.resource_revision = 0;
+        first.previous_resource_manifest = None;
+        roots
+            .install_projection(&managed, "deduplicated", first)
+            .await
+            .expect("P3 projection");
         host.run_thread_extension_after_admission(
             None,
             "deduplicated",
@@ -986,7 +991,11 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             Role::User,
             "prior branch context",
         )];
-        host.install_frozen_session_projection("context-thread", contextual, None, true, None)
+        // C4 starts a new physical Root; it does not import generation7 history.
+        contextual.resource_revision = 0;
+        contextual.previous_resource_manifest = None;
+        roots
+            .install_projection(&managed, "context-thread", contextual)
             .await
             .expect("C4 projection");
         host.run_thread_extension_after_admission(

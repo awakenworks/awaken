@@ -41,16 +41,18 @@ pub fn validate_terminal_no_create_witness(
     creation_not_attempted: bool,
     environment: &awaken_session_state_contract::SessionEnvironmentState,
     owner_vacant: bool,
+    materialization_admitted: bool,
 ) -> Result<(), crate::RunError> {
     if creation_not_attempted
         && (!matches!(
             environment,
             awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
-        ) || !owner_vacant)
+        ) || !owner_vacant
+            || materialization_admitted)
     {
         return Err(crate::RunError::classified(
             "session_terminal_unattempted_environment_conflict",
-            "archive no-Create witness conflicts with the frozen state or retained owner",
+            "archive no-Create witness conflicts with the frozen state, retained owner or admitted materialization",
         ));
     }
     Ok(())
@@ -61,10 +63,12 @@ mod no_create_witness_tests {
     #[test]
     fn terminal_no_create_consistency_retains_unknown_and_rejects_contradictions() {
         // Causes C1 witness, C2 Unmaterialized frozen state, C3 Vacant local
-        // owner. W1 absent witness -> retain ordinary provider requirements;
+        // owner, C4 canonical materialization.has_admitted from frozen Root.
+        // W1 absent witness -> retain ordinary provider requirements;
         // W2 witness + C2/C3 -> allow the known-absence branch; W3 witness with
-        // either contradiction -> classified rejection. Eight rows cover both
-        // frozen-state partitions and every independent local-owner condition.
+        // any contradiction -> classified rejection. Cross the eight original
+        // rows with both C4 values: present-empty supplies no witness; admitted
+        // pending/origin contradicts a true witness even without binding.
         use awaken_session_state_contract::SessionEnvironmentState;
         for (witness, unmaterialized, vacant, allowed) in [
             (false, false, false, true),
@@ -86,12 +90,15 @@ mod no_create_witness_tests {
                     idle_since_unix_ms: None,
                 }
             };
-            let result = super::validate_terminal_no_create_witness(witness, &state, vacant);
-            assert_eq!(
-                result.is_ok(),
-                allowed,
-                "witness={witness}, unmaterialized={unmaterialized}, vacant={vacant}"
-            );
+            for admitted in [false, true] {
+                let result =
+                    super::validate_terminal_no_create_witness(witness, &state, vacant, admitted);
+                assert_eq!(
+                    result.is_ok(),
+                    allowed && (!witness || !admitted),
+                    "witness={witness}, unmaterialized={unmaterialized}, vacant={vacant}, admitted={admitted}"
+                );
+            }
         }
     }
 }

@@ -542,13 +542,28 @@ impl SessionEnvironmentOwner {
         &mut self,
         environment: Arc<crate::session_environment::SessionEnvironment>,
         kind: awaken_session_state_contract::SessionEnvironmentEffectKind,
+        intent: Option<&awaken_session_state_contract::SessionEnvironmentEffectIntent>,
     ) -> Result<UnboundSessionEnvironment, HostError> {
+        if let Some(intent) = intent {
+            intent
+                .verify()
+                .map_err(|error| HostError::internal(error.to_string()))?;
+            if intent.kind() != &kind {
+                return Err(HostError::internal(
+                    "candidate changed its captured effect kind",
+                ));
+            }
+        }
         let binding = serde_json::to_string(&environment.lifecycle().handle())
             .map_err(|error| HostError::internal(error.to_string()))?;
         let origin = match (&mut *self, kind) {
             (Self::Vacant, awaken_session_state_contract::SessionEnvironmentEffectKind::Create) => {
                 UnboundSessionEnvironmentOrigin::New
             }
+            (
+                Self::Vacant,
+                awaken_session_state_contract::SessionEnvironmentEffectKind::Rebuild { .. },
+            ) if intent.is_some() => UnboundSessionEnvironmentOrigin::New,
             (Self::Vacant, awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt) => {
                 UnboundSessionEnvironmentOrigin::Adoption
             }
@@ -565,7 +580,23 @@ impl SessionEnvironmentOwner {
                 if existing.binding == binding
                     && Arc::ptr_eq(&existing.environment, &environment) =>
             {
-                if existing.effect_kind() != current_kind {
+                // A supplied intent's kind was checked above; full equality
+                // below protects it. Unknown enrollment keeps its old whitelist.
+                let same_kind = intent.is_some()
+                    || matches!(
+                        (&existing.origin, &current_kind),
+                        (
+                            UnboundSessionEnvironmentOrigin::New
+                                | UnboundSessionEnvironmentOrigin::DurableCreate(_),
+                            awaken_session_state_contract::SessionEnvironmentEffectKind::Create
+                        ) | (
+                            UnboundSessionEnvironmentOrigin::Adoption
+                                | UnboundSessionEnvironmentOrigin::AdoptionFrom(_)
+                                | UnboundSessionEnvironmentOrigin::DurableAdoption(_),
+                            awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt
+                        )
+                    );
+                if existing.intent.as_deref() != intent || !same_kind {
                     return Err(HostError::internal(
                         "Session Environment candidate changed its create/adopt effect",
                     ));
@@ -580,6 +611,7 @@ impl SessionEnvironmentOwner {
         };
         let candidate = UnboundSessionEnvironment {
             origin,
+            intent: intent.cloned().map(Box::new),
             binding,
             environment,
         };
@@ -838,7 +870,21 @@ impl SessionEnvironmentOwner {
         &mut self,
         expected: &RetiringSessionEnvironment,
         environment: Arc<crate::session_environment::SessionEnvironment>,
+        intent: Option<&awaken_session_state_contract::SessionEnvironmentEffectIntent>,
     ) -> Result<(), HostError> {
+        if let Some(intent) = intent {
+            intent
+                .verify()
+                .map_err(|error| HostError::internal(error.to_string()))?;
+            if !matches!(
+                intent.kind(),
+                awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt
+            ) {
+                return Err(HostError::internal(
+                    "re-adoption changed its captured effect kind",
+                ));
+            }
+        }
         let Self::Retiring(current) = self else {
             return Err(HostError::internal(
                 "Session Environment re-adoption has no Retiring owner",
@@ -897,6 +943,7 @@ impl SessionEnvironmentOwner {
         *self = Self::Preparing(SessionEnvironmentPreparation::Candidate(
             UnboundSessionEnvironment {
                 origin,
+                intent: intent.cloned().map(Box::new),
                 binding,
                 environment,
             },
@@ -981,24 +1028,12 @@ pub(in crate::host::session) fn committed_identity(
     receipt: &awaken_session_state_contract::SessionEnvironmentReceipt,
     committed: awaken_session_state_contract::SessionEnvironmentState,
 ) -> Result<BoundSessionEnvironmentIdentity, HostError> {
-    let awaken_session_state_contract::SessionEnvironmentState::Resident {
-        binding,
-        effect_id: Some(effect_id),
-        generation: Some(generation),
-        ..
-    } = committed
-    else {
-        return Err(HostError::internal(
-            "durable Environment binding sink returned no generated Resident authority",
-        ));
-    };
-    if binding != receipt.binding || effect_id != receipt.effect_id {
-        return Err(HostError::internal(
-            "durable Environment binding sink returned mismatched committed authority",
-        ));
-    }
+    let generation = committed
+        .committed_receipt_generation(receipt)
+        .map_err(|error| HostError::internal(error.to_string()))?
+        .clone();
     Ok(BoundSessionEnvironmentIdentity::Durable {
-        effect_id,
+        effect_id: receipt.effect_id.clone(),
         generation,
     })
 }
