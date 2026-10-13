@@ -287,17 +287,6 @@ impl RawTool for RunInBackground {
                 },
             },
         );
-        let execution = current_tool_execution_facts(&task.invocation.call)?;
-        task.start(
-            self.supervisor.worker_id(),
-            self.supervisor.clock().now_ms(),
-            BackgroundTaskSupervisor::lease_ms(),
-            crate::TaskExecutionPolicy {
-                recovery: execution.recovery,
-                concurrency: execution.concurrency,
-            },
-        )
-        .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?;
         let store = state()?;
         let cell = task_state_cell(&task.id);
         let mut output = render(
@@ -308,11 +297,24 @@ impl RawTool for RunInBackground {
             .load(&store)
             .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?
         {
+            // A durable request receipt does not acquire another attempt or
+            // depend on the current catalog; only a new cell needs both.
             Some(existing) if existing.same_request_as(&task) => Ok(output),
             Some(_) => Err(ToolError::DefinitiveFailure(
                 "deterministic background task id collided with different state".into(),
             )),
             None => {
+                let execution = current_tool_execution_facts(&task.invocation.call)?;
+                task.start(
+                    self.supervisor.worker_id(),
+                    self.supervisor.clock().now_ms(),
+                    BackgroundTaskSupervisor::lease_ms(),
+                    crate::TaskExecutionPolicy {
+                        recovery: execution.recovery,
+                        concurrency: execution.concurrency,
+                    },
+                )
+                .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?;
                 output.state.push(
                     cell.write(&task)
                         .map_err(|error| ToolError::DefinitiveFailure(error.to_string()))?,

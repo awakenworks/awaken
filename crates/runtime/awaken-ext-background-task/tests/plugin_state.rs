@@ -2,6 +2,7 @@
 // @formal evidence background_task.stale_fence_never_finishes_or_heartbeats
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::run::Id as RunId;
@@ -10,8 +11,8 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_background_task::{
     BackgroundInvocation, BackgroundTask, BackgroundTaskCompletion, BackgroundTaskConfig,
     BackgroundTaskEnd, BackgroundTaskId, BackgroundTaskLifecycle, BackgroundTaskOrigin,
-    BackgroundTaskPlugin, BackgroundTaskSupervisor, TaskExecutionPolicy, task_state_cell,
-    tasks_from_state,
+    BackgroundTaskPlugin, BackgroundTaskSupervisor, BackgroundWait, TaskExecutionPolicy,
+    task_state_cell, tasks_from_state,
 };
 use awaken_lease_testkit::ManualClock;
 use awaken_runtime_contract::plugin::{
@@ -24,11 +25,16 @@ use awaken_tool_contract::tool::{
     with_tool_operation_context, with_tool_state_context,
 };
 
-struct FixtureExecutionFacts;
+#[derive(Default)]
+struct FixtureExecutionFacts {
+    unavailable: AtomicBool,
+    lookups: AtomicUsize,
+}
 
 impl ToolExecutionFactsResolver for FixtureExecutionFacts {
     fn resolve(&self, call: &ToolCall) -> Result<ToolExecutionFacts, ToolError> {
-        (call.tool_id == "bash")
+        self.lookups.fetch_add(1, Ordering::SeqCst);
+        (call.tool_id == "bash" && !self.unavailable.load(Ordering::SeqCst))
             .then_some(ToolExecutionFacts {
                 recovery: ToolRecoveryPolicy::default(),
                 concurrency: ToolConcurrency::Parallel,
@@ -75,7 +81,8 @@ async fn invoke(
     call: ToolCall,
     state: Store,
     operation: &str,
-) -> awaken_tool_contract::tool::ToolOutput {
+    facts: Option<Arc<FixtureExecutionFacts>>,
+) -> Result<awaken_tool_contract::tool::ToolOutput, ToolError> {
     with_tool_state_context(
         state,
         with_tool_operation_context(
@@ -86,11 +93,15 @@ async fn invoke(
                 call_id: Some(call.call_id.clone()),
                 execution_scope: None,
             },
-            with_tool_execution_facts(Arc::new(FixtureExecutionFacts), tool.invoke(call)),
+            async {
+                match facts {
+                    Some(facts) => with_tool_execution_facts(facts, tool.invoke(call)).await,
+                    None => tool.invoke(call).await,
+                }
+            },
         ),
     )
     .await
-    .expect("fixture tool invocation succeeds")
 }
 
 #[tokio::test]
@@ -193,6 +204,7 @@ async fn tools_create_list_get_cancel_only_through_runtime_state_commands() {
     let run = env
         .dynamic_tool("run_in_background")
         .expect("configured run tool exists");
+    let facts = Arc::new(FixtureExecutionFacts::default());
     let mut store = Store::new();
     let submitted = invoke(
         run.as_ref(),
@@ -203,8 +215,10 @@ async fn tools_create_list_get_cancel_only_through_runtime_state_commands() {
         },
         store.clone(),
         "operation-1",
+        Some(facts.clone()),
     )
-    .await;
+    .await
+    .expect("fixture submission succeeds");
     assert_eq!(submitted.state.len(), 1);
     store.apply(&submitted.state[0]);
 
@@ -217,8 +231,10 @@ async fn tools_create_list_get_cancel_only_through_runtime_state_commands() {
         },
         store.clone(),
         "operation-1",
+        Some(facts.clone()),
     )
-    .await;
+    .await
+    .expect("fixture replay succeeds");
     assert!(
         replay.state.is_empty(),
         "deterministic replay is a read-only receipt"
@@ -242,8 +258,10 @@ async fn tools_create_list_get_cancel_only_through_runtime_state_commands() {
         },
         store.clone(),
         "operation-2",
+        Some(facts.clone()),
     )
-    .await;
+    .await
+    .expect("fixture list succeeds");
     assert!(list.text().contains(&task_id));
     assert!(
         !list.text().contains("sleep 1"),
@@ -261,8 +279,10 @@ async fn tools_create_list_get_cancel_only_through_runtime_state_commands() {
         },
         store.clone(),
         "operation-3",
+        Some(facts.clone()),
     )
-    .await;
+    .await
+    .expect("fixture get succeeds");
     assert!(get.text().contains("running"));
 
     let cancel = invoke(
@@ -276,19 +296,33 @@ async fn tools_create_list_get_cancel_only_through_runtime_state_commands() {
         },
         store,
         "operation-4",
+        Some(facts),
     )
-    .await;
+    .await
+    .expect("fixture cancellation succeeds");
     assert_eq!(cancel.state.len(), 1);
     assert!(cancel.text().contains("cancelling"));
 }
 
 #[tokio::test]
 async fn submission_uses_the_supervisors_injected_clock_and_replay_keeps_the_lease() {
-    // Cause/effect rules SC: C1 a configured launch at t=2,000 -> one Running
-    // attempt whose expiry is t+the single 300s lease; C2 the same operation
-    // replays after the clock advances -> exact receipt, no new State command
-    // and no restamp. The submitted task id remains deterministic from its
-    // Thread/Run/operation, while worker identity is supplied by the supervisor.
+    // Cause/effect decision table SC: C1 valid configured request identity;
+    // C2 its exclusive cell is absent / exact / collision / malformed;
+    // C3 current execution catalog is available / returns Err / absent;
+    // C4 clock advances or saturates at ManualClock's signed-domain maximum;
+    // C5 an exact durable task is Requested / Running / Waiting / Cancelling /
+    // Ended (Cancelled or Completed). Requested retains revision 0 and no
+    // attempt; receipt replay must neither start it nor synthesize policy.
+    // R1 C1 + absent + available -> one Running command freezing the injected
+    // worker, policy and 300s lease. R2 C1 + exact -> original receipt, zero
+    // catalog lookups and zero commands regardless of C3-C5; no restamp or
+    // reopening, and a receipt grants no target execution permission.
+    // R3 collision or malformed -> reject before C3/C4, preserving all State.
+    // R4 absent + failed/missing catalog -> reject without a State command.
+    // R5 unconfigured target or empty operation -> reject before cell replay.
+    // Thread/Run/operation, call identity and arguments all remain required.
+    // u64::MAX clock input is intentionally clamped to i64::MAX by the existing
+    // clock contract; this is saturation coverage, not a ClockOverflow claim.
     let clock = Arc::new(ManualClock::new(2_000));
     let supervisor = Arc::new(BackgroundTaskSupervisor::new("clock-worker", clock.clone()));
     let plugin = BackgroundTaskPlugin::with_supervisor(
@@ -305,23 +339,229 @@ async fn submission_uses_the_supervisors_injected_clock_and_replay_keeps_the_lea
         tool_id: "run_in_background".into(),
         arguments: serde_json::json!({"tool":"bash","arguments":{"command":"echo clock"}}),
     };
+    let facts = Arc::new(FixtureExecutionFacts::default());
     let mut state = Store::new();
-    let first = invoke(run.as_ref(), call.clone(), state.clone(), "clock-operation").await;
-    assert_eq!(first.state.len(), 1, "SC1");
+    let first = invoke(
+        run.as_ref(),
+        call.clone(),
+        state.clone(),
+        "clock-operation",
+        Some(facts.clone()),
+    )
+    .await
+    .expect("R1 submission");
+    assert_eq!(first.state.len(), 1, "R1");
+    assert_eq!(facts.lookups.load(Ordering::SeqCst), 1, "R1");
     state.apply(&first.state[0]);
     let task = tasks_from_state(&state).unwrap().pop().unwrap();
     let attempt = task.attempt().unwrap();
-    assert_eq!(attempt.worker_id, "clock-worker", "SC1");
+    assert_eq!(attempt.worker_id, "clock-worker", "R1");
+    assert_eq!(
+        attempt.policy,
+        TaskExecutionPolicy {
+            recovery: ToolRecoveryPolicy::default(),
+            concurrency: ToolConcurrency::Parallel,
+        },
+        "R1"
+    );
     assert_eq!(
         attempt.lease_expires_at_ms,
         2_000 + BackgroundTaskSupervisor::lease_ms(),
-        "SC1"
+        "R1"
     );
-    clock.set(2_500);
-    let replay = invoke(run.as_ref(), call, state.clone(), "clock-operation").await;
-    assert!(replay.state.is_empty(), "SC2");
-    assert_eq!(replay.text(), first.text(), "SC2");
-    assert_eq!(tasks_from_state(&state).unwrap(), vec![task], "SC2");
+    facts.unavailable.store(true, Ordering::SeqCst);
+    for phase in 0..6 {
+        let mut existing = task.clone();
+        let tenure = existing.tenure().unwrap();
+        match phase {
+            0 => {}
+            1 => existing.wait(&tenure, BackgroundWait::Resource).unwrap(),
+            2 => existing.request_cancel().unwrap(),
+            3 => {
+                existing.request_cancel().unwrap();
+                existing
+                    .finish(
+                        &tenure,
+                        BackgroundTaskEnd::Completed {
+                            content: Vec::new(),
+                            is_error: false,
+                        },
+                    )
+                    .unwrap();
+                assert!(matches!(
+                    &existing.lifecycle,
+                    BackgroundTaskLifecycle::Ended {
+                        end: BackgroundTaskEnd::Cancelled
+                    }
+                ));
+            }
+            4 => existing
+                .finish(
+                    &tenure,
+                    BackgroundTaskEnd::Completed {
+                        content: vec![ContentBlock::text("already completed")],
+                        is_error: false,
+                    },
+                )
+                .unwrap(),
+            5 => {
+                existing = BackgroundTask::requested(
+                    task.id.clone(),
+                    task.origin.clone(),
+                    task.invocation.clone(),
+                );
+                assert_eq!(existing.revision, 0, "C5 Requested");
+                assert!(existing.attempt().is_none(), "C5 Requested");
+            }
+            _ => unreachable!(),
+        }
+        let mut durable = state.clone();
+        durable.apply(&task_state_cell(&existing.id).write(&existing).unwrap());
+        for now in [2_500, u64::MAX] {
+            clock.set(now);
+            assert_eq!(clock.now_ms(), now.min(i64::MAX as u64), "C4");
+            for resolver in [Some(facts.clone()), None] {
+                let replay = invoke(
+                    run.as_ref(),
+                    call.clone(),
+                    durable.clone(),
+                    "clock-operation",
+                    resolver,
+                )
+                .await
+                .expect("R2 exact receipt survives unavailable catalog");
+                assert!(replay.state.is_empty(), "R2");
+                assert_eq!(replay.text(), first.text(), "R2");
+                assert_eq!(facts.lookups.load(Ordering::SeqCst), 1, "R2");
+                let mut after = durable.clone();
+                for command in &replay.state {
+                    after.apply(command);
+                }
+                assert_eq!(after, durable, "R2 complete State unchanged");
+                assert_eq!(
+                    tasks_from_state(&after).unwrap(),
+                    vec![existing.clone()],
+                    "R2"
+                );
+            }
+        }
+    }
+
+    // R3 each independent request coordinate must reject a colliding cell;
+    // the unavailable catalog and saturated clock cannot mask that decision.
+    for coordinate in 0..7 {
+        let mut collision = task.clone();
+        match coordinate {
+            0 => collision.id = BackgroundTaskId::new("different-task").unwrap(),
+            1 => collision.origin.thread_id = ThreadId("different-thread".into()),
+            2 => collision.origin.run_id = RunId("different-run".into()),
+            3 => collision.origin.operation_id = "different-operation".into(),
+            4 => collision.invocation.call.call_id = "different-call".into(),
+            5 => collision.invocation.call.tool_id = "different-tool".into(),
+            6 => collision.invocation.call.arguments = serde_json::json!({"command":"different"}),
+            _ => unreachable!(),
+        }
+        let mut durable = state.clone();
+        durable.apply(&task_state_cell(&task.id).write(&collision).unwrap());
+        let before = durable.clone();
+        let error = invoke(
+            run.as_ref(),
+            call.clone(),
+            durable.clone(),
+            "clock-operation",
+            Some(facts.clone()),
+        )
+        .await
+        .expect_err("R3 collision");
+        assert!(
+            matches!(error, ToolError::DefinitiveFailure(message) if message.contains("collided"))
+        );
+        assert_eq!(facts.lookups.load(Ordering::SeqCst), 1, "R3");
+        assert_eq!(durable, before, "R3 complete State unchanged");
+    }
+    for malformed in [serde_json::json!({"state":"wrong"}), {
+        let mut value = serde_json::to_value(&task).unwrap();
+        value["revision"] = serde_json::json!(0);
+        value
+    }] {
+        let mut durable = state.clone();
+        durable.apply(&Command::set(
+            Scope::Thread,
+            MergePolicy::Exclusive,
+            first.state[0].key.0.clone(),
+            malformed,
+        ));
+        let before = durable.clone();
+        let error = invoke(
+            run.as_ref(),
+            call.clone(),
+            durable.clone(),
+            "clock-operation",
+            Some(facts.clone()),
+        )
+        .await
+        .expect_err("R3 malformed persisted State");
+        assert!(
+            matches!(error, ToolError::DefinitiveFailure(message) if message.contains("did not match its declared shape"))
+        );
+        assert_eq!(facts.lookups.load(Ordering::SeqCst), 1, "R3");
+        assert_eq!(durable, before, "R3 complete State unchanged");
+    }
+
+    // R4 no durable receipt may bypass resolution for a new operation.
+    for resolver in [None, Some(facts.clone())] {
+        let before = state.clone();
+        let lookups = facts.lookups.load(Ordering::SeqCst);
+        let expected_lookups = usize::from(resolver.is_some());
+        let error = invoke(
+            run.as_ref(),
+            call.clone(),
+            state.clone(),
+            "new-operation",
+            resolver,
+        )
+        .await
+        .expect_err("R4 fresh request requires catalog");
+        assert!(matches!(
+            error,
+            ToolError::UnknownTool(_) | ToolError::DefinitiveFailure(_)
+        ));
+        assert_eq!(
+            facts.lookups.load(Ordering::SeqCst),
+            lookups + expected_lookups,
+            "R4"
+        );
+        assert_eq!(state, before, "R4 complete State unchanged");
+    }
+
+    // R5 retained authorization and operation checks precede the existing cell.
+    for (arguments, operation) in [
+        (
+            serde_json::json!({"tool":"unknown","arguments":{}}),
+            "clock-operation",
+        ),
+        (call.arguments.clone(), " "),
+    ] {
+        let lookups = facts.lookups.load(Ordering::SeqCst);
+        let error = invoke(
+            run.as_ref(),
+            ToolCall {
+                arguments,
+                ..call.clone()
+            },
+            state.clone(),
+            operation,
+            Some(facts.clone()),
+        )
+        .await
+        .expect_err("R5 rejected request");
+        assert!(matches!(
+            error,
+            ToolError::InvalidArguments(_) | ToolError::DefinitiveFailure(_)
+        ));
+        assert_eq!(facts.lookups.load(Ordering::SeqCst), lookups, "R5");
+        assert_eq!(tasks_from_state(&state).unwrap(), vec![task.clone()], "R5");
+    }
 }
 
 #[tokio::test]
