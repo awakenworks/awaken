@@ -1,3 +1,7 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: MCP claim, recovery and replacement delegate to the canonical attachment-set laws
+// @formal reason: within one Session candidate, retaining generation and plaintext-holder boundaries.
+// @formal reason: This requirement link does not prove external attachment delivery or secret custody.
 use super::{
     McpAttachmentDraft, McpAttachmentError, McpGeneration, McpGenerationRef, McpRealizationClaim,
     McpReplacementPlan, PlaintextHolder, SessionMcpOperations,

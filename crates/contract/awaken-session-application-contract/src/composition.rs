@@ -1,3 +1,7 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Process configuration freezes placement, realization owner and retry budget before
+// @formal reason: Session admission; reconciliation results project the durable root. This product
+// @formal reason: requirement link does not claim a formal proof of process assembly or delivery.
 //! Immutable process configuration and application reconciliation projections.
 
 use awaken_session_types::SessionRuntimePlacement;

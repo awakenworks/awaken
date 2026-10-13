@@ -1,3 +1,7 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Execution and disposition transitions use the controlled root's activity and terminal
+// @formal reason: fences. The application must commit this candidate through its original CAS; this
+// @formal reason: product classification does not assert Worker liveness or physical termination.
 use super::{
     SessionArchiveWithRepositoryPublicationError, SessionDispositionTransitionError,
     SessionExecutionState, SessionExecutionTransitionError, SessionLifecycleOperations,

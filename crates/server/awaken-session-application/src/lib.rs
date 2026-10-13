@@ -1,3 +1,7 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: The Session application shares the repository and required services that enforce one
+// @formal reason: durable authority across protocol callers. Its authorization, CAS and effect owners
+// @formal reason: retain their own evidence; this product classification does not replace their checks.
 //! Coordinator-owned Session application state and required services.
 //!
 //! Protocol adapters retain DTO projection, route parsing, and transient stream

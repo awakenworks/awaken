@@ -1,3 +1,7 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Checkpoint expiry and binding-generation updates stay within the existing Session
+// @formal reason: candidate and its receipt/generation laws; the application commits root CAS before
+// @formal reason: observing success. This link is not proof of provider deletion or materialization.
 use super::{
     SandboxGeneration, SessionEnvironmentOperations, SessionEnvironmentReceiptError,
     SessionEnvironmentState, SessionEnvironmentTransitionError,

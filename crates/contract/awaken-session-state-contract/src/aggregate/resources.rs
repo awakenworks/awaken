@@ -1,3 +1,7 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Resource preparation, activation, rollback and retirement use the canonical resource
+// @formal reason: state within one Session candidate. Original root CAS and physical receipt checks
+// @formal reason: remain required; this classification does not prove external Resource availability.
 use super::{
     ResolvedInput, ResolvedSessionResources, ResourceActivationError, SessionResourcesOperations,
 };

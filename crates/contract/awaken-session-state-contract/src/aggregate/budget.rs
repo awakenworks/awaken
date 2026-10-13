@@ -1,3 +1,7 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: The Session candidate owns usage-cursor recovery, cumulative reconciliation, reach
+// @formal reason: transitions and limits through the existing budget state. Arithmetic proofs retain
+// @formal reason: their original scope; this requirement link does not claim physical usage delivery.
 use super::{
     ManagedBudgetUsageCursor, SessionAggregateCommandError, SessionBudgetOperations,
     SessionBudgetState,

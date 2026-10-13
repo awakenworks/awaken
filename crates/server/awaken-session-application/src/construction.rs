@@ -1,3 +1,7 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Application construction validates process configuration and freezes complete Runtime,
+// @formal reason: credential and Resource capabilities before sharing the Session authority. This product
+// @formal reason: link does not claim a proof of provider I/O, plaintext custody or runtime execution.
 //! Consume process configuration and complete feature capabilities before sharing.
 
 use awaken_executable_agent_contract::ExecutableAgentProfileSource;
