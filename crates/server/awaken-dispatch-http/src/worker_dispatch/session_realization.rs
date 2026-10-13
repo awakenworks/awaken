@@ -21,6 +21,7 @@ pub(super) struct SessionCleanupPollReq {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct SessionCleanupClaimNextReq {
     identity: WorkerIdentity,
     target: awaken_session_realization_contract::SessionRealizationTarget,
