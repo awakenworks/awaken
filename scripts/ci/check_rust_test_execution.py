@@ -97,7 +97,7 @@ def _write_receipt(path: Path, document: dict) -> None:
 
 def run_required(arguments: list[str], inventory: Path, results: Path, receipt: Path) -> int:
     """Adapt two focused commands to the existing sequence, never run a loop."""
-    from crate_test import execute_commands
+    from crate_test import execute_commands, native_command
     from rust_test_plan import source_snapshot, working_subject
 
     try:
@@ -129,7 +129,7 @@ def run_required(arguments: list[str], inventory: Path, results: Path, receipt: 
     def run(command, **kwargs):
         log = inventory if command == commands[0] else results
         with log.open("w", encoding="utf-8") as output:
-            return subprocess.run(command, stdout=output, stderr=subprocess.STDOUT, **kwargs)
+            return subprocess.run(native_command(command, kwargs.get("env")), stdout=output, stderr=subprocess.STDOUT, **kwargs)
     def record(rows):
         document["rows"] = rows
         row = rows[-1]
@@ -222,7 +222,12 @@ if [ "$1" = awaken-ci-deadline ]; then
 fi
 ''' + body, encoding="utf-8")
         cargo.chmod(0o755)
-        return dict(detached_git_environment(), PATH=f"{binary}:{os.environ['PATH']}",
+        if os.name == "nt":
+            bash = shutil.which("bash")
+            if bash is None:
+                raise RuntimeError("native Windows fixtures require Git Bash")
+            (binary / "cargo.cmd").write_text(f'@"{bash}" "{cargo.as_posix()}" %*\n', encoding="utf-8")
+        return dict(detached_git_environment(), PATH=str(binary) + os.pathsep + os.environ['PATH'],
                     CARGO_TARGET_DIR=str(fixture / "target"))
 
     @unittest.skipIf(os.name == "nt", "POSIX admitted shell composition")

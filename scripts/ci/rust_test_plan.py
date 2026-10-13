@@ -142,7 +142,11 @@ class PlanTests(unittest.TestCase):
         # repository/index; no throwaway fixture may initialize or configure it.
         from formal_sources import detached_git_environment
         self.detached_environment = detached_git_environment
-        environment = mock.patch.dict(os.environ, detached_git_environment(), clear=True)
+        # Fixtures author their compile graph; caller linker/target overrides
+        # are independent inputs exercised by native_graph_reason's own table.
+        values = {key: value for key, value in detached_git_environment().items()
+                  if key not in crate_test.COMPILE_ENVIRONMENT_OVERRIDES}
+        environment = mock.patch.dict(os.environ, values, clear=True)
         environment.start()
         self.addCleanup(environment.stop)
 
@@ -440,7 +444,7 @@ else:
             calls = []
             errors = io.StringIO()
             def output(command, **kwargs):
-                if command[0] == "cargo":
+                if Path(command[0]).stem.lower() == "cargo":
                     calls.append(command[1])
                     return json.dumps(metadata).encode()
                 return original_output(command, **kwargs)
@@ -450,7 +454,7 @@ else:
                     (root / "crates/other/src/lib.rs").write_text("pub const VALUE: u8 = 3;\n")
                 return result
             def execute(command, **kwargs):
-                if command[0] == "cargo":
+                if Path(command[0]).stem.lower() == "cargo":
                     calls.append(command[1])
                     return subprocess.CompletedProcess(command, 0)
                 return original_run(command, **kwargs)
@@ -475,12 +479,12 @@ else:
             calls = []
             errors = io.StringIO()
             def output(command, **kwargs):
-                if command[0] == "cargo":
+                if Path(command[0]).stem.lower() == "cargo":
                     calls.append(command[1])
                     return json.dumps(metadata).encode()
                 return original_output(command, **kwargs)
             def execute(command, **kwargs):
-                if command[0] == "cargo":
+                if Path(command[0]).stem.lower() == "cargo":
                     calls.append(command[1])
                     return subprocess.CompletedProcess(command, 0)
                 return original_run(command, **kwargs)
@@ -519,7 +523,7 @@ else:
                             self.git(root, "commit", "--quiet", "-m", "late fixture revision")
                     return original_subject()
                 def output(command, **kwargs):
-                    if command[0] == "cargo":
+                    if Path(command[0]).stem.lower() == "cargo":
                         calls.append(command[1])
                         return json.dumps(metadata).encode()
                     return original_output(command, **kwargs)
@@ -560,7 +564,7 @@ else:
                 calls = []
                 original = subprocess.check_output
                 def output(command, **kwargs):
-                    if command[0] == "cargo":
+                    if Path(command[0]).stem.lower() == "cargo":
                         calls.append(command[1])
                         raise AssertionError("Cargo must not run after source refusal")
                     return original(command, **kwargs)

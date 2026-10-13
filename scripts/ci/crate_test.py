@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -40,6 +41,13 @@ import unittest
 from unittest import mock
 from pathlib import Path
 import formal_sources
+
+WINDOWS = os.name == "nt"
+COMPILE_ENVIRONMENT_OVERRIDES = (
+    "CARGO_BUILD_TARGET", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS",
+    "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_BUILD_RUSTC",
+    "CARGO_BUILD_RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILE = ROOT / ".config/rust-tests.toml"
@@ -66,8 +74,23 @@ def load_profile(path: Path = PROFILE) -> tuple[list[str], list[dict[str, str]]]
     return features, companions
 
 
+def native_command(command: list[str], environment: dict[str, str] | None = None) -> list[str]:
+    """Honor the chosen PATH on Windows, including its .cmd tool wrappers.
+
+    CreateProcess does not search PATHEXT for an unqualified program name.
+    Keep logical commands in plans/receipts while resolving the actual launch.
+    """
+    if not WINDOWS or Path(command[0]).name != command[0]:
+        return command
+    values = os.environ if environment is None else environment
+    program = shutil.which(command[0], path=values.get("PATH", os.environ.get("PATH", os.defpath)))
+    if program is None:
+        raise FileNotFoundError(2, "Executable not found on the selected PATH", command[0])
+    return [program, *command[1:]]
+
+
 def host_triple(root: Path = ROOT, environment: dict[str, str] | None = None) -> str:
-    for line in subprocess.check_output(["rustc", "-vV"], cwd=root, env=environment, text=True).splitlines():
+    for line in subprocess.check_output(native_command(["rustc", "-vV"], environment), cwd=root, env=environment, text=True).splitlines():
         if line.startswith("host: "):
             return line.split(" ", 1)[1].strip()
     raise PlanError("rustc -vV reports no host triple")
@@ -82,9 +105,9 @@ def full_graph_metadata(features: list[str], *, root: Path = ROOT,
     """
 
     return json.loads(subprocess.check_output(
-        ["cargo", "metadata", "--locked", "--format-version", "1",
+        native_command(["cargo", "metadata", "--locked", "--format-version", "1",
          *(["--features", ",".join(features)] if features else []),
-         *(["--filter-platform", host_triple(root, environment)] if host_only else [])],
+         *(["--filter-platform", host_triple(root, environment)] if host_only else [])], environment),
         cwd=root, env=environment,
     ))
 
@@ -98,8 +121,7 @@ def native_graph_reason(root: Path, values: dict[str, str]) -> str:
     and variable names explain refusal without revealing configuration values.
     The single-crate test helper's existing profile behavior is unchanged.
     """
-    overrides = ("CARGO_BUILD_TARGET", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS", "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_BUILD_RUSTC", "CARGO_BUILD_RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER")
-    if any(values.get(name) for name in overrides):
+    if any(values.get(name) for name in COMPILE_ENVIRONMENT_OVERRIDES):
         return "unconfirmed compile target/compiler environment"
     cargo_home = Path(values.get("CARGO_HOME", str(Path.home() / ".cargo")))
     if not cargo_home.is_absolute():
@@ -294,7 +316,9 @@ def environment(root: Path = ROOT) -> dict[str, str]:
 def execute_commands(commands: list[list[str]], values: dict[str, str], *, root: Path = ROOT,
                      verify=None, record=None, run=None) -> tuple[int, list[dict]]:
     """One ordinary sequence; original failure outranks source/evidence faults."""
-    run = subprocess.run if run is None else run
+    if run is None:
+        def run(command, **kwargs):
+            return subprocess.run(native_command(command, kwargs.get("env")), **kwargs)
     rows = []
     for command in commands:
         try:
@@ -532,6 +556,38 @@ class CrateTestPlan(unittest.TestCase):
             self.assertEqual(formal_sources.source_facts(decoy), before)
             self.assertEqual({p: p.read_bytes() for p in protected}, protected)
 
+    def test_native_command_honors_wrappers_without_altering_arguments_or_falling_back(self) -> None:
+        # N1 Windows PATH selects .cmd before the installed .exe; N2 omitted
+        # tool refuses; N3 explicit executable/Unix argv remains untouched.
+        # The real affected-planner CLI table also exercises native .cmd
+        # metadata and execution, preserving original status and receipts.
+        command = ["cargo", "nextest", "-E", "package(=cli) & test(value)"]
+        values = {"PATH": "chosen-tools"}
+        with mock.patch(__name__ + ".WINDOWS", True), mock.patch.object(shutil, "which", return_value="chosen-tools/cargo.cmd") as find:
+            self.assertEqual(native_command(command, values), ["chosen-tools/cargo.cmd", *command[1:]])
+            find.assert_called_once_with("cargo", path="chosen-tools")
+            self.assertEqual(command[0], "cargo")
+        with mock.patch(__name__ + ".WINDOWS", True), mock.patch.object(shutil, "which", return_value=None):
+            with self.assertRaises(FileNotFoundError):
+                native_command(command, values)
+        for windows, explicit in [(False, command), (True, ["chosen-tools/cargo.cmd", *command[1:]])]:
+            with mock.patch(__name__ + ".WINDOWS", windows), mock.patch.object(shutil, "which") as find:
+                self.assertEqual(native_command(explicit, values), explicit)
+                find.assert_not_called()
+        with mock.patch(__name__ + ".native_command", return_value=["chosen-tools/cargo.cmd", *command[1:]]), \
+                mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess(command, 0)) as spawn:
+            status, rows = execute_commands([command], values)
+            self.assertEqual(status, 0)
+            self.assertEqual(rows[0]["command"], command)
+            self.assertEqual(spawn.call_args.args[0], ["chosen-tools/cargo.cmd", *command[1:]])
+        calls = []
+        def record_run(actual, **kwargs):
+            calls.append(actual)
+            return subprocess.CompletedProcess(actual, 0)
+        with mock.patch(__name__ + ".native_command", side_effect=AssertionError("adapter owns the launch")):
+            status, rows = execute_commands([command], values, run=record_run)
+            self.assertEqual((status, calls, rows[0]["command"]), (0, [command], command))
+
     def test_metadata_owner_preserves_root_environment_features_and_host_mode(self) -> None:
         # B10: both callers use this original metadata owner. The compile caller
         # passes its authored features/root/BUILD environment; the old affected
@@ -542,11 +598,11 @@ class CrateTestPlan(unittest.TestCase):
                 mock.patch.object(subprocess, "check_output", return_value="{}") as output:
             self.assertEqual(full_graph_metadata(["cli/k8s"], root=root, environment=values), {})
             host.assert_called_once_with(root, values)
-            output.assert_called_once_with(["cargo", "metadata", "--locked", "--format-version", "1", "--features", "cli/k8s", "--filter-platform", "fixture-host"], cwd=root, env=values)
+            output.assert_called_once_with(native_command(["cargo", "metadata", "--locked", "--format-version", "1", "--features", "cli/k8s", "--filter-platform", "fixture-host"], values), cwd=root, env=values)
         with mock.patch(__name__ + ".host_triple", side_effect=AssertionError("host must not be read")), \
                 mock.patch.object(subprocess, "check_output", return_value="{}") as output:
             full_graph_metadata([], root=root, environment=values, host_only=False)
-            output.assert_called_once_with(["cargo", "metadata", "--locked", "--format-version", "1"], cwd=root, env=values)
+            output.assert_called_once_with(native_command(["cargo", "metadata", "--locked", "--format-version", "1"], values), cwd=root, env=values)
 
     def test_metadata_refusal_starts_no_companion_or_nextest(self) -> None:
         # B12: original metadata75/23/signal refusal -> same public CLI status,
