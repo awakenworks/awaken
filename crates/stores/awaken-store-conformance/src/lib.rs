@@ -42,7 +42,7 @@ use awaken_agent_contract::audit::kind::Kind as EventKind;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, OperationCoordinator};
 use awaken_agent_contract::thread::commit::operation::{
-    CommitOperation, CommitOperationId, CommitPayloadHash,
+    CommitOperation, CommitOperationId, CommitPayloadHash, commit_payload_hash,
 };
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
@@ -860,12 +860,35 @@ pub async fn commit_operation_is_idempotent_and_cas<
 ) {
     let thread = ThreadId("conf-operation".to_string());
     let run = RunId("conf-operation-run".to_string());
+    let first_commit = running_checkpoint(&thread, &run, "first");
     let first = CommitOperation {
         operation_id: CommitOperationId::new(run.clone(), 0),
         expected_thread_version: 0,
-        payload_hash: CommitPayloadHash("sha256:first".to_string()),
-        commit: running_checkpoint(&thread, &run, "first"),
+        payload_hash: commit_payload_hash(&first_commit).unwrap(),
+        commit: first_commit,
     };
+    // Causes N1 no original receipt, N2 valid intrinsic Run/Thread/body shape,
+    // N3 declaration hashes another actual body or is an arbitrary string.
+    // Rules N0=N1+N2+N3=>reject with the complete prefix unchanged; N1 with
+    // the canonical hash=>the original first append below. All four backends
+    // execute this same table. Existing receipt replay is a separate prior law,
+    // and a legacy declared hash is never upgraded to a body certificate.
+    let empty_prefix = store.recovery_snapshot(&thread, &run).await.unwrap();
+    let other = running_checkpoint(&thread, &run, "another-body");
+    for invalid_hash in [
+        commit_payload_hash(&other).unwrap(),
+        CommitPayloadHash("sha256:unverified".into()),
+    ] {
+        assert_ne!(invalid_hash, first.payload_hash, "N3 distinct declaration");
+        let mut invalid = first.clone();
+        invalid.payload_hash = invalid_hash;
+        assert!(store.commit_operation(invalid).await.is_err(), "N0");
+        assert_eq!(
+            store.recovery_snapshot(&thread, &run).await.unwrap(),
+            empty_prefix,
+            "N0 every committed fact/cursor/time/receipt projection stutters"
+        );
+    }
     let applied = store
         .commit_operation(first.clone())
         .await
@@ -894,6 +917,8 @@ pub async fn commit_operation_is_idempotent_and_cas<
         "a duplicate receipt does not append facts"
     );
 
+    operation_receipt_replay_is_thread_bound(store, &first, &applied).await;
+
     let mut hash_conflict = first;
     hash_conflict.payload_hash = CommitPayloadHash("sha256:different".to_string());
     assert!(
@@ -901,11 +926,12 @@ pub async fn commit_operation_is_idempotent_and_cas<
         "one operation id cannot identify two payloads"
     );
 
+    let second_commit = ended_checkpoint(&thread, &run, "second");
     let stale = CommitOperation {
         operation_id: CommitOperationId::new(run.clone(), 1),
         expected_thread_version: 0,
-        payload_hash: CommitPayloadHash("sha256:second".to_string()),
-        commit: ended_checkpoint(&thread, &run, "second"),
+        payload_hash: commit_payload_hash(&second_commit).unwrap(),
+        commit: second_commit,
     };
     assert!(
         store.commit_operation(stale.clone()).await.is_err(),
@@ -948,6 +974,53 @@ pub async fn commit_operation_is_idempotent_and_cas<
     );
 }
 
+/// The same receipt identity law for warm stores and cold reopen/reconnect.
+/// Storage fixtures supply their actual first receipt; this helper creates no
+/// receipt or persistence implementation and invokes the original operation port.
+pub async fn operation_receipt_replay_is_thread_bound<
+    S: OperationCoordinator + RunRecoverySource,
+>(
+    store: &S,
+    operation: &CommitOperation,
+    original: &awaken_agent_contract::thread::commit::operation::CommitReceipt,
+) {
+    // Causes: B1 an original receipt exists; B2 Run/ordinal/declared hash are
+    // unchanged; B3 request Thread matches its original durable Thread; B4
+    // expected version is stale or maximal. Rules: R1=B1+B2+B3+B4=>the original
+    // duplicate receipt; R2=B1+B2+!B3+B4=>reject and both complete prefixes
+    // remain unchanged. Declared hashes in this existing conformance fixture
+    // do not certify body content; this checks the independent Thread binding.
+    // Replay precedes current CAS, but cannot move a receipt across Threads.
+    let thread = &operation.commit.thread_id;
+    let run = &operation.operation_id.run_id;
+    let foreign_thread = ThreadId(format!("{}-foreign", thread.0));
+    let original_prefix = store.recovery_snapshot(thread, run).await.unwrap();
+    let foreign_prefix = store.recovery_snapshot(&foreign_thread, run).await.unwrap();
+    for expected_version in [0, u64::MAX] {
+        let mut same = operation.clone();
+        same.expected_thread_version = expected_version;
+        let replay = store.commit_operation(same.clone()).await.unwrap();
+        let mut expected = original.clone();
+        expected.duplicate = true;
+        assert_eq!(replay, expected, "R1 complete original receipt before CAS");
+        same.commit.thread_id = foreign_thread.clone();
+        assert!(
+            store.commit_operation(same).await.is_err(),
+            "R2 a stored receipt cannot certify another Thread"
+        );
+        assert_eq!(
+            store.recovery_snapshot(thread, run).await.unwrap(),
+            original_prefix,
+            "R2 original complete prefix is unchanged"
+        );
+        assert_eq!(
+            store.recovery_snapshot(&foreign_thread, run).await.unwrap(),
+            foreign_prefix,
+            "R2 foreign complete prefix is unchanged"
+        );
+    }
+}
+
 /// Two operations prepared from the same Thread prefix race: the Thread CAS
 /// admits exactly one, even when they target different Runs.
 pub async fn concurrent_operations_cas_one_winner<
@@ -958,11 +1031,12 @@ pub async fn concurrent_operations_cas_one_winner<
     let thread = ThreadId("conf-operation-race".to_string());
     let operation = |run: &str| {
         let run_id = RunId(run.to_string());
+        let commit = running_checkpoint(&thread, &run_id, run);
         CommitOperation {
-            operation_id: CommitOperationId::new(run_id.clone(), 0),
+            operation_id: CommitOperationId::new(run_id, 0),
             expected_thread_version: 0,
-            payload_hash: CommitPayloadHash(format!("sha256:{run}")),
-            commit: running_checkpoint(&thread, &run_id, run),
+            payload_hash: commit_payload_hash(&commit).unwrap(),
+            commit,
         }
     };
     let (left, right) = tokio::join!(

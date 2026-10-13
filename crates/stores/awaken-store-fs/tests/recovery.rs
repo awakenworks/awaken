@@ -15,7 +15,7 @@ use awaken_agent_contract::audit::kind::Kind as EventKind;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, OperationCoordinator};
 use awaken_agent_contract::thread::commit::operation::{
-    CommitOperation, CommitOperationId, CommitPayloadHash,
+    CommitOperation, CommitOperationId, commit_payload_hash,
 };
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
@@ -219,37 +219,39 @@ async fn operation_receipt_survives_reopen() {
     // Duplicate(receipt), while the payload appears exactly once.
     let dir = std::env::temp_dir().join("awaken_store_fs_receipt_reopen");
     let _ = std::fs::remove_dir_all(&dir);
+    let commit = ThreadCommit {
+        thread_id: ThreadId("receipt-thread".into()),
+        run: RunDisposition::running(RunId("receipt-run".into())),
+        messages: vec![Message::text(
+            MsgId("receipt-message".into()),
+            Role::Assistant,
+            "once",
+        )],
+        state: Vec::new(),
+        events: Vec::new(),
+    };
     let operation = CommitOperation {
         operation_id: CommitOperationId::new(RunId("receipt-run".into()), 0),
         expected_thread_version: 0,
-        payload_hash: CommitPayloadHash("sha256:receipt".into()),
-        commit: ThreadCommit {
-            thread_id: ThreadId("receipt-thread".into()),
-            run: RunDisposition::running(RunId("receipt-run".into())),
-            messages: vec![Message::text(
-                MsgId("receipt-message".into()),
-                Role::Assistant,
-                "once",
-            )],
-            state: Vec::new(),
-            events: Vec::new(),
-        },
+        payload_hash: commit_payload_hash(&commit).unwrap(),
+        commit,
     };
-    {
+    let applied = {
         let store = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
             .await
             .expect("open");
-        assert!(
-            !store
-                .commit_operation(operation.clone())
-                .await
-                .unwrap()
-                .duplicate
-        );
-    }
+        let receipt = store.commit_operation(operation.clone()).await.unwrap();
+        assert!(!receipt.duplicate);
+        receipt
+    };
     let reopened = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
         .await
         .expect("reopen");
+    // Cold binding uses the same B1-B4 decision table as warm conformance.
+    awaken_store_conformance::operation_receipt_replay_is_thread_bound(
+        &reopened, &operation, &applied,
+    )
+    .await;
     assert!(
         reopened
             .commit_operation(operation)

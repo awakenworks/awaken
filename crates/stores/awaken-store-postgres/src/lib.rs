@@ -40,6 +40,7 @@ use awaken_agent_contract::thread::commit::coordinator::{
 use awaken_agent_contract::thread::commit::operation::{
     CommitOperation, CommitPayloadHash, CommitReceipt, admit_commit_operation_append,
     applied_commit_receipt, replay_commit_operation_receipt, require_commit_operation_identity,
+    require_commit_operation_payload_hash,
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
@@ -594,11 +595,18 @@ impl OperationCoordinator for PostgresCommitCoordinator {
         let mut tx = self.pool.begin().await.map_err(reject)?;
         let current_version = lock_thread_version(&mut tx, &operation.commit.thread_id).await?;
         let existing = load_receipt(&mut tx, &operation).await?;
-        if let Some(receipt) = replay_commit_operation_receipt(&operation, existing.as_ref())
-            .map_err(|error| Error::Rejected(error.to_string()))?
+        if let Some(receipt) = replay_commit_operation_receipt(
+            &operation,
+            existing
+                .as_ref()
+                .map(|(thread_id, receipt)| (thread_id, receipt)),
+        )
+        .map_err(|error| Error::Rejected(error.to_string()))?
         {
             return Ok(receipt);
         }
+        require_commit_operation_payload_hash(&operation)
+            .map_err(|error| Error::Rejected(error.to_string()))?;
         let current_ordinal: i64 = sqlx::query_scalar(&format!(
             "SELECT COUNT(*) FROM {NS}_commit WHERE run_id = $1"
         ))
@@ -689,9 +697,9 @@ async fn set_thread_version(
 async fn load_receipt(
     tx: &mut Transaction<'_, Postgres>,
     operation: &CommitOperation,
-) -> Result<Option<CommitReceipt>, Error> {
+) -> Result<Option<(ThreadId, CommitReceipt)>, Error> {
     let row = sqlx::query(&format!(
-        "SELECT payload_hash, commit_sequence, thread_version \
+        "SELECT thread_id, payload_hash, commit_sequence, thread_version \
          FROM {NS}_commit_receipt \
          WHERE operation_run_id = $1 AND operation_ordinal = $2"
     ))
@@ -703,16 +711,22 @@ async fn load_receipt(
     let Some(row) = row else {
         return Ok(None);
     };
+    let thread_id: String = row.try_get("thread_id").map_err(reject)?;
     let payload_hash: String = row.try_get("payload_hash").map_err(reject)?;
-    Ok(Some(CommitReceipt {
-        operation_id: operation.operation_id.clone(),
-        commit_sequence: decode_authority(
-            row.try_get::<i64, _>("commit_sequence").map_err(reject)?,
-        )?,
-        thread_version: decode_authority(row.try_get::<i64, _>("thread_version").map_err(reject)?)?,
-        payload_hash: CommitPayloadHash(payload_hash),
-        duplicate: true,
-    }))
+    Ok(Some((
+        ThreadId(thread_id),
+        CommitReceipt {
+            operation_id: operation.operation_id.clone(),
+            commit_sequence: decode_authority(
+                row.try_get::<i64, _>("commit_sequence").map_err(reject)?,
+            )?,
+            thread_version: decode_authority(
+                row.try_get::<i64, _>("thread_version").map_err(reject)?,
+            )?,
+            payload_hash: CommitPayloadHash(payload_hash),
+            duplicate: true,
+        },
+    )))
 }
 
 async fn append_commit(
