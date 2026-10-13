@@ -20,6 +20,8 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import generate_hooks
+from shared_conformance import (TEST_ATTRIBUTE, shared_conformance_errors,
+                                self_test as shared_conformance_self_test)
 from check_sdk_consumer import admission_errors as sdk_admission_errors
 from _k8s_container_gate_fitness import (
     k8s_container_gate_errors,
@@ -133,9 +135,6 @@ TUPLE_HELPER_BASELINE = 0
 HTTP_HELPER_RETURN = re.compile(r"->\s*\(StatusCode,\s*Value\)")
 RUST_FN = re.compile(r"\bfn\s+(\w+)")
 TUPLE_HELPER = re.compile(r"->\s*\((?:axum::http::)?StatusCode\s*,")
-TEST_ATTRIBUTE = re.compile(
-    r"#\[(?:tokio::)?test[^\]]*\]\s*(?:#\[[^\]]*\]\s*)*(?:async\s+)?fn\s+(\w+)"
-)
 UNBOUNDED_WAIT = re.compile(r"\.(?:notified|recv|acquire|changed)\(\)\s*\.await")
 BOUNDED_WAIT = re.compile(r"time::timeout|tokio::select!|select!|signaled\(")
 # A unit or integration test that has not finished in five minutes is not slow,
@@ -634,44 +633,6 @@ def workflow_only_registry_errors(workflows: dict[str, str]) -> list[str]:
     return errors
 
 
-def shared_conformance_errors(
-    store_suite: str,
-    backend_tests: dict[str, str],
-    ingress_tests: str,
-) -> list[str]:
-    errors: list[str] = []
-    store_cases = re.findall(r"^pub async fn ([a-z0-9_]+)", store_suite, re.MULTILINE)
-    for relative, test_text in backend_tests.items():
-        missing = [
-            case
-            for case in store_cases
-            if f"awaken_store_conformance::{case}" not in test_text
-        ]
-        if missing:
-            errors.append(
-                f"{relative} omits shared store cases: " + ", ".join(missing)
-            )
-
-    # The ingress testkit intentionally owns no backend. Its executable proof is
-    # the same suite applied to each production implementation.
-    for backend in ("memory", "sqlite", "postgres"):
-        if f"async fn {backend}_dispatch_conforms" not in ingress_tests:
-            errors.append(f"dispatch conformance omits {backend} backend")
-    # Cause C7: a backend may inject its store-owned clock through the canonical
-    # conformance wrapper. Effect: exactly three backend bindings still execute
-    # one shared suite; neither helper spelling creates a parallel case list.
-    conformance_bindings = re.findall(
-        r"\bassert_dispatch_conformance(?:_with_clock)?\(", ingress_tests
-    )
-    if len(conformance_bindings) != 3:
-        errors.append("dispatch conformance suite is not applied to exactly three backends")
-    operational_feed_bindings = re.findall(
-        r"\bassert_dispatch_operational_feed_conformance(?:_with_clock)?\(",
-        ingress_tests,
-    )
-    if len(operational_feed_bindings) != 3:
-        errors.append("dispatch operational-feed suite is not applied to exactly three backends")
-    return errors
 
 
 # The two commands `--push` exists to run: workspace clippy under
@@ -1919,63 +1880,7 @@ def self_test() -> None:
         for relative in STORE_BACKEND_TESTS
     }
     ingress_tests = (ROOT / INGRESS_CONFORMANCE).read_text(encoding="utf-8")
-    assert not shared_conformance_errors(store_suite, backend_tests, ingress_tests), "R1/C7"
-    detached_backend = dict(backend_tests)
-    detached_backend[STORE_BACKEND_TESTS[0]] = detached_backend[
-        STORE_BACKEND_TESTS[0]
-    ].replace("awaken_store_conformance::commit_then_read", "detached::commit_then_read")
-    assert any(
-        "omits shared store cases: commit_then_read" in error
-        for error in shared_conformance_errors(
-            store_suite, detached_backend, ingress_tests
-        )
-    ), "R8 store testkit"
-    assert any(
-        "omits postgres backend" in error
-        for error in shared_conformance_errors(
-            store_suite,
-            backend_tests,
-            ingress_tests.replace("async fn postgres_dispatch_conforms", "async fn detached"),
-        )
-    ), "R8 ingress testkit"
-
-    # Operational-feed binding cause/effect design:
-    # C13=a production backend uses the canonical default-clock entrypoint;
-    # C14=a production backend uses the canonical explicit-clock entrypoint.
-    # E13=both spellings count as one binding to the same shared suite. R14
-    # rejects a missing binding; R15 rejects a duplicate binding, regardless of
-    # which spelling introduced it. This keeps clock policy orthogonal to suite
-    # ownership and preserves the exactly-three-backends invariant.
-    assert not shared_conformance_errors(
-        store_suite, backend_tests, ingress_tests
-    ), "R1/C13-C14 mixed operational-feed clocks"
-    missing_operational_feed = ingress_tests.replace(
-        "assert_dispatch_operational_feed_conformance(&store, \"conformance-postgres\").await;",
-        "",
-        1,
-    )
-    assert any(
-        "operational-feed suite is not applied to exactly three backends" in error
-        for error in shared_conformance_errors(
-            store_suite, backend_tests, missing_operational_feed
-        )
-    ), "R14 missing operational-feed binding"
-    duplicate_operational_feed = ingress_tests.replace(
-        "assert_dispatch_operational_feed_conformance(&store, \"conformance-postgres\").await;",
-        (
-            "assert_dispatch_operational_feed_conformance(&store, \"conformance-postgres\").await;\n"
-            "    assert_dispatch_operational_feed_conformance_with_clock(\n"
-            "        &store, \"conformance-postgres-duplicate\", &set_clock,\n"
-            "    ).await;"
-        ),
-        1,
-    )
-    assert any(
-        "operational-feed suite is not applied to exactly three backends" in error
-        for error in shared_conformance_errors(
-            store_suite, backend_tests, duplicate_operational_feed
-        )
-    ), "R15 duplicate operational-feed binding"
+    shared_conformance_self_test(store_suite, backend_tests, ingress_tests)
 
 
 def main(argv: list[str]) -> int:
