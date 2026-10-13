@@ -36,11 +36,13 @@ async fn builder_rejects_invalid_configuration_before_observing_or_starting_serv
         let clock = Arc::new(ConstructionClock::default());
         let environment = Arc::new(RecordingEnvironmentSource::default());
         let runtime = Arc::new(creation::RecordingCreateRuntime::default());
-        let built = SessionApplication::builder(
+        let probe = Arc::new(ExecutionObservationProbe::default());
+        let built = SessionApplicationBuilder::new(
             runtime.clone(),
             Arc::new(NoopMcpRealizer),
             SessionPersistence::new(store, clock.clone()),
             environment.clone(),
+            SessionExecutionAdmission::new(probe.clone(), probe.clone(), probe.clone()),
         )
         .configuration(SessionApplicationConfiguration {
             local_realization_owner: owner.into(),
@@ -52,6 +54,7 @@ async fn builder_rejects_invalid_configuration_before_observing_or_starting_serv
         assert_eq!(clock.0.load(Ordering::SeqCst), 0);
         assert_eq!(runtime.preparations.load(Ordering::SeqCst), 0);
         assert_eq!(environment.dispatch_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(probe.0.load(Ordering::SeqCst), 0);
     }
 }
 
@@ -68,7 +71,7 @@ async fn builder_freezes_normalized_owner_and_preserves_exact_creation_replay() 
     let persistence = SessionPersistence::new(store, clock.clone());
     let sink = persistence.environment_binding_sink();
     let runtime = Arc::new(creation::RecordingCreateRuntime::default());
-    let app = SessionApplication::builder(
+    let app = SessionApplicationBuilder::fixture(
         runtime.clone(),
         Arc::new(NoopMcpRealizer),
         persistence,
@@ -123,7 +126,7 @@ async fn builder_enabled_retention_propagates_authority_failure_instead_of_silen
                 .await
                 .unwrap(),
         );
-        let app = SessionApplication::builder(
+        let app = SessionApplicationBuilder::fixture(
             Arc::new(NoopRuntime),
             Arc::new(NoopMcpRealizer),
             SessionPersistence::new(store.clone(), system_clock()),
@@ -152,4 +155,186 @@ async fn builder_enabled_retention_propagates_authority_failure_instead_of_silen
                 .unwrap();
         }
     }
+}
+
+#[derive(Default)]
+struct ExecutionObservationProbe(AtomicUsize);
+
+#[async_trait::async_trait]
+impl awaken_dispatch_contract::DispatchOperationalFeed for ExecutionObservationProbe {
+    async fn events_after(
+        &self,
+        cursor: awaken_dispatch_contract::DispatchCursor,
+        _limit: usize,
+        _run: Option<&awaken_agent_contract::agent::run::Id>,
+    ) -> Result<awaken_dispatch_contract::DispatchPage, awaken_dispatch_contract::DispatchError>
+    {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(awaken_dispatch_contract::DispatchPage {
+            events: Vec::new(),
+            next_cursor: cursor,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_worker_contract::WorkerObservationSource for ExecutionObservationProbe {
+    async fn list(
+        &self,
+    ) -> Result<Vec<awaken_worker_contract::RegisteredWorker>, awaken_worker_contract::RegistryError>
+    {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(Vec::new())
+    }
+}
+
+impl awaken_session_realization_contract::SessionPreparationPlacement
+    for ExecutionObservationProbe
+{
+    fn requirements(
+        &self,
+        _session: &PersistedSession,
+    ) -> Result<
+        awaken_worker_contract::PlacementRequirements,
+        awaken_session_realization_contract::SessionRealizationControlFailure,
+    > {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(awaken_worker_contract::PlacementRequirements::remote_required())
+    }
+}
+
+#[tokio::test]
+async fn builder_freezes_execution_services_and_mount_checks_reject_foreign_instances_without_reads()
+ {
+    // C1 exact same object, C2 equal data from another object, C3 one replaced
+    // role. R1 all exact -> mount accepted. R2 any C2/C3 -> refused before any
+    // dispatch read, Worker observation, compiler call or Runtime preparation.
+    // Repeating the checks never installs or replaces a source.
+    for topology in [
+        SessionExecutionPlacement::LocalWorker,
+        SessionExecutionPlacement::RegisteredWorker,
+    ] {
+        let probe = Arc::new(ExecutionObservationProbe::default());
+        let foreign = Arc::new(ExecutionObservationProbe::default());
+        let dispatch: Arc<dyn awaken_dispatch_contract::DispatchOperationalFeed> = probe.clone();
+        let workers: Arc<dyn awaken_worker_contract::WorkerObservationSource> = probe.clone();
+        let placement: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement> =
+            probe.clone();
+        let foreign_dispatch: Arc<dyn awaken_dispatch_contract::DispatchOperationalFeed> =
+            foreign.clone();
+        let foreign_workers: Arc<dyn awaken_worker_contract::WorkerObservationSource> =
+            foreign.clone();
+        let foreign_placement: Arc<
+            dyn awaken_session_realization_contract::SessionPreparationPlacement,
+        > = foreign.clone();
+        let store = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .await
+                .unwrap(),
+        );
+        let clock = Arc::new(ConstructionClock::default());
+        let runtime = Arc::new(creation::RecordingCreateRuntime::default());
+        let app = SessionApplicationBuilder::new(
+            runtime.clone(),
+            Arc::new(NoopMcpRealizer),
+            SessionPersistence::new(store, clock.clone()),
+            Arc::new(RecordingEnvironmentSource::default()),
+            SessionExecutionAdmission::new(dispatch.clone(), workers.clone(), placement.clone()),
+        )
+        .configuration(SessionApplicationConfiguration {
+            execution_placement: topology,
+            ..Default::default()
+        })
+        .build()
+        .unwrap();
+        assert_eq!(clock.0.load(Ordering::SeqCst), 1);
+        assert!(app.execution_admission().verify_dispatch(&dispatch).is_ok());
+        assert!(
+            app.execution_admission()
+                .verify_dispatch(&foreign_dispatch)
+                .is_err()
+        );
+        for (observations, compiler, accepted) in [
+            (&workers, &placement, true),
+            (&foreign_workers, &placement, false),
+            (&workers, &foreign_placement, false),
+            (&foreign_workers, &foreign_placement, false),
+        ] {
+            assert_eq!(
+                app.execution_admission()
+                    .verify_worker_admission(observations, compiler)
+                    .is_ok(),
+                accepted
+            );
+        }
+        assert!(app.execution_admission().verify_dispatch(&dispatch).is_ok());
+        assert!(
+            app.execution_admission()
+                .verify_worker_admission(&workers, &placement)
+                .is_ok()
+        );
+        assert_eq!(probe.0.load(Ordering::SeqCst), 0);
+        assert_eq!(foreign.0.load(Ordering::SeqCst), 0);
+        assert_eq!(runtime.preparations.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
+fn fixture_execution_completion_validates_existing_bindings_before_filling_missing_slots() {
+    // R1 either retained role or both retained roles mismatch -> refusal leaves
+    // every missing slot empty. R2 exact retained roles -> completion. R3 either
+    // foreign role after completion -> refusal preserves both canonical handles.
+    let probe = Arc::new(ExecutionObservationProbe::default());
+    let foreign = Arc::new(ExecutionObservationProbe::default());
+    let workers: Arc<dyn awaken_worker_contract::WorkerObservationSource> = probe.clone();
+    let placement: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement> =
+        probe.clone();
+    let foreign_workers: Arc<dyn awaken_worker_contract::WorkerObservationSource> = foreign.clone();
+    let foreign_placement: Arc<
+        dyn awaken_session_realization_contract::SessionPreparationPlacement,
+    > = foreign.clone();
+    for (has_workers, has_placement) in [(true, false), (false, true), (true, true)] {
+        let services = SessionExecutionAdmission::fixture();
+        if has_workers {
+            assert!(services.workers.set(workers.clone()).is_ok());
+        }
+        if has_placement {
+            assert!(services.placement.set(placement.clone()).is_ok());
+        }
+        assert!(
+            services
+                .complete_fixture_worker_admission(
+                    foreign_workers.clone(),
+                    foreign_placement.clone()
+                )
+                .is_err()
+        );
+        assert_eq!(services.workers.get().is_some(), has_workers, "R1");
+        assert_eq!(services.placement.get().is_some(), has_placement, "R1");
+        assert!(
+            services
+                .complete_fixture_worker_admission(workers.clone(), placement.clone())
+                .is_ok(),
+            "R2"
+        );
+        for (roster, compiler) in [
+            (foreign_workers.clone(), placement.clone()),
+            (workers.clone(), foreign_placement.clone()),
+        ] {
+            assert!(
+                services
+                    .complete_fixture_worker_admission(roster, compiler)
+                    .is_err(),
+                "R3"
+            );
+            assert!(
+                services
+                    .verify_worker_admission(&workers, &placement)
+                    .is_ok(),
+                "R3"
+            );
+        }
+    }
+    assert_eq!(probe.0.load(Ordering::SeqCst), 0);
+    assert_eq!(foreign.0.load(Ordering::SeqCst), 0);
 }

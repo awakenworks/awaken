@@ -4530,13 +4530,24 @@ fn application_with_runtime(
     repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
     environments: Arc<dyn SessionEnvironmentSource>,
 ) -> SessionApplication {
-    let mcp = Arc::new(NoopMcpRealizer);
-    SessionApplication::new(
+    configured_application(runtime, repo, environments, Default::default())
+}
+
+fn configured_application(
+    runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime>,
+    repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
+    environments: Arc<dyn SessionEnvironmentSource>,
+    configuration: SessionApplicationConfiguration,
+) -> SessionApplication {
+    SessionApplicationBuilder::fixture(
         runtime,
-        mcp,
+        Arc::new(NoopMcpRealizer),
         crate::SessionPersistence::new(repo, system_clock()),
         environments,
     )
+    .configuration(configuration)
+    .build()
+    .expect("valid fixture Session application")
 }
 
 #[tokio::test]
@@ -4561,12 +4572,14 @@ async fn complete_runtime_composition_does_not_require_optional_role_discovery()
         Arc::ptr_eq(&sink, &persistence.environment_binding_sink()),
         "R2"
     );
-    let app = SessionApplication::new(
+    let app = SessionApplicationBuilder::fixture(
         runtime,
         Arc::new(NoopMcpRealizer),
         persistence,
         Arc::new(RecordingEnvironmentSource::default()),
-    );
+    )
+    .build()
+    .expect("valid fixture Session application");
     assert!(Arc::ptr_eq(&sink, &app.environment_binding_sink()), "R1/R2");
     let selected_clock: Arc<dyn awaken_time::WallClock> = clock;
     assert!(Arc::ptr_eq(&selected_clock, &app.clock()), "R1");
@@ -4577,13 +4590,15 @@ fn application_with_configuration(
     environments: Arc<dyn SessionEnvironmentSource>,
     configuration: SessionApplicationConfiguration,
 ) -> SessionApplication {
-    SessionApplication::new_with_configuration(
+    SessionApplicationBuilder::fixture(
         Arc::new(NoopRuntime),
         Arc::new(NoopMcpRealizer),
         crate::SessionPersistence::new(repo, system_clock()),
         environments,
-        configuration,
     )
+    .configuration(configuration)
+    .build()
+    .expect("valid fixture Session application")
 }
 
 fn skill_resources(id: &str) -> crate::session_resource::ResolvedSessionResources {

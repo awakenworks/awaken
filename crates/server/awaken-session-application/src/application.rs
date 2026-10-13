@@ -135,16 +135,8 @@ pub struct SessionApplication {
     /// application, and write-once so a second outbox consumer cannot replace
     /// the canonical supervisor after traffic starts.
     lifecycle_notifier: OnceLock<Arc<dyn LifecycleFactNotifier>>,
-    /// Canonical registered-Worker observation used immediately before an
-    /// external terminal-cleanup lease CAS. The HTTP adapter authenticates the
-    /// request, while this application-owned read prevents direct callers or a
-    /// stale adapter snapshot from assigning an incompatible Worker.
-    worker_observations: OnceLock<Arc<dyn awaken_worker_contract::WorkerObservationSource>>,
-    /// Read side of the existing dispatch authority, bound once at composition.
-    /// It grants no execution, claim, resume or persistence authority.
-    dispatch_observations: OnceLock<Arc<dyn awaken_dispatch_contract::DispatchOperationalFeed>>,
-    session_preparation_placement:
-        OnceLock<Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement>>,
+    /// One complete set of immutable execution observations.
+    execution_admission: SessionExecutionAdmission,
     /// Disposable keyset position for one bounded preparation-candidate page
     /// per poll. The root and its CAS remain the scheduling authority.
     session_preparation_cursors: tokio::sync::Mutex<
@@ -166,127 +158,11 @@ pub struct SessionApplication {
 static APPLICATION_INCARNATION_SEQ: AtomicU64 = AtomicU64::new(0);
 
 impl SessionApplication {
-    /// Consume process services before sharing the canonical application.
-    #[must_use]
-    pub fn builder(
-        runtime: impl Into<crate::SessionExecutor>,
-        mcp: Arc<dyn McpAttachmentRealizer>,
-        persistence: SessionPersistence,
-        environments: Arc<dyn SessionEnvironmentSource>,
-    ) -> SessionApplicationBuilder {
-        SessionApplicationBuilder::new(runtime, mcp, persistence, environments)
-    }
-
-    /// Install the existing clock port before sharing the application.
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn with_clock(mut self, clock: Arc<dyn awaken_time::WallClock>) -> Self {
-        self.clock = clock;
-        self.environment_binding_sink = Arc::new(RepositoryEnvironmentBindingSink::new(
-            self.sessions_repo.clone(),
-            self.clock.clone(),
-        ));
-        self
-    }
-
     /// The injected clock port, for an adapter that stamps observations on the
     /// same time line as this application's commands.
     #[must_use]
     pub fn clock(&self) -> Arc<dyn awaken_time::WallClock> {
         self.clock.clone()
-    }
-
-    /// `clock` is the process's one wall clock, chosen by the composition that
-    /// builds this application.
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn new(
-        runtime: impl Into<crate::SessionExecutor>,
-        mcp_realizer: Arc<dyn McpAttachmentRealizer>,
-        persistence: SessionPersistence,
-        environments: Arc<dyn SessionEnvironmentSource>,
-    ) -> Self {
-        Self::new_with_configuration(
-            runtime,
-            mcp_realizer,
-            persistence,
-            environments,
-            SessionApplicationConfiguration::default(),
-        )
-    }
-
-    /// `clock` stamps every Session fact this application writes and judges
-    /// every lease it holds; the composition passes the process's one clock.
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn new_with_configuration(
-        runtime: impl Into<crate::SessionExecutor>,
-        mcp_realizer: Arc<dyn McpAttachmentRealizer>,
-        persistence: SessionPersistence,
-        environments: Arc<dyn SessionEnvironmentSource>,
-        configuration: SessionApplicationConfiguration,
-    ) -> Self {
-        Self::builder(runtime, mcp_realizer, persistence, environments)
-            .configuration(configuration)
-            .build()
-            .expect("fixture Session application configuration is valid")
-    }
-
-    fn new_inner(
-        runtime: crate::SessionExecutor,
-        mcp_realizer: Arc<dyn McpAttachmentRealizer>,
-        persistence: SessionPersistence,
-        environments: Arc<dyn SessionEnvironmentSource>,
-        configuration: SessionApplicationConfiguration,
-    ) -> Self {
-        let SessionPersistence {
-            store,
-            clock,
-            environment_binding_sink,
-        } = persistence;
-        let lifecycle_outbox: Arc<dyn awaken_session_repository_contract::LifecycleOutbox> =
-            store.clone();
-        let sessions_repo: Arc<dyn SessionRepository> = store;
-        // The incarnation stem: this application's start instant on its clock.
-        let started_at = clock.now().as_unix_nanos();
-        Self {
-            clock,
-            configuration,
-            runtime,
-            mcp_realizer,
-            credential_source: None,
-            credential_material_ingress: None,
-            environments,
-            config_source: None,
-            model_publication_resolver: None,
-            resource_registry: None,
-            resource_purge_scheduler: None,
-            resource_references: None,
-            resource_files: None,
-            managed_list_prices: None,
-            sessions_repo,
-            environment_binding_sink,
-            lifecycle_outbox,
-            executable_projection_refresh: None,
-            lifecycle_notifier: OnceLock::new(),
-            worker_observations: OnceLock::new(),
-            dispatch_observations: OnceLock::new(),
-            session_preparation_placement: OnceLock::new(),
-            session_preparation_cursors: tokio::sync::Mutex::new(BTreeMap::new()),
-            runtime_incarnation: format!(
-                "session:{}:{started_at}:{}",
-                std::process::id(),
-                APPLICATION_INCARNATION_SEQ.fetch_add(1, Ordering::Relaxed)
-            ),
-            local_realization_locks: Arc::default(),
-            #[cfg(any(test, feature = "test-support"))]
-            mutation_sequence: AtomicU64::new(0),
-            lifecycle_supervisor_started: AtomicBool::new(false),
-            lifecycle_wakeup: tokio::sync::Notify::new(),
-            event_batch_cutover_validation: Arc::new(
-                SessionEventBatchCutoverValidationSource::new(),
-            ),
-        }
     }
 
     /// Exact immutable fact written into a newly compiled Session baseline.
@@ -612,12 +488,10 @@ impl SessionApplication {
         &mut self,
         repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
     ) {
-        self.lifecycle_outbox = repo.clone();
-        self.sessions_repo = repo;
-        self.environment_binding_sink = Arc::new(RepositoryEnvironmentBindingSink::new(
-            self.sessions_repo.clone(),
-            self.clock.clone(),
-        ));
+        let persistence = SessionPersistence::new(repo, self.clock.clone());
+        self.sessions_repo = persistence.store.clone();
+        self.lifecycle_outbox = persistence.store;
+        self.environment_binding_sink = persistence.environment_binding_sink;
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -633,6 +507,11 @@ impl SessionApplication {
         self.managed_list_prices = Some(provider);
     }
 
+    /// The frozen dispatch, Worker roster and placement compiler for this process.
+    pub fn execution_admission(&self) -> &SessionExecutionAdmission {
+        &self.execution_admission
+    }
+
     /// Bind the one lifecycle-outbox wake channel. Duplicate composition is an
     /// error instead of silently replacing (or running alongside) its owner.
     pub fn set_lifecycle_notifier(
@@ -644,51 +523,16 @@ impl SessionApplication {
             .map_err(|_| "Session lifecycle notifier is already installed")
     }
 
-    /// Bind the one Coordinator-owned registered-Worker observation source.
-    /// Duplicate composition is rejected instead of letting HTTP and the root
-    /// CAS consult different registries.
-    pub fn set_worker_observation_source(
-        &self,
-        source: Arc<dyn awaken_worker_contract::WorkerObservationSource>,
-    ) -> Result<(), &'static str> {
-        self.worker_observations
-            .set(source)
-            .map_err(|_| "Worker observation source is already installed")
-    }
-
-    /// Bind the same dispatch feed used by the Runtime. A second source cannot
-    /// replace the cursor partition after Run observation has begun.
-    pub fn set_dispatch_observation_source(
-        &self,
-        source: Arc<dyn awaken_dispatch_contract::DispatchOperationalFeed>,
-    ) -> Result<(), &'static str> {
-        self.dispatch_observations
-            .set(source)
-            .map_err(|_| "Session dispatch observation source is already installed")
-    }
-
     pub(crate) fn worker_observation_source(
         &self,
     ) -> Option<&dyn awaken_worker_contract::WorkerObservationSource> {
-        self.worker_observations.get().map(Arc::as_ref)
-    }
-
-    /// Bind the Runtime Host's one Sandbox/Resource capability compiler. A
-    /// missing compiler disables no-Run Worker claims rather than guessing a
-    /// weaker placement vector in the Session application.
-    pub fn set_session_preparation_placement(
-        &self,
-        placement: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement>,
-    ) -> Result<(), &'static str> {
-        self.session_preparation_placement
-            .set(placement)
-            .map_err(|_| "Session preparation placement is already installed")
+        self.execution_admission.workers.get().map(Arc::as_ref)
     }
 
     pub(crate) fn session_preparation_placement(
         &self,
     ) -> Option<&dyn awaken_session_realization_contract::SessionPreparationPlacement> {
-        self.session_preparation_placement.get().map(Arc::as_ref)
+        self.execution_admission.placement.get().map(Arc::as_ref)
     }
 
     /// Bind the one executable-projection reconciliation operation used by

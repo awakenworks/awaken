@@ -948,3 +948,14 @@
   guard for exact pre-entry Sandbox process evidence. Binding and stop share one
   retention catalog; the existing resource owner retains guard-release authority.
   Historical opaque tool evidence remains unchanged.
+
+## 2026-10-14 — Release exact failed Frozen executions through the archive owner
+
+- [Session operations](../design/session-aggregate-and-dispatch-capabilities.md)
+  reuse the original archive CAS for a failed/cancelled current primary Run and
+  its exact activity receipt. The profiled command has one role entry; a redundant
+  application forwarding function is removed. New activity and incomplete Events
+  retain their existing fences. Verified cleanup still owns successful release.
+- Decision-table tests cover retained cleanup, restart/replay, missing or foreign
+  evidence, other execution classes and concurrent activity. Source evidence does
+  not assert independent effect closure or deployed Flow successor admission.

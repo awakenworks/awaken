@@ -1,7 +1,7 @@
 // @formal surface requirement=session.lifecycle.session_state
-// @formal reason: The Session application shares the repository and required services that enforce one
-// @formal reason: durable authority across protocol callers. Its authorization, CAS and effect owners
-// @formal reason: retain their own evidence; this product classification does not replace their checks.
+// @formal reason: Declares the Session application and its required consumer roles. Commands and
+// @formal reason: authority checks are implemented by the owning application modules and contracts;
+// @formal reason: these exports do not create another durable authority or prove external closure.
 //! Coordinator-owned Session application state and required services.
 //!
 //! Protocol adapters retain DTO projection, route parsing, and transient stream
@@ -32,6 +32,8 @@ use {
 
 pub use awaken_session_execution_contract::SessionExecutor;
 
+mod execution_admission;
+pub use execution_admission::SessionExecutionAdmission;
 mod construction;
 pub use construction::{SessionApplicationBuilder, SessionCredentials, SessionResources};
 

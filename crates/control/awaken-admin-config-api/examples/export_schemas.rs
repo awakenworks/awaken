@@ -6,7 +6,7 @@
 //! shared with the OpenAPI document so the two artifacts cannot drift.
 //!
 //! ```sh
-//! cargo run -p awaken-admin-config-api --features schema --example export_schemas
+//! cargo run -p awaken-admin-config-api --features schema --example export_admin_schemas
 //! ```
 
 use serde_json::{Value, json};

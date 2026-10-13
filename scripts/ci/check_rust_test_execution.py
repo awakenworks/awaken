@@ -222,13 +222,14 @@ if [ "$1" = awaken-ci-deadline ]; then
 fi
 ''' + body, encoding="utf-8")
         cargo.chmod(0o755)
+        values = dict(detached_git_environment(), PATH=str(binary) + os.pathsep + os.environ['PATH'],
+                      CARGO_TARGET_DIR=str(fixture / "target"))
         if os.name == "nt":
-            bash = shutil.which("bash")
-            if bash is None:
-                raise RuntimeError("native Windows fixtures require Git Bash")
-            (binary / "cargo.cmd").write_text(f'@"{bash}" "{cargo.as_posix()}" %*\n', encoding="utf-8")
-        return dict(detached_git_environment(), PATH=str(binary) + os.pathsep + os.environ['PATH'],
-                    CARGO_TARGET_DIR=str(fixture / "target"))
+            from _native_test_launcher import native_fixture_launcher
+            from _native_shell import bash_executable
+            shutil.copyfile(native_fixture_launcher(), binary / "cargo.exe")
+            values.update(AWAKEN_FIXTURE_PROGRAM=bash_executable(), AWAKEN_FIXTURE_SCRIPT=str(cargo))
+        return values
 
     @unittest.skipIf(os.name == "nt", "POSIX admitted shell composition")
     def test_shared_budget_starts_after_queued_admission(self) -> None:

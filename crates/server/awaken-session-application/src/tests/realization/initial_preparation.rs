@@ -151,9 +151,11 @@ async fn preparation_candidate_index_skips_a_saturated_live_owner_front() {
         terminal_cleanup_manifest(),
     )]);
     application
+        .execution_admission()
         .set_worker_observation_source(observations)
         .unwrap();
     application
+        .execution_admission()
         .set_session_preparation_placement(Arc::new(FixtureSessionPlacement))
         .unwrap();
     let assignment = application
@@ -236,9 +238,11 @@ async fn preparation_claim_advances_one_candidate_page_per_poll() {
         terminal_cleanup_manifest(),
     )]);
     application
+        .execution_admission()
         .set_worker_observation_source(observations.clone())
         .unwrap();
     application
+        .execution_admission()
         .set_session_preparation_placement(Arc::new(SelectiveSessionPlacement))
         .unwrap();
     assert!(
@@ -475,6 +479,7 @@ async fn initial_preparation_claims_only_an_eligible_external_preparing_root() {
     let eligible = terminal_cleanup_worker(&target, terminal_cleanup_manifest());
     observations.replace(vec![eligible.clone()]);
     application
+        .execution_admission()
         .set_worker_observation_source(observations.clone())
         .unwrap();
     assert!(
@@ -491,6 +496,7 @@ async fn initial_preparation_claims_only_an_eligible_external_preparing_root() {
         "R7 missing canonical compiler fails closed"
     );
     application
+        .execution_admission()
         .set_session_preparation_placement(Arc::new(FixtureSessionPlacement))
         .unwrap();
 
@@ -614,9 +620,11 @@ async fn preparation_rechecks_worker_capability_after_root_assignment() {
         WorkerObservationStep::Workers(vec![withdrawn]),
     ]);
     application
+        .execution_admission()
         .set_worker_observation_source(observations)
         .unwrap();
     application
+        .execution_admission()
         .set_session_preparation_placement(Arc::new(FixtureSessionPlacement))
         .unwrap();
     assert!(

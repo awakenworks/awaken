@@ -2694,12 +2694,14 @@ async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects(
             create(repository.as_ref(), session).await;
             let runtime = Arc::new(EventBatchRuntime::default());
             let clock = Arc::new(ManualClock::new(100));
-            let app = application_with_runtime(
+            let app = SessionApplicationBuilder::fixture(
                 runtime.clone(),
-                faulting.clone(),
+                Arc::new(NoopMcpRealizer),
+                SessionPersistence::new(faulting.clone(), clock.clone()),
                 Arc::new(RecordingEnvironmentSource::default()),
             )
-            .with_clock(clock.clone());
+            .build()
+            .expect("valid fixture Store/Clock composition");
             let initial = repository.get(&SessionId::from(&session_id)).await.unwrap();
             let outbox =
                 serde_json::to_value(repository.pending_lifecycle().await.unwrap()).unwrap();
@@ -2808,12 +2810,14 @@ async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects(
                 expected,
                 "T2/T3 complete committed frame {cleanup}/{fault}"
             );
-            let cold = application_with_runtime(
+            let cold = SessionApplicationBuilder::fixture(
                 runtime.clone(),
-                repository.clone(),
+                Arc::new(NoopMcpRealizer),
+                SessionPersistence::new(repository.clone(), Arc::new(ManualClock::new(900))),
                 Arc::new(RecordingEnvironmentSource::default()),
             )
-            .with_clock(Arc::new(ManualClock::new(900)));
+            .build()
+            .expect("valid fixture Store/Clock composition");
             let replay = cold.reconcile_event_batches().await;
             assert!(replay.failures.is_empty(), "T4 cold scan");
             assert_eq!(replay.settled, 0, "T4 no unfinished batch");

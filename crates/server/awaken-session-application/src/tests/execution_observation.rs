@@ -225,10 +225,12 @@ async fn native_run_pages_need_no_managed_input_history_and_preserve_exact_curso
         Arc::new(RecordingEnvironmentSource::default()),
     );
     application
+        .execution_admission()
         .set_dispatch_observation_source(feed.clone())
         .unwrap();
     assert!(
         application
+            .execution_admission()
             .set_dispatch_observation_source(feed.clone())
             .is_err(),
         "one source, no replacement"
@@ -378,6 +380,7 @@ async fn native_run_observation_refuses_foreign_scope_missing_source_and_invalid
         unavailable: true.into(),
     });
     application
+        .execution_admission()
         .set_dispatch_observation_source(feed.clone())
         .unwrap();
     assert!(
@@ -569,7 +572,9 @@ async fn native_run_claim_is_visible_before_the_first_commit_only_with_exact_adm
         calls: 0.into(),
         unavailable: false.into(),
     });
-    app.set_dispatch_observation_source(feed).unwrap();
+    app.execution_admission()
+        .set_dispatch_observation_source(feed)
+        .unwrap();
     assert!(
         matches!(
             app.session_run_events_after(
