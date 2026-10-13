@@ -459,6 +459,7 @@ include!("conformance/recovery_credentials.rs");
 include!("conformance/operations_claims.rs");
 
 include!("conformance/reservations.rs");
+include!("conformance/session_run_admission.rs");
 
 include!("conformance/fixtures.rs");
 

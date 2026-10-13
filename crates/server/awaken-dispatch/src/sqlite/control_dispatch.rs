@@ -158,32 +158,17 @@ impl awaken_dispatch_contract::DispatchControlReads for SqliteDispatchStore {
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let (_authority, mut conn) = self.with_conn().await?;
         let p = NS;
-        let rows =
-            sqlx::query_as::<_, (i64, String, Option<String>, Option<String>, Option<String>)>(
-                &format!(
-                    "SELECT sequence, run_id, request_fingerprint, thread_id, session_thread_id \
-                 FROM {p}_dispatch_completion \
-                 WHERE sequence > ?1 ORDER BY sequence LIMIT ?2"
-                ),
-            )
-            .bind(after_sequence)
-            .bind(limit)
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(store_error)?;
-        let mut events = Vec::new();
-        for (sequence, run_id, request_fingerprint, thread_id, session_thread_id) in rows {
-            events.push(DispatchCompletion {
-                sequence: u64::try_from(sequence).map_err(|_| {
-                    DispatchError::Rejected("persisted completion sequence is negative".to_string())
-                })?,
-                run_id: RunId(run_id),
-                thread_id: thread_id.map(ThreadId),
-                session_thread_id: session_thread_id.map(ThreadId),
-                request_fingerprint,
-            });
-        }
-        Ok(events)
+        let rows = sqlx::query(&format!(
+            "SELECT sequence, run_id, request_fingerprint, thread_id, session_thread_id \
+             FROM {p}_dispatch_completion \
+             WHERE sequence > ?1 ORDER BY sequence LIMIT ?2"
+        ))
+        .bind(after_sequence)
+        .bind(limit)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(store_error)?;
+        rows.iter().map(decode_dispatch_completion).collect()
     }
 
     async fn scan_dispatch_ids(
@@ -227,6 +212,29 @@ impl awaken_dispatch_contract::DispatchControlReads for SqliteDispatchStore {
 
 #[async_trait]
 impl awaken_dispatch_contract::SessionRunReservations for SqliteDispatchStore {
+    async fn observe_session_run_admission(
+        &self,
+        run_id: &RunId,
+    ) -> Result<awaken_dispatch_contract::SessionRunAdmissionObservation, DispatchError> {
+        use awaken_dispatch_contract::SessionRunAdmissionObservation;
+        let (_authority, mut conn) = self.with_conn().await?;
+        let row = load_run_identity_evidence(&mut conn, NS, run_id).await?;
+        if let Some(request) = decode_live_identity(&row)? {
+            crate::dispatch::validate_observed_dispatch_key(
+                run_id,
+                &ThreadId(row.try_get("live_thread_id").map_err(store_error)?),
+                &request,
+            )?;
+            return Ok(SessionRunAdmissionObservation::Live(Box::new(request)));
+        }
+        if decode_completed_identity(&row)?.is_some() {
+            return Ok(SessionRunAdmissionObservation::Completed(
+                decode_dispatch_completion(&row)?,
+            ));
+        }
+        Ok(SessionRunAdmissionObservation::Missing)
+    }
+
     async fn reserve_session_run(
         &self,
         request: RunDispatch,
@@ -238,15 +246,14 @@ impl awaken_dispatch_contract::SessionRunReservations for SqliteDispatchStore {
         let (_authority, mut conn) = self.with_conn().await?;
         let p = NS;
         let mut tx = immediate(&mut conn).await?;
-        let live: Option<(String, String)> = sqlx::query_as(&format!(
-            "SELECT status, request FROM {p}_dispatch WHERE run_id = ?1"
-        ))
-        .bind(&request.run_id().0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        if let Some((status, stored_json)) = live {
-            let stored: RunDispatch = serde_json::from_str(&stored_json).map_err(json_err)?;
+        let evidence = load_run_identity_evidence(&mut tx, p, request.run_id()).await?;
+        if evidence
+            .try_get::<Option<String>, _>("live_run_id")
+            .map_err(store_error)?
+            .is_some()
+        {
+            let status: String = evidence.try_get("status").map_err(store_error)?;
+            let stored = decode_live_dispatch(&evidence)?;
             let state = DispatchState::from_db(&status).ok_or_else(|| {
                 DispatchError::Rejected(format!("unknown persisted dispatch state `{status}`"))
             })?;
@@ -254,13 +261,7 @@ impl awaken_dispatch_contract::SessionRunReservations for SqliteDispatchStore {
             tx.commit().await.map_err(store_error)?;
             return Ok(outcome);
         }
-        let completed: Option<Option<String>> = sqlx::query_scalar(&format!(
-            "SELECT request_fingerprint FROM {p}_dispatch_completion WHERE run_id = ?1"
-        ))
-        .bind(&request.run_id().0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?;
+        let completed = decode_completed_identity(&evidence)?;
         if let Some(request_fingerprint) = completed {
             let outcome = classify_completed_session_run_reservation(
                 request_fingerprint.as_deref(),

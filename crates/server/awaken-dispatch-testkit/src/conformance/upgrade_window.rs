@@ -75,6 +75,38 @@ async fn upgrade_window_retry_replays_rows_written_before_typed_requirements(
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {
+    // O4 a real original projection whose legacy MCP stages are absent keeps
+    // None through observation; published requirements/replay stay U1-U7 below.
+    let mut absent_stages = projected_dispatch(ns, "upgrade-absent-stages", "environment-a", false);
+    let envelope = absent_stages.session_runtime.as_mut().unwrap();
+    let mut json: serde_json::Value = serde_json::from_str(&envelope.projection_json).unwrap();
+    json.as_object_mut().unwrap().remove("mcp_stages");
+    envelope.projection_json = serde_json::to_string(&json).unwrap();
+    store
+        .enqueue(absent_stages.clone())
+        .await
+        .expect("O4 old None row");
+    assert_eq!(
+        store
+            .observe_session_run_admission(absent_stages.run_id())
+            .await
+            .unwrap(),
+        awaken_dispatch_contract::SessionRunAdmissionObservation::Live(Box::new(
+            absent_stages.clone()
+        )),
+        "O4 original stages None stays absent"
+    );
+    let absent_claim = store
+        .claim_new_run(
+            absent_stages,
+            "upgrade-worker",
+            LEASE_MS,
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    settle_done(store, &absent_claim).await;
     let legacy = projected_dispatch(ns, "upgrade-legacy", "environment-a", false);
     store.enqueue(legacy.clone()).await.expect("U1 legacy row");
     store

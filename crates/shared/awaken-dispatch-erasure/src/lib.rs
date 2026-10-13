@@ -81,6 +81,15 @@ use awaken_dispatch_contract::{
 ///     worker.events_after(DispatchCursor(0), 1, Some(run)).await;
 /// }
 /// ```
+/// Admission input is also Coordinator-only; no claim-as-read escape exists.
+/// ```compile_fail,E0599
+/// use awaken_dispatch_erasure::AnyDispatchStore;
+/// use awaken_dispatch_contract::SessionRunReservations;
+/// use awaken_agent_contract::agent::run::Id;
+/// async fn observe(worker: &AnyDispatchStore) {
+///     worker.observe_session_run_admission(&Id("peer".into())).await;
+/// }
+/// ```
 /// A Worker view also cannot discover a local checkpoint authority.
 /// ```compile_fail
 /// use awaken_dispatch_erasure::AnyDispatchStore;
@@ -426,6 +435,13 @@ impl DispatchMaintenance for AnyCoordinatorDispatch {
 }
 #[async_trait]
 impl SessionRunReservations for AnyCoordinatorDispatch {
+    async fn observe_session_run_admission(
+        &self,
+        run_id: &RunId,
+    ) -> Result<awaken_dispatch_contract::SessionRunAdmissionObservation, DispatchError> {
+        delegate_owner!(self, observe_session_run_admission(run_id))
+    }
+
     async fn reserve_session_run(
         &self,
         request: RunDispatch,

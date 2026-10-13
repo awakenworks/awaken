@@ -1608,6 +1608,29 @@ impl awaken_dispatch_contract::DispatchControlReads for PostgresDispatchStore {
 
 #[async_trait]
 impl awaken_dispatch_contract::SessionRunReservations for PostgresDispatchStore {
+    async fn observe_session_run_admission(
+        &self,
+        run_id: &RunId,
+    ) -> Result<awaken_dispatch_contract::SessionRunAdmissionObservation, DispatchError> {
+        use awaken_dispatch_contract::SessionRunAdmissionObservation;
+        let mut connection = self.pool.acquire().await.map_err(store_error)?;
+        let row = load_run_identity_evidence(&mut connection, NS, run_id).await?;
+        if let Some(request) = decode_live_identity(&row)? {
+            crate::dispatch::validate_observed_dispatch_key(
+                run_id,
+                &ThreadId(row.try_get("live_thread_id").map_err(store_error)?),
+                &request,
+            )?;
+            return Ok(SessionRunAdmissionObservation::Live(Box::new(request)));
+        }
+        if decode_completed_identity(&row)?.is_some() {
+            return Ok(SessionRunAdmissionObservation::Completed(
+                decode_dispatch_completion(&row)?,
+            ));
+        }
+        Ok(SessionRunAdmissionObservation::Missing)
+    }
+
     async fn reserve_session_run(
         &self,
         request: RunDispatch,
@@ -1620,16 +1643,14 @@ impl awaken_dispatch_contract::SessionRunReservations for PostgresDispatchStore 
         let store_now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
         let deadline = crate::clock::deadline_millis(store_now_ms, reservation_ttl_ms);
         lock_run_identity(&mut tx, &request.run_id().0).await?;
-        let live = sqlx::query(&format!(
-            "SELECT status, request FROM {p}_dispatch WHERE run_id = $1"
-        ))
-        .bind(&request.run_id().0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        if let Some(row) = live {
-            let status: String = row.try_get("status").map_err(store_error)?;
-            let Json(stored): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
+        let evidence = load_run_identity_evidence(&mut tx, p, request.run_id()).await?;
+        if evidence
+            .try_get::<Option<String>, _>("live_run_id")
+            .map_err(store_error)?
+            .is_some()
+        {
+            let status: String = evidence.try_get("status").map_err(store_error)?;
+            let stored = crate::postgres_identity::decode_live_dispatch(&evidence)?;
             let state = DispatchState::from_db(&status).ok_or_else(|| {
                 DispatchError::Rejected(format!("unknown persisted dispatch state `{status}`"))
             })?;
@@ -1637,13 +1658,7 @@ impl awaken_dispatch_contract::SessionRunReservations for PostgresDispatchStore 
             tx.commit().await.map_err(store_error)?;
             return Ok(outcome);
         }
-        let completed: Option<Option<String>> = sqlx::query_scalar(&format!(
-            "SELECT request_fingerprint FROM {p}_dispatch_completion WHERE run_id = $1"
-        ))
-        .bind(&request.run_id().0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?;
+        let completed = decode_completed_identity(&evidence)?;
         if let Some(request_fingerprint) = completed {
             let outcome = classify_completed_session_run_reservation(
                 request_fingerprint.as_deref(),
