@@ -14,7 +14,7 @@ use awaken_agent_contract::audit::run_event::RunEvent;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, OperationCoordinator};
 use awaken_agent_contract::thread::commit::operation::{
-    CommitOperation, CommitOperationId, CommitPayloadHash,
+    CommitOperation, CommitOperationId, CommitPayloadHash, CommitReceipt, commit_payload_hash,
 };
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
@@ -424,38 +424,49 @@ async fn g13_failed_commit_leaves_no_partial_state() {
 
 #[tokio::test]
 async fn operation_receipt_survives_reopen() {
+    // Cause/effect decision table: C1 a fresh operation carries its canonical
+    // ThreadCommit hash; C2 its response is lost and the store reopens; C3 the
+    // exact durable receipt exists; C4 the request names its original Thread.
+    // R1 C1 + !C3 => one append and one receipt bound to the actual body.
+    // R2 C2 + C3 + C4 => exact receipt replay before fresh body/CAS admission;
+    // R3 C3 + !C4 => rejection with both complete prefixes unchanged. R2/R3
+    // use the original shared warm/cold binding matrix, including stale/maximal
+    // expected versions; historical declared hashes never prove body content.
     let path = std::env::temp_dir().join(format!(
         "awaken_store_sqlite_receipt_{}.db",
         std::process::id()
     ));
     let _ = std::fs::remove_file(&path);
+    let commit = ThreadCommit {
+        thread_id: ThreadId("receipt-thread".into()),
+        run: RunDisposition::running(RunId("receipt-run".into())),
+        messages: vec![message("receipt-message", "once")],
+        state: Vec::new(),
+        events: Vec::new(),
+    };
     let operation = CommitOperation {
         operation_id: CommitOperationId::new(RunId("receipt-run".into()), 0),
         expected_thread_version: 0,
-        payload_hash: CommitPayloadHash("sha256:receipt".into()),
-        commit: ThreadCommit {
-            thread_id: ThreadId("receipt-thread".into()),
-            run: RunDisposition::running(RunId("receipt-run".into())),
-            messages: vec![message("receipt-message", "once")],
-            state: Vec::new(),
-            events: Vec::new(),
-        },
+        payload_hash: commit_payload_hash(&commit).unwrap(),
+        commit,
     };
-    {
+    let applied = {
         let store = SqliteCommitCoordinator::open(path.to_str().unwrap())
             .await
             .expect("open");
-        assert!(
-            !store
-                .commit_operation(operation.clone())
-                .await
-                .unwrap()
-                .duplicate
-        );
-    }
+        let receipt = store.commit_operation(operation.clone()).await.unwrap();
+        assert!(!receipt.duplicate);
+        assert_eq!(receipt.payload_hash, operation.payload_hash, "R1 body hash");
+        receipt
+    };
     let reopened = SqliteCommitCoordinator::open(path.to_str().unwrap())
         .await
         .expect("reopen");
+    // Cold binding uses the same B1-B4 decision table as warm conformance.
+    awaken_store_conformance::operation_receipt_replay_is_thread_bound(
+        &reopened, &operation, &applied,
+    )
+    .await;
     assert!(
         reopened
             .commit_operation(operation)
@@ -469,5 +480,114 @@ async fn operation_receipt_survives_reopen() {
             .len(),
         1
     );
+
+    // Legacy decision table: L1 a real plain commit supplies the original
+    // record/Thread/Run/version/time; L2 its historical receipt row carries a
+    // noncanonical declaration; L3 cold replay keeps that exact declaration
+    // and Thread; L4 either declaration or Thread differs. L1+L2+L3 returns
+    // the original receipt without append/restamp; L4 rejects atomically.
+    // Only this historical test fixture inserts the old receipt, without
+    // replacing a modern row or submitting a new fake-hash operation. This
+    // preserves weak legacy observations, not proof of the original body.
+    let legacy_commit = ThreadCommit {
+        thread_id: ThreadId("legacy-receipt-thread".into()),
+        run: RunDisposition::running(RunId("legacy-receipt-run".into())),
+        messages: vec![message("legacy-receipt-message", "legacy once")],
+        state: Vec::new(),
+        events: Vec::new(),
+    };
+    let legacy_record = reopened.commit(legacy_commit.clone()).await.unwrap();
+    let legacy_operation = CommitOperation {
+        operation_id: CommitOperationId::new(RunId("legacy-receipt-run".into()), 0),
+        expected_thread_version: 0,
+        payload_hash: CommitPayloadHash("sha256:receipt".into()),
+        commit: legacy_commit,
+    };
+    assert_ne!(
+        legacy_operation.payload_hash,
+        commit_payload_hash(&legacy_operation.commit).unwrap(),
+        "L2 historical declaration is not a canonical body hash"
+    );
+    let legacy_prefix = reopened
+        .recovery_snapshot(
+            &legacy_operation.commit.thread_id,
+            &legacy_operation.operation_id.run_id,
+        )
+        .await
+        .unwrap();
+    let legacy_receipt = CommitReceipt {
+        operation_id: legacy_operation.operation_id.clone(),
+        commit_sequence: legacy_record.sequence,
+        thread_version: legacy_prefix.thread_version,
+        payload_hash: legacy_operation.payload_hash.clone(),
+        duplicate: false,
+    };
+    let raw = raw_sqlite(&path).await;
+    sqlx::query(
+        "INSERT INTO runtime_commit_receipt \
+         (operation_run_id, operation_ordinal, thread_id, payload_hash, commit_sequence, thread_version) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )
+    .bind(&legacy_receipt.operation_id.run_id.0)
+    .bind(i64::try_from(legacy_receipt.operation_id.ordinal).unwrap())
+    .bind(&legacy_operation.commit.thread_id.0)
+    .bind(&legacy_receipt.payload_hash.0)
+    .bind(i64::try_from(legacy_receipt.commit_sequence).unwrap())
+    .bind(i64::try_from(legacy_receipt.thread_version).unwrap())
+    .execute(&raw)
+    .await
+    .unwrap();
+    raw.close().await;
+    drop(reopened);
+    let legacy_cold = SqliteCommitCoordinator::open(path.to_str().unwrap())
+        .await
+        .expect("reopen historical receipt");
+    awaken_store_conformance::operation_receipt_replay_is_thread_bound(
+        &legacy_cold,
+        &legacy_operation,
+        &legacy_receipt,
+    )
+    .await;
+    let mut legacy_conflict = legacy_operation.clone();
+    legacy_conflict.payload_hash = commit_payload_hash(&legacy_conflict.commit).unwrap();
+    assert!(
+        legacy_cold.commit_operation(legacy_conflict).await.is_err(),
+        "L4 a canonical hash cannot replace the original declaration"
+    );
+    assert_eq!(
+        legacy_cold
+            .recovery_snapshot(
+                &legacy_operation.commit.thread_id,
+                &legacy_operation.operation_id.run_id,
+            )
+            .await
+            .unwrap(),
+        legacy_prefix,
+        "L3/L4 complete prefix and original commit times remain unchanged"
+    );
+    assert_eq!(legacy_cold.commit_count(), 2, "L3/L4 no append");
+    let raw = raw_sqlite(&path).await;
+    let row: (String, i64, String, String, i64, i64) = sqlx::query_as(
+        "SELECT operation_run_id, operation_ordinal, thread_id, payload_hash, commit_sequence, thread_version \
+         FROM runtime_commit_receipt WHERE operation_run_id = ?1 AND operation_ordinal = ?2",
+    )
+    .bind(&legacy_receipt.operation_id.run_id.0)
+    .bind(i64::try_from(legacy_receipt.operation_id.ordinal).unwrap())
+    .fetch_one(&raw)
+    .await
+    .unwrap();
+    assert_eq!(
+        row,
+        (
+            legacy_receipt.operation_id.run_id.0,
+            i64::try_from(legacy_receipt.operation_id.ordinal).unwrap(),
+            legacy_operation.commit.thread_id.0,
+            legacy_receipt.payload_hash.0,
+            i64::try_from(legacy_receipt.commit_sequence).unwrap(),
+            i64::try_from(legacy_receipt.thread_version).unwrap(),
+        ),
+        "L3/L4 the exact historical receipt row remains unchanged"
+    );
+    raw.close().await;
     let _ = std::fs::remove_file(path);
 }

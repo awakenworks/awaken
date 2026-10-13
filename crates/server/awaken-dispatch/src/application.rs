@@ -11,7 +11,9 @@ pub use awaken_session_execution_contract::{
 use std::sync::Arc;
 
 use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
-use awaken_agent_contract::thread::commit::operation::{CommitReceipt, commit_payload_hash};
+use awaken_agent_contract::thread::commit::operation::{
+    CommitReceipt, require_commit_operation_payload_hash,
+};
 
 use crate::ClaimedCommitRequest;
 use awaken_dispatch_execution::validate_commit_dispatch_binding;
@@ -866,13 +868,8 @@ impl ClaimedCommitService {
                 trusted_dispatch.run_id().0
             )));
         }
-        let expected_hash = commit_payload_hash(&request.operation.commit)
+        require_commit_operation_payload_hash(&request.operation)
             .map_err(|error| ApplicationError::invalid(error.to_string()))?;
-        if expected_hash != request.operation.payload_hash {
-            return Err(ApplicationError::invalid(
-                "commit operation payload hash does not match ThreadCommit",
-            ));
-        }
         // The guarded queue row, never the Worker request, selects the Session
         // partition. A stale claim returned above before this resolution.
         let coordinator = self

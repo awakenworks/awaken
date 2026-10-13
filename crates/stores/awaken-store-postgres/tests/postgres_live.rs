@@ -28,7 +28,7 @@ use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator, Error as CommitError, OperationCoordinator,
 };
 use awaken_agent_contract::thread::commit::operation::{
-    CommitOperation, CommitOperationId, CommitPayloadHash,
+    CommitOperation, CommitOperationId, CommitPayloadHash, CommitReceipt, commit_payload_hash,
 };
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
@@ -1705,14 +1705,17 @@ async fn concurrent_thread_open_observes_one_complete_postgres_snapshot() {
 
 #[tokio::test]
 async fn operation_receipt_survives_reconnect() {
-    // Causes: C1 an operation contains 257 ordered facts of each kind and
-    // crosses every 256-row SQL chunk; C2 its committed response is lost; C3
+    // Causes: C1 a fresh operation carries its canonical body hash and contains
+    // 257 ordered facts of each kind, crossing every 256-row SQL chunk; C2 its
+    // committed response is lost; C3
     // a fresh Coordinator replays the exact operation; C4 the same operation id
     // is reused with a different hash. Effects: E1 one durable prefix and one
     // receipt survive restart; E2 C3 returns the original receipt as duplicate
     // without another fact; E3 C4 is rejected without changing that prefix.
-    // Decision rules: R1=C1+C2+C3 -> E1+E2; R2=R1+C4 -> E3. Small-payload
-    // idempotency and CAS rules remain in shared backend conformance.
+    // Decision rules: R1=C1+C2+C3 -> E1+E2; R2=R1+C4 -> E3. Existing exact
+    // replay precedes fresh body/CAS admission and retains its declared hash;
+    // the historical declaration alone never certifies body content. Small-
+    // payload idempotency and CAS rules remain in shared backend conformance.
     let Some(pool) = schema_pool("t_operation_receipt_reconnect").await else {
         return;
     };
@@ -1735,19 +1738,20 @@ async fn operation_receipt_survives_reconnect() {
             payload: serde_json::json!({"index": index}),
         })
         .collect::<Vec<_>>();
+    let commit = ThreadCommit {
+        thread_id: ThreadId("receipt-thread".into()),
+        run: RunDisposition::running(RunId("receipt-run".into())),
+        messages: messages.clone(),
+        state: state.clone(),
+        events,
+    };
     let operation = CommitOperation {
         operation_id: CommitOperationId::new(RunId("receipt-run".into()), 0),
         expected_thread_version: 0,
-        payload_hash: CommitPayloadHash("sha256:receipt".into()),
-        commit: ThreadCommit {
-            thread_id: ThreadId("receipt-thread".into()),
-            run: RunDisposition::running(RunId("receipt-run".into())),
-            messages: messages.clone(),
-            state: state.clone(),
-            events,
-        },
+        payload_hash: commit_payload_hash(&commit).unwrap(),
+        commit,
     };
-    {
+    let applied = {
         let coordinator = PostgresCommitCoordinator::with_pool(pool.clone())
             .await
             .expect("coordinator a");
@@ -1757,12 +1761,20 @@ async fn operation_receipt_survives_reconnect() {
             .unwrap();
         assert!(!receipt.duplicate, "R1 first application");
         assert_eq!(receipt.commit_sequence, 1, "R1/E1");
+        assert_eq!(receipt.payload_hash, operation.payload_hash, "R1 body hash");
         // Deliberately discard the response: the caller may retry after a
         // transport loss even though PostgreSQL already committed it.
-    }
+        receipt
+    };
     let reopened = PostgresCommitCoordinator::with_pool(pool.clone())
         .await
         .expect("coordinator b");
+    // with_pool is unbound: the shared cold Thread-binding matrix reaches the
+    // original receipt SQL instead of being hidden by a projection-view guard.
+    awaken_store_conformance::operation_receipt_replay_is_thread_bound(
+        &reopened, &operation, &applied,
+    )
+    .await;
     let replay = reopened
         .commit_operation(operation.clone())
         .await
@@ -1802,6 +1814,113 @@ async fn operation_receipt_survives_reconnect() {
         .await
         .unwrap();
     assert_eq!((commit_count, receipt_count), (1, 1), "R1/R2 E1-E3");
+
+    // Legacy decision table: L1 a real plain commit supplies the original
+    // record/Thread/Run/version/time; L2 its historical receipt row carries a
+    // noncanonical declaration; L3 cold replay keeps that exact declaration
+    // and Thread; L4 either declaration or Thread differs. L1+L2+L3 returns
+    // the original receipt without append/restamp; L4 rejects atomically.
+    // The existing isolated SQL fixture inserts this old row, not an active
+    // operation write or a replacement of the modern receipt. No production
+    // migration/rewrite or original-body certification is implied.
+    let legacy_commit = ThreadCommit {
+        thread_id: ThreadId("legacy-receipt-thread".into()),
+        run: RunDisposition::running(RunId("legacy-receipt-run".into())),
+        messages: vec![message("legacy-receipt-message", "legacy once")],
+        state: Vec::new(),
+        events: Vec::new(),
+    };
+    let legacy_record = reopened.commit(legacy_commit.clone()).await.unwrap();
+    let legacy_operation = CommitOperation {
+        operation_id: CommitOperationId::new(RunId("legacy-receipt-run".into()), 0),
+        expected_thread_version: 0,
+        payload_hash: CommitPayloadHash("sha256:receipt".into()),
+        commit: legacy_commit,
+    };
+    assert_ne!(
+        legacy_operation.payload_hash,
+        commit_payload_hash(&legacy_operation.commit).unwrap(),
+        "L2 historical declaration is not a canonical body hash"
+    );
+    let legacy_prefix = reopened
+        .recovery_snapshot(
+            &legacy_operation.commit.thread_id,
+            &legacy_operation.operation_id.run_id,
+        )
+        .await
+        .unwrap();
+    let legacy_receipt = CommitReceipt {
+        operation_id: legacy_operation.operation_id.clone(),
+        commit_sequence: legacy_record.sequence,
+        thread_version: legacy_prefix.thread_version,
+        payload_hash: legacy_operation.payload_hash.clone(),
+        duplicate: false,
+    };
+    sqlx::query(
+        "INSERT INTO runtime_commit_receipt \
+         (operation_run_id, operation_ordinal, thread_id, payload_hash, commit_sequence, thread_version) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(&legacy_receipt.operation_id.run_id.0)
+    .bind(i64::try_from(legacy_receipt.operation_id.ordinal).unwrap())
+    .bind(&legacy_operation.commit.thread_id.0)
+    .bind(&legacy_receipt.payload_hash.0)
+    .bind(i64::try_from(legacy_receipt.commit_sequence).unwrap())
+    .bind(i64::try_from(legacy_receipt.thread_version).unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
+    drop(reopened);
+    let legacy_cold = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .expect("reconnect historical receipt");
+    // Like the modern cold case, the unbound coordinator reaches the original
+    // SQL receipt lookup; no foreign-Thread projection guard hides L4.
+    awaken_store_conformance::operation_receipt_replay_is_thread_bound(
+        &legacy_cold,
+        &legacy_operation,
+        &legacy_receipt,
+    )
+    .await;
+    let mut legacy_conflict = legacy_operation.clone();
+    legacy_conflict.payload_hash = commit_payload_hash(&legacy_conflict.commit).unwrap();
+    assert!(
+        legacy_cold.commit_operation(legacy_conflict).await.is_err(),
+        "L4 a canonical hash cannot replace the original declaration"
+    );
+    assert_eq!(
+        legacy_cold
+            .recovery_snapshot(
+                &legacy_operation.commit.thread_id,
+                &legacy_operation.operation_id.run_id,
+            )
+            .await
+            .unwrap(),
+        legacy_prefix,
+        "L3/L4 complete prefix and original commit times remain unchanged"
+    );
+    assert_eq!(legacy_cold.commit_count(), 2, "L3/L4 no append");
+    let row: (String, i64, String, String, i64, i64) = sqlx::query_as(
+        "SELECT operation_run_id, operation_ordinal, thread_id, payload_hash, commit_sequence, thread_version \
+         FROM runtime_commit_receipt WHERE operation_run_id = $1 AND operation_ordinal = $2",
+    )
+    .bind(&legacy_receipt.operation_id.run_id.0)
+    .bind(i64::try_from(legacy_receipt.operation_id.ordinal).unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        row,
+        (
+            legacy_receipt.operation_id.run_id.0,
+            i64::try_from(legacy_receipt.operation_id.ordinal).unwrap(),
+            legacy_operation.commit.thread_id.0,
+            legacy_receipt.payload_hash.0,
+            i64::try_from(legacy_receipt.commit_sequence).unwrap(),
+            i64::try_from(legacy_receipt.thread_version).unwrap(),
+        ),
+        "L3/L4 the exact historical receipt row remains unchanged"
+    );
 }
 
 #[tokio::test]

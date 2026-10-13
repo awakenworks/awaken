@@ -45,6 +45,7 @@ use awaken_agent_contract::thread::commit::coordinator::{
 use awaken_agent_contract::thread::commit::operation::{
     CommitOperation, CommitPayloadHash, CommitReceipt, admit_commit_operation_append,
     applied_commit_receipt, replay_commit_operation_receipt, require_commit_operation_identity,
+    require_commit_operation_payload_hash,
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
@@ -750,8 +751,8 @@ async fn write_operation(
         Error::Rejected("commit operation ordinal exceeds backend range".to_string())
     })?;
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(reject)?;
-    let existing = sqlx::query_as::<_, (String, i64, i64)>(&format!(
-        "SELECT payload_hash, commit_sequence, thread_version \
+    let existing = sqlx::query_as::<_, (String, String, i64, i64)>(&format!(
+        "SELECT thread_id, payload_hash, commit_sequence, thread_version \
          FROM {NS}_commit_receipt \
          WHERE operation_run_id = ?1 AND operation_ordinal = ?2"
     ))
@@ -761,22 +762,34 @@ async fn write_operation(
     .await
     .map_err(reject)?;
     let existing = existing
-        .map(|(payload_hash, commit_sequence, thread_version)| {
-            Ok(CommitReceipt {
-                operation_id: operation.operation_id.clone(),
-                commit_sequence: decode_authority(commit_sequence)?,
-                thread_version: decode_authority(thread_version)?,
-                payload_hash: CommitPayloadHash(payload_hash),
-                duplicate: false,
-            })
-        })
+        .map(
+            |(thread_id, payload_hash, commit_sequence, thread_version)| {
+                Ok((
+                    ThreadId(thread_id),
+                    CommitReceipt {
+                        operation_id: operation.operation_id.clone(),
+                        commit_sequence: decode_authority(commit_sequence)?,
+                        thread_version: decode_authority(thread_version)?,
+                        payload_hash: CommitPayloadHash(payload_hash),
+                        duplicate: false,
+                    },
+                ))
+            },
+        )
         .transpose()?;
-    if let Some(receipt) = replay_commit_operation_receipt(operation, existing.as_ref())
-        .map_err(|error| Error::Rejected(error.to_string()))?
+    if let Some(receipt) = replay_commit_operation_receipt(
+        operation,
+        existing
+            .as_ref()
+            .map(|(thread_id, receipt)| (thread_id, receipt)),
+    )
+    .map_err(|error| Error::Rejected(error.to_string()))?
     {
         return Ok(OperationWrite::Duplicate(receipt));
     }
 
+    require_commit_operation_payload_hash(operation)
+        .map_err(|error| Error::Rejected(error.to_string()))?;
     ensure_thread_version(&mut tx, &operation.commit.thread_id).await?;
     let current_version: i64 = sqlx::query_scalar(&format!(
         "SELECT version FROM {NS}_thread_version WHERE thread_id = ?1"

@@ -22,8 +22,14 @@ pub trait Coordinator: Send + Sync {
 
 /// Durable idempotent/CAS extension used by recoverable remote Workers.
 ///
-/// Implementations must persist the commit and its receipt atomically. Returning
-/// success for a duplicate must not append facts or advance the Thread version.
+/// Implementations must persist the commit and its receipt atomically, retaining
+/// the original committed Thread alongside the operation identity and declared
+/// payload hash. A duplicate can succeed only for that same Thread and returns
+/// the original receipt without appending facts or advancing the Thread version.
+/// This persisted receipt binding precedes new-operation CAS; an absent receipt
+/// continues through the existing append admission. Receipt replay preserves
+/// declared-hash semantics; body validation and authorization stay at their
+/// existing boundaries.
 #[async_trait]
 pub trait OperationCoordinator: Coordinator {
     async fn commit_operation(

@@ -9,11 +9,12 @@ use awaken_agent_contract::audit::kind::Kind;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, OperationCoordinator};
 use awaken_agent_contract::thread::commit::operation::{
-    CommitOperation, CommitOperationId, CommitPayloadHash,
+    CommitOperation, CommitOperationId, CommitPayloadHash, commit_payload_hash,
 };
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_store_fs::FsCommitCoordinator;
 
 const LOG: &str = "commits.ndjson";
@@ -65,7 +66,7 @@ async fn current_fixture(dir: &std::path::Path) -> String {
         .commit_operation(CommitOperation {
             operation_id: CommitOperationId::new(RunId("operation-run".into()), 0),
             expected_thread_version: 0,
-            payload_hash: CommitPayloadHash("fixture-hash".into()),
+            payload_hash: commit_payload_hash(&nested).unwrap(),
             commit: nested,
         })
         .await
@@ -76,7 +77,21 @@ async fn current_fixture(dir: &std::path::Path) -> String {
 }
 
 fn make_historical(dir: &std::path::Path, current: &str) -> String {
-    let historical = current
+    // The modern writer remains canonical. The existing historical fixture
+    // editor alone installs its original old declaration in the old log bytes.
+    let declared = current
+        .lines()
+        .map(|line| {
+            let mut row: serde_json::Value = serde_json::from_str(line).unwrap();
+            if let Some(hash) = row.get_mut("payload_hash") {
+                *hash = serde_json::Value::String("fixture-hash".into());
+            }
+            serde_json::to_string(&row).unwrap()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    let historical = declared
         .replace("RunStateChanged", "RunPhaseChanged")
         .replace("RunAwaiting", "RunWaiting")
         .replace("\"resume_ticket\"", "\"waiting\"");
@@ -102,7 +117,11 @@ async fn old_and_nested_wire_shapes_migrate_to_the_current_log_version() {
     // record is newline-complete. R1=C1+C2+C3 -> E1 structurally normalize at
     // the one migration boundary before decoding through the current-only commit
     // contract, E2 atomically publish only current spellings, E3 preserve record
-    // order and replayed state. A second domain decoder would violate E1.
+    // order and replayed state. C4 the old declaration is noncanonical -> E4
+    // restore unchanged through construction, return its exact receipt on live
+    // retry, and reject an unseen noncanonical operation before append. C5
+    // another cold open -> E5 same bytes and complete prefix. A second domain
+    // decoder or hash repair would violate E1/E4.
     let dir = tempfile::tempdir().unwrap();
     let current = current_fixture(dir.path()).await;
     let historical = make_historical(dir.path(), &current);
@@ -128,10 +147,75 @@ async fn old_and_nested_wire_shapes_migrate_to_the_current_log_version() {
             .is_some(),
         "R1/E3 nested operation"
     );
+    let bytes = std::fs::read(dir.path().join(LOG)).unwrap();
+    let row = std::str::from_utf8(&bytes).unwrap().lines().nth(1).unwrap();
+    let stored: serde_json::Value = serde_json::from_str(row).unwrap();
+    let recorded_time = stored["committed_at_unix_ms"].as_u64().unwrap();
+    let operation: CommitOperation = serde_json::from_value(stored).unwrap();
+    assert_eq!(
+        operation.payload_hash,
+        CommitPayloadHash("fixture-hash".into()),
+        "C4 original declaration"
+    );
+    let thread = operation.commit.thread_id.clone();
+    let run = operation.commit.run_id().clone();
+    let prefix = migrated.recovery_snapshot(&thread, &run).await.unwrap();
+    assert_eq!(
+        prefix.commit_timestamps.get(&2),
+        Some(&recorded_time),
+        "C4/E4 original recorded time"
+    );
+    let exact = migrated.commit_operation(operation.clone()).await.unwrap();
+    assert!(exact.duplicate, "C4/E4 exact legacy retry");
+    assert_eq!(
+        exact.operation_id, operation.operation_id,
+        "C4/E4 exact operation identity"
+    );
+    assert_eq!(exact.commit_sequence, 2, "C4/E4 original sequence");
+    assert_eq!(exact.thread_version, 1, "C4/E4 original version");
+    assert_eq!(
+        exact.payload_hash, operation.payload_hash,
+        "C4/E4 original hash"
+    );
+    let mut unseen = operation.clone();
+    unseen.operation_id.ordinal = 1;
+    unseen.expected_thread_version = 1;
+    assert!(
+        migrated.commit_operation(unseen).await.is_err(),
+        "C4/E4 strict new append"
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join(LOG)).unwrap(),
+        bytes,
+        "C4/E4 no durable append"
+    );
+    assert_eq!(
+        migrated.recovery_snapshot(&thread, &run).await.unwrap(),
+        prefix,
+        "C4/E4 exact complete prefix"
+    );
     drop(migrated);
 
     assert_eq!(std::fs::read(dir.path().join(VERSION)).unwrap(), b"2\n");
     assert_current_log(&std::fs::read_to_string(dir.path().join(LOG)).unwrap());
+    let reopened = FsCommitCoordinator::open(dir.path(), awaken_time::system_clock())
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened.recovery_snapshot(&thread, &run).await.unwrap(),
+        prefix,
+        "C5/E5 cold prefix"
+    );
+    assert_eq!(
+        reopened.commit_operation(operation).await.unwrap(),
+        exact,
+        "C5/E5 exact receipt"
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join(LOG)).unwrap(),
+        bytes,
+        "C5/E5 byte preservation"
+    );
 }
 
 #[tokio::test]

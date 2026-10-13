@@ -14,6 +14,7 @@ use awaken_agent_contract::thread::commit::operation::{
 };
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_dispatch::ClaimedCommitService;
 use awaken_dispatch::{
     ClaimedCommitCommand, ClaimedRunCommit, MemoryDispatchStore, RegisteredWorker, RegistryError,
@@ -294,6 +295,39 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
         )
         .is_empty(),
         "R2/E1"
+    );
+    // R5 exact identity/current epoch with body B but retained hash(body A)
+    // => existing InvalidRequest text, no durable prefix change. R3 following
+    // the refusal succeeds, so the claim guard is not retained by the failure.
+    // The server and local stores consume the same canonical validation owner.
+    let before_invalid = coordinator
+        .recovery_snapshot(
+            &command.operation.commit.thread_id,
+            &command.operation.operation_id.run_id,
+        )
+        .await
+        .unwrap();
+    let before_count = coordinator.commit_count();
+    let mut invalid = command.clone();
+    invalid.operation.commit.messages.clear();
+    let hash_error = remote.commit_operation(invalid).await.unwrap_err();
+    assert!(
+        hash_error
+            .to_string()
+            .contains("commit operation payload hash does not match ThreadCommit"),
+        "R5 original public error"
+    );
+    assert_eq!(coordinator.commit_count(), before_count, "R5 zero append");
+    assert_eq!(
+        coordinator
+            .recovery_snapshot(
+                &command.operation.commit.thread_id,
+                &command.operation.operation_id.run_id
+            )
+            .await
+            .unwrap(),
+        before_invalid,
+        "R5 complete recovery prefix unchanged"
     );
     let first = remote.commit_operation(command.clone()).await.unwrap();
     let duplicate = remote.commit_operation(command).await.unwrap();

@@ -40,6 +40,7 @@ use awaken_agent_contract::thread::commit::coordinator::{
 use awaken_agent_contract::thread::commit::operation::{
     CommitOperation, CommitOperationId, CommitReceipt, admit_commit_operation_append,
     applied_commit_receipt, replay_commit_operation_receipt, require_commit_operation_identity,
+    require_commit_operation_payload_hash,
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
@@ -48,6 +49,9 @@ use awaken_agent_contract::thread::read::lifecycle::encode_run_lifecycle_cursor;
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource, RunResumeTicket,
 };
+
+mod replay;
+pub use replay::MemoryCommitReplay;
 
 /// Everything one commit made durable, materialized as read models. This is the
 /// after-commit truth that replay and projection consume.
@@ -80,8 +84,9 @@ struct CommitState {
     /// so a resume against a terminal/resumed run finds nothing (fail closed).
     resume_tickets: HashMap<RunId, ResumeTicket>,
     /// Durable in the reference store's lifetime; filesystem persistence replays
-    /// operation log entries through this same map.
-    receipts: HashMap<CommitOperationId, CommitReceipt>,
+    /// operation log entries through this same map. The original Thread is kept
+    /// with its receipt; a declared hash alone cannot establish that association.
+    receipts: HashMap<CommitOperationId, (ThreadId, CommitReceipt)>,
 }
 
 impl CommitState {
@@ -196,8 +201,9 @@ impl MemoryCommitCoordinator {
         })
     }
 
-    /// Validate an operation without applying it. Used by the filesystem adapter
-    /// while it holds its append lock so rejection always happens before fsync.
+    /// Validate fresh append admission without applying it. Used by the
+    /// filesystem adapter under its append lock so shape, existing receipt,
+    /// canonical payload and append rejections all precede fsync.
     pub fn inspect_operation(
         &self,
         operation: &CommitOperation,
@@ -210,7 +216,7 @@ impl MemoryCommitCoordinator {
             .state
             .lock()
             .map_err(|_| Error::Rejected("commit store poisoned".to_string()))?;
-        match inspect_operation_locked(&state, operation)? {
+        match inspect_operation_locked(&state, operation, OperationOrigin::Fresh)? {
             OperationInspection::Replay(receipt) => Ok(Some(receipt)),
             OperationInspection::Append { .. } => Ok(None),
         }
@@ -241,10 +247,23 @@ impl MemoryCommitCoordinator {
 }
 
 impl MemoryCommitCoordinator {
+    /// Apply a newly supplied operation at its explicit time. Existing exact
+    /// receipts retain their declaration semantics; a new append must match
+    /// the original canonical payload hash before any state is applied.
     pub async fn commit_operation_at(
         &self,
         operation: CommitOperation,
         committed_at_unix_ms: Option<u64>,
+    ) -> Result<CommitReceipt, Error> {
+        self.apply_operation_at(operation, committed_at_unix_ms, OperationOrigin::Fresh)
+            .await
+    }
+
+    async fn apply_operation_at(
+        &self,
+        operation: CommitOperation,
+        committed_at_unix_ms: Option<u64>,
+        origin: OperationOrigin,
     ) -> Result<CommitReceipt, Error> {
         operation
             .commit
@@ -254,7 +273,7 @@ impl MemoryCommitCoordinator {
             .state
             .lock()
             .map_err(|_| Error::Rejected("commit store poisoned".to_string()))?;
-        let (thread_version, append) = match inspect_operation_locked(&state, &operation)? {
+        let (thread_version, append) = match inspect_operation_locked(&state, &operation, origin)? {
             OperationInspection::Replay(receipt) => return Ok(receipt),
             OperationInspection::Append {
                 thread_version,
@@ -264,6 +283,7 @@ impl MemoryCommitCoordinator {
         let operation_id = operation.operation_id;
         let payload_hash = operation.payload_hash;
         let commit = operation.commit;
+        let thread_id = commit.thread_id.clone();
         let record = apply_commit_locked(&mut state, commit, committed_at_unix_ms, append);
         let receipt = applied_commit_receipt(
             operation_id.clone(),
@@ -271,7 +291,9 @@ impl MemoryCommitCoordinator {
             record.sequence,
             thread_version,
         );
-        state.receipts.insert(operation_id, receipt.clone());
+        state
+            .receipts
+            .insert(operation_id, (thread_id, receipt.clone()));
         Ok(receipt)
     }
 }
@@ -292,6 +314,13 @@ impl OperationCoordinator for MemoryCommitCoordinator {
     }
 }
 
+// Only the public fresh boundary and the empty construction role select this
+// origin. It is never caller-controlled metadata or a mode on a live owner.
+enum OperationOrigin {
+    Fresh,
+    StoredRecord,
+}
+
 enum OperationInspection {
     Replay(CommitReceipt),
     Append {
@@ -310,14 +339,24 @@ struct AppendPlan {
 fn inspect_operation_locked(
     state: &CommitState,
     operation: &CommitOperation,
+    origin: OperationOrigin,
 ) -> Result<OperationInspection, Error> {
     require_commit_operation_identity(operation)
         .map_err(|error| Error::Rejected(error.to_string()))?;
-    if let Some(receipt) =
-        replay_commit_operation_receipt(operation, state.receipts.get(&operation.operation_id))
-            .map_err(|error| Error::Rejected(error.to_string()))?
+    if let Some(receipt) = replay_commit_operation_receipt(
+        operation,
+        state
+            .receipts
+            .get(&operation.operation_id)
+            .map(|(thread_id, receipt)| (thread_id, receipt)),
+    )
+    .map_err(|error| Error::Rejected(error.to_string()))?
     {
         return Ok(OperationInspection::Replay(receipt));
+    }
+    if matches!(origin, OperationOrigin::Fresh) {
+        require_commit_operation_payload_hash(operation)
+            .map_err(|error| Error::Rejected(error.to_string()))?;
     }
     let thread = state.threads.get(&operation.commit.thread_id);
     let current_thread_version = thread.map_or(0, |thread| thread.run_facts.len() as u64);
