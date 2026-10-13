@@ -4,6 +4,7 @@
 
 use super::{RenewalFailureDisposition, realization_renewal_failure_disposition};
 use awaken_lease_contract::authority::AuthorityLeaseTiming;
+use awaken_session_realization_contract::ObservedSessionRealizationLease;
 use awaken_session_realization_contract::SessionRealizationControl as _;
 use awaken_session_realization_driver::DeadlineSessionRealizationControl;
 #[cfg(any(target_os = "linux", test))]
@@ -34,25 +35,26 @@ impl<'a> ResourcePreparation<'a> {
     pub(super) fn begin(
         host: &'a crate::SharedHost,
         session: &'a str,
-        proof: awaken_session_realization_contract::ObservedSessionRealizationLease,
+        proof: ObservedSessionRealizationLease,
     ) -> Result<Self, crate::HostError> {
         let asserted = proof.lease.clone();
         let cancellation = Arc::new(awaken_runtime_contract::CancellationToken::new());
-        let (introduced_lease, changed) = host.authorize_worker_effect(|| {
-            host.installed_sessions.update_realization(session, |r| {
-                if r.resource_preparation.is_some() {
-                    return Err(crate::HostError::internal(
-                        "Resource preparation already holds its projection lock",
-                    ));
-                }
-                let introduced = r.authority.lease().is_none();
-                if !r.install_lease(proof) {
-                    return Err(Self::ended());
-                }
-                r.resource_preparation = Some(cancellation.clone());
-                Ok((introduced, r.changed.clone()))
-            })
-        })?;
+        let (introduced_lease, changed) =
+            host.realizer.execution.authorize_worker_effect(|| {
+                host.installed_sessions.update_realization(session, |r| {
+                    if r.resource_preparation.is_some() {
+                        return Err(crate::HostError::internal(
+                            "Resource preparation already holds its projection lock",
+                        ));
+                    }
+                    let introduced = r.authority.lease().is_none();
+                    if !r.install_lease(proof) {
+                        return Err(Self::ended());
+                    }
+                    r.resource_preparation = Some(cancellation.clone());
+                    Ok((introduced, r.changed.clone()))
+                })
+            })?;
         changed.notify_waiters();
         let preparation = Self {
             host,
@@ -188,6 +190,8 @@ impl crate::SharedHost {
         // | R2 | yes | explicit loss | any | E2 |
         // | R3 | yes | temporary failure | live | E3 |
         // | R4 | yes | temporary failure | expired | E4 |
+        // The original success/error arms are carried by Result::map/map_err;
+        // R1-R4 keep the same observation time and error/revocation policy.
         // Capture the existing slot identity before Control I/O. Equal lease
         // fields do not authorize an ABA replacement of the Session slot.
         let Some(realization) = self
@@ -200,10 +204,7 @@ impl crate::SharedHost {
         else {
             return Ok(false);
         };
-        let renewal: Result<
-            awaken_session_realization_contract::ObservedSessionRealizationLease,
-            (crate::HostError, bool),
-        > = async {
+        let renewal: Result<ObservedSessionRealizationLease, (crate::HostError, bool)> = async {
             let control_failure = |error| {
                 let revoke = realization_renewal_failure_disposition(&error)
                     == RenewalFailureDisposition::RevokeImmediately;
@@ -211,7 +212,7 @@ impl crate::SharedHost {
             };
             let request_started = awaken_authority_clock::authority_proof_started()
                 .map_err(|error| (crate::HostError::internal(error.to_string()), true))?;
-            match control
+            control
                 .renew_session_realization(
                     awaken_session_realization_contract::RenewSessionRealization {
                         session_id: awaken_session_types::SessionId::from(&session_id),
@@ -220,10 +221,8 @@ impl crate::SharedHost {
                     },
                 )
                 .await
-            {
-                Ok(renewed_lease) => Ok(renewed_lease.observed(request_started)),
-                Err(error) => Err(control_failure(error)),
-            }
+                .map(|renewed_lease| renewed_lease.observed(request_started))
+                .map_err(control_failure)
         }
         .await;
         // The Control request released its shared permit before reaching this
@@ -240,16 +239,18 @@ impl crate::SharedHost {
                 // and install atomically: another driver may already have extended,
                 // replaced, or removed that projection. A renewal is not authority
                 // to recreate a slot or overwrite a later installed lease.
-                self.authorize_worker_effect(|| {
-                    Ok(self
-                        .installed_sessions
-                        .modify_realization(&session_id, |state| {
-                            Arc::ptr_eq(&state.realization, &realization)
-                                && state.renew_lease(&lease, renewed_lease)
-                        })
-                        .unwrap_or(false))
-                })
-                .map_err(|error| (error, true))
+                self.realizer
+                    .execution
+                    .authorize_worker_effect(|| {
+                        Ok(self
+                            .installed_sessions
+                            .modify_realization(&session_id, |state| {
+                                Arc::ptr_eq(&state.realization, &realization)
+                                    && state.renew_lease(&lease, renewed_lease)
+                            })
+                            .unwrap_or(false))
+                    })
+                    .map_err(|error| (error, true))
             }
             Err(error) => Err(error),
         };

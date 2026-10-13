@@ -168,6 +168,34 @@ impl SessionExecutionAuthority {
 }
 
 impl ExecutionAuthority {
+    /// Lock order: Worker proof -> Session slots -> synchronous provider grant.
+    /// No async owner lock or external I/O may be held by this callback.
+    pub(crate) fn authorize_worker_effect<T>(
+        &self,
+        effect: impl FnOnce() -> Result<T, HostError>,
+    ) -> Result<T, HostError> {
+        let Some(authority) = &self.worker else {
+            return effect();
+        };
+        let mut effect = Some(effect);
+        let mut result = None;
+        authority
+            .with_current(&mut |remaining| {
+                if remaining.is_zero() {
+                    return Err(io::ErrorKind::PermissionDenied.into());
+                }
+                let effect = effect
+                    .take()
+                    .ok_or_else(|| io::Error::other("authority callback repeated"))?;
+                result = Some(effect());
+                Ok(())
+            })
+            .map_err(|error| {
+                HostError::internal(format!("Worker execution authority denied: {error}"))
+            })?;
+        result.ok_or_else(|| HostError::internal("Worker authority omitted the effect"))?
+    }
+
     fn capture(
         &self,
         session: &str,
