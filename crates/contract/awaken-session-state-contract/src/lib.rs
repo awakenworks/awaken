@@ -59,8 +59,8 @@ pub(crate) use {
 
 pub use archive_intent::{
     SessionArchiveAdmission, SessionArchiveBusinessIntent, SessionTerminalCleanupAffinity,
-    session_archive_idempotency_record, session_terminal_cleanup_affinity_for,
-    session_unattempted_profiled_archive_record,
+    session_archive_idempotency_record, session_has_terminal_no_create_evidence,
+    session_terminal_cleanup_affinity_for, session_unattempted_profiled_archive_record,
 };
 pub use environment::{
     CheckpointReceipt, QuiescenceReceipt, RestoreReceipt, SandboxCheckpointRef,

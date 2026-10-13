@@ -16,7 +16,7 @@ fn fact(id: &str) -> ManagedLifecycleFact {
 async fn seed_expired_cleanup_affinity(
     repository: Arc<FaultingSessionRepository>,
     id: &str,
-    witness: bool,
+    evidence: NoCreateEvidence,
     live: bool,
     physical: bool,
     child: bool,
@@ -26,6 +26,8 @@ async fn seed_expired_cleanup_affinity(
     Arc<RecordingCleanupRuntime>,
     Arc<RecordingWorkerObservations>,
 ) {
+    let witness = matches!(evidence, NoCreateEvidence::ArchiveReceipt);
+    let modern = matches!(evidence, NoCreateEvidence::FreshEmpty);
     let runtime = Arc::new(RecordingCleanupRuntime::default());
     let app = SessionApplication::new_with_configuration(
         runtime.clone(),
@@ -38,6 +40,18 @@ async fn seed_expired_cleanup_affinity(
         },
     );
     let mut root = unattempted_with_placement(id, SessionRuntimePlacement::Worker);
+    if modern {
+        root = PersistedSession::frozen_with_budget(
+            id,
+            root.frozen_baseline().unwrap().clone(),
+            root.resources,
+            root.mcp,
+            root.title,
+            root.metadata,
+            root.tools,
+            root.budget,
+        );
+    }
     if !witness {
         root.execution = SessionExecutionState::Idle;
     }
@@ -126,6 +140,12 @@ async fn seed_expired_cleanup_affinity(
     (app, runtime, workers)
 }
 
+enum NoCreateEvidence {
+    ArchiveReceipt,
+    FreshEmpty,
+    Unknown,
+}
+
 fn target(incumbent_owner: &str) -> awaken_session_realization_contract::SessionRealizationTarget {
     awaken_session_realization_contract::SessionRealizationTarget {
         owner: "new-worker".into(),
@@ -140,6 +160,47 @@ fn target(incumbent_owner: &str) -> awaken_session_realization_contract::Session
         .into(),
         lease_expires_at_unix_ms: u64::MAX,
         reassign_existing_lease: false,
+    }
+}
+
+#[tokio::test]
+async fn idle_archive_projects_known_empty_materialization_without_borrowing_legacy_history() {
+    // C1 the actual fresh-root constructor persists an empty materialization
+    // fact; C2 the Session is idle after model-only work; C3 ordinary archive
+    // commits its terminal fence, rather than the early-preparation receipt.
+    // R1 C1+C2+C3 -> a no-Create assignment without Provider observation.
+    // R2 historical omitted C1 -> no fabricated witness. Read-only projection
+    // must preserve the complete durable root in both cases.
+    for modern in [false, true] {
+        let durable = sqlite_session_repository("idle no-Create repository").await;
+        let repository = Arc::new(FaultingSessionRepository::new(durable));
+        let id = format!("idle-no-create-{modern}");
+        let (app, _, _) = seed_expired_cleanup_affinity(
+            repository.clone(),
+            &id,
+            if modern {
+                NoCreateEvidence::FreshEmpty
+            } else {
+                NoCreateEvidence::Unknown
+            },
+            true,
+            false,
+            false,
+            "old-worker",
+        )
+        .await;
+        let before = repository.get(&SessionId::from(&id)).await.unwrap();
+        assert_eq!(before.environment_materialization().is_some(), modern);
+        let assignment = app
+            .terminal_cleanup_assignment_from_snapshot("workspace", &before)
+            .await
+            .unwrap();
+        assert_eq!(assignment.environment_creation_not_attempted, modern);
+        assert_eq!(
+            assignment.projection.environment_materialization.as_deref(),
+            before.environment_materialization(),
+        );
+        assert_eq!(repository.get(&SessionId::from(&id)).await.unwrap(), before);
     }
 }
 
@@ -168,7 +229,11 @@ async fn expired_foreign_cleanup_affinity_requires_exact_no_create_and_pristine_
             let (app, runtime, _) = seed_expired_cleanup_affinity(
                 repository.clone(),
                 &id,
-                witness,
+                if witness {
+                    NoCreateEvidence::ArchiveReceipt
+                } else {
+                    NoCreateEvidence::Unknown
+                },
                 live,
                 physical,
                 child,
@@ -226,7 +291,7 @@ async fn no_create_affinity_claim_preserves_unavailable_authority_and_lost_cas_r
             let (app, runtime, workers) = seed_expired_cleanup_affinity(
                 repository.clone(),
                 &id,
-                true,
+                NoCreateEvidence::ArchiveReceipt,
                 false,
                 false,
                 false,
