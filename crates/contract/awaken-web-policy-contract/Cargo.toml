@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [package.metadata.awaken]
+# SDK publishing preparation: Web policy vocabulary is a public compatibility promise.
+api_snapshot = true
 context = "runtime"
 product = "sdk"
 bounded_context = "agent-runtime"

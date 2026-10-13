@@ -1,0 +1,108 @@
+pub mod awaken_lease_contract
+pub mod awaken_lease_contract::authority
+pub struct awaken_lease_contract::authority::AuthorityLeaseTiming
+impl awaken_lease_contract::authority::AuthorityLeaseTiming
+pub fn awaken_lease_contract::authority::AuthorityLeaseTiming::from_ttl_ms(u64) -> Self
+pub const fn awaken_lease_contract::authority::AuthorityLeaseTiming::lease_ttl(self) -> core::time::Duration
+pub const fn awaken_lease_contract::authority::AuthorityLeaseTiming::proof_window(self) -> core::time::Duration
+pub fn awaken_lease_contract::authority::AuthorityLeaseTiming::remaining_proof_after(self, core::time::Duration) -> core::time::Duration
+pub fn awaken_lease_contract::authority::AuthorityLeaseTiming::remaining_proof_at(self, awaken_lease_contract::authority::AuthorityProofStarted, awaken_lease_contract::authority::AuthorityProofStarted) -> core::option::Option<core::time::Duration>
+pub const fn awaken_lease_contract::authority::AuthorityLeaseTiming::renew_interval(self) -> core::time::Duration
+pub const fn awaken_lease_contract::authority::AuthorityLeaseTiming::request_timeout(self) -> core::time::Duration
+pub const fn awaken_lease_contract::authority::AuthorityLeaseTiming::retry_delay(self) -> core::time::Duration
+pub struct awaken_lease_contract::authority::AuthorityProofStarted
+impl awaken_lease_contract::authority::AuthorityProofStarted
+pub fn awaken_lease_contract::authority::AuthorityProofStarted::elapsed_at(self, Self) -> core::option::Option<core::time::Duration>
+pub const fn awaken_lease_contract::authority::AuthorityProofStarted::elapsed_clock(self) -> core::time::Duration
+pub const fn awaken_lease_contract::authority::AuthorityProofStarted::from_clock_sample(tokio::time::instant::Instant, core::time::Duration) -> Self
+pub const fn awaken_lease_contract::authority::AuthorityProofStarted::scheduled(self) -> tokio::time::instant::Instant
+pub mod awaken_lease_contract::fence
+pub enum awaken_lease_contract::fence::FenceSuccession
+pub awaken_lease_contract::fence::FenceSuccession::Reassignment
+pub awaken_lease_contract::fence::FenceSuccession::Renewal
+pub struct awaken_lease_contract::fence::EffectFence<S: awaken_lease_contract::fence::TenureScope, Op>
+impl<S: awaken_lease_contract::fence::TenureScope, Op: core::cmp::Eq> awaken_lease_contract::fence::EffectFence<S, Op>
+pub fn awaken_lease_contract::fence::EffectFence<S, Op>::authorizes_effect_successor(&self, &Self) -> bool
+pub const fn awaken_lease_contract::fence::EffectFence<S, Op>::lease(&self) -> &awaken_lease_contract::fence::Lease<S>
+pub const fn awaken_lease_contract::fence::EffectFence<S, Op>::new(Op, awaken_lease_contract::fence::Lease<S>) -> Self
+pub const fn awaken_lease_contract::fence::EffectFence<S, Op>::operation(&self) -> &Op
+pub fn awaken_lease_contract::fence::EffectFence<S, Op>::same_effect_identity(&self, &Self) -> bool
+impl<S: awaken_lease_contract::fence::TenureScope, Op: core::clone::Clone> core::clone::Clone for awaken_lease_contract::fence::EffectFence<S, Op>
+pub fn awaken_lease_contract::fence::EffectFence<S, Op>::clone(&self) -> Self
+impl<S: awaken_lease_contract::fence::TenureScope, Op: core::cmp::Eq> core::cmp::Eq for awaken_lease_contract::fence::EffectFence<S, Op>
+impl<S: awaken_lease_contract::fence::TenureScope, Op: core::cmp::PartialEq> core::cmp::PartialEq for awaken_lease_contract::fence::EffectFence<S, Op>
+pub fn awaken_lease_contract::fence::EffectFence<S, Op>::eq(&self, &Self) -> bool
+impl<S: awaken_lease_contract::fence::TenureScope, Op: core::fmt::Debug> core::fmt::Debug for awaken_lease_contract::fence::EffectFence<S, Op>
+pub fn awaken_lease_contract::fence::EffectFence<S, Op>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_lease_contract::fence::Epoch(_)
+impl awaken_lease_contract::fence::Epoch
+pub const awaken_lease_contract::fence::Epoch::FIRST: Self
+pub fn awaken_lease_contract::fence::Epoch::deserialize_u64<'de, D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<u64, <D as serde_core::de::Deserializer>::Error>
+pub const fn awaken_lease_contract::fence::Epoch::from_persisted(u64) -> core::option::Option<Self>
+pub const fn awaken_lease_contract::fence::Epoch::get(self) -> u64
+pub const fn awaken_lease_contract::fence::Epoch::next(self) -> core::option::Option<Self>
+impl core::convert::From<awaken_lease_contract::fence::Epoch> for u64
+pub fn u64::from(awaken_lease_contract::fence::Epoch) -> Self
+impl core::convert::TryFrom<u64> for awaken_lease_contract::fence::Epoch
+pub type awaken_lease_contract::fence::Epoch::Error = awaken_lease_contract::fence::ZeroEpoch
+pub fn awaken_lease_contract::fence::Epoch::try_from(u64) -> core::result::Result<Self, Self::Error>
+impl core::fmt::Display for awaken_lease_contract::fence::Epoch
+pub fn awaken_lease_contract::fence::Epoch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_lease_contract::fence::Lease<S: awaken_lease_contract::fence::TenureScope>
+impl<S: awaken_lease_contract::fence::TenureScope> awaken_lease_contract::fence::Lease<S>
+pub fn awaken_lease_contract::fence::Lease<S>::authorizes_successor(&self, &Self) -> bool
+pub const fn awaken_lease_contract::fence::Lease<S>::expires(&self) -> awaken_time::expiry::Expiry
+pub fn awaken_lease_contract::fence::Lease<S>::is_live_at(&self, awaken_time::time::UtcTime) -> bool
+pub const fn awaken_lease_contract::fence::Lease<S>::new(awaken_lease_contract::fence::Tenure<S>, awaken_time::expiry::Expiry) -> Self
+pub fn awaken_lease_contract::fence::Lease<S>::renewed_to(&self, awaken_time::expiry::Expiry) -> core::option::Option<Self>
+pub fn awaken_lease_contract::fence::Lease<S>::succession(&self, &Self) -> core::option::Option<awaken_lease_contract::fence::FenceSuccession>
+pub const fn awaken_lease_contract::fence::Lease<S>::tenure(&self) -> &awaken_lease_contract::fence::Tenure<S>
+impl<S: awaken_lease_contract::fence::TenureScope> core::clone::Clone for awaken_lease_contract::fence::Lease<S>
+pub fn awaken_lease_contract::fence::Lease<S>::clone(&self) -> Self
+impl<S: awaken_lease_contract::fence::TenureScope> core::cmp::Eq for awaken_lease_contract::fence::Lease<S>
+impl<S: awaken_lease_contract::fence::TenureScope> core::cmp::PartialEq for awaken_lease_contract::fence::Lease<S>
+pub fn awaken_lease_contract::fence::Lease<S>::eq(&self, &Self) -> bool
+impl<S: awaken_lease_contract::fence::TenureScope> core::fmt::Debug for awaken_lease_contract::fence::Lease<S>
+pub fn awaken_lease_contract::fence::Lease<S>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_lease_contract::fence::SlotToken(_)
+impl awaken_lease_contract::fence::SlotToken
+pub fn awaken_lease_contract::fence::SlotToken::mint() -> Self
+impl core::cmp::Eq for awaken_lease_contract::fence::SlotToken
+impl core::cmp::PartialEq for awaken_lease_contract::fence::SlotToken
+pub fn awaken_lease_contract::fence::SlotToken::eq(&self, &Self) -> bool
+impl core::fmt::Debug for awaken_lease_contract::fence::SlotToken
+pub fn awaken_lease_contract::fence::SlotToken::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_lease_contract::fence::Tenure<S: awaken_lease_contract::fence::TenureScope>
+impl<S: awaken_lease_contract::fence::TenureScope> awaken_lease_contract::fence::Tenure<S>
+pub const fn awaken_lease_contract::fence::Tenure<S>::epoch(&self) -> awaken_lease_contract::fence::Epoch
+pub const fn awaken_lease_contract::fence::Tenure<S>::granted(<S as awaken_lease_contract::fence::TenureScope>::Subject, <S as awaken_lease_contract::fence::TenureScope>::Holder, awaken_lease_contract::fence::Epoch) -> Self
+pub const fn awaken_lease_contract::fence::Tenure<S>::holder(&self) -> &<S as awaken_lease_contract::fence::TenureScope>::Holder
+pub fn awaken_lease_contract::fence::Tenure<S>::reassigned(&self, <S as awaken_lease_contract::fence::TenureScope>::Holder) -> core::option::Option<Self>
+pub const fn awaken_lease_contract::fence::Tenure<S>::subject(&self) -> &<S as awaken_lease_contract::fence::TenureScope>::Subject
+impl<S: awaken_lease_contract::fence::TenureScope> core::clone::Clone for awaken_lease_contract::fence::Tenure<S>
+pub fn awaken_lease_contract::fence::Tenure<S>::clone(&self) -> Self
+impl<S: awaken_lease_contract::fence::TenureScope> core::cmp::Eq for awaken_lease_contract::fence::Tenure<S>
+impl<S: awaken_lease_contract::fence::TenureScope> core::cmp::PartialEq for awaken_lease_contract::fence::Tenure<S>
+pub fn awaken_lease_contract::fence::Tenure<S>::eq(&self, &Self) -> bool
+impl<S: awaken_lease_contract::fence::TenureScope> core::fmt::Debug for awaken_lease_contract::fence::Tenure<S>
+pub fn awaken_lease_contract::fence::Tenure<S>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<S: awaken_lease_contract::fence::TenureScope> core::hash::Hash for awaken_lease_contract::fence::Tenure<S> where <S as awaken_lease_contract::fence::TenureScope>::Subject: core::hash::Hash, <S as awaken_lease_contract::fence::TenureScope>::Holder: core::hash::Hash
+pub fn awaken_lease_contract::fence::Tenure<S>::hash<H: core::hash::Hasher>(&self, &mut H)
+pub struct awaken_lease_contract::fence::ZeroEpoch
+impl core::error::Error for awaken_lease_contract::fence::ZeroEpoch
+impl core::fmt::Display for awaken_lease_contract::fence::ZeroEpoch
+pub fn awaken_lease_contract::fence::ZeroEpoch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub trait awaken_lease_contract::fence::FenceToken
+pub fn awaken_lease_contract::fence::FenceToken::authorizes_successor(&self, &Self) -> bool where Self: core::marker::Sized
+pub fn awaken_lease_contract::fence::FenceToken::epoch(&self) -> u64
+pub fn awaken_lease_contract::fence::FenceToken::expires_at_unix_ms(&self) -> u64
+pub fn awaken_lease_contract::fence::FenceToken::is_live_at(&self, u64) -> bool
+pub fn awaken_lease_contract::fence::FenceToken::owner(&self) -> &str
+pub fn awaken_lease_contract::fence::FenceToken::runtime_incarnation(&self) -> &str
+pub fn awaken_lease_contract::fence::FenceToken::same_realization_lease(&self, &Self) -> bool where Self: core::marker::Sized
+pub fn awaken_lease_contract::fence::FenceToken::succession(&self, &Self) -> core::option::Option<awaken_lease_contract::fence::FenceSuccession> where Self: core::marker::Sized
+pub trait awaken_lease_contract::fence::TenureScope
+pub type awaken_lease_contract::fence::TenureScope::Holder: core::cmp::Eq + core::clone::Clone + core::fmt::Debug
+pub type awaken_lease_contract::fence::TenureScope::Subject: core::cmp::Eq + core::clone::Clone + core::fmt::Debug
+pub const fn awaken_lease_contract::fence::fence_is_live_at(u64, u64) -> bool
+pub fn awaken_lease_contract::fence::fence_succession<E: core::cmp::PartialOrd>(bool, u64, E, u64, E, bool) -> core::option::Option<awaken_lease_contract::fence::FenceSuccession>

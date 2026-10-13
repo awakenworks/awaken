@@ -5,6 +5,8 @@ edition = "2024"
 license.workspace = true
 
 [package.metadata.awaken]
+# SDK publishing preparation: tool pattern values and matchers are public API.
+api_snapshot = true
 context = "shared"
 product = "sdk"
 bounded_context = "agent-runtime"

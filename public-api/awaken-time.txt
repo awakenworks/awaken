@@ -1,0 +1,74 @@
+pub mod awaken_time
+pub mod awaken_time::mono
+pub use awaken_time::mono::Instant
+pub struct awaken_time::mono::MonoDeadline(_)
+impl awaken_time::mono::MonoDeadline
+pub fn awaken_time::mono::MonoDeadline::after(core::time::Duration) -> Self
+pub const fn awaken_time::mono::MonoDeadline::at(tokio::time::instant::Instant) -> Self
+pub fn awaken_time::mono::MonoDeadline::has_passed(self) -> bool
+pub const fn awaken_time::mono::MonoDeadline::instant(self) -> tokio::time::instant::Instant
+pub fn awaken_time::mono::MonoDeadline::remaining(self) -> core::time::Duration
+pub struct awaken_time::mono::Stopwatch(_)
+impl awaken_time::mono::Stopwatch
+pub fn awaken_time::mono::Stopwatch::elapsed(self) -> core::time::Duration
+pub fn awaken_time::mono::Stopwatch::start() -> Self
+pub fn awaken_time::mono::now() -> tokio::time::instant::Instant
+pub mod awaken_time::utc
+pub const awaken_time::utc::MAX_RFC3339_NANOS: i128
+pub fn awaken_time::utc::bounded_rfc3339_nanos(i128) -> i128
+pub fn awaken_time::utc::civil_from_days(i64) -> (i64, u32, u32)
+pub fn awaken_time::utc::days_from_civil(i64, u32, u32) -> i64
+pub const fn awaken_time::utc::days_in_month(i64, u32) -> u32
+pub fn awaken_time::utc::epoch_millis_to_rfc3339(u64) -> alloc::string::String
+pub fn awaken_time::utc::format_rfc3339_utc_nanos(i128) -> alloc::string::String
+pub fn awaken_time::utc::parse_rfc3339_utc_nanos(&str) -> core::option::Option<i128>
+pub fn awaken_time::utc::project_epoch_millis(u128) -> u64
+pub fn awaken_time::utc::rfc3339_to_epoch_millis(&str) -> core::option::Option<u64>
+pub struct awaken_time::Expiry(_)
+impl awaken_time::Expiry
+pub const fn awaken_time::Expiry::after(awaken_time::UtcTime, core::time::Duration) -> Self
+pub const fn awaken_time::Expiry::at(awaken_time::UtcTime) -> Self
+pub fn awaken_time::Expiry::child_within(Self, awaken_time::UtcTime, core::time::Duration) -> core::option::Option<Self>
+pub const fn awaken_time::Expiry::deadline(self) -> awaken_time::UtcTime
+pub const fn awaken_time::Expiry::from_epoch_ms(u64) -> Self
+pub fn awaken_time::Expiry::from_persisted_ms(i64) -> Self
+pub const fn awaken_time::Expiry::is_expired_at(self, awaken_time::UtcTime) -> bool
+pub const fn awaken_time::Expiry::is_live_at(self, awaken_time::UtcTime) -> bool
+pub fn awaken_time::Expiry::remaining_at(self, awaken_time::UtcTime) -> core::option::Option<core::time::Duration>
+pub fn awaken_time::Expiry::to_epoch_ms(self) -> u64
+pub fn awaken_time::Expiry::to_persisted_ms(self) -> i64
+pub fn awaken_time::Expiry::within(self, Self, awaken_time::UtcTime) -> core::option::Option<Self>
+pub struct awaken_time::NotBefore(_)
+impl awaken_time::NotBefore
+pub const fn awaken_time::NotBefore::after(awaken_time::UtcTime, core::time::Duration) -> Self
+pub const fn awaken_time::NotBefore::at(awaken_time::UtcTime) -> Self
+pub const fn awaken_time::NotBefore::instant(self) -> awaken_time::UtcTime
+pub fn awaken_time::NotBefore::is_due_at(self, awaken_time::UtcTime) -> bool
+pub struct awaken_time::UtcTime(_)
+impl awaken_time::UtcTime
+pub const awaken_time::UtcTime::UNIX_EPOCH: Self
+pub fn awaken_time::UtcTime::as_epoch_ms(self) -> u64
+pub fn awaken_time::UtcTime::as_epoch_ms_i64(self) -> i64
+pub const fn awaken_time::UtcTime::as_unix_nanos(self) -> u128
+pub fn awaken_time::UtcTime::as_unix_nanos_u64(self) -> u64
+pub const fn awaken_time::UtcTime::duration_since_epoch(self) -> core::time::Duration
+pub const fn awaken_time::UtcTime::from_duration_since_epoch(core::time::Duration) -> Self
+pub const fn awaken_time::UtcTime::from_epoch_ms(u64) -> Self
+pub fn awaken_time::UtcTime::from_epoch_ms_i64(i64) -> Self
+pub fn awaken_time::UtcTime::from_system_time(std::time::SystemTime) -> Self
+pub fn awaken_time::UtcTime::from_unix_nanos(u128) -> Self
+pub fn awaken_time::UtcTime::parse_rfc3339(&str) -> core::option::Option<Self>
+pub const fn awaken_time::UtcTime::saturating_add(self, core::time::Duration) -> Self
+pub const fn awaken_time::UtcTime::saturating_duration_since(self, Self) -> core::time::Duration
+pub fn awaken_time::UtcTime::to_rfc3339(self) -> alloc::string::String
+pub fn awaken_time::UtcTime::to_rfc3339_millis(self) -> alloc::string::String
+pub fn awaken_time::UtcTime::to_rfc3339_secs(self) -> alloc::string::String
+pub trait awaken_time::WallClock: core::marker::Send + core::marker::Sync
+pub fn awaken_time::WallClock::now(&self) -> awaken_time::UtcTime
+pub trait awaken_time::WallClockExt
+pub fn awaken_time::WallClockExt::now_ms(&self) -> u64
+pub fn awaken_time::WallClockExt::observed_at(&self) -> alloc::string::String
+impl<C: awaken_time::WallClock + ?core::marker::Sized> awaken_time::WallClockExt for C
+pub fn C::now_ms(&self) -> u64
+pub fn C::observed_at(&self) -> alloc::string::String
+pub fn awaken_time::system_clock() -> alloc::sync::Arc<dyn awaken_time::WallClock>

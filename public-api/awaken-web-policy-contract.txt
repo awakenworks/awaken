@@ -1,0 +1,25 @@
+pub mod awaken_web_policy_contract
+pub enum awaken_web_policy_contract::WebUrlSourceFilter
+pub awaken_web_policy_contract::WebUrlSourceFilter::All
+pub awaken_web_policy_contract::WebUrlSourceFilter::Except
+pub awaken_web_policy_contract::WebUrlSourceFilter::Except::tools: alloc::vec::Vec<awaken_web_policy_contract::WebUrlToolReference>
+pub awaken_web_policy_contract::WebUrlSourceFilter::None
+pub awaken_web_policy_contract::WebUrlSourceFilter::Only
+pub awaken_web_policy_contract::WebUrlSourceFilter::Only::tools: alloc::vec::Vec<awaken_web_policy_contract::WebUrlToolReference>
+impl<'de> serde_core::de::Deserialize<'de> for awaken_web_policy_contract::WebUrlSourceFilter
+pub fn awaken_web_policy_contract::WebUrlSourceFilter::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub enum awaken_web_policy_contract::WebUrlSourceKind
+pub awaken_web_policy_contract::WebUrlSourceKind::ClientTool
+pub awaken_web_policy_contract::WebUrlSourceKind::ServerTool
+pub awaken_web_policy_contract::WebUrlSourceKind::UserInput
+pub enum awaken_web_policy_contract::WebUrlToolReference
+pub awaken_web_policy_contract::WebUrlToolReference::ToolReference
+pub awaken_web_policy_contract::WebUrlToolReference::ToolReference::name: alloc::string::String
+pub struct awaken_web_policy_contract::WebFetchUrlSources
+pub awaken_web_policy_contract::WebFetchUrlSources::client_tool_results: core::option::Option<awaken_web_policy_contract::WebUrlSourceFilter>
+pub awaken_web_policy_contract::WebFetchUrlSources::server_tool_results: core::option::Option<awaken_web_policy_contract::WebUrlSourceFilter>
+pub awaken_web_policy_contract::WebFetchUrlSources::user_input: core::option::Option<awaken_web_policy_contract::WebUrlSourceFilter>
+impl awaken_web_policy_contract::WebFetchUrlSources
+pub fn awaken_web_policy_contract::WebFetchUrlSources::permits(&self, awaken_web_policy_contract::WebUrlSourceKind, &str) -> bool
+pub fn awaken_web_policy_contract::WebFetchUrlSources::validate(&self, &alloc::collections::btree::set::BTreeSet<&str>) -> core::result::Result<(), alloc::string::String>
+pub fn awaken_web_policy_contract::WebFetchUrlSources::validate_intrinsic(&self) -> core::result::Result<(), alloc::string::String>

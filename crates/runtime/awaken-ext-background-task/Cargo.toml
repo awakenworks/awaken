@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [package.metadata.awaken]
+# SDK publishing preparation: the task aggregate and plugin composition are public API.
+api_snapshot = true
 context = "runtime"
 product = "sdk"
 bounded_context = "agent-runtime"

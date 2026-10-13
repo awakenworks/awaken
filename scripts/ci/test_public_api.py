@@ -53,8 +53,18 @@ elif args == ["metadata", "--no-deps", "--format-version", "1"]:
         print(json.dumps({"packages": []}))
         sys.exit(0)
     packages = [{"name": "fixture", "metadata": {"awaken": {"api_snapshot": True}}}]
+    if os.environ.get("API_TEST_SELECTED_PRODUCT"):
+        packages[0]["metadata"]["awaken"].update(
+            product=os.environ["API_TEST_SELECTED_PRODUCT"], separation="contract")
+        packages[0]["publish"] = json.loads(os.environ.get("API_TEST_SELECTED_PUBLISH", "null"))
     if os.environ.get("API_TEST_UNSELECTED_MEMBER"):
-        packages.append({"name": "internal", "metadata": {"awaken": {}}})
+        metadata = {}
+        if os.environ.get("API_TEST_UNSELECTED_PRODUCT"):
+            metadata.update(product=os.environ["API_TEST_UNSELECTED_PRODUCT"], separation="contract")
+        if os.environ.get("API_TEST_UNSELECTED_SNAPSHOT"):
+            metadata["api_snapshot"] = json.loads(os.environ["API_TEST_UNSELECTED_SNAPSHOT"])
+        packages.append({"name": "internal", "metadata": {"awaken": metadata},
+                         "publish": json.loads(os.environ.get("API_TEST_UNSELECTED_PUBLISH", "null"))})
     print(json.dumps({"packages": packages}))
 else:
     assert args == ["+nightly-2026-07-14", "public-api", "-p", "fixture",
@@ -89,6 +99,15 @@ else:
         # refuses any `-p` but the fixture) and the gate still passes on the
         # selected one; S2 a snapshot file for an unselected member is an
         # orphan and fails before anything is computed, in check and in bless.
+        # SDK completeness cause/effect table: C1 product SDK vs internal;
+        # C2 Cargo publish null/registry list vs [] (publish=false); C3 explicit
+        # api_snapshot true vs omitted/false. S3-S6 C1+publishable+!C3 => refuse
+        # before generation or baseline write, even under bless. S7 SDK+[] and
+        # S8 internal+publishable do not require selection, preserving S1/S2.
+        # S9 explicit selection is still computed for SDK/internal x null/list/
+        # [], including an unpublished member with its own selection reason.
+        # Separation is not the publication authority. The original
+        # mocked IO edge rejects any unexpected crate or rendering argv.
         self.seed(SURFACE)
         result = self.invoke("--require-tools", API_TEST_UNSELECTED_MEMBER="1")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -100,6 +119,41 @@ else:
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertIn("without a selecting crate", result.stderr)
                 self.assertTrue(orphan.exists(), "an orphan is reported, never deleted")
+        orphan.unlink()
+        for rule, product, publish, selection, expected in (
+            ("S3", "sdk", "null", "", 1),
+            ("S4", "sdk", '["private-registry"]', "", 1),
+            ("S5", "sdk", "null", "false", 1),
+            ("S6", "sdk", '["private-registry"]', "false", 1),
+            ("S7 omitted", "sdk", "[]", "", 0),
+            ("S7 false", "sdk", "[]", "false", 0),
+            ("S8 omitted", "platform", "null", "", 0),
+            ("S8 false", "platform", "null", "false", 0),
+        ):
+            for arguments in (("--require-tools",), ("--bless", "--require-tools")):
+                with self.subTest(rule=rule, arguments=arguments):
+                    (self.root / "computed").unlink(missing_ok=True)
+                    result = self.invoke(
+                        *arguments, API_TEST_UNSELECTED_MEMBER="1",
+                        API_TEST_UNSELECTED_PRODUCT=product,
+                        API_TEST_UNSELECTED_PUBLISH=publish,
+                        API_TEST_UNSELECTED_SNAPSHOT=selection,
+                    )
+                    self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                    self.assertEqual((self.root / "computed").exists(), expected == 0)
+                    self.assertEqual(self.snapshot.read_bytes(), SURFACE, "no missing selection may bless")
+                    if expected:
+                        self.assertIn("publishable SDK crates must explicitly select", result.stderr)
+                        self.assertIn("internal", result.stderr)
+        for product in ("sdk", "platform"):
+            for publish in ("null", '["private-registry"]', "[]"):
+                with self.subTest(rule="S9", product=product, publish=publish):
+                    result = self.invoke(
+                        "--require-tools", API_TEST_SELECTED_PRODUCT=product,
+                        API_TEST_SELECTED_PUBLISH=publish,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("1 crates compared", result.stdout)
 
     def test_check_is_read_only_and_requires_a_comparable_reviewed_baseline(self):
         # Causes: C1 baseline exists; C2 computed surface matches; C3 generation
@@ -108,6 +162,8 @@ else:
         # writes/creates the baseline, including a missing parent directory.
         # R1 equal; R2 drift; R3 missing file; R4 missing directory; R5 diff
         # observer error; R6 generator error. C2 is meaningful only with C1+C3.
+        # Run these same baseline/compute/diff partitions through an explicitly
+        # selected publishable SDK; completeness cannot waive baseline review.
         for rule, baseline, parent, conditions, expected in (
             ("R1", SURFACE, True, {}, 0),
             ("R2", b"reviewed old bytes", True, {}, 1),
@@ -124,7 +180,7 @@ else:
                     self.snapshot.parent.mkdir()
                 if baseline is not None:
                     self.seed(baseline)
-                result = self.invoke("--require-tools", **conditions)
+                result = self.invoke("--require-tools", API_TEST_SELECTED_PRODUCT="sdk", **conditions)
                 self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
                 self.assertEqual(self.snapshot.parent.exists(), parent, "E3 directory mutation")
                 actual = self.snapshot.read_bytes() if self.snapshot.exists() else None
@@ -134,6 +190,7 @@ else:
         # B1 missing baseline + explicit bless + successful generation => create;
         # B2 changed baseline => replace; B3 failed generation => retain exact
         # original bytes and fail, never publish empty/partial tool output.
+        # The selected SDK partition keeps the same sole explicit writer.
         for rule, baseline, conditions, expected in (
             ("B1", None, {}, 0),
             ("B2", b"reviewed old bytes", {}, 0),
@@ -143,7 +200,7 @@ else:
                 self.snapshot.unlink(missing_ok=True)
                 if baseline is not None:
                     self.seed(baseline)
-                result = self.invoke("--bless", "--require-tools", **conditions)
+                result = self.invoke("--bless", "--require-tools", API_TEST_SELECTED_PRODUCT="sdk", **conditions)
                 self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
                 self.assertEqual(self.snapshot.read_bytes(), SURFACE if expected == 0 else baseline)
 
@@ -160,7 +217,9 @@ else:
         Rules: (T1|T2) x (A|B) => E1. (T1|T2) x C => E2. (T3|T4) x every caller
         => E1, because --allow-absent-tools waives an absence and these are not
         absences. No row may reach generation or write a baseline, even under
-        --bless.
+        --bless. An unselected publishable SDK in the metadata fixture cannot
+        make a tooling refusal succeed; an explicit absent-tool waiver still
+        says that nothing was compared, rather than certifying SDK coverage.
         """
 
         self.seed(b"preserved")
@@ -177,7 +236,10 @@ else:
                 ("C --allow-absent-tools", ("--allow-absent-tools",), 0 if waivable else 1),
             ):
                 with self.subTest(rule=rule, caller=caller):
-                    result = self.invoke("--bless", *flags, **conditions)
+                    result = self.invoke(
+                        "--bless", *flags, API_TEST_UNSELECTED_MEMBER="1",
+                        API_TEST_UNSELECTED_PRODUCT="sdk", **conditions,
+                    )
                     self.assertEqual(
                         result.returncode, expected, result.stdout + result.stderr
                     )
