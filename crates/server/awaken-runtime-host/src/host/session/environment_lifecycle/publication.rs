@@ -24,7 +24,8 @@ impl SharedHost {
         &self,
         thread: &str,
     ) -> Option<UnboundSessionEnvironment> {
-        self.installed_sessions
+        let realizations = self.installed_sessions.realizations();
+        realizations
             .read_realization(thread, |r| match &r.environment_owner {
                 SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(
                     candidate,

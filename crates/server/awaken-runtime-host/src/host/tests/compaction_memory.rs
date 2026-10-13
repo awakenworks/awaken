@@ -142,6 +142,9 @@ async fn compaction_summary_reaches_the_same_long_run() {
     // E2 C2 injects the committed summary into that Run's inference. Constraint/
     // Invariant: compaction changes context projection, not Thread identity or
     // committed history. Decision rule: execute C1 then C2 and distinguish replies.
+    // Assembly phase invariant: Memory selection/recovery/Recall precedes the
+    // same Compact configuration/backend/plugin phase; extracting that phase
+    // preserves Runtime and plugin order and returns the same ContextPolicy.
     // C3 the Host supplies request-only environment context on both attempts:
     // it must remain model-visible while contributing no conversational prefix
     // to compaction. C1+C3 => still E1; C2+C3 => E2 over actual Thread history.
@@ -282,7 +285,9 @@ async fn published_compact_plugin_is_installed_from_the_immutable_agent() {
     // Cause/effect graph: C1 an immutable publication selects `compact`; C2 the
     // process has no ambient compaction override. C1+C2 must install the exact
     // publication-selected plugin before inference. Otherwise authoring accepts
-    // a capability that the product runtime can never execute.
+    // a capability that the product runtime can never execute. The private
+    // Compact assembly phase consumes the original acquired ContextResources;
+    // it neither reparses Memory config nor samples another publication.
     let snapshot = crate::config::server_config(
         "published-compact",
         "stub",
@@ -1059,6 +1064,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     };
     let lifecycle_guard = host
         .installed_sessions
+        .realizations()
         .lock_lifecycle("memory-replay")
         .await;
     let preparing = tokio::spawn({
@@ -1130,6 +1136,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     // pressure test: the durable sandbox binding is resident, while this process
     // has not yet projected the authoritative Resource generation.
     host.installed_sessions
+        .realizations()
         .update_realization("memory-replay", |r| {
             r.manifest = None;
             r.resources = Default::default();

@@ -304,6 +304,7 @@ mod tests {
                 .is_none_or(|(host, thread)| {
                     host.upgrade().is_some_and(|host| {
                         host.installed_sessions
+                            .realizations()
                             .read_realization(thread, |r| r.environment_owner.is_resident())
                             .unwrap_or(false)
                     })
@@ -722,8 +723,9 @@ mod tests {
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationDriveError> {
         let realization = host
             .installed_sessions
-            .acquire_realization(session_id.as_str())
-            .await;
+            .acquire_realization_with(session_id.as_str(), |_| ())
+            .await
+            .0;
         let synchronizer =
             WorkerProjectionSynchronizer::for_directive(host, &directive, None, None, false, None);
         HostWorkerResolver::drive_session_realization_with_synchronizer(
@@ -946,6 +948,7 @@ mod tests {
         );
         assert_eq!(
             host.installed_sessions
+                .realizations()
                 .read_realization(thread, |r| r.authority.lease().cloned())
                 .flatten(),
             Some(lease.clone()),
@@ -1055,7 +1058,10 @@ mod tests {
         )
         .await
         .expect("lease renewal reuses the retained immutable publication");
-        let retained = host.installed_sessions.published_snapshot(thread);
+        let retained = host
+            .installed_sessions
+            .realizations()
+            .published_snapshot(thread);
         assert_eq!(retained.as_ref(), Some(&snapshot), "P1/P2");
 
         let mut effective = snapshot.clone();
@@ -1088,7 +1094,10 @@ mod tests {
         .await
         .expect("P3 Session-effective Run snapshot shares the frozen coordinates");
         assert_eq!(
-            host.installed_sessions.published_snapshot(thread).as_ref(),
+            host.installed_sessions
+                .realizations()
+                .published_snapshot(thread)
+                .as_ref(),
             Some(&snapshot),
             "P3"
         );
@@ -1287,6 +1296,7 @@ mod tests {
         );
         assert_eq!(
             host.installed_sessions
+                .realizations()
                 .read_realization(thread, |r| r
                     .authority
                     .lease()
@@ -1454,6 +1464,7 @@ mod tests {
             .expect("C1 original materialization readback");
         let old_lease = source_host
             .installed_sessions
+            .realizations()
             .read_realization(thread, |r| r.authority.lease().cloned())
             .flatten()
             .expect("C1 actual original assignment");
@@ -1501,6 +1512,7 @@ mod tests {
         );
         let lease = host
             .installed_sessions
+            .realizations()
             .read_realization(thread, |r| r.authority.lease().cloned())
             .flatten()
             .expect("C4 Store-installed consumer lease");
@@ -1799,7 +1811,7 @@ mod tests {
             );
             assert!(
                 matches!(
-                    host.installed_sessions.read_realization(thread, |r| r.authority.clone()),
+                    host.installed_sessions.realizations().read_realization(thread, |r| r.authority.clone()),
                     Some(crate::installed_session::SessionRealizationAuthority::Closed(Some(ref closed)))
                         if closed == &recovery_authority.lease
                 ),
@@ -1952,6 +1964,7 @@ mod tests {
         assert!(
             first_use_host
                 .installed_sessions
+                .realizations()
                 .read_realization(first_use_thread, |r| r.environment_owner.is_resident())
                 .unwrap_or(false),
             "R7 Store-read identity remains Resident"

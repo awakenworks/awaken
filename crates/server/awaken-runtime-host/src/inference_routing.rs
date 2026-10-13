@@ -25,12 +25,12 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 /// a ref becomes an executor.
 pub(crate) struct InferenceRouting {
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
-    slots: crate::installed_session::InstalledSessions,
+    slots: Arc<crate::installed_session::InstalledSessions>,
 }
 
 impl InferenceRouting {
     pub(crate) fn new(
-        slots: crate::installed_session::InstalledSessions,
+        slots: Arc<crate::installed_session::InstalledSessions>,
         materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     ) -> Self {
         Self {
@@ -68,7 +68,7 @@ impl InferenceRouting {
     /// uses its agent's published binding. Stamped onto the run's activation at
     /// delivery so the resolve seam sees it without consulting this map.
     pub(crate) fn override_for(&self, thread: &str) -> Option<String> {
-        self.slots.frozen(thread).model_ref.clone()
+        self.slots.realizations().frozen(thread).model_ref.clone()
     }
 
     pub(crate) fn executor_for_activation(

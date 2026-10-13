@@ -47,7 +47,7 @@ async fn session_realizations_reach_only_frozen_reads_realization_and_the_narrow
     assert!(
         Arc::ptr_eq(
             &sessions.frozen(thread),
-            &host.installed_sessions.frozen(thread)
+            &host.installed_sessions.realizations().frozen(thread)
         ),
         "V3 exact frozen value"
     );

@@ -68,6 +68,7 @@ impl ToolExecutor for DeferredSandboxExecutor {
             .upgrade()
             .and_then(|host| {
                 host.installed_sessions
+                    .realizations()
                     .read_realization(&self.thread, |r| r.environment_owner.resident())
                     .flatten()
             })

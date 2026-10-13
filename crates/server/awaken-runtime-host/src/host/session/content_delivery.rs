@@ -48,7 +48,8 @@ impl SharedHost {
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         tool: &str,
     ) -> bool {
-        let session_tools = self.installed_sessions.frozen(thread).tools.clone();
+        let realizations = self.installed_sessions.realizations();
+        let session_tools = realizations.frozen(thread).tools.clone();
         let toolsets = session_tools
             .as_ref()
             .map(|tools| tools.toolsets.as_slice())
@@ -117,6 +118,7 @@ impl SharedHost {
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         authored_skills_subdir: &str,
     ) -> Option<Vec<String>> {
+        let realizations = self.installed_sessions.realizations();
         let managed_session = self
             .installed_sessions
             .read_run(thread, |run| run.session_dispatch)
@@ -137,8 +139,7 @@ impl SharedHost {
             return Some(Vec::new());
         }
 
-        let mut roots = self
-            .installed_sessions
+        let mut roots = realizations
             .read_realization(thread, |r| {
                 r.resources
                     .repositories
@@ -176,6 +177,7 @@ impl SharedHost {
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         skill_evidence: SkillDeliveryEvidence<'_>,
     ) -> Result<crate::frozen_inputs::ManagedContentDelivery, HostError> {
+        let realizations = self.installed_sessions.realizations();
         let managed_session = self
             .installed_sessions
             .read_run(thread, |run| run.session_dispatch)
@@ -227,8 +229,7 @@ impl SharedHost {
         // auxiliary/child Agent snapshot. Once the root projection chooses it,
         // a restricted Outcome grader or delegate must reuse that immutable
         // choice instead of trying to re-author the Session's mounts/tools.
-        if let Some(existing) = self
-            .installed_sessions
+        if let Some(existing) = realizations
             .read_realization(thread, |r| r.content_delivery)
             .flatten()
         {
@@ -253,8 +254,7 @@ impl SharedHost {
             crate::frozen_inputs::ManagedContentDelivery::SemanticTools
         };
         if delivery == crate::frozen_inputs::ManagedContentDelivery::SemanticTools
-            && self
-                .installed_sessions
+            && realizations
                 .read_realization(thread, |r| {
                     r.resources
                         .resource_prompts
@@ -289,8 +289,7 @@ impl SharedHost {
                 ));
             }
         }
-        self.installed_sessions
-            .update_realization(thread, |r| r.content_delivery = Some(delivery));
+        realizations.update_realization(thread, |r| r.content_delivery = Some(delivery));
         Ok(delivery)
     }
 
@@ -380,6 +379,7 @@ impl SharedHost {
         has_published_delegates: bool,
         claimed_attempt: bool,
     ) -> bool {
+        let realizations = self.installed_sessions.realizations();
         // A Coordinator-only Host constructs the durable dispatch envelope but
         // never executes it. Creating an eager sandbox here would make the
         // Coordinator a second physical owner beside the registered Worker.
@@ -436,14 +436,14 @@ impl SharedHost {
                 )
                 .is_acp()
             });
-        let selected_backend_is_acp = self
-            .installed_sessions
-            .frozen(thread)
-            .backend_ref
-            .clone()
-            .is_some_and(|backend_ref| {
-                awaken_runtime_contract::resolved::Backend::from_ref(&backend_ref).is_acp()
-            });
+        let selected_backend_is_acp =
+            realizations
+                .frozen(thread)
+                .backend_ref
+                .clone()
+                .is_some_and(|backend_ref| {
+                    awaken_runtime_contract::resolved::Backend::from_ref(&backend_ref).is_acp()
+                });
         // Delegation itself is a Sandbox capability: the child must inherit the
         // exact parent environment and its lifecycle fence. Keep that fact in the
         // sole eager-vs-deferred classifier instead of accepting deferral here and

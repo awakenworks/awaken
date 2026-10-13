@@ -1692,6 +1692,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
 
     let exact_before = host
         .installed_sessions
+        .realizations()
         .read_realization("exact-cold-transition", |r| r.resource_transition.clone())
         .flatten()
         .expect("R1 exact transition projection");
@@ -1702,6 +1703,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         .expect("R1/E1 exact desired-only consumer");
     assert_eq!(
         host.installed_sessions
+            .realizations()
             .read_realization("exact-cold-transition", |r| r.resource_transition.clone())
             .flatten(),
         Some(exact_before),
@@ -1714,6 +1716,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
 
     let active_transition = host
         .installed_sessions
+        .realizations()
         .read_realization(active_thread, |r| r.resource_transition.clone())
         .flatten()
         .expect("R2 exact transition projection");
@@ -1728,6 +1731,7 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
         .expect("R2/E1 exact desired consumer with active previous");
     assert_eq!(
         host.installed_sessions
+            .realizations()
             .read_realization(active_thread, |r| r.resource_transition.clone())
             .flatten(),
         Some(active_transition),
@@ -1790,6 +1794,7 @@ async fn complete_projection_resource_guard_excludes_desired_only_staging() {
     );
     let guard = host
         .installed_sessions
+        .realizations()
         .lock_resource_projection(thread)
         .await;
     let mut staging = tokio::spawn({
@@ -1809,6 +1814,7 @@ async fn complete_projection_resource_guard_excludes_desired_only_staging() {
     );
     assert!(
         host.installed_sessions
+            .realizations()
             .read_realization(thread, |r| {
                 r.resource_transition.is_none()
                     && r.staged_resource_effect_key.is_none()
@@ -1825,6 +1831,7 @@ async fn complete_projection_resource_guard_excludes_desired_only_staging() {
         .expect("L2 cold staging succeeds after guard release");
     assert!(
         host.installed_sessions
+            .realizations()
             .read_realization(thread, |r| {
                 r.resource_transition.is_some()
                     && r.staged_resource_effect_key.is_some()
@@ -1930,6 +1937,7 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
     });
     let _guard = host
         .installed_sessions
+        .realizations()
         .lock_resource_projection(foreign_thread)
         .await;
     let error = host
@@ -1960,6 +1968,7 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
     let bound_thread = "prospective-bound-resource";
     let _guard = host
         .installed_sessions
+        .realizations()
         .lock_resource_projection(bound_thread)
         .await;
     host.stage_prevalidated_dispatched_resource_transition_under_resource_projection(
@@ -1973,6 +1982,7 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
     .expect("P2 prospective binding defers missing File compilation");
     assert!(
         host.installed_sessions
+            .realizations()
             .read_realization(bound_thread, |r| {
                 r.manifest.is_none()
                     && r.resource_transition.is_none()
@@ -2640,6 +2650,7 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
 
     let original_identity = host
         .installed_sessions
+        .realizations()
         .read_realization(thread, |r| match &r.environment_owner {
             crate::environment_owner::SessionEnvironmentOwner::Resident(bound) => {
                 bound.identity.clone()
@@ -2656,14 +2667,16 @@ async fn an_aba_replacement_with_the_same_handle_survives_stale_discard() {
     );
     host.install_test_resident_session_environment(thread, replacement.clone());
     assert_eq!(
-        host.installed_sessions.read_realization(thread, |r| {
-            match &r.environment_owner {
-                crate::environment_owner::SessionEnvironmentOwner::Resident(bound) => {
-                    bound.identity.clone()
+        host.installed_sessions
+            .realizations()
+            .read_realization(thread, |r| {
+                match &r.environment_owner {
+                    crate::environment_owner::SessionEnvironmentOwner::Resident(bound) => {
+                        bound.identity.clone()
+                    }
+                    _ => panic!("C4 replacement remains Resident"),
                 }
-                _ => panic!("C4 replacement remains Resident"),
-            }
-        }),
+            }),
         Some(original_identity),
         "C4 same-handle Arc replacement preserves original Root identity"
     );

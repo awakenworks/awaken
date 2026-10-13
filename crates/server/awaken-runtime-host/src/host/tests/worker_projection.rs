@@ -681,6 +681,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         assert!(
             amendment_host
                 .installed_sessions
+                .realizations()
                 .read_realization("authority-amendment", |r| {
                     r.manifest.is_none()
                         && r.resource_transition.as_ref().is_some_and(|transition| {
@@ -702,6 +703,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         assert!(
             amendment_host
                 .installed_sessions
+                .realizations()
                 .read_realization("authority-amendment", |r| {
                     r.manifest.is_none()
                         && r.resource_transition.as_ref().is_some_and(|transition| {
@@ -871,6 +873,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         // staged sandbox requirements remain available. R1 C1+C2=>E1,E2,E3.
         assert!(
             host.installed_sessions
+                .realizations()
                 .read_realization("flow-thread", |r| {
                     r.manifest.is_none()
                         && r.resource_transition.as_ref().is_some_and(|transition| {

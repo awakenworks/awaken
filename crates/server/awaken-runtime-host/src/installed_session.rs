@@ -232,16 +232,14 @@ impl crate::session_realizations::SessionRunQuery for SessionRunBinding {
     }
 }
 
-impl crate::session_realizations::SessionRealizationSource
-    for Mutex<HashMap<String, InstalledSession>>
-{
+impl crate::session_realizations::SessionRealizationSource for InstalledSessions {
     fn visit(
         &self,
         session: &str,
         create: bool,
         visit: &mut dyn FnMut(crate::session_realizations::SessionRealizationAccess<'_>),
     ) -> Result<(), InstalledSessionsPoisoned> {
-        let mut slots = self.lock().map_err(|_| InstalledSessionsPoisoned)?;
+        let mut slots = self.slots.lock().map_err(|_| InstalledSessionsPoisoned)?;
         let slot = if create {
             Some(slots.entry(session.to_string()).or_default())
         } else {
@@ -287,30 +285,9 @@ impl InstalledSession {
     }
 }
 
-#[derive(Clone)]
+#[derive(Default)]
 pub(crate) struct InstalledSessions {
-    slots: Arc<Mutex<HashMap<String, InstalledSession>>>,
-    /// The realizer's view of these same Sessions; the realization-layer
-    /// operations live there and are reached through `Deref`.
-    realizations: crate::session_realizations::SessionRealizations,
-}
-
-impl Default for InstalledSessions {
-    fn default() -> Self {
-        let slots: Arc<Mutex<HashMap<String, InstalledSession>>> = Arc::default();
-        Self {
-            realizations: crate::session_realizations::SessionRealizations::new(slots.clone()),
-            slots,
-        }
-    }
-}
-
-impl std::ops::Deref for InstalledSessions {
-    type Target = crate::session_realizations::SessionRealizations;
-
-    fn deref(&self) -> &Self::Target {
-        &self.realizations
-    }
+    slots: Mutex<HashMap<String, InstalledSession>>,
 }
 
 /// Ephemeral cleanup selection, captured at the close edge. Existing lock Arcs
@@ -359,13 +336,15 @@ impl InstalledSessions {
 
     /// The registry itself, for tests that hold or poison its lock.
     #[cfg(all(test, target_os = "linux"))]
-    pub(crate) fn test_map(&self) -> &Arc<Mutex<HashMap<String, InstalledSession>>> {
+    pub(crate) fn test_map(&self) -> &Mutex<HashMap<String, InstalledSession>> {
         &self.slots
     }
 
     /// The realizer's view of these Sessions.
-    pub(crate) fn realizations(&self) -> crate::session_realizations::SessionRealizations {
-        self.realizations.clone()
+    pub(crate) fn realizations(
+        self: &Arc<Self>,
+    ) -> crate::session_realizations::SessionRealizations {
+        crate::session_realizations::SessionRealizations::new(self.clone())
     }
 
     pub(crate) fn close_realization(

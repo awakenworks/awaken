@@ -23,6 +23,7 @@ pub(super) async fn assemble(
     mut resources: ContextResources,
     requested_purpose: RuntimeContextPurpose,
 ) -> Result<PreparedContext, HostError> {
+    let realizations = &host.realizer.environments.sessions;
     let env = &resources.env;
     let authorization = &resources.authorization;
     let has_published_multiagent = resources.has_published_multiagent;
@@ -113,8 +114,7 @@ pub(super) async fn assemble(
     let mut memory_descriptors = Vec::new();
     let mut semantic_memory_tools = None;
     if content_delivery == crate::frozen_inputs::ManagedContentDelivery::SemanticTools {
-        let bindings = host
-            .installed_sessions
+        let bindings = realizations
             .read_realization(thread, |r| r.memory_bindings.clone())
             .unwrap_or_default();
         if let Some(wiring) = crate::session_memory_tools::SessionMemoryTools::new(bindings) {

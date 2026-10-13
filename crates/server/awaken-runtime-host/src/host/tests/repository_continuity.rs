@@ -204,10 +204,12 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
     // process-local Resource completion cache must be re-established.
     // Rebased fixture rule: cold adoption updates the canonical installed
     // Session view; a legacy registry or forwarding alias must not participate.
-    host.installed_sessions.update_realization(thread, |state| {
-        state.environment_resource_reconciliation =
-            crate::staged_resources::EnvironmentResourceReconciliation::Adopted;
-    });
+    host.installed_sessions
+        .realizations()
+        .update_realization(thread, |state| {
+            state.environment_resource_reconciliation =
+                crate::staged_resources::EnvironmentResourceReconciliation::Adopted;
+        });
     let transition =
         crate::session_resource::SessionResourceTransition::new(manifest.clone(), manifest.clone())
             .unwrap();

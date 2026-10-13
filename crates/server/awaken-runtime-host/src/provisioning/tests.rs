@@ -251,12 +251,14 @@ async fn root_terminal_cleanup_effect(
 ) {
     let environment = host
         .installed_sessions
+        .realizations()
         .read_realization(session_id, |r| r.environment_owner.resident())
         .flatten()
         .expect("terminal test requires a resident Environment");
     let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
     let workspace_id = host
         .installed_sessions
+        .realizations()
         .frozen(session_id)
         .workspace
         .clone()
@@ -1690,6 +1692,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
     let managed = crate::ManagedHost::new(host.clone());
     let workspace_id = host
         .installed_sessions
+        .realizations()
         .frozen("session-artifacts")
         .workspace
         .clone()
@@ -1701,6 +1704,7 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .unwrap();
     assert!(
         host.installed_sessions
+            .realizations()
             .read_realization("session-artifacts", |r| {
                 r.environment_owner.terminal_bound_environment().is_some()
             })
@@ -1843,6 +1847,7 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
     );
 
     host.installed_sessions
+        .realizations()
         .update_realization("artifact-response-loss", |r| {
             r.environment_owner = crate::installed_session::SessionEnvironmentOwner::Vacant;
         });
@@ -2088,7 +2093,7 @@ async fn terminal_artifact_recovery_requires_the_root_workspace_before_catalog_i
     );
     let publisher = Arc::new(RecordingArtifactRecovery::default());
     let harvester = ArtifactHarvester {
-        sessions: crate::installed_session::InstalledSessions::default().realizations(),
+        sessions: Arc::new(crate::installed_session::InstalledSessions::default()).realizations(),
         local_workspace: "must-not-be-used".into(),
         publisher: publisher.clone(),
     };
@@ -2392,6 +2397,7 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
     assert!(error.message.contains("injected catalog failure"));
     assert!(
         host.installed_sessions
+            .realizations()
             .read_realization("session-harvest-failure", |r| {
                 r.environment_owner.terminal_bound_environment().is_some()
             })

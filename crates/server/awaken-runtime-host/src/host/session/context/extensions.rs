@@ -28,6 +28,7 @@ pub(super) async fn skills(
     resources: &mut ContextResources,
     mut runtime: Runtime,
 ) -> Result<SkillWiring, HostError> {
+    let realizations = &host.realizer.environments.sessions;
     let frozen_skill_versions = resources.plan.frozen_skill_versions.take();
     let installed = &resources.plan.installed;
     let workspace = &resources.plan.workspace;
@@ -132,8 +133,7 @@ pub(super) async fn skills(
         if content_delivery == crate::frozen_inputs::ManagedContentDelivery::ManagedFilesystem {
             let prompt = crate::skill_delivery::filesystem_skill_prompt(registry.as_ref())
                 .map_err(HostError::internal)?;
-            host.installed_sessions
-                .update_realization(thread, |r| r.skill_prompt = prompt);
+            realizations.update_realization(thread, |r| r.skill_prompt = prompt);
         } else {
             if session_dispatch {
                 return Err(HostError::bad_request(
@@ -184,8 +184,7 @@ pub(super) async fn skills(
         }
         skill_registry = Some(registry);
     } else {
-        host.installed_sessions
-            .update_realization(thread, |r| r.skill_prompt = None);
+        realizations.update_realization(thread, |r| r.skill_prompt = None);
     }
     Ok(SkillWiring {
         runtime,
@@ -248,8 +247,11 @@ pub(super) async fn memory(
         } else {
             None
         };
-        host.select_thread_memory_binding(thread, binding_id)
+        host.realizer
+            .staging
+            .select_thread_memory_binding(thread, binding_id)
             .map_err(HostError::bad_request)?
+            .map(|binding| host.resources.memory.bound(binding))
     } else {
         // Direct embedders opt in through `bind_resolved_memory`; Managed
         // compatibility Sessions merely register standard mount bindings.
@@ -323,6 +325,27 @@ pub(super) async fn memory(
         runtime = runtime.with_plugin(Arc::new(plugin));
         plugin_ids.push(awaken_ext_memory::MEMORY_PLUGIN_ID.to_string());
     }
+    let (runtime, context_policy) = compact(host, thread, resources, runtime, &mut plugin_ids)?;
+    Ok(MemoryWiring {
+        runtime,
+        plugin_ids,
+        acp_memory_recall,
+        context_policy,
+    })
+}
+
+fn compact(
+    host: &SharedHost,
+    thread: &str,
+    resources: &ContextResources,
+    mut runtime: Runtime,
+    plugin_ids: &mut Vec<String>,
+) -> Result<(Runtime, ContextPolicy), HostError> {
+    let installed = &resources.plan.installed;
+    let fallback_model_ref = &resources.plan.fallback_model_ref;
+    let publication_source = &resources.plan.publication_source;
+    let workspace = &resources.plan.workspace;
+    let commit = &resources.commit;
     // Compaction is a plugin too: a BeforeInference hook that folds the older
     // slice into a summary and injects it request-only. A successful fold
     // activates its matching Run-scoped window; before that history stays whole.
@@ -420,10 +443,5 @@ pub(super) async fn memory(
         }
         None => awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
     };
-    Ok(MemoryWiring {
-        runtime,
-        plugin_ids,
-        acp_memory_recall,
-        context_policy,
-    })
+    Ok((runtime, context_policy))
 }

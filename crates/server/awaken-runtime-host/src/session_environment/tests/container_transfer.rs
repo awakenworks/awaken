@@ -184,6 +184,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             {
                 let lifecycle = host
                     .installed_sessions
+                    .realizations()
                     .read_realization(thread, |r| r.lifecycle.clone())
                     .unwrap();
                 let _lifecycle = lifecycle.lock().await;
@@ -228,6 +229,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
             );
             let retained = host
                 .installed_sessions
+                .realizations()
                 .read_realization(thread, |r| r.environment_owner.terminal_bound_environment())
                 .flatten()
                 .unwrap();
@@ -244,6 +246,7 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
                 .unwrap();
             let rebound = host
                 .installed_sessions
+                .realizations()
                 .read_realization(thread, |r| r.environment_owner.terminal_bound_environment())
                 .flatten()
                 .unwrap()

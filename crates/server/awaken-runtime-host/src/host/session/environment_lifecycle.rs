@@ -361,6 +361,7 @@ impl SharedHost {
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
     ) {
+        let realizations = self.installed_sessions.realizations();
         let binding = serde_json::to_string(&environment.lifecycle().handle())
             .expect("test Environment handle serializes");
         let receipt = awaken_session_state_contract::SessionEnvironmentReceipt::new(
@@ -369,7 +370,7 @@ impl SharedHost {
             binding.clone(),
             None,
         );
-        self.installed_sessions.update_realization(thread, |r| {
+        realizations.update_realization(thread, |r| {
             // A same-handle ABA test replaces only the process-local Arc. Keep
             // its existing Root-generated identity instead of downgrading it.
             if let SessionEnvironmentOwner::Resident(owned) = &mut r.environment_owner
@@ -403,10 +404,11 @@ impl SharedHost {
         source_generation_id: Option<&str>,
         rebuild_unavailable: bool,
     ) -> Result<SessionEnvironmentAdoptionDisposition, HostError> {
+        let realizations = self.installed_sessions.realizations();
         let Some(encoded) = encoded else {
             return Ok(SessionEnvironmentAdoptionDisposition::NoBinding);
         };
-        let _lifecycle = self.installed_sessions.lock_lifecycle(thread).await;
+        let _lifecycle = realizations.lock_lifecycle(thread).await;
         self.adopt_bound_session_environment_under_lifecycle(
             thread,
             encoded,
@@ -431,7 +433,7 @@ impl SharedHost {
         unavailable_policy: SessionEnvironmentUnavailablePolicy,
         preauthorized: Option<&AuthorizedSessionEnvironmentEffect>,
     ) -> Result<SessionEnvironmentAdoptionDisposition, HostError> {
-        let exec = &self.realizer;
+        let exec = &self.realizer.environments;
         if exec.holds_unpublished_retirement(thread) {
             return Err(HostError::internal(
                 "unpublished terminal or cleanup ownership cannot resume ordinary adoption",
@@ -604,7 +606,7 @@ impl SharedHost {
                         if let Some(retiring) = revoked_owner.as_ref() {
                             // Atomically retain the fresh Candidate before its
                             // canonical binding/publication edge can suspend.
-                            self.installed_sessions.update_realization(thread, |r| {
+                            exec.sessions.update_realization(thread, |r| {
                                 r.environment_owner
                                     .prepare_retiring_realization_adoption(retiring, environment.clone(), Some(effect.authorization.intent()))
                             })?;
@@ -625,7 +627,7 @@ impl SharedHost {
                 };
                 self.ensure_published_environment_reconciled_under_lifecycle(thread, environment)
                     .await?;
-                self.installed_sessions.update_realization(thread, |r| {
+                exec.sessions.update_realization(thread, |r| {
                     r.environment_rebuild_source = None;
                 });
                 Ok(SessionEnvironmentAdoptionDisposition::Ready)
@@ -696,13 +698,14 @@ impl SharedHost {
         thread: &str,
         incoming: &awaken_session_realization_contract::ObservedSessionRealizationLease,
     ) -> Result<(), HostError> {
+        let realizations = self.installed_sessions.realizations();
         let retirement = self.realizer.execution.authorize_worker_effect(|| {
             let now = awaken_authority_clock::authority_proof_started()
                 .map_err(|error| HostError::internal(error.to_string()))?;
             if incoming.remaining_at(now).is_none() {
                 return Err(HostError::internal("replacement Session authority time proof is exhausted"));
             }
-            let selected = self.installed_sessions.read_realization(thread, |r| {
+            let selected = realizations.read_realization(thread, |r| {
                 let environment = match &r.environment_owner {
                     SessionEnvironmentOwner::Resident(owned) => &owned.environment,
                     SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(candidate))
@@ -747,7 +750,8 @@ impl SharedHost {
         retirement: &RetiringSessionEnvironment,
         status: Result<awaken_provisioning_contract::SandboxStatus, E>,
     ) -> Result<bool, E> {
-        match self.installed_sessions.modify_realization(thread, |r| {
+        let realizations = self.installed_sessions.realizations();
+        match realizations.modify_realization(thread, |r| {
             r.environment_owner
                 .observe_retirement_status(retirement, status)
         }) {
@@ -785,7 +789,8 @@ impl SharedHost {
         thread: &str,
         expected: &Arc<crate::session_environment::SessionEnvironment>,
     ) -> bool {
-        let _lifecycle = self.installed_sessions.lock_lifecycle(thread).await;
+        let realizations = self.installed_sessions.realizations();
+        let _lifecycle = realizations.lock_lifecycle(thread).await;
         let Ok(Some(retirement)) = self.realizer.retire_current_environment(
             thread,
             SessionEnvironmentRetirementCause::RecoveryDiscard,
@@ -806,8 +811,8 @@ impl SharedHost {
         &self,
         thread: &str,
     ) -> Result<bool, HostError> {
-        let retained_realization_owner = self
-            .installed_sessions
+        let realizations = self.installed_sessions.realizations();
+        let retained_realization_owner = realizations
             .modify_realization(thread, |r| {
                 // Physical retirement of an Unowned LegacyDirect environment is
                 // not loss of a never-installed Control lease. Preserve that

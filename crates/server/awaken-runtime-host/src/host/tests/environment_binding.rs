@@ -39,9 +39,11 @@ async fn captured_environment_intent_survives_renewal_without_rebuilding_adopt()
     )
     .unwrap()
     .observed(awaken_authority_clock::authority_proof_started().unwrap());
-    host.installed_sessions.update_realization(thread, |r| {
-        r.authority = crate::installed_session::SessionRealizationAuthority::Live(proof);
-    });
+    host.installed_sessions
+        .realizations()
+        .update_realization(thread, |r| {
+            r.authority = crate::installed_session::SessionRealizationAuthority::Live(proof);
+        });
     *sink.original_intent.lock().unwrap() = Some(original.clone());
     for request_expiry in [60_000, 120_000] {
         let requested = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(

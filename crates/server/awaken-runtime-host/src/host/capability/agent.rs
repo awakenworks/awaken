@@ -72,7 +72,7 @@ impl AgentExecution {
     /// The selected executor/model with routing over the Host's Session slots.
     pub(in crate::host) fn new(
         selection: AgentSelection,
-        installed_sessions: crate::installed_session::InstalledSessions,
+        installed_sessions: Arc<crate::installed_session::InstalledSessions>,
     ) -> Self {
         Self {
             llm: selection.llm,

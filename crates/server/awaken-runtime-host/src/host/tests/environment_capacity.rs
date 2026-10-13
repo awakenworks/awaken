@@ -213,7 +213,7 @@ fn executor(
         images: Mutex::default(),
         fail,
     });
-    let sessions = crate::installed_session::InstalledSessions::default().realizations();
+    let sessions = Arc::new(crate::installed_session::InstalledSessions::default()).realizations();
     let env = crate::environment_providers::EnvironmentProviders::new(
         root,
         SessionEnvironmentProvider::new(recording.clone()),

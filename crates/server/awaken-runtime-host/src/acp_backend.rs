@@ -225,6 +225,7 @@ mod tests {
         assert!(host.exec.acp.is_some(), "A1 executor");
         assert_eq!(
             host.installed_sessions
+                .realizations()
                 .frozen("t")
                 .backend_ref
                 .clone()
@@ -234,6 +235,7 @@ mod tests {
         );
         assert_eq!(
             host.installed_sessions
+                .realizations()
                 .frozen("unstaged-thread")
                 .backend_ref
                 .clone(),

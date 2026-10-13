@@ -129,6 +129,7 @@ impl SharedHost {
         thread: &str,
         command: OutcomeCommand<'_>,
     ) -> Result<OutcomeCommandResult, HostError> {
+        let realizations = self.installed_sessions.realizations();
         let definition = match &command {
             OutcomeCommand::Prepare {
                 description,
@@ -145,14 +146,15 @@ impl SharedHost {
         // even after the Worker publishes a durable Environment binding. Reuse
         // the canonical coordination envelope instead of trying to adopt that
         // physical Environment on every Outcome projection read.
-        let worker_placement = self
-            .installed_sessions
-            .frozen(thread)
-            .baseline
-            .as_ref()
-            .is_some_and(|baseline| {
-                baseline.runtime_placement == awaken_session_types::SessionRuntimePlacement::Worker
-            });
+        let worker_placement =
+            realizations
+                .frozen(thread)
+                .baseline
+                .as_ref()
+                .is_some_and(|baseline| {
+                    baseline.runtime_placement
+                        == awaken_session_types::SessionRuntimePlacement::Worker
+                });
         let ctx = if worker_placement {
             self.ctx_for_session_coordination(thread, None).await?
         } else {

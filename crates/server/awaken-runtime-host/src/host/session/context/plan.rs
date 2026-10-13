@@ -37,6 +37,7 @@ pub(super) async fn prepare(
     claimed_attempt: Option<&ClaimedRuntimeInput>,
     force_defer_environment: bool,
 ) -> Result<ContextPlan, HostError> {
+    let realizations = &host.realizer.environments.sessions;
     // Resolve the immutable publication before selecting an environment.
     // Environment identity is a consequence of provisioning, not of the ACP
     // executor or a process-wide sandbox default.
@@ -105,7 +106,7 @@ pub(super) async fn prepare(
         let transition =
             crate::session_resource::SessionResourceTransition::new(empty.clone(), empty)
                 .map_err(|error| HostError::internal(error.to_string()))?;
-        host.installed_sessions.update_realization(thread, |r| {
+        realizations.update_realization(thread, |r| {
             if r.resource_transition.is_none() {
                 r.resource_transition = Some(transition);
             }
@@ -116,8 +117,7 @@ pub(super) async fn prepare(
     // `on_tool_use` may defer the Environment; doing this later in Skill
     // wiring can classify a cold cache as instruction-only and then discover
     // support files after the sandbox-free decision has already been made.
-    let frozen_skill_versions = host
-        .installed_sessions
+    let frozen_skill_versions = realizations
         .read_realization(thread, |r| r.skills.clone())
         .flatten();
     // Reservation is metadata-only on a cold Coordinator. The aggregate
@@ -126,7 +126,7 @@ pub(super) async fn prepare(
     // bundle bytes after Environment adoption.
     let deferred_skill_bindings = (force_defer_environment && frozen_skill_versions.is_none())
         .then(|| {
-            host.installed_sessions
+            realizations
                 .read_realization(thread, |r| {
                     r.resource_transition
                         .as_ref()

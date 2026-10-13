@@ -32,7 +32,7 @@ pub(crate) enum CoordinationEndpoint {
     Local(Weak<dyn SessionAgentCoordination>),
     Remote {
         control: Arc<ClaimedCoordination>,
-        slots: crate::installed_session::InstalledSessions,
+        slots: Arc<crate::installed_session::InstalledSessions>,
     },
 }
 
@@ -69,7 +69,7 @@ impl crate::SharedHost {
 
 impl CoordinationEndpoint {
     fn current_claim(
-        slots: &crate::installed_session::InstalledSessions,
+        slots: &Arc<crate::installed_session::InstalledSessions>,
         session_id: &str,
         source_run_id: &str,
     ) -> Result<RunClaim, ToolError> {
@@ -959,7 +959,7 @@ mod tests {
             owner: "worker".into(),
             epoch: 2,
         };
-        let slots = crate::installed_session::InstalledSessions::default();
+        let slots = Arc::new(crate::installed_session::InstalledSessions::default());
         let control = Arc::new(RemoteControl::default());
         let endpoint = CoordinationEndpoint::Remote {
             control: control.clone(),

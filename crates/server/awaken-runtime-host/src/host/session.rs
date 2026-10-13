@@ -42,7 +42,8 @@ impl SharedHost {
     /// projection); otherwise reconstruct the configured durable adapter without
     /// selecting, creating, or adopting a Session environment.
     pub(crate) async fn commit_for_read(&self, thread: &str) -> Result<Arc<HostCommit>, HostError> {
-        let _lifecycle = self.installed_sessions.lock_lifecycle(thread).await;
+        let realizations = self.installed_sessions.realizations();
+        let _lifecycle = realizations.lock_lifecycle(thread).await;
         self.commit_for_read_under_lifecycle(thread).await
     }
 
@@ -189,6 +190,7 @@ impl SharedHost {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Arc<SessionCtx>, HostError>> + Send + 'a>,
     > {
+        let realizations = self.installed_sessions.realizations();
         // Context-construction stack cause/effect table: C1=the caller enters
         // through reservation, snapshot, or claimed execution; C2=the frozen
         // projection requires the full Environment/Runtime realization chain.
@@ -208,7 +210,7 @@ impl SharedHost {
             } else {
                 RuntimeContextPurpose::Execution
             };
-            let _lifecycle = self.installed_sessions.lock_lifecycle(thread).await;
+            let _lifecycle = realizations.lock_lifecycle(thread).await;
             self.realizer
                 .retry_unpublished_session_environment_cleanup(thread)
                 .await?;

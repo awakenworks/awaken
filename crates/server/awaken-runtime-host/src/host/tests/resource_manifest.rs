@@ -238,6 +238,7 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
         );
         let (binding_count, automatic_absent) = host
             .installed_sessions
+            .realizations()
             .read_realization(&thread, |r| (r.memory_bindings.len(), r.memory.is_none()))
             .unwrap();
         assert_eq!(binding_count, count, "{} E1 bindings", case.rule);
@@ -247,6 +248,12 @@ async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
 
 #[tokio::test]
 async fn automatic_memory_requires_one_explicit_existing_binding() {
+    // The state selection now belongs to the original ResourceStaging view.
+    // It mutates only realization under the same slot lock: no binding clears
+    // selection, an absent named binding clears it before the same error, and
+    // an exact named binding returns that same Arc. Host execution alone wraps
+    // it in MemoryRuntime.bound; neither selection nor wrapping starts a Run.
+    // A1-A4 below keep the original configuration/error/identity effects.
     // Automatic-memory cause/effect graph:
     // C1 published Agent selects the Awaken memory plugin; C2 config supplies
     // binding_id; C3 that id exists in the Session's standard mount bindings.
