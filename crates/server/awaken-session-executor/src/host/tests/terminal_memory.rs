@@ -1772,6 +1772,12 @@ async fn provider_proved_unmaterialized_absence_closes_missing_memory_evidence()
 
 #[tokio::test]
 async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
+    // Receiver consolidation preserves the original cause/effect rows:
+    // LiveUnprepared + nonempty intents requires the frozen Workspace, then
+    // clones the same Holding MemoryMounter Arc; None keeps the same Internal
+    // error before any Memory effect. Recovery-only modes or empty intents do
+    // not read that port. H1-H8 retain the exact participant/effect assertions;
+    // the deleted Host proxy supplied no additional state or authorization.
     /* Host terminal Memory table HM1. Provider tests own fresh Copy-guard
      * creation and exact acknowledgement semantics; this table owns the Host
      * caller shared by a resident same-process Environment and a cold

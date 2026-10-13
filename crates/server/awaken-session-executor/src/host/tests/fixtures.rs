@@ -892,7 +892,7 @@ impl SharedHost {
             None => self.realizer.env.sandbox_root.clone(),
         };
         let provider = awaken_sandbox_local::LocalProvider::new(root);
-        if let Some(mounter) = self.memory_mounter() {
+        if let Some(mounter) = self.realizer.environments.env.memory_mounter.clone() {
             provider.install_memory_mounter(mounter);
         }
         provider

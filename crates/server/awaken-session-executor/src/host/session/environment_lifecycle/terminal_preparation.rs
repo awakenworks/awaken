@@ -821,7 +821,11 @@ impl SharedHost {
                 HostError::internal("terminal Memory plan has no frozen Workspace")
             })?;
             let mounter = self
-                .memory_mounter()
+                .realizer
+                .environments
+                .env
+                .memory_mounter
+                .clone()
                 .ok_or_else(|| HostError::internal("terminal Memory copy has no MemoryMounter"))?;
             for intent in &plan.intents {
                 self.realizer.cleanup.effect_fence(effect)?;
