@@ -1,3 +1,7 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: Credential-pin migration validates both retained slots before changing either and
+// @formal reason: replacement follows the existing desired-generation law. This controlled mutation
+// @formal reason: preserves the Session requirement without claiming provider custody or delivery.
 use super::{
     PlaintextHolder, ResolvedInput, ResolvedInputSource, ResolvedSessionResources,
     ResourceActivationError, SessionResourcesOperations,

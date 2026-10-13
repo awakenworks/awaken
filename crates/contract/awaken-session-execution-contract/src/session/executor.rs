@@ -1,3 +1,7 @@
+// @formal surface requirement=session.lifecycle.session_state
+// @formal reason: The complete Runtime supplies one immutable owner for every required Session role;
+// @formal reason: accessors cannot replace that owner or introduce separate durable truth. Construction
+// @formal reason: and caller checks remain executable evidence, not a proof of external effects.
 //! Immutable required Runtime roles selected at Session application construction.
 //!
 //! Each accessor exposes one caller role. All handles come from the same selected
