@@ -55,7 +55,17 @@ a Worker from another bound queue before starting work. Remote scheduling omits
 local maintenance and relays; the original 42 scheduler observations cover
 the selection, including failures, timing and joined shutdown.
 
-`DispatchWorker::new` and `new_bound` supply the combined local recovery source.
+`DispatchWorker::new` and `new_bound` require the existing `OperationCoordinator`
+with their combined local recovery source. Both erased commit roles retain the
+same actual owner before a projection is installed. `GuardedRunCommit::new`
+forwards versioned operations to that owner's atomic CAS and persisted receipt;
+it never derives a receipt from an ordinary commit sequence. Exact replay returns
+the original sequence and version without another append. `from_plain` retains
+only the existing ordinary commit meaning and rejects a versioned operation
+before taking a lock or calling the plain commit. `ClaimedRunCommit` requires an
+explicit operation implementation; it has no ordinary-to-operation default.
+Both guarded write paths
+retain the same dispatch epoch through validation, commit and observed release.
 `from_parts` supports a direct local committed reader. Adding a projection to
 that split configuration requires a source and is rejected during configuration
 if absent. Remote `from_binding` and `new_bound` always install one required

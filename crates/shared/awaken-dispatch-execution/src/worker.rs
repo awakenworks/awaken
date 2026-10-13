@@ -40,7 +40,9 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
-use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
+use awaken_agent_contract::thread::commit::coordinator::{
+    Coordinator as CommitCoordinator, OperationCoordinator,
+};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_credential_contract::{
@@ -374,18 +376,27 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         owner: impl Into<String>,
     ) -> Self
     where
-        C: CommitCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
+        C: OperationCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
         S: LocalWorkerDispatch,
     {
-        // `commit` must back two independently erased ports; this clone only
-        // increments the Arc count and does not clone coordinator state.
+        // Both erased write ports retain this same actual authority. In
+        // particular, installing a projection cannot fabricate operation CAS.
         let base_commit: Arc<dyn CommitCoordinator> = commit.clone();
+        let guard: Arc<dyn DispatchCommitAuthority> = store.clone();
+        let claimed_commit = Arc::new(GuardedRunCommit::new(commit.clone(), guard));
         let recovery_source: Arc<dyn RunRecoverySource> = commit;
         let projection = Arc::new(crate::RecoveryProjection::new());
-        // Keep the concrete Arc for refresh installs while exposing the same
-        // projection through the read port.
         let reader: Arc<dyn CommittedThreadView> = projection.clone();
-        let mut worker = Self::from_parts(runtime, store, base_commit, reader, owner);
+        let ports = ExecutionAuthority::Local(store.clone());
+        let mut worker = construct_dispatch_worker(
+            runtime,
+            store,
+            base_commit,
+            reader,
+            owner,
+            ports,
+            claimed_commit,
+        );
         worker.recovery_projection = Some(projection);
         worker.recovery_source = Some(recovery_source);
         worker
@@ -406,7 +417,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         S: LocalWorkerDispatch,
     {
         let guard: Arc<dyn DispatchCommitAuthority> = store.clone();
-        let claimed_commit = Arc::new(GuardedRunCommit::new(commit.clone(), guard.clone()));
+        let claimed_commit = Arc::new(GuardedRunCommit::from_plain(commit.clone(), guard));
         let ports = ExecutionAuthority::Local(store.clone());
         construct_dispatch_worker(runtime, store, commit, reader, owner, ports, claimed_commit)
     }
@@ -1695,46 +1706,15 @@ impl DispatchWorker<AnyDispatchStore> {
         reader: Arc<dyn CommittedThreadView>,
         owner: impl Into<String>,
     ) -> Self {
-        let (ports, claimed_commit) = match binding.placement() {
+        let claimed_commit: Arc<dyn ClaimedRunCommit> = match binding.placement() {
             DispatchTopology::Local(local) => {
-                let guard: Arc<dyn DispatchCommitAuthority> = local.clone();
-                (
-                    ExecutionAuthority::Local(local.clone()),
-                    Arc::new(GuardedRunCommit::new(commit.clone(), guard))
-                        as Arc<dyn ClaimedRunCommit>,
-                )
+                Arc::new(GuardedRunCommit::from_plain(commit.clone(), local.clone()))
             }
-            DispatchTopology::Remote {
-                checkpoints,
-                credentials,
-                commit,
-            } => (
-                ExecutionAuthority::Remote {
-                    checkpoints: checkpoints.clone(),
-                    credentials: credentials.clone(),
-                },
-                commit.clone(),
-            ),
+            DispatchTopology::Remote { commit, .. } => commit.clone(),
         };
-        // Remote execution always loads one claim-scoped prefix before entry.
-        // Caller-provided provisional readers cannot bypass that required load.
-        let projection = matches!(ports, ExecutionAuthority::Remote { .. })
-            .then(|| Arc::new(crate::RecoveryProjection::new()));
-        let reader: Arc<dyn CommittedThreadView> = projection
-            .as_ref()
-            .map_or(reader, |projection| projection.clone());
-        let mut worker = construct_dispatch_worker(
-            runtime,
-            binding.queue(),
-            commit,
-            reader,
-            owner,
-            ports,
-            claimed_commit,
-        );
-        worker.recovery_projection = projection;
-        worker
+        construct_bound_dispatch_worker(runtime, binding, commit, reader, owner, claimed_commit)
     }
+
     pub fn new_bound<C>(
         runtime: Arc<Runtime>,
         binding: DispatchBinding,
@@ -1742,18 +1722,71 @@ impl DispatchWorker<AnyDispatchStore> {
         owner: impl Into<String>,
     ) -> Self
     where
-        C: CommitCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
+        C: OperationCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
     {
         let projection = Arc::new(crate::RecoveryProjection::new());
         let local = matches!(binding.placement(), DispatchTopology::Local(_));
-        let mut worker =
-            Self::from_binding(runtime, binding, commit.clone(), projection.clone(), owner);
+        let claimed_commit: Arc<dyn ClaimedRunCommit> = match binding.placement() {
+            DispatchTopology::Local(local) => {
+                Arc::new(GuardedRunCommit::new(commit.clone(), local.clone()))
+            }
+            DispatchTopology::Remote { commit, .. } => commit.clone(),
+        };
+        let mut worker = construct_bound_dispatch_worker(
+            runtime,
+            binding,
+            commit.clone(),
+            projection.clone(),
+            owner,
+            claimed_commit,
+        );
         if local {
             worker.recovery_projection = Some(projection);
             worker.recovery_source = Some(commit);
         }
         worker
     }
+}
+
+// Binding lowering holds no Worker state. Both typed compositions reach the
+// same Worker constructor after their required authority is selected.
+fn construct_bound_dispatch_worker(
+    runtime: Arc<Runtime>,
+    binding: DispatchBinding,
+    commit: Arc<dyn CommitCoordinator>,
+    reader: Arc<dyn CommittedThreadView>,
+    owner: impl Into<String>,
+    claimed_commit: Arc<dyn ClaimedRunCommit>,
+) -> DispatchWorker<AnyDispatchStore> {
+    let ports = match binding.placement() {
+        DispatchTopology::Local(local) => ExecutionAuthority::Local(local.clone()),
+        DispatchTopology::Remote {
+            checkpoints,
+            credentials,
+            ..
+        } => ExecutionAuthority::Remote {
+            checkpoints: checkpoints.clone(),
+            credentials: credentials.clone(),
+        },
+    };
+    // Remote execution always loads one claim-scoped prefix before entry.
+    // Caller-provided provisional readers cannot bypass that required load.
+    let projection = matches!(ports, ExecutionAuthority::Remote { .. })
+        .then(|| Arc::new(crate::RecoveryProjection::new()));
+    let reader: Arc<dyn CommittedThreadView> = projection
+        .as_ref()
+        .map_or(reader, |projection| projection.clone());
+    let mut worker = construct_dispatch_worker(
+        runtime,
+        binding.queue(),
+        commit,
+        reader,
+        owner,
+        ports,
+        claimed_commit,
+    );
+    worker.recovery_projection = projection;
+    worker
 }
 
 fn construct_dispatch_worker<S: Dispatch + 'static>(

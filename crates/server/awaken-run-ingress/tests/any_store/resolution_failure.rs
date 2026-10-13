@@ -83,7 +83,7 @@ async fn exercise_failure<C>(
     fault: &str,
     clock: Arc<ManualClock>,
 ) where
-    C: awaken_agent_contract::thread::commit::coordinator::Coordinator
+    C: awaken_agent_contract::thread::commit::coordinator::OperationCoordinator
         + CommittedThreadView
         + awaken_agent_contract::thread::read::recovery::RunRecoverySource
         + 'static,
