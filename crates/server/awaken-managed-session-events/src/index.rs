@@ -14,6 +14,8 @@
 //!
 //! Consumer: the protocol adapter's canonical sort of one candidate.
 
+#[cfg(test)]
+mod terminal_time_tests;
 mod tool_results;
 
 use std::collections::{HashMap, HashSet};
@@ -980,12 +982,19 @@ impl<'a> OrderIndex<'a> {
         role: ManagedEventType,
         terminal_source: u64,
     ) -> EventPosition {
+        let terminal = self.evidence.parent_terminal;
         EventPosition {
-            processed_at_unix_ms: self
-                .evidence
-                .parent_terminal
-                .archived_at_unix_ms
-                .or_else(|| self.time_for(self.evidence.session_id, terminal_source)),
+            // Activation failure can publish these absorbing status facts
+            // before release archives the root. Their existing failure owner
+            // must remain stable in warm and cold projections, even when its
+            // historical time is unknown; archive is a later distinct fact.
+            processed_at_unix_ms: if terminal.activation_failed {
+                terminal.failed_at_unix_ms
+            } else {
+                terminal
+                    .archived_at_unix_ms
+                    .or_else(|| self.time_for(self.evidence.session_id, terminal_source))
+            },
             source_commit_cursor: terminal_source,
             phase: role.phase(),
             ordinal: Ordinal::FIRST,
