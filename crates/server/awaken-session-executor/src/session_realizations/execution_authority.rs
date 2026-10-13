@@ -168,6 +168,34 @@ impl SessionExecutionAuthority {
 }
 
 impl ExecutionAuthority {
+    /// Lock order: Worker proof -> Session slots -> synchronous provider grant.
+    /// No async owner lock or external I/O may be held by this callback.
+    pub(crate) fn authorize_worker_effect<T>(
+        &self,
+        effect: impl FnOnce() -> Result<T, HostError>,
+    ) -> Result<T, HostError> {
+        let Some(authority) = &self.worker else {
+            return effect();
+        };
+        let mut effect = Some(effect);
+        let mut result = None;
+        authority
+            .with_current(&mut |remaining| {
+                if remaining.is_zero() {
+                    return Err(io::ErrorKind::PermissionDenied.into());
+                }
+                let effect = effect
+                    .take()
+                    .ok_or_else(|| io::Error::other("authority callback repeated"))?;
+                result = Some(effect());
+                Ok(())
+            })
+            .map_err(|error| {
+                HostError::internal(format!("Worker execution authority denied: {error}"))
+            })?;
+        result.ok_or_else(|| HostError::internal("Worker authority omitted the effect"))?
+    }
+
     fn capture(
         &self,
         session: &str,
@@ -194,29 +222,35 @@ impl ExecutionAuthority {
         session: &str,
         initial: &SandboxEffectFence,
     ) -> Result<impl CurrentExecutionAuthority + use<>, HostError> {
+        let mut capture = Some(|realization: &SessionRealization| {
+            let lease = realization.authority.lease().ok_or_else(|| {
+                HostError::internal("Session realization proof is no longer live")
+            })?;
+            let current = lease
+                .sandbox_effect_fence(initial.operation_id())
+                .map_err(|error| HostError::internal(error.to_string()))?;
+            if !initial.same_effect_identity(&current)
+                || current.expires_at_unix_ms() < initial.expires_at_unix_ms()
+            {
+                return Err(HostError::internal(
+                    "Session realization generation changed",
+                ));
+            }
+            Ok(self.capture(
+                session,
+                realization,
+                lease,
+                SessionEffectTarget::Provider(initial.clone()),
+            ))
+        });
+        let mut outcome = None;
         self.sessions
-            .read_realization(session, |realization| {
-                let lease = realization.authority.lease().ok_or_else(|| {
-                    HostError::internal("Session realization proof is no longer live")
-                })?;
-                let current = lease
-                    .sandbox_effect_fence(initial.operation_id())
-                    .map_err(|error| HostError::internal(error.to_string()))?;
-                if !initial.same_effect_identity(&current)
-                    || current.expires_at_unix_ms() < initial.expires_at_unix_ms()
-                {
-                    return Err(HostError::internal(
-                        "Session realization generation changed",
-                    ));
-                }
-                Ok(self.capture(
-                    session,
-                    realization,
-                    lease,
-                    SessionEffectTarget::Provider(initial.clone()),
-                ))
+            .0
+            .visit(session, false, &mut |access| {
+                outcome = capture.take().map(|capture| capture(access.realization));
             })
-            .ok_or_else(|| HostError::internal("Session realization slot is absent"))?
+            .map_err(|_| HostError::internal("installed sessions mutex poisoned"))?;
+        outcome.ok_or_else(|| HostError::internal("Session realization slot is absent"))?
     }
 
     /// Called while the caller holds the installed Sessions' lock and has
@@ -623,10 +657,30 @@ mod tests {
 
     #[tokio::test]
     async fn execution_authority_poison_and_callback_unwind_fail_closed() {
-        // S32 slot poison alone; S33 callback unwind poisons both held owners.
-        // Neither uncertain state can grant a later effect or reopen a scope.
+        // Cause/effect table: C1 installed/missing slot; C2 healthy/poisoned
+        // slot lock; C3 poison from a slot writer (S32) or the held effect
+        // callback (S33, also poisons Worker). E1 healthy exact capture succeeds;
+        // E2 healthy missing capture reports absence without creating a slot;
+        // E3 poison before fresh capture returns Internal, never absence/unwind;
+        // E4 poison after capture denies the effect with zero callbacks.
+        // Both S32/S33 cover E1-E4. The initiating C3 panic is intentional;
+        // only later capture/effect behavior must not unwind or reopen a scope.
         for callback in [false, true] {
             let f = Fixture::new().await;
+            let initial = f.authority.asserted.sandbox_effect_fence("create").unwrap();
+            let execution = ExecutionAuthority {
+                sessions: f.slots.realizations(),
+                worker: Some(f.worker.clone()),
+            };
+            let provider = execution
+                .provider_effect_authority("session", &initial)
+                .expect("E1 healthy exact capture");
+            let absent = execution
+                .provider_effect_authority("missing", &initial)
+                .err()
+                .expect("E2 genuinely absent slot");
+            assert_eq!(absent.message, "Session realization slot is absent");
+            assert!(!f.slots.contains("missing"), "E2 no slot creation");
             let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 if callback {
                     let _ = f.authority.with_current(&mut |_| panic!("callback failed"));
@@ -637,6 +691,26 @@ mod tests {
             }));
             assert!(unwind.is_err());
             assert!(f.current().is_err());
+            let mut calls = 0;
+            assert!(
+                provider
+                    .with_current_effect(&initial, &mut |_, _| {
+                        calls += 1;
+                        Ok(())
+                    })
+                    .is_err(),
+                "E4 captured provider denies after poison"
+            );
+            assert_eq!(calls, 0, "E4 no effect callback");
+            let fresh = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                execution.provider_effect_authority("session", &initial)
+            }))
+            .expect("E3 fresh capture must not unwind");
+            let error = fresh.err().expect("E3 poisoned capture must reject");
+            assert_eq!(error.kind, crate::host_error::HostErrorKind::Internal);
+            assert_eq!(error.code, "internal");
+            assert_eq!(error.message, "installed sessions mutex poisoned");
+            assert_ne!(error.message, absent.message, "E3 poison is not absence");
         }
     }
 

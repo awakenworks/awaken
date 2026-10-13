@@ -1020,6 +1020,11 @@ impl awaken_provisioning_contract::CurrentExecutionAuthority for WorkerProofGate
 
 #[tokio::test]
 async fn worker_root_denies_fresh_and_replaced_projection_before_resource_io() {
+    // Receiver migration keeps the original Worker -> slot callback boundary:
+    // closed Worker proof denies both fresh/replaced publication before IO,
+    // while a direct local Host keeps its existing absence-of-registry meaning.
+    // No closure or error rule moves to another authority during consolidation.
+
     // Cause/effect table: root closed; absent/existing slot; File/no Resource.
     // | A1 | absent | File | deny preparation; no read or installed lease |
     // | A2 | absent | none | deny complete publication |

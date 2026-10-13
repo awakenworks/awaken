@@ -342,7 +342,8 @@ impl SharedHost {
             .as_ref()
             .map(|fence| {
                 self.realizer
-                    .session_environment_effect_fence_source(thread, fence)
+                    .execution
+                    .provider_effect_authority(thread, fence)
                     .map(|source| {
                         Arc::new(source)
                             as Arc<dyn awaken_provisioning_contract::CurrentExecutionAuthority>
@@ -1250,22 +1251,6 @@ impl crate::environment_holding::EnvironmentHolding {
     pub(crate) async fn evict_session_for_rebuild(&self, thread: &str) {
         self.sessions
             .modify_session(thread, |slot| slot.run.drop_context());
-    }
-}
-
-impl crate::environment_holding::EnvironmentHolding {
-    /// A projection through the existing Worker -> Session admission guards,
-    /// not another lease owner. Capture the exact operation and slot allocation;
-    /// renewals may replace the observation, never these identities. This
-    /// returns durable Control coordinates, not a provider-local expiry or an
-    /// authorization to perform asynchronous I/O after the guards are released.
-    fn session_environment_effect_fence_source(
-        &self,
-        thread: &str,
-        initial: &awaken_provisioning_contract::SandboxEffectFence,
-    ) -> Result<impl awaken_provisioning_contract::CurrentExecutionAuthority + use<>, HostError>
-    {
-        self.execution.provider_effect_authority(thread, initial)
     }
 }
 

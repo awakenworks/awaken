@@ -21,8 +21,8 @@
       "reason": "slice H (plan 10.4): each Session role moves to the component that owns its state; ManagedHost only composes"
     },
     "awaken-session-executor::SharedHost": {
-      "files": 41,
-      "methods": 266,
+      "files": 40,
+      "methods": 265,
       "reason": "slice H: each of the eleven session-runtime roles gets one owning component (plan 10.3 item 11)"
     },
     "awaken-runtime::Runtime": {

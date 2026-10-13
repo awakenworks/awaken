@@ -322,7 +322,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
                 "cannot renew a Session realization lease that is not installed",
             )
         };
-        self.host
+        self.host.realizer.execution
             .authorize_worker_effect(|| {
                 Ok(self.host
             .installed_sessions
