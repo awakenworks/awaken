@@ -202,6 +202,12 @@ transaction after receipt/owner/revision checks, before row, receipt and outbox
 publication; callers cannot bypass this by constructing a complete candidate.
 Inbound processing persists its first observation,
 and realization failure retains its own time so later cleanup cannot rewrite it.
+For an activation-failed Session, every parent-terminal status event uses that
+same durable failure observation, including a historical unknown. A later archive
+cannot replace it with an archive or Runtime commit time. Nonfailed terminal
+projections retain their existing archive/commit observation. The pure Managed
+`OrderIndex` owns this selection; publication still rejects conflicting known
+times. Warm replicas and cold reconstruction consume the same rule.
 Resource binding times belong to each existing resolved input: manifest replacement
 preserves creation time, updates only changed bindings, and does not stamp a no-op.
 
