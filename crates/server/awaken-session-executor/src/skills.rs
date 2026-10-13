@@ -845,10 +845,13 @@ mod tests {
         .unwrap()
         .unwrap();
         let projection = filesystem_skill_prompt(registry.as_ref()).unwrap().unwrap();
-        let slots = crate::installed_session::InstalledSessions::default();
-        slots.update_realization("skill-path", |r| r.skill_prompt = Some(projection.clone()));
+        let slots = Arc::new(crate::installed_session::InstalledSessions::default());
+        slots
+            .realizations()
+            .update_realization("skill-path", |r| r.skill_prompt = Some(projection.clone()));
         assert!(
             slots
+                .realizations()
                 .prompts("skill-path", None, true, false)
                 .unwrap()
                 .iter()
@@ -857,7 +860,7 @@ mod tests {
         );
         // The test installs a resident projection only, not a durable claim.
         // Actual Managed owner transitions retain their existing integration tests.
-        slots.update_realization("skill-path", |r| {
+        slots.realizations().update_realization("skill-path", |r| {
             use crate::installed_session::*;
             r.environment_owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
                 binding: "fixture".into(),
@@ -881,6 +884,7 @@ mod tests {
             );
             std::fs::create_dir_all(&view.protocol_cwd).unwrap();
             let prompt = slots
+                .realizations()
                 .prompts("skill-path", cwd, true, false)
                 .unwrap()
                 .join("\n");
@@ -917,6 +921,7 @@ mod tests {
         }
         assert_eq!(
             slots
+                .realizations()
                 .read_realization("skill-path", |r| r.skill_prompt.clone())
                 .flatten(),
             Some(projection),
@@ -924,14 +929,19 @@ mod tests {
         );
         // P6 malformed directory metadata cannot yield a model request once
         // realized; propagate the shared path validator's failure unchanged.
-        slots.update_realization("skill-path", |r| {
+        slots.realizations().update_realization("skill-path", |r| {
             r.skill_prompt = Some(FilesystemSkillPrompt::from_entries(vec![(
                 "Unsafe".into(),
                 "invalid".into(),
                 "../escape".into(),
             )]))
         });
-        assert!(slots.prompts("skill-path", None, true, false).is_err());
+        assert!(
+            slots
+                .realizations()
+                .prompts("skill-path", None, true, false)
+                .is_err()
+        );
         env.lifecycle().dispose().await.unwrap();
     }
 

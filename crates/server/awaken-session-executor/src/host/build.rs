@@ -96,7 +96,7 @@ fn assemble_host(dependencies: HostDependencies, host: std::sync::Weak<SharedHos
         session_execution,
         skill_bundle_source,
     } = dependencies;
-    let installed_sessions = crate::installed_session::InstalledSessions::default();
+    let installed_sessions = Arc::new(crate::installed_session::InstalledSessions::default());
     let memory = Arc::new(crate::memory::MemoryRuntime::new(
         agent.llm.clone(),
         env.auxiliary_sandboxes.provider("mem"),
@@ -211,13 +211,15 @@ impl SharedHost {
     /// Rebuildable Agent projection used only as input to Session admission.
     /// Runtime never treats this cache as an executable publication authority.
     pub fn thread_agent_projection(&self, thread: &str) -> Option<String> {
-        self.installed_sessions.frozen(thread).agent_id.clone()
+        let realizations = self.installed_sessions.realizations();
+        realizations.frozen(thread).agent_id.clone()
     }
 
     /// Workspace context supplied to the Session application admission boundary.
     /// Unknown flat-protocol threads use the process's persisted local workspace.
     pub fn thread_workspace(&self, thread: &str) -> String {
-        self.installed_sessions
+        let realizations = self.installed_sessions.realizations();
+        realizations
             .frozen(thread)
             .workspace
             .clone()
@@ -227,7 +229,8 @@ impl SharedHost {
     /// Workspace for a prepared thread; unlike `thread_workspace`, unknown ids
     /// do not inherit local ownership and therefore cannot enumerate artifacts.
     pub fn registered_thread_workspace(&self, thread: &str) -> Option<String> {
-        self.installed_sessions.frozen(thread).workspace.clone()
+        let realizations = self.installed_sessions.realizations();
+        realizations.frozen(thread).workspace.clone()
     }
 
     /// Clone the completion projection consumed by the authenticated Worker

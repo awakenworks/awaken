@@ -29,6 +29,7 @@ impl ManagedHost {
         command: SessionRepositoryPublicationCommand,
         lease: &SessionRealizationLease,
     ) -> Result<SessionRepositoryPublicationEffect, RunError> {
+        let realizations = self.host.installed_sessions.realizations();
         let cleanup = &self.host.realizer.cleanup;
         let workspace = self.host.thread_workspace(command.session_id.as_str());
 
@@ -42,11 +43,10 @@ impl ManagedHost {
         let _realization = self
             .host
             .installed_sessions
-            .acquire_realization(command.session_id.as_str())
-            .await;
-        let _lifecycle = self
-            .host
-            .installed_sessions
+            .acquire_realization_with(command.session_id.as_str(), |_| ())
+            .await
+            .0;
+        let _lifecycle = realizations
             .lock_lifecycle(command.session_id.as_str())
             .await;
         let mut current_lease = cleanup
@@ -69,9 +69,7 @@ impl ManagedHost {
         current_lease = cleanup
             .authorize_lease(&command.session_id, lease)
             .map_err(to_run_error)?;
-        let (assignment, resolved_resources) = self
-            .host
-            .installed_sessions
+        let (assignment, resolved_resources) = realizations
             .read_realization(command.session_id.as_str(), |r| {
                 (
                     r.terminal_cleanup_assignment.clone(),

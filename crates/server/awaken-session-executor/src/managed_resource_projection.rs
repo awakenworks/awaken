@@ -76,14 +76,10 @@ impl crate::ManagedHost {
         claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
     ) -> Result<CompiledEffectiveInputs, RunError> {
+        let realizations = self.host.installed_sessions.realizations();
         let mut all = crate::staged_resources::StagedResources::default();
         let mut memory_bindings = std::collections::HashMap::new();
-        let environment = self
-            .host
-            .installed_sessions
-            .frozen(thread)
-            .environment_projection
-            .clone();
+        let environment = realizations.frozen(thread).environment_projection.clone();
         for input in inputs.inputs() {
             let one = self
                 .stage_resolved_input(workspace, input, claim, realization, environment.as_ref())
@@ -262,6 +258,7 @@ impl crate::ManagedHost {
         realization_lease: Option<&session_resource::SessionRealizationLease>,
         prospective_environment_binding: bool,
     ) -> Result<(), RunError> {
+        let realizations = self.host.installed_sessions.realizations();
         let installed = self.host.realizer.staging.thread_resource_manifest(thread);
         if installed.as_ref().is_some_and(|installed| {
             installed != transition.previous() && installed != transition.desired()
@@ -274,9 +271,7 @@ impl crate::ManagedHost {
         let live_environment = self.host.realizer.session_environment(thread).await;
         let awaiting_adoption = live_environment.is_none()
             && (prospective_environment_binding
-                || self
-                    .host
-                    .installed_sessions
+                || realizations
                     .read_realization(thread, |r| r.environment_owner.durable_binding().is_some())
                     .unwrap_or(false));
         if awaiting_adoption {
@@ -322,14 +317,13 @@ impl crate::ManagedHost {
         realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
         effect_key: String,
     ) -> Result<(), RunError> {
+        let realizations = self.host.installed_sessions.realizations();
         // Unclaimed replay may reuse the exact already-compiled cold
         // requirements. Claimed staging intentionally revalidates immutable
         // bytes/configuration on every ingress operation before refreshing the
         // same cache entry.
         if claim.is_none()
-            && self
-                .host
-                .installed_sessions
+            && realizations
                 .read_realization(thread, |r| {
                     r.staged_resource_effect_key.as_deref() == Some(effect_key.as_str())
                 })
@@ -400,15 +394,14 @@ impl crate::ManagedHost {
         &self,
         thread: &str,
     ) -> Result<(), RunError> {
+        let realizations = self.host.installed_sessions.realizations();
         use crate::staged_resources::ResourceBindingCheck;
 
         // This method is entered only through the SessionRuntime application
         // port. Preserve that neutral identity before dispatch so a claiming
         // Worker enters the frozen Session realization path.
-        self.host.installed_sessions.enter_session_dispatch(thread);
-        let checks = self
-            .host
-            .installed_sessions
+        realizations.enter_session_dispatch(thread);
+        let checks = realizations
             .read_realization(thread, |r| r.resources.binding_checks.clone())
             .unwrap_or_default();
         if checks.is_empty() {
@@ -462,7 +455,8 @@ impl crate::ManagedHost {
         claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
-        let _lifecycle = self.host.installed_sessions.lock_lifecycle(thread).await;
+        let realizations = self.host.installed_sessions.realizations();
+        let _lifecycle = realizations.lock_lifecycle(thread).await;
         self.apply_session_inputs_under_lifecycle(thread, transition, claim, realization_lease)
             .await
     }
@@ -479,11 +473,8 @@ impl crate::ManagedHost {
         claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
-        let _resource_projection = self
-            .host
-            .installed_sessions
-            .lock_resource_projection(thread)
-            .await;
+        let realizations = self.host.installed_sessions.realizations();
+        let _resource_projection = realizations.lock_resource_projection(thread).await;
         self.apply_session_inputs_body(thread, transition, claim, realization_lease)
             .await
     }
@@ -499,7 +490,7 @@ impl crate::ManagedHost {
         claim: Option<&awaken_dispatch_contract::RunClaim>,
         realization_lease: Option<&session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
-        let sessions = &self.host.installed_sessions;
+        let sessions = &self.host.realizer.environments.sessions;
         let previous_manifest = transition.previous();
         let desired_manifest = transition.desired();
         let inputs = &desired_manifest.resources;

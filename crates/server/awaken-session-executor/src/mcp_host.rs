@@ -104,7 +104,7 @@ impl McpInputHost for SharedHost {
 impl SharedHost {
     pub(crate) fn active_mcp_projections(&self, thread: &str) -> Vec<McpGenerationProjection> {
         self.mcp
-            .active_projections(&self.installed_sessions, thread)
+            .active_projections(self.installed_sessions.as_ref(), thread)
     }
 
     #[cfg(test)]
@@ -112,7 +112,8 @@ impl SharedHost {
         &self,
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Option<McpGenerationProjection> {
-        self.mcp.projection(&self.installed_sessions, generation)
+        self.mcp
+            .projection(self.installed_sessions.as_ref(), generation)
     }
 
     #[cfg(test)]
@@ -122,7 +123,7 @@ impl SharedHost {
     ) -> Result<(), HostError> {
         Ok(self
             .mcp
-            .insert_projection(&self.installed_sessions, projection)?)
+            .insert_projection(self.installed_sessions.as_ref(), projection)?)
     }
 
     /// Transfer a freshly spawned stdio process into the already-installed
@@ -133,9 +134,11 @@ impl SharedHost {
         generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
         process: Arc<dyn awaken_provisioning_contract::ProcessHandle>,
     ) -> Result<bool, HostError> {
-        Ok(self
-            .mcp
-            .attach_staging_process(&self.installed_sessions, generation, process)?)
+        Ok(self.mcp.attach_staging_process(
+            self.installed_sessions.as_ref(),
+            generation,
+            process,
+        )?)
     }
 
     /// Publish only wiring into the private staged projection. Durable publish
@@ -148,7 +151,7 @@ impl SharedHost {
     ) -> Result<(), HostError> {
         Ok(self
             .mcp
-            .complete_staging(&self.installed_sessions, generation, wiring)?)
+            .complete_staging(self.installed_sessions.as_ref(), generation, wiring)?)
     }
 
     #[cfg(test)]
@@ -159,7 +162,7 @@ impl SharedHost {
     {
         Ok(self
             .mcp
-            .renew_projection(&self.installed_sessions, request)?)
+            .renew_projection(self.installed_sessions.as_ref(), request)?)
     }
 
     #[cfg(test)]
@@ -168,7 +171,7 @@ impl SharedHost {
         request: &awaken_session_configuration_contract::mcp::StageMcpAttachment,
     ) -> bool {
         self.mcp
-            .forget_replayable_removed_projection(&self.installed_sessions, request)
+            .forget_replayable_removed_projection(self.installed_sessions.as_ref(), request)
     }
 
     #[cfg(test)]
@@ -178,7 +181,7 @@ impl SharedHost {
     ) -> Result<(), HostError> {
         Ok(self
             .mcp
-            .publish_projection(&self.installed_sessions, generation)
+            .publish_projection(self.installed_sessions.as_ref(), generation)
             .await?)
     }
 
@@ -189,7 +192,7 @@ impl SharedHost {
     ) -> Result<(), HostError> {
         Ok(self
             .mcp
-            .drain_projection(&self.installed_sessions, generation)
+            .drain_projection(self.installed_sessions.as_ref(), generation)
             .await?)
     }
 
@@ -200,7 +203,7 @@ impl SharedHost {
     ) -> Result<McpQuiescenceProof, HostError> {
         Ok(self
             .mcp
-            .drain_projections(&self.installed_sessions, thread, expected)
+            .drain_projections(self.installed_sessions.as_ref(), thread, expected)
             .await?)
     }
 

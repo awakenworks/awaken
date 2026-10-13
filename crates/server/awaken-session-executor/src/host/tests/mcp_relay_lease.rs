@@ -92,13 +92,15 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
             "R2"
         );
     }
-    host.installed_sessions.update_realization(session, |r| {
-        let mut expired = lease.clone();
-        expired.expires_at_unix_ms = 1;
-        r.authority = crate::installed_session::SessionRealizationAuthority::Live(
-            crate::installed_session::test_expired_observed_lease(expired),
-        );
-    });
+    host.installed_sessions
+        .realizations()
+        .update_realization(session, |r| {
+            let mut expired = lease.clone();
+            expired.expires_at_unix_ms = 1;
+            r.authority = crate::installed_session::SessionRealizationAuthority::Live(
+                crate::installed_session::test_expired_observed_lease(expired),
+            );
+        });
     assert_eq!(
         invoke(url.clone()).await.unwrap().status(),
         reqwest::StatusCode::NOT_FOUND,

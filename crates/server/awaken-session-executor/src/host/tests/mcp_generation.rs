@@ -743,6 +743,11 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
 
 #[tokio::test]
 async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
+    // Owner/phase migration: the staging task retains the same registry Arc;
+    // ordinary slot reads borrow it and do not require a Clone registry. The
+    // projection, activity and drain Arcs still identify the original owner.
+    // S1-S5 below retain the pending-stage/drain/process proof assertions;
+    // the MCP activity guard case covers a Future dropped before first poll.
     use async_trait::async_trait;
     use awaken_provisioning_contract as pc;
     use awaken_session_configuration_contract::mcp::{McpRealizationReceipt, StageMcpAttachment};
@@ -832,6 +837,7 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
         None,
     );
     host.installed_sessions
+        .realizations()
         .close_mcp_realization_admission(
             "mcp-staging-quiescence",
             awaken_session_mcp::McpQuiescenceAdmissionFence::new(
@@ -859,6 +865,7 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
     assert!(
         !host
             .installed_sessions
+            .realizations()
             .mcp_realization_admitted("mcp-staging-quiescence"),
         "S5 residual staging owner keeps expiry projection closed"
     );
@@ -989,6 +996,7 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
     .unwrap();
     assert!(
         host.installed_sessions
+            .realizations()
             .mcp_realization_admitted("mcp-staging-quiescence"),
         "S5 exact source-free projection reopens only after residual cleanup"
     );
@@ -1088,11 +1096,13 @@ async fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epo
             } else {
                 crate::installed_session::test_observed_lease(lease)
             };
-            host.installed_sessions
-                .update_realization(expired.session_id().as_str(), |r| {
+            host.installed_sessions.realizations().update_realization(
+                expired.session_id().as_str(),
+                |r| {
                     r.authority =
                         crate::installed_session::SessionRealizationAuthority::Live(proof);
-                });
+                },
+            );
         }
         assert_eq!(
             host.mcp_generation_is_authorized_at(&expired, base + 100),
@@ -1183,6 +1193,7 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
             McpProjectionState::Draining,
         ] {
             host.installed_sessions
+                .realizations()
                 .modify_realization(old_generation.session_id().as_str(), |r| {
                     r.mcp.projections_mut()[0].state = live_state
                 });
@@ -1196,6 +1207,7 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
             );
         }
         host.installed_sessions
+            .realizations()
             .modify_realization(old_generation.session_id().as_str(), |r| {
                 r.mcp.projections_mut()[0].state = state
             });
@@ -1228,6 +1240,7 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
         );
         assert_eq!(
             host.installed_sessions
+                .realizations()
                 .read_realization(renewed.generation.session_id().as_str(), |r| {
                     r.mcp.projection_count()
                 }),

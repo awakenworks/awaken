@@ -1118,6 +1118,7 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
     ];
     let hash = bundle_sha256(&files);
     host.installed_sessions
+        .realizations()
         .update_realization("coordinator-dispatch-only", |r| {
             r.skills = Some(vec![SkillVersion {
                 id: "skver_files_1".into(),

@@ -122,11 +122,9 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         lease: &awaken_session_realization_contract::ObservedSessionRealizationLease,
         prepare_session: bool,
     ) -> Result<(), awaken_session_types::RunError> {
+        let realizations = self.host.installed_sessions.realizations();
         let exec = &self.host.realizer;
-        let retained_publication = self
-            .host
-            .installed_sessions
-            .published_snapshot(session_id.as_str());
+        let retained_publication = realizations.published_snapshot(session_id.as_str());
         if let Some(claimed) = self.published_snapshot
             && !matches!(
                 awaken_session_realization_contract::frozen_agent_publication_decision(
@@ -172,11 +170,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         // repair or any projection/Resource effect, and the same guard prevents
         // another owner transition until the replacement projection is wholly
         // installed.
-        let lifecycle_guard = self
-            .host
-            .installed_sessions
-            .lock_lifecycle(session_id.as_str())
-            .await;
+        let lifecycle_guard = realizations.lock_lifecycle(session_id.as_str()).await;
         if self.claim.is_some() {
             let (canonical_publication, model_candidate) = self
                 .host
@@ -190,9 +184,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
             let a2a_only = canonical_publication
                 .as_ref()
                 .is_some_and(|publication| !requires_local_environment(&publication.resolved_spec));
-            let has_local_environment_owner = self
-                .host
-                .installed_sessions
+            let has_local_environment_owner = realizations
                 .read_realization(session_id.as_str(), |r| {
                     r.environment_owner.has_local_environment()
                 })
@@ -262,22 +254,15 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
         // otherwise the later claimed resolver mistakes an empty compatibility
         // envelope for ordinary desired state and drains Control's active MCP
         // generation.
-        self.host
-            .installed_sessions
-            .enter_session_dispatch(session_id.as_str());
+        realizations.enter_session_dispatch(session_id.as_str());
         drop(lifecycle_guard);
-        let published_snapshot = self
-            .host
-            .installed_sessions
-            .published_snapshot(session_id.as_str());
+        let published_snapshot = realizations.published_snapshot(session_id.as_str());
         // A resident Arc is process-local ownership, not evidence that its
         // physical Sandbox survived. Revalidate every durable binding through
         // the one adoption path; Ready reuses that Arc, while closed evidence
         // follows the existing policy-fenced Rebuild decision.
         let has_environment_binding = projection.environment.binding().is_some();
-        let runtime_authority_resident = self
-            .host
-            .installed_sessions
+        let runtime_authority_resident = realizations
             .modify_session(session_id.as_str(), |slot| {
                 slot.run.holds_context() || slot.realization.environment_owner.is_resident()
             })
@@ -843,7 +828,11 @@ mod tests {
             // Stop at the production sink-readback/local-publication boundary.
             // No synthetic generation or Resident -> Candidate demotion: use
             // the canonical authorization, fenced Provider and retention edges.
-            let _lifecycle = host.installed_sessions.lock_lifecycle(thread).await;
+            let _lifecycle = host
+                .installed_sessions
+                .realizations()
+                .lock_lifecycle(thread)
+                .await;
             let effect = host
                 .authorize_environment_effect_before_io(
                     thread,
@@ -910,6 +899,7 @@ mod tests {
         // execution-authority view; renewal/conflict checks share this oracle.
         let owned_environment = || {
             host.installed_sessions
+                .realizations()
                 .read_realization(thread, |r| {
                     r.environment_owner.resident().or_else(|| {
                         r.environment_owner
@@ -1012,6 +1002,7 @@ mod tests {
         };
         let lifecycle = host
             .installed_sessions
+            .realizations()
             .read_realization(thread, |r| r.lifecycle.clone())
             .expect("DH1 lifecycle owner");
         if revoke {
@@ -1543,6 +1534,7 @@ mod tests {
         host.install_test_resident_session_environment(thread, environment.clone());
         let lifecycle = host
             .installed_sessions
+            .realizations()
             .read_realization(thread, |r| r.lifecycle.clone())
             .expect("legacy lifecycle owner");
         {
@@ -1660,7 +1652,7 @@ mod tests {
             host.realizer.session_environment(thread).await.is_none(),
             "CR1/E3"
         );
-        host.installed_sessions.read_realization(thread, |r| {
+        host.installed_sessions.realizations().read_realization(thread, |r| {
             assert!(matches!(&r.environment_owner,
                 crate::environment_owner::SessionEnvironmentOwner::Preparing(
                     crate::environment_owner::SessionEnvironmentPreparation::AwaitingAdoption { binding, .. }
@@ -1783,6 +1775,7 @@ mod tests {
         );
         assert!(
             host.installed_sessions
+                .realizations()
                 .read_realization(thread, |r| r
                     .environment_owner
                     .resident()
@@ -1937,7 +1930,7 @@ mod tests {
         );
         assert!(root_sentinel.exists(), "RA1/E2 physical root is untouched");
         assert!(
-            host.installed_sessions
+            host.installed_sessions.realizations()
                 .read_realization(thread, |r| {
                     matches!(
                         &r.environment_owner,

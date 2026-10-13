@@ -283,9 +283,10 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         mode: awaken_session_realization_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
+        let realizations = self.host.installed_sessions.realizations();
         // Every Environment-owner projection, including lease-only recovery,
         // crosses the same lifecycle guard as physical publication/retirement.
-        let _lifecycle = self.host.installed_sessions.lock_lifecycle(thread).await;
+        let _lifecycle = realizations.lock_lifecycle(thread).await;
         if mode.prepares_session() {
             // Cause/effect rule P2: an unprotected active Runtime rejects before
             // any frozen coordinate is published. The same lifecycle mutex also
@@ -316,6 +317,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
         thread: &str,
         lease: awaken_session_realization_contract::ObservedSessionRealizationLease,
     ) -> Result<(), RunError> {
+        let realizations = self.host.installed_sessions.realizations();
         let missing = || {
             RunError::classified(
                 "session_realization_lease_missing",
@@ -324,8 +326,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
         };
         self.host.realizer.execution
             .authorize_worker_effect(|| {
-                Ok(self.host
-            .installed_sessions
+                Ok(realizations
             .modify_realization(thread, |r| {
                 let current = r.authority.lease().cloned().ok_or_else(missing)?;
                 if !r.renew_lease(&current, lease) {

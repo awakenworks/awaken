@@ -134,6 +134,7 @@ impl SharedHost {
         ),
         HostError,
     > {
+        let realizations = self.installed_sessions.realizations();
         let workspace = self.thread_workspace(thread);
         let projected_agent = self.thread_agent_projection(thread);
         if let (Some(asserted), Some(projected)) = (agent, projected_agent.as_deref())
@@ -155,9 +156,8 @@ impl SharedHost {
             .or(projected_agent.as_deref())
             .or(delivered_agent.as_deref())
             .unwrap_or("assistant");
-        let baseline = self.installed_sessions.frozen(thread).baseline.clone();
-        let skill_pins = self
-            .installed_sessions
+        let baseline = realizations.frozen(thread).baseline.clone();
+        let skill_pins = realizations
             .read_realization(thread, |r| {
                 r.resource_transition
                     .as_ref()
@@ -177,7 +177,7 @@ impl SharedHost {
         let published_backend_ref = model_candidate
             .as_ref()
             .map(|candidate| candidate.binding().identity().2.to_owned());
-        let projected_backend_ref = self.installed_sessions.frozen(thread).backend_ref.clone();
+        let projected_backend_ref = realizations.frozen(thread).backend_ref.clone();
         if let (Some(published), Some(projected)) = (&published_backend_ref, &projected_backend_ref)
             && published != projected
         {
@@ -237,7 +237,8 @@ impl SharedHost {
         thread: &str,
         agent: Option<&str>,
     ) -> Result<awaken_runtime_contract::resolved::ModelProvisioning, HostError> {
-        let delivered = self.installed_sessions.published_snapshot(thread);
+        let realizations = self.installed_sessions.realizations();
+        let delivered = realizations.published_snapshot(thread);
         let (_, _, _, model_candidate) =
             self.resolve_session_publication(thread, agent, delivered)?;
         Ok(model_candidate
@@ -252,6 +253,7 @@ impl SharedHost {
         thread: &str,
         intent: &awaken_session_state_contract::SessionEnvironmentEffectIntent,
     ) -> Result<AuthorizedSessionEnvironmentEffect, HostError> {
+        let realizations = self.installed_sessions.realizations();
         intent
             .verify()
             .map_err(|error| HostError::internal(error.to_string()))?;
@@ -260,8 +262,7 @@ impl SharedHost {
                 "Environment request names another Session",
             ));
         }
-        let (claimed_ordinary_run, managed_projection, closed) = self
-            .installed_sessions
+        let (claimed_ordinary_run, managed_projection, closed) = realizations
             .modify_session(thread, |slot| {
                 let managed = slot.inputs.baseline.is_some() || slot.run.session_dispatch();
                 let ordinary = slot.realization.authority.lease().is_none()
@@ -472,6 +473,7 @@ impl SharedHost {
         effect: &AuthorizedSessionEnvironmentEffect,
         reconciliation: crate::staged_resources::EnvironmentResourceReconciliation,
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, HostError> {
+        let realizations = self.installed_sessions.realizations();
         let exec = &self.realizer;
         let candidate = match effect.authorization.intent().kind() {
             awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt => {
@@ -509,7 +511,7 @@ impl SharedHost {
         };
         let environment =
             exec.publish_prepared_session_environment(thread, &candidate, identity)?;
-        self.installed_sessions.update_realization(thread, |r| {
+        realizations.update_realization(thread, |r| {
             r.environment_resource_reconciliation = reconciliation;
         });
         Ok(environment)
@@ -524,8 +526,9 @@ impl SharedHost {
         &self,
         thread: &str,
     ) -> Result<Option<Arc<crate::session_environment::SessionEnvironment>>, HostError> {
+        let realizations = self.installed_sessions.realizations();
         let exec = &self.realizer;
-        let revoked_binding = self.installed_sessions.read_realization(thread, |r| match &r.environment_owner {
+        let revoked_binding = realizations.read_realization(thread, |r| match &r.environment_owner {
             crate::environment_owner::SessionEnvironmentOwner::Retiring(retiring)
                 if retiring.cause == crate::environment_owner::SessionEnvironmentRetirementCause::RealizationRevocation =>
                 match &retiring.owned {
@@ -556,8 +559,7 @@ impl SharedHost {
                     HostError::internal("unacknowledged Candidate adoption published no owner")
                 });
         }
-        let candidate = self
-            .installed_sessions
+        let candidate = realizations
             .read_realization(thread, |r| {
                 r.environment_owner.unpublished_candidate().cloned()
             })
@@ -595,7 +597,7 @@ impl SharedHost {
         };
         let environment =
             exec.publish_prepared_session_environment(thread, &candidate, identity)?;
-        self.installed_sessions.update_realization(thread, |r| {
+        realizations.update_realization(thread, |r| {
             r.environment_resource_reconciliation = reconciliation;
         });
         Ok(Some(environment))
@@ -610,9 +612,9 @@ impl SharedHost {
         thread: &str,
         provider: &crate::session_environment::SessionEnvironmentProvider,
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, HostError> {
+        let realizations = self.installed_sessions.realizations();
         let staging = &self.realizer.staging;
-        let transition = self
-            .installed_sessions
+        let transition = realizations
             .read_realization(thread, |r| r.resource_transition.clone())
             .flatten()
             .ok_or_else(|| {
@@ -620,8 +622,7 @@ impl SharedHost {
                     "Session Environment creation requires an exact Resource transition",
                 )
             })?;
-        let (claim, realization_lease) = self
-            .installed_sessions
+        let (claim, realization_lease) = realizations
             .modify_session(thread, |slot| {
                 (
                     slot.run.dispatch_claim().cloned(),
@@ -629,8 +630,7 @@ impl SharedHost {
                 )
             })
             .unwrap_or_default();
-        let rebuild_source = self
-            .installed_sessions
+        let rebuild_source = realizations
             .read_realization(thread, |r| r.environment_rebuild_source.clone())
             .flatten();
         let (kind, source_binding) = match &rebuild_source {
@@ -697,7 +697,7 @@ impl SharedHost {
                 crate::staged_resources::EnvironmentResourceReconciliation::Fresh,
             )
             .await?;
-        self.installed_sessions.update_realization(thread, |r| {
+        realizations.update_realization(thread, |r| {
             r.environment_rebuild_source = None;
         });
         self.ensure_published_environment_reconciled_under_lifecycle(thread, environment)
@@ -749,12 +749,11 @@ impl SharedHost {
         thread: &str,
         environment: Arc<crate::session_environment::SessionEnvironment>,
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, HostError> {
-        let reconciliation = self
-            .installed_sessions
+        let realizations = self.installed_sessions.realizations();
+        let reconciliation = realizations
             .read_realization(thread, |r| r.environment_resource_reconciliation)
             .unwrap_or_default();
-        let transition = self
-            .installed_sessions
+        let transition = realizations
             .read_realization(thread, |r| r.resource_transition.clone())
             .flatten()
             .ok_or_else(|| {
@@ -766,8 +765,7 @@ impl SharedHost {
         {
             return Ok(environment);
         }
-        let (claim, realization_lease) = self
-            .installed_sessions
+        let (claim, realization_lease) = realizations
             .modify_session(thread, |slot| {
                 (
                     slot.run.dispatch_claim().cloned(),
@@ -845,7 +843,8 @@ impl SharedHost {
         &self,
         thread: &str,
     ) -> Result<Arc<crate::session_environment::SessionEnvironment>, HostError> {
-        let _lifecycle = self.installed_sessions.lock_lifecycle(thread).await;
+        let realizations = self.installed_sessions.realizations();
+        let _lifecycle = realizations.lock_lifecycle(thread).await;
         if let Some(environment) = self
             .retry_session_environment_candidate_under_lifecycle(thread)
             .await?
@@ -854,8 +853,7 @@ impl SharedHost {
                 .ensure_published_environment_reconciled_under_lifecycle(thread, environment)
                 .await;
         }
-        if let Some(environment) = self
-            .installed_sessions
+        if let Some(environment) = realizations
             .read_realization(thread, |r| r.environment_owner.resident())
             .flatten()
         {

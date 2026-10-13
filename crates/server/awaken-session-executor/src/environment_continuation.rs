@@ -48,9 +48,8 @@ impl ManagedHost {
         asserted: &session_resource::SessionRealizationLease,
         stale_code: &'static str,
     ) -> Result<session_resource::SessionRealizationLease, RunError> {
-        let (current, live) = self
-            .host
-            .installed_sessions
+        let realizations = self.host.installed_sessions.realizations();
+        let (current, live) = realizations
             .read_realization(thread, |r| {
                 r.authority.lease().map(|current| {
                     (
@@ -157,9 +156,10 @@ impl ManagedHost {
         expected_mcp_generations: &[session_mcp::McpGenerationRef],
     ) -> Result<awaken_session_state_contract::QuiescenceReceipt, RunError> {
         let sessions = &self.host.installed_sessions;
+        let realization_view = sessions.realizations();
         self.continuation_effect_fence(thread, operation)?;
-        let _realization = sessions.acquire_realization(thread).await;
-        let _lifecycle = sessions.lock_lifecycle(thread).await;
+        let _realization = sessions.acquire_realization_with(thread, |_| ()).await.0;
+        let _lifecycle = realization_view.lock_lifecycle(thread).await;
         let environment = self
             .host
             .realizer
@@ -171,7 +171,7 @@ impl ManagedHost {
                 generation,
             )
             .map_err(to_run_error)?;
-        sessions
+        realization_view
             .close_mcp_realization_admission(
                 thread,
                 awaken_session_mcp::McpQuiescenceAdmissionFence::new(
@@ -261,6 +261,7 @@ impl ManagedHost {
         thread: &str,
         request: awaken_session_state_contract::SandboxCheckpointRequest,
     ) -> Result<awaken_session_state_contract::CheckpointReceipt, RunError> {
+        let realizations = self.host.installed_sessions.realizations();
         if request.session_id != thread {
             return Err(RunError::internal(
                 "checkpoint request does not belong to its Session",
@@ -275,7 +276,7 @@ impl ManagedHost {
             .execution
             .provider_effect_authority(thread, &effect_fence)
             .map_err(to_run_error)?;
-        let _lifecycle = self.host.installed_sessions.lock_lifecycle(thread).await;
+        let _lifecycle = realizations.lock_lifecycle(thread).await;
         let environment = self
             .host
             .realizer
@@ -328,7 +329,7 @@ impl ManagedHost {
         generation: &awaken_session_state_contract::SandboxGeneration,
         source_binding: &str,
     ) -> Result<awaken_session_state_contract::SourceReleasePreparedReceipt, RunError> {
-        let exec = &self.host.realizer;
+        let exec = &self.host.realizer.environments;
         self.continuation_preparation_effect_fence(thread, preparation)?;
         let Some(resources) = exec.staging.thread_resource_manifest(thread) else {
             return Err(RunError::unavailable_classified(
@@ -377,7 +378,7 @@ impl ManagedHost {
                     error.to_string(),
                 )
             })?;
-        let _lifecycle = self.host.installed_sessions.lock_lifecycle(thread).await;
+        let _lifecycle = exec.sessions.lock_lifecycle(thread).await;
         self.continuation_preparation_effect_fence(thread, preparation)?;
         let effect_fence = self.continuation_preparation_effect_fence(thread, preparation)?;
         let prepared = self
@@ -481,12 +482,13 @@ impl ManagedHost {
         thread: &str,
         disposal: &awaken_session_state_contract::SourceReleaseDisposal,
     ) -> Result<awaken_session_state_contract::SourceDisposedReceipt, RunError> {
+        let realizations = self.host.installed_sessions.realizations();
         let exec = &self.host.realizer;
         let operation = disposal.operation();
         let generation = disposal.generation();
         let source_binding = disposal.source_binding();
         self.continuation_source_disposal_authorization(thread, disposal)?;
-        let _lifecycle = self.host.installed_sessions.lock_lifecycle(thread).await;
+        let _lifecycle = realizations.lock_lifecycle(thread).await;
         let provider_authorization =
             self.continuation_source_disposal_authorization(thread, disposal)?;
         exec.dispose_prepared_checkpoint_source_environment(
@@ -511,13 +513,14 @@ impl ManagedHost {
         &self,
         request: awaken_session_state_contract::SandboxRestoreRequest,
     ) -> Result<awaken_session_state_contract::RestoreReceipt, RunError> {
+        let realizations = self.host.installed_sessions.realizations();
         let exec = &self.host.realizer;
         let staging = &exec.staging;
         request
             .validate()
             .map_err(|error| RunError::unavailable(error.to_string()))?;
         let thread = request.session_id.clone();
-        let _lifecycle = self.host.installed_sessions.lock_lifecycle(&thread).await;
+        let _lifecycle = realizations.lock_lifecycle(&thread).await;
         exec.retry_unpublished_session_environment_cleanup(&thread)
             .await
             .map_err(to_run_error)?;
@@ -641,6 +644,7 @@ mod tests {
                 ),
             };
             host.installed_sessions
+                .realizations()
                 .update_realization(rule, |r| r.authority = authority);
             let managed = ManagedHost::new(host);
             let generation = awaken_session_state_contract::SandboxGeneration::new(

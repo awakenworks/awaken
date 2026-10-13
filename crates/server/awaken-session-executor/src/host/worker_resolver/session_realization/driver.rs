@@ -20,8 +20,9 @@ impl HostWorkerResolver {
     ) -> Result<(), awaken_dispatch_execution::Error> {
         let realization = host
             .installed_sessions
-            .acquire_realization(session_id.as_str())
-            .await;
+            .acquire_realization_with(session_id.as_str(), |_| ())
+            .await
+            .0;
         let synchronizer = WorkerProjectionSynchronizer::for_directive(
             host,
             &directive,

@@ -9,7 +9,7 @@ use awaken_session_execution_contract::RealizationRuntime as _;
 use awaken_session_state_contract::SessionEnvironmentState;
 
 fn observation(host: &SharedHost) -> serde_json::Value {
-    host.installed_sessions.read_realization("projection-convergence", |realization| {
+    host.installed_sessions.realizations().read_realization("projection-convergence", |realization| {
         let receipt = realization.frozen_projection_receipt.as_ref();
         let binding = match &realization.environment_owner {
             crate::installed_session::SessionEnvironmentOwner::Preparing(crate::installed_session::SessionEnvironmentPreparation::AwaitingAdoption { binding, .. }) => binding.as_str(),

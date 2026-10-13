@@ -22,7 +22,7 @@ impl InstalledSessions {
     /// awaiting Tokio, the contract kernel retries against the replacement
     /// instead of admitting the stale allocation.
     pub(crate) async fn acquire_realization_with<R>(
-        &self,
+        self: &Arc<Self>,
         session: &str,
         mut on_admit: impl FnMut(&mut InstalledSession) -> R,
     ) -> (SessionRealizationPermit, R) {
@@ -30,8 +30,9 @@ impl InstalledSessions {
         SessionRealizationPermit::acquire(
             &awaken_session_types::SessionId::from(session),
             move || {
-                let identity: Arc<tokio::sync::Mutex<()>> =
-                    slots.update_realization(session, |r| r.realization.clone());
+                let identity: Arc<tokio::sync::Mutex<()>> = slots
+                    .realizations()
+                    .update_realization(session, |r| r.realization.clone());
                 async move {
                     let owner = identity.clone().lock_owned().await;
                     (identity, owner)
@@ -46,10 +47,6 @@ impl InstalledSessions {
         )
         .await
     }
-
-    pub(crate) async fn acquire_realization(&self, session: &str) -> SessionRealizationPermit {
-        self.acquire_realization_with(session, |_| ()).await.0
-    }
 }
 
 #[cfg(test)]
@@ -58,19 +55,25 @@ mod tests {
 
     #[tokio::test]
     async fn a_recreated_slot_is_not_admitted_through_the_removed_allocation() {
+        // Owner migration keeps the same Arc registry and three slot locks.
+        // Both callers now enter the original with/permit kernel directly;
+        // the removed projection used this exact unit admission callback.
+        // R1/R2 still cover waiting, removal/recreation and current identity.
         // Cause/effect graph: C1 a driver holds the Session's slot allocation;
         // C2 a second driver waits on that same allocation; C3 the slot is
         // removed and recreated while it waits; C4 the first permit is dropped.
         // E1 C2 waits; E2 after C3+C4 it is admitted only against the *current*
         // allocation. Rules: R1=C1+C2=>E1; R2=C1+C2+C3+C4=>E2.
-        let slots = InstalledSessions::default();
-        let held = slots.acquire_realization("session-a").await;
+        let slots = Arc::new(InstalledSessions::default());
+        let held = slots.acquire_realization_with("session-a", |_| ()).await.0;
         let waiting = slots
             .acquire_realization_with("session-a", |slot| slot.realization.realization.clone());
         let mut waiting = std::pin::pin!(waiting);
         assert!(futures_util::poll!(waiting.as_mut()).is_pending(), "R1/E1");
         slots.remove("session-a");
-        let recreated = slots.update_realization("session-a", |r| r.realization.clone());
+        let recreated = slots
+            .realizations()
+            .update_realization("session-a", |r| r.realization.clone());
         drop(held);
         let (_permit, admitted) = tokio::time::timeout(std::time::Duration::from_secs(5), waiting)
             .await

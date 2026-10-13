@@ -20,12 +20,13 @@ impl SharedHost {
         session_id: &str,
         observed_root: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
     ) -> Result<Vec<CoordinatedThreadLink>, HostError> {
+        let realizations = self.installed_sessions.realizations();
         if observed_root.is_some_and(|snapshot| snapshot.thread_id.0 != session_id) {
             return Err(HostError::internal(
                 "coordination query received a snapshot for a different Session root",
             ));
         }
-        let delivered = self.installed_sessions.published_snapshot(session_id);
+        let delivered = realizations.published_snapshot(session_id);
         // Relationship recovery and terminal teardown must remain available
         // after a publication is revoked. The committed advisor call supplies
         // identity; current publication only enriches its model label. Managed
