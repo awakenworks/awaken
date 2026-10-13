@@ -17,12 +17,13 @@ use awaken_session_realization_contract::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
     FailSessionRealization, RenewSessionRealization, SessionRealizationAction,
     SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationDirective,
-    SessionTerminalCleanupAssignment, terminal_cleanup_worker_requirements,
+    SessionRealizationLeaseReceipt, SessionTerminalCleanupAssignment,
+    terminal_cleanup_worker_requirements,
 };
 use awaken_session_execution_contract::RealizationRuntime;
 use awaken_session_state_contract::{
     ManagedLifecycleFact, PersistedSession, SessionEnvironmentState, SessionExecutionState,
-    SessionRepositoryError,
+    SessionRepositoryError, session_has_terminal_no_create_evidence,
 };
 use awaken_session_types::RunError;
 
@@ -228,12 +229,9 @@ impl SessionApplication {
                     session,
                 )
                 .await
-                .map_err(repository_control)?,
-            authority:
-                awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
-                    lease,
-                    self.clock.now_ms(),
-                )?,
+                .map_err(repository_control)?
+                    || session_has_terminal_no_create_evidence(session),
+            authority: SessionRealizationLeaseReceipt::issued_at(lease, self.clock.now_ms())?,
         })
     }
 
