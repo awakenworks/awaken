@@ -391,8 +391,8 @@ pub trait SessionResourceCommands: Send + Sync {
         &self,
         workspace_id: &str,
         agent_defaults: &[awaken_resource_contract::InputBinding],
-        session_inputs: &[awaken_session_resource_contract::SessionInputAttachment],
-    ) -> Result<awaken_session_resource_contract::ResolvedSessionResources, RunError>;
+        session_inputs: &[crate::session_resource::SessionInputAttachment],
+    ) -> Result<crate::session_resource::ResolvedSessionResources, RunError>;
 
     /// See [`SessionApplication::rotate_repository_credential`].
     async fn rotate_repository_credential(
@@ -888,8 +888,8 @@ impl SessionResourceCommands for SessionApplication {
         &self,
         workspace_id: &str,
         agent_defaults: &[awaken_resource_contract::InputBinding],
-        session_inputs: &[awaken_session_resource_contract::SessionInputAttachment],
-    ) -> Result<awaken_session_resource_contract::ResolvedSessionResources, RunError> {
+        session_inputs: &[crate::session_resource::SessionInputAttachment],
+    ) -> Result<crate::session_resource::ResolvedSessionResources, RunError> {
         SessionApplication::resolve_session_inputs(
             self,
             workspace_id,

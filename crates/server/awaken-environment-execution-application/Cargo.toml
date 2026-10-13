@@ -20,7 +20,6 @@ awaken-credential-contract.workspace = true
 awaken-environment-contract.workspace = true
 awaken-executable-environment-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
-awaken-session-mcp-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-worker-contract.workspace = true
 async-trait.workspace = true

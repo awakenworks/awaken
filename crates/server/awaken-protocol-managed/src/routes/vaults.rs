@@ -89,8 +89,8 @@ mod credential_material_ingress;
 
 fn application_mcp_target_fingerprint(
     url: &str,
-) -> Result<String, awaken_session_mcp_contract::McpTargetError> {
-    let identity = awaken_session_mcp_contract::McpTarget::identity(url)?;
+) -> Result<String, awaken_agent_contract::McpTargetError> {
+    let identity = awaken_agent_contract::McpTarget::identity(url)?;
     let port = identity.port.map(|port| port.to_string());
     Ok(sha256_identity(
         "application-mcp-normalized-target-v1",
@@ -111,7 +111,7 @@ fn application_mcp_target_fingerprint(
 
 /// The canonical MCP audience of `url`.
 fn mcp_audience(url: &str) -> Result<String, awaken_credential_vault::CredentialError> {
-    awaken_session_mcp_contract::McpTarget::identity(url)
+    awaken_agent_contract::McpTarget::identity(url)
         .map(|identity| identity.canonical_url())
         .map_err(|_| {
             awaken_credential_vault::CredentialError::InvalidSource(
@@ -305,7 +305,7 @@ impl VaultState {
         vault_ids: &[String],
         url: &str,
     ) -> Result<Option<CredentialSourceId>, awaken_credential_vault::CredentialError> {
-        let Ok(requested) = awaken_session_mcp_contract::McpTarget::identity(url) else {
+        let Ok(requested) = awaken_agent_contract::McpTarget::identity(url) else {
             return Ok(None);
         };
         for vault_id in vault_ids {
@@ -318,7 +318,7 @@ impl VaultState {
             };
             if let Some(credential) = credentials.into_iter().find(|credential| {
                 auth_mcp_server_url(&credential.auth)
-                    .and_then(|url| awaken_session_mcp_contract::McpTarget::identity(url).ok())
+                    .and_then(|url| awaken_agent_contract::McpTarget::identity(url).ok())
                     .is_some_and(|candidate| candidate == requested)
             }) {
                 return Ok(Some(credential.source_id));
@@ -403,7 +403,7 @@ impl VaultState {
                 ));
             }
         };
-        let target = awaken_session_mcp_contract::McpTarget::parse_http(&url).map_err(|_| {
+        let target = awaken_agent_contract::McpTarget::parse_http(&url).map_err(|_| {
             awaken_credential_vault::CredentialError::InvalidSource(
                 "MCP credential target is invalid".into(),
             )
@@ -419,7 +419,7 @@ impl VaultState {
         &self,
         source_id: &CredentialSourceId,
         workspace_id: Option<&str>,
-        target: &awaken_session_mcp_contract::McpTarget,
+        target: &awaken_agent_contract::McpTarget,
         selected_holder: &awaken_credential_contract::PlaintextHolder,
         binding: &awaken_credential_contract::CredentialMaterialBinding,
     ) -> Result<
@@ -431,7 +431,7 @@ impl VaultState {
                 "MCP credentials require an HTTP target".into(),
             )
         })?;
-        let target_audience = awaken_session_mcp_contract::McpTarget::identity(target_url)
+        let target_audience = awaken_agent_contract::McpTarget::identity(target_url)
             .map_err(|_| {
                 awaken_credential_vault::CredentialError::InvalidSource(
                     "MCP credential target is invalid".into(),
@@ -549,7 +549,7 @@ impl SessionCredentialSource for VaultState {
         &self,
         source_id: &CredentialSourceId,
         workspace_id: &str,
-        target: &awaken_session_mcp_contract::McpTarget,
+        target: &awaken_agent_contract::McpTarget,
         selected_holder: &awaken_credential_contract::PlaintextHolder,
         binding: &awaken_credential_contract::CredentialMaterialBinding,
     ) -> Result<awaken_credential_contract::CredentialAccess, String> {

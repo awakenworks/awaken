@@ -11,8 +11,11 @@ use awaken_session_configuration_contract::{
     EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline, SessionBaselineState,
     SessionMcpAuthoringContext, SessionNetworkPolicy,
 };
-use awaken_session_mcp_contract::{
-    McpAttachmentDraft, McpAttachmentOrigin, McpTarget, SessionMcpAttachmentSet,
+use {
+    awaken_agent_contract::McpTarget,
+    awaken_session_configuration_contract::mcp::{
+        McpAttachmentDraft, McpAttachmentOrigin, SessionMcpAttachmentSet,
+    },
 };
 
 use super::*;
@@ -850,8 +853,7 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
                         ),
                     },
                 },
-                runtime_placement:
-                    awaken_session_configuration_contract::SessionRuntimePlacement::Local,
+                runtime_placement: awaken_session_types::SessionRuntimePlacement::Local,
                 mcp_authoring: SessionMcpAuthoringContext::default(),
                 agent_id: "coder".into(),
                 agent_revision: None,

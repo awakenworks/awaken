@@ -55,14 +55,14 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         .await
         .expect("create file")
         .id;
-    let declaration = awaken_session_resource_contract::SessionResourceManifest::new(
+    let declaration = crate::session_resource::SessionResourceManifest::new(
         "workspace-a",
-        awaken_session_resource_contract::ResolvedSessionResources::try_new(
-            vec![awaken_session_resource_contract::ResolvedInput {
+        crate::session_resource::ResolvedSessionResources::try_new(
+            vec![crate::session_resource::ResolvedInput {
                 created_at_unix_ms: None,
                 updated_at_unix_ms: None,
                 binding_id: awaken_resource_contract::BindingId::new("file-binding"),
-                source: awaken_session_resource_contract::ResolvedInputSource::File {
+                source: crate::session_resource::ResolvedInputSource::File {
                     file_id: awaken_resource_contract::FileId::from(file_id.as_str()),
                 },
                 mount_path: "/uploads/input.bin".to_string(),
@@ -85,7 +85,7 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         )
         .await
         .expect("F1 actual Root prepares the complete initial transition");
-    let manifest = awaken_session_resource_contract::SessionResourceManifest::at_revision(
+    let manifest = crate::session_resource::SessionResourceManifest::at_revision(
         projection.workspace_id.clone(),
         projection.resource_revision,
         projection.resources.clone(),
@@ -140,10 +140,10 @@ async fn live_file_replacement_requires_the_exact_resource_transition() {
         Some(manifest.clone())
     );
 
-    let cleared = awaken_session_resource_contract::SessionResourceManifest::at_revision(
+    let cleared = crate::session_resource::SessionResourceManifest::at_revision(
         "workspace-a",
         manifest.revision + 1,
-        awaken_session_resource_contract::ResolvedSessionResources::default(),
+        crate::session_resource::ResolvedSessionResources::default(),
     );
     let error = host
         .install_dispatched_resources("thread-cold-resource", &cleared, None)
@@ -291,14 +291,14 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
         .await
         .expect("create actual scoped File")
         .id;
-    let declaration = awaken_session_resource_contract::SessionResourceManifest::new(
+    let declaration = crate::session_resource::SessionResourceManifest::new(
         "workspace-a",
-        awaken_session_resource_contract::ResolvedSessionResources::try_new(
-            vec![awaken_session_resource_contract::ResolvedInput {
+        crate::session_resource::ResolvedSessionResources::try_new(
+            vec![crate::session_resource::ResolvedInput {
                 created_at_unix_ms: None,
                 updated_at_unix_ms: None,
                 binding_id: awaken_resource_contract::BindingId::new("generation-file"),
-                source: awaken_session_resource_contract::ResolvedInputSource::File {
+                source: crate::session_resource::ResolvedInputSource::File {
                     file_id: awaken_resource_contract::FileId::from(file_id.as_str()),
                 },
                 mount_path: "/generation.txt".into(),
@@ -320,7 +320,7 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
         )
         .await
         .expect("Root prepares the complete initial transition");
-    let initial_manifest = awaken_session_resource_contract::SessionResourceManifest::at_revision(
+    let initial_manifest = crate::session_resource::SessionResourceManifest::at_revision(
         projection.workspace_id.clone(),
         projection.resource_revision,
         projection.resources.clone(),
@@ -357,17 +357,17 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
         .expect("R1 exact replay revalidation");
 
     for rejected in [
-        awaken_session_resource_contract::SessionResourceManifest::at_revision(
+        crate::session_resource::SessionResourceManifest::at_revision(
             "workspace-a",
             initial_manifest.revision - 1,
-            awaken_session_resource_contract::ResolvedSessionResources::default(),
+            crate::session_resource::ResolvedSessionResources::default(),
         ),
-        awaken_session_resource_contract::SessionResourceManifest::at_revision(
+        crate::session_resource::SessionResourceManifest::at_revision(
             "workspace-a",
             initial_manifest.revision,
-            awaken_session_resource_contract::ResolvedSessionResources::try_new(
+            crate::session_resource::ResolvedSessionResources::try_new(
                 Vec::new(),
-                vec![awaken_session_resource_contract::ResolvedSkillBinding {
+                vec![crate::session_resource::ResolvedSkillBinding {
                     kind: awaken_agent_contract::AgentSkillKind::Custom,
                     skill_id: "different-same-generation".into(),
                     version: 1,
@@ -376,10 +376,10 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
             )
             .unwrap(),
         ),
-        awaken_session_resource_contract::SessionResourceManifest::at_revision(
+        crate::session_resource::SessionResourceManifest::at_revision(
             "workspace-b",
             initial_manifest.revision + 1,
-            awaken_session_resource_contract::ResolvedSessionResources::default(),
+            crate::session_resource::ResolvedSessionResources::default(),
         ),
     ] {
         let result = host
@@ -395,10 +395,10 @@ async fn desired_only_worker_requires_an_exact_transition_for_every_change() {
         );
     }
 
-    let next_manifest = awaken_session_resource_contract::SessionResourceManifest::at_revision(
+    let next_manifest = crate::session_resource::SessionResourceManifest::at_revision(
         "workspace-a",
         initial_manifest.revision + 1,
-        awaken_session_resource_contract::ResolvedSessionResources::default(),
+        crate::session_resource::ResolvedSessionResources::default(),
     );
     host.install_dispatched_resources("thread-generation-fence", &next_manifest, Some(&claim))
         .await

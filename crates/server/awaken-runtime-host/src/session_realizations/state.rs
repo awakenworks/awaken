@@ -3,6 +3,7 @@
 //! The realization layer of one installed Session: its Environment owner,
 //! the Control-issued realization lease, and what is staged for it.
 
+use awaken_session_configuration_contract::resource as session_resource;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -22,7 +23,7 @@ pub(crate) enum SessionRealizationAuthority {
     #[default]
     Uninstalled,
     Live(awaken_session_realization_contract::ObservedSessionRealizationLease),
-    Closed(Option<awaken_session_resource_contract::SessionRealizationLease>),
+    Closed(Option<session_resource::SessionRealizationLease>),
 }
 
 impl SessionRealizationAuthority {
@@ -45,7 +46,7 @@ impl SessionRealizationAuthority {
     /// neither wall time nor a retained Closed lease grants authority.
     pub(crate) fn remaining_for(
         &self,
-        asserted: &awaken_session_resource_contract::SessionRealizationLease,
+        asserted: &session_resource::SessionRealizationLease,
     ) -> Option<std::time::Duration> {
         awaken_session_realization_contract::realization_lease_generation_authorizes(
             self.lease()?,
@@ -55,9 +56,7 @@ impl SessionRealizationAuthority {
         .flatten()
     }
 
-    pub(crate) fn lease(
-        &self,
-    ) -> Option<&awaken_session_resource_contract::SessionRealizationLease> {
+    pub(crate) fn lease(&self) -> Option<&session_resource::SessionRealizationLease> {
         match self {
             Self::Live(proof) => Some(&proof.lease),
             Self::Uninstalled | Self::Closed(_) => None,
@@ -73,7 +72,7 @@ impl SessionRealizationAuthority {
     /// A retry may select the retained closed identity; a stale revoker cannot.
     pub(crate) fn close(
         &mut self,
-        expected: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+        expected: Option<&session_resource::SessionRealizationLease>,
     ) -> bool {
         let retained = match self {
             Self::Live(proof) => Some(&mut proof.lease),
@@ -160,11 +159,11 @@ pub(crate) struct SessionRealization {
     /// are read on demand by the ordinary `read` tool.
     pub skill_prompt: Option<crate::skill_delivery::FilesystemSkillPrompt>,
     pub resources: StagedResources,
-    pub manifest: Option<awaken_session_resource_contract::SessionResourceManifest>,
+    pub manifest: Option<session_resource::SessionResourceManifest>,
     /// Exact aggregate-owned physical replacement currently being replayed.
     /// This is a rebuildable command projection, not completion state: the
     /// durable Resource aggregate remains the only active/pending authority.
-    pub resource_transition: Option<awaken_session_resource_contract::SessionResourceTransition>,
+    pub resource_transition: Option<session_resource::SessionResourceTransition>,
     /// Fingerprint of the exact transition + optional Run claim whose immutable
     /// inputs were compiled into `resources`, `memory_bindings`, and `skills`.
     /// This avoids duplicate File/Vault/catalog reads between deferred staging
@@ -178,9 +177,7 @@ pub(crate) struct SessionRealization {
 
 impl SessionRealization {
     /// Resources the Environment held before an in-flight resource transition.
-    pub(crate) fn previous_resources(
-        &self,
-    ) -> Option<awaken_session_resource_contract::ResolvedSessionResources> {
+    pub(crate) fn previous_resources(&self) -> Option<session_resource::ResolvedSessionResources> {
         let transition = self.resource_transition.as_ref()?;
         Some(transition.previous().resources.clone())
     }
@@ -209,7 +206,7 @@ impl SessionRealization {
 
     pub(crate) fn close_authority(
         &mut self,
-        expected: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+        expected: Option<&session_resource::SessionRealizationLease>,
     ) -> bool {
         if !self.authority.close(expected) {
             return false;
@@ -277,7 +274,7 @@ impl SessionRealization {
     /// the currently visible lease. Neither can recreate absent/closed state.
     pub(crate) fn renew_lease(
         &mut self,
-        asserted: &awaken_session_resource_contract::SessionRealizationLease,
+        asserted: &session_resource::SessionRealizationLease,
         renewed: awaken_session_realization_contract::ObservedSessionRealizationLease,
     ) -> bool {
         if self.authority.lease() != Some(asserted)
@@ -301,7 +298,7 @@ impl SessionRealization {
 
     pub(crate) fn resource_preparation_authorized(
         &self,
-        asserted: &awaken_session_resource_contract::SessionRealizationLease,
+        asserted: &session_resource::SessionRealizationLease,
     ) -> bool {
         !self.authority.is_closed()
             && self

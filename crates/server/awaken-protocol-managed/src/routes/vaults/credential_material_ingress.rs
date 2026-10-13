@@ -165,7 +165,7 @@ mod tests {
             source_id,
             workspace_id: workspace_id.into(),
             target,
-            usage: awaken_session_resource_contract::repository_transport_credential_usage(),
+            usage: awaken_session_configuration_contract::resource::repository_transport_credential_usage(),
             material: material(provider, token),
         }
     }
@@ -183,7 +183,7 @@ mod tests {
             expected_revision,
             workspace_id: workspace_id.into(),
             target,
-            usage: awaken_session_resource_contract::repository_transport_credential_usage(),
+            usage: awaken_session_configuration_contract::resource::repository_transport_credential_usage(),
             material: material(provider, token),
         }
     }
@@ -227,12 +227,12 @@ mod tests {
         );
         let source_id = CredentialSourceId("credential:repository:exact".into());
         let exact_target =
-            awaken_session_resource_contract::repository_transport_credential_target(
+            awaken_session_configuration_contract::resource::repository_transport_credential_target(
                 "https://github.com/awaken/example.git",
             )
             .expect("V1 target");
         let other_target =
-            awaken_session_resource_contract::repository_transport_credential_target(
+            awaken_session_configuration_contract::resource::repository_transport_credential_target(
                 "https://git.example.test/awaken/example.git",
             )
             .expect("V5 target");
@@ -282,7 +282,7 @@ mod tests {
             descriptor
                 .admit(
                     &exact_target,
-                    &awaken_session_resource_contract::repository_transport_credential_usage(),
+                    &awaken_session_configuration_contract::resource::repository_transport_credential_usage(),
                 )
                 .is_ok(),
             "V1/E1"

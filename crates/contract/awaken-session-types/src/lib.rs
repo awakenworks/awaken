@@ -14,6 +14,11 @@ pub use monotone::{MonotoneAdmission, SourceOrder, monotone_admission};
 mod run_command;
 pub use run_command::{SessionRunCommandFingerprint, SessionRunReplacement};
 
+mod placement;
+pub use placement::SessionRuntimePlacement;
+mod recovery;
+pub use recovery::SessionRecoveryQuarantine;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionContractErrorDetail(String);
 

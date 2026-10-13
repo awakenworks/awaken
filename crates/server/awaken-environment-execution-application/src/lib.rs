@@ -114,7 +114,7 @@ impl EnvironmentExecutionApplication {
         &self,
         environment_id: &str,
         runtime: Option<&str>,
-        mcp_targets: &[awaken_session_mcp_contract::McpTarget],
+        mcp_targets: &[awaken_agent_contract::McpTarget],
     ) -> Result<
         Option<awaken_session_configuration_contract::EnvironmentSnapshot>,
         EnvironmentImageBuildError,
@@ -127,7 +127,7 @@ impl EnvironmentExecutionApplication {
         &self,
         environment_id: &str,
         runtime: Option<&str>,
-        mcp_targets: &[awaken_session_mcp_contract::McpTarget],
+        mcp_targets: &[awaken_agent_contract::McpTarget],
     ) -> Result<
         Option<awaken_session_configuration_contract::EnvironmentSnapshot>,
         EnvironmentImageBuildError,
@@ -169,7 +169,7 @@ impl EnvironmentExecutionApplication {
         environment_id: &str,
         revision: u64,
         runtime: Option<&str>,
-        mcp_targets: &[awaken_session_mcp_contract::McpTarget],
+        mcp_targets: &[awaken_agent_contract::McpTarget],
     ) -> Result<
         Option<awaken_session_configuration_contract::EnvironmentSnapshot>,
         EnvironmentImageBuildError,
@@ -183,7 +183,7 @@ impl EnvironmentExecutionApplication {
         environment_id: &str,
         revision: u64,
         runtime: Option<&str>,
-        mcp_targets: &[awaken_session_mcp_contract::McpTarget],
+        mcp_targets: &[awaken_agent_contract::McpTarget],
     ) -> Result<
         Option<awaken_session_configuration_contract::EnvironmentSnapshot>,
         EnvironmentImageBuildError,
@@ -444,6 +444,8 @@ impl EnvironmentExecutionApplication {
 impl awaken_executable_environment_contract::SessionEnvironmentProjectionSource
     for EnvironmentExecutionApplication
 {
+    type Snapshot = awaken_session_configuration_contract::EnvironmentSnapshot;
+
     async fn get(
         &self,
         environment_id: &str,
@@ -455,9 +457,9 @@ impl awaken_executable_environment_contract::SessionEnvironmentProjectionSource
         &self,
         environment_id: &str,
         runtime: Option<&str>,
-        mcp_targets: &[awaken_session_mcp_contract::McpTarget],
+        mcp_targets: &[awaken_agent_contract::McpTarget],
     ) -> Result<
-        Option<awaken_executable_environment_contract::ResolvedSessionEnvironment>,
+        Option<awaken_executable_environment_contract::ResolvedSessionEnvironment<Self::Snapshot>>,
         EnvironmentImageBuildError,
     > {
         Ok(
@@ -474,9 +476,9 @@ impl awaken_executable_environment_contract::SessionEnvironmentProjectionSource
         environment_id: &str,
         revision: u64,
         runtime: Option<&str>,
-        mcp_targets: &[awaken_session_mcp_contract::McpTarget],
+        mcp_targets: &[awaken_agent_contract::McpTarget],
     ) -> Result<
-        Option<awaken_executable_environment_contract::ResolvedSessionEnvironment>,
+        Option<awaken_executable_environment_contract::ResolvedSessionEnvironment<Self::Snapshot>>,
         EnvironmentImageBuildError,
     > {
         Ok(
@@ -625,7 +627,7 @@ fn registration_unavailable(
 async fn snapshot_from_registration(
     registration: ExecutableEnvironmentRegistration,
     runtime: Option<&str>,
-    mcp_targets: &[awaken_session_mcp_contract::McpTarget],
+    mcp_targets: &[awaken_agent_contract::McpTarget],
     image_readiness: Option<&Arc<dyn EnvironmentImageReadiness>>,
     cloud_native_credential_realization: Option<
         &awaken_credential_contract::CredentialRealizationProfile,
@@ -763,7 +765,7 @@ impl awaken_session_configuration_contract::EnvironmentWarmupSource
 
 fn session_network_policy(
     config: &EnvironmentConfig,
-    mcp_targets: &[awaken_session_mcp_contract::McpTarget],
+    mcp_targets: &[awaken_agent_contract::McpTarget],
     mcp_holder: awaken_credential_contract::PlaintextBoundary,
 ) -> awaken_session_configuration_contract::SessionNetworkPolicy {
     use awaken_session_configuration_contract::SessionNetworkPolicy;
@@ -786,7 +788,7 @@ fn session_network_policy(
     if *allow_mcp_servers && mcp_holder == awaken_credential_contract::PlaintextBoundary::Workload {
         hosts.extend(mcp_targets.iter().filter_map(|target| {
             target.http_url().and_then(|url| {
-                awaken_session_mcp_contract::McpTarget::identity(url)
+                awaken_agent_contract::McpTarget::identity(url)
                     .ok()
                     .map(|identity| identity.host)
             })
@@ -1161,9 +1163,8 @@ mod tests {
             awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
             "S2 E3"
         );
-        let target =
-            awaken_session_mcp_contract::McpTarget::parse_http("https://Mcp.Example.test/rpc")
-                .expect("valid MCP target");
+        let target = awaken_agent_contract::McpTarget::parse_http("https://Mcp.Example.test/rpc")
+            .expect("valid MCP target");
         let exceptions = hosted_application
             .snapshot_for_session("exceptions", Some("acp:stdio"), &[target])
             .await
@@ -1195,10 +1196,10 @@ mod tests {
             .snapshot_for_session(
                 "exceptions",
                 Some("acp:stdio"),
-                &[awaken_session_mcp_contract::McpTarget::parse_http(
-                    "https://mcp.example.test/rpc",
-                )
-                .unwrap()],
+                &[
+                    awaken_agent_contract::McpTarget::parse_http("https://mcp.example.test/rpc")
+                        .unwrap(),
+                ],
             )
             .await
             .unwrap()
@@ -1847,8 +1848,7 @@ mod tests {
         };
         config.validate().unwrap();
         let target =
-            awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.example.test/rpc")
-                .unwrap();
+            awaken_agent_contract::McpTarget::parse_http("https://mcp.example.test/rpc").unwrap();
         assert_eq!(
             session_network_policy(
                 &config,

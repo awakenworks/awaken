@@ -1,18 +1,15 @@
 use super::*;
+use awaken_session_configuration_contract::resource::SessionMutationPolicy;
 use awaken_session_configuration_contract::{ControlSessionCreationInputs, SessionCreationIntent};
-use awaken_session_resource_contract::SessionMutationPolicy;
 use awaken_session_state_contract::{ActivationState, SessionDisposition, SessionEnvironmentState};
 
 pub(super) fn unattempted(id: &str) -> PersistedSession {
-    unattempted_with_placement(
-        id,
-        awaken_session_configuration_contract::SessionRuntimePlacement::Local,
-    )
+    unattempted_with_placement(id, awaken_session_types::SessionRuntimePlacement::Local)
 }
 
 pub(in crate::tests) fn unattempted_with_placement(
     id: &str,
-    placement: awaken_session_configuration_contract::SessionRuntimePlacement,
+    placement: awaken_session_types::SessionRuntimePlacement,
 ) -> PersistedSession {
     let mut session = persisted(id, false, "preparing");
     let mut b = session.frozen_baseline().unwrap().clone();
@@ -28,14 +25,14 @@ pub(in crate::tests) fn unattempted_with_placement(
         .resources
         .prepare(&session.session_id, file_resources("pending-file"))
         .unwrap();
-    session.mcp = awaken_session_mcp_contract::SessionMcpAttachmentSet::from_initial(
-        vec![awaken_session_mcp_contract::McpAttachmentDraft {
+    session.mcp = crate::session_mcp::SessionMcpAttachmentSet::from_initial(
+        vec![crate::session_mcp::McpAttachmentDraft {
             name: "pending-mcp".into(),
-            target: awaken_session_mcp_contract::McpTarget::parse_http("https://example.test/mcp")
+            target: awaken_agent_contract::McpTarget::parse_http("https://example.test/mcp")
                 .unwrap(),
             prompts_as_skills: false,
             credential: None,
-            origin: awaken_session_mcp_contract::McpAttachmentOrigin::Session,
+            origin: crate::session_mcp::McpAttachmentOrigin::Session,
         }],
         None,
     )
@@ -148,7 +145,7 @@ fn unattempted_profiled_release_checks_every_root_admission_cause() {
                     })
             }),
             ("realization-lease", |s| {
-                s.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+                s.realization = Some(crate::session_resource::SessionRealizationLease {
                     owner: "old".into(),
                     runtime_incarnation: "old".into(),
                     epoch: 1,
@@ -191,21 +188,19 @@ fn unattempted_profiled_release_checks_every_root_admission_cause() {
             }),
             ("mcp-attempt", |s| s.mcp.attachments[0].attempts = 1),
             ("mcp-state", |s| {
-                s.mcp.attachments[0].state =
-                    awaken_session_mcp_contract::McpAttachmentState::Realizing
+                s.mcp.attachments[0].state = crate::session_mcp::McpAttachmentState::Realizing
             }),
             ("mcp-publication", |s| {
                 s.mcp.attachments[0].publication_acknowledged = true
             }),
             ("mcp-claim", |s| {
-                s.mcp.attachments[0].realization =
-                    Some(awaken_session_mcp_contract::McpRealizationClaim {
-                        realization_id: "old".into(),
-                        runtime_incarnation: "old".into(),
-                        lease_epoch: 1,
-                        lease_expires_at_unix_ms: 10,
-                        stage_idempotency_key: "old".into(),
-                    })
+                s.mcp.attachments[0].realization = Some(crate::session_mcp::McpRealizationClaim {
+                    realization_id: "old".into(),
+                    runtime_incarnation: "old".into(),
+                    lease_epoch: 1,
+                    lease_expires_at_unix_ms: 10,
+                    stage_idempotency_key: "old".into(),
+                })
             }),
             ("accepted-event", |s| {
                 s.event_batches = session_with_unsettled_event("event").event_batches

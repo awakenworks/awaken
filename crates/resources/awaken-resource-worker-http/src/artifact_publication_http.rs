@@ -499,7 +499,7 @@ async fn authorize_session_worker_lease(
     service: &WorkerArtifactPublicationService,
     worker: &VerifiedWorkerContext,
     identity: Option<&WorkerIdentity>,
-    lease: &awaken_session_resource_contract::SessionRealizationLease,
+    lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     temporal_rule: SessionWorkerEffectTemporalRule,
 ) -> Result<(), StatusCode> {
     let Some(identity) = identity else {
@@ -1255,7 +1255,7 @@ mod tests {
                     "session",
                     "cleanup",
                 ),
-                awaken_session_resource_contract::SessionRealizationLease {
+                awaken_session_configuration_contract::resource::SessionRealizationLease {
                     owner: "worker".into(),
                     runtime_incarnation: "worker:incarnation".into(),
                     epoch: 1,

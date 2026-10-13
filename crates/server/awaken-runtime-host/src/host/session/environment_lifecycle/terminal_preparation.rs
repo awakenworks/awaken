@@ -8,6 +8,7 @@
 //! checkpoint work into the existing two-stage terminal protocol.
 
 use super::*;
+use awaken_session_configuration_contract::resource as session_resource;
 
 impl SharedHost {
     /// Re-open one exact terminal substrate into the process-local teardown
@@ -339,7 +340,7 @@ impl SharedHost {
         thread: &str,
         binding: &str,
         effect_fence: &awaken_provisioning_contract::SandboxEffectFence,
-        resolved_resources: Option<&awaken_session_resource_contract::ResolvedSessionResources>,
+        resolved_resources: Option<&session_resource::ResolvedSessionResources>,
         mode: BoundEnvironmentPreparationMode,
     ) -> Result<PreparedBoundEnvironment, HostError> {
         let exec = &self.realizer;
@@ -977,8 +978,8 @@ impl crate::terminal_cleanup::TerminalCleanup {
     pub(crate) fn authorize_lease(
         &self,
         session_id: &awaken_session_types::SessionId,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
-    ) -> Result<awaken_session_resource_contract::SessionRealizationLease, HostError> {
+        lease: &session_resource::SessionRealizationLease,
+    ) -> Result<session_resource::SessionRealizationLease, HostError> {
         self
             .sessions
             .read_realization(session_id.as_str(), |r| {

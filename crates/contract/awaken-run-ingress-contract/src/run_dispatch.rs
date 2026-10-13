@@ -612,10 +612,10 @@ fn dispatch_admission_shape_keeps_child_affinity_independent() {
 mod tests {
     use super::*;
     use awaken_agent_contract::RedactedString;
+    use awaken_session_configuration_contract::resource::SessionResourceManifest;
     use awaken_session_configuration_contract::{
         EnvironmentSnapshot, SessionRuntimeProjection, SessionToolConfiguration,
     };
-    use awaken_session_resource_contract::SessionResourceManifest;
 
     #[test]
     fn dispatch_admission_shape_is_total_and_port_neutral() {

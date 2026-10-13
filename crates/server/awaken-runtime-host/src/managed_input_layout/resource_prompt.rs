@@ -10,6 +10,7 @@
 //! validated prompt-template rendering for the selected Session Environment.
 
 use super::managed_file_mount_path;
+use awaken_session_configuration_contract::resource as session_resource;
 
 const RESOURCE_PROMPT_VARIABLE_PREFIX: &str = "{{awaken.";
 const RESOURCE_PROMPT_VARIABLES: &[&str] = &[
@@ -53,9 +54,9 @@ pub(crate) struct ResourcePromptProjection {
 
 impl ResourcePromptProjection {
     pub(crate) fn try_from_input(
-        input: &awaken_session_resource_contract::ResolvedInput,
+        input: &session_resource::ResolvedInput,
     ) -> Result<Self, awaken_session_types::RunError> {
-        use awaken_session_resource_contract::ResolvedInputSource;
+        use awaken_session_configuration_contract::resource::ResolvedInputSource;
 
         let (kind, logical_path) = match &input.source {
             ResolvedInputSource::File { file_id } => (

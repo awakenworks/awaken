@@ -8,22 +8,18 @@ mod session_realization;
 
 #[cfg(test)]
 pub(crate) use awaken_environment_contract::EnvironmentRevision;
+#[cfg(feature = "test-support")]
+pub(crate) use awaken_session_configuration_contract::mcp::McpGeneration;
+pub(crate) use awaken_session_configuration_contract::mcp::{
+    McpGenerationRef, McpRealizationReceipt, SessionMcpAttachment, StageMcpAttachment,
+};
+pub(crate) use awaken_session_configuration_contract::resource::{
+    ResolvedInput, ResolvedSessionResources, ResolvedSkillBinding, SessionRealizationLease,
+    SessionResourceManifest, SessionResourceTransition,
+};
 #[cfg(test)]
 pub(crate) use awaken_session_configuration_contract::{
     EnvironmentFingerprint, EnvironmentSnapshot, SessionBaselineInputs, SessionNetworkPolicy,
-};
-pub(crate) use awaken_session_configuration_contract::{
-    SessionBaseline, SessionInit, SessionModelOverride, SessionRuntimePlacement,
-    SessionSandboxLayout, SessionSystemPromptSelection, SessionToolConfiguration,
-};
-#[cfg(feature = "test-support")]
-pub(crate) use awaken_session_mcp_contract::McpGeneration;
-pub(crate) use awaken_session_mcp_contract::{
-    McpGenerationRef, McpRealizationReceipt, SessionMcpAttachment, StageMcpAttachment,
-};
-pub(crate) use awaken_session_resource_contract::{
-    ResolvedInput, ResolvedSessionResources, ResolvedSkillBinding, SessionRealizationLease,
-    SessionResourceManifest, SessionResourceTransition,
 };
 #[cfg(test)]
 pub(crate) use awaken_session_state_contract::SessionCleanupCommand;
@@ -36,6 +32,13 @@ pub(crate) use awaken_session_state_contract::{
 };
 pub(crate) use awaken_session_types::RunError;
 pub(crate) use awaken_session_types::{SessionId, SessionRevision};
+pub(crate) use {
+    awaken_session_configuration_contract::{
+        SessionBaseline, SessionInit, SessionModelOverride, SessionSandboxLayout,
+        SessionSystemPromptSelection, SessionToolConfiguration,
+    },
+    awaken_session_types::SessionRuntimePlacement,
+};
 
 pub use claimed_control::{ClaimedSessionControlError, ClaimedSessionRealizationControl};
 pub use resource_operation_fence::ResourceOperationFence;
@@ -47,11 +50,11 @@ mod mcp_attachment {
         attachment: &str,
         version: u64,
         url: &str,
-    ) -> awaken_session_mcp_contract::McpGeneration {
-        awaken_session_mcp_contract::McpGeneration::of_bare_target(
-            awaken_session_mcp_contract::McpAttachmentId(attachment.into()),
+    ) -> awaken_session_configuration_contract::mcp::McpGeneration {
+        awaken_session_configuration_contract::mcp::McpGeneration::of_bare_target(
+            awaken_session_configuration_contract::mcp::McpAttachmentId(attachment.into()),
             version,
-            &awaken_session_mcp_contract::McpTarget::parse_http(url).unwrap(),
+            &awaken_agent_contract::McpTarget::parse_http(url).unwrap(),
         )
     }
 }

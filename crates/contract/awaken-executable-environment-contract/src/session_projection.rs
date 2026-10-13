@@ -1,12 +1,12 @@
 //! Environment-owned executable projection queries for Session admission.
 
 use crate::{EnvironmentImageBuildError, ExecutableEnvironmentRegistrationError};
+use awaken_agent_contract::McpTarget;
 use awaken_environment_contract::EnvItem;
-use awaken_session_mcp_contract::McpTarget;
 
 /// Exact executable Environment projection resolved for one Session creation.
-pub struct ResolvedSessionEnvironment {
-    pub snapshot: awaken_session_configuration_contract::EnvironmentSnapshot,
+pub struct ResolvedSessionEnvironment<Snapshot> {
+    pub snapshot: Snapshot,
 }
 
 /// Coordinator projection consumed by Session compilation. Environment HTTP
@@ -14,6 +14,8 @@ pub struct ResolvedSessionEnvironment {
 /// this service contract.
 #[async_trait::async_trait]
 pub trait SessionEnvironmentProjectionSource: Send + Sync {
+    type Snapshot: Send + Sync;
+
     async fn get(
         &self,
         environment_id: &str,
@@ -24,7 +26,7 @@ pub trait SessionEnvironmentProjectionSource: Send + Sync {
         environment_id: &str,
         runtime: Option<&str>,
         mcp_targets: &[McpTarget],
-    ) -> Result<Option<ResolvedSessionEnvironment>, EnvironmentImageBuildError>;
+    ) -> Result<Option<ResolvedSessionEnvironment<Self::Snapshot>>, EnvironmentImageBuildError>;
 
     async fn resolve_exact_for_session(
         &self,
@@ -32,5 +34,5 @@ pub trait SessionEnvironmentProjectionSource: Send + Sync {
         revision: u64,
         runtime: Option<&str>,
         mcp_targets: &[McpTarget],
-    ) -> Result<Option<ResolvedSessionEnvironment>, EnvironmentImageBuildError>;
+    ) -> Result<Option<ResolvedSessionEnvironment<Self::Snapshot>>, EnvironmentImageBuildError>;
 }

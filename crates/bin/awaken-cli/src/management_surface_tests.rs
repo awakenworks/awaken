@@ -181,7 +181,7 @@ async fn admin_and_vault_surfaces_are_served_together() {
         durable_before.resources.desired_generation().0,
         "R1 rotation amends this exact unattempted generation"
     );
-    let awaken_session_resource_contract::ResolvedInputSource::Repository {
+    let awaken_session_configuration_contract::resource::ResolvedInputSource::Repository {
         credential: Some(credential),
         ..
     } = &durable_after.resources.desired().inputs()[0].source

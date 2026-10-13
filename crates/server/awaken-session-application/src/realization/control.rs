@@ -447,7 +447,7 @@ impl SessionApplication {
                     &lease.runtime_incarnation,
                     lease.epoch,
                 ));
-                let claim = awaken_session_mcp_contract::McpRealizationClaim {
+                let claim = crate::session_mcp::McpRealizationClaim {
                     realization_id,
                     runtime_incarnation: lease.runtime_incarnation.clone(),
                     lease_epoch: lease.epoch,

@@ -117,7 +117,7 @@ async fn handle_relay_destination(
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
     let Some((worker_id, generation)) = session.current_worker_relay_generation(
-        &awaken_session_mcp_contract::McpAttachmentId(query.attachment_id),
+        &awaken_session_configuration_contract::mcp::McpAttachmentId(query.attachment_id),
         query.version,
         now,
     ) else {

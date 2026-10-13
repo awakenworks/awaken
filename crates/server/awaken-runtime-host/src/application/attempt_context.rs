@@ -378,7 +378,7 @@ mod acp_context_tests {
                 credential_realization:
                     awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
             },
-            runtime_placement: sc::SessionRuntimePlacement::Worker,
+            runtime_placement: awaken_session_types::SessionRuntimePlacement::Worker,
             mcp_authoring: Default::default(),
             agent_id: "agent".into(),
             agent_revision: None,

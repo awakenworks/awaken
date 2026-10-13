@@ -6,6 +6,8 @@ mod durable_run_operations;
 mod run_admission;
 mod session;
 
+#[cfg(test)]
+pub(crate) use awaken_agent_contract::McpTarget;
 pub(crate) use awaken_agent_contract::stable_fingerprint;
 #[cfg(test)]
 pub(crate) use awaken_session_application_contract::session_usage_from_thread_usage;
@@ -13,24 +15,22 @@ pub(crate) use awaken_session_application_contract::{
     DelegatedRun, DelegatedRunSnapshot, Pending, SessionBudgetResumeDelivery,
     SessionBudgetResumeDisposition, SessionBudgetResumeTicket, StepOutcome,
 };
+pub(crate) use awaken_session_configuration_contract::mcp::{
+    McpGenerationRef, McpProjectionEffectKind, McpProjectionReceipt, McpRealizationReceipt,
+    StageMcpAttachment,
+};
+pub(crate) use awaken_session_configuration_contract::resource::{
+    ResolvedSkillBinding, SessionRealizationLease, SessionResourceTransition,
+};
 pub(crate) use awaken_session_configuration_contract::{
     AgentCapabilities, SessionSandboxLayout, SessionToolConfiguration,
 };
 #[cfg(test)]
 pub(crate) use awaken_session_event_contract::SessionUserRunSystemInput;
-#[cfg(test)]
-pub(crate) use awaken_session_mcp_contract::McpTarget;
-pub(crate) use awaken_session_mcp_contract::{
-    McpGenerationRef, McpProjectionEffectKind, McpProjectionReceipt, McpRealizationReceipt,
-    StageMcpAttachment,
-};
 pub(crate) use awaken_session_realization_contract::{
     FrozenSessionProjection, ObservedSessionRealizationLease, SessionProjectionInstallMode,
     SessionRealizationControl, SessionTerminalCleanupAssignment,
     SessionTerminalCleanupPreparationAuthorization,
-};
-pub(crate) use awaken_session_resource_contract::{
-    ResolvedSkillBinding, SessionRealizationLease, SessionResourceTransition,
 };
 pub(crate) use awaken_session_state_contract::{
     CheckpointReceipt, QuiescenceReceipt, RestoreReceipt, SandboxCheckpointRef,
@@ -92,18 +92,18 @@ pub mod __macro_support {
         SessionBudgetResumeDisposition, SessionBudgetResumeTicket, StepOutcome,
     };
     pub use awaken_session_budget_contract::SessionUsage;
+    pub use awaken_session_configuration_contract::mcp::McpGenerationRef;
+    pub use awaken_session_configuration_contract::resource::{
+        ResolvedSkillBinding, SessionRealizationLease, SessionResourceTransition,
+    };
     pub use awaken_session_configuration_contract::{
         AgentCapabilities, SessionSandboxLayout, SessionToolConfiguration,
     };
     pub use awaken_session_event_contract::session_outcome_convenience_id;
-    pub use awaken_session_mcp_contract::McpGenerationRef;
     pub use awaken_session_realization_contract::{
         FrozenSessionProjection, ObservedSessionRealizationLease, SessionProjectionInstallMode,
         SessionRealizationControl, SessionTerminalCleanupAssignment,
         SessionTerminalCleanupPreparationAuthorization,
-    };
-    pub use awaken_session_resource_contract::{
-        ResolvedSkillBinding, SessionRealizationLease, SessionResourceTransition,
     };
     pub use awaken_session_state_contract::{
         CheckpointReceipt, QuiescenceReceipt, RestoreReceipt, SandboxCheckpointRef,
@@ -123,11 +123,11 @@ mod mcp_attachment {
         attachment: &str,
         version: u64,
         url: &str,
-    ) -> awaken_session_mcp_contract::McpGeneration {
-        awaken_session_mcp_contract::McpGeneration::of_bare_target(
-            awaken_session_mcp_contract::McpAttachmentId(attachment.into()),
+    ) -> awaken_session_configuration_contract::mcp::McpGeneration {
+        awaken_session_configuration_contract::mcp::McpGeneration::of_bare_target(
+            awaken_session_configuration_contract::mcp::McpAttachmentId(attachment.into()),
             version,
-            &awaken_session_mcp_contract::McpTarget::parse_http(url).unwrap(),
+            &awaken_agent_contract::McpTarget::parse_http(url).unwrap(),
         )
     }
 }

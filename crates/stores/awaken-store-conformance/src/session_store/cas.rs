@@ -631,7 +631,7 @@ async fn materialization_retention_rows<R: awaken_session_repository_contract::S
     );
     let fresh = create_session(repo, "ws_a", fresh, Vec::new()).await;
     let mut claimed = SessionAggregate::try_from(fresh).unwrap();
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
         owner: "worker".into(),
         runtime_incarnation: "worker:1:boot".into(),
         epoch: 1,

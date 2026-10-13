@@ -28,7 +28,7 @@ INPUT_GLOBS = ("scripts/ci/**",)
 LISTED = re.compile(r"^(\S+): test$", re.MULTILINE)
 EXECUTED = re.compile(r"^test (\S+) \.\.\. (ok|FAILED|ignored)(?:,.*)?$", re.MULTILINE)
 SUMMARY = re.compile(r"^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;", re.MULTILINE)
-SKIP = re.compile(r"^(?:SKIPPED\b|\[skip\])", re.MULTILINE | re.IGNORECASE)
+SKIP = re.compile(r"^(?:skip(?:ped|ping)\b|\[skip\])", re.MULTILINE | re.IGNORECASE)
 
 
 def _listed_selection(inventory: str, required: list[str] | tuple[str, ...]) -> tuple[Counter, list[str]]:
@@ -671,7 +671,7 @@ if [ "$1" = --input-type=module ]; then echo /owned/hand; else echo E2E >> "$CAL
         # E1 same argv for listing/execution, including existing libtest args.
         # E2 zero selection, E3 ignored, E4 fixture skip, E5 execution failure,
         # E6 listing failure all fail. Preserve E6's status and never execute.
-        for case in ("passing", "empty", "ignored", "skipped", "failed", "list-failed"):
+        for case in ("passing", "empty", "ignored", "skipped", "legacy-skipped", "failed", "list-failed"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
                 fixture = Path(temporary)
                 self.runner_fixture(fixture)
@@ -688,6 +688,7 @@ fi
 echo 'test critical ... ok'
 echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
 [ "$CASE" != skipped ] || echo 'SKIPPED PostgreSQL fixture: absent'
+[ "$CASE" != legacy-skipped ] || echo 'skipping live Worker identity: AWAKEN_K8S_E2E=1 is required'
 [ "$CASE" != failed ]
 ''')
                 environment.update(CASE=case, CALL_LOG=str(fixture / "target/calls"))
@@ -718,6 +719,8 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored;'
             (inventory, output.replace("0 ignored", "1 ignored"), 0),
             (inventory, output + "SKIPPED PostgreSQL fixture: absent\n", 0),
             (inventory, output + "[skip] no NATS reachable\n", 0),
+            (inventory, output + "skipping live Worker identity: AWAKEN_K8S_E2E=1 is required\n", 0),
+            (inventory, output + "Skipping live systemd Worker: AWAKEN_SYSTEMD_WORKER_E2E=1 is required\n", 0),
             (inventory, output, 101),
         )
         for listed, result, status in variants:

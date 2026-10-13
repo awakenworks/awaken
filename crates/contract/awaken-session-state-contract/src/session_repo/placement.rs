@@ -13,7 +13,7 @@
 //! new placement could be read three different ways.
 
 use super::*;
-use awaken_session_configuration_contract::SessionRuntimePlacement;
+use awaken_session_types::SessionRuntimePlacement;
 
 /// Who executes one frozen Session and who realizes its Environment, derived
 /// once from the two frozen facts.

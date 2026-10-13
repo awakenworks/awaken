@@ -28,7 +28,7 @@ struct ExactRepositoryRegistry {
 struct ExactTerminalPublicationControl {
     workspace_id: String,
     command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
-    lease: Arc<Mutex<awaken_session_resource_contract::SessionRealizationLease>>,
+    lease: Arc<Mutex<awaken_session_configuration_contract::resource::SessionRealizationLease>>,
 }
 
 #[async_trait::async_trait]
@@ -62,7 +62,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
     async fn terminal_repository_publication_command(
         &self,
         session_id: &awaken_session_types::SessionId,
-        asserted_lease: &awaken_session_resource_contract::SessionRealizationLease,
+        asserted_lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_realization_contract::SessionRepositoryPublicationProjection>,
         awaken_session_realization_contract::SessionRealizationControlFailure,
@@ -89,7 +89,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
     async fn record_terminal_repository_publication_receipt(
         &self,
         _session_id: &awaken_session_types::SessionId,
-        _lease: &awaken_session_resource_contract::SessionRealizationLease,
+        _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         _receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         Err(
@@ -102,7 +102,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
     async fn record_terminal_repository_publication_rejection(
         &self,
         _session_id: &awaken_session_types::SessionId,
-        _lease: &awaken_session_resource_contract::SessionRealizationLease,
+        _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         _rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         Err(
@@ -180,13 +180,13 @@ impl LiveResourceBindingVerifier for ExactRepositoryRegistry {
     }
 }
 
-fn resources() -> awaken_session_resource_contract::ResolvedSessionResources {
-    awaken_session_resource_contract::ResolvedSessionResources::try_new(
-        vec![awaken_session_resource_contract::ResolvedInput {
+fn resources() -> awaken_session_configuration_contract::resource::ResolvedSessionResources {
+    awaken_session_configuration_contract::resource::ResolvedSessionResources::try_new(
+        vec![awaken_session_configuration_contract::resource::ResolvedInput {
             created_at_unix_ms: None,
             updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::from("repository-binding"),
-            source: awaken_session_resource_contract::ResolvedInputSource::Repository {
+            source: awaken_session_configuration_contract::resource::ResolvedInputSource::Repository {
                 repository_id: awaken_resource_contract::RepositoryId::from("repository-exact"),
                 config: awaken_resource_contract::RepositoryConfigVersion {
                     repository_id: "repository-exact".into(),
@@ -339,8 +339,9 @@ impl RepositoryTransportAuthorizer for CancellingAuthorizer {
 }
 
 struct RenewingTerminalAuthorizer {
-    current_lease: Arc<Mutex<awaken_session_resource_contract::SessionRealizationLease>>,
-    renewal: awaken_session_resource_contract::SessionRealizationLease,
+    current_lease:
+        Arc<Mutex<awaken_session_configuration_contract::resource::SessionRealizationLease>>,
+    renewal: awaken_session_configuration_contract::resource::SessionRealizationLease,
     capability_expiry_unix_ms: u64,
 }
 
@@ -748,12 +749,12 @@ async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
 async fn session_repository_transport_is_worker_lease_and_command_fenced() {
     type PublicationFence = (
         awaken_session_state_contract::SessionRepositoryPublicationCommand,
-        awaken_session_resource_contract::SessionRealizationLease,
+        awaken_session_configuration_contract::resource::SessionRealizationLease,
     );
 
     let (directory, identity) = support::ready_worker("worker-repository-publication").await;
     let command = terminal_publication_command("session-publication");
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
         owner: identity.worker_id.clone(),
         runtime_incarnation: identity.lease_owner(),
         epoch: 7,
@@ -1058,7 +1059,7 @@ async fn session_repository_transport_is_worker_lease_and_command_fenced() {
     ));
     assert_eq!(rejected_authorizer.0.lock().unwrap().len(), 0, "P11");
 
-    let renewal = awaken_session_resource_contract::SessionRealizationLease {
+    let renewal = awaken_session_configuration_contract::resource::SessionRealizationLease {
         expires_at_unix_ms: lease.expires_at_unix_ms.saturating_add(10_000),
         ..lease.clone()
     };

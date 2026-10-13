@@ -22,7 +22,7 @@ use crate::mcp::error::run_error;
 use crate::mcp::{McpGenerationAuthority, McpSessionSlots, McpSessions};
 
 fn validate_stdio_credential_binding(
-    target: &awaken_session_mcp_contract::McpTarget,
+    target: &awaken_agent_contract::McpTarget,
     has_credential: bool,
     has_plaintext_holder: bool,
 ) -> Result<(), RunError> {
@@ -43,7 +43,7 @@ pub trait McpStagingSession: Send + Sync {
     /// Whether the exact generation is authorized at `now_unix_ms`.
     fn mcp_generation_is_authorized_at(
         &self,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
         now_unix_ms: u64,
     ) -> bool;
 
@@ -101,8 +101,8 @@ impl McpSessions {
         slots: &S,
         host: &dyn McpStagingSession,
         credentials: McpCredentialMaterialization<'_>,
-        request: awaken_session_mcp_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, RunError> {
+        request: awaken_session_configuration_contract::mcp::StageMcpAttachment,
+    ) -> Result<awaken_session_configuration_contract::mcp::McpRealizationReceipt, RunError> {
         use awaken_credential_contract::{CredentialRealizationKind, PlaintextBoundary};
 
         if request.workspace_id.trim().is_empty()
@@ -284,9 +284,7 @@ impl McpSessions {
                         let upstream_host = request
                             .target
                             .http_url()
-                            .and_then(|url| {
-                                awaken_session_mcp_contract::McpTarget::identity(url).ok()
-                            })
+                            .and_then(|url| awaken_agent_contract::McpTarget::identity(url).ok())
                             .map(|identity| identity.host)
                             .ok_or_else(|| {
                                 RunError::classified(
@@ -501,7 +499,7 @@ impl McpSessions {
                 },
             },
         };
-        let receipt = awaken_session_mcp_contract::McpRealizationReceipt {
+        let receipt = awaken_session_configuration_contract::mcp::McpRealizationReceipt {
             generation: request.generation.clone(),
             realization_id: request.realization_id.clone(),
             selected_plaintext_holder: request.selected_plaintext_holder.clone(),
@@ -751,7 +749,7 @@ impl McpSessions {
         &self,
         slots: &S,
         host: &dyn McpStagingSession,
-        generation: awaken_session_mcp_contract::McpGenerationRef,
+        generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         let now_unix_ms = awaken_time::WallClockExt::now_ms(self.clock.as_ref());
         if !host.mcp_generation_is_authorized_at(&generation, now_unix_ms) {
@@ -768,7 +766,7 @@ impl McpSessions {
     pub async fn drain_attachment<S: McpSessionSlots>(
         &self,
         slots: &S,
-        generation: awaken_session_mcp_contract::McpGenerationRef,
+        generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         self.drain_projection(slots, &generation)
             .await
@@ -788,9 +786,8 @@ mod tests {
         // Complete decision table: only C1 && (C2 || C3) produces E1. HTTP may
         // carry either credential shape, and anonymous stdio remains supported.
         let http =
-            awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.example.test/mcp")
-                .unwrap();
-        let stdio = awaken_session_mcp_contract::McpTarget::sandbox_stdio(
+            awaken_agent_contract::McpTarget::parse_http("https://mcp.example.test/mcp").unwrap();
+        let stdio = awaken_agent_contract::McpTarget::sandbox_stdio(
             "/usr/bin/node",
             vec!["/mnt/session/uploads/server.js".into()],
         )

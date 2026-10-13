@@ -27,11 +27,11 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
             .agent_tools()
             .agent_filesystem_view(cwd, AgentFilesystemClient::AcpProcess);
         let logical = "/mnt/session/uploads/资料 brief.txt";
-        let input = awaken_session_resource_contract::ResolvedInput {
+        let input = crate::session_resource::ResolvedInput {
             created_at_unix_ms: None,
             updated_at_unix_ms: None,
             binding_id: "file".into(),
-            source: awaken_session_resource_contract::ResolvedInputSource::File {
+            source: crate::session_resource::ResolvedInputSource::File {
                 file_id: "file".into(),
             },
             mount_path: logical.into(),

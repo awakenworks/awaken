@@ -50,8 +50,7 @@ pub use persisted_session::{
 };
 pub use placement::{SessionPlacementClass, SessionPublicStatus};
 pub use recovery::{
-    SessionRecoveryQuarantine, SessionRepositoryRecoveryAction, SessionScan, SessionScanCursor,
-    SessionScanQuery,
+    SessionRepositoryRecoveryAction, SessionScan, SessionScanCursor, SessionScanQuery,
 };
 pub use repository_publication::{
     SessionArchiveWithRepositoryPublicationError, SessionWorkerObligation,

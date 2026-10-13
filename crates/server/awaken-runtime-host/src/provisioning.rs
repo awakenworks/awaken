@@ -7,6 +7,7 @@
 //! are the same `SharedHost` (fields are `pub(crate)`).
 
 use crate::staged_resources::{RepositoryActivation, ResourceBindingCheck, StagedResources};
+use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_realization_contract::ResourceOperationFence;
 use std::sync::Arc;
 
@@ -490,7 +491,7 @@ impl SharedHost {
         binding_checks: &[ResourceBindingCheck],
         publication_fence: Option<&(
             awaken_session_state_contract::SessionRepositoryPublicationCommand,
-            awaken_session_resource_contract::SessionRealizationLease,
+            session_resource::SessionRealizationLease,
         )>,
     ) -> Result<Option<pc::RepositoryHttpBasicCredential>, crate::host_error::HostError> {
         let pin = repository.credential_pin.as_ref();
@@ -702,7 +703,7 @@ impl SharedHost {
         expectation: &pc::RepositoryPublicationExpectation,
         publication_fence: Option<&(
             awaken_session_state_contract::SessionRepositoryPublicationCommand,
-            awaken_session_resource_contract::SessionRealizationLease,
+            session_resource::SessionRealizationLease,
         )>,
     ) -> Result<pc::RepositoryPublicationReceipt, RepositoryPublicationActivationError> {
         repository.plan.validate_mount_path().map_err(|error| {
@@ -1115,7 +1116,7 @@ impl crate::resource_staging::ResourceStaging {
                     transition.desired().resources.inputs().iter().any(|input| {
                         matches!(
                             input.source,
-                            awaken_session_resource_contract::ResolvedInputSource::Repository { .. }
+                            session_resource::ResolvedInputSource::Repository { .. }
                         )
                     })
                 });
@@ -1151,7 +1152,7 @@ impl crate::resource_staging::ResourceStaging {
     pub(crate) fn sandbox_spec_for_resolved_resources_and_provider(
         &self,
         thread: &str,
-        resources: &awaken_session_resource_contract::ResolvedSessionResources,
+        resources: &session_resource::ResolvedSessionResources,
         provider: &crate::session_environment::SessionEnvironmentProvider,
     ) -> pc::SandboxSpec {
         let environment = self.sessions.frozen(thread).environment_projection.clone();
@@ -1169,7 +1170,7 @@ impl crate::resource_staging::ResourceStaging {
         let has_repositories = resources.inputs().iter().any(|input| {
             matches!(
                 input.source,
-                awaken_session_resource_contract::ResolvedInputSource::Repository { .. }
+                session_resource::ResolvedInputSource::Repository { .. }
             )
         });
         self.sandbox_spec_for_mount_layout_with_network(
@@ -1280,7 +1281,7 @@ impl crate::resource_staging::ResourceStaging {
     pub(crate) fn register_thread_resource_manifest(
         &self,
         thread: &str,
-        manifest: awaken_session_resource_contract::SessionResourceManifest,
+        manifest: session_resource::SessionResourceManifest,
     ) {
         self.sessions
             .update_realization(thread, |r| r.manifest = Some(manifest));
@@ -1289,7 +1290,7 @@ impl crate::resource_staging::ResourceStaging {
     pub(crate) fn thread_resource_manifest(
         &self,
         thread: &str,
-    ) -> Option<awaken_session_resource_contract::SessionResourceManifest> {
+    ) -> Option<session_resource::SessionResourceManifest> {
         self.sessions
             .read_realization(thread, |r| r.manifest.clone())
             .flatten()

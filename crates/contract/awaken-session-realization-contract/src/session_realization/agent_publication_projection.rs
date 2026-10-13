@@ -40,7 +40,7 @@ fn effective_publication_field_replacement_is_exact_and_noop_preserving() {
 pub fn project_effective_agent_publication(
     model_override: Option<&crate::SessionModelOverride>,
     system_prompt: &crate::SessionSystemPromptSelection,
-    skill_pins: Option<&[awaken_session_resource_contract::ResolvedSkillBinding]>,
+    skill_pins: Option<&[awaken_session_configuration_contract::resource::ResolvedSkillBinding]>,
     workspace_id: &str,
     mut snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
 ) -> Result<awaken_runtime_contract::ExecutableAgentSnapshot, RunError> {
@@ -517,7 +517,7 @@ mod tests {
             skill_id: "published".into(),
             version: "1".into(),
         };
-        let pin = awaken_session_resource_contract::ResolvedSkillBinding {
+        let pin = awaken_session_configuration_contract::resource::ResolvedSkillBinding {
             kind: awaken_agent_contract::AgentSkillKind::Custom,
             skill_id: "replacement".into(),
             version: 2,

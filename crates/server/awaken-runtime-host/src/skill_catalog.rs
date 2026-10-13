@@ -16,7 +16,7 @@ use awaken_ext_skills::SkillSpec;
 #[cfg(test)]
 use awaken_resource_contract::SkillDefinition;
 use awaken_resource_contract::{SkillStoreError, SkillVersion};
-use awaken_session_resource_contract::ResolvedSkillBinding;
+use awaken_session_configuration_contract::resource::ResolvedSkillBinding;
 
 use crate::skill_delivery::anthropic_skill;
 use awaken_session_configuration_contract::SkillCatalogApplication;

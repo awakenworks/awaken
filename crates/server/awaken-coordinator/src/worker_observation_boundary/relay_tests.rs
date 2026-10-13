@@ -1,16 +1,20 @@
 use super::*;
 use awaken_executable_environment_contract::SessionEnvironmentProjectionSource as _;
-use awaken_session_configuration_contract::{
-    SessionBaseline, SessionBaselineInputs, SessionRuntimePlacement,
-};
-use awaken_session_mcp_contract::{McpTarget, SessionMcpAttachmentSet};
-use awaken_session_resource_contract::SessionRealizationLease;
+use awaken_session_configuration_contract::resource::SessionRealizationLease;
 use awaken_session_state_contract::*;
 use awaken_worker_contract::{WorkerHeartbeat, WorkerRegistration};
 use axum::body::Body;
 use axum::http::Request;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tower::ServiceExt as _;
+use {
+    awaken_agent_contract::McpTarget,
+    awaken_session_configuration_contract::mcp::SessionMcpAttachmentSet,
+};
+use {
+    awaken_session_configuration_contract::{SessionBaseline, SessionBaselineInputs},
+    awaken_session_types::SessionRuntimePlacement,
+};
 
 struct ExactPod {
     identity: awaken_worker_contract::WorkerIdentity,
@@ -111,25 +115,30 @@ async fn destination_boundary_requires_exact_auth_root_registry_and_pod() {
         ),
     );
     let mut mcp = SessionMcpAttachmentSet::from_initial(
-        vec![awaken_session_mcp_contract::McpAttachmentDraft {
-            name: "echo".into(),
-            target: McpTarget::parse_http("https://mcp.example.test/").unwrap(),
-            prompts_as_skills: false,
-            credential: Some(credential),
-            origin: awaken_session_mcp_contract::McpAttachmentOrigin::Agent,
-        }],
+        vec![
+            awaken_session_configuration_contract::mcp::McpAttachmentDraft {
+                name: "echo".into(),
+                target: McpTarget::parse_http("https://mcp.example.test/").unwrap(),
+                prompts_as_skills: false,
+                credential: Some(credential),
+                origin: awaken_session_configuration_contract::mcp::McpAttachmentOrigin::Agent,
+            },
+        ],
         Some(holder.clone()),
     )
     .unwrap();
-    mcp.attachments[0].state = awaken_session_mcp_contract::McpAttachmentState::Active;
+    mcp.attachments[0].state =
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Active;
     mcp.attachments[0].publication_acknowledged = true;
-    mcp.attachments[0].realization = Some(awaken_session_mcp_contract::McpRealizationClaim {
-        realization_id: "realization".into(),
-        runtime_incarnation: "runtime".into(),
-        lease_epoch: 3,
-        lease_expires_at_unix_ms: 140,
-        stage_idempotency_key: "stage".into(),
-    });
+    mcp.attachments[0].realization = Some(
+        awaken_session_configuration_contract::mcp::McpRealizationClaim {
+            realization_id: "realization".into(),
+            runtime_incarnation: "runtime".into(),
+            lease_epoch: 3,
+            lease_expires_at_unix_ms: 140,
+            stage_idempotency_key: "stage".into(),
+        },
+    );
     let attachment = mcp.attachments[0].attachment_id.0.clone();
     let mut environment = environments
         .resolve_current_for_session(

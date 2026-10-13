@@ -3,22 +3,21 @@
 //! Revocation failures, retained retry inputs, and cancelled adoption retries.
 
 use super::*;
+use awaken_session_configuration_contract::mcp as session_mcp;
+use awaken_session_configuration_contract::resource as session_resource;
 
 async fn install_active_worker_relay(
     host: &SharedHost,
     thread: &str,
-) -> (
-    awaken_session_mcp::McpRelay,
-    awaken_session_mcp_contract::McpGenerationRef,
-) {
+) -> (awaken_session_mcp::McpRelay, session_mcp::McpGenerationRef) {
     let generation = crate::test_mcp::mcp_fence(thread, "docs", 1, "runtime-1", 1, u64::MAX);
-    let request = awaken_session_mcp_contract::StageMcpAttachment {
+    let request = session_mcp::StageMcpAttachment {
         workspace_id: "workspace".into(),
         generation: generation.clone(),
         realization_id: "realization-1".into(),
         stage_idempotency_key: "stage-1".into(),
         name: "docs".into(),
-        target: awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.example.test/sse")
+        target: awaken_agent_contract::McpTarget::parse_http("https://mcp.example.test/sse")
             .unwrap(),
         prompts_as_skills: false,
         credential: None,
@@ -37,7 +36,7 @@ async fn install_active_worker_relay(
     assert!(host.mcp.install_relay(relay.clone()));
     relay.set_route(&generation, &server);
     host.insert_mcp_projection(awaken_session_mcp::McpGenerationProjection {
-        receipt: awaken_session_mcp_contract::McpRealizationReceipt {
+        receipt: session_mcp::McpRealizationReceipt {
             generation: generation.clone(),
             realization_id: request.realization_id.clone(),
             selected_plaintext_holder: None,
@@ -305,7 +304,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
             "provider", "model", "backend",
         ))
         .build();
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = session_resource::SessionRealizationLease {
         owner: "worker".into(),
         runtime_incarnation: "worker/1".into(),
         epoch: 1,
@@ -422,7 +421,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
     let storage = tempfile::tempdir().expect("storage");
     let thread = "thread-adoption-retry";
     let activation = test_activation(thread, "run-adoption-retry-publication");
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = session_resource::SessionRealizationLease {
         owner: "worker-adoption-retry".into(),
         runtime_incarnation: "worker-adoption-retry:incarnation".into(),
         epoch: 1,

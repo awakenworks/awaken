@@ -450,23 +450,23 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
             }])
         };
         let active = active_revision.map(|revision| {
-            awaken_session_resource_contract::SessionResourceManifest::at_revision(
+            crate::session_resource::SessionResourceManifest::at_revision(
                 "workspace-a",
                 revision,
                 resources("active"),
             )
         });
         let desired = desired_revision.map(|revision| {
-            awaken_session_resource_contract::SessionResourceManifest::at_revision(
+            crate::session_resource::SessionResourceManifest::at_revision(
                 "workspace-a",
                 revision,
                 resources("desired"),
             )
         });
         let transition = desired.clone().map(|desired| {
-            awaken_session_resource_contract::SessionResourceTransition::new(
+            crate::session_resource::SessionResourceTransition::new(
                 active.clone().unwrap_or_else(|| {
-                    awaken_session_resource_contract::SessionResourceManifest::at_revision(
+                    crate::session_resource::SessionResourceManifest::at_revision(
                         "workspace-a",
                         0,
                         resources("previous"),
@@ -512,9 +512,7 @@ async fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope
             .session_resources
             .as_ref()
             .unwrap_or_else(|| panic!("{rule} resource envelope"))
-            .decode_with(
-                awaken_session_resource_contract::SessionResourceManifest::decode_resources,
-            )
+            .decode_with(crate::session_resource::SessionResourceManifest::decode_resources)
             .unwrap_or_else(|error| panic!("{rule} decode resource envelope: {error}"));
 
         assert_eq!(carried.revision, expected_revision, "{rule} selection");

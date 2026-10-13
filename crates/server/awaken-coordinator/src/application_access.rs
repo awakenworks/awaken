@@ -376,16 +376,18 @@ mod tests {
 
     use async_trait::async_trait;
     use awaken_authz_enforce::ApplicationAccessAuthenticator;
-    use awaken_session_configuration_contract::{
-        EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline, SessionBaselineInputs,
-        SessionBaselineState, SessionMcpAuthoringContext, SessionNetworkPolicy,
-        SessionRuntimePlacement,
-    };
     use awaken_session_state_contract::{ManagedLifecycleFact, PersistedSession};
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use serde_json::{Value, json};
     use tower::ServiceExt;
+    use {
+        awaken_session_configuration_contract::{
+            EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline, SessionBaselineInputs,
+            SessionBaselineState, SessionMcpAuthoringContext, SessionNetworkPolicy,
+        },
+        awaken_session_types::SessionRuntimePlacement,
+    };
 
     use super::*;
 
@@ -600,11 +602,11 @@ mod tests {
             awaken_session_configuration_contract::SessionCreationIntent {
                 control: awaken_session_configuration_contract::ControlSessionCreationInputs {
                     mutation_policy:
-                        awaken_session_resource_contract::SessionMutationPolicy::Managed,
+                        awaken_session_configuration_contract::resource::SessionMutationPolicy::Managed,
                     application_origin: baseline.application_origin,
                     environment: baseline.environment,
                     runtime_placement:
-                        awaken_session_configuration_contract::SessionRuntimePlacement::Local,
+                        awaken_session_types::SessionRuntimePlacement::Local,
                     agent_id: baseline.agent_id,
                     agent_revision: baseline.agent_revision,
                     model_override: baseline.model_override,

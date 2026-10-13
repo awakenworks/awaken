@@ -3,12 +3,12 @@
 // @formal reason: classified against its product requirement; this link is not a formal-proof claim.
 //! Protocol-neutral services required by the Session application.
 
+use awaken_agent_contract::McpTarget;
 use awaken_agent_contract::{RedactedString, StructuredCredentialMaterial};
 use awaken_credential_contract::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialBinding, CredentialRef,
     CredentialSourceId, CredentialTarget, CredentialUsage, PlaintextHolder,
 };
-use awaken_session_mcp_contract::McpTarget;
 
 /// Exact credential execution decision already selected by Session.
 ///

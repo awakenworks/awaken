@@ -50,7 +50,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
     )
     .await
     .expect("R1 complete projection precedes the live Environment");
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = crate::session_resource::SessionRealizationLease {
         owner: "remote-worker".into(),
         runtime_incarnation: "remote-worker:incarnation".into(),
         epoch: 3,
@@ -242,7 +242,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
     )
     .await
     .expect("R1/C2 install ordinary frozen projection");
-    let ordinary_lease = awaken_session_resource_contract::SessionRealizationLease {
+    let ordinary_lease = crate::session_resource::SessionRealizationLease {
         owner: "remote-worker".into(),
         runtime_incarnation: "remote-worker:incarnation".into(),
         epoch: 8,
@@ -258,7 +258,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
 
     let terminal_id = "blocked-terminal-cleanup";
     let mut terminal_projection = remote_terminal_cleanup_projection();
-    let terminal_lease = awaken_session_resource_contract::SessionRealizationLease {
+    let terminal_lease = crate::session_resource::SessionRealizationLease {
         owner: "remote-worker".into(),
         runtime_incarnation: "remote-worker:incarnation".into(),
         epoch: 9,
@@ -363,7 +363,7 @@ async fn blocked_terminal_cleanup_renews_its_generation_and_another_session() {
 
 fn enqueue_completed_terminal_assignments(
     control: &RemoteTerminalCleanupControl,
-    lease: &awaken_session_resource_contract::SessionRealizationLease,
+    lease: &crate::session_resource::SessionRealizationLease,
     prefix: &str,
     count: usize,
 ) {
@@ -387,8 +387,8 @@ fn enqueue_completed_terminal_assignments(
     }
 }
 
-fn completed_terminal_test_lease() -> awaken_session_resource_contract::SessionRealizationLease {
-    awaken_session_resource_contract::SessionRealizationLease {
+fn completed_terminal_test_lease() -> crate::session_resource::SessionRealizationLease {
+    crate::session_resource::SessionRealizationLease {
         owner: "remote-worker".into(),
         runtime_incarnation: "remote-worker:incarnation".into(),
         epoch: 3,
@@ -397,7 +397,7 @@ fn completed_terminal_test_lease() -> awaken_session_resource_contract::SessionR
 }
 
 fn terminal_target_for(
-    lease: &awaken_session_resource_contract::SessionRealizationLease,
+    lease: &crate::session_resource::SessionRealizationLease,
 ) -> awaken_session_realization_contract::SessionRealizationTarget {
     awaken_session_realization_contract::SessionRealizationTarget {
         owner: lease.owner.clone(),
@@ -731,7 +731,7 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
     .expect("validated Host dependencies");
     let managed = crate::ManagedHost::new(host.clone());
     let session_id = "cold-terminal-worker";
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = crate::session_resource::SessionRealizationLease {
         owner: "remote-worker".into(),
         runtime_incarnation: "remote-worker:replacement".into(),
         epoch: 4,

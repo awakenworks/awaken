@@ -1,6 +1,6 @@
 use awaken_agent_contract::{AgentSkillBinding, AgentSkillKind};
 use awaken_resource_contract::{SkillDefinition, SkillVersion};
-use awaken_session_resource_contract::ResolvedSkillBinding;
+use awaken_session_configuration_contract::resource::ResolvedSkillBinding;
 use awaken_skill_store::{InMemorySkillStore, SkillBundleFile, bundle_sha256};
 use std::sync::Arc;
 

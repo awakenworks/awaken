@@ -71,7 +71,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
         .staging
         .register_thread_resources("t-end", crate::staged_resources::StagedResources::default());
     host.register_thread_model("t-end", "private-model");
-    let mut lease = awaken_session_resource_contract::SessionRealizationLease {
+    let mut lease = crate::session_resource::SessionRealizationLease {
         owner: "terminal-test-worker".into(),
         runtime_incarnation: "terminal-test-worker:incarnation".into(),
         epoch: 1,
@@ -385,7 +385,7 @@ async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
                 "never-existed",
             )
             .unwrap(),
-        awaken_session_resource_contract::SessionRealizationLease {
+        crate::session_resource::SessionRealizationLease {
             owner: "terminal-test-worker".into(),
             runtime_incarnation: "terminal-test-worker:incarnation".into(),
             epoch: 1,
@@ -696,7 +696,7 @@ async fn terminal_projection_retirement_requires_generation_tag_and_durable_abse
         .build()
         .expect("validated Host dependencies");
     let session_id = "terminal-retire-root";
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = crate::session_resource::SessionRealizationLease {
         owner: "terminal-retire-worker".into(),
         runtime_incarnation: "terminal-retire-worker:incarnation".into(),
         epoch: 7,

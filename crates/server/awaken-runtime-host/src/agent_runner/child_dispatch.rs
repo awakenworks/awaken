@@ -14,7 +14,7 @@ use super::AgentRunError;
 pub(crate) fn child_dispatch_request(
     activation: RunActivation,
     parent_thread_id: ThreadId,
-    session_resources: Option<awaken_session_resource_contract::SessionResourceManifest>,
+    session_resources: Option<crate::session_resource::SessionResourceManifest>,
     publication_source: Option<&dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
 ) -> Result<RunDispatch, AgentRunError> {
     // Delegated publications are frozen FROM a Workspace, so this coordinate
@@ -155,19 +155,22 @@ mod tests {
             RunInput::from(vec![user("go")]),
         );
 
-        let manifest = awaken_session_resource_contract::SessionResourceManifest::new(
-            "workspace-a",
-            awaken_session_resource_contract::ResolvedSessionResources::try_new(
-                Vec::new(),
-                vec![awaken_session_resource_contract::ResolvedSkillBinding {
-                    kind: awaken_agent_contract::AgentSkillKind::Custom,
-                    skill_id: "skill-a".into(),
-                    version: 3,
-                    bundle_sha256: "sha256:skill-a-v3".into(),
-                }],
-            )
-            .unwrap(),
-        );
+        let manifest =
+            awaken_session_configuration_contract::resource::SessionResourceManifest::new(
+                "workspace-a",
+                awaken_session_configuration_contract::resource::ResolvedSessionResources::try_new(
+                    Vec::new(),
+                    vec![
+                        awaken_session_configuration_contract::resource::ResolvedSkillBinding {
+                            kind: awaken_agent_contract::AgentSkillKind::Custom,
+                            skill_id: "skill-a".into(),
+                            version: 3,
+                            bundle_sha256: "sha256:skill-a-v3".into(),
+                        },
+                    ],
+                )
+                .unwrap(),
+            );
         let request = child_dispatch_request(
             activation,
             ThreadId("parent-thread".to_string()),
@@ -190,7 +193,7 @@ mod tests {
             .as_ref()
             .expect("resource envelope")
             .decode_with(
-                awaken_session_resource_contract::SessionResourceManifest::decode_resources,
+                awaken_session_configuration_contract::resource::SessionResourceManifest::decode_resources,
             )
             .expect("decode resource envelope");
         assert_eq!(carried, manifest);
@@ -261,9 +264,9 @@ mod tests {
         // Delegated publications are frozen FROM a Workspace, so a parent that
         // delegates must carry one; the manifest is where the Session states
         // it. Passing None here made the admission refuse rather than guess.
-        let owner = awaken_session_resource_contract::SessionResourceManifest::new(
+        let owner = awaken_session_configuration_contract::resource::SessionResourceManifest::new(
             awaken_tenancy::DEFAULT_WORKSPACE_ID,
-            awaken_session_resource_contract::ResolvedSessionResources::try_new(
+            awaken_session_configuration_contract::resource::ResolvedSessionResources::try_new(
                 Vec::new(),
                 Vec::new(),
             )

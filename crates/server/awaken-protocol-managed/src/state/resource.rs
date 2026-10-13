@@ -105,9 +105,9 @@ impl ResourceInput {
 /// echoed.
 pub(crate) fn resolved_resource_dto(
     session_id: &str,
-    input: &awaken_session_resource_contract::ResolvedInput,
+    input: &crate::session_resource::ResolvedInput,
 ) -> SessionResource {
-    use awaken_session_resource_contract::ResolvedInputSource;
+    use awaken_session_configuration_contract::resource::ResolvedInputSource;
     let id = || format!("{session_id}:resource:{}", input.binding_id.as_str());
     match &input.source {
         ResolvedInputSource::File { file_id } => SessionResource::File {

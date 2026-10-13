@@ -62,8 +62,8 @@ fn realization_renewal_failure_disposition(
 }
 
 fn failed_realization_invalidates_projection(
-    current: &awaken_session_resource_contract::SessionRealizationLease,
-    failed: &awaken_session_resource_contract::SessionRealizationLease,
+    current: &crate::session_resource::SessionRealizationLease,
+    failed: &crate::session_resource::SessionRealizationLease,
 ) -> bool {
     awaken_session_realization_contract::realization_lease_generation_authorizes(current, failed)
 }
@@ -170,7 +170,7 @@ mod realization_renewal_tests {
         // | F2 renewed | yes | later | no | E1 |
         // | F3 regressed | yes | earlier | no | E2 |
         // | F4 replacement | no | any | yes | E2 |
-        let failed = awaken_session_resource_contract::SessionRealizationLease {
+        let failed = awaken_session_configuration_contract::resource::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/boot-1".into(),
             epoch: 7,
@@ -180,7 +180,7 @@ mod realization_renewal_tests {
             ("F1", failed.clone(), true),
             (
                 "F2",
-                awaken_session_resource_contract::SessionRealizationLease {
+                awaken_session_configuration_contract::resource::SessionRealizationLease {
                     expires_at_unix_ms: 20,
                     ..failed.clone()
                 },
@@ -188,7 +188,7 @@ mod realization_renewal_tests {
             ),
             (
                 "F3",
-                awaken_session_resource_contract::SessionRealizationLease {
+                awaken_session_configuration_contract::resource::SessionRealizationLease {
                     expires_at_unix_ms: 9,
                     ..failed.clone()
                 },
@@ -196,7 +196,7 @@ mod realization_renewal_tests {
             ),
             (
                 "F4",
-                awaken_session_resource_contract::SessionRealizationLease {
+                awaken_session_configuration_contract::resource::SessionRealizationLease {
                     epoch: 8,
                     expires_at_unix_ms: 20,
                     ..failed.clone()
@@ -238,7 +238,7 @@ impl crate::SharedHost {
     pub(crate) fn install_session_realization_lease(
         &self,
         session_id: &str,
-        lease: awaken_session_resource_contract::SessionRealizationLease,
+        lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<(), crate::HostError> {
         let changed = self.authorize_worker_effect(|| {
             self.installed_sessions.update_realization(session_id, |r| {
@@ -262,7 +262,7 @@ impl crate::SharedHost {
     pub(crate) fn invalidate_session_realization_lease(
         &self,
         session_id: &str,
-        failed: &awaken_session_resource_contract::SessionRealizationLease,
+        failed: &crate::session_resource::SessionRealizationLease,
     ) {
         self.installed_sessions.modify_realization(session_id, |r| {
             if r.authority
@@ -280,7 +280,7 @@ impl crate::SharedHost {
     /// monotonically extended authority.
     pub(crate) fn mcp_generation_is_authorized_at(
         &self,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
+        generation: &crate::session_mcp::McpGenerationRef,
         now_unix_ms: u64,
     ) -> bool {
         self.mcp_generation_root_authority(generation)
@@ -299,7 +299,7 @@ impl crate::SharedHost {
     /// Absence is explicit: it is never a live lease or proof of renewal.
     pub(crate) fn mcp_generation_root_authority(
         &self,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
+        generation: &crate::session_mcp::McpGenerationRef,
     ) -> Option<bool> {
         self.installed_sessions
             .read_realization(generation.session_id().as_str(), |r| {
@@ -307,7 +307,7 @@ impl crate::SharedHost {
                     return Some(false);
                 }
                 r.authority.lease().map(|current| {
-                    let asserted = awaken_session_resource_contract::SessionRealizationLease {
+                    let asserted = crate::session_resource::SessionRealizationLease {
                         owner: current.owner.clone(),
                         runtime_incarnation: generation.runtime_incarnation().to_owned(),
                         epoch: generation.lease_epoch().get(),
@@ -327,7 +327,7 @@ impl crate::SharedHost {
         &self,
         control: &dyn awaken_session_realization_contract::SessionTerminalCleanupControl,
         session_id: &awaken_session_types::SessionId,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<bool, crate::HostError> {
         match control.terminal_cleanup_work(session_id, lease).await {
             Ok(Some(_)) => {
@@ -528,7 +528,7 @@ impl crate::SharedHost {
         &self,
         session_id: &str,
         expected_projection: Option<(
-            &awaken_session_resource_contract::SessionRealizationLease,
+            &crate::session_resource::SessionRealizationLease,
             &Arc<tokio::sync::Mutex<()>>,
         )>,
     ) -> Result<bool, crate::HostError> {
@@ -723,8 +723,8 @@ impl crate::SharedHost {
         let has_mcp_projection = projection.mcp.iter().any(|attachment| {
             !matches!(
                 attachment.state,
-                awaken_session_mcp_contract::McpAttachmentState::Removed
-                    | awaken_session_mcp_contract::McpAttachmentState::Failed
+                crate::session_mcp::McpAttachmentState::Removed
+                    | crate::session_mcp::McpAttachmentState::Failed
             )
         });
         let resource_transition = projection
@@ -774,7 +774,7 @@ impl crate::SharedHost {
         // and every Local dispatch retains the exact provider-effective check.
         if resource_mode == FrozenResourceProjectionMode::Dispatch
             && projection.baseline.runtime_placement
-                == awaken_session_configuration_contract::SessionRuntimePlacement::Worker
+                == awaken_session_types::SessionRuntimePlacement::Worker
         {
             self.realizer.staging.validate_structural_resource_layout(
                 thread,

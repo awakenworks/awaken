@@ -59,7 +59,7 @@ pub trait McpSessionSlots: Clone + Send + Sync + 'static {
 pub trait McpGenerationAuthority: Send + Sync {
     fn mcp_generation_root_authority(
         &self,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Option<bool>;
 }
 
@@ -226,7 +226,7 @@ impl McpSessions {
     pub fn projection<S: McpSessionSlots>(
         &self,
         slots: &S,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Option<McpGenerationProjection> {
         slots
             .read_mcp(generation.session_id().as_str(), |mcp| {
@@ -270,7 +270,7 @@ impl McpSessions {
     pub fn attach_staging_process<S: McpSessionSlots>(
         &self,
         slots: &S,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
         process: Arc<dyn awaken_provisioning_contract::ProcessHandle>,
     ) -> Result<bool, McpError> {
         slots
@@ -303,7 +303,7 @@ impl McpSessions {
     pub fn complete_staging<S: McpSessionSlots>(
         &self,
         slots: &S,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
         wiring: McpWiring,
     ) -> Result<(), McpError> {
         slots
@@ -342,8 +342,9 @@ impl McpSessions {
     pub fn renew_projection<S: McpSessionSlots>(
         &self,
         slots: &S,
-        request: &awaken_session_mcp_contract::StageMcpAttachment,
-    ) -> Result<Option<awaken_session_mcp_contract::McpRealizationReceipt>, McpError> {
+        request: &awaken_session_configuration_contract::mcp::StageMcpAttachment,
+    ) -> Result<Option<awaken_session_configuration_contract::mcp::McpRealizationReceipt>, McpError>
+    {
         let binding = request.renewal_binding_fingerprint();
         slots.update_mcp(request.generation.session_id().as_str(), |mcp| {
             if mcp.quiescence_fence.is_some() {
@@ -376,7 +377,7 @@ impl McpSessions {
                     "MCP lease renewal conflicts with the staged realization",
                 ));
             }
-            let receipt = awaken_session_mcp_contract::McpRealizationReceipt {
+            let receipt = awaken_session_configuration_contract::mcp::McpRealizationReceipt {
                 generation: request.generation.clone(),
                 realization_id: request.realization_id.clone(),
                 selected_plaintext_holder: request.selected_plaintext_holder.clone(),
@@ -399,7 +400,7 @@ impl McpSessions {
     pub fn forget_replayable_removed_projection<S: McpSessionSlots>(
         &self,
         slots: &S,
-        request: &awaken_session_mcp_contract::StageMcpAttachment,
+        request: &awaken_session_configuration_contract::mcp::StageMcpAttachment,
     ) -> bool {
         let request_fingerprint = request.fingerprint();
         let renewal_binding = request.renewal_binding_fingerprint();
@@ -428,7 +429,7 @@ impl McpSessions {
     pub async fn publish_projection<S: McpSessionSlots>(
         &self,
         slots: &S,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Result<(), McpError> {
         if !slots
             .read_mcp(generation.session_id().as_str(), |mcp| {
@@ -532,7 +533,7 @@ impl McpSessions {
     pub async fn drain_projection<S: McpSessionSlots>(
         &self,
         slots: &S,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Result<(), McpError> {
         let Some(drain) = slots
             .read_mcp(generation.session_id().as_str(), |mcp| {
@@ -721,7 +722,7 @@ impl McpSessions {
         &self,
         slots: &S,
         thread: &str,
-        expected: &[awaken_session_mcp_contract::McpGenerationRef],
+        expected: &[awaken_session_configuration_contract::mcp::McpGenerationRef],
     ) -> Result<McpQuiescenceProof, McpError> {
         let mut targets = Vec::with_capacity(expected.len());
         for generation in expected {
@@ -784,5 +785,5 @@ impl McpSessions {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct McpQuiescenceProof {
-    pub generations: Vec<awaken_session_mcp_contract::McpGenerationRef>,
+    pub generations: Vec<awaken_session_configuration_contract::mcp::McpGenerationRef>,
 }

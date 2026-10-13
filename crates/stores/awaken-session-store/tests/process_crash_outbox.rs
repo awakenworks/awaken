@@ -54,8 +54,7 @@ fn session() -> PersistedSession {
         awaken_session_configuration_contract::SessionBaseline::compile(
             awaken_session_configuration_contract::SessionBaselineInputs {
                 environment,
-                runtime_placement:
-                    awaken_session_configuration_contract::SessionRuntimePlacement::Local,
+                runtime_placement: awaken_session_types::SessionRuntimePlacement::Local,
                 mcp_authoring: Default::default(),
                 agent_id: "assistant".into(),
                 agent_revision: None,

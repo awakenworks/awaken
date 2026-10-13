@@ -1,7 +1,9 @@
 // @formal entrypoint session_realization.publication_excludes_staged_retired_generation
 //! One post-activation publication plan for the durable Session generation set.
 use super::{generation_set_authorizes, projection, unavailable};
-use awaken_session_mcp_contract::{McpAttachmentState, McpGenerationRef, SessionMcpAttachment};
+use awaken_session_configuration_contract::mcp::{
+    McpAttachmentState, McpGenerationRef, SessionMcpAttachment,
+};
 use awaken_session_realization_contract::{
     SessionRealizationAction, SessionRealizationControlFailure,
 };

@@ -23,7 +23,7 @@ use super::{
 
 fn expected_mcp_generations(
     session: &PersistedSession,
-) -> Result<Vec<awaken_session_mcp_contract::McpGenerationRef>, SessionContinuationError> {
+) -> Result<Vec<crate::session_mcp::McpGenerationRef>, SessionContinuationError> {
     session
         .mcp
         .active_generation_refs(&session.session_id)
@@ -50,10 +50,10 @@ pub enum SessionContinuationError {
     DidNotConverge,
 }
 
-fn input_is_memory(input: &awaken_session_resource_contract::ResolvedInput) -> bool {
+fn input_is_memory(input: &crate::session_resource::ResolvedInput) -> bool {
     matches!(
         &input.source,
-        awaken_session_resource_contract::ResolvedInputSource::MemoryStore { .. }
+        crate::session_resource::ResolvedInputSource::MemoryStore { .. }
     )
 }
 

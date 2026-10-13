@@ -16,23 +16,23 @@ async fn host_with_process_reaper() -> Arc<SharedHost> {
 /// change which generation is visible.
 #[tokio::test]
 async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
+    use awaken_session_configuration_contract::mcp::McpRealizationReceipt;
     use awaken_session_mcp::project_mcp_session_transport;
     use awaken_session_mcp::{McpGenerationProjection, McpProjectionState};
     use awaken_session_mcp::{McpTransportMaterial, McpWiring};
-    use awaken_session_mcp_contract::McpRealizationReceipt;
 
     let host = host_with_process_reaper().await;
     let generation = |number: u64| {
         crate::test_mcp::mcp_fence("mcp-parity", "mcp-docs", number, "runtime-1", 7, u64::MAX)
     };
     let projection = |number: u64, secret: &str| {
-        let request = awaken_session_mcp_contract::StageMcpAttachment {
+        let request = crate::session_mcp::StageMcpAttachment {
             workspace_id: "workspace-a".into(),
             generation: generation(number),
             realization_id: format!("realize-{number}"),
             stage_idempotency_key: format!("stage-{number}"),
             name: "docs".into(),
-            target: awaken_session_mcp_contract::McpTarget::parse_http(format!(
+            target: awaken_agent_contract::McpTarget::parse_http(format!(
                 "https://mcp-{number}.example.test"
             ))
             .unwrap(),
@@ -186,7 +186,7 @@ async fn mcp_drain_acknowledges_removed_only_after_busy_call_quiesces() {
     use async_trait::async_trait;
     use awaken_ext_mcp::transport::{McpToolTransport, revocable_transport};
     use awaken_ext_mcp::{CallToolResult, McpToolDefinition, McpTransportError};
-    use awaken_session_mcp_contract::{McpRealizationReceipt, StageMcpAttachment};
+    use awaken_session_configuration_contract::mcp::{McpRealizationReceipt, StageMcpAttachment};
 
     use awaken_session_mcp::{McpGenerationProjection, McpProjectionState};
     use awaken_session_mcp::{McpTransportMaterial, McpTransportMaterialKind, McpWiring};
@@ -245,7 +245,7 @@ async fn mcp_drain_acknowledges_removed_only_after_busy_call_quiesces() {
         realization_id: "realization-1".into(),
         stage_idempotency_key: "stage-1".into(),
         name: "docs".into(),
-        target: awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.example.test/sse")
+        target: awaken_agent_contract::McpTarget::parse_http("https://mcp.example.test/sse")
             .unwrap(),
         prompts_as_skills: false,
         credential: None,
@@ -330,7 +330,7 @@ async fn mcp_drain_acknowledges_removed_only_after_busy_call_quiesces() {
 #[tokio::test(start_paused = true)]
 async fn worker_relay_drain_retains_exact_route_across_cancel_and_timeout_retry() {
     use awaken_credential_contract::CredentialRealizationKind;
-    use awaken_session_mcp_contract::{McpRealizationReceipt, StageMcpAttachment};
+    use awaken_session_configuration_contract::mcp::{McpRealizationReceipt, StageMcpAttachment};
 
     use awaken_session_mcp::{McpGenerationProjection, McpProjectionState};
     use awaken_session_mcp::{McpTransportMaterial, McpTransportMaterialKind};
@@ -362,7 +362,7 @@ async fn worker_relay_drain_retains_exact_route_across_cancel_and_timeout_retry(
         realization_id: "realization-1".into(),
         stage_idempotency_key: "stage-1".into(),
         name: "docs".into(),
-        target: awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.example.test/sse")
+        target: awaken_agent_contract::McpTarget::parse_http("https://mcp.example.test/sse")
             .unwrap(),
         prompts_as_skills: false,
         credential: None,
@@ -473,7 +473,7 @@ async fn worker_relay_drain_retains_exact_route_across_cancel_and_timeout_retry(
 async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     use async_trait::async_trait;
     use awaken_provisioning_contract as pc;
-    use awaken_session_mcp_contract::{
+    use awaken_session_configuration_contract::mcp::{
         McpGenerationRef, McpRealizationReceipt, StageMcpAttachment,
     };
 
@@ -539,7 +539,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
             realization_id: format!("realize-{}", generation.generation().version()),
             stage_idempotency_key: format!("stage-{}", generation.generation().version()),
             name: format!("mcp-{}", generation.generation().version()),
-            target: awaken_session_mcp_contract::McpTarget::parse_http(format!(
+            target: awaken_agent_contract::McpTarget::parse_http(format!(
                 "https://mcp-{}.example.test",
                 generation.generation().version()
             ))
@@ -745,7 +745,7 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
 async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
     use async_trait::async_trait;
     use awaken_provisioning_contract as pc;
-    use awaken_session_mcp_contract::{McpRealizationReceipt, StageMcpAttachment};
+    use awaken_session_configuration_contract::mcp::{McpRealizationReceipt, StageMcpAttachment};
 
     use awaken_session_mcp::{McpGenerationProjection, McpProjectionState, McpStagingActivity};
 
@@ -791,8 +791,7 @@ async fn mcp_quiescence_waits_for_staging_activity_before_removed_proof() {
         realization_id: "realize-1".into(),
         stage_idempotency_key: "stage-1".into(),
         name: "docs".into(),
-        target: awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.example.test")
-            .unwrap(),
+        target: awaken_agent_contract::McpTarget::parse_http("https://mcp.example.test").unwrap(),
         prompts_as_skills: false,
         credential: None,
         selected_plaintext_holder: None,
@@ -1039,7 +1038,7 @@ async fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epo
     for (rule, lease, expected) in [
         (
             "A2",
-            Some(awaken_session_resource_contract::SessionRealizationLease {
+            Some(crate::session_resource::SessionRealizationLease {
                 owner: "worker-a".into(),
                 runtime_incarnation: "runtime-a/boot-1".into(),
                 epoch: 3,
@@ -1049,7 +1048,7 @@ async fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epo
         ),
         (
             "A3",
-            Some(awaken_session_resource_contract::SessionRealizationLease {
+            Some(crate::session_resource::SessionRealizationLease {
                 owner: "worker-a".into(),
                 runtime_incarnation: "runtime-b/boot-1".into(),
                 epoch: 3,
@@ -1059,7 +1058,7 @@ async fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epo
         ),
         (
             "A4",
-            Some(awaken_session_resource_contract::SessionRealizationLease {
+            Some(crate::session_resource::SessionRealizationLease {
                 owner: "worker-a".into(),
                 runtime_incarnation: "runtime-a/boot-1".into(),
                 epoch: 3,
@@ -1069,7 +1068,7 @@ async fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epo
         ),
         (
             "A5",
-            Some(awaken_session_resource_contract::SessionRealizationLease {
+            Some(crate::session_resource::SessionRealizationLease {
                 owner: "worker-a".into(),
                 runtime_incarnation: "runtime-a/boot-1".into(),
                 epoch: 3,
@@ -1112,8 +1111,8 @@ async fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epo
 
 #[tokio::test]
 async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
+    use awaken_session_configuration_contract::mcp::{McpRealizationReceipt, StageMcpAttachment};
     use awaken_session_mcp::{McpGenerationProjection, McpProjectionState};
-    use awaken_session_mcp_contract::{McpRealizationReceipt, StageMcpAttachment};
 
     /* Runtime renewal cause/effect decision table. C1 the same logical
      * generation/incarnation/epoch and immutable binding exists; C2 its state is
@@ -1146,7 +1145,7 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
             realization_id: "realization-1".into(),
             stage_idempotency_key: "stage-1".into(),
             name: "browser".into(),
-            target: awaken_session_mcp_contract::McpTarget::parse_http(
+            target: awaken_agent_contract::McpTarget::parse_http(
                 "https://browser.example.test/mcp",
             )
             .unwrap(),
@@ -1202,7 +1201,7 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
             });
         host.install_session_realization_lease(
             old_generation.session_id().as_str(),
-            awaken_session_resource_contract::SessionRealizationLease {
+            crate::session_resource::SessionRealizationLease {
                 owner: "worker-a".into(),
                 runtime_incarnation: old_generation.runtime_incarnation().to_owned(),
                 epoch: old_generation.lease_epoch().get(),
@@ -1259,10 +1258,8 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
         realization_id: "realization-1".into(),
         stage_idempotency_key: "renew-max".into(),
         name: "browser".into(),
-        target: awaken_session_mcp_contract::McpTarget::parse_http(
-            "https://browser.example.test/mcp",
-        )
-        .unwrap(),
+        target: awaken_agent_contract::McpTarget::parse_http("https://browser.example.test/mcp")
+            .unwrap(),
         prompts_as_skills: false,
         credential: None,
         selected_plaintext_holder: None,
@@ -1275,9 +1272,9 @@ async fn mcp_projection_renewal_updates_the_same_staged_or_active_slot() {
 /// compatibility/recovery path.
 #[tokio::test]
 async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
+    use awaken_session_configuration_contract::mcp::McpRealizationReceipt;
     use awaken_session_mcp::McpTransportMaterial;
     use awaken_session_mcp::{McpGenerationProjection, McpProjectionState};
-    use awaken_session_mcp_contract::McpRealizationReceipt;
 
     let generation = crate::test_mcp::mcp_fence(
         "mcp-stage-authority",
@@ -1297,13 +1294,13 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
         },
     };
     let projection = McpGenerationProjection {
-        request: awaken_session_mcp_contract::StageMcpAttachment {
+        request: crate::session_mcp::StageMcpAttachment {
             workspace_id: "workspace-a".into(),
             generation: generation.clone(),
             realization_id: "realize-1".into(),
             stage_idempotency_key: "stage-1".into(),
             name: "docs".into(),
-            target: awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.example.test")
+            target: awaken_agent_contract::McpTarget::parse_http("https://mcp.example.test")
                 .unwrap(),
             prompts_as_skills: false,
             credential: None,
@@ -1371,9 +1368,9 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
 
 #[tokio::test]
 async fn worker_authority_loss_revokes_every_session_projection() {
+    use awaken_session_configuration_contract::mcp::McpRealizationReceipt;
     use awaken_session_mcp::{McpGenerationProjection, McpProjectionState};
     use awaken_session_mcp::{McpTransportMaterial, McpWiring};
-    use awaken_session_mcp_contract::McpRealizationReceipt;
 
     // Cause graph: unprovable Worker authority -> enumerate the canonical
     // process-local Session projections -> nonterminal realization revocation ->
@@ -1403,13 +1400,13 @@ async fn worker_authority_loss_revokes_every_session_projection() {
         },
     };
     host.insert_mcp_projection(McpGenerationProjection {
-        request: awaken_session_mcp_contract::StageMcpAttachment {
+        request: crate::session_mcp::StageMcpAttachment {
             workspace_id: "workspace-a".into(),
             generation: generation.clone(),
             realization_id: "realize-1".into(),
             stage_idempotency_key: "stage-1".into(),
             name: "docs".into(),
-            target: awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.example.test")
+            target: awaken_agent_contract::McpTarget::parse_http("https://mcp.example.test")
                 .unwrap(),
             prompts_as_skills: false,
             credential: None,

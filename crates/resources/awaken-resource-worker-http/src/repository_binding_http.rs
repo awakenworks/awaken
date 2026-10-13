@@ -60,7 +60,7 @@ pub struct RepositoryTransportAuthorization {
     pub worker: WorkerIdentity,
     pub session_id: String,
     pub workspace_id: String,
-    pub input: awaken_session_resource_contract::ResolvedInput,
+    pub input: awaken_session_configuration_contract::resource::ResolvedInput,
     pub authority: RepositoryTransportAuthority,
 }
 
@@ -79,7 +79,7 @@ pub enum RepositoryTransportAuthority {
     },
     TerminalPublication {
         command: Box<awaken_session_state_contract::SessionRepositoryPublicationCommand>,
-        lease: awaken_session_resource_contract::SessionRealizationLease,
+        lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
     },
 }
 
@@ -275,7 +275,7 @@ impl RepositoryBindingVerifier<RunClaim> for HttpRepositoryBindingVerifier {
 impl
     RepositoryBindingVerifier<(
         awaken_session_state_contract::SessionRepositoryPublicationCommand,
-        awaken_session_resource_contract::SessionRealizationLease,
+        awaken_session_configuration_contract::resource::SessionRealizationLease,
     )> for HttpRepositoryBindingVerifier
 {
     async fn verify(
@@ -285,7 +285,7 @@ impl
         config_version: ConfigVersion,
         fence: Option<&(
             awaken_session_state_contract::SessionRepositoryPublicationCommand,
-            awaken_session_resource_contract::SessionRealizationLease,
+            awaken_session_configuration_contract::resource::SessionRealizationLease,
         )>,
     ) -> Result<RepositoryTransport, RepositoryBindingVerifierError> {
         let (command, lease) = fence.ok_or_else(|| {
@@ -456,7 +456,7 @@ async fn verify_run_repository_binding(
         manifest.resources.inputs().iter().find(|input| {
             matches!(
                 &input.source,
-                awaken_session_resource_contract::ResolvedInputSource::Repository {
+                awaken_session_configuration_contract::resource::ResolvedInputSource::Repository {
                     repository_id,
                     config,
                     ..
@@ -568,7 +568,7 @@ async fn verify_session_repository_binding(
     else {
         return StatusCode::FORBIDDEN.into_response();
     };
-    let awaken_session_resource_contract::ResolvedInputSource::Repository {
+    let awaken_session_configuration_contract::resource::ResolvedInputSource::Repository {
         repository_id,
         config,
         ..
@@ -663,7 +663,7 @@ async fn verify_terminal_repository_binding(
     worker: &VerifiedWorkerContext,
     request: RepositoryBindingRequest,
     command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
-    lease: awaken_session_resource_contract::SessionRealizationLease,
+    lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
 ) -> Response {
     let Some(identity) = request.identity.as_ref() else {
         return StatusCode::FORBIDDEN.into_response();
@@ -725,7 +725,7 @@ async fn verify_terminal_repository_binding(
         return StatusCode::FORBIDDEN.into_response();
     }
     let canonical = &projection.command;
-    let awaken_session_resource_contract::ResolvedInputSource::Repository {
+    let awaken_session_configuration_contract::resource::ResolvedInputSource::Repository {
         repository_id,
         config,
         ..

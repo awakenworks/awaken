@@ -154,3 +154,12 @@ The protocol replaces its disposable permission index only after the whole
 reduction succeeds, retaining the previous index when a refresh is corrupt.
 The decision table crosses identical/different source bytes and forward/reverse
 audits, alongside Thread/Run/step reuse, replay and exact-prefix constraints.
+
+Session MCP and Resource configuration now live in the `mcp` and `resource`
+modules of `awaken-session-configuration-contract`. Their former contract crates
+are physically removed. The existing generation, quiescence, Resource transition
+and realization-fence algorithms move with their tests; their durable encodings
+and fingerprints retain the same definitions. Callers name SDK MCP targets,
+Session ids and provisioning checkpoint values at their actual owners rather
+than importing them through a second contract. Creation replay tests cross exact
+replay, a Resource-only change, an MCP-only change and corrupt Resource identity.

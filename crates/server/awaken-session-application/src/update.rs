@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use awaken_agent_contract::stable_fingerprint;
 use awaken_session_configuration_contract::SessionToolConfiguration;
-use awaken_session_mcp_contract::McpAttachmentState;
+use awaken_session_configuration_contract::mcp::McpAttachmentState;
 use awaken_session_realization_contract::realization_lease_is_live_at;
 use awaken_session_state_contract::{IdempotencyRecord, PersistedSession, SessionExecutionState};
 use awaken_session_types::RunError;
@@ -191,10 +191,10 @@ fn realization_failure_after_commit(error: super::SessionRealizationError) -> Ru
 }
 
 fn validate_credential_lifecycle_replacement(
-    mcp: &awaken_session_mcp_contract::SessionMcpAttachmentSet,
+    mcp: &crate::session_mcp::SessionMcpAttachmentSet,
     source_id: &str,
     revoked: bool,
-    drafts: &[awaken_session_mcp_contract::McpAttachmentDraft],
+    drafts: &[crate::session_mcp::McpAttachmentDraft],
 ) -> Result<(), RunError> {
     if source_id.trim().is_empty() {
         return Err(RunError::bad_request(
@@ -341,15 +341,13 @@ impl SessionApplication {
             }
             let drafts = desired
                 .into_iter()
-                .map(
-                    |attachment| awaken_session_mcp_contract::McpAttachmentDraft {
-                        name: attachment.name.clone(),
-                        target: attachment.target.clone(),
-                        prompts_as_skills: attachment.prompts_as_skills,
-                        credential: attachment.credential.clone(),
-                        origin: attachment.origin,
-                    },
-                )
+                .map(|attachment| crate::session_mcp::McpAttachmentDraft {
+                    name: attachment.name.clone(),
+                    target: attachment.target.clone(),
+                    prompts_as_skills: attachment.prompts_as_skills,
+                    credential: attachment.credential.clone(),
+                    origin: attachment.origin,
+                })
                 .collect();
             let selected_holder = session
                 .frozen_baseline()
@@ -848,8 +846,11 @@ mod tests {
         CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
         CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
     };
-    use awaken_session_mcp_contract::{
-        McpAttachmentDraft, McpAttachmentOrigin, McpTarget, SessionMcpAttachmentSet,
+    use {
+        awaken_agent_contract::McpTarget,
+        awaken_session_configuration_contract::mcp::{
+            McpAttachmentDraft, McpAttachmentOrigin, SessionMcpAttachmentSet,
+        },
     };
 
     fn credential(source: &str, revision: u64, holder: &PlaintextHolder) -> CredentialAccess {

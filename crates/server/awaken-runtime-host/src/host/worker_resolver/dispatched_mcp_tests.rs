@@ -46,8 +46,8 @@ async fn dispatched_mcp_effect_projection_decision_table() {
     host.install_environment_projection("mcp-dispatch", &deferred_environment())
         .expect("install frozen Environment");
 
-    let request = |session: &str, attachment: &str, expiry: u64| {
-        awaken_session_mcp_contract::StageMcpAttachment {
+    let request =
+        |session: &str, attachment: &str, expiry: u64| crate::session_mcp::StageMcpAttachment {
             workspace_id: "workspace-a".into(),
             generation: crate::test_mcp::mcp_fence(
                 session,
@@ -60,15 +60,14 @@ async fn dispatched_mcp_effect_projection_decision_table() {
             realization_id: format!("realize-{attachment}"),
             stage_idempotency_key: format!("stage-{attachment}"),
             name: attachment.into(),
-            target: awaken_session_mcp_contract::McpTarget::parse_http(format!(
+            target: awaken_agent_contract::McpTarget::parse_http(format!(
                 "https://{attachment}.example.test/mcp"
             ))
             .expect("HTTP target"),
             prompts_as_skills: false,
             credential: None,
             selected_plaintext_holder: None,
-        }
-    };
+        };
     let exact = request("mcp-dispatch", "docs", u64::MAX);
 
     HostWorkerResolver::reconcile_dispatched_mcp(

@@ -9,7 +9,7 @@ use awaken_ext_mcp::notification::{
     McpNotificationConfig, McpNotificationHandler, McpSelectedInput,
 };
 use awaken_session_application_contract::SessionRunBackgroundApplication;
-use awaken_session_mcp_contract::McpGenerationRef;
+use awaken_session_configuration_contract::mcp::McpGenerationRef;
 use serde_json::{Value, json};
 
 use crate::mcp::{McpError, McpGenerationAuthority, McpSessions};
@@ -243,7 +243,10 @@ mod tests {
         // | L5   | version / attachment / content changed                         | no     |
         // Root liveness is independently checked at delivery, never inferred
         // from this match.
-        use awaken_session_mcp_contract::{McpAttachmentId, McpGeneration, McpTarget};
+        use {
+            awaken_agent_contract::McpTarget,
+            awaken_session_configuration_contract::mcp::{McpAttachmentId, McpGeneration},
+        };
         let generation = |name: &str, version: u64, url: &str| {
             McpGeneration::of_bare_target(
                 McpAttachmentId(name.into()),

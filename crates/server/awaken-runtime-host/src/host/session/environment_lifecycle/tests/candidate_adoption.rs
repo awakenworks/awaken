@@ -3,6 +3,7 @@
 //! Hidden candidate adoption, root commit, and projection evidence.
 
 use super::*;
+use awaken_session_configuration_contract::resource as session_resource;
 
 #[derive(Default)]
 struct NonOwningEnvironmentBindingSink {
@@ -30,7 +31,7 @@ async fn candidate_retention_preserves_original_intent_and_never_invents_unknown
     let thread = "candidate-original-intent";
     let owned = environment(&provider, thread).await;
     let binding = serde_json::to_string(&owned.lifecycle().handle()).unwrap();
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = session_resource::SessionRealizationLease {
         owner: "original-worker".into(),
         runtime_incarnation: "original-boot".into(),
         epoch: 7,
@@ -76,7 +77,7 @@ async fn candidate_retention_preserves_original_intent_and_never_invents_unknown
             let mut renewed = SessionEnvironmentEffectIntent::new(
                 thread,
                 kind.clone(),
-                Some(awaken_session_resource_contract::SessionRealizationLease {
+                Some(session_resource::SessionRealizationLease {
                     expires_at_unix_ms: 500,
                     ..lease.clone()
                 }),

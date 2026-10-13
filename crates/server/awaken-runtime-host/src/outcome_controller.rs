@@ -151,8 +151,7 @@ impl SharedHost {
             .baseline
             .as_ref()
             .is_some_and(|baseline| {
-                baseline.runtime_placement
-                    == awaken_session_configuration_contract::SessionRuntimePlacement::Worker
+                baseline.runtime_placement == awaken_session_types::SessionRuntimePlacement::Worker
             });
         let ctx = if worker_placement {
             self.ctx_for_session_coordination(thread, None).await?

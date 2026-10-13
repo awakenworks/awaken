@@ -1,5 +1,6 @@
 use super::*;
 use crate::installed_session::test_observed_lease;
+use awaken_session_configuration_contract::resource as session_resource;
 
 #[test]
 fn realization_authority_close_and_renewal_have_one_projection() {
@@ -12,7 +13,7 @@ fn realization_authority_close_and_renewal_have_one_projection() {
     // Q4 live+exact closes; Q5 closed+exact retry succeeds; Q6-Q8 exact
     // renewal crosses the three expiry partitions; Q9 stale reply rejects.
     let base = crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000;
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = session_resource::SessionRealizationLease {
         owner: "worker".into(),
         runtime_incarnation: "worker/1".into(),
         epoch: 1,

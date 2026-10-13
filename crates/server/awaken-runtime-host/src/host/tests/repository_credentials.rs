@@ -25,9 +25,9 @@ fn repository_credential_descriptor(url: &str) -> awaken_credential_contract::Cr
             ["password", "username"],
         ),
         [awaken_credential_contract::CredentialTargetContract::new(
-            awaken_session_resource_contract::repository_transport_credential_target(url)
+            crate::session_resource::repository_transport_credential_target(url)
                 .expect("HTTPS Repository target"),
-            awaken_session_resource_contract::repository_transport_credential_usage(),
+            crate::session_resource::repository_transport_credential_usage(),
         )],
     )
 }
@@ -142,7 +142,7 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
         let _managed = managed;
 
         let thread = format!("worker-dispatch-repository-{rule}");
-        let manifest = awaken_session_resource_contract::SessionResourceManifest::new(
+        let manifest = crate::session_resource::SessionResourceManifest::new(
             host.local_workspace(),
             effective_repository(
                 "repo-1",
@@ -206,7 +206,7 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
 /// | P6 | exact, delayed use | changes to Direct | any | reject; zero direct fallback |
 #[tokio::test]
 async fn platform_repository_credentials_are_gateway_mediated_without_fallback() {
-    fn platform_resources() -> awaken_session_resource_contract::ResolvedSessionResources {
+    fn platform_resources() -> crate::session_resource::ResolvedSessionResources {
         let resources = effective_repository(
             "repo-platform",
             "https://github.com/awaken/example.git",
@@ -220,7 +220,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         );
         resources
             .update_input(&binding_id, |input| {
-                let awaken_session_resource_contract::ResolvedInputSource::Repository {
+                let crate::session_resource::ResolvedInputSource::Repository {
                     credential: Some(credential),
                     ..
                 } = &mut input.source
@@ -252,7 +252,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     .expect("validated Host dependencies");
 
     let _runtime = crate::ManagedHost::new(host.clone());
-    let manifest = awaken_session_resource_contract::SessionResourceManifest::new(
+    let manifest = crate::session_resource::SessionResourceManifest::new(
         host.local_workspace(),
         platform_resources(),
     );
@@ -291,7 +291,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         .expect("P5 protected activation")
         .access
         .target = Some(
-        awaken_session_resource_contract::repository_transport_credential_target(
+        crate::session_resource::repository_transport_credential_target(
             "https://gitlab.example.test/awaken/example.git",
         )
         .expect("P5 alternate HTTPS target"),
@@ -357,7 +357,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     .expect("validated Host dependencies");
 
     let _downgrade_runtime = crate::ManagedHost::new(downgrade_host.clone());
-    let downgrade_manifest = awaken_session_resource_contract::SessionResourceManifest::new(
+    let downgrade_manifest = crate::session_resource::SessionResourceManifest::new(
         downgrade_host.local_workspace(),
         platform_resources(),
     );
@@ -390,7 +390,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     .build()
     .expect("validated Host dependencies");
     let _direct_runtime = crate::ManagedHost::new(direct_host.clone());
-    let direct_manifest = awaken_session_resource_contract::SessionResourceManifest::new(
+    let direct_manifest = crate::session_resource::SessionResourceManifest::new(
         direct_host.local_workspace(),
         platform_resources(),
     );
@@ -622,7 +622,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
         let binding_id = resources.inputs()[0].binding_id.clone();
         let resources = resources
             .update_input(&binding_id, |input| {
-                let awaken_session_resource_contract::ResolvedInputSource::Repository {
+                let crate::session_resource::ResolvedInputSource::Repository {
                     config,
                     credential,
                     ..
@@ -859,7 +859,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
     // C1 the initial desired generation is staged but no Environment exists;
     // C2 the aggregate rotates only its credential pin. C1+C2 therefore carries
     // the exact initial->next transition without treating staging as completion.
-    let before_manifest = awaken_session_resource_contract::SessionResourceManifest::at_revision(
+    let before_manifest = crate::session_resource::SessionResourceManifest::at_revision(
         host.local_workspace(),
         0,
         initial,

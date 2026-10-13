@@ -33,7 +33,7 @@ use super::{RealizationHttpError, WorkerDispatchService, respond_realization};
 pub(super) struct SessionRepositoryPublicationCompleteReq {
     identity: WorkerIdentity,
     session_id: String,
-    lease: awaken_session_resource_contract::SessionRealizationLease,
+    lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
     receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt,
 }
 
@@ -41,7 +41,7 @@ pub(super) struct SessionRepositoryPublicationCompleteReq {
 pub(super) struct SessionRepositoryPublicationRejectReq {
     identity: WorkerIdentity,
     session_id: String,
-    lease: awaken_session_resource_contract::SessionRealizationLease,
+    lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
     rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection,
 }
 

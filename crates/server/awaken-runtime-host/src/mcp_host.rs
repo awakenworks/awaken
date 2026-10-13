@@ -84,7 +84,7 @@ impl McpSessionSlots for InstalledSessions {
 impl McpGenerationAuthority for SharedHost {
     fn mcp_generation_root_authority(
         &self,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
+        generation: &crate::session_mcp::McpGenerationRef,
     ) -> Option<bool> {
         SharedHost::mcp_generation_root_authority(self, generation)
     }
@@ -110,7 +110,7 @@ impl SharedHost {
     #[cfg(test)]
     pub(crate) fn mcp_projection(
         &self,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Option<McpGenerationProjection> {
         self.mcp.projection(&self.installed_sessions, generation)
     }
@@ -130,7 +130,7 @@ impl SharedHost {
     #[cfg(test)]
     pub(crate) fn attach_staging_mcp_process(
         &self,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
         process: Arc<dyn awaken_provisioning_contract::ProcessHandle>,
     ) -> Result<bool, HostError> {
         Ok(self
@@ -143,7 +143,7 @@ impl SharedHost {
     #[cfg(test)]
     pub(crate) fn complete_staging_mcp_projection(
         &self,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
         wiring: awaken_session_mcp::McpWiring,
     ) -> Result<(), HostError> {
         Ok(self
@@ -154,8 +154,9 @@ impl SharedHost {
     #[cfg(test)]
     pub(crate) fn renew_mcp_projection(
         &self,
-        request: &awaken_session_mcp_contract::StageMcpAttachment,
-    ) -> Result<Option<awaken_session_mcp_contract::McpRealizationReceipt>, HostError> {
+        request: &awaken_session_configuration_contract::mcp::StageMcpAttachment,
+    ) -> Result<Option<awaken_session_configuration_contract::mcp::McpRealizationReceipt>, HostError>
+    {
         Ok(self
             .mcp
             .renew_projection(&self.installed_sessions, request)?)
@@ -164,7 +165,7 @@ impl SharedHost {
     #[cfg(test)]
     pub(crate) fn forget_replayable_removed_mcp_projection(
         &self,
-        request: &awaken_session_mcp_contract::StageMcpAttachment,
+        request: &awaken_session_configuration_contract::mcp::StageMcpAttachment,
     ) -> bool {
         self.mcp
             .forget_replayable_removed_projection(&self.installed_sessions, request)
@@ -173,7 +174,7 @@ impl SharedHost {
     #[cfg(test)]
     pub(crate) async fn publish_mcp_projection(
         &self,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Result<(), HostError> {
         Ok(self
             .mcp
@@ -184,7 +185,7 @@ impl SharedHost {
     #[cfg(test)]
     pub(crate) async fn drain_mcp_projection(
         &self,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Result<(), HostError> {
         Ok(self
             .mcp
@@ -195,7 +196,7 @@ impl SharedHost {
     pub(crate) async fn drain_mcp_projections(
         &self,
         thread: &str,
-        expected: &[awaken_session_mcp_contract::McpGenerationRef],
+        expected: &[crate::session_mcp::McpGenerationRef],
     ) -> Result<McpQuiescenceProof, HostError> {
         Ok(self
             .mcp
@@ -277,13 +278,13 @@ mod tests {
             .expect("validated Host dependencies");
         let generation =
             crate::test_mcp::mcp_fence("mcp-no-reaper", "stdio", 1, "runtime-1", 1, u64::MAX);
-        let request = awaken_session_mcp_contract::StageMcpAttachment {
+        let request = awaken_session_configuration_contract::mcp::StageMcpAttachment {
             workspace_id: "workspace-a".into(),
             generation: generation.clone(),
             realization_id: "realize-1".into(),
             stage_idempotency_key: "stage-1".into(),
             name: "stdio".into(),
-            target: awaken_session_mcp_contract::McpTarget::sandbox_stdio("/usr/bin/true", vec![])
+            target: awaken_agent_contract::McpTarget::sandbox_stdio("/usr/bin/true", vec![])
                 .unwrap(),
             prompts_as_skills: false,
             credential: None,

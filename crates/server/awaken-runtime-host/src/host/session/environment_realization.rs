@@ -5,6 +5,7 @@
 //! Ordinary Session Environment selection, effect authorization, and publication.
 
 use super::*;
+use awaken_session_configuration_contract::resource as session_resource;
 
 #[cfg(test)]
 mod fence_source_tests;
@@ -20,7 +21,7 @@ impl SharedHost {
         workspace: &str,
         coordinates: CanonicalSessionProjection<'_>,
         delivered: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
-        skill_pins: Option<&[awaken_session_resource_contract::ResolvedSkillBinding]>,
+        skill_pins: Option<&[session_resource::ResolvedSkillBinding]>,
     ) -> Result<
         (
             Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
@@ -1150,7 +1151,7 @@ impl crate::environment_holding::EnvironmentHolding {
                             .filter(|input| {
                                 matches!(
                                     input.source,
-                                    awaken_session_resource_contract::ResolvedInputSource::Repository { .. }
+                                    session_resource::ResolvedInputSource::Repository { .. }
                                 )
                             })
                             .map(crate::managed_input_layout::resolved_input_effect_path)

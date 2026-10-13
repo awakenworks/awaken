@@ -19,7 +19,7 @@
     "awaken-session-environment": 76,
     "awaken-session-environment-contract": 253,
     "awaken-session-realization-driver": 265,
-    "awaken-session-resource-contract": 84,
-    "awaken-session-state-contract": 16
+    "awaken-session-state-contract": 16,
+    "awaken-session-configuration-contract": 84
   }
 }

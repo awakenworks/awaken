@@ -42,7 +42,7 @@ async fn large_session_reconciliation_is_earliest_deadline_first_and_bounded() {
             &host,
             &control,
             &session_id,
-            awaken_session_resource_contract::SessionRealizationLease {
+            crate::session_resource::SessionRealizationLease {
                 owner: "worker-a".into(),
                 runtime_incarnation: "worker-a:incarnation".into(),
                 epoch: 1,
@@ -162,7 +162,7 @@ async fn five_hundred_twelve_session_reconciliation_remains_bounded_and_complete
             &host,
             &control,
             &session_id,
-            awaken_session_resource_contract::SessionRealizationLease {
+            crate::session_resource::SessionRealizationLease {
                 owner: "worker-a".into(),
                 runtime_incarnation: "worker-a:incarnation".into(),
                 epoch: 1,
@@ -287,7 +287,7 @@ async fn late_renewal_response_cannot_mutate_a_replacement_projection() {
             .build()
             .expect("validated Host dependencies");
             let now = crate::terminal_repository_publication::runtime_unix_now_ms();
-            let old = awaken_session_resource_contract::SessionRealizationLease {
+            let old = crate::session_resource::SessionRealizationLease {
                 owner: "worker".into(),
                 runtime_incarnation: "boot-1".into(),
                 epoch: 1,
@@ -387,7 +387,7 @@ async fn renewal_revocation_rechecks_authority_after_realization_admission() {
         .build()
         .expect("validated Host dependencies");
         let now = crate::terminal_repository_publication::runtime_unix_now_ms();
-        let lease = awaken_session_resource_contract::SessionRealizationLease {
+        let lease = crate::session_resource::SessionRealizationLease {
             owner: "worker".into(),
             runtime_incarnation: "boot".into(),
             epoch: 1,
@@ -476,7 +476,7 @@ async fn temporary_control_failure_retains_only_a_still_live_session_lease() {
     .expect("validated Host dependencies");
     let now = crate::terminal_repository_publication::runtime_unix_now_ms();
     for (session_id, expired) in [("renewal-live", false), ("renewal-expired", true)] {
-        let lease = awaken_session_resource_contract::SessionRealizationLease {
+        let lease = crate::session_resource::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a:incarnation".into(),
             epoch: 1,
@@ -531,7 +531,7 @@ async fn stale_ownership_revokes_even_when_the_old_deadline_is_still_live() {
     let now = crate::terminal_repository_publication::runtime_unix_now_ms();
     host.install_session_realization_lease(
         "renewal-stale",
-        awaken_session_resource_contract::SessionRealizationLease {
+        crate::session_resource::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a:old".into(),
             epoch: 1,
@@ -588,7 +588,7 @@ async fn per_request_deadlines_release_every_renewal_capacity_slot() {
     for index in 0..SESSION_COUNT {
         host.install_session_realization_lease(
             &format!("deadline-session-{index:02}"),
-            awaken_session_resource_contract::SessionRealizationLease {
+            crate::session_resource::SessionRealizationLease {
                 owner: "worker-a".into(),
                 runtime_incarnation: "worker-a:incarnation".into(),
                 epoch: 1,
@@ -671,7 +671,7 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
         let mut held = Vec::new();
         for index in 0..SESSION_COUNT {
             let session = format!("deadline-mutex-{index:02}");
-            let lease = awaken_session_resource_contract::SessionRealizationLease {
+            let lease = crate::session_resource::SessionRealizationLease {
                 owner: "worker-a".into(),
                 runtime_incarnation: "worker-a:incarnation".into(),
                 epoch: 1,
@@ -884,7 +884,7 @@ async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
         .build()
         .expect("validated Host dependencies");
         let now = crate::terminal_repository_publication::runtime_unix_now_ms();
-        let old = awaken_session_resource_contract::SessionRealizationLease {
+        let old = crate::session_resource::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a:old".into(),
             epoch: 1,

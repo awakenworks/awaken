@@ -14,6 +14,9 @@ authority = "session-configuration"
 separation = "contract"
 
 [dependencies]
+awaken-session-types.workspace = true
+awaken-lease-contract.workspace = true
+awaken-time.workspace = true
 awaken-web-policy-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-credential-contract.workspace = true
@@ -21,8 +24,6 @@ awaken-environment-contract.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-resource-contract.workspace = true
 awaken-runtime-contract.workspace = true
-awaken-session-mcp-contract.workspace = true
-awaken-session-resource-contract.workspace = true
 async-trait.workspace = true
 http = "1"
 serde.workspace = true

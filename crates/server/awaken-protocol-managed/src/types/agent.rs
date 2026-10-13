@@ -120,7 +120,7 @@ impl AgentSkill {
     /// mutable Skill catalog.
     #[must_use]
     pub(crate) fn from_resolved_binding(
-        binding: &awaken_session_resource_contract::ResolvedSkillBinding,
+        binding: &crate::session_resource::ResolvedSkillBinding,
     ) -> Self {
         Self::from_binding(awaken_agent_contract::AgentSkillBinding {
             kind: binding.kind,

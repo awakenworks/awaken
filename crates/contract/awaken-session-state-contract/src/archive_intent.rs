@@ -160,7 +160,7 @@ pub fn session_terminal_cleanup_affinity_for(
     if current.owner == target_owner && current.runtime_incarnation == target_runtime_incarnation {
         return SessionTerminalCleanupAffinity::Unchanged;
     }
-    if !awaken_session_resource_contract::realization_lease_is_live_at(
+    if !awaken_session_configuration_contract::resource::realization_lease_is_live_at(
         current.expires_at_unix_ms,
         now_unix_ms,
     ) && matches!(

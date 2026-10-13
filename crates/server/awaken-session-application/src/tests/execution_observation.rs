@@ -46,7 +46,7 @@ fn profiled_observed_session(id: &str) -> PersistedSession {
     let source = session.frozen_baseline().unwrap().clone();
     let compiled = SessionCreationIntent {
         control: ControlSessionCreationInputs {
-            mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Frozen,
+            mutation_policy: crate::session_resource::SessionMutationPolicy::Frozen,
             application_origin: source.application_origin,
             environment: source.environment,
             runtime_placement: source.runtime_placement,

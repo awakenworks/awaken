@@ -19,7 +19,6 @@ awaken-agent-contract.workspace = true
 awaken-time.workspace = true
 awaken-resource-contract.workspace = true
 awaken-session-configuration-contract.workspace = true
-awaken-session-resource-contract.workspace = true
 uuid = { version = "1", features = ["v4"] }
 url.workspace = true
 # Skill import is an application trust-boundary operation, not persistence.

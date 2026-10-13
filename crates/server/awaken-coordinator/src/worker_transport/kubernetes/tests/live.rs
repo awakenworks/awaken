@@ -417,6 +417,10 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         .as_str()
         .unwrap()
         .to_owned();
+    let first_version = first_create.object["metadata"]["resourceVersion"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let cms: kube::Api<ConfigMap> = kube::Api::namespaced(client.clone(), name);
     assert_eq!(
         cms.get("broker-probe")
@@ -429,7 +433,15 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
         "E7 exact API readback"
     );
     let replay = create_client.create(request).await.unwrap();
-    assert_eq!(replay.status, 409, "E7 one Create response-loss replay");
+    assert_eq!(replay.status, 200, "E7 exact admitted Create readback");
+    assert_eq!(
+        replay.object["metadata"]["uid"], first_uid,
+        "E7 same object"
+    );
+    assert_eq!(
+        replay.object["metadata"]["resourceVersion"], first_version,
+        "E7 readback does not mutate the original object"
+    );
     assert_eq!(
         cms.get("broker-probe")
             .await

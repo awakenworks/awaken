@@ -80,25 +80,29 @@ pub fn sample_persisted(id: &str) -> PersistedSession {
             resource_holder: holder,
         },
     };
-    let mut mcp = awaken_session_mcp_contract::SessionMcpAttachmentSet::from_initial(
-        vec![awaken_session_mcp_contract::McpAttachmentDraft {
-            name: "calc".into(),
-            target: awaken_session_mcp_contract::McpTarget::parse_http("https://x").unwrap(),
-            credential: None,
-            prompts_as_skills: false,
-            origin: awaken_session_mcp_contract::McpAttachmentOrigin::Session,
-        }],
-        None,
-    )
-    .unwrap();
-    mcp.attachments[0].state = awaken_session_mcp_contract::McpAttachmentState::Active;
+    let mut mcp =
+        awaken_session_configuration_contract::mcp::SessionMcpAttachmentSet::from_initial(
+            vec![
+                awaken_session_configuration_contract::mcp::McpAttachmentDraft {
+                    name: "calc".into(),
+                    target: awaken_agent_contract::McpTarget::parse_http("https://x").unwrap(),
+                    credential: None,
+                    prompts_as_skills: false,
+                    origin:
+                        awaken_session_configuration_contract::mcp::McpAttachmentOrigin::Session,
+                },
+            ],
+            None,
+        )
+        .unwrap();
+    mcp.attachments[0].state =
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Active;
     let mut legacy = PersistedSession::frozen_with_budget(
         SessionId::from(id),
         awaken_session_configuration_contract::SessionBaseline::compile(
             awaken_session_configuration_contract::SessionBaselineInputs {
                 environment,
-                runtime_placement:
-                    awaken_session_configuration_contract::SessionRuntimePlacement::Local,
+                runtime_placement: awaken_session_types::SessionRuntimePlacement::Local,
                 mcp_authoring: Default::default(),
                 agent_id: "coder".into(),
                 agent_revision: None,
@@ -129,19 +133,23 @@ pub fn sample_persisted(id: &str) -> PersistedSession {
     serde_json::from_value(wire).unwrap()
 }
 
-pub fn sample_inputs() -> awaken_session_resource_contract::ResolvedSessionResources {
-    awaken_session_resource_contract::ResolvedSessionResources::try_new(
-        vec![awaken_session_resource_contract::ResolvedInput {
-            created_at_unix_ms: None,
-            updated_at_unix_ms: None,
-            binding_id: awaken_resource_contract::BindingId::from("input-file"),
-            source: awaken_session_resource_contract::ResolvedInputSource::File {
-                file_id: awaken_resource_contract::FileId::from("file-hash"),
+pub fn sample_inputs() -> awaken_session_configuration_contract::resource::ResolvedSessionResources
+{
+    awaken_session_configuration_contract::resource::ResolvedSessionResources::try_new(
+        vec![
+            awaken_session_configuration_contract::resource::ResolvedInput {
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
+                binding_id: awaken_resource_contract::BindingId::from("input-file"),
+                source:
+                    awaken_session_configuration_contract::resource::ResolvedInputSource::File {
+                        file_id: awaken_resource_contract::FileId::from("file-hash"),
+                    },
+                mount_path: "/input.txt".into(),
+                access: awaken_resource_contract::ResourceAccess::ReadOnly,
+                instructions: None,
             },
-            mount_path: "/input.txt".into(),
-            access: awaken_resource_contract::ResourceAccess::ReadOnly,
-            instructions: None,
-        }],
+        ],
         Vec::new(),
     )
     .unwrap()
@@ -201,12 +209,12 @@ impl awaken_session_application::SessionCredentialSource for RolloutCredentialSo
         &self,
         source_id: &awaken_credential_contract::CredentialSourceId,
         _workspace_id: &str,
-        target: &awaken_session_mcp_contract::McpTarget,
+        target: &awaken_agent_contract::McpTarget,
         selected_holder: &awaken_credential_contract::PlaintextHolder,
         _binding: &awaken_credential_contract::CredentialMaterialBinding,
     ) -> Result<awaken_credential_contract::CredentialAccess, String> {
         let revision = if source_id.0 == "source-a" { 2 } else { 1 };
-        let audience = awaken_session_mcp_contract::McpTarget::identity(
+        let audience = awaken_agent_contract::McpTarget::identity(
             target.http_url().ok_or("MCP target is not HTTP")?,
         )
         .map_err(|error| error.to_string())?

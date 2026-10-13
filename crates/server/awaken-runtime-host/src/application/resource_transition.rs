@@ -80,8 +80,8 @@ const fn frozen_resource_generation_install_decision(
 /// This adapter contains no independent policy and is the only place where
 /// Runtime cache identity is translated into the kernel's complete fact set.
 pub(super) fn frozen_resource_transition_install_decision(
-    existing: Option<&awaken_session_resource_contract::SessionResourceTransition>,
-    incoming: &awaken_session_resource_contract::SessionResourceTransition,
+    existing: Option<&crate::session_resource::SessionResourceTransition>,
+    incoming: &crate::session_resource::SessionResourceTransition,
     authority_amends_unattempted: bool,
 ) -> FrozenResourceTransitionInstallDecision {
     match existing {
@@ -161,35 +161,42 @@ mod tests {
         workspace: &str,
         revision: u64,
         skill: Option<&str>,
-    ) -> awaken_session_resource_contract::SessionResourceTransition {
-        let resources = awaken_session_resource_contract::ResolvedSessionResources::try_new(
-            Vec::new(),
-            skill
-                .map(
-                    |skill_id| awaken_session_resource_contract::ResolvedSkillBinding {
-                        kind: awaken_agent_contract::AgentSkillKind::Custom,
-                        skill_id: skill_id.into(),
-                        version: 1,
-                        bundle_sha256: format!("sha256-{skill_id}"),
-                    },
-                )
-                .into_iter()
-                .collect(),
+    ) -> awaken_session_configuration_contract::resource::SessionResourceTransition {
+        let resources =
+            awaken_session_configuration_contract::resource::ResolvedSessionResources::try_new(
+                Vec::new(),
+                skill
+                    .map(|skill_id| {
+                        awaken_session_configuration_contract::resource::ResolvedSkillBinding {
+                            kind: awaken_agent_contract::AgentSkillKind::Custom,
+                            skill_id: skill_id.into(),
+                            version: 1,
+                            bundle_sha256: format!("sha256-{skill_id}"),
+                        }
+                    })
+                    .into_iter()
+                    .collect(),
+            )
+            .expect("test Resource projection is valid");
+        let manifest =
+            awaken_session_configuration_contract::resource::SessionResourceManifest::at_revision(
+                workspace, revision, resources,
+            );
+        awaken_session_configuration_contract::resource::SessionResourceTransition::new(
+            manifest.clone(),
+            manifest,
         )
-        .expect("test Resource projection is valid");
-        let manifest = awaken_session_resource_contract::SessionResourceManifest::at_revision(
-            workspace, revision, resources,
-        );
-        awaken_session_resource_contract::SessionResourceTransition::new(manifest.clone(), manifest)
-            .expect("test transition belongs to one Workspace")
+        .expect("test transition belongs to one Workspace")
     }
 
     fn transition_from(
-        previous: awaken_session_resource_contract::SessionResourceManifest,
-        desired: awaken_session_resource_contract::SessionResourceManifest,
-    ) -> awaken_session_resource_contract::SessionResourceTransition {
-        awaken_session_resource_contract::SessionResourceTransition::new(previous, desired)
-            .expect("test transition belongs to one Workspace")
+        previous: awaken_session_configuration_contract::resource::SessionResourceManifest,
+        desired: awaken_session_configuration_contract::resource::SessionResourceManifest,
+    ) -> awaken_session_configuration_contract::resource::SessionResourceTransition {
+        awaken_session_configuration_contract::resource::SessionResourceTransition::new(
+            previous, desired,
+        )
+        .expect("test transition belongs to one Workspace")
     }
 
     #[test]

@@ -26,7 +26,7 @@ mod tests {
 
     #[test]
     fn materialization_target_is_the_original_typed_request_target() {
-        let target = awaken_session_mcp_contract::McpTarget::parse_http(
+        let target = awaken_agent_contract::McpTarget::parse_http(
             "https://credential-bound.example.test/mcp?tenant=exact",
         )
         .expect("valid target");

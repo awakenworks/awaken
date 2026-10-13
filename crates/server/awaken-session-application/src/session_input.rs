@@ -134,15 +134,11 @@ impl InputProjectionClass {
     }
 
     #[must_use]
-    pub fn of_resolved(source: &awaken_session_resource_contract::ResolvedInputSource) -> Self {
+    pub fn of_resolved(source: &crate::session_resource::ResolvedInputSource) -> Self {
         match source {
-            awaken_session_resource_contract::ResolvedInputSource::File { .. } => Self::File,
-            awaken_session_resource_contract::ResolvedInputSource::MemoryStore { .. } => {
-                Self::MemoryStore
-            }
-            awaken_session_resource_contract::ResolvedInputSource::Repository { .. } => {
-                Self::Repository
-            }
+            crate::session_resource::ResolvedInputSource::File { .. } => Self::File,
+            crate::session_resource::ResolvedInputSource::MemoryStore { .. } => Self::MemoryStore,
+            crate::session_resource::ResolvedInputSource::Repository { .. } => Self::Repository,
         }
     }
 }
@@ -288,7 +284,7 @@ fn plan_session_input_attachments(
     session_id: &str,
     requests: &[SessionInputRequest],
     agent_defaults: &[awaken_resource_contract::InputBinding],
-) -> Result<Vec<awaken_session_resource_contract::SessionInputAttachment>, String> {
+) -> Result<Vec<crate::session_resource::SessionInputAttachment>, String> {
     requests
         .iter()
         .enumerate()
@@ -333,7 +329,7 @@ fn plan_session_input_attachments(
             if let Some(replaced) = &replaces {
                 binding.binding_id.clone_from(replaced);
             }
-            Ok(awaken_session_resource_contract::SessionInputAttachment { binding, replaces })
+            Ok(crate::session_resource::SessionInputAttachment { binding, replaces })
         })
         .collect()
 }
@@ -342,7 +338,7 @@ fn plan_session_input_attachments(
 /// binding set checked, before any Repository or Vault participant.
 pub struct PreparedSessionInputs {
     requests: Vec<SessionInputRequest>,
-    attachments: Vec<awaken_session_resource_contract::SessionInputAttachment>,
+    attachments: Vec<crate::session_resource::SessionInputAttachment>,
     effective_bindings: Vec<awaken_resource_contract::InputBinding>,
 }
 
@@ -404,12 +400,11 @@ impl SessionApplication {
         // caller enter Registry/Vault participants.
         let attachments = plan_session_input_attachments(session_id, &normalized, agent_defaults)
             .map_err(RunError::bad_request)?;
-        let effective_bindings =
-            awaken_session_resource_contract::SessionInputResolver::effective_bindings(
-                agent_defaults,
-                &attachments,
-            )
-            .map_err(|error| RunError::bad_request(error.to_string()))?;
+        let effective_bindings = crate::session_resource::SessionInputResolver::effective_bindings(
+            agent_defaults,
+            &attachments,
+        )
+        .map_err(|error| RunError::bad_request(error.to_string()))?;
         Ok(PreparedSessionInputs {
             requests: normalized,
             attachments,
@@ -427,7 +422,7 @@ impl SessionApplication {
         prepared: &PreparedSessionInputs,
     ) -> Result<
         (
-            Vec<awaken_session_resource_contract::SessionInputAttachment>,
+            Vec<crate::session_resource::SessionInputAttachment>,
             Vec<super::ConfiguredSessionRepository>,
         ),
         RunError,
@@ -639,7 +634,7 @@ mod tests {
         .expect("R2 remains additive");
         assert_eq!(r2[0].replaces, None, "R2 no path fallback");
         assert!(
-            awaken_session_resource_contract::SessionInputResolver::effective_bindings(
+            awaken_session_configuration_contract::resource::SessionInputResolver::effective_bindings(
                 &[different_default],
                 &r2,
             )

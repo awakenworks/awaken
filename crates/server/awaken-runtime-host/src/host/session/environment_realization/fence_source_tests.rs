@@ -3,8 +3,9 @@ use super::*;
 use crate::installed_session::SessionRealizationAuthority;
 use awaken_provisioning_contract::test_support::FenceTamper as _;
 use awaken_provisioning_contract::{CurrentExecutionAuthority, SandboxEffectFence};
+use awaken_session_configuration_contract::resource as session_resource;
+use awaken_session_configuration_contract::resource::SessionRealizationLease;
 use awaken_session_realization_contract::SessionRealizationLeaseReceipt;
-use awaken_session_resource_contract::SessionRealizationLease;
 use std::{io, sync::Mutex, time::Duration};
 
 struct Worker(Mutex<Option<Duration>>);
@@ -912,21 +913,17 @@ async fn environment_receipt_refreshes_only_the_captured_live_generation() {
                     "R1/R2 original expiry is immutable even under renewed authority"
                 );
                 if rule == "renewed" {
-                    assert!(
-                        !awaken_session_resource_contract::realization_lease_is_live_at(
-                            60_000, 90_000
-                        )
-                    );
-                    assert!(
-                        awaken_session_resource_contract::realization_lease_authorizes(
-                            &awaken_session_resource_contract::SessionRealizationLease {
-                                expires_at_unix_ms: 120_000,
-                                ..lease()
-                            },
-                            receipt.realization.as_ref().unwrap(),
-                            90_000
-                        )
-                    );
+                    assert!(!session_resource::realization_lease_is_live_at(
+                        60_000, 90_000
+                    ));
+                    assert!(session_resource::realization_lease_authorizes(
+                        &session_resource::SessionRealizationLease {
+                            expires_at_unix_ms: 120_000,
+                            ..lease()
+                        },
+                        receipt.realization.as_ref().unwrap(),
+                        90_000
+                    ));
                 }
             }
         }

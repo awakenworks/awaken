@@ -1,6 +1,6 @@
 //! Immutable process configuration and application reconciliation projections.
 
-use awaken_session_configuration_contract::SessionRuntimePlacement;
+use awaken_session_types::SessionRuntimePlacement;
 
 /// Process-level execution topology interpreted by the Session application.
 /// The selected value is frozen into every newly admitted Session; protocol
@@ -37,7 +37,7 @@ pub struct WorkDispatchFailure {
 pub struct WorkDispatchReconciliation {
     pub settled: usize,
     pub failures: Vec<WorkDispatchFailure>,
-    pub quarantined: Vec<awaken_session_state_contract::SessionRecoveryQuarantine>,
+    pub quarantined: Vec<awaken_session_types::SessionRecoveryQuarantine>,
     pub pending: usize,
 }
 

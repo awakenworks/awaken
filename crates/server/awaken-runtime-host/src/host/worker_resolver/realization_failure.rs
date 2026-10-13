@@ -225,7 +225,7 @@ mod tests {
             let run_error = crate::host_error::to_run_error(host_error());
             let command = awaken_session_realization_contract::FailSessionRealization::for_effect(
                 "s".into(),
-                awaken_session_resource_contract::SessionRealizationLease {
+                awaken_session_configuration_contract::resource::SessionRealizationLease {
                     owner: "w".into(),
                     runtime_incarnation: "w/1".into(),
                     epoch: 1,

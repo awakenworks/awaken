@@ -448,7 +448,7 @@ impl ManagedState {
                     .map(|server| {
                         super::application::agent_mcp_candidate(
                             server,
-                            awaken_session_mcp_contract::McpAttachmentOrigin::Agent,
+                            crate::session_mcp::McpAttachmentOrigin::Agent,
                         )
                     })
                     .collect()

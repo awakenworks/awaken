@@ -5,6 +5,7 @@
 //! layout, validation mounts and prompt fragments. Provisioning and the Host's
 //! resource projection both read it; it reads neither.
 
+use awaken_session_configuration_contract::resource as session_resource;
 mod resource_prompt;
 
 pub(crate) use resource_prompt::{AgentPathView, ResourcePromptProjection};
@@ -174,19 +175,16 @@ pub(crate) fn project_managed_input_layout(
 }
 
 pub(crate) fn resolved_input_layout_projection(
-    input: &awaken_session_resource_contract::ResolvedInput,
+    input: &session_resource::ResolvedInput,
 ) -> ManagedLayoutProjection {
     let kind = match &input.source {
-        awaken_session_resource_contract::ResolvedInputSource::File { file_id } => {
+        session_resource::ResolvedInputSource::File { file_id } => {
             ManagedInputKind::File(file_id.as_str())
         }
-        awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
-            memory_store_id,
-            ..
+        session_resource::ResolvedInputSource::MemoryStore {
+            memory_store_id, ..
         } => ManagedInputKind::Memory(memory_store_id.as_str()),
-        awaken_session_resource_contract::ResolvedInputSource::Repository { .. } => {
-            ManagedInputKind::Repository
-        }
+        session_resource::ResolvedInputSource::Repository { .. } => ManagedInputKind::Repository,
     };
     project_managed_input_layout(ManagedInputLayoutView {
         kind,
@@ -196,16 +194,14 @@ pub(crate) fn resolved_input_layout_projection(
     })
 }
 
-pub(crate) fn resolved_input_effect_path(
-    input: &awaken_session_resource_contract::ResolvedInput,
-) -> String {
+pub(crate) fn resolved_input_effect_path(input: &session_resource::ResolvedInput) -> String {
     resolved_input_layout_projection(input)
         .mount_path()
         .to_string()
 }
 
 pub(crate) fn resolved_input_validation_mount(
-    input: &awaken_session_resource_contract::ResolvedInput,
+    input: &session_resource::ResolvedInput,
     environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
 ) -> Option<awaken_provisioning_contract::MountRequirement> {
     match resolved_input_layout_projection(input) {

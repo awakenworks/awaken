@@ -13,6 +13,7 @@ use crate::environment_owner::{
     RetiringEnvironmentOwner, RetiringSessionEnvironment, SessionEnvironmentOwner,
     SessionEnvironmentPreparation, SessionEnvironmentRetirementCause, UnboundSessionEnvironment,
 };
+use awaken_session_configuration_contract::resource as session_resource;
 
 mod publication;
 mod state;
@@ -1605,7 +1606,7 @@ impl crate::environment_holding::EnvironmentHolding {
         &self,
         thread: &str,
         provider: &crate::session_environment::SessionEnvironmentProvider,
-        resolved_resources: Option<&awaken_session_resource_contract::ResolvedSessionResources>,
+        resolved_resources: Option<&session_resource::ResolvedSessionResources>,
     ) -> awaken_provisioning_contract::SandboxSpec {
         match resolved_resources {
             Some(resources) => self
@@ -1670,7 +1671,7 @@ impl crate::environment_holding::EnvironmentHolding {
         thread: &str,
         encoded: &str,
         provider: &crate::session_environment::SessionEnvironmentProvider,
-        resolved_resources: Option<&awaken_session_resource_contract::ResolvedSessionResources>,
+        resolved_resources: Option<&session_resource::ResolvedSessionResources>,
         source_generation_id: Option<&str>,
     ) -> Result<ValidatedSessionEnvironmentAdoption, HostError> {
         let handle: awaken_provisioning_contract::SandboxHandle = serde_json::from_str(encoded)

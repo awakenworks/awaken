@@ -664,7 +664,8 @@ mod runtime_session_store_tests {
     fn creation_intent() -> SessionCreationIntent {
         SessionCreationIntent {
             control: ControlSessionCreationInputs {
-                mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Managed,
+                mutation_policy:
+                    awaken_session_configuration_contract::resource::SessionMutationPolicy::Managed,
                 application_origin: None,
                 environment: EnvironmentSnapshot {
                     environment_id: awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID
@@ -694,8 +695,7 @@ mod runtime_session_store_tests {
                             ),
                         },
                 },
-                runtime_placement:
-                    awaken_session_configuration_contract::SessionRuntimePlacement::Local,
+                runtime_placement: awaken_session_types::SessionRuntimePlacement::Local,
                 agent_id: "assistant".into(),
                 agent_revision: None,
                 model_override: None,
@@ -1530,12 +1530,14 @@ mod process_role_surface_tests {
         let mut realized = super::runtime_session_store_tests::session(
             &awaken_session_types::SessionId::from("domain-affinity"),
         );
-        realized.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
-            owner: domain_identity.worker_id.clone(),
-            runtime_incarnation: "domain-test:old-pod".into(),
-            epoch: 1,
-            expires_at_unix_ms: 1,
-        });
+        realized.realization = Some(
+            awaken_session_configuration_contract::resource::SessionRealizationLease {
+                owner: domain_identity.worker_id.clone(),
+                runtime_incarnation: "domain-test:old-pod".into(),
+                epoch: 1,
+                expires_at_unix_ms: 1,
+            },
+        );
         let payload_hash = stable_fingerprint(&realized);
         domain_sessions
             .create(

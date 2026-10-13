@@ -219,12 +219,14 @@ mod tests {
         let mut root = session("terminal-worker-demand", SessionRevision(1));
         assert!(!root.needs_terminal_cleanup_worker().unwrap(), "R1");
         assert!(!root.has_unfinished_worker_realization().unwrap(), "R1");
-        root.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
-            owner: "worker-root".into(),
-            runtime_incarnation: "worker-root:pod-uid".into(),
-            epoch: 1,
-            expires_at_unix_ms: 1,
-        });
+        root.realization = Some(
+            awaken_session_configuration_contract::resource::SessionRealizationLease {
+                owner: "worker-root".into(),
+                runtime_incarnation: "worker-root:pod-uid".into(),
+                epoch: 1,
+                expires_at_unix_ms: 1,
+            },
+        );
         assert!(root.has_unfinished_worker_realization().unwrap(), "R2");
         let id = root.session_id.clone();
         assert!(root.terminal_cleanup.request(&id));

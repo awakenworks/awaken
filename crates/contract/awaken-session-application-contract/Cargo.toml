@@ -15,9 +15,6 @@ separation = "contract"
 
 [dependencies]
 awaken-credential-contract.workspace = true
-awaken-session-configuration-contract.workspace = true
-awaken-session-mcp-contract.workspace = true
-awaken-session-state-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-time.workspace = true
 awaken-runtime-contract.workspace = true

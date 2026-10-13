@@ -7,7 +7,9 @@
 
 use super::McpGenerationRef;
 #[cfg(kani)]
-use awaken_session_mcp_contract::{McpAttachmentContentDigest, McpAttachmentId, McpGeneration};
+use awaken_session_configuration_contract::mcp::{
+    McpAttachmentContentDigest, McpAttachmentId, McpGeneration,
+};
 
 /// Whether the current exact-generation fence is the asserted fence or a
 /// monotonic lease extension of it. Session, logical generation, owner

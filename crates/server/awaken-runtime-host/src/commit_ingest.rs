@@ -139,21 +139,21 @@ mod tests {
 
     fn claimed_memory_manifest(
         store_id: &str,
-    ) -> awaken_session_resource_contract::SessionResourceManifest {
+    ) -> awaken_session_configuration_contract::resource::SessionResourceManifest {
         let config = awaken_resource_contract::MemoryStoreConfigVersion {
             memory_store_id: store_id.to_string().into(),
             version: awaken_resource_contract::ConfigVersion::INITIAL,
             retention_policy: Default::default(),
         };
-        awaken_session_resource_contract::SessionResourceManifest::at_revision(
+        awaken_session_configuration_contract::resource::SessionResourceManifest::at_revision(
             WORKSPACE_ID,
             7,
-            awaken_session_resource_contract::ResolvedSessionResources::try_new(
-                vec![awaken_session_resource_contract::ResolvedInput {
+            awaken_session_configuration_contract::resource::ResolvedSessionResources::try_new(
+                vec![awaken_session_configuration_contract::resource::ResolvedInput {
                     created_at_unix_ms: None,
                     updated_at_unix_ms: None,
                     binding_id: awaken_resource_contract::BindingId::new(MEMORY_BINDING_ID),
-                    source: awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
+                    source: awaken_session_configuration_contract::resource::ResolvedInputSource::MemoryStore {
                         memory_store_id: store_id.to_string().into(),
                         config,
                     },
@@ -170,7 +170,7 @@ mod tests {
     fn claimed_memory_projection(
         root: &awaken_runtime_contract::ExecutableAgentSnapshot,
         override_candidate: &ResolvedModelCandidate,
-        manifest: &awaken_session_resource_contract::SessionResourceManifest,
+        manifest: &awaken_session_configuration_contract::resource::SessionResourceManifest,
     ) -> awaken_session_realization_contract::FrozenSessionProjection {
         let binding = override_candidate.binding();
         let environment = awaken_session_configuration_contract::EnvironmentSnapshot {
@@ -192,8 +192,7 @@ mod tests {
         let baseline = awaken_session_configuration_contract::SessionBaseline::compile(
             awaken_session_configuration_contract::SessionBaselineInputs {
                 environment,
-                runtime_placement:
-                    awaken_session_configuration_contract::SessionRuntimePlacement::Worker,
+                runtime_placement: awaken_session_types::SessionRuntimePlacement::Worker,
                 mcp_authoring: Default::default(),
                 agent_id: root.root_agent_id.0.clone(),
                 agent_revision: None,
@@ -228,10 +227,10 @@ mod tests {
             resource_revision: manifest.revision,
             resources: manifest.resources.clone(),
             previous_resource_manifest: Some(
-                awaken_session_resource_contract::SessionResourceManifest::at_revision(
+                awaken_session_configuration_contract::resource::SessionResourceManifest::at_revision(
                     manifest.workspace_id.clone(),
                     0,
-                    awaken_session_resource_contract::ResolvedSessionResources::default(),
+                    awaken_session_configuration_contract::resource::ResolvedSessionResources::default(),
                 ),
             ),
             tools: Default::default(),
@@ -562,11 +561,12 @@ mod tests {
             .install_projection(&managed, thread, initial)
             .await
             .expect("C5 install complete frozen Session projection");
-        let manifest = awaken_session_resource_contract::SessionResourceManifest::at_revision(
-            committed.workspace_id.clone(),
-            committed.resource_revision,
-            committed.resources.clone(),
-        );
+        let manifest =
+            awaken_session_configuration_contract::resource::SessionResourceManifest::at_revision(
+                committed.workspace_id.clone(),
+                committed.resource_revision,
+                committed.resources.clone(),
+            );
         admission
             .realizer
             .staging

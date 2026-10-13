@@ -489,7 +489,7 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
         ChangeMemoryStoreState, ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition,
         PublishMemoryStoreConfig, RegisterMemoryStore, ResourceAdministration as _, ResourceState,
     };
-    use awaken_session_resource_contract::ResolvedInputSource;
+    use awaken_session_configuration_contract::resource::ResolvedInputSource;
 
     let catalog = resource_registry().await;
     let host = ((crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
@@ -671,14 +671,12 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
     let mut init = bare_session("a", &workspace);
     let resources = init
         .resources
-        .with_skills(vec![
-            awaken_session_resource_contract::ResolvedSkillBinding {
-                kind: awaken_agent_contract::AgentSkillKind::Custom,
-                skill_id: "governed".into(),
-                version: 1,
-                bundle_sha256: hash,
-            },
-        ])
+        .with_skills(vec![crate::session_resource::ResolvedSkillBinding {
+            kind: awaken_agent_contract::AgentSkillKind::Custom,
+            skill_id: "governed".into(),
+            version: 1,
+            bundle_sha256: hash,
+        }])
         .unwrap();
     init.resources = resources.clone();
     install_complete_test_session_for_realization(&managed, "skill-revoke", init)
@@ -729,7 +727,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
                 before_manifest.revision,
                 before_manifest.resources.clone(),
                 before_manifest.revision + 1,
-                awaken_session_resource_contract::ResolvedSessionResources::default(),
+                crate::session_resource::ResolvedSessionResources::default(),
             ),
         )
         .await

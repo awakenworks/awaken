@@ -298,15 +298,17 @@ fn upgrade_v1_root(data: &str, revision: i64) -> Result<Option<String>, serde_js
             .get("attachment_id")
             .cloned()
             .ok_or_else(|| invalid("v1 MCP attachment has no identity"))?;
-        let identity: awaken_session_mcp_contract::McpAttachmentId =
+        let identity: awaken_session_configuration_contract::mcp::McpAttachmentId =
             serde_json::from_value(identity)?;
         if identity.0.is_empty() {
             return Err(invalid("v1 MCP attachment identity is empty"));
         }
-        let draft: awaken_session_mcp_contract::McpAttachmentDraft =
+        let draft: awaken_session_configuration_contract::mcp::McpAttachmentDraft =
             serde_json::from_value(attachment.clone())?;
         attachment["generation"] = serde_json::to_value(
-            awaken_session_mcp_contract::McpGeneration::of_draft(identity, version, &draft),
+            awaken_session_configuration_contract::mcp::McpGeneration::of_draft(
+                identity, version, &draft,
+            ),
         )?;
     }
     aggregate.insert("revision".into(), serde_json::json!(next_revision));
@@ -391,16 +393,16 @@ mod tests {
         // repository, not merely serde. No new protocol is introduced, so this
         // is storage/codec evidence, not a physical-stop or migration proof.
         let mut session = crate::tests::sample("format-witness");
-        session.mcp = awaken_session_mcp_contract::SessionMcpAttachmentSet::from_initial(
-            vec![awaken_session_mcp_contract::McpAttachmentDraft {
+        session.mcp = awaken_session_configuration_contract::mcp::SessionMcpAttachmentSet::from_initial(
+            vec![awaken_session_configuration_contract::mcp::McpAttachmentDraft {
                 name: "fixture".into(),
-                target: awaken_session_mcp_contract::McpTarget::parse_http(
+                target: awaken_agent_contract::McpTarget::parse_http(
                     "https://fixture.test/mcp",
                 )
                 .unwrap(),
                 prompts_as_skills: false,
                 credential: None,
-                origin: awaken_session_mcp_contract::McpAttachmentOrigin::Session,
+                origin: awaken_session_configuration_contract::mcp::McpAttachmentOrigin::Session,
             }],
             None,
         )
@@ -410,7 +412,7 @@ mod tests {
             .mcp
             .claim_realization(
                 &generation,
-                awaken_session_mcp_contract::McpRealizationClaim {
+                awaken_session_configuration_contract::mcp::McpRealizationClaim {
                     realization_id: "old-realization".into(),
                     runtime_incarnation: "old-worker".into(),
                     lease_epoch: 7,
@@ -655,14 +657,14 @@ mod tests {
             }))
             .unwrap();
         session.resources = awaken_session_state_contract::SessionResourceState::from_active(
-            awaken_session_resource_contract::ResolvedSessionResources::try_new(
+            awaken_session_configuration_contract::resource::ResolvedSessionResources::try_new(
                 vec![intent.input.clone()],
                 Vec::new(),
             )
             .unwrap(),
         );
         session.environment.set_resident("codec-publication-source");
-        let lease = awaken_session_resource_contract::SessionRealizationLease {
+        let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
             owner: "codec-worker".into(),
             runtime_incarnation: "codec-worker:boot".into(),
             epoch: 7,
@@ -1050,12 +1052,14 @@ mod tests {
             old.tools.clone(),
             old.budget.clone(),
         );
-        fresh.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
-            owner: "worker".into(),
-            runtime_incarnation: "worker:1:boot".into(),
-            epoch: 1,
-            expires_at_unix_ms: 500,
-        });
+        fresh.realization = Some(
+            awaken_session_configuration_contract::resource::SessionRealizationLease {
+                owner: "worker".into(),
+                runtime_incarnation: "worker:1:boot".into(),
+                epoch: 1,
+                expires_at_unix_ms: 500,
+            },
+        );
         let fingerprint = fresh
             .frozen_baseline()
             .unwrap()

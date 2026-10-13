@@ -13,7 +13,7 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
         .build()
         .expect("validated Host dependencies");
     let session = "renewed-relay";
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = crate::session_resource::SessionRealizationLease {
         owner: "worker".into(),
         runtime_incarnation: "worker/1".into(),
         epoch: 2,
@@ -67,8 +67,8 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
         let mut foreign = generation.clone();
         foreign = foreign
             .with_persisted(|w| {
-                w.generation = awaken_session_mcp_contract::McpGeneration::new(
-                    awaken_session_mcp_contract::McpAttachmentId(format!("foreign-{incarnation}")),
+                w.generation = crate::session_mcp::McpGeneration::new(
+                    crate::session_mcp::McpAttachmentId(format!("foreign-{incarnation}")),
                     foreign.generation().version(),
                     foreign.generation().digest().clone(),
                 )
@@ -107,8 +107,8 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
     let mut live = generation.clone();
     live = live
         .with_persisted(|w| {
-            w.generation = awaken_session_mcp_contract::McpGeneration::new(
-                awaken_session_mcp_contract::McpAttachmentId("live-assertion".into()),
+            w.generation = crate::session_mcp::McpGeneration::new(
+                crate::session_mcp::McpAttachmentId("live-assertion".into()),
                 live.generation().version(),
                 live.generation().digest().clone(),
             )

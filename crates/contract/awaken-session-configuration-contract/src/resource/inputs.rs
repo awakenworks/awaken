@@ -278,7 +278,7 @@ pub(crate) fn session_resource_compatibility_facts(
 /// canonical representation of a Session that selected no Skills.
 ///
 /// ```compile_fail
-/// use awaken_session_resource_contract::ResolvedSessionResources;
+/// use crate::resource::ResolvedSessionResources;
 ///
 /// let _ = ResolvedSessionResources {
 ///     inputs: Vec::new(),
@@ -1634,26 +1634,26 @@ mod tests {
         .expect("valid Skill candidate");
 
         assert!(
-            crate::SessionMutationPolicy::Managed
+            super::SessionMutationPolicy::Managed
                 .admits_resource_replacement(&current, &changed_non_file),
             "R1/E1"
         );
         assert!(
-            !crate::SessionMutationPolicy::Frozen.admits_resource_replacement(&current, &current),
+            !super::SessionMutationPolicy::Frozen.admits_resource_replacement(&current, &current),
             "R2/E2"
         );
         assert!(
-            crate::SessionMutationPolicy::FileResources
+            super::SessionMutationPolicy::FileResources
                 .admits_resource_replacement(&current, &file_only),
             "R3/E3"
         );
         assert!(
-            !crate::SessionMutationPolicy::FileResources
+            !super::SessionMutationPolicy::FileResources
                 .admits_resource_replacement(&current, &changed_non_file),
             "R4/E3"
         );
         assert!(
-            !crate::SessionMutationPolicy::FileResources
+            !super::SessionMutationPolicy::FileResources
                 .admits_resource_replacement(&current, &changed_skill),
             "R5/E3"
         );

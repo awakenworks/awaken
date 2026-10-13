@@ -19,7 +19,7 @@ async fn await_terminal_fence_refresh_gate<T: std::fmt::Debug, E: std::fmt::Debu
     .unwrap_or_else(|_| panic!("terminal preparation did not reach {boundary}"));
 }
 
-fn terminal_memory_resources() -> awaken_session_resource_contract::ResolvedSessionResources {
+fn terminal_memory_resources() -> crate::session_resource::ResolvedSessionResources {
     effective_resources(vec![TestInput {
         kind: "memory_store".into(),
         id: "terminal-memory-store".into(),
@@ -43,7 +43,7 @@ fn terminal_memory_projection_with_idle_retention(
     projection.resource_revision = 1;
     projection.resources = resources.clone();
     projection.previous_resource_manifest = Some(
-        awaken_session_resource_contract::SessionResourceManifest::at_revision(
+        crate::session_resource::SessionResourceManifest::at_revision(
             "terminal-workspace",
             1,
             resources,
@@ -113,7 +113,7 @@ impl
                 },
             );
         };
-        let awaken_session_resource_contract::ResolvedInputSource::MemoryStore { config, .. } =
+        let crate::session_resource::ResolvedInputSource::MemoryStore { config, .. } =
             &input.source
         else {
             return Err(
@@ -204,11 +204,11 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
     .build()
     .expect("validated Host dependencies");
     let managed = crate::ManagedHost::new(host);
-    let input = awaken_session_resource_contract::ResolvedInput {
+    let input = crate::session_resource::ResolvedInput {
         created_at_unix_ms: None,
         updated_at_unix_ms: None,
         binding_id: awaken_resource_contract::BindingId::from("realization-memory"),
-        source: awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
+        source: crate::session_resource::ResolvedInputSource::MemoryStore {
             memory_store_id: awaken_resource_contract::MemoryStoreId::from(
                 "realization-memory-store",
             ),
@@ -224,23 +224,20 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         access: awaken_resource_contract::ResourceAccess::ReadOnly,
         instructions: None,
     };
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = crate::session_resource::SessionRealizationLease {
         owner: "realization-memory-worker".into(),
         runtime_incarnation: "realization-memory-worker:1:boot".into(),
         epoch: 2,
         expires_at_unix_ms: u64::MAX,
     };
-    let desired = awaken_session_resource_contract::SessionResourceManifest::at_revision(
+    let desired = crate::session_resource::SessionResourceManifest::at_revision(
         "realization-workspace",
         5,
-        awaken_session_resource_contract::ResolvedSessionResources::try_new(
-            vec![input.clone()],
-            Vec::new(),
-        )
-        .expect("R2 exact Memory manifest"),
+        crate::session_resource::ResolvedSessionResources::try_new(vec![input.clone()], Vec::new())
+            .expect("R2 exact Memory manifest"),
     );
-    let transition = awaken_session_resource_contract::SessionResourceTransition::new(
-        awaken_session_resource_contract::SessionResourceManifest::at_revision(
+    let transition = crate::session_resource::SessionResourceTransition::new(
+        crate::session_resource::SessionResourceManifest::at_revision(
             "realization-workspace",
             0,
             Default::default(),
@@ -292,7 +289,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         .await
         .expect("R2 exact lease replay reuses its compiled projection");
     assert_eq!(events.lock().unwrap().len(), 1, "R2 exact cache replay");
-    let renewed = awaken_session_resource_contract::SessionRealizationLease {
+    let renewed = crate::session_resource::SessionRealizationLease {
         expires_at_unix_ms: lease.expires_at_unix_ms - 1,
         ..lease.clone()
     };
@@ -364,7 +361,7 @@ async fn remote_memory_staging_reuses_one_run_or_session_authority() {
         "R1/R2 select distinct existing encoders"
     );
 
-    let stale = awaken_session_resource_contract::SessionRealizationLease {
+    let stale = crate::session_resource::SessionRealizationLease {
         epoch: 1,
         ..lease.clone()
     };
@@ -564,7 +561,7 @@ async fn source_release_preparation_is_withheld_for_an_absent_pod_with_live_clai
 
     let handle = terminal_fixture_container_handle(thread, &host.realizer.sandbox_spec(thread));
     let source_binding = serde_json::to_string(&handle).unwrap();
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = crate::session_resource::SessionRealizationLease {
         owner: "source-cleanup-worker".into(),
         runtime_incarnation: "source-cleanup-worker:incarnation".into(),
         epoch: 1,
@@ -788,13 +785,13 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         .expect("validated Host dependencies");
     let session_id = "terminal-renewed-provider-fence";
     let now_unix_ms = crate::terminal_repository_publication::runtime_unix_now_ms();
-    let expired_lease = awaken_session_resource_contract::SessionRealizationLease {
+    let expired_lease = crate::session_resource::SessionRealizationLease {
         owner: "terminal-worker".into(),
         runtime_incarnation: "terminal-worker:boot".into(),
         epoch: 12,
         expires_at_unix_ms: now_unix_ms.saturating_sub(20_001),
     };
-    let renewed_lease = awaken_session_resource_contract::SessionRealizationLease {
+    let renewed_lease = crate::session_resource::SessionRealizationLease {
         expires_at_unix_ms: now_unix_ms.saturating_add(30_000),
         ..expired_lease.clone()
     };
@@ -923,7 +920,7 @@ async fn terminal_provider_fences_use_only_the_current_same_generation_renewal()
         "R2/E2"
     );
 
-    let successor = awaken_session_resource_contract::SessionRealizationLease {
+    let successor = crate::session_resource::SessionRealizationLease {
         epoch: expired_lease.epoch + 1,
         expires_at_unix_ms: now_unix_ms.saturating_add(30_000),
         ..expired_lease
@@ -966,7 +963,7 @@ async fn terminal_preparation_refreshes_the_fence_at_each_physical_boundary() {
     // | R3 | checkpoint under L2 | L3 | provider receives and receipt binds L3 (E3/E4) |
     let thread = "terminal-fence-refresh-between-effects";
     let (lease, effect) = terminal_recovery_effect(thread, "terminal-refresh-worker");
-    let renewed = |expires_at_unix_ms| awaken_session_resource_contract::SessionRealizationLease {
+    let renewed = |expires_at_unix_ms| crate::session_resource::SessionRealizationLease {
         expires_at_unix_ms,
         ..lease.clone()
     };

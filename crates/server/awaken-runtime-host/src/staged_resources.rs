@@ -6,6 +6,7 @@
 //! produces them and the Session slot holds them.
 
 use awaken_provisioning_contract as pc;
+use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_realization_contract::ResourceOperationFence;
 
 /// A thread's staged neutral mount requirements plus the prompt fragments derived
@@ -68,7 +69,7 @@ pub(crate) enum ResourceBindingCheck {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct RepositoryActivation {
     pub plan: pc::RepositoryRealizationPlan,
-    pub credential_pin: Option<awaken_session_resource_contract::ResolvedRepositoryCredential>,
+    pub credential_pin: Option<session_resource::ResolvedRepositoryCredential>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

@@ -154,11 +154,11 @@ pub struct McpGenerationProjection {
     /// The one canonical, secret-free effect input. Keep it intact so durable
     /// dispatch can replay the exact generation on the execution Worker without
     /// reconstructing a parallel MCP configuration from live transport state.
-    pub request: awaken_session_mcp_contract::StageMcpAttachment,
+    pub request: awaken_session_configuration_contract::mcp::StageMcpAttachment,
     /// Exact immutable realization identity with only renewable expiry/key
     /// excluded. It prevents a lease extension from changing target,
     /// credential, holder, owner incarnation, epoch, or logical generation.
-    pub receipt: awaken_session_mcp_contract::McpRealizationReceipt,
+    pub receipt: awaken_session_configuration_contract::mcp::McpRealizationReceipt,
     pub server: Option<crate::mcp_material::McpTransportMaterial>,
     pub native_wiring: Option<crate::mcp_material::McpWiring>,
     /// Session-owned process for a Native sandbox-stdio MCP generation. ACP
@@ -320,7 +320,9 @@ impl SessionMcpState {
     /// The exact stage requests of every visible generation, as durable
     /// dispatch replays them on the execution Worker.
     #[must_use]
-    pub fn active_stage_requests(&self) -> Vec<awaken_session_mcp_contract::StageMcpAttachment> {
+    pub fn active_stage_requests(
+        &self,
+    ) -> Vec<awaken_session_configuration_contract::mcp::StageMcpAttachment> {
         self.projections
             .iter()
             .filter(|projection| projection.state == McpProjectionState::Active)

@@ -292,7 +292,7 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl
 
     async fn record_terminal_cleanup_preparation(
         &self,
-        _lease: &awaken_session_resource_contract::SessionRealizationLease,
+        _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         _preparation: awaken_session_state_contract::SessionCleanupPreparation,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         Err(
@@ -861,7 +861,7 @@ async fn terminal_artifact_uses_current_root_for_an_expired_asserted_generation(
             "session-terminal-artifact",
             "cleanup-root",
         ),
-        awaken_session_resource_contract::SessionRealizationLease {
+        awaken_session_configuration_contract::resource::SessionRealizationLease {
             owner: identity.worker_id.clone(),
             runtime_incarnation: identity.lease_owner(),
             epoch: 4,
@@ -870,7 +870,7 @@ async fn terminal_artifact_uses_current_root_for_an_expired_asserted_generation(
     );
     let renewed = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
         asserted.command.clone(),
-        awaken_session_resource_contract::SessionRealizationLease {
+        awaken_session_configuration_contract::resource::SessionRealizationLease {
             expires_at_unix_ms: now_unix_ms.saturating_add(30_000),
             ..asserted.lease.clone()
         },
@@ -1076,7 +1076,7 @@ async fn checkpoint_release_is_unscoped_idempotent_and_terminal_rebindable() {
     ));
     let counting = Arc::new(CountingFileApplication::new(application.clone()));
     let (directory, identity) = support::ready_worker("worker-checkpoint-artifact").await;
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
         owner: identity.worker_id.clone(),
         runtime_incarnation: identity.lease_owner(),
         epoch: 9,
@@ -1295,7 +1295,7 @@ async fn terminal_artifact_response_loss_recovers_only_exact_durable_file_eviden
             "session-terminal-recovery",
             "cleanup-root",
         ),
-        awaken_session_resource_contract::SessionRealizationLease {
+        awaken_session_configuration_contract::resource::SessionRealizationLease {
             owner: identity.worker_id.clone(),
             runtime_incarnation: identity.lease_owner(),
             epoch: 7,
@@ -1304,7 +1304,7 @@ async fn terminal_artifact_response_loss_recovers_only_exact_durable_file_eviden
     );
     let renewed_effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
         effect.command.clone(),
-        awaken_session_resource_contract::SessionRealizationLease {
+        awaken_session_configuration_contract::resource::SessionRealizationLease {
             expires_at_unix_ms: now_unix_ms.saturating_add(30_000),
             ..effect.lease.clone()
         },

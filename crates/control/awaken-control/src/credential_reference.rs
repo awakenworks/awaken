@@ -75,12 +75,12 @@ impl awaken_resource_contract::RepositoryCredentialValidator for CredentialRevis
             return Err(unavailable());
         }
         let target =
-            awaken_session_resource_contract::repository_transport_credential_target(remote_url)
+            awaken_session_configuration_contract::resource::repository_transport_credential_target(remote_url)
                 .map_err(|_| unavailable())?;
         source
             .validate_access_target(
                 Some(&target),
-                &awaken_session_resource_contract::repository_transport_credential_usage(),
+                &awaken_session_configuration_contract::resource::repository_transport_credential_usage(),
             )
             .map_err(|_| unavailable())?;
         let now = awaken_time::WallClockExt::now_ms(self.clock.as_ref());

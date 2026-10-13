@@ -117,7 +117,7 @@ async fn preparation_candidate_index_skips_a_saturated_live_owner_front() {
     );
     for index in 0..300 {
         let mut root = externally_placed(&format!("retained-{index}"), "idle", false);
-        root.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+        root.realization = Some(crate::session_resource::SessionRealizationLease {
             owner: format!("old-worker-{index}"),
             runtime_incarnation: format!("old-worker-{index}:pod"),
             epoch: 1,
@@ -176,7 +176,7 @@ async fn bound_incomplete_preparation_remains_a_candidate_without_extra_replica_
             .unwrap(),
     );
     let mut root = externally_placed("bound-preparation", "preparing", true);
-    root.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+    root.realization = Some(crate::session_resource::SessionRealizationLease {
         owner: "worker-a".into(),
         runtime_incarnation: "worker-a:pod".into(),
         epoch: 1,

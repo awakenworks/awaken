@@ -54,7 +54,7 @@ async fn install_complete_memory_test_session(
     thread: &str,
     agent: &str,
     store: &str,
-) -> awaken_session_resource_contract::SessionResourceManifest {
+) -> crate::session_resource::SessionResourceManifest {
     let resources = effective_resources(vec![TestInput {
         kind: "memory_store".into(),
         id: store.into(),
@@ -70,7 +70,7 @@ async fn install_complete_memory_test_session(
         .install_complete_test_session(managed, thread, init)
         .await
         .expect("real Root before Memory fixture projection");
-    let manifest = awaken_session_resource_contract::SessionResourceManifest::at_revision(
+    let manifest = crate::session_resource::SessionResourceManifest::at_revision(
         managed.host.local_workspace(),
         projection.resource_revision,
         resources.clone(),
@@ -1110,7 +1110,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     let unacknowledged = resource_transition(
         host.local_workspace(),
         0,
-        awaken_session_resource_contract::ResolvedSessionResources::default(),
+        crate::session_resource::ResolvedSessionResources::default(),
         1,
         resources.clone(),
     );
@@ -1184,7 +1184,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         let mut changed = resources.inputs()[0].clone();
         match field {
             "store" => {
-                let awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
+                let crate::session_resource::ResolvedInputSource::MemoryStore {
                     memory_store_id,
                     config,
                 } = &mut changed.source
@@ -1195,10 +1195,8 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
                 config.memory_store_id = memory_store_id.clone();
             }
             "config" | "retention" => {
-                let awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
-                    config,
-                    ..
-                } = &mut changed.source
+                let crate::session_resource::ResolvedInputSource::MemoryStore { config, .. } =
+                    &mut changed.source
                 else {
                     unreachable!()
                 };
@@ -1216,11 +1214,9 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
             "updated" => changed.updated_at_unix_ms = Some(1),
             _ => unreachable!(),
         }
-        let changed = awaken_session_resource_contract::ResolvedSessionResources::try_new(
-            vec![changed],
-            Vec::new(),
-        )
-        .unwrap();
+        let changed =
+            crate::session_resource::ResolvedSessionResources::try_new(vec![changed], Vec::new())
+                .unwrap();
         // Cross every mutation with previous=installed and previous=desired.
         // A no-op in the incoming command cannot override a different installed
         // Memory pin; compare the completed projection, not command equality.
@@ -1259,7 +1255,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
                 1,
                 resources.clone(),
                 2,
-                awaken_session_resource_contract::ResolvedSessionResources::default(),
+                crate::session_resource::ResolvedSessionResources::default(),
             ),
         )
         .await

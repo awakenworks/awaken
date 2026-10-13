@@ -146,7 +146,7 @@ impl ClaimFencedArtifactPublisher {
 
     fn checkpoint_control_for_live_lease(
         &self,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         effect_kind: &str,
     ) -> Result<
         &Arc<dyn awaken_session_realization_contract::SessionCheckpointArtifactControl>,
@@ -380,7 +380,7 @@ mod tests {
     struct ExactResourceControl {
         workspace_id: String,
         asserted_effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
-        current_lease: awaken_session_resource_contract::SessionRealizationLease,
+        current_lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
         checkpoint: Option<awaken_session_state_contract::SessionEnvironmentOperation>,
     }
 
@@ -438,7 +438,7 @@ mod tests {
 
         async fn record_terminal_cleanup_preparation(
             &self,
-            _lease: &awaken_session_resource_contract::SessionRealizationLease,
+            _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
             _preparation: awaken_session_state_contract::SessionCleanupPreparation,
         ) -> Result<(), SessionRealizationControlFailure> {
             Err(SessionRealizationControlFailure::Invalid(
@@ -475,7 +475,7 @@ mod tests {
                 "session",
                 "cleanup",
             ),
-            awaken_session_resource_contract::SessionRealizationLease {
+            awaken_session_configuration_contract::resource::SessionRealizationLease {
                 owner: "coordinator".into(),
                 runtime_incarnation: "coordinator:incarnation".into(),
                 epoch: 1,
@@ -523,7 +523,7 @@ mod tests {
             fence: Some(ResourceOperationFence::Terminal(effect)),
         };
 
-        let renewed = awaken_session_resource_contract::SessionRealizationLease {
+        let renewed = awaken_session_configuration_contract::resource::SessionRealizationLease {
             expires_at_unix_ms: now_unix_ms.saturating_add(60_000),
             ..asserted.lease.clone()
         };
@@ -606,7 +606,7 @@ mod tests {
 
         let foreign = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
             asserted.command.clone(),
-            awaken_session_resource_contract::SessionRealizationLease {
+            awaken_session_configuration_contract::resource::SessionRealizationLease {
                 epoch: asserted.lease.epoch + 1,
                 ..asserted.lease.clone()
             },
@@ -853,7 +853,7 @@ mod tests {
             "workspace",
             "session",
         ] {
-            let lease = awaken_session_resource_contract::SessionRealizationLease {
+            let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
                 owner: "owner".into(),
                 runtime_incarnation: "owner:boot".into(),
                 epoch: 1,

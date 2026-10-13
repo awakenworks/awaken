@@ -218,7 +218,7 @@ async fn register_replayed_token_repository(
 fn repository_retirement_resources(
     session_id: &str,
     credential: Option<awaken_credential_contract::CredentialRef>,
-) -> awaken_session_resource_contract::ResolvedSessionResources {
+) -> crate::session_resource::ResolvedSessionResources {
     let repository_id = managed_repository_id(session_id);
     let remote_url = "https://github.com/awaken/example.git";
     let credential_binding = credential
@@ -229,35 +229,31 @@ fn repository_retirement_resources(
             awaken_credential_contract::PlaintextBoundary::Workload,
             "spiffe://awaken.test/sandbox",
         );
-        Box::new(
-            awaken_session_resource_contract::ResolvedRepositoryCredential {
-                access: awaken_credential_contract::CredentialAccess::new(
-                    credential,
-                    awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
-                    awaken_session_resource_contract::repository_transport_credential_usage(),
-                    awaken_credential_contract::CredentialExecutionPolicy::exact(
-                        holder.clone(),
-                        awaken_credential_contract::ModelExposurePolicy::Forbidden,
-                    ),
-                )
-                .with_target(
-                    awaken_session_resource_contract::repository_transport_credential_target(
-                        remote_url,
-                    )
-                    .expect("Repository target"),
+        Box::new(crate::session_resource::ResolvedRepositoryCredential {
+            access: awaken_credential_contract::CredentialAccess::new(
+                credential,
+                awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
+                crate::session_resource::repository_transport_credential_usage(),
+                awaken_credential_contract::CredentialExecutionPolicy::exact(
+                    holder.clone(),
+                    awaken_credential_contract::ModelExposurePolicy::Forbidden,
                 ),
-                selected_plaintext_holder: holder,
-            },
-        )
+            )
+            .with_target(
+                crate::session_resource::repository_transport_credential_target(remote_url)
+                    .expect("Repository target"),
+            ),
+            selected_plaintext_holder: holder,
+        })
     });
-    awaken_session_resource_contract::ResolvedSessionResources::try_new(
-        vec![awaken_session_resource_contract::ResolvedInput {
+    crate::session_resource::ResolvedSessionResources::try_new(
+        vec![crate::session_resource::ResolvedInput {
             created_at_unix_ms: None,
             updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::from(format!(
                 "repository-{session_id}"
             )),
-            source: awaken_session_resource_contract::ResolvedInputSource::Repository {
+            source: crate::session_resource::ResolvedInputSource::Repository {
                 repository_id: repository_id.clone().into(),
                 config: awaken_resource_contract::RepositoryConfigVersion {
                     repository_id: repository_id.into(),
@@ -282,7 +278,7 @@ fn repository_retirement_resources(
 fn session_with_repository_retirement(
     session_id: &str,
     self_hosted: bool,
-    resources: awaken_session_resource_contract::ResolvedSessionResources,
+    resources: crate::session_resource::ResolvedSessionResources,
 ) -> PersistedSession {
     let mut session = persisted(session_id, self_hosted, "idle");
     session.resources = awaken_session_state_contract::SessionResourceState::from_active(resources);
@@ -290,7 +286,7 @@ fn session_with_repository_retirement(
         .resources
         .prepare(
             &awaken_session_types::SessionId::from(session_id),
-            awaken_session_resource_contract::ResolvedSessionResources::default(),
+            crate::session_resource::ResolvedSessionResources::default(),
         )
         .expect("prepare omission");
     session.resources.commit().expect("commit omission");
@@ -6328,8 +6324,8 @@ struct FailOnceMcpRealizer {
 impl McpAttachmentRealizer for FailOnceMcpRealizer {
     async fn stage_mcp_attachment(
         &self,
-        request: awaken_session_mcp_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, RunError> {
+        request: crate::session_mcp::StageMcpAttachment,
+    ) -> Result<crate::session_mcp::McpRealizationReceipt, RunError> {
         if self.stage_calls.fetch_add(1, Ordering::SeqCst) == 0 {
             return Err(RunError::unavailable("injected MCP stage outage"));
         }
@@ -6338,14 +6334,14 @@ impl McpAttachmentRealizer for FailOnceMcpRealizer {
 
     async fn publish_mcp_generation(
         &self,
-        generation: awaken_session_mcp_contract::McpGenerationRef,
+        generation: crate::session_mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         McpAttachmentRealizer::publish_mcp_generation(&NoopMcpRealizer, generation).await
     }
 
     async fn drain_mcp_generation(
         &self,
-        generation: awaken_session_mcp_contract::McpGenerationRef,
+        generation: crate::session_mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         McpAttachmentRealizer::drain_mcp_generation(&NoopMcpRealizer, generation).await
     }
@@ -6426,7 +6422,7 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
                 ),
                 prompts_as_skills: false,
                 published_credential: None,
-                origin: awaken_session_mcp_contract::McpAttachmentOrigin::Session,
+                origin: crate::session_mcp::McpAttachmentOrigin::Session,
             },
         ])),
         idempotency_key: Some(idempotency_key.into()),
@@ -6540,7 +6536,7 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
     );
     assert_eq!(
         desired[0].state,
-        awaken_session_mcp_contract::McpAttachmentState::Active,
+        crate::session_mcp::McpAttachmentState::Active,
         "M2/E3"
     );
     assert!(desired[0].publication_acknowledged, "M2/E3");
@@ -6640,15 +6636,15 @@ async fn profiled_update_authority_separates_public_agent_and_credential_lifecyc
     for (id, policy) in [
         (
             "update-managed-policy",
-            awaken_session_resource_contract::SessionMutationPolicy::Managed,
+            crate::session_resource::SessionMutationPolicy::Managed,
         ),
         (
             "update-frozen-policy",
-            awaken_session_resource_contract::SessionMutationPolicy::Frozen,
+            crate::session_resource::SessionMutationPolicy::Frozen,
         ),
         (
             "update-files-policy",
-            awaken_session_resource_contract::SessionMutationPolicy::FileResources,
+            crate::session_resource::SessionMutationPolicy::FileResources,
         ),
     ] {
         let mut session = persisted(id, false, "idle");
@@ -7182,7 +7178,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
     fn receipt(
         session_id: &str,
         binding: &str,
-        realization: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+        realization: Option<&crate::session_resource::SessionRealizationLease>,
     ) -> awaken_session_state_contract::SessionEnvironmentReceipt {
         awaken_session_state_contract::SessionEnvironmentReceipt::new(
             session_id,
@@ -7197,7 +7193,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
             .await
             .expect("session repository"),
     );
-    let current = awaken_session_resource_contract::SessionRealizationLease {
+    let current = crate::session_resource::SessionRealizationLease {
         owner: "runtime-a".into(),
         runtime_incarnation: "runtime-a/boot-1".into(),
         epoch: 3,
@@ -7279,12 +7275,12 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
     assert_eq!(replayed, bound, "B10 exact replay");
     super::observation_refinement::root_step("binding-replay", &bound, &replayed, 300);
     let mut renewed_session = persisted("binding-renewed", false, "idle");
-    renewed_session.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+    renewed_session.realization = Some(crate::session_resource::SessionRealizationLease {
         expires_at_unix_ms: u64::MAX,
         ..current.clone()
     });
     create(repo.as_ref(), renewed_session).await;
-    let admitted_before_renewal = awaken_session_resource_contract::SessionRealizationLease {
+    let admitted_before_renewal = crate::session_resource::SessionRealizationLease {
         expires_at_unix_ms: u64::MAX - 1,
         ..current.clone()
     };
@@ -7303,7 +7299,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
     sink.persist(receipt("binding-unassigned", "sandbox-legacy", None))
         .await
         .expect("B6");
-    let stale = awaken_session_resource_contract::SessionRealizationLease {
+    let stale = crate::session_resource::SessionRealizationLease {
         owner: "runtime-b".into(),
         runtime_incarnation: "runtime-b/boot-1".into(),
         epoch: 4,
@@ -7338,7 +7334,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         "B5"
     );
     assert_eq!(error.code, "session_realization_stale", "B5");
-    let expired = awaken_session_resource_contract::SessionRealizationLease {
+    let expired = crate::session_resource::SessionRealizationLease {
         expires_at_unix_ms: 0,
         ..current.clone()
     };
@@ -7528,25 +7524,25 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
         } else {
             admitted_expiry
         };
-        let asserted_lease = awaken_session_resource_contract::SessionRealizationLease {
+        let asserted_lease = crate::session_resource::SessionRealizationLease {
             owner: "runtime-a".into(),
             runtime_incarnation: "runtime-a/boot-1".into(),
             epoch: 7,
             expires_at_unix_ms: admitted_expiry,
         };
-        let current_lease = awaken_session_resource_contract::SessionRealizationLease {
+        let current_lease = crate::session_resource::SessionRealizationLease {
             expires_at_unix_ms: renewed_expiry,
             ..asserted_lease.clone()
         };
         let mut session = persisted("in-flight-renewal", false, "activating");
         session.realization = Some(current_lease.clone());
-        session.mcp = awaken_session_mcp_contract::SessionMcpAttachmentSet::from_initial(
-            vec![awaken_session_mcp_contract::McpAttachmentDraft {
+        session.mcp = crate::session_mcp::SessionMcpAttachmentSet::from_initial(
+            vec![crate::session_mcp::McpAttachmentDraft {
                 name: "browser".into(),
                 target: McpTarget::parse_http("https://browser.example.test/mcp").unwrap(),
                 prompts_as_skills: false,
                 credential: None,
-                origin: awaken_session_mcp_contract::McpAttachmentOrigin::Session,
+                origin: crate::session_mcp::McpAttachmentOrigin::Session,
             }],
             None,
         )
@@ -7556,7 +7552,7 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
             .mcp
             .claim_realization(
                 &generation,
-                awaken_session_mcp_contract::McpRealizationClaim {
+                crate::session_mcp::McpRealizationClaim {
                     realization_id: "realization-1".into(),
                     runtime_incarnation: asserted_lease.runtime_incarnation.clone(),
                     lease_epoch: asserted_lease.epoch,
@@ -7604,7 +7600,7 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
             repo.clone(),
             Arc::new(RecordingEnvironmentSource::default()),
         );
-        let admitted_receipt = awaken_session_mcp_contract::McpRealizationReceipt {
+        let admitted_receipt = crate::session_mcp::McpRealizationReceipt {
             receipt_fingerprint: admitted_request.fingerprint(),
             generation: admitted_request.generation.clone(),
             realization_id: admitted_request.realization_id.clone(),
@@ -7746,16 +7742,16 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
 
 #[tokio::test]
 async fn recovery_replacement_partitions_staged_receipts_and_replays_activation() {
-    use awaken_session_mcp_contract::{
+    use awaken_session_configuration_contract::mcp::{
         McpAttachmentDraft, McpAttachmentOrigin, McpAttachmentState, McpRealizationClaim,
         McpRealizationReceipt, SessionMcpAttachmentSet,
     };
+    use awaken_session_configuration_contract::resource::SessionRealizationLease;
     use awaken_session_realization_contract::{
         AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
         RenewSessionRealization, SessionRealizationAction, SessionRealizationControl,
         SessionRealizationControlFailure, SessionRealizationTarget,
     };
-    use awaken_session_resource_contract::SessionRealizationLease;
     // Cause/effect graph: C1 hot owner versus restarted owner; C2 renewal
     // between Stage and activation; C3 activation response loss/replay;
     // C4 valid versus corrupted recovered-old receipt. The full replacement
@@ -8185,12 +8181,12 @@ async fn complete_recovery_scan_reaches_page_two_and_purge_fails_closed() {
     let memory_store_id = awaken_resource_contract::MemoryStoreId::from("page-two-memory");
     let mut blocker = persisted("page-z-blocker", true, "idle");
     blocker.resources = awaken_session_state_contract::SessionResourceState::from_active(
-        awaken_session_resource_contract::ResolvedSessionResources::try_new(
-            vec![awaken_session_resource_contract::ResolvedInput {
+        crate::session_resource::ResolvedSessionResources::try_new(
+            vec![crate::session_resource::ResolvedInput {
                 created_at_unix_ms: None,
                 updated_at_unix_ms: None,
                 binding_id: awaken_resource_contract::BindingId::from("page-two-memory"),
-                source: awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
+                source: crate::session_resource::ResolvedInputSource::MemoryStore {
                     memory_store_id: memory_store_id.clone(),
                     config: awaken_resource_contract::MemoryStoreConfigVersion {
                         memory_store_id: memory_store_id.clone(),

@@ -6,6 +6,7 @@
 //! corresponding Worker projection after Control accepts the receipt.
 
 use super::*;
+use awaken_session_configuration_contract::resource as session_resource;
 
 impl SharedHost {
     /// Complete every source-dependent participant under one exact aggregate
@@ -507,7 +508,7 @@ impl SharedHost {
     pub(crate) async fn acknowledge_completed_terminal_cleanup(
         &self,
         session_id: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &session_resource::SessionRealizationLease,
     ) {
         self.retire_completed_terminal_cleanup_projection(session_id, lease)
             .await;
@@ -520,7 +521,7 @@ impl SharedHost {
     pub(crate) async fn retire_completed_terminal_cleanup_projection(
         &self,
         session_id: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &session_resource::SessionRealizationLease,
     ) -> bool {
         let projected_terminal = self
             .installed_sessions
@@ -536,7 +537,7 @@ impl SharedHost {
     async fn retire_terminal_projection_for_generation(
         &self,
         session_id: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &session_resource::SessionRealizationLease,
         target: Option<&str>,
     ) -> bool {
         let Some(root_realization) = self

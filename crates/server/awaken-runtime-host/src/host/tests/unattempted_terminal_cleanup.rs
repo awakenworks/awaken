@@ -11,7 +11,7 @@ async fn cold_unmaterialized_recovery_uses_the_saved_create_not_the_cleanup_leas
     for known in [false, true] {
         let thread = "cold-original-create";
         let mut projection = remote_terminal_cleanup_projection();
-        let old_lease = awaken_session_resource_contract::SessionRealizationLease {
+        let old_lease = crate::session_resource::SessionRealizationLease {
             owner: "old-worker".into(),
             runtime_incarnation: "old-boot".into(),
             epoch: 3,

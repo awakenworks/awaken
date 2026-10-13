@@ -28,7 +28,7 @@ mod realization_permit;
 /// its request observation explicitly, never silently manufacture fresh TTL.
 #[cfg(test)]
 pub(crate) fn test_lease_receipt(
-    lease: awaken_session_resource_contract::SessionRealizationLease,
+    lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
 ) -> awaken_session_realization_contract::SessionRealizationLeaseReceipt {
     awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
         lease,
@@ -39,7 +39,7 @@ pub(crate) fn test_lease_receipt(
 
 #[cfg(test)]
 pub(crate) fn test_observed_lease(
-    lease: awaken_session_resource_contract::SessionRealizationLease,
+    lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
 ) -> awaken_session_realization_contract::ObservedSessionRealizationLease {
     let started = awaken_authority_clock::authority_proof_started().unwrap();
     test_lease_receipt(lease).observed(started)
@@ -50,7 +50,7 @@ pub(crate) fn test_observed_lease(
 /// returning it. This is never the fallback for a failed live fixture.
 #[cfg(test)]
 pub(crate) fn test_expired_observed_lease(
-    lease: awaken_session_resource_contract::SessionRealizationLease,
+    lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
 ) -> awaken_session_realization_contract::ObservedSessionRealizationLease {
     let started = awaken_authority_clock::authority_proof_started().unwrap();
     let proof = awaken_session_realization_contract::SessionRealizationLeaseReceipt {
@@ -90,7 +90,7 @@ impl InstalledSession {
     /// remains the exclusive completion edge for physical Resource effects.
     pub(crate) fn dispatch_resource_manifest(
         &self,
-    ) -> Option<awaken_session_resource_contract::SessionResourceManifest> {
+    ) -> Option<crate::session_resource::SessionResourceManifest> {
         if self.run.session_dispatch {
             self.realization
                 .resource_transition
@@ -325,7 +325,7 @@ pub(crate) struct SessionRealizationRevocationSelection {
 impl SessionRealizationRevocationSelection {
     fn close(
         slot: &mut InstalledSession,
-        expected: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+        expected: Option<&crate::session_resource::SessionRealizationLease>,
     ) -> Option<Self> {
         slot.realization.close_authority(expected).then(|| Self {
             realization: slot.realization.realization.clone(),
@@ -372,7 +372,7 @@ impl InstalledSessions {
         &self,
         session: &str,
         expected: Option<(
-            &awaken_session_resource_contract::SessionRealizationLease,
+            &crate::session_resource::SessionRealizationLease,
             &Arc<tokio::sync::Mutex<()>>,
         )>,
     ) -> Option<SessionRealizationRevocationSelection> {

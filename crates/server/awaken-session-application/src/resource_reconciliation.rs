@@ -10,10 +10,10 @@
 //! Durable Session Resource recovery and terminal reclamation.
 
 use awaken_resource_contract::{ResourceReference, ResourceReferenceKind, ResourceReferenceRecord};
-use awaken_session_realization_contract::SessionRealizationControlFailure;
-use awaken_session_resource_contract::{
+use awaken_session_configuration_contract::resource::{
     ResolvedInput, ResolvedInputSource, ResolvedSessionResources, SessionRealizationLease,
 };
+use awaken_session_realization_contract::SessionRealizationControlFailure;
 use awaken_session_state_contract::{
     ActivationState, IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionAggregate,
     SessionExecutionState, SessionMutation, SessionMutationPayload, SessionMutationResult,
@@ -999,17 +999,16 @@ impl SessionApplication {
         preflight_repository_credential_rotation(&persisted, original_input.clone())?;
         self.resource_plaintext_holder(&persisted)?;
         let credential_target =
-            awaken_session_resource_contract::repository_transport_credential_target(&remote_url)
-                .map_err(|error| {
-                SessionPreparationError::Rejected(RunError::bad_request(error.to_string()))
-            })?;
+            crate::session_resource::repository_transport_credential_target(&remote_url).map_err(
+                |error| SessionPreparationError::Rejected(RunError::bad_request(error.to_string())),
+            )?;
         let completed_credential_revision = ingress
             .rotate_material(CredentialMaterialRotationCommand {
                 source_id: awaken_credential_contract::CredentialSourceId(credential_source),
                 expected_revision: credential_revision,
                 workspace_id: owner_scope.to_owned(),
                 target: credential_target,
-                usage: awaken_session_resource_contract::repository_transport_credential_usage(),
+                usage: crate::session_resource::repository_transport_credential_usage(),
                 material,
             })
             .await
@@ -1397,13 +1396,13 @@ impl SessionApplication {
             if let Some(desired) = session.resources.pending.clone() {
                 let previous = session.resources.active.clone();
                 let previous_revision = session.resources.active_revision();
-                let transition = awaken_session_resource_contract::SessionResourceTransition::new(
-                    awaken_session_resource_contract::SessionResourceManifest::at_revision(
+                let transition = crate::session_resource::SessionResourceTransition::new(
+                    crate::session_resource::SessionResourceManifest::at_revision(
                         owner_scope,
                         previous_revision,
                         previous.clone(),
                     ),
-                    awaken_session_resource_contract::SessionResourceManifest::at_revision(
+                    crate::session_resource::SessionResourceManifest::at_revision(
                         owner_scope,
                         session.resources.revision,
                         desired.clone(),
@@ -1482,16 +1481,14 @@ impl SessionApplication {
                 };
             }
             let (active_revision, active_resources) = session.resources.active_generation();
-            let active = awaken_session_resource_contract::SessionResourceManifest::at_revision(
+            let active = crate::session_resource::SessionResourceManifest::at_revision(
                 owner_scope,
                 active_revision,
                 active_resources.clone(),
             );
-            let transition = awaken_session_resource_contract::SessionResourceTransition::new(
-                active.clone(),
-                active,
-            )
-            .map_err(internal)?;
+            let transition =
+                crate::session_resource::SessionResourceTransition::new(active.clone(), active)
+                    .map_err(internal)?;
             environment_runtime
                 .apply_session_inputs(session_id.as_str(), &transition)
                 .await
