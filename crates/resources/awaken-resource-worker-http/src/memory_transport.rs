@@ -908,24 +908,19 @@ async fn send_operation(
         .text()
         .await
         .map_err(|error| MemErr::Storage(error.to_string()))?;
-    if status != StatusCode::OK {
-        if let Ok(MemoryOperationResponse::Error { error }) =
-            serde_json::from_str::<MemoryOperationResponse>(&body)
-        {
-            return Err(error.into());
-        }
-        return Err(MemErr::Storage(format!(
-            "Memory authority returned HTTP {status}; body={body}"
-        )));
-    }
-    let response = serde_json::from_str::<MemoryOperationResponse>(&body).map_err(|error| {
-        MemErr::Storage(format!(
-            "decode Memory authority response: {error}; body={body}"
-        ))
-    })?;
-    match response {
-        MemoryOperationResponse::Error { error } => Err(error.into()),
-        response => Ok(response),
+    match serde_json::from_str::<MemoryOperationResponse>(&body) {
+        // Preserve the authority's closed error contract, including conflict
+        // recovery data, on both success and refusal status codes.
+        Ok(MemoryOperationResponse::Error { error }) => Err(error.into()),
+        Ok(response) if status == StatusCode::OK => Ok(response),
+        _ if status != StatusCode::OK => Err(MemErr::Storage(format!(
+            "Memory authority returned HTTP {status}"
+        ))),
+        // Neither arbitrary response bytes nor serde's input-derived error
+        // belong in diagnostics: both can contain private Memory content.
+        _ => Err(MemErr::Storage(
+            "decode Memory authority response: invalid response".into(),
+        )),
     }
 }
 
@@ -1188,6 +1183,133 @@ impl MemoryRepository for HttpMemoryRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn memory_http_errors_preserve_typed_recovery_without_echoing_response_bytes() {
+        // Causes: C1 HTTP 200 versus refusal; C2 a closed success, a closed
+        // authority error, or an invalid/unexpected body; C3 private bytes in
+        // raw text or serde's unknown discriminant/field. Effects: E1 exact
+        // success; E2 unchanged typed recovery; E3 opaque transport/decode
+        // failure retaining HTTP status where relevant; E4 no C3 disclosure.
+        // Decision table: R1=200+success=>E1; R2=200+typed=>E2;
+        // R3=refusal+typed=>E2; R4=refusal+raw=>E3+E4;
+        // R5=200+invalid tag=>E3+E4; R6=200+extra field=>E3+E4;
+        // R7=refusal+success=>E3+E4. A typed Storage message remains an
+        // intentional authority contract (R8), distinct from arbitrary bytes;
+        // R9=refusal+Conflict=>E2 with the complete original current Memory.
+        // Every rule traverses the actual HTTP client and existing fixture;
+        // no alternate decoder or transport is introduced for testing.
+        use awaken_dispatch_testkit::worker_http as support;
+
+        enum Expected {
+            Snapshot,
+            AtCapacity,
+            NotFound,
+            HttpFailure,
+            DecodeFailure,
+            AuthorityStorage,
+            Conflict,
+        }
+        let private = "private-memory-response-sentinel";
+        let memory = Memory {
+            id: "original-head".into(),
+            path: "/original.md".into(),
+            content_sha256: "original-content-hash".into(),
+            content_size: private.len() as u64,
+            version: 7,
+            created_unix_nanos: 11,
+            updated_unix_nanos: 13,
+            content: Some(private.into()),
+        };
+        let snapshot = serde_json::to_string(&MemoryOperationResponse::Snapshot {
+            heads: vec![memory.clone().into()],
+        })
+        .unwrap();
+        let conflict = serde_json::to_string(&MemoryOperationResponse::Error {
+            error: MemoryWireError::Conflict {
+                current: memory.clone().into(),
+            },
+        })
+        .unwrap();
+        let cases = [
+            (StatusCode::OK, snapshot, Expected::Snapshot),
+            (StatusCode::OK, r#"{"kind":"error","error":{"kind":"at_capacity"}}"#.to_owned(), Expected::AtCapacity),
+            (StatusCode::NOT_FOUND, r#"{"kind":"error","error":{"kind":"not_found","value":"original-head"}}"#.to_owned(), Expected::NotFound),
+            (StatusCode::SERVICE_UNAVAILABLE, private.to_owned(), Expected::HttpFailure),
+            (StatusCode::OK, format!(r#"{{"kind":"{private}"}}"#), Expected::DecodeFailure),
+            (StatusCode::OK, format!(r#"{{"kind":"snapshot","heads":[],"{private}":true}}"#), Expected::DecodeFailure),
+            (StatusCode::CONFLICT, r#"{"kind":"snapshot","heads":[]}"#.to_owned(), Expected::HttpFailure),
+            (StatusCode::INTERNAL_SERVER_ERROR, r#"{"kind":"error","error":{"kind":"storage","message":"declared-authority-failure"}}"#.to_owned(), Expected::AuthorityStorage),
+            (StatusCode::CONFLICT, conflict, Expected::Conflict),
+        ];
+        let reference = memory_materialization_reference(
+            "workspace-memory",
+            "memory",
+            ConfigVersion::INITIAL,
+            ResourceAccess::ReadOnly,
+            &RunClaim {
+                run_id: awaken_agent_contract::agent::run::Id("run-memory".into()),
+                owner: "worker-memory".into(),
+                epoch: 1,
+            },
+        )
+        .unwrap();
+        for (status, body, expected) in cases {
+            let app = Router::new().route(
+                MEMORY_PATH,
+                post(move || {
+                    let body = body.clone();
+                    async move { (status, body) }
+                }),
+            );
+            let address = support::serve(app).await;
+            let upstream = WorkerUpstream::new(format!("http://{address}"));
+            let result = send_operation(&upstream, &reference, MemoryOperation::Snapshot {}).await;
+            match expected {
+                Expected::Snapshot => {
+                    let Ok(MemoryOperationResponse::Snapshot { heads }) = result else {
+                        panic!("R1 requires the complete snapshot")
+                    };
+                    let actual: Vec<Memory> = heads
+                        .into_iter()
+                        .map(|head| head.try_into().unwrap())
+                        .collect();
+                    assert_eq!(actual, vec![memory.clone()], "R1 all original fields");
+                }
+                Expected::AtCapacity => assert!(matches!(result, Err(MemErr::AtCapacity)), "R2"),
+                Expected::NotFound => assert!(
+                    matches!(result, Err(MemErr::NotFound(value)) if value == "original-head"),
+                    "R3"
+                ),
+                Expected::HttpFailure | Expected::DecodeFailure => {
+                    let Err(MemErr::Storage(message)) = result else {
+                        panic!("R4-R7 require a Storage error")
+                    };
+                    assert!(!message.contains(private), "R4-R7/E4");
+                    if status == StatusCode::OK {
+                        assert_eq!(
+                            message, "decode Memory authority response: invalid response",
+                            "R5-R6/E3"
+                        );
+                    } else {
+                        assert_eq!(
+                            message,
+                            format!("Memory authority returned HTTP {status}"),
+                            "R4/R7/E3"
+                        );
+                    }
+                }
+                Expected::AuthorityStorage => assert!(
+                    matches!(result, Err(MemErr::Storage(message)) if message == "declared-authority-failure"),
+                    "R8"
+                ),
+                Expected::Conflict => assert!(
+                    matches!(result, Err(MemErr::Conflict { current }) if *current == memory),
+                    "R9 complete typed recovery data"
+                ),
+            }
+        }
+    }
 
     #[test]
     fn payload_free_memory_operations_refuse_the_keys_they_do_not_model() {
