@@ -178,6 +178,24 @@ impl MemoryCommitCoordinator {
             .and_then(|state| state.resume_tickets.get(run_id).cloned())
     }
 
+    /// Inspect every ordinary-commit rejection before a durable adapter appends.
+    /// The record is the next sequence in this snapshot, not a reservation:
+    /// callers must serialize inspection, durable append, and application. The
+    /// filesystem owner does so under its existing append/lifecycle locks.
+    pub fn inspect_commit(&self, commit: &ThreadCommit) -> Result<CommitRecord, Error> {
+        commit
+            .validate()
+            .map_err(|error| Error::Rejected(error.to_string()))?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| Error::Rejected("commit store poisoned".to_string()))?;
+        let append = prepare_append_locked(&state, commit)?;
+        Ok(CommitRecord {
+            sequence: append.sequence,
+        })
+    }
+
     /// Validate an operation without applying it. Used by the filesystem adapter
     /// while it holds its append lock so rejection always happens before fsync.
     pub fn inspect_operation(
@@ -212,8 +230,13 @@ impl MemoryCommitCoordinator {
             .state
             .lock()
             .map_err(|_| Error::Rejected("commit store poisoned".to_string()))?;
-        validate_transition_locked(&state, &commit)?;
-        apply_commit_locked(&mut state, commit, committed_at_unix_ms)
+        let append = prepare_append_locked(&state, &commit)?;
+        Ok(apply_commit_locked(
+            &mut state,
+            commit,
+            committed_at_unix_ms,
+            append,
+        ))
     }
 }
 
@@ -231,14 +254,17 @@ impl MemoryCommitCoordinator {
             .state
             .lock()
             .map_err(|_| Error::Rejected("commit store poisoned".to_string()))?;
-        let thread_version = match inspect_operation_locked(&state, &operation)? {
+        let (thread_version, append) = match inspect_operation_locked(&state, &operation)? {
             OperationInspection::Replay(receipt) => return Ok(receipt),
-            OperationInspection::Append { thread_version } => thread_version,
+            OperationInspection::Append {
+                thread_version,
+                append,
+            } => (thread_version, append),
         };
         let operation_id = operation.operation_id;
         let payload_hash = operation.payload_hash;
         let commit = operation.commit;
-        let record = apply_commit_locked(&mut state, commit, committed_at_unix_ms)?;
+        let record = apply_commit_locked(&mut state, commit, committed_at_unix_ms, append);
         let receipt = applied_commit_receipt(
             operation_id.clone(),
             payload_hash.clone(),
@@ -268,7 +294,17 @@ impl OperationCoordinator for MemoryCommitCoordinator {
 
 enum OperationInspection {
     Replay(CommitReceipt),
-    Append { thread_version: u64 },
+    Append {
+        thread_version: u64,
+        append: AppendPlan,
+    },
+}
+
+/// Values already checked before any append or in-memory mutation. This is
+/// transient admission data, never another persisted sequence or receipt.
+struct AppendPlan {
+    sequence: u64,
+    event_sequences: Vec<u64>,
 }
 
 fn inspect_operation_locked(
@@ -295,8 +331,11 @@ fn inspect_operation_locked(
     let thread_version =
         admit_commit_operation_append(operation, current_thread_version, current_run_ordinal)
             .map_err(|error| Error::Rejected(error.to_string()))?;
-    validate_transition_locked(state, &operation.commit)?;
-    Ok(OperationInspection::Append { thread_version })
+    let append = prepare_append_locked(state, &operation.commit)?;
+    Ok(OperationInspection::Append {
+        thread_version,
+        append,
+    })
 }
 
 fn validate_transition_locked(state: &CommitState, commit: &ThreadCommit) -> Result<(), Error> {
@@ -321,17 +360,15 @@ fn validate_transition_locked(state: &CommitState, commit: &ThreadCommit) -> Res
     Ok(())
 }
 
-fn apply_commit_locked(
-    state: &mut CommitState,
-    commit: ThreadCommit,
-    committed_at_unix_ms: Option<u64>,
-) -> Result<CommitRecord, Error> {
+fn prepare_append_locked(state: &CommitState, commit: &ThreadCommit) -> Result<AppendPlan, Error> {
+    validate_transition_locked(state, commit)?;
     let next = state
         .sequence
         .checked_add(1)
         .ok_or_else(|| Error::Rejected("commit sequence overflow".to_string()))?;
-    // Validate every cursor before mutating the in-memory authority. This keeps
-    // an oversized event batch or arithmetic overflow atomic and fail-closed.
+    // Ordinary commits, new operations, and filesystem pre-fsync inspection all
+    // use this same law. Exact operation replay returns its old receipt before
+    // reaching append admission and consumes no future sequence/event capacity.
     let event_sequences = (0..commit.events.len())
         .map(|offset| {
             encode_run_lifecycle_cursor(next, offset)
@@ -339,6 +376,22 @@ fn apply_commit_locked(
                 .map_err(|error| Error::Rejected(error.to_string()))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    Ok(AppendPlan {
+        sequence: next,
+        event_sequences,
+    })
+}
+
+fn apply_commit_locked(
+    state: &mut CommitState,
+    commit: ThreadCommit,
+    committed_at_unix_ms: Option<u64>,
+    append: AppendPlan,
+) -> CommitRecord {
+    let AppendPlan {
+        sequence: next,
+        event_sequences,
+    } = append;
     let run_id = commit.run_id().clone();
     let run_state = commit.run_state();
     let run_fact = commit.run_fact();
@@ -386,8 +439,11 @@ fn apply_commit_locked(
     });
 
     state.sequence = next;
-    Ok(CommitRecord { sequence: next })
+    CommitRecord { sequence: next }
 }
+
+#[cfg(test)]
+mod commit_admission_tests;
 
 /// Committed thread truth is readable for resume through the contract read port:
 /// the transcript and the active awaiting ticket, never the live sink (G1/G13).
