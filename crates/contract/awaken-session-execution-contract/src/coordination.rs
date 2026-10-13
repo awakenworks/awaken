@@ -44,6 +44,59 @@ pub struct SessionAgentMessageCommand {
     pub message: String,
 }
 
+impl SessionAgentMessageCommand {
+    /// Original input-shape checks only; committed tool-source refinement must
+    /// still follow before Session authorization or any admission effect.
+    pub fn validate_coordinates(&self) -> Result<(), crate::RunError> {
+        if self.source_thread_id.0 != self.session_id {
+            return Err(crate::RunError::bad_request(
+                "only the primary Session Thread may coordinate Agents",
+            ));
+        }
+        if self.message.trim().is_empty()
+            || self.operation_id.trim().is_empty()
+            || self.source_call_id.trim().is_empty()
+        {
+            return Err(crate::RunError::bad_request(
+                "Agent coordination requires a message and Runtime operation identity",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Convert the already-refined original command into the same complete
+    /// coordination input. Roster resolution and Session authorization remain
+    /// application-owned; no input field is reconstructed from current state.
+    pub fn into_coordinated_run(
+        self,
+        intent: CoordinatedRunIntent,
+        thread_id: ThreadId,
+        snapshot: ExecutableAgentSnapshot,
+        session_activity_epoch: Option<u64>,
+        max_unarchived_threads: usize,
+    ) -> CoordinatedRunCommand {
+        let run_id = coordinated_run_id(
+            &self.session_id,
+            &thread_id,
+            &self.source_run_id,
+            &self.operation_id,
+        );
+        CoordinatedRunCommand {
+            intent,
+            session_id: self.session_id,
+            thread_id,
+            run_id,
+            parent_run_id: self.source_run_id,
+            parent_call_id: self.source_call_id,
+            operation_id: self.operation_id,
+            snapshot,
+            message: self.message,
+            session_activity_epoch,
+            max_unarchived_threads,
+        }
+    }
+}
+
 /// Accepted identity returned to the model-facing builtin adapter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionAgentMessageReceipt {
@@ -235,8 +288,52 @@ pub struct CoordinatedRunCommand {
     pub operation_id: String,
     pub snapshot: ExecutableAgentSnapshot,
     pub message: String,
-    pub session_activity_epoch: u64,
+    /// Original operation receipt, read before fresh preparation. Absence is
+    /// data-only recovery input; a fresh admission requires Some(nonzero).
+    pub session_activity_epoch: Option<u64>,
     pub max_unarchived_threads: usize,
+}
+
+/// Stable coordinated Run identity; moved from the original Session caller.
+pub fn coordinated_run_id(
+    session: &SessionId,
+    thread: &ThreadId,
+    parent: &RunId,
+    operation: &str,
+) -> RunId {
+    RunId(format!(
+        "coord-run-{}",
+        awaken_agent_contract::stable_fingerprint(&(
+            "managed-coordinated-run-v1",
+            session.as_str(),
+            thread.0.as_str(),
+            parent.0.as_str(),
+            operation,
+        ))
+    ))
+}
+
+/// The original immutable child input constructor, shared by freeze and read.
+pub fn coordinated_activation_input(
+    session: &str,
+    thread: &ThreadId,
+    run: &RunId,
+    operation: &str,
+    message: String,
+) -> Vec<Message> {
+    vec![Message::text(
+        awaken_agent_contract::agent::message::Id(format!(
+            "coord-input-{}",
+            awaken_agent_contract::stable_fingerprint(&(
+                session,
+                thread.0.as_str(),
+                run.0.as_str(),
+                operation
+            ))
+        )),
+        Role::User,
+        message,
+    )]
 }
 
 /// Trusted committed Session activity boundary delivered by the dispatch
@@ -278,6 +375,90 @@ pub struct SessionAgentReportContinuation {
     pub source_run_id: RunId,
     pub session_activity_epoch: u64,
     pub message: awaken_agent_contract::agent::message::Message,
+}
+
+/// Two existing nonwire commands borrowed by the one recovery projection.
+#[derive(Clone, Copy, Debug)]
+pub enum CoordinatedAdmissionRef<'a> {
+    Child(&'a CoordinatedRunCommand),
+    Report(
+        &'a SessionAgentReportContinuation,
+        &'a awaken_session_configuration_contract::SessionBaseline,
+    ),
+}
+
+impl SessionAgentReportContinuation {
+    /// Original report rendering from the exact selected committed response and
+    /// frozen roster name. It does not reselect a latest Run or normalize text.
+    pub fn from_committed_report(
+        command: &SessionAgentBoundaryCommand,
+        name: &str,
+        report: &str,
+    ) -> Self {
+        Self {
+            session_id: command.session_id.clone(),
+            source_thread_id: command.source_thread_id.clone(),
+            source_run_id: command.source_run_id.clone(),
+            session_activity_epoch: command.session_activity_epoch,
+            message: Message::text(
+                awaken_agent_contract::agent::message::Id::agent_thread_report(
+                    &command.source_run_id,
+                ),
+                Role::User,
+                format!(
+                    "Message from agent {} (thread {}):\n{}",
+                    name, command.source_thread_id.0, report
+                ),
+            ),
+        }
+    }
+
+    /// Original root continuation identity, never selected from the latest Run.
+    pub fn run_id(&self) -> RunId {
+        RunId(format!(
+            "coord-report-run-{}",
+            awaken_agent_contract::stable_fingerprint(&(
+                "managed-agent-report-run-v1",
+                self.session_id.as_str(),
+                self.source_run_id.0.as_str(),
+            ))
+        ))
+    }
+}
+
+impl CoordinatedAdmissionRef<'_> {
+    pub fn session_id(&self) -> &SessionId {
+        match self {
+            Self::Child(c) => &c.session_id,
+            Self::Report(c, _) => &c.session_id,
+        }
+    }
+    pub fn thread_id(&self) -> ThreadId {
+        match self {
+            Self::Child(c) => c.thread_id.clone(),
+            Self::Report(c, _) => ThreadId(c.session_id.to_string()),
+        }
+    }
+    pub fn run_id(&self) -> RunId {
+        match self {
+            Self::Child(c) => c.run_id.clone(),
+            Self::Report(c, _) => c.run_id(),
+        }
+    }
+    pub fn activity_epoch(&self) -> Option<u64> {
+        match self {
+            Self::Child(c) => c.session_activity_epoch,
+            Self::Report(c, _) => Some(c.session_activity_epoch),
+        }
+    }
+    /// Existing raw membership coordinates: child admission owns its target
+    /// activity; a report still transfers the original source child's activity.
+    pub fn activity_source(&self) -> (Option<&str>, &ThreadId, &RunId) {
+        match self {
+            Self::Child(c) => (Some(&c.operation_id), &c.thread_id, &c.run_id),
+            Self::Report(c, _) => (None, &c.source_thread_id, &c.source_run_id),
+        }
+    }
 }
 
 /// Select the one terminal assistant response that becomes a coordinated

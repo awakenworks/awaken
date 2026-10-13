@@ -3,6 +3,7 @@
 //! derive coordination links from one Thread-owned source.
 
 use super::*;
+use awaken_agent_contract::agent::delegation::DelegationId;
 
 #[derive(Clone)]
 struct PendingCoordinationCall {

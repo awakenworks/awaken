@@ -601,6 +601,56 @@ impl awaken_session_execution_contract::CoordinationRuntime for ManagedHost {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for ManagedHost {
+    async fn coordinated_admission_receipt(
+        &self,
+        command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
+    ) -> Result<Option<awaken_session_execution_contract::SessionAgentMessageReceipt>, RunError> {
+        use awaken_dispatch_contract::SessionRunAdmissionObservation;
+        if command.activity_epoch() == Some(0)
+            || matches!(command, awaken_session_execution_contract::CoordinatedAdmissionRef::Report(_, baseline)
+                if baseline.agent_revision.is_none_or(|revision| revision == 0))
+        {
+            return Err(RunError::unavailable(
+                "original coordination activity epoch is invalid",
+            ));
+        }
+        let run = command.run_id();
+        let observed = self
+            .host
+            .coordinator_dispatch()
+            .map_err(|error| RunError::unavailable(error.message))?
+            .observe_session_run_admission(&run)
+            .await
+            .map_err(|error| RunError::unavailable(error.to_string()))?;
+        match observed {
+            SessionRunAdmissionObservation::Missing => Ok(None),
+            SessionRunAdmissionObservation::Live(request)
+                if request.identity_scope
+                    == awaken_dispatch_contract::DispatchIdentityScope::FullDispatch
+                    && request.session_command_fingerprint.is_none()
+                    && request.session_thread_id.as_ref()
+                        == Some(&awaken_agent_contract::agent::thread::Id(
+                            command.session_id().to_string(),
+                        ))
+                    && command.activity_epoch().is_some_and(|epoch| epoch != 0)
+                    && request.session_activity_epoch == command.activity_epoch()
+                    && awaken_dispatch_execution::coordinated_activation_matches(
+                        &command,
+                        &request.activation,
+                    ) =>
+            {
+                Ok(Some(
+                    awaken_session_execution_contract::SessionAgentMessageReceipt {
+                        thread_id: command.thread_id(),
+                    },
+                ))
+            }
+            _ => Err(RunError::unavailable(
+                "original coordinated admission evidence is incomplete or mismatched",
+            )),
+        }
+    }
+
     async fn session_run_state(
         &self,
         session_id: &awaken_session_types::SessionId,

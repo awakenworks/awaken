@@ -8,7 +8,7 @@
 // @formal evidence session_run.execution_requires_dispatch_work_and_realization_owner
 // @formal evidence session_time.root_observations_are_revision_bound_and_replay_stable
 // @formal evidence session_work.only_a_claimed_nonterminal_run_may_revive_stopped_work
-// awaken-allow(file-limit-ceiling): 8331 (legacy oversized test file: split, never grow)
+// awaken-allow(file-limit-ceiling): 8022 (legacy oversized test file: split, never grow)
 use super::*;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -49,7 +49,21 @@ fn coordinated_session(id: &str) -> PersistedSession {
             },
         ),
     );
-    session
+    // Coordinated admission cases create a new Session, unlike persisted(),
+    // which deliberately represents a legacy missing activity history. Use the
+    // original constructor to retain complete pre-effect membership evidence.
+    let mut fresh = PersistedSession::frozen_with_budget(
+        id,
+        session.frozen_baseline().unwrap().clone(),
+        session.resources,
+        session.mcp,
+        session.title,
+        session.metadata,
+        session.tools,
+        session.budget,
+    );
+    fresh.execution = session.execution;
+    fresh
 }
 
 fn session_with_unsettled_event(id: &str) -> PersistedSession {
@@ -3745,303 +3759,6 @@ async fn operation_activity_replay_uses_the_root_receipt_as_its_only_epoch_autho
 }
 
 #[tokio::test]
-async fn coordinated_agent_admission_preserves_activity_across_ambiguous_delivery() {
-    // Constraint/Invariant: the authoritative Session inputs and repository CAS
-    // documented here remain the only decision source; no parallel ledger is admitted.
-    // Decision rule: execute every reachable cause partition documented here and
-    // require its stated effects, including each fail-closed outcome.
-    // Cause/effect graph: C0 committed source validation accepts/rejects; C1
-    // Runtime admission is accepted, definitively rejected, ambiguously
-    // unavailable, or returns a mismatched receipt; C2 an ambiguous
-    // operation is retried with the same identity; C3 its committed child boundary
-    // later arrives; C4 a terminal child atomically admits its deterministic
-    // primary report continuation; C5 that report Run later reaches its committed
-    // boundary. Effects: E1 accepted work retains one active epoch; E2 only a
-    // BadRequest settles immediately; E0 invalid source reaches neither activity
-    // nor Runtime admission; E3 unavailable/internal outcomes retain the
-    // epoch as durable recovery evidence; E4 exact retry reuses the same child Run
-    // and epoch; E5 Awaiting settles that one epoch exactly; E6 C4 transfers the
-    // same epoch without an intermediate Idle; E7 C5 settles it exactly once;
-    // E8 admission reserves 24 ordinary-child slots because the public 25-Thread
-    // limit includes the primary Thread (Advisor consultations are exempt).
-    //
-    // | Rule | Runtime result | Exact retry | Boundary | Effect |
-    // |---|---|---|---|---|
-    // | S0 | source mismatch | no | none | E0 |
-    // | S1 | accepted | no | pending | E1+E8 |
-    // | S2 | BadRequest | no | none | E2 |
-    // | S3 | Unavailable | accepted | pending | E3+E4 |
-    // | S4 | mismatched receipt | no | unknown | E3 |
-    // | S5 | S3 accepted retry | yes | Awaiting | E5 |
-    // | S6 | accepted | no | child Ended | E6 |
-    // | S7 | report accepted | no | primary Ended | E7 |
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .await
-            .expect("Agent admission repository"),
-    );
-    for id in [
-        "send-invalid-source",
-        "send-accepted",
-        "send-rejected",
-        "send-ambiguous",
-        "send-mismatch",
-    ] {
-        create(repo.as_ref(), coordinated_session(id)).await;
-    }
-
-    let invalid_source_runtime = Arc::new(RecordingAgentAdmissionRuntime::new([]));
-    invalid_source_runtime.reject_agent_message_source();
-    let invalid_source =
-        configured_admission_application(repo.clone(), invalid_source_runtime.clone());
-    let invalid_source_error =
-        awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
-            &invalid_source,
-            coordination_spawn_command("send-invalid-source"),
-        )
-        .await
-        .expect_err("S0 source mismatch");
-    assert_eq!(
-        invalid_source_error.kind,
-        awaken_session_types::RunErrorKind::BadRequest,
-        "S0/E0"
-    );
-    assert!(
-        invalid_source_runtime.admissions.lock().unwrap().is_empty(),
-        "S0/E0 no Runtime admission"
-    );
-    assert!(
-        repo.get(&SessionId::from("send-invalid-source"))
-            .await
-            .expect("S0 state")
-            .active_activity_epochs
-            .is_empty(),
-        "S0/E0 no Session activity"
-    );
-
-    let accepted_runtime = Arc::new(RecordingAgentAdmissionRuntime::new([
-        AgentAdmissionOutcome::Accepted,
-    ]));
-    let accepted = configured_admission_application(repo.clone(), accepted_runtime.clone());
-    awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
-        &accepted,
-        coordination_spawn_command("send-accepted"),
-    )
-    .await
-    .expect("S1 accepted");
-    let accepted_epoch = accepted_runtime.admissions.lock().unwrap()[0].session_activity_epoch;
-    assert_eq!(
-        accepted_runtime.admissions.lock().unwrap()[0].max_unarchived_threads,
-        24,
-        "S1/E8 primary plus ordinary children cannot exceed 25 Threads"
-    );
-    assert_eq!(
-        repo.get(&SessionId::from("send-accepted"))
-            .await
-            .expect("S1 state")
-            .active_activity_epochs,
-        std::collections::BTreeSet::from([accepted_epoch]),
-        "S1/E1"
-    );
-
-    let rejected_runtime = Arc::new(RecordingAgentAdmissionRuntime::new([
-        AgentAdmissionOutcome::BadRequest,
-    ]));
-    let rejected = configured_admission_application(repo.clone(), rejected_runtime);
-    let rejected_error =
-        awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
-            &rejected,
-            coordination_spawn_command("send-rejected"),
-        )
-        .await
-        .expect_err("S2 definitive rejection");
-    assert_eq!(
-        rejected_error.kind,
-        awaken_session_types::RunErrorKind::BadRequest
-    );
-    assert!(
-        repo.get(&SessionId::from("send-rejected"))
-            .await
-            .expect("S2 state")
-            .active_activity_epochs
-            .is_empty(),
-        "S2/E2"
-    );
-
-    let ambiguous_runtime = Arc::new(RecordingAgentAdmissionRuntime::new([
-        AgentAdmissionOutcome::Unavailable,
-        AgentAdmissionOutcome::Accepted,
-    ]));
-    let ambiguous = configured_admission_application(repo.clone(), ambiguous_runtime.clone());
-    awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
-        &ambiguous,
-        coordination_spawn_command("send-ambiguous"),
-    )
-    .await
-    .expect_err("S3 ambiguous response");
-    let ambiguous_epoch = ambiguous_runtime.admissions.lock().unwrap()[0].session_activity_epoch;
-    assert_eq!(
-        repo.get(&SessionId::from("send-ambiguous"))
-            .await
-            .expect("S3 state")
-            .active_activity_epochs,
-        std::collections::BTreeSet::from([ambiguous_epoch]),
-        "S3/E3"
-    );
-    awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
-        &ambiguous,
-        coordination_spawn_command("send-ambiguous"),
-    )
-    .await
-    .expect("S3/S4 exact retry accepted");
-    let (child, run) = {
-        let admissions = ambiguous_runtime.admissions.lock().unwrap();
-        assert_eq!(admissions.len(), 2, "S3/S4 two delivery attempts");
-        assert_eq!(admissions[0].thread_id, admissions[1].thread_id, "S4/E4");
-        assert_eq!(admissions[0].run_id, admissions[1].run_id, "S4/E4");
-        assert_eq!(
-            admissions[0].session_activity_epoch, admissions[1].session_activity_epoch,
-            "S4/E4"
-        );
-        (
-            admissions[0].thread_id.clone(),
-            admissions[0].run_id.clone(),
-        )
-    };
-
-    let mismatch_runtime = Arc::new(RecordingAgentAdmissionRuntime::new([
-        AgentAdmissionOutcome::MismatchedReceipt,
-    ]));
-    let mismatch = configured_admission_application(repo.clone(), mismatch_runtime.clone());
-    let mismatch_error =
-        awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
-            &mismatch,
-            coordination_spawn_command("send-mismatch"),
-        )
-        .await
-        .expect_err("S4 mismatched receipt");
-    assert_eq!(
-        mismatch_error.kind,
-        awaken_session_types::RunErrorKind::Internal
-    );
-    let mismatch_epoch = mismatch_runtime.admissions.lock().unwrap()[0].session_activity_epoch;
-    assert_eq!(
-        repo.get(&SessionId::from("send-mismatch"))
-            .await
-            .expect("S4 state")
-            .active_activity_epochs,
-        std::collections::BTreeSet::from([mismatch_epoch]),
-        "S4/E3"
-    );
-
-    ambiguous_runtime.commit_boundary("send-ambiguous", &child, &run, RunState::Awaiting, "");
-    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-        &ambiguous,
-        awaken_session_execution_contract::SessionAgentBoundaryCommand {
-            session_id: "send-ambiguous".into(),
-            source_thread_id: child,
-            source_run_id: run,
-            source_agent_id: "coord-child".into(),
-            session_activity_epoch: ambiguous_epoch,
-            cancellation_requested: false,
-        },
-    )
-    .await
-    .expect("S5 committed Awaiting boundary");
-    assert!(
-        repo.get(&SessionId::from("send-ambiguous"))
-            .await
-            .expect("S5 state")
-            .active_activity_epochs
-            .is_empty(),
-        "S5/E5"
-    );
-
-    let accepted_admission = accepted_runtime.admissions.lock().unwrap()[0].clone();
-    accepted_runtime.commit_boundary(
-        "send-accepted",
-        &accepted_admission.thread_id,
-        &accepted_admission.run_id,
-        RunState::Ended(EndCause::NaturalEnd),
-        "research complete",
-    );
-    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-        &accepted,
-        awaken_session_execution_contract::SessionAgentBoundaryCommand {
-            session_id: "send-accepted".into(),
-            source_thread_id: accepted_admission.thread_id,
-            source_run_id: accepted_admission.run_id,
-            source_agent_id: "coord-child".into(),
-            session_activity_epoch: accepted_epoch,
-            cancellation_requested: false,
-        },
-    )
-    .await
-    .expect("S6 terminal child hands off to the report continuation");
-    {
-        let continuations = accepted_runtime.continuations.lock().unwrap();
-        assert_eq!(continuations.len(), 1, "S6/E6 one report continuation");
-        assert_eq!(
-            continuations[0].session_activity_epoch, accepted_epoch,
-            "S6/E6 transfers the exact child epoch"
-        );
-        assert!(
-            continuations[0]
-                .message
-                .text_content()
-                .contains("research complete"),
-            "S6/E6 report is derived from the committed child snapshot"
-        );
-    }
-    let handed_off = repo
-        .get(&SessionId::from("send-accepted"))
-        .await
-        .expect("S6 state");
-    assert_eq!(
-        handed_off.active_activity_epochs,
-        std::collections::BTreeSet::from([accepted_epoch]),
-        "S6/E6 no intermediate aggregate Idle"
-    );
-    assert_eq!(
-        handed_off.execution,
-        SessionExecutionState::Running,
-        "S6/E6"
-    );
-
-    accepted_runtime.commit_boundary(
-        "send-accepted",
-        &ThreadId("send-accepted".into()),
-        &RunId("coord-report-run".into()),
-        RunState::Ended(EndCause::NaturalEnd),
-        "coordinator acknowledged report",
-    );
-    awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
-        &accepted,
-        awaken_session_execution_contract::SessionAgentBoundaryCommand {
-            session_id: "send-accepted".into(),
-            source_thread_id: ThreadId("send-accepted".into()),
-            source_run_id: RunId("coord-report-run".into()),
-            source_agent_id: "coord-root".into(),
-            session_activity_epoch: accepted_epoch,
-            cancellation_requested: false,
-        },
-    )
-    .await
-    .expect("S7 primary report boundary settles the transferred epoch");
-    let completed = repo
-        .get(&SessionId::from("send-accepted"))
-        .await
-        .expect("S7 state");
-    assert!(completed.active_activity_epochs.is_empty(), "S7/E7");
-    assert_eq!(completed.execution, SessionExecutionState::Idle, "S7/E7");
-    assert_eq!(
-        accepted_runtime.continuations.lock().unwrap().len(),
-        1,
-        "S7/E7 primary boundary must not recurse into another report"
-    );
-}
-
-#[tokio::test]
 async fn recovered_child_settlement_uses_the_claimed_dispatch_agent_without_a_parent_link() {
     // Decision rule: execute every reachable cause partition documented here and
     // require its stated effects, including each fail-closed outcome.
@@ -4082,6 +3799,7 @@ async fn recovered_child_settlement_uses_the_claimed_dispatch_agent_without_a_pa
         .await;
     }
     let runtime = Arc::new(RecordingAgentAdmissionRuntime::new([]));
+    runtime.set_admission_observations([Ok(None)]);
     let app = configured_admission_application(repo.clone(), runtime.clone());
 
     for (rule, source_agent_id, accepted) in cases {
@@ -4089,9 +3807,13 @@ async fn recovered_child_settlement_uses_the_claimed_dispatch_agent_without_a_pa
         let child = ThreadId(format!("settlement-child-{rule}"));
         let run = RunId(format!("settlement-run-{rule}"));
         let (_, epoch) = app
-            .begin_activity_for_operation(
+            .begin_activity_for_operation_with_policy(
                 &SessionId::from(&session_id),
                 &format!("settlement-operation-{rule}"),
+                false,
+                None,
+                None,
+                Some((&child, &run)),
             )
             .await
             .expect("activity precondition");
@@ -4202,6 +3924,7 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
             AgentAdmissionOutcome::Accepted,
             AgentAdmissionOutcome::Accepted,
         ]));
+        runtime.set_admission_observations([Ok(None), Ok(None)]);
         let app = configured_admission_application(repo.clone(), runtime.clone());
         let receipt =
             awaken_session_execution_contract::SessionAgentCoordination::send_session_agent_message(
@@ -4277,6 +4000,7 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
         );
         create(repo.as_ref(), coordinated_session(&session_id)).await;
         let runtime = Arc::new(RecordingAgentAdmissionRuntime::new([]));
+        runtime.set_admission_observations([Ok(None)]);
         let thread_id = ThreadId(format!("{session_id}-target"));
         match rule {
             "A6" => {}
@@ -4965,6 +4689,7 @@ async fn root_activity_cas_is_the_only_budget_admission_choke() {
     let runtime = Arc::new(RecordingAgentAdmissionRuntime::new([
         AgentAdmissionOutcome::Accepted,
     ]));
+    runtime.set_admission_observations([Ok(None)]);
     let app = configured_admission_application(repo.clone(), runtime.clone());
 
     let roster = awaken_session_execution_contract::SessionAgentCoordination::list_session_agents(
@@ -6111,8 +5836,26 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
     );
     assert_eq!(runtime.continuations.load(Ordering::SeqCst), 0, "B1/E2");
 
+    runtime.set_admission_observations([
+        Ok(None),
+        Ok(Some(
+            awaken_session_execution_contract::SessionAgentMessageReceipt {
+                thread_id: ThreadId("boundary-budget-ended".into()),
+            },
+        )),
+    ]);
     let (_, ended_epoch) = app
-        .begin_activity_for_operation(&SessionId::from("boundary-budget-ended"), "ended-op")
+        .begin_activity_for_operation_with_policy(
+            &SessionId::from("boundary-budget-ended"),
+            "ended-op",
+            false,
+            None,
+            None,
+            Some((
+                &ThreadId("budget-child".into()),
+                &RunId("budget-child-run".into()),
+            )),
+        )
         .await
         .expect("B2 activity");
     runtime.commit_boundary(
@@ -6162,8 +5905,8 @@ async fn child_boundary_reconciles_budget_before_the_report_request_gate() {
     assert_eq!(replayed.budget.reach_transitions().len(), 1, "B3/E4");
     assert_eq!(
         runtime.continuations.load(Ordering::SeqCst),
-        2,
-        "B3/E4 the application retries delivery; the Host owner deduplicates its Dispatch"
+        1,
+        "B3/E4 original accepted receipt returns without redelivery"
     );
     let reached = repo
         .pending_lifecycle()
@@ -6258,11 +6001,25 @@ async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_led
         "b",
     );
     let (_, epoch_a) = app
-        .begin_activity_for_operation(&SessionId::from("concurrent-child-budget"), "child-a-op")
+        .begin_activity_for_operation_with_policy(
+            &SessionId::from("concurrent-child-budget"),
+            "child-a-op",
+            false,
+            None,
+            None,
+            Some((&child_a, &run_a)),
+        )
         .await
         .expect("C1 child A activity");
     let (_, epoch_b) = app
-        .begin_activity_for_operation(&SessionId::from("concurrent-child-budget"), "child-b-op")
+        .begin_activity_for_operation_with_policy(
+            &SessionId::from("concurrent-child-budget"),
+            "child-b-op",
+            false,
+            None,
+            None,
+            Some((&child_b, &run_b)),
+        )
         .await
         .expect("C1 child B activity");
     let command = |thread_id, run_id, session_activity_epoch| {
@@ -6275,6 +6032,7 @@ async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_led
             cancellation_requested: false,
         }
     };
+    runtime.set_admission_observations([Ok(None), Ok(None)]);
     let (settled_a, settled_b) = tokio::join!(
         awaken_session_execution_contract::SessionAgentCoordination::settle_session_agent_boundary(
             &app,

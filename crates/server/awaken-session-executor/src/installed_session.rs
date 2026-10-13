@@ -215,6 +215,12 @@ impl crate::session_realizations::SessionRunQuery for SessionRunBinding {
         self.context.is_some()
     }
 
+    fn has_active_run(&self) -> bool {
+        self.context
+            .as_ref()
+            .is_some_and(|runtime| runtime.has_active_run())
+    }
+
     fn session_dispatch(&self) -> bool {
         self.session_dispatch
     }

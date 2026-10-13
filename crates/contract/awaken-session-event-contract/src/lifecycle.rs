@@ -53,6 +53,41 @@ pub struct SessionRuntimeIntervalObservation {
     pub source_commit_cursor: u64,
 }
 
+impl SessionRuntimeIntervalObservation {
+    /// Resolve an exact terminal coordinate from the same prefix used to settle
+    /// this Run. The activity clock must not reopen a global lifecycle history.
+    pub fn from_committed_boundary(
+        activity_epoch: u64,
+        thread_id: &awaken_agent_contract::ThreadId,
+        run_id: &awaken_agent_contract::RunId,
+        state: &awaken_agent_contract::agent::run::RunState,
+        snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+    ) -> Result<Option<Self>, awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeedError>
+    {
+        let mut selected = None;
+        let page = snapshot.lifecycle_events_after(
+            awaken_agent_contract::RunLifecycleCursor::default(),
+            usize::MAX,
+        )?;
+        for event in page.events {
+            if &event.thread_id == thread_id
+                && &event.run_id == run_id
+                && &event.state == state
+                && crate::SessionAgentRunBoundary::is_boundary(event.kind)
+            {
+                selected = Some(Self {
+                    activity_epoch,
+                    thread_id: event.thread_id,
+                    run_id: event.run_id,
+                    lifecycle_cursor: event.cursor,
+                    source_commit_cursor: event.source_commit_cursor,
+                });
+            }
+        }
+        Ok(selected)
+    }
+}
+
 /// Exact, secret-free Session Running interval emitted through the existing
 /// lifecycle outbox. Infrastructure-only restore, checkpoint, queue and drain
 /// work never create this value.
@@ -98,6 +133,23 @@ pub struct ManagedLifecycleFact {
     pub runtime_interval: Option<SessionRuntimeInterval>,
 }
 
+impl ManagedLifecycleFact {
+    pub fn runtime_interval_closed(
+        owner_scope: &str,
+        session_id: &str,
+        interval: SessionRuntimeInterval,
+    ) -> Self {
+        Self {
+            id: interval.interval_id.clone(),
+            object_id: session_id.to_string(),
+            workspace_id: Some(owner_scope.to_string()),
+            event_type: "session.runtime_interval_closed".to_string(),
+            timestamp: i64::try_from(interval.ended_at_unix_ms / 1_000).unwrap_or(i64::MAX),
+            runtime_interval: Some(interval),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,6 +182,15 @@ mod tests {
             serde_json::to_string(&interval).unwrap(),
             r#"{"interval_id":"interval-a","activity_epoch":2,"started_at_unix_ms":3,"ended_at_unix_ms":4,"opened_revision":0,"closed_revision":0,"usage":{"by_model":{},"active_seconds":0,"web_fetch_requests":0,"web_search_requests":0}}"#,
             "L3 canonical bytes"
+        );
+        // L4 owner relocation preserves the original fact wire byte-for-byte;
+        // it changes neither outbox identity nor legacy interval defaults.
+        let closed =
+            ManagedLifecycleFact::runtime_interval_closed("workspace", "session-a", interval);
+        assert_eq!(
+            serde_json::to_string(&closed).unwrap(),
+            r#"{"id":"interval-a","object_id":"session-a","workspace_id":"workspace","event_type":"session.runtime_interval_closed","timestamp":0,"runtime_interval":{"interval_id":"interval-a","activity_epoch":2,"started_at_unix_ms":3,"ended_at_unix_ms":4,"opened_revision":0,"closed_revision":0,"usage":{"by_model":{},"active_seconds":0,"web_fetch_requests":0,"web_search_requests":0}}}"#,
+            "L4 unchanged wire"
         );
     }
 }

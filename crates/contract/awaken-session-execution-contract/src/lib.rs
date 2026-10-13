@@ -49,14 +49,15 @@ pub(crate) use awaken_session_types::SessionId;
 
 pub use claimed_coordination::ClaimedSessionCoordinationControl;
 pub use coordination::{
-    CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadKind, CoordinatedThreadLink,
-    CoordinatedThreadTarget, SessionAgentBoundaryAction, SessionAgentBoundaryCommand,
-    SessionAgentBoundaryRole, SessionAgentBoundaryVisibility, SessionAgentCommittedReport,
-    SessionAgentCoordination, SessionAgentMessageCommand, SessionAgentMessageReceipt,
-    SessionAgentReportContinuation, SessionAgentRosterEntry, SessionAgentRunBoundary,
-    SessionAgentTarget, SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
-    SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyActivity,
-    SessionThreadToolReplyCommand, SessionThreadToolReplyDelivery, SessionThreadToolReplyFence,
+    CoordinatedAdmissionRef, CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadKind,
+    CoordinatedThreadLink, CoordinatedThreadTarget, SessionAgentBoundaryAction,
+    SessionAgentBoundaryCommand, SessionAgentBoundaryRole, SessionAgentBoundaryVisibility,
+    SessionAgentCommittedReport, SessionAgentCoordination, SessionAgentMessageCommand,
+    SessionAgentMessageReceipt, SessionAgentReportContinuation, SessionAgentRosterEntry,
+    SessionAgentRunBoundary, SessionAgentTarget, SessionRunActivityAdmission,
+    SessionRunActivityAdmissionMode, SessionThreadTarget, SessionThreadToolReply,
+    SessionThreadToolReplyActivity, SessionThreadToolReplyCommand, SessionThreadToolReplyDelivery,
+    SessionThreadToolReplyFence, coordinated_activation_input, coordinated_run_id,
     coordinated_thread_closed, coordinated_thread_id, session_agent_boundary_action,
     session_agent_report_messages, session_agent_report_text, session_agent_run_boundary,
     session_run_activity_operation_id,
