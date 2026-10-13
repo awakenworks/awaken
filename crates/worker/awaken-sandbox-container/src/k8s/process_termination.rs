@@ -276,27 +276,31 @@ fn coordinate(value: Option<&str>) -> Option<String> {
         .map(str::to_owned)
 }
 
+// One retention catalog shared by pre-entry binding and later stop admission.
+// The Create guard already retains the original Sandbox until its Resource
+// owner joins terminal disposal; reusing it grants no Worker-release authority.
+const PROCESS_RETENTION_FINALIZERS: [&str; 3] = [
+    WORKER_PROCESS_EVIDENCE_FINALIZER,
+    super::continuation::CONTINUATION_CLEANUP_FINALIZER,
+    super::create_ledger::ORIGINAL_GUARD_FINALIZER,
+];
+
 fn retention_finalizer(pod: &Pod) -> Option<&str> {
     let finalizers = pod.metadata.finalizers.as_ref()?;
-    [
-        WORKER_PROCESS_EVIDENCE_FINALIZER,
-        super::continuation::CONTINUATION_CLEANUP_FINALIZER,
-    ]
-    .into_iter()
-    .find(|candidate| finalizers.iter().any(|value| value == candidate))
+    PROCESS_RETENTION_FINALIZERS
+        .into_iter()
+        .find(|candidate| finalizers.iter().any(|value| value == candidate))
 }
 fn evidence_is_retained(pod: &Pod) -> bool {
     retention_finalizer(pod).is_some()
 }
 fn binding_retention_is_present(binding: &PodProcessBinding, pod: &Pod) -> bool {
-    matches!(
-        binding.retention_finalizer.as_str(),
-        WORKER_PROCESS_EVIDENCE_FINALIZER | super::continuation::CONTINUATION_CLEANUP_FINALIZER
-    ) && pod
-        .metadata
-        .finalizers
-        .as_ref()
-        .is_some_and(|values| values.contains(&binding.retention_finalizer))
+    PROCESS_RETENTION_FINALIZERS.contains(&binding.retention_finalizer.as_str())
+        && pod
+            .metadata
+            .finalizers
+            .as_ref()
+            .is_some_and(|values| values.contains(&binding.retention_finalizer))
 }
 
 fn private_container(container: &k8s_openapi::api::core::v1::Container) -> bool {

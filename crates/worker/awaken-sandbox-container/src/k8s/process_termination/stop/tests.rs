@@ -714,6 +714,75 @@ async fn durable_exit_allows_only_exact_idempotent_process_evidence_release() {
 }
 
 #[tokio::test]
+async fn sandbox_stop_preserves_create_and_continuation_retention_ownership() {
+    // DT-RESOURCE-GUARD: C1 pre-entry Create/continuation guard + exact UID;
+    // C2 current private process identity; C3 accepted DELETE; C4 exact exits.
+    // G1=C1+C2 -> one UID/RV-fenced stop, still Unknown until C4. G2=G1+C4
+    // -> local exit receipt and idempotent replay. G3 either resource guard
+    // never grants Worker replacement/authentication or Worker guard release.
+    // The existing resource lifecycle remains the sole guard/PVC harvest owner.
+    for guard in [
+        super::super::super::continuation::CONTINUATION_CLEANUP_FINALIZER,
+        super::super::super::create_ledger::ORIGINAL_GUARD_FINALIZER,
+    ] {
+        let fixture = Fixture::new(Fault::None);
+        fixture
+            .facts
+            .lock()
+            .unwrap()
+            .pod
+            .as_mut()
+            .unwrap()
+            .metadata
+            .finalizers = Some(vec![guard.into()]);
+        let binding = fixture.binding().await;
+        assert!(binding.evidence_was_retained(), "G1 {guard}");
+        assert!(!binding.worker_evidence_was_retained(), "G3 {guard}");
+        assert!(
+            fixture
+                .stopper()
+                .request_registered_pod_replacement("worker", "uid-a")
+                .await
+                .is_err(),
+            "G3"
+        );
+        assert_eq!(
+            fixture.facts.lock().unwrap().accepted,
+            0,
+            "G3 no Worker mutation"
+        );
+        assert_eq!(
+            fixture.stopper().request_stop(&binding).await.unwrap(),
+            PodProcessTermination::Unknown,
+            "G1"
+        );
+        fixture.exit();
+        for _ in 0..2 {
+            assert!(
+                matches!(
+                    fixture.stopper().request_stop(&binding).await.unwrap(),
+                    PodProcessTermination::Observed(_)
+                ),
+                "G2"
+            );
+        }
+        fixture.stopper().release_evidence(&binding).await.unwrap();
+        let facts = fixture.facts.lock().unwrap();
+        assert_eq!(facts.accepted, 1, "G1/G2 exact single stop");
+        assert_eq!(facts.released, 0, "G3 no resource-guard release");
+        assert_eq!(
+            facts.pod.as_ref().unwrap().metadata.finalizers.as_deref(),
+            Some([guard.to_owned()].as_slice()),
+            "G3 original guard retained"
+        );
+        assert!(
+            facts.calls.iter().all(|(method, _)| method != "PUT"),
+            "G3 no metadata rewrite"
+        );
+    }
+}
+
+#[tokio::test]
 async fn an_already_exited_pod_must_be_closed_before_a_stop_receipt() {
     // S12 causes: exact retained binding + every process already exited, but
     // no API deletion intent. Effects: exact DELETE, Unknown; only a fresh read

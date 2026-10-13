@@ -221,9 +221,9 @@ impl PodProcessStopper {
                 "Worker process evidence was not retained before binding",
             ));
         }
-        // Session continuation retention belongs to its Resource lifecycle.
-        // This process observer may consume it but must not release its PVC/
-        // harvest fence. Worker-owned retention keeps its existing release.
+        // Sandbox Create and continuation retention belong to their Resource
+        // lifecycle. This observer may consume them but must not release a
+        // Create-result, PVC or harvest fence. Worker release stays unchanged.
         if binding.retention_finalizer != WORKER_PROCESS_EVIDENCE_FINALIZER {
             return Ok(());
         }
