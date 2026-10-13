@@ -22,7 +22,7 @@ rustix = { version = "1", features = ["fs"] }
 same-file = "1.0.6"
 
 [target.'cfg(windows)'.dependencies]
-awaken-fs-win32 = { path = "../../shared/awaken-fs-win32" }
+awaken-fs-win32 = { path = "../../shared/awaken-fs-win32", version = "1.0.0" }
 cap-primitives = "4"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 

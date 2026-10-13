@@ -148,7 +148,7 @@ awaken-iam-host = { git = "https://github.com/awakenworks/awaken-iam.git", rev =
 awaken-store-conformance = { path = "crates/stores/awaken-store-conformance" }
 awaken-sql-storage = { path = "crates/stores/awaken-sql-storage" }
 awaken-sqlite-pool = { path = "crates/stores/awaken-sqlite-pool" }
-awaken-store-inmem = { path = "crates/runtime/awaken-store-inmem" }
+awaken-store-inmem = { path = "crates/runtime/awaken-store-inmem", version = "1.0.0" }
 awaken-store-fs = { path = "crates/stores/awaken-store-fs" }
 awaken-store-schema = { path = "crates/stores/awaken-store-schema" }
 awaken-store-sqlite = { path = "crates/stores/awaken-store-sqlite" }
@@ -166,8 +166,8 @@ awaken-container-contract = { path = "crates/contract/awaken-container-contract"
 awaken-session-environment-contract = { path = "crates/contract/awaken-session-environment-contract" }
 awaken-session-environment = { path = "crates/worker/awaken-session-environment" }
 awaken-local-process = { path = "crates/worker/awaken-local-process" }
-awaken-sandbox-fs = { path = "crates/worker/awaken-sandbox-fs" }
-awaken-fs-durability = { path = "crates/shared/awaken-fs-durability" }
+awaken-sandbox-fs = { path = "crates/worker/awaken-sandbox-fs", version = "1.0.0" }
+awaken-fs-durability = { path = "crates/shared/awaken-fs-durability", version = "1.0.0" }
 awaken-installation-workspace = { path = "crates/worker/awaken-installation-workspace" }
 awaken-sandbox-policy-store = { path = "crates/server/awaken-sandbox-policy-store" }
 awaken-worker-contract = { path = "crates/contract/awaken-worker-contract" }
