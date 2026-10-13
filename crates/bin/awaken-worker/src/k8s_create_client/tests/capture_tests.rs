@@ -134,11 +134,17 @@ async fn chunked_fresh_reply_is_bounded_and_explicit_legacy_reply_stays_whole() 
                 }
             }),
         );
-        let (client, server) = fixture(router).await;
+        let (mut client, server) = fixture(router).await;
+        // This case tests a >4 MiB byte policy, not the short retry deadline.
+        // Both profiles get the same transfer/decode budget: disabling the
+        // fresh limiter would make the fresh reply succeed like legacy.
+        client.request_budget = std::time::Duration::from_secs(5);
         let result = client.create(request()).await;
         assert_eq!(
             result.is_ok(),
-            profile == CreateReplyProfile::LegacyRetainedCreate
+            profile == CreateReplyProfile::LegacyRetainedCreate,
+            "profile {profile:?}: {:?}",
+            result.as_ref().err()
         );
         if let Ok(response) = result {
             assert_eq!(response.object["metadata"]["uid"], "u".repeat(8193));
@@ -146,25 +152,48 @@ async fn chunked_fresh_reply_is_bounded_and_explicit_legacy_reply_stays_whole() 
         }
         server.abort();
     }
-    let router = Router::new().route(
-        SEAL_PATH,
-        post(move || async move {
-            (
-                [(
-                    K8S_CREATE_CAPTURE_HEADER,
-                    CreateReplyProfile::WholeJoin.header_value(),
-                )],
-                "x".repeat(limit + 1),
-            )
-        }),
-    );
-    let (client, server) = fixture(router).await;
-    let predecessor = ContainerEffectFence::new("old", "worker", "boot", 1, u64::MAX).unwrap();
-    assert!(matches!(
-        client
+    for length in [limit - 1, limit, limit + 1] {
+        let mut wire = serde_json::to_vec(&RequestJoin::Complete(Vec::new())).unwrap();
+        // Valid JSON whitespace keeps the payload decodable even at B+1.
+        // Without the limiter the oversize arm would invent a complete join;
+        // an invalid JSON body could fail for the wrong reason and hide that.
+        wire.resize(length, b' ');
+        assert_eq!(
+            serde_json::from_slice::<RequestJoin>(&wire).unwrap(),
+            RequestJoin::Complete(Vec::new())
+        );
+        let router = Router::new().route(
+            SEAL_PATH,
+            post(move || {
+                let wire = wire.clone();
+                async move {
+                    let chunks = vec![
+                        Ok::<_, std::io::Error>(wire[..limit / 2].to_vec()),
+                        Ok(wire[limit / 2..].to_vec()),
+                    ];
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header(
+                            K8S_CREATE_CAPTURE_HEADER,
+                            CreateReplyProfile::WholeJoin.header_value(),
+                        )
+                        .header("content-type", "application/json")
+                        .body(Body::from_stream(stream::iter(chunks)))
+                        .unwrap()
+                }
+            }),
+        );
+        let (mut client, server) = fixture(router).await;
+        client.request_budget = std::time::Duration::from_secs(5);
+        let predecessor = ContainerEffectFence::new("old", "worker", "boot", 1, u64::MAX).unwrap();
+        let result = client
             .seal_predecessor("scope", &predecessor, "awaken-scope")
-            .await,
-        Err(RuntimeError::MayHaveCommitted(_))
-    ));
-    server.abort();
+            .await;
+        if length <= limit {
+            assert_eq!(result.unwrap(), RequestJoin::Complete(Vec::new()));
+        } else {
+            assert!(matches!(result, Err(RuntimeError::MayHaveCommitted(_))));
+        }
+        server.abort();
+    }
 }
