@@ -44,14 +44,15 @@ pub use awaken_worker_contract::{
 pub use claimed_commit::ClaimedRunCommit;
 pub use claimed_stream::ClaimedStreamPublisher;
 pub use dispatch::{
-    AttemptAdmission, AttemptClosureEvent, AttemptClosureKind, AttemptClosurePage,
-    AttemptClosureRecord, AttemptCredentialBindingError, CasOutcome, ClaimCredentialOperation,
-    Claimed, ClaimedCheckpointTransport, ClaimedCommitCommand, ClaimedCredentialDeliveryTransport,
-    CommitEpochAdmission, CommitEpochBoundary, CommitEpochCompletion, CommitEpochGuard,
-    ContinuationAdmission, DispatchCompletion, DispatchCredentialAdmissionError, DispatchDepths,
-    DispatchError, DispatchLease, DispatchOutcome, DispatchSettlementError,
-    DispatchSettlementObserver, DispatchState, DispatchSummary, Inbox, LeaseRenewalOutcome, Outbox,
-    PendingInput, PendingRecord, RunClaim, SessionChildAdmission, SessionContinuationOutbox,
+    AttemptAcknowledgementRecord, AttemptAdmission, AttemptClosureEvent, AttemptClosureKind,
+    AttemptClosurePage, AttemptClosureRecord, AttemptCredentialBindingError, AttemptPhysicalFact,
+    AttemptReturnCause, CasOutcome, ClaimCredentialOperation, Claimed, ClaimedCheckpointTransport,
+    ClaimedCommitCommand, ClaimedCredentialDeliveryTransport, CommitEpochAdmission,
+    CommitEpochBoundary, CommitEpochCompletion, CommitEpochGuard, ContinuationAdmission,
+    DispatchCompletion, DispatchCredentialAdmissionError, DispatchDepths, DispatchError,
+    DispatchLease, DispatchOutcome, DispatchSettlementError, DispatchSettlementObserver,
+    DispatchState, DispatchSummary, Inbox, LeaseRenewalOutcome, Outbox, PendingInput,
+    PendingRecord, RunClaim, SessionChildAdmission, SessionContinuationOutbox,
     SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
     SettleOutcome, SubmitOptions, can_admit_claim_credentials, claim_credential_operation,
     classify_commit_epoch_admission, compile_attempt_credential_bindings,

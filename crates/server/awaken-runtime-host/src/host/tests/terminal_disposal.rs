@@ -1051,7 +1051,10 @@ async fn terminal_quiescence_still_waits_for_a_pre_cancel_live_physical_claim() 
         !terminal.is_finished(),
         "Q2/E1 normal physical work still blocks"
     );
-    dispatch.finish_attempt(&physical_claim).await.unwrap();
+    dispatch
+        .finish_attempt(&physical_claim, None)
+        .await
+        .unwrap();
     let cancellation = dispatch
         .claim_run(&run, "cancellation-worker", 30_000, &Default::default())
         .await

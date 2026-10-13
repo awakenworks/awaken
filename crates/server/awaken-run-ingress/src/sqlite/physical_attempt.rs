@@ -165,110 +165,79 @@ impl SqliteDispatchStore {
     pub(super) async fn finish_physical_attempt_with(
         &self,
         claim: &RunClaim,
-        closure: Option<&crate::AttemptClosureRecord>,
+        purpose: crate::dispatch::AttemptFinish<'_>,
     ) -> Result<SettleOutcome, DispatchError> {
-        if let Some(record) = closure {
-            record.validate()?;
-        }
-        let claim = claim.clone();
         let (_authority, mut connection) = self.with_conn().await?;
         let mut tx = immediate(&mut connection).await?;
         let p = NS;
         let epoch = durable_i64("dispatch attempt epoch", claim.epoch)?;
         let current: Option<crate::dispatch::PhysicalAttemptStorageRow<String>> = sqlx::query_as(&format!("SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, request, active_attempt_closing FROM {p}_dispatch WHERE run_id = ?1"))
             .bind(&claim.run_id.0).fetch_optional(&mut *tx).await.map_err(store_error)?;
-        let Some((active_owner, active_epoch, binding, request, closing)) = current else {
-            let outcome = if let Some(record) = closure {
-                let prior = read_stored_operation_page(
-                    &mut tx,
-                    DispatchCursor::default(),
-                    usize::MAX,
-                    Some(&claim.run_id),
-                    crate::dispatch::OperationReadPurpose::AttemptClosure,
-                )
-                .await?;
-                crate::dispatch::attempt_closure_replay(
-                    record,
-                    prior.iter().filter_map(|event| event.operation.closure()),
-                )?
-            } else {
-                SettleOutcome::Fenced
-            };
-            tx.commit().await.map_err(store_error)?;
-            return Ok(outcome);
-        };
-        let active_epoch = active_epoch
-            .map(|value| durable_u64("dispatch attempt epoch", value))
-            .transpose()?;
-        let slot = PhysicalAttemptSlot::from_facts(
-            active_owner.is_some(),
-            active_epoch.is_some(),
-            active_owner.as_deref() == Some(&claim.owner),
-            active_epoch == Some(claim.epoch),
-        );
-        let (transition, outcome) =
-            crate::dispatch::decide_physical_attempt_finish(slot, closing, closure.is_some())?;
-        if let Some(record) = closure {
-            if transition == PhysicalAttemptTransition::Stutter {
-                let prior = read_stored_operation_page(
-                    &mut tx,
-                    DispatchCursor::default(),
-                    usize::MAX,
-                    Some(&claim.run_id),
-                    crate::dispatch::OperationReadPurpose::AttemptClosure,
-                )
-                .await?;
-                let replay = crate::dispatch::attempt_closure_replay(
-                    record,
-                    prior.iter().filter_map(|event| event.operation.closure()),
-                )?;
-                tx.commit().await.map_err(store_error)?;
-                return Ok(replay);
-            }
-            if transition == PhysicalAttemptTransition::Clear {
+        let row_exists = current.is_some();
+        let (slot, closing, original) = if let Some((owner, epoch, binding, request, closing)) =
+            current
+        {
+            let epoch = epoch
+                .map(|value| durable_u64("dispatch attempt epoch", value))
+                .transpose()?;
+            let slot = PhysicalAttemptSlot::from_facts(
+                owner.is_some(),
+                epoch.is_some(),
+                owner.as_deref() == Some(&claim.owner),
+                epoch == Some(claim.epoch),
+            );
+            let original = if purpose.requires_fact() {
                 let request = serde_json::from_str::<RunDispatch>(&request).map_err(json_err)?;
-                let mut stored = crate::dispatch::decode_physical_attempt(
+                let mut original = crate::dispatch::decode_physical_attempt(
                     &claim.run_id,
-                    active_owner.clone(),
-                    active_epoch,
+                    owner,
+                    epoch,
                     binding,
                     closing,
                 )?;
-                if let Some(stored) = &mut stored {
-                    stored.thread_id = Some(request.thread_id().clone());
-                    stored.session_thread_id = request.session_thread_id;
+                if let Some(original) = &mut original {
+                    original.thread_id = Some(request.thread_id().clone());
+                    original.session_thread_id = request.session_thread_id;
                 }
-                if stored.as_ref() != Some(record.attempt()) {
-                    return Err(DispatchError::Conflict(
-                        "closure subject differs from the frozen physical attempt".into(),
-                    ));
-                }
-                let prior = read_stored_operation_page(
-                    &mut tx,
-                    DispatchCursor::default(),
-                    usize::MAX,
-                    Some(&claim.run_id),
-                    crate::dispatch::OperationReadPurpose::AttemptClosure,
-                )
-                .await?;
-                if prior
-                    .iter()
-                    .filter_map(|event| event.operation.closure())
-                    .any(|previous| previous.attempt().claim == claim)
-                {
-                    return Err(DispatchError::Conflict(
-                        "a retired closure subject cannot be asserted for another active entry"
-                            .into(),
-                    ));
-                }
-            }
-        }
+                original
+            } else {
+                None
+            };
+            (slot, closing, original)
+        } else {
+            (PhysicalAttemptSlot::Empty, false, None)
+        };
+        let prior = if purpose.requires_fact() {
+            read_stored_operation_page(
+                &mut tx,
+                DispatchCursor::default(),
+                usize::MAX,
+                Some(&claim.run_id),
+                crate::dispatch::OperationReadPurpose::AttemptClosure,
+            )
+            .await?
+        } else {
+            Vec::new()
+        };
+        let (transition, outcome, fact) = crate::dispatch::plan_physical_attempt_finish(
+            claim,
+            purpose,
+            slot,
+            closing,
+            original.as_ref(),
+            prior
+                .iter()
+                .filter_map(|event| event.operation.physical_fact()),
+            row_exists,
+        )?;
         if transition == PhysicalAttemptTransition::Clear {
+            // Both append and exact slot retirement share this original
+            // transaction. Append failure cannot discard the original binding.
+            if let Some(fact) = &fact {
+                insert_operation(&mut tx, p, fact, self.clock.now_ms()).await?;
+            }
             sqlx::query(&format!("UPDATE {p}_dispatch SET active_attempt_owner = NULL, active_attempt_epoch = NULL, active_attempt_binding = NULL, active_attempt_closing = FALSE, retired_attempt_epoch = ?3 WHERE run_id = ?1 AND active_attempt_owner = ?2 AND active_attempt_epoch = ?3"))
                 .bind(&claim.run_id.0).bind(&claim.owner).bind(epoch).execute(&mut *tx).await.map_err(store_error)?;
-            if let Some(record) = closure {
-                insert_operation(&mut tx, p, record, self.clock.now_ms()).await?;
-            }
         }
         tx.commit().await.map_err(store_error)?;
         Ok(outcome)

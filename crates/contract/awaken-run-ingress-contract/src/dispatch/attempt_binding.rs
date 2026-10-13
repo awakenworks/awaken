@@ -88,6 +88,77 @@ pub struct PhysicalAttempt {
     pub closing: bool,
 }
 
+impl PhysicalAttempt {
+    /// Intrinsic subject data shared by return and independent-closure records.
+    /// This validates identity only; no recorded data grants execution or stop.
+    fn validate_subject(&self, invalid_subject: &str) -> Result<(), DispatchError> {
+        if self.claim.run_id.0.trim().is_empty()
+            || self.claim.owner.trim().is_empty()
+            || self
+                .thread_id
+                .as_ref()
+                .is_some_and(|id| id.0.trim().is_empty())
+            || self
+                .session_thread_id
+                .as_ref()
+                .is_some_and(|id| id.0.trim().is_empty())
+        {
+            return Err(DispatchError::Rejected(invalid_subject.into()));
+        }
+        if let Some(binding) = &self.binding {
+            binding.validate_for(&self.claim)?;
+        }
+        Ok(())
+    }
+}
+
+/// Local observations of the original drive, never an assertion of Provider
+/// or Session-domain termination. Earlier resolution IO and external durable
+/// work are outside this observation's scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptReturnCause {
+    OperationFutureNotEntered,
+    StructuredReturnObserved,
+}
+
+/// The exact original slot frozen in the ordinary ACK transaction. Its stable
+/// reference is the original operation event cursor; no Provider URI is minted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttemptAcknowledgementRecord {
+    attempt: PhysicalAttempt,
+    cause: AttemptReturnCause,
+}
+
+impl AttemptAcknowledgementRecord {
+    pub fn try_new(
+        attempt: PhysicalAttempt,
+        cause: AttemptReturnCause,
+    ) -> Result<Self, DispatchError> {
+        let record = Self { attempt, cause };
+        record.validate()?;
+        Ok(record)
+    }
+
+    pub fn validate(&self) -> Result<(), DispatchError> {
+        if self.attempt.closing {
+            return Err(DispatchError::Rejected(
+                "ordinary ACK cannot attest an independently closing attempt".into(),
+            ));
+        }
+        self.attempt
+            .validate_subject("attempt fact requires its exact claim and Thread subject")
+    }
+
+    pub fn attempt(&self) -> &PhysicalAttempt {
+        &self.attempt
+    }
+    pub fn cause(&self) -> AttemptReturnCause {
+        self.cause
+    }
+}
+
 /// The original trusted source's two different closure assertions. A retained
 /// value describes one attempt, never complete old-Worker-domain membership.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,30 +196,12 @@ impl AttemptClosureRecord {
 
     /// Intrinsic data validation, not proof of Provider honesty or a grant.
     pub fn validate(&self) -> Result<(), DispatchError> {
-        if !self.attempt.closing
-            || self.attempt.claim.run_id.0.trim().is_empty()
-            || self.attempt.claim.owner.trim().is_empty()
-            || self.evidence_ref.trim().is_empty()
-            || self
-                .attempt
-                .thread_id
-                .as_ref()
-                .is_some_and(|thread| thread.0.trim().is_empty())
-            || self
-                .attempt
-                .session_thread_id
-                .as_ref()
-                .is_some_and(|thread| thread.0.trim().is_empty())
-        {
-            return Err(DispatchError::Rejected(
-                "attempt closure requires its exact closed subject, Thread and Provider reference"
-                    .into(),
-            ));
+        let invalid_subject =
+            "attempt closure requires its exact closed subject, Thread and Provider reference";
+        if !self.attempt.closing || self.evidence_ref.trim().is_empty() {
+            return Err(DispatchError::Rejected(invalid_subject.into()));
         }
-        if let Some(binding) = &self.attempt.binding {
-            binding.validate_for(&self.attempt.claim)?;
-        }
-        Ok(())
+        self.attempt.validate_subject(invalid_subject)
     }
 
     pub fn attempt(&self) -> &PhysicalAttempt {
@@ -162,13 +215,41 @@ impl AttemptClosureRecord {
     }
 }
 
+/// One original operation-page data sum. Independent closure retains its old
+/// bytes; an ordinary acknowledgement cannot be consumed as either stop kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", deny_unknown_fields)]
+pub enum AttemptPhysicalFact {
+    #[serde(rename = "attempt_acknowledgement")]
+    Acknowledgement {
+        record: AttemptAcknowledgementRecord,
+    },
+    #[serde(rename = "attempt_closure")]
+    IndependentClosure { record: AttemptClosureRecord },
+}
+
+impl AttemptPhysicalFact {
+    pub fn attempt(&self) -> &PhysicalAttempt {
+        match self {
+            Self::Acknowledgement { record } => record.attempt(),
+            Self::IndependentClosure { record } => record.attempt(),
+        }
+    }
+    pub fn validate(&self) -> Result<(), DispatchError> {
+        match self {
+            Self::Acknowledgement { record } => record.validate(),
+            Self::IndependentClosure { record } => record.validate(),
+        }
+    }
+}
+
 /// Server-local read data using the original operation table's global cursor.
 /// This is not part of the public diagnostics Page or a permission receipt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttemptClosureEvent {
     pub cursor: crate::DispatchCursor,
     pub recorded_at_ms: Option<u64>,
-    pub record: AttemptClosureRecord,
+    pub record: AttemptPhysicalFact,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

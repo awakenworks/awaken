@@ -81,8 +81,9 @@ include!("dispatch/settlement.rs");
 
 mod attempt_binding;
 pub use attempt_binding::{
-    AttemptClosureEvent, AttemptClosureKind, AttemptClosurePage, AttemptClosureRecord,
-    AttemptExecutionBinding, PhysicalAttempt, attempt_binding_retry_is_exact,
+    AttemptAcknowledgementRecord, AttemptClosureEvent, AttemptClosureKind, AttemptClosurePage,
+    AttemptClosureRecord, AttemptExecutionBinding, AttemptPhysicalFact, AttemptReturnCause,
+    PhysicalAttempt, attempt_binding_retry_is_exact,
 };
 
 mod lease;
@@ -1086,7 +1087,11 @@ mod tests {
             Self::unsupported()
         }
 
-        async fn finish_attempt(&self, _claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+        async fn finish_attempt(
+            &self,
+            _claim: &RunClaim,
+            _cause: Option<crate::AttemptReturnCause>,
+        ) -> Result<SettleOutcome, DispatchError> {
             Self::unsupported()
         }
 

@@ -512,7 +512,7 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
     );
     assert_eq!(
         store
-            .finish_attempt(&occupied_claim)
+            .finish_attempt(&occupied_claim, None)
             .await
             .expect("finish occupied attempt"),
         SettleOutcome::Applied,

@@ -196,6 +196,10 @@ pub struct AttemptExecutionRequest {
     pub claim: RunClaim,
     #[serde(default)]
     pub identity: Option<WorkerIdentity>,
+    /// Only finish may carry this local observation. Missing legacy evidence
+    /// remains unknown and serializes with the original request bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_cause: Option<crate::AttemptReturnCause>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,6 +254,63 @@ mod tests {
     use awaken_agent_contract::event::{AgentEvent, Delta};
     use awaken_agent_contract::thread::commit::operation::{CommitOperationId, CommitPayloadHash};
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
+
+    #[test]
+    fn ordinary_return_cause_preserves_missing_wire_and_is_rejected_by_the_old_strict_codec() {
+        // W1 old two-field request -> None, exact old serialization; W2 either
+        // local cause -> current decode, old strict decoder rejects (HTTP Json
+        // maps that format failure to 422); W3 unsupported All/Controlled or
+        // object-shaped cause -> reject, never downgrade to legacy None.
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct OldStrictAttemptRequest {
+            claim: RunClaim,
+            identity: Option<WorkerIdentity>,
+        }
+        let legacy =
+            serde_json::json!({"claim":{"run_id":"r","owner":"w","epoch":1},"identity":null});
+        let request: AttemptExecutionRequest = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(request.return_cause.is_none());
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            legacy,
+            "W1 skip None"
+        );
+        let old: OldStrictAttemptRequest = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(old.claim, request.claim);
+        assert_eq!(old.identity, request.identity);
+        for cause in [
+            crate::AttemptReturnCause::OperationFutureNotEntered,
+            crate::AttemptReturnCause::StructuredReturnObserved,
+        ] {
+            let mut current = request.clone();
+            current.return_cause = Some(cause);
+            let wire = serde_json::to_value(&current).unwrap();
+            assert_eq!(
+                serde_json::from_value::<AttemptExecutionRequest>(wire.clone())
+                    .unwrap()
+                    .return_cause,
+                Some(cause),
+                "W2"
+            );
+            assert!(
+                serde_json::from_value::<OldStrictAttemptRequest>(wire).is_err(),
+                "W2 old codec rejects, no None fallback"
+            );
+        }
+        for cause in [
+            serde_json::json!("all_execution_stopped"),
+            serde_json::json!("controlled_execution_closed"),
+            serde_json::json!({"structured_return_observed":{}}),
+        ] {
+            let mut wire = legacy.clone();
+            wire["return_cause"] = cause;
+            assert!(
+                serde_json::from_value::<AttemptExecutionRequest>(wire).is_err(),
+                "W3 no independent purpose on Worker wire"
+            );
+        }
+    }
 
     /// Cause/effect design: an older Worker omits optional identity/options fields;
     /// the Coordinator must decode the request with `None` rather than dead-letter

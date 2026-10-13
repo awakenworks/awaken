@@ -894,8 +894,13 @@ impl awaken_run_ingress_contract::DispatchExecution for PostgresDispatchStore {
     async fn close_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
         self.close_physical_attempt(claim).await
     }
-    async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
-        self.finish_physical_attempt_with(claim, None).await
+    async fn finish_attempt(
+        &self,
+        claim: &RunClaim,
+        cause: Option<awaken_run_ingress_contract::AttemptReturnCause>,
+    ) -> Result<SettleOutcome, DispatchError> {
+        self.finish_physical_attempt_with(claim, crate::dispatch::AttemptFinish::Ordinary(cause))
+            .await
     }
 
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
@@ -1383,8 +1388,11 @@ impl awaken_run_ingress_contract::DispatchAttemptControl for PostgresDispatchSto
         &self,
         record: &crate::AttemptClosureRecord,
     ) -> Result<SettleOutcome, DispatchError> {
-        self.finish_physical_attempt_with(&record.attempt().claim, Some(record))
-            .await
+        self.finish_physical_attempt_with(
+            &record.attempt().claim,
+            crate::dispatch::AttemptFinish::Independent(record),
+        )
+        .await
     }
 
     async fn admit_attempt_guarded(

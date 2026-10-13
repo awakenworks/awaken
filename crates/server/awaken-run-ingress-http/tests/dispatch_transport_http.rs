@@ -950,7 +950,7 @@ async fn occupied_physical_attempt_blocks_terminal_observers_and_work_release() 
         assert_eq!(work.releases.load(Ordering::SeqCst), 0);
         assert!(recovery.observed.lock().unwrap().is_empty());
         assert_eq!(store.list_dispatches().await.unwrap().len(), 1);
-        store.finish_attempt(&claim).await.unwrap();
+        store.finish_attempt(&claim, None).await.unwrap();
         assert_eq!(
             settle_terminal(&router, &claim).await.0,
             StatusCode::SERVICE_UNAVAILABLE
