@@ -1124,6 +1124,50 @@ mod tests {
         // admissible nonterminal result applies once; E2 exact Completed replay
         // is a no-op; E3 changed Completed replay rejects without mutation.
         // Rules C1+C2=>E1, Completed+C3(exact)=>E2, Completed+!C3=>E3.
+        // Raw/staged compatibility table: R1 raw=[A], staged=[A,B]; R2
+        // raw=[A,B], staged=[A,B]. Both are legal completed outcomes, but
+        // only the exact RAW output replays. Equal staged state cannot make
+        // R1 and R2 interchangeable. No hook runs to reconstruct either row.
+        let raw = StateCommand::set(Scope::Thread, MergePolicy::Disjoint, "raw", 1.into());
+        let reaction =
+            StateCommand::set(Scope::Thread, MergePolicy::Disjoint, "reaction", 2.into());
+        let combined = vec![raw.clone(), reaction];
+        let raw_output = ToolOutput::ok("c", "done").with_state(vec![raw]);
+        let combined_output = ToolOutput::ok("c", "done").with_state(combined.clone());
+        let mut raw_then_reaction = batch();
+        let mut raw_only = batch();
+        for (candidate, output) in [
+            (&mut raw_then_reaction, raw_output.clone()),
+            (&mut raw_only, combined_output.clone()),
+        ] {
+            candidate.mark_executing("c").unwrap();
+            candidate.complete(output).unwrap();
+            candidate.set_result_state("c", combined.clone()).unwrap();
+            candidate.validate().unwrap();
+        }
+        assert_eq!(
+            raw_then_reaction.calls()[0].result_state,
+            raw_only.calls()[0].result_state
+        );
+        let original_raw = raw_then_reaction.clone();
+        let original_combined = raw_only.clone();
+        raw_then_reaction.complete(raw_output.clone()).unwrap();
+        assert_eq!(raw_then_reaction, original_raw, "R1 exact raw replay");
+        assert_eq!(
+            raw_only.complete(raw_output),
+            Err(ToolBatchError::InvalidTransition),
+            "R2 cannot derive raw output from its equal staged vector"
+        );
+        assert_eq!(raw_only, original_combined, "R2 rejection is inert");
+        assert_eq!(
+            raw_then_reaction.complete(combined_output.clone()),
+            Err(ToolBatchError::InvalidTransition),
+            "R1 staged equality does not change raw replay identity"
+        );
+        assert_eq!(raw_then_reaction, original_raw, "R1 rejection is inert");
+        raw_only.complete(combined_output).unwrap();
+        assert_eq!(raw_only, original_combined, "R2 exact raw replay");
+
         let mut batch = batch();
         assert_eq!(batch.finalize(), Err(ToolBatchError::Incomplete));
         batch.mark_executing("c").unwrap();
@@ -1152,6 +1196,10 @@ mod tests {
         // itself requires every call terminal, while terminal-but-Open remains
         // private. Decision rules: P1(Open,incomplete,*) -> reject; P2(Open,
         // terminal,*) -> reject; P3(Finalized,terminal,model/reverse) -> E1/E2.
+        // P4 raw state empty + independently staged hook state is legal; a
+        // codec round-trip preserves those distinct values and still refuses
+        // publication while Open. Deriving staged effects from raw output
+        // would lose P4; exposing them before Finalized would bypass P2.
         let mut batch = two_call_batch();
         assert!(matches!(
             batch.publication(),
@@ -1188,6 +1236,24 @@ mod tests {
             batch.publication(),
             Err(ToolBatchError::Unfinalized)
         ));
+        for entry in batch.calls() {
+            let ToolCallPhase::Completed(output) = &entry.phase else {
+                panic!("P4 calls are terminal")
+            };
+            assert!(output.state.is_empty(), "P4 raw output owns no state");
+            assert_eq!(
+                entry.result_state.len(),
+                1,
+                "P4 staged hook state is retained"
+            );
+        }
+        let decoded: ToolBatch =
+            serde_json::from_value(serde_json::to_value(&batch).unwrap()).unwrap();
+        assert_eq!(decoded, batch, "P4 the original codec preserves both roles");
+        assert!(
+            matches!(decoded.publication(), Err(ToolBatchError::Unfinalized)),
+            "P4 no Open publication grant"
+        );
         batch.finalize().unwrap();
         let publication = batch.publication().unwrap();
         assert_eq!(
@@ -1700,9 +1766,51 @@ mod tests {
 
     #[test]
     fn persisted_completed_call_cannot_contain_another_calls_output() {
+        // Decoder compatibility table: L1/L2 exact call + nonempty raw state
+        // + result_state omitted/explicitly [] => valid, raw state retained,
+        // but no staged publication is inferred. Open still refuses publication;
+        // Finalized yields zero commands. L3 foreign output call_id => reject.
+        // Missing and explicit-empty historical values must not become an
+        // implicit raw-state fallback or a new unpublished Task authority.
         let mut batch = batch();
         batch.mark_executing("c").unwrap();
-        batch.complete(ToolOutput::ok("c", "ok")).unwrap();
+        let raw = StateCommand::set(Scope::Thread, MergePolicy::Disjoint, "raw", 1.into());
+        let output = ToolOutput::ok("c", "ok").with_state(vec![raw]);
+        batch.complete(output.clone()).unwrap();
+        let wire = serde_json::to_value(&batch).unwrap();
+        for (rule, omitted) in [("L1", true), ("L2", false)] {
+            let mut value = wire.clone();
+            let call = value["calls"][0].as_object_mut().unwrap();
+            if omitted {
+                call.remove("result_state");
+            } else {
+                call.insert("result_state".into(), serde_json::json!([]));
+            }
+            let mut decoded: ToolBatch = serde_json::from_value(value).unwrap();
+            assert_eq!(
+                decoded.output("c"),
+                Some(output.clone()),
+                "{rule} raw identity retained"
+            );
+            assert!(
+                decoded.calls()[0].result_state.is_empty(),
+                "{rule} no inferred staged state"
+            );
+            assert!(
+                matches!(decoded.publication(), Err(ToolBatchError::Unfinalized)),
+                "{rule} Open remains private"
+            );
+            decoded.finalize().unwrap();
+            assert!(
+                decoded
+                    .publication()
+                    .unwrap()
+                    .result_state()
+                    .next()
+                    .is_none(),
+                "{rule} Finalized does not invent raw publication"
+            );
+        }
         let mut value = serde_json::to_value(batch).unwrap();
         value["calls"][0]["phase"]["Completed"]["call_id"] = serde_json::json!("different-call");
         assert!(serde_json::from_value::<ToolBatch>(value).is_err());
