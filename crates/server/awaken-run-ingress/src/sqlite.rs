@@ -23,7 +23,8 @@ use awaken_scoped_migration::sqlite::SqliteMigrationRunner;
 use awaken_sqlite_pool::EmbeddedPool;
 use awaken_sqlite_pool::EmbeddedSqlite;
 use futures_util::TryStreamExt;
-use sqlx::sqlite::{Sqlite, SqliteConnection};
+use sqlx::Row;
+use sqlx::sqlite::{Sqlite, SqliteConnection, SqliteRow};
 
 use crate::dispatch::{
     AttemptAdmission, AttemptCredentialBinding, AttemptExecutionBinding, CasOutcome,
@@ -104,29 +105,52 @@ async fn published_checksum(
     .map_err(|error| StoreError::Migrate(error.to_string()))
 }
 
+async fn load_run_identity_evidence(
+    connection: &mut SqliteConnection,
+    prefix: &str,
+    run_id: &RunId,
+) -> Result<SqliteRow, DispatchError> {
+    sqlx::query(&format!(
+        "SELECT d.run_id AS live_run_id, d.thread_id AS live_thread_id, \
+         d.status, d.request, c.sequence, c.run_id, c.request_fingerprint, \
+         c.thread_id, c.session_thread_id FROM (SELECT ?1 AS run_id) k \
+         LEFT JOIN {prefix}_dispatch d ON d.run_id = k.run_id \
+         LEFT JOIN {prefix}_dispatch_completion c ON c.run_id = k.run_id"
+    ))
+    .bind(&run_id.0)
+    .fetch_one(connection)
+    .await
+    .map_err(store_error)
+}
+
+fn decode_live_identity(row: &SqliteRow) -> Result<Option<RunDispatch>, DispatchError> {
+    row.try_get::<Option<String>, _>("live_run_id")
+        .map_err(store_error)?
+        .map(|_| decode_live_dispatch(row))
+        .transpose()
+}
+
+fn decode_live_dispatch(row: &SqliteRow) -> Result<RunDispatch, DispatchError> {
+    let json: String = row.try_get("request").map_err(store_error)?;
+    serde_json::from_str(&json).map_err(json_err)
+}
+
+fn decode_completed_identity(row: &SqliteRow) -> Result<Option<Option<String>>, DispatchError> {
+    row.try_get::<Option<String>, _>("run_id")
+        .map_err(store_error)?
+        .map(|_| row.try_get("request_fingerprint").map_err(store_error))
+        .transpose()
+}
+
 async fn exact_run_replay(
     tx: &mut SqliteConnection,
     prefix: &str,
     request: &RunDispatch,
 ) -> Result<bool, DispatchError> {
-    let run_id = &request.run_id().0;
-    let live = sqlx::query_scalar::<_, String>(&format!(
-        "SELECT request FROM {prefix}_dispatch WHERE run_id = ?1"
-    ))
-    .bind(run_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(store_error)?
-    .map(|stored| serde_json::from_str::<RunDispatch>(&stored).map_err(json_err))
-    .transpose()?;
+    let evidence = load_run_identity_evidence(tx, prefix, request.run_id()).await?;
+    let live = decode_live_identity(&evidence)?;
     let completed = if live.is_none() {
-        sqlx::query_scalar::<_, Option<String>>(&format!(
-            "SELECT request_fingerprint FROM {prefix}_dispatch_completion WHERE run_id = ?1"
-        ))
-        .bind(run_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?
+        decode_completed_identity(&evidence)?
     } else {
         None
     };
@@ -136,6 +160,25 @@ async fn exact_run_replay(
         (None, None) => StoredRunIdentity::Absent,
     };
     decide_run_identity(stored, request).map(|decision| decision == RunIdentityDecision::Replay)
+}
+
+fn decode_dispatch_completion(row: &SqliteRow) -> Result<DispatchCompletion, DispatchError> {
+    let sequence: i64 = row.try_get("sequence").map_err(store_error)?;
+    Ok(DispatchCompletion {
+        sequence: u64::try_from(sequence).map_err(|_| {
+            DispatchError::Rejected("persisted completion sequence is negative".to_string())
+        })?,
+        run_id: RunId(row.try_get("run_id").map_err(store_error)?),
+        thread_id: row
+            .try_get::<Option<String>, _>("thread_id")
+            .map_err(store_error)?
+            .map(ThreadId),
+        session_thread_id: row
+            .try_get::<Option<String>, _>("session_thread_id")
+            .map_err(store_error)?
+            .map(ThreadId),
+        request_fingerprint: row.try_get("request_fingerprint").map_err(store_error)?,
+    })
 }
 
 /// The one SQLite insertion kernel after Run identity and any command-specific

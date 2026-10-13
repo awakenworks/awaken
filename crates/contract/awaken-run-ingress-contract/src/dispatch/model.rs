@@ -437,6 +437,17 @@ pub struct DispatchSummary {
     pub physical_attempt_active: bool,
 }
 
+/// One coherent, data-only observation of the original admission storage.
+/// Missing grants no reservation or execution authority. Live carries the
+/// original request even when its row is reserved, awaiting or quarantined;
+/// Completed retains delivery evidence only, never a reconstructed input.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SessionRunAdmissionObservation {
+    Missing,
+    Live(Box<RunDispatch>),
+    Completed(DispatchCompletion),
+}
+
 /// Claim-fenced resolution of one expired Session Run reservation. This mutates
 /// the existing dispatch row only; it is not a second command or activity log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

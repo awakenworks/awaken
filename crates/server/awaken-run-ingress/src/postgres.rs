@@ -50,7 +50,9 @@ use crate::postgres_helpers::{
     retry_exhausted_candidate,
 };
 use crate::postgres_identity::{
-    exact_run_replay, load_completion_events, lock_run_identity, lock_session_child_admission,
+    decode_completed_identity, decode_dispatch_completion, decode_live_identity, exact_run_replay,
+    load_completion_events, load_run_identity_evidence, lock_run_identity,
+    lock_session_child_admission,
 };
 use crate::{
     DispatchCursor, DispatchOperation, DispatchOperationalFeed, DispatchPage, DispatchPlacement,
