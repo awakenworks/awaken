@@ -16,6 +16,11 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
+      sdk_qualification:
+        description: Explicit SDK package or pre-release source SemVer qualification
+        type: choice
+        default: none
+        options: [none, package, semver]
       build_benchmark:
         description: Measure representative cold and warm Cargo builds
         type: boolean
@@ -138,6 +143,12 @@ jobs:
           printf 'revision=%s\nref=%s\nrun_id=%s\nrun_attempt=%s\n' \
             "$source_revision" "$GITHUB_REF" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
             > target/test-timings/source.env
+      - name: Qualify complete SDK package archives
+        if: github.event_name == 'workflow_dispatch' && inputs.sdk_qualification == 'package'
+        run: python3 scripts/ci/check_sdk_consumer.py --qualify-package
+      - name: Qualify complete SDK pre-release source SemVer
+        if: github.event_name == 'workflow_dispatch' && inputs.sdk_qualification == 'semver'
+        run: python3 scripts/ci/check_sdk_consumer.py --qualify-semver --baseline-rev 50b3f3e22dbfe1d91dd6ee6fef8ee8dfc8e15940
       - name: Install repository test dependencies
         run: |
           # E2E lock decision table: C1 package.json and package-lock.json agree

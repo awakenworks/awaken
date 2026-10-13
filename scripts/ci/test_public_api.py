@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 import _strict_unittest as strict_unittest
+from public_api_selection import selected_crates
 
 
 SOURCE = Path(__file__).resolve().parent
@@ -22,7 +23,7 @@ class PublicApiTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         scripts = self.root / "scripts/ci"
         scripts.mkdir(parents=True)
-        for name in ("check_public_api.sh", "_cargo_target.sh"):
+        for name in ("check_public_api.sh", "_cargo_target.sh", "public_api_selection.py"):
             shutil.copy2(SOURCE / name, scripts / name)
         self.script = scripts / "check_public_api.sh"
         self.snapshot = self.root / "public-api/fixture.txt"
@@ -108,6 +109,16 @@ else:
         # [], including an unpublished member with its own selection reason.
         # Separation is not the publication authority. The original
         # mocked IO edge rejects any unexpected crate or rendering argv.
+        # S10 the exact same metadata owner yields two projections: explicit
+        # snapshots include internal/unpublished members; SDK qualification
+        # includes only publishable SDK members. Both reject missing selection.
+        for product in ("sdk", "platform"):
+            for publish in (None, ["private-registry"], []):
+                row = {"name": "fixture", "publish": publish,
+                       "metadata": {"awaken": {"product": product, "api_snapshot": True}}}
+                snapshots, sdk = selected_crates([row])
+                self.assertEqual(snapshots, ["fixture"])
+                self.assertEqual(sdk, ["fixture"] if product == "sdk" and publish != [] else [])
         self.seed(SURFACE)
         result = self.invoke("--require-tools", API_TEST_UNSELECTED_MEMBER="1")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

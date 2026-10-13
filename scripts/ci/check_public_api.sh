@@ -110,27 +110,7 @@ if ! metadata_json="$(cargo metadata --no-deps --format-version 1)"; then
   echo "cargo metadata failed; the public API gate cannot enumerate its crates" >&2
   exit 1
 fi
-crates=$(printf '%s' "$metadata_json" | python3 -c "
-import json, sys
-packages = json.load(sys.stdin)['packages']
-missing_sdk = sorted(
-    p['name'] for p in packages
-    if ((p.get('metadata') or {}).get('awaken') or {}).get('product') == 'sdk'
-    and p.get('publish') != []
-    and ((p.get('metadata') or {}).get('awaken') or {}).get('api_snapshot') is not True
-)
-if missing_sdk:
-    sys.stderr.write('publishable SDK crates must explicitly select public API snapshots: '
-                     + ', '.join(missing_sdk) + '\n')
-    sys.exit(1)
-selected = sorted(
-    p['name'] for p in packages
-    if ((p.get('metadata') or {}).get('awaken') or {}).get('api_snapshot') is True
-)
-# Native Windows Python translates print's LF into CRLF. Shell word splitting
-# leaves CR attached to all but the final package name; emit protocol bytes.
-sys.stdout.buffer.write(('\n'.join(selected) + '\n').encode('utf-8'))
-")
+crates=$(printf '%s' "$metadata_json" | python3 scripts/ci/public_api_selection.py)
 
 # A snapshot file for a crate that is not selected is an orphan: nothing checks
 # it, so it would silently rot while looking like a reviewed surface.
