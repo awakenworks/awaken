@@ -35,6 +35,72 @@ pub(super) fn decode(pod: Value) -> Pod {
 }
 
 #[test]
+fn original_create_guard_retains_only_the_exact_pre_entry_sandbox_process() {
+    // DT-CREATE-RETENTION: C1 original Create guard was present at binding;
+    // C2 exact live private Pod identity; C3 same guard remains at observation;
+    // C4 every exact process exits. R1=C1+C2 -> retained Sandbox binding, never
+    // Worker authentication/release authority. R2=C1+C2+C3+C4 -> local exit;
+    // R3 missing/substituted guard -> no retained evidence. R4 changed UID,
+    // node or runtime incarnation -> Unknown. No row installs a new guard or
+    // upgrades an old unretained binding; terminal status cannot mint admission.
+    let guard = super::super::create_ledger::ORIGINAL_GUARD_FINALIZER;
+    let mut live = running();
+    live["metadata"]["finalizers"] = json!([guard]);
+    let binding = bind("ns", "worker", "uid-a", &decode(live)).unwrap();
+    assert!(
+        binding.evidence_was_retained(),
+        "R1 original Create retention"
+    );
+    assert!(!binding.worker_evidence_was_retained(), "R1 Sandbox only");
+    let mut exited = terminal();
+    exited["metadata"]["finalizers"] = json!([guard]);
+    assert!(
+        binding_retention_is_present(&binding, &decode(exited.clone())),
+        "R2"
+    );
+    assert!(
+        matches!(
+            observe(&binding, &decode(exited.clone())),
+            PodProcessTermination::Observed(_)
+        ),
+        "R2"
+    );
+    for finalizers in [
+        json!([]),
+        json!([WORKER_PROCESS_EVIDENCE_FINALIZER]),
+        json!(["other.example/keep"]),
+    ] {
+        let mut changed = exited.clone();
+        changed["metadata"]["finalizers"] = finalizers;
+        assert!(
+            !binding_retention_is_present(&binding, &decode(changed)),
+            "R3"
+        );
+    }
+    for (pointer, value) in [
+        ("/metadata/uid", json!("foreign")),
+        ("/spec/nodeName", json!("other")),
+        (
+            "/status/containerStatuses/0/containerID",
+            json!("containerd://other"),
+        ),
+    ] {
+        let mut changed = exited.clone();
+        *changed.pointer_mut(pointer).unwrap() = value;
+        assert_eq!(
+            observe(&binding, &decode(changed)),
+            PodProcessTermination::Unknown,
+            "R4 {pointer}"
+        );
+    }
+    let unretained = bind("ns", "worker", "uid-a", &decode(running())).unwrap();
+    assert!(
+        !unretained.evidence_was_retained(),
+        "R3 no retrospective upgrade"
+    );
+}
+
+#[test]
 fn completed_init_is_enrolled_and_continuation_retention_stays_with_its_owner() {
     // C1 private non-restarting init completed with an exact successful exit;
     // C2 it is live/restarted/rebound/failed; C3 existing continuation finalizer.

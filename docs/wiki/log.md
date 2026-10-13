@@ -940,3 +940,11 @@
   keeps store identities sparse and forbids advancing past unresolved lower inserts.
 - [ADR-0069](../adr/0069-acp-capability-configuration-lifecycle.md)
   reuses the original Create ticket through transient control response loss.
+
+
+## 2026-10-13 — Reuse original Sandbox Create retention
+
+- [ADR-0024](../adr/0024-daemon-lease-renewal.md) reuses the original Create
+  guard for exact pre-entry Sandbox process evidence. Binding and stop share one
+  retention catalog; the existing resource owner retains guard-release authority.
+  Historical opaque tool evidence remains unchanged.
