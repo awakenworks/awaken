@@ -120,6 +120,19 @@
       "install": "cargo install cargo-public-api --locked --version 0.52.0"
     },
     {
+      "name": "cargo-semver-checks",
+      "locate": "cargo-bin",
+      "gates": ["api"],
+      "requirement": "optional",
+      "skip": "explicit SDK source SemVer qualification; ordinary API checks compare TXT snapshots",
+      "version": {
+        "command": ["cargo-semver-checks", "semver-checks", "--version"],
+        "expect": "cargo-semver-checks 0.47.0",
+        "mismatch": "warning"
+      },
+      "install": "cargo install --locked cargo-semver-checks --version 0.47.0"
+    },
+    {
       "name": "nightly-2026-07-14",
       "locate": "rust-toolchain",
       "gates": ["api"],
