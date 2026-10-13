@@ -161,7 +161,7 @@ impl awaken_session_execution_contract::RealizationRuntime for AcceptingFake {
     async fn invalidate_session_realization_lease(
         &self,
         thread: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)

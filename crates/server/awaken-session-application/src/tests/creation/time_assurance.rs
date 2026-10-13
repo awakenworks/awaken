@@ -24,7 +24,7 @@ fn timed_application(
 fn command() -> CreateSessionCommand {
     let mut command = creation_command("time-assurance");
     command.intent.control.runtime_placement =
-        awaken_session_configuration_contract::SessionRuntimePlacement::Worker;
+        awaken_session_types::SessionRuntimePlacement::Worker;
     command.idempotency = None;
     command
 }

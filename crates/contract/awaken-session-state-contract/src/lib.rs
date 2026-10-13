@@ -21,11 +21,15 @@ pub(crate) use awaken_agent_contract::stable_fingerprint;
 #[cfg(test)]
 pub(crate) use awaken_session_budget_contract::ManagedModelUsageCursor;
 pub(crate) use awaken_session_budget_contract::{ManagedBudgetUsageCursor, SessionBudgetState};
+pub(crate) use awaken_session_configuration_contract::resource::{
+    ResolvedInput, ResolvedInputSource, ResolvedSessionResources, ResolvedSkillBinding,
+    SessionRealizationLease, SessionResourceManifest, SessionResourceTransition,
+    realization_lease_authorizes, realization_lease_generation_authorizes,
+};
 #[cfg(test)]
-pub(crate) use awaken_session_configuration_contract::{
-    ControlSessionCreationInputs, EnvironmentFingerprint, EnvironmentSnapshot,
-    SessionCreationIntent, SessionNetworkPolicy, SessionRuntimePlacement,
-    SessionSystemPromptSelection,
+pub(crate) use awaken_session_configuration_contract::resource::{
+    ResolvedRepositoryCredential, SessionMutationPolicy, repository_transport_credential_target,
+    repository_transport_credential_usage,
 };
 pub(crate) use awaken_session_configuration_contract::{
     EnvironmentIdleRetentionMode, EnvironmentIdleRetentionPolicy, SessionBaseline,
@@ -39,20 +43,19 @@ pub(crate) use awaken_session_event_contract::{
     SessionEventProjectionAnchor, SessionInitialEventPlan, session_event_execution_may_close,
     session_inputs_allow_idle,
 };
-pub(crate) use awaken_session_mcp_contract::{
-    McpGenerationRef, McpTarget, SessionMcpAttachmentSet,
-};
-pub(crate) use awaken_session_resource_contract::{
-    ResolvedInput, ResolvedInputSource, ResolvedSessionResources, ResolvedSkillBinding,
-    SessionRealizationLease, SessionResourceManifest, SessionResourceTransition,
-    realization_lease_authorizes, realization_lease_generation_authorizes,
+pub(crate) use awaken_session_types::{SessionId, SessionRevision};
+pub(crate) use {
+    awaken_agent_contract::McpTarget,
+    awaken_session_configuration_contract::mcp::{McpGenerationRef, SessionMcpAttachmentSet},
 };
 #[cfg(test)]
-pub(crate) use awaken_session_resource_contract::{
-    ResolvedRepositoryCredential, SessionMutationPolicy, repository_transport_credential_target,
-    repository_transport_credential_usage,
+pub(crate) use {
+    awaken_session_configuration_contract::{
+        ControlSessionCreationInputs, EnvironmentFingerprint, EnvironmentSnapshot,
+        SessionCreationIntent, SessionNetworkPolicy, SessionSystemPromptSelection,
+    },
+    awaken_session_types::SessionRuntimePlacement,
 };
-pub(crate) use awaken_session_types::{SessionId, SessionRevision};
 
 pub use archive_intent::{
     SessionArchiveAdmission, SessionArchiveBusinessIntent, SessionTerminalCleanupAffinity,
@@ -87,11 +90,10 @@ pub use session_repo::{
     SessionDispositionTransitionError, SessionEventDispatchSettlementEffect, SessionExecutionState,
     SessionExecutionStateError, SessionExecutionTransitionError, SessionIdempotencyReceipt,
     SessionMutation, SessionMutationPayload, SessionMutationResult, SessionMutationValidationError,
-    SessionPlacementClass, SessionPublicStatus, SessionRecoveryQuarantine,
-    SessionRepositoryConflict, SessionRepositoryError, SessionRepositoryRecoveryAction,
-    SessionRunActivityAdmissionRecord, SessionScan, SessionScanCursor, SessionScanQuery,
-    SessionTombstone, SessionWorkerObligation, VisibleMcpServer, session_is_terminal,
-    session_is_unattempted_profiled_preparation,
+    SessionPlacementClass, SessionPublicStatus, SessionRepositoryConflict, SessionRepositoryError,
+    SessionRepositoryRecoveryAction, SessionRunActivityAdmissionRecord, SessionScan,
+    SessionScanCursor, SessionScanQuery, SessionTombstone, SessionWorkerObligation,
+    VisibleMcpServer, session_is_terminal, session_is_unattempted_profiled_preparation,
 };
 pub use terminal_cleanup::{
     SessionCleanupCommand, SessionCleanupDisposalCommand, SessionCleanupDisposalReceipt,

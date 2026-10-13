@@ -204,7 +204,7 @@ fn initial_mcp_candidates(
                     .credential_source_id
                     .clone()
                     .zip(server.credential_revision),
-                origin: awaken_session_mcp_contract::McpAttachmentOrigin::Agent,
+                origin: crate::session_mcp::McpAttachmentOrigin::Agent,
             })
             .collect(),
         (None, None) => Vec::new(),
@@ -696,7 +696,7 @@ impl SessionApplication {
             .and_then(|profile| (profile.source_revision > 0).then_some(profile.source_revision));
         let intent = awaken_session_configuration_contract::SessionCreationIntent {
             control: awaken_session_configuration_contract::ControlSessionCreationInputs {
-                mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Managed,
+                mutation_policy: crate::session_resource::SessionMutationPolicy::Managed,
                 application_origin: None,
                 environment,
                 runtime_placement: self.runtime_placement(),

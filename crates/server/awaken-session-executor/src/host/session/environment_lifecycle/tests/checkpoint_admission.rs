@@ -1,6 +1,7 @@
 //! Checkpoint upload authority and suspension/terminal admission.
 
 use super::*;
+use awaken_session_configuration_contract::resource as session_resource;
 
 struct PendingUploadStore {
     puts: std::sync::atomic::AtomicUsize,
@@ -70,7 +71,7 @@ async fn checkpoint_upload_host_preserves_original_authority_across_lifecycle_an
                         .into_session_provider();
                 let environment = environment(&provider, thread).await;
                 let binding = serde_json::to_string(&environment.lifecycle().handle()).unwrap();
-                let lease = awaken_session_resource_contract::SessionRealizationLease {
+                let lease = session_resource::SessionRealizationLease {
                     owner: "upload-worker".into(),
                     runtime_incarnation: "boot".into(),
                     epoch: 2,
@@ -349,8 +350,8 @@ async fn terminal_committed_checkpoint_requires_current_worker_and_session_after
 #[tokio::test]
 async fn suspension_and_terminal_admission_use_live_observation_and_never_reopen_closed_slots() {
     use crate::installed_session::SessionRealizationAuthority as Authority;
+    use awaken_session_configuration_contract::resource::SessionRealizationLease;
     use awaken_session_realization_contract::SessionRealizationLeaseReceipt;
-    use awaken_session_resource_contract::SessionRealizationLease;
 
     // Cause/effect table: C1 absent/Uninstalled/Live/Closed root; C2 operation
     // fenced/unfenced; C3 exact/foreign/older/newer assertion; C4 observed proof

@@ -14,14 +14,13 @@ authority = "session-realization"
 separation = "sole-in-layer"
 
 [dependencies]
+awaken-session-configuration-contract.workspace = true
 async-trait.workspace = true
 awaken-time.workspace = true
 tokio = { workspace = true, features = ["macros", "sync", "time"] }
 awaken-agent-contract.workspace = true
 awaken-lease-contract.workspace = true
-awaken-session-mcp-contract.workspace = true
 awaken-session-realization-contract.workspace = true
-awaken-session-resource-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-state-contract.workspace = true
 awaken-session-types.workspace = true

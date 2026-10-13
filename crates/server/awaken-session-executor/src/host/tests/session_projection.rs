@@ -645,11 +645,11 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         "M4/E4"
     );
 
-    let memory_with_path = awaken_session_resource_contract::ResolvedInput {
+    let memory_with_path = crate::session_resource::ResolvedInput {
         created_at_unix_ms: None,
         updated_at_unix_ms: None,
         binding_id: awaken_resource_contract::BindingId::from("memory"),
-        source: awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
+        source: crate::session_resource::ResolvedInputSource::MemoryStore {
             memory_store_id: awaken_resource_contract::MemoryStoreId::from("store"),
             config: awaken_resource_contract::MemoryStoreConfigVersion {
                 memory_store_id: awaken_resource_contract::MemoryStoreId::from("store"),
@@ -740,7 +740,7 @@ async fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
         "M5a empty Skill manifest clears the published selection"
     );
 
-    let binding = awaken_session_resource_contract::ResolvedSkillBinding {
+    let binding = crate::session_resource::ResolvedSkillBinding {
         kind: awaken_agent_contract::AgentSkillKind::Custom,
         skill_id: "think".into(),
         version: 1,
@@ -1447,8 +1447,7 @@ async fn frozen_session_resolves_its_exact_agent_revision_instead_of_current() {
     let baseline = awaken_session_configuration_contract::SessionBaseline::compile(
         awaken_session_configuration_contract::SessionBaselineInputs {
             environment: on_tool_use_environment(),
-            runtime_placement:
-                awaken_session_configuration_contract::SessionRuntimePlacement::Local,
+            runtime_placement: awaken_session_types::SessionRuntimePlacement::Local,
             mcp_authoring: Default::default(),
             agent_id: "agent-a".into(),
             agent_revision: Some(2),
@@ -1472,9 +1471,9 @@ async fn frozen_session_resolves_its_exact_agent_revision_instead_of_current() {
             resource_revision: 0,
             resources: Default::default(),
             previous_resource_manifest: Some(
-                awaken_session_resource_contract::SessionResourceManifest::new(
+                crate::session_resource::SessionResourceManifest::new(
                     host.local_workspace(),
-                    awaken_session_resource_contract::ResolvedSessionResources::default(),
+                    crate::session_resource::ResolvedSessionResources::default(),
                 ),
             ),
             tools: Default::default(),
@@ -1963,28 +1962,28 @@ async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host(
         awaken_credential_contract::PLATFORM_EGRESS_GATEWAY_TRUST_DOMAIN,
     );
     let upstream = "https://upstream.invalid/mcp";
-    let audience = awaken_session_mcp_contract::McpTarget::identity(upstream)
+    let audience = awaken_agent_contract::McpTarget::identity(upstream)
         .unwrap()
         .canonical_url();
-    let generation = awaken_session_mcp_contract::McpGenerationRef::from_persisted(
+    let generation = crate::session_mcp::McpGenerationRef::from_persisted(
         "mcp-platform".into(),
-        awaken_session_mcp_contract::McpGeneration::of_bare_target(
-            awaken_session_mcp_contract::McpAttachmentId("mcp-docs".into()),
+        crate::session_mcp::McpGeneration::of_bare_target(
+            crate::session_mcp::McpAttachmentId("mcp-docs".into()),
             1,
-            &awaken_session_mcp_contract::McpTarget::parse_http(upstream).unwrap(),
+            &awaken_agent_contract::McpTarget::parse_http(upstream).unwrap(),
         ),
         "runtime-1".into(),
         1,
         u64::MAX - 1,
     )
     .expect("MCP generation fence epoch is nonzero");
-    let request = awaken_session_mcp_contract::StageMcpAttachment {
+    let request = crate::session_mcp::StageMcpAttachment {
         workspace_id: "workspace-a".into(),
         generation: generation.clone(),
         realization_id: "realize-platform".into(),
         stage_idempotency_key: "stage-platform".into(),
         name: "docs".into(),
-        target: awaken_session_mcp_contract::McpTarget::parse_http(upstream).unwrap(),
+        target: awaken_agent_contract::McpTarget::parse_http(upstream).unwrap(),
         prompts_as_skills: false,
         credential: Some(
             CredentialAccess::new(

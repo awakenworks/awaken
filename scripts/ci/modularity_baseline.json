@@ -71,7 +71,6 @@
     "awaken-scenario-host": 1,
     "awaken-session-application": 3,
     "awaken-session-environment": 1,
-    "awaken-session-mcp-contract": 1,
     "awaken-session-realization-contract": 1,
     "awaken-session-repository-contract": 1,
     "awaken-session-execution-contract": 3,
@@ -217,11 +216,9 @@
     "awaken-session-environment-contract",
     "awaken-session-event-contract",
     "awaken-session-mcp",
-    "awaken-session-mcp-contract",
     "awaken-session-realization-contract",
     "awaken-session-realization-driver",
     "awaken-session-repository-contract",
-    "awaken-session-resource-contract",
     "awaken-session-execution-contract",
     "awaken-session-state-contract",
     "awaken-session-store",
@@ -293,7 +290,7 @@
     "awaken-protocol-managed::state/events/committed_projection/canonical_order.rs::canonicalize_committed_events": 220,
     "awaken-protocol-managed::state/events/lifecycle_projection.rs::append_delegation_projections": 152,
     "awaken-protocol-managed::state/events/transcript_projection.rs::append_child_transcript_projection": 162,
-    "awaken-protocol-managed::state/resources.rs::lower_complete_resource_manifest": 286,
+    "awaken-protocol-managed::state/resources.rs::lower_complete_resource_manifest": 280,
     "awaken-protocol-managed::state/sessions.rs::create_session_with_identity_from": 213,
     "awaken-protocol-managed::state/sessions.rs::rehydrated_session_for": 157,
     "awaken-provider-genai::lib.rs::infer_streaming": 228,
@@ -332,8 +329,8 @@
     "awaken-session-executor::host/session/environment_lifecycle/terminal_preparation.rs::prepare_terminal_environment_under_lifecycle": 233,
     "awaken-session-executor::host/worker_resolver/claimed_dispatch.rs::worker_for_claimed": 240,
     "awaken-session-executor::host/worker_resolver/session_realization/projection_synchronizer.rs::synchronize_session_projection": 243,
-    "awaken-session-executor::managed_resource_projection.rs::apply_session_inputs_body": 467,
-    "awaken-session-executor::managed_resource_projection.rs::stage_resolved_input_with_resource_authority": 313,
+    "awaken-session-executor::managed_resource_projection.rs::apply_session_inputs_body": 463,
+    "awaken-session-executor::managed_resource_projection.rs::stage_resolved_input_with_resource_authority": 309,
     "awaken-session-executor::provisioning.rs::repository_operation_credential": 203,
     "awaken-session-executor::skills.rs::build_skill_registry": 154,
     "awaken-session-executor::terminal_repository_publication.rs::publish_terminal_repository": 153,
@@ -371,14 +368,14 @@
     "awaken-session-application::realization/control.rs::activate_session_realization_inner": 167,
     "awaken-session-application::realization/control.rs::begin_session_realization_inner": 189,
     "awaken-session-application::realization/control.rs::claim_terminal_cleanup_root": 173,
-    "awaken-session-application::resource_reconciliation.rs::reconcile_prepared_resources": 153,
-    "awaken-session-application::resource_reconciliation.rs::rotate_repository_credential": 153,
+    "awaken-session-application::resource_reconciliation.rs::reconcile_prepared_resources": 151,
+    "awaken-session-application::resource_reconciliation.rs::rotate_repository_credential": 152,
     "awaken-session-application::resource_reconciliation/terminal_cleanup.rs::release_terminal_resources_once": 183,
-    "awaken-session-application::run_admission.rs::create_profiled_session_with_completion": 395,
-    "awaken-session-application::runtime_commands.rs::configure_session_repository": 268,
+    "awaken-session-application::run_admission.rs::create_profiled_session_with_completion": 394,
+    "awaken-session-application::runtime_commands.rs::configure_session_repository": 266,
     "awaken-session-application::update.rs::update_session_once": 167,
     "awaken-session-event-contract::lib.rs::compile_attributed": 172,
-    "awaken-session-mcp::mcp/attachment.rs::stage_attachment": 649,
+    "awaken-session-mcp::mcp/attachment.rs::stage_attachment": 647,
     "awaken-session-mcp::mcp/sessions.rs::drain_projection": 182,
     "awaken-session-mcp::mcp_relay.rs::forward": 170,
     "awaken-session-mcp::test_mcp.rs::start_with_options": 175,
@@ -392,12 +389,12 @@
   },
   "crate-budget": {
     "awaken-protocol-managed": {
-      "deps": 39,
+      "deps": 37,
       "lines": 24420,
       "reason": "W20 (plan 9.11): Session lifecycle and deployment decisions move to their application services; the adapter keeps protocol translation only"
     },
     "awaken-session-executor": {
-      "deps": 47,
+      "deps": 45,
       "lines": 35921,
       "reason": "runtime-host split (plan 10.4 slices R, E, H): lines hold host plus the realizer being extracted in place (+142 approved 2026-10-10 for the SessionRealizations view, leaves with the realization crate; +24 approved 2026-10-10 for k8s_unschedulable_wait_secs settings, leaves with the deployment configuration to the composition root); host_lines may only fall; target < 20000 lines, about 26-28 dependencies",
       "host_lines": 24522
@@ -408,7 +405,7 @@
       "reason": "ADR-0092 quota/unschedulable/probe handling plus reviewed single-ledger finite capture policy (+383 required lines after duplicate byte-count/collector consolidation): canonical full ConfigMap/future-result/guard projection and original Limited response adaptation; no new store or resource budget. Removed when W34 moves the Kubernetes backend into its own crate."
     },
     "awaken-session-application": {
-      "deps": 24,
+      "deps": 22,
       "lines": 18316,
       "reason": "W21 (plan 9.12): split by use case around one SessionMutations core; if it stays one aggregate after W21, record that review here"
     }

@@ -38,7 +38,7 @@ if [ "${1:-}" = "--session-observations" ]; then
     -p awaken-session-application-contract -p awaken-session-execution-contract \
     -p awaken-session-realization-contract -p awaken-session-state-contract \
     -p awaken-session-repository-contract \
-    -p awaken-session-resource-contract -p awaken-worker-contract \
+    -p awaken-session-configuration-contract -p awaken-worker-contract \
     -p awaken-session-application \
     -p awaken-store-inmem -p awaken-store-fs -p awaken-store-sqlite -p awaken-protocol-managed
   cargo test --locked -p awaken-session-executor --lib projection_convergence::

@@ -94,9 +94,8 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
     let binding = resources.inputs()[0].binding_id.clone();
     let resources = resources
         .update_input(&binding, |input| {
-            let awaken_session_resource_contract::ResolvedInputSource::Repository {
-                config, ..
-            } = &mut input.source
+            let crate::session_resource::ResolvedInputSource::Repository { config, .. } =
+                &mut input.source
             else {
                 unreachable!()
             };
@@ -105,7 +104,7 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
         .unwrap();
     let thread = "repository-continuity";
     let workspace = host.local_workspace().to_string();
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = crate::session_resource::SessionRealizationLease {
         owner: "continuity-worker".into(),
         runtime_incarnation: "continuity-worker/1".into(),
         epoch: 1,
@@ -118,8 +117,7 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
                 awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
                 serde_json::json!({}),
             ),
-            runtime_placement:
-                awaken_session_configuration_contract::SessionRuntimePlacement::Worker,
+            runtime_placement: awaken_session_types::SessionRuntimePlacement::Worker,
             mcp_authoring: Default::default(),
             agent_id: "agent".into(),
             agent_revision: None,
@@ -134,7 +132,7 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
             transcript_prefix: None,
         },
     );
-    let manifest = awaken_session_resource_contract::SessionResourceManifest::at_revision(
+    let manifest = crate::session_resource::SessionResourceManifest::at_revision(
         &workspace,
         1,
         resources.clone(),
@@ -149,7 +147,7 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
         resource_revision: 1,
         resources,
         previous_resource_manifest: Some(
-            awaken_session_resource_contract::SessionResourceManifest::at_revision(
+            crate::session_resource::SessionResourceManifest::at_revision(
                 &workspace,
                 0,
                 Default::default(),
@@ -210,11 +208,9 @@ async fn adopted_repository_preserves_work_branch_commit_and_uncommitted_files()
         state.environment_resource_reconciliation =
             crate::staged_resources::EnvironmentResourceReconciliation::Adopted;
     });
-    let transition = awaken_session_resource_contract::SessionResourceTransition::new(
-        manifest.clone(),
-        manifest.clone(),
-    )
-    .unwrap();
+    let transition =
+        crate::session_resource::SessionResourceTransition::new(manifest.clone(), manifest.clone())
+            .unwrap();
     managed
         .apply_session_inputs_with_context(thread, &transition, None, Some(&lease))
         .await

@@ -762,12 +762,8 @@ use awaken_dispatch_http::WorkerDispatchAuthority;
 
 mod environment_renewal {
     use super::*;
-    use awaken_session_configuration_contract::{
-        EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline, SessionBaselineInputs,
-        SessionRuntimePlacement,
-    };
+    use awaken_session_configuration_contract::resource::SessionRealizationLease;
     use awaken_session_repository_contract::SessionRepository;
-    use awaken_session_resource_contract::SessionRealizationLease;
     use awaken_session_state_contract::{
         IdempotencyRecord, PersistedSession, SessionEnvironmentEffectAuthorization,
         SessionEnvironmentEffectIntent, SessionEnvironmentEffectKind, SessionEnvironmentReceipt,
@@ -776,6 +772,12 @@ mod environment_renewal {
     use awaken_worker_contract::{
         SessionWorkAcquisition, SessionWorkLease, SessionWorkLeaseAuthority, SessionWorkOwnership,
         WorkQueueError,
+    };
+    use {
+        awaken_session_configuration_contract::{
+            EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline, SessionBaselineInputs,
+        },
+        awaken_session_types::SessionRuntimePlacement,
     };
 
     // This fixture supplies a selected Work-port observation. It owns no Work
@@ -993,7 +995,7 @@ mod environment_renewal {
             );
             clock.set(150);
             assert_eq!(
-                awaken_session_resource_contract::realization_lease_is_live_at(
+                awaken_session_configuration_contract::resource::realization_lease_is_live_at(
                     original.expires_at_unix_ms,
                     150
                 ),

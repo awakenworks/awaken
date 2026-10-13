@@ -19,8 +19,7 @@ pub(super) struct ContextPlan {
     pub(super) unclaimed_runtime_publications: Option<Vec<ExecutableAgentSnapshot>>,
     pub(super) session_dispatch: bool,
     pub(super) frozen_skill_versions: Option<Vec<awaken_resource_contract::SkillVersion>>,
-    pub(super) deferred_skill_bindings:
-        Option<Vec<awaken_session_resource_contract::ResolvedSkillBinding>>,
+    pub(super) deferred_skill_bindings: Option<Vec<crate::session_resource::ResolvedSkillBinding>>,
     pub(super) execution_backend: awaken_runtime_contract::resolved::Backend,
     pub(super) background_tasks_enabled: bool,
     pub(super) background_attention: Option<
@@ -98,13 +97,13 @@ pub(super) async fn prepare(
     // path. A Managed/claimed caller must already carry its aggregate-owned
     // transition and therefore remains fail-closed when that fact is absent.
     if claimed_attempt.is_none() && !session_dispatch {
-        let empty = awaken_session_resource_contract::SessionResourceManifest::at_revision(
+        let empty = crate::session_resource::SessionResourceManifest::at_revision(
             workspace.clone(),
             0,
-            awaken_session_resource_contract::ResolvedSessionResources::default(),
+            crate::session_resource::ResolvedSessionResources::default(),
         );
         let transition =
-            awaken_session_resource_contract::SessionResourceTransition::new(empty.clone(), empty)
+            crate::session_resource::SessionResourceTransition::new(empty.clone(), empty)
                 .map_err(|error| HostError::internal(error.to_string()))?;
         host.installed_sessions.update_realization(thread, |r| {
             if r.resource_transition.is_none() {

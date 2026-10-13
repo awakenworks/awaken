@@ -5,21 +5,21 @@ mod application_origin;
 mod baseline;
 mod dispatched_runtime;
 mod execution_context;
+pub mod mcp;
 mod mcp_probe;
 mod model_resolution;
 mod network_policy;
+pub mod resource;
 mod runtime_projection;
 mod skill_execution;
 mod tool_configuration;
 
-use awaken_session_mcp_contract::McpAttachmentDraft;
+use crate::mcp::McpAttachmentDraft;
 #[cfg(test)]
-use awaken_session_mcp_contract::{McpAttachmentOrigin, McpTarget};
+use crate::resource::{ResolvedInput, ResolvedInputSource};
+use crate::resource::{ResolvedSessionResources, ResolvedSkillBinding, SessionMutationPolicy};
 #[cfg(test)]
-use awaken_session_resource_contract::{ResolvedInput, ResolvedInputSource};
-use awaken_session_resource_contract::{
-    ResolvedSessionResources, ResolvedSkillBinding, SessionMutationPolicy,
-};
+use {crate::mcp::McpAttachmentOrigin, awaken_agent_contract::McpTarget};
 
 pub use agent_config::{
     AGENT_TOOLSET_TOOL_IDS, AgentPermissionPreset, AgentPermissionPresetTarget, AgentTool,
@@ -36,8 +36,8 @@ pub use baseline::{
     EnvironmentFingerprint, EnvironmentIdleRetentionMode, EnvironmentIdleRetentionPolicy,
     EnvironmentSnapshot, SandboxProvisioning, SessionBaseline, SessionBaselineFingerprint,
     SessionBaselineInputs, SessionBaselineState, SessionCreationFinalizeError,
-    SessionCreationIntent, SessionMcpAuthoringContext, SessionRuntimePlacement,
-    SessionSystemPromptSelection, resolved_environment_snapshot_is_exact,
+    SessionCreationIntent, SessionMcpAuthoringContext, SessionSystemPromptSelection,
+    resolved_environment_snapshot_is_exact,
 };
 pub use dispatched_runtime::{SessionRuntimeDispatchError, SessionRuntimeProjection};
 pub use execution_context::{SessionContextError, SessionContextSeed, SessionTrigger};
@@ -67,3 +67,5 @@ pub(crate) use awaken_agent_contract::stable_fingerprint;
 pub trait EnvironmentWarmupSource: Send + Sync {
     async fn current_environment_warmups(&self) -> Result<Vec<EnvironmentSnapshot>, String>;
 }
+
+use awaken_session_types::SessionRuntimePlacement;

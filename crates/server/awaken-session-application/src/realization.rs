@@ -9,14 +9,16 @@ use crate::SessionAggregate;
 use awaken_time::WallClockExt as _;
 use std::collections::BTreeSet;
 
-use awaken_session_mcp_contract::{McpAttachmentState, McpGenerationRef, StageMcpAttachment};
+use awaken_session_configuration_contract::mcp::{
+    McpAttachmentState, McpGenerationRef, StageMcpAttachment,
+};
+use awaken_session_configuration_contract::resource::SessionRealizationLease;
 use awaken_session_realization_contract::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
     FailSessionRealization, RenewSessionRealization, SessionRealizationAction,
     SessionRealizationControl, SessionRealizationControlFailure, SessionRealizationDirective,
     SessionTerminalCleanupAssignment, terminal_cleanup_worker_requirements,
 };
-use awaken_session_resource_contract::SessionRealizationLease;
 use awaken_session_execution_contract::RealizationRuntime;
 use awaken_session_state_contract::{
     ManagedLifecycleFact, PersistedSession, SessionEnvironmentState, SessionExecutionState,
@@ -147,7 +149,7 @@ pub struct SessionReconciliationFailure {
 pub struct SessionReconciliation {
     pub settled: Vec<PersistedSession>,
     pub failures: Vec<SessionReconciliationFailure>,
-    pub quarantined: Vec<awaken_session_state_contract::SessionRecoveryQuarantine>,
+    pub quarantined: Vec<awaken_session_types::SessionRecoveryQuarantine>,
     pub pending: usize,
 }
 

@@ -874,13 +874,12 @@ async fn durable_deferred_sandbox_publication_decision_table() {
 
 struct RecordingSessionControl {
     resume_calls: Arc<AtomicUsize>,
-    continuations: Arc<
-        std::sync::Mutex<Vec<Option<awaken_session_resource_contract::SessionRealizationLease>>>,
-    >,
+    continuations:
+        Arc<std::sync::Mutex<Vec<Option<crate::session_resource::SessionRealizationLease>>>>,
     phases: Arc<std::sync::Mutex<Vec<&'static str>>>,
     projection:
         Arc<std::sync::Mutex<Option<awaken_session_realization_contract::FrozenSessionProjection>>>,
-    mcp_stage: Option<awaken_session_mcp_contract::StageMcpAttachment>,
+    mcp_stage: Option<crate::session_mcp::StageMcpAttachment>,
     fail_begin: Arc<AtomicBool>,
 }
 
@@ -895,9 +894,8 @@ struct RecordingMcpRealizer {
 impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRealizer {
     async fn stage_mcp_attachment(
         &self,
-        request: awaken_session_mcp_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, awaken_session_types::RunError>
-    {
+        request: crate::session_mcp::StageMcpAttachment,
+    ) -> Result<crate::session_mcp::McpRealizationReceipt, awaken_session_types::RunError> {
         self.calls.lock().unwrap().push("stage");
         if let Some((host, thread)) = self.required_physical_environment.get() {
             let physical_only = host.upgrade().is_some_and(|host| {
@@ -921,7 +919,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRe
                 "test MCP stage failed",
             ));
         }
-        Ok(awaken_session_mcp_contract::McpRealizationReceipt {
+        Ok(crate::session_mcp::McpRealizationReceipt {
             receipt_fingerprint: request.fingerprint(),
             generation: request.generation,
             realization_id: request.realization_id,
@@ -932,7 +930,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRe
 
     async fn publish_mcp_generation(
         &self,
-        _generation: awaken_session_mcp_contract::McpGenerationRef,
+        _generation: crate::session_mcp::McpGenerationRef,
     ) -> Result<(), awaken_session_types::RunError> {
         self.calls.lock().unwrap().push("publish");
         Ok(())
@@ -940,7 +938,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRe
 
     async fn drain_mcp_generation(
         &self,
-        _generation: awaken_session_mcp_contract::McpGenerationRef,
+        _generation: crate::session_mcp::McpGenerationRef,
     ) -> Result<(), awaken_session_types::RunError> {
         self.calls.lock().unwrap().push("drain");
         Ok(())
@@ -1009,13 +1007,13 @@ async fn cold_claimed_stdio_mcp_opens_the_exact_agent_snapshot_before_staging() 
             awaken_session_realization_contract::FrozenResourceTransitionUse::ApplyEffects,
         )
         .expect("S1 exact Store-read initial Resource transition");
-    let stage = awaken_session_mcp_contract::StageMcpAttachment {
+    let stage = crate::session_mcp::StageMcpAttachment {
         workspace_id: host.local_workspace().into(),
         generation: crate::test_mcp::mcp_fence(thread, "browser", 1, "worker-a", 1, u64::MAX),
         realization_id: "realize-browser-1".into(),
         stage_idempotency_key: "stage-browser-1".into(),
         name: "browser".into(),
-        target: awaken_session_mcp_contract::McpTarget::sandbox_stdio(
+        target: awaken_agent_contract::McpTarget::sandbox_stdio(
             "playwright-mcp",
             vec!["--headless".into()],
         )
@@ -1081,7 +1079,7 @@ impl awaken_session_realization_contract::ClaimedSessionRealizationControl
         claim: &ingress::RunClaim,
         _session_id: &str,
         _session_work_authority: Option<&awaken_worker_contract::SessionWorkAuthorityReceipt>,
-        continuation: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+        continuation: Option<&crate::session_resource::SessionRealizationLease>,
     ) -> Result<
         Option<awaken_session_realization_contract::SessionRealizationDirective>,
         awaken_session_realization_contract::ClaimedSessionControlError,
@@ -1096,7 +1094,7 @@ impl awaken_session_realization_contract::ClaimedSessionRealizationControl
                 projection,
                 authority: crate::installed_session::test_lease_receipt(
                     continuation.cloned().unwrap_or_else(|| {
-                        awaken_session_resource_contract::SessionRealizationLease {
+                        crate::session_resource::SessionRealizationLease {
                             owner: claim.owner.clone(),
                             runtime_incarnation: claim.owner.clone(),
                             epoch: claim.epoch,
@@ -1142,7 +1140,7 @@ impl awaken_session_realization_contract::SessionRealizationControl for Recordin
             awaken_session_realization_contract::SessionRealizationDirective {
                 projection,
                 authority: crate::installed_session::test_lease_receipt(
-                    awaken_session_resource_contract::SessionRealizationLease {
+                    crate::session_resource::SessionRealizationLease {
                         owner: command.target.owner,
                         runtime_incarnation: command.target.runtime_incarnation,
                         epoch: 1,
@@ -1336,7 +1334,7 @@ async fn claimed_worker_uses_only_frozen_session_realization() {
         slot.run.dispatch_claim = Some(predecessor.clone());
         slot.realization.authority = crate::installed_session::SessionRealizationAuthority::Live(
             crate::installed_session::test_observed_lease(
-                awaken_session_resource_contract::SessionRealizationLease {
+                crate::session_resource::SessionRealizationLease {
                     owner: claimed.lease.owner().to_owned(),
                     runtime_incarnation: claimed.lease.owner().to_owned(),
                     epoch: 0,
@@ -1470,17 +1468,16 @@ async fn claimed_resource_conflict_is_terminal_before_realization() {
             }
             "revision" => projection.resource_revision += 1,
             "bindings" => {
-                projection.resources =
-                    awaken_session_resource_contract::ResolvedSessionResources::try_new(
-                        Vec::new(),
-                        vec![awaken_session_resource_contract::ResolvedSkillBinding {
-                            kind: awaken_agent_contract::AgentSkillKind::Custom,
-                            skill_id: "replacement-skill".into(),
-                            version: 1,
-                            bundle_sha256: "sha256-replacement".into(),
-                        }],
-                    )
-                    .unwrap();
+                projection.resources = crate::session_resource::ResolvedSessionResources::try_new(
+                    Vec::new(),
+                    vec![crate::session_resource::ResolvedSkillBinding {
+                        kind: awaken_agent_contract::AgentSkillKind::Custom,
+                        skill_id: "replacement-skill".into(),
+                        version: 1,
+                        bundle_sha256: "sha256-replacement".into(),
+                    }],
+                )
+                .unwrap();
             }
             _ => unreachable!(),
         }
@@ -1650,15 +1647,15 @@ async fn desired_only_dispatch_reuses_the_exact_projected_transition() {
     // | R3 | rev1→rev1 | absent | rev2 | E2 |
     let host = adoption_host().await;
     let managed = managed_test_host(host.clone());
-    let revision_one = awaken_session_resource_contract::SessionResourceManifest::at_revision(
+    let revision_one = crate::session_resource::SessionResourceManifest::at_revision(
         "workspace-a",
         1,
-        awaken_session_resource_contract::ResolvedSessionResources::default(),
+        crate::session_resource::ResolvedSessionResources::default(),
     );
-    let revision_two = awaken_session_resource_contract::SessionResourceManifest::at_revision(
+    let revision_two = crate::session_resource::SessionResourceManifest::at_revision(
         "workspace-a",
         2,
-        awaken_session_resource_contract::ResolvedSessionResources::default(),
+        crate::session_resource::ResolvedSessionResources::default(),
     );
 
     for thread in ["exact-cold-transition", "mismatched-cold-transition"] {
@@ -1787,9 +1784,9 @@ async fn complete_projection_resource_guard_excludes_desired_only_staging() {
     let host = adoption_host().await;
     let _managed = crate::ManagedHost::new(host.clone());
     let thread = "resource-projection-guard";
-    let manifest = awaken_session_resource_contract::SessionResourceManifest::new(
+    let manifest = crate::session_resource::SessionResourceManifest::new(
         host.local_workspace(),
-        awaken_session_resource_contract::ResolvedSessionResources::default(),
+        crate::session_resource::ResolvedSessionResources::default(),
     );
     let guard = host
         .installed_sessions
@@ -1884,19 +1881,19 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         .await
         .expect("P2 exact Skill store")
         .expect("P2 create exact Skill");
-    let missing_resources = awaken_session_resource_contract::ResolvedSessionResources::try_new(
-        vec![awaken_session_resource_contract::ResolvedInput {
+    let missing_resources = crate::session_resource::ResolvedSessionResources::try_new(
+        vec![crate::session_resource::ResolvedInput {
             created_at_unix_ms: None,
             updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::new("missing-file-binding"),
-            source: awaken_session_resource_contract::ResolvedInputSource::File {
+            source: crate::session_resource::ResolvedInputSource::File {
                 file_id: awaken_resource_contract::FileId::from("missing-file"),
             },
             mount_path: "/missing.txt".into(),
             access: awaken_resource_contract::ResourceAccess::ReadOnly,
             instructions: None,
         }],
-        vec![awaken_session_resource_contract::ResolvedSkillBinding {
+        vec![crate::session_resource::ResolvedSkillBinding {
             kind: awaken_agent_contract::AgentSkillKind::Custom,
             skill_id: "cold-recovery".into(),
             version: 1,
@@ -1904,24 +1901,22 @@ async fn exact_prevalidated_staging_rejects_foreign_active_and_defers_bound_phys
         }],
     )
     .expect("valid missing-File projection");
-    let previous = awaken_session_resource_contract::SessionResourceManifest::at_revision(
+    let previous = crate::session_resource::SessionResourceManifest::at_revision(
         "workspace-a",
         1,
         Default::default(),
     );
-    let desired = awaken_session_resource_contract::SessionResourceManifest::at_revision(
+    let desired = crate::session_resource::SessionResourceManifest::at_revision(
         "workspace-a",
         2,
         missing_resources,
     );
-    let transition = awaken_session_resource_contract::SessionResourceTransition::new(
-        previous.clone(),
-        desired.clone(),
-    )
-    .expect("exact transition");
+    let transition =
+        crate::session_resource::SessionResourceTransition::new(previous.clone(), desired.clone())
+            .expect("exact transition");
 
     let foreign_thread = "foreign-active-resource";
-    let foreign = awaken_session_resource_contract::SessionResourceManifest::at_revision(
+    let foreign = crate::session_resource::SessionResourceManifest::at_revision(
         "workspace-a",
         9,
         Default::default(),
@@ -2041,14 +2036,14 @@ async fn cold_worker_file_staging_uses_only_the_claim_bound_source() {
     .build()
     .expect("validated Host dependencies");
     let managed = crate::ManagedHost::new(host.clone());
-    let manifest = awaken_session_resource_contract::SessionResourceManifest::new(
+    let manifest = crate::session_resource::SessionResourceManifest::new(
         "workspace-remote",
-        awaken_session_resource_contract::ResolvedSessionResources::try_new(
-            vec![awaken_session_resource_contract::ResolvedInput {
+        crate::session_resource::ResolvedSessionResources::try_new(
+            vec![crate::session_resource::ResolvedInput {
                 created_at_unix_ms: None,
                 updated_at_unix_ms: None,
                 binding_id: awaken_resource_contract::BindingId::new("remote-file-binding"),
-                source: awaken_session_resource_contract::ResolvedInputSource::File {
+                source: crate::session_resource::ResolvedInputSource::File {
                     file_id: awaken_resource_contract::FileId::from("file-remote"),
                 },
                 mount_path: "/input.txt".into(),
@@ -2863,8 +2858,7 @@ async fn outcome_projection_read_does_not_adopt_worker_owned_environment() {
         eager_environment(),
         &activation.snapshot,
     );
-    projection.baseline.runtime_placement =
-        awaken_session_configuration_contract::SessionRuntimePlacement::Worker;
+    projection.baseline.runtime_placement = awaken_session_types::SessionRuntimePlacement::Worker;
     projection.environment = awaken_session_state_contract::SessionEnvironmentState::Resident {
         binding: "opaque-worker-owned-environment".into(),
         effect_id: None,
@@ -2902,7 +2896,7 @@ async fn has_environment(host: &SharedHost, thread: &str) -> bool {
 fn active_manifest(
     host: &SharedHost,
     thread: &str,
-) -> Option<awaken_session_resource_contract::SessionResourceManifest> {
+) -> Option<crate::session_resource::SessionResourceManifest> {
     host.realizer.staging.thread_resource_manifest(thread)
 }
 

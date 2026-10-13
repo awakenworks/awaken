@@ -144,13 +144,12 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
             .freeze_targets(&id, [], 0, 0)
             .unwrap();
         if let Some(current_lease_ms) = current_lease_ms {
-            requested.realization =
-                Some(awaken_session_resource_contract::SessionRealizationLease {
-                    owner: registered.snapshot.identity.worker_id.clone(),
-                    runtime_incarnation: registered.snapshot.identity.lease_owner(),
-                    epoch: 7,
-                    expires_at_unix_ms: now + current_lease_ms,
-                });
+            requested.realization = Some(crate::session_resource::SessionRealizationLease {
+                owner: registered.snapshot.identity.worker_id.clone(),
+                runtime_incarnation: registered.snapshot.identity.lease_owner(),
+                epoch: 7,
+                expires_at_unix_ms: now + current_lease_ms,
+            });
         }
         create(repo.as_ref(), requested).await;
         let before = repo.get(&id).await.unwrap();

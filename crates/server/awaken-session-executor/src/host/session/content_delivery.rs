@@ -14,7 +14,7 @@ use super::*;
 /// materialized versions instead.
 pub(crate) enum SkillDeliveryEvidence<'a> {
     Materialized(Option<&'a [awaken_resource_contract::SkillVersion]>),
-    DeferredBindings(&'a [awaken_session_resource_contract::ResolvedSkillBinding]),
+    DeferredBindings(&'a [crate::session_resource::ResolvedSkillBinding]),
 }
 
 impl SkillDeliveryEvidence<'_> {

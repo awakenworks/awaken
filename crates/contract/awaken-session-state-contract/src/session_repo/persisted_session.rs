@@ -27,7 +27,7 @@ pub fn session_is_unattempted_profiled_preparation(session: &PersistedSession) -
         .is_some_and(crate::SessionEnvironmentMaterialization::has_admitted)
         && session.frozen_baseline().is_some_and(|baseline| {
             baseline.mutation_policy
-                == awaken_session_resource_contract::SessionMutationPolicy::Frozen
+                == awaken_session_configuration_contract::resource::SessionMutationPolicy::Frozen
         })
         && session.created_at_unix_ms.is_some()
         && session.execution == SessionExecutionState::Preparing
@@ -49,7 +49,8 @@ pub fn session_is_unattempted_profiled_preparation(session: &PersistedSession) -
                 && activation.lease_expires_at_unix_ms.is_none()
         })
         && session.mcp.attachments.iter().all(|attachment| {
-            attachment.state == awaken_session_mcp_contract::McpAttachmentState::Requested
+            attachment.state
+                == awaken_session_configuration_contract::mcp::McpAttachmentState::Requested
                 && attachment.attempts == 0
                 && attachment.realization.is_none()
                 && !attachment.publication_acknowledged
@@ -1394,10 +1395,13 @@ impl PersistedSession {
     #[must_use]
     pub fn current_worker_relay_generation(
         &self,
-        attachment_id: &awaken_session_mcp_contract::McpAttachmentId,
+        attachment_id: &awaken_session_configuration_contract::mcp::McpAttachmentId,
         version: u64,
         now_unix_ms: u64,
-    ) -> Option<(String, awaken_session_mcp_contract::McpGenerationRef)> {
+    ) -> Option<(
+        String,
+        awaken_session_configuration_contract::mcp::McpGenerationRef,
+    )> {
         if self.is_terminal() || self.is_hidden() {
             return None;
         }
@@ -1431,7 +1435,7 @@ impl PersistedSession {
         if !crate::realization_lease_authorizes(current, &asserted, now_unix_ms) {
             return None;
         }
-        let generation = awaken_session_mcp_contract::McpGenerationRef::from_claim(
+        let generation = awaken_session_configuration_contract::mcp::McpGenerationRef::from_claim(
             &self.session_id,
             &attachment.generation,
             claim,
@@ -1480,7 +1484,7 @@ mod worker_relay_route_tests {
         CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
         CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
     };
-    use awaken_session_mcp_contract::{
+    use awaken_session_configuration_contract::mcp::{
         McpAttachmentDraft, McpAttachmentId, McpAttachmentOrigin, McpAttachmentState,
         McpRealizationClaim, SessionMcpAttachmentSet,
     };
@@ -1516,10 +1520,8 @@ mod worker_relay_route_tests {
         root.mcp = SessionMcpAttachmentSet::from_initial(
             vec![McpAttachmentDraft {
                 name: "calc".into(),
-                target: awaken_session_mcp_contract::McpTarget::parse_http(
-                    "https://mcp.example.test/",
-                )
-                .unwrap(),
+                target: awaken_agent_contract::McpTarget::parse_http("https://mcp.example.test/")
+                    .unwrap(),
                 prompts_as_skills: false,
                 credential: Some(credential),
                 origin: McpAttachmentOrigin::Agent,

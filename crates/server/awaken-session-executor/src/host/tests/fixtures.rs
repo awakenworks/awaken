@@ -253,12 +253,11 @@ pub(crate) struct RemoteTerminalCleanupControl {
     pub(crate) renewal_delay_ms: Mutex<std::collections::HashMap<String, u64>>,
     pub(crate) renewals_active: AtomicUsize,
     pub(crate) max_renewals_active: AtomicUsize,
-    pub(crate) renewals:
-        Mutex<BTreeMap<String, awaken_session_resource_contract::SessionRealizationLease>>,
+    pub(crate) renewals: Mutex<BTreeMap<String, crate::session_resource::SessionRealizationLease>>,
     pub(crate) authority: Mutex<
         Option<(
             awaken_session_realization_contract::FrozenSessionProjection,
-            awaken_session_resource_contract::SessionRealizationLease,
+            crate::session_resource::SessionRealizationLease,
         )>,
     >,
 }
@@ -448,7 +447,7 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue
     async fn terminal_cleanup_work(
         &self,
         session_id: &SessionId,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_realization_contract::SessionTerminalCleanupWork>,
         awaken_session_realization_contract::SessionRealizationControlFailure,
@@ -574,7 +573,7 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl
 
     async fn record_terminal_cleanup_preparation(
         &self,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
         preparation: awaken_session_state_contract::SessionCleanupPreparation,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         let (projection, current) = self.authority.lock().unwrap().clone().ok_or(
@@ -670,7 +669,7 @@ impl awaken_session_realization_contract::SessionTerminalDisposalControl
 
     async fn record_terminal_cleanup_disposal(
         &self,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
         receipt: awaken_session_state_contract::SessionCleanupDisposalReceipt,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         let current = self
@@ -738,7 +737,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
     async fn terminal_repository_publication_command(
         &self,
         session_id: &SessionId,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_realization_contract::SessionRepositoryPublicationProjection>,
         awaken_session_realization_contract::SessionRealizationControlFailure,
@@ -780,7 +779,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
     async fn record_terminal_repository_publication_receipt(
         &self,
         session_id: &SessionId,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
         receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         let current = self
@@ -820,7 +819,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
     async fn record_terminal_repository_publication_rejection(
         &self,
         session_id: &SessionId,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
         rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         let current = self
@@ -873,7 +872,7 @@ impl awaken_session_realization_contract::ClaimedSessionRealizationControl
         _claim: &awaken_dispatch_contract::RunClaim,
         _session_id: &str,
         _session_work_authority: Option<&awaken_worker_contract::SessionWorkAuthorityReceipt>,
-        _continuation: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+        _continuation: Option<&crate::session_resource::SessionRealizationLease>,
     ) -> Result<
         Option<awaken_session_realization_contract::SessionRealizationDirective>,
         awaken_session_realization_contract::ClaimedSessionControlError,

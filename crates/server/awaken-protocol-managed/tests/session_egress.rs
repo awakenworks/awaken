@@ -161,7 +161,7 @@ impl awaken_session_execution_contract::RealizationRuntime for CapturingFake {
     async fn invalidate_session_realization_lease(
         &self,
         thread: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
@@ -219,27 +219,29 @@ impl awaken_session_execution_contract::OutcomeRuntime for CapturingFake {
 impl awaken_session_execution_contract::McpAttachmentRealizer for CapturingFake {
     async fn stage_mcp_attachment(
         &self,
-        request: awaken_session_mcp_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, RunError> {
-        Ok(awaken_session_mcp_contract::McpRealizationReceipt {
-            receipt_fingerprint: request.fingerprint(),
-            generation: request.generation,
-            realization_id: request.realization_id,
-            selected_plaintext_holder: request.selected_plaintext_holder,
-            actual_realization_kind: None,
-        })
+        request: awaken_session_configuration_contract::mcp::StageMcpAttachment,
+    ) -> Result<awaken_session_configuration_contract::mcp::McpRealizationReceipt, RunError> {
+        Ok(
+            awaken_session_configuration_contract::mcp::McpRealizationReceipt {
+                receipt_fingerprint: request.fingerprint(),
+                generation: request.generation,
+                realization_id: request.realization_id,
+                selected_plaintext_holder: request.selected_plaintext_holder,
+                actual_realization_kind: None,
+            },
+        )
     }
 
     async fn publish_mcp_generation(
         &self,
-        _generation: awaken_session_mcp_contract::McpGenerationRef,
+        _generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         Ok(())
     }
 
     async fn drain_mcp_generation(
         &self,
-        _generation: awaken_session_mcp_contract::McpGenerationRef,
+        _generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         Ok(())
     }

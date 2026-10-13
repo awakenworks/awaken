@@ -76,7 +76,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let managed = crate::ManagedHost::new(host.clone());
     let holder = PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker");
     let (mcp_url, seen) = crate::test_mcp::start(Some("Bearer published-mcp-token")).await;
-    let mcp_audience = awaken_session_mcp_contract::McpTarget::identity(&mcp_url)
+    let mcp_audience = awaken_agent_contract::McpTarget::identity(&mcp_url)
         .unwrap()
         .canonical_url();
     credential.descriptor = Some(awaken_credential_contract::CredentialDescriptor::new(
@@ -101,14 +101,14 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let generation = |session: &str| {
         crate::test_mcp::mcp_fence(session, "mcp-docs", 1, "runtime-1", 1, u64::MAX - 1)
     };
-    let request = |session: &str, workspace: &str, revision: u64| {
-        awaken_session_mcp_contract::StageMcpAttachment {
+    let request =
+        |session: &str, workspace: &str, revision: u64| crate::session_mcp::StageMcpAttachment {
             workspace_id: workspace.into(),
             generation: generation(session),
             realization_id: format!("realize-{session}"),
             stage_idempotency_key: format!("stage-{session}"),
             name: "docs".into(),
-            target: awaken_session_mcp_contract::McpTarget::parse_http(&mcp_url).unwrap(),
+            target: awaken_agent_contract::McpTarget::parse_http(&mcp_url).unwrap(),
             credential: Some(
                 CredentialAccess::new(
                     CredentialRef {
@@ -132,8 +132,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             ),
             prompts_as_skills: false,
             selected_plaintext_holder: Some(holder.clone()),
-        }
-    };
+        };
 
     // Cause graph: exact described MCP target + workspace + revision + allowed
     // Worker holder -> Native host material is staged but invisible; durable
@@ -264,8 +263,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     conflicting_renewal.generation = conflicting_renewal.generation.expiring_at(u64::MAX);
     conflicting_renewal.stage_idempotency_key = "renew-conflicting".into();
     conflicting_renewal.target =
-        awaken_session_mcp_contract::McpTarget::parse_http("https://other.example.test/mcp")
-            .unwrap();
+        awaken_agent_contract::McpTarget::parse_http("https://other.example.test/mcp").unwrap();
     assert_eq!(
         managed
             .stage_mcp_attachment(conflicting_renewal)
@@ -391,8 +389,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         match changed {
             "workspace" => rejected.workspace_id.push_str("-other"),
             "attachment" => {
-                w.generation = awaken_session_mcp_contract::McpGeneration::new(
-                    awaken_session_mcp_contract::McpAttachmentId(format!(
+                w.generation = crate::session_mcp::McpGeneration::new(
+                    crate::session_mcp::McpAttachmentId(format!(
                         "{}-other",
                         w.generation.attachment_id().0
                     )),
@@ -406,10 +404,9 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             "realization" => rejected.realization_id.push_str("-other"),
             "name" => rejected.name.push_str("-other"),
             "target" => {
-                rejected.target = awaken_session_mcp_contract::McpTarget::parse_http(
-                    "https://other.example.test/mcp",
-                )
-                .unwrap()
+                rejected.target =
+                    awaken_agent_contract::McpTarget::parse_http("https://other.example.test/mcp")
+                        .unwrap()
             }
             "credential" => rejected.credential = None,
             "holder" => rejected.selected_plaintext_holder = None,
@@ -485,7 +482,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     admitted_before_renewal.generation = admitted_before_renewal.generation.expiring_at(0);
     host.install_session_realization_lease(
         "mcp-renewed-authority",
-        awaken_session_resource_contract::SessionRealizationLease {
+        crate::session_resource::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "runtime-1".into(),
             epoch: 1,
@@ -936,7 +933,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     default_relay_host
         .install_session_realization_lease(
             default_generation.session_id().as_str(),
-            awaken_session_resource_contract::SessionRealizationLease {
+            crate::session_resource::SessionRealizationLease {
                 owner: "worker-a".into(),
                 runtime_incarnation: default_generation.runtime_incarnation().to_owned(),
                 epoch: default_generation.lease_epoch().get(),
@@ -1109,7 +1106,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     secure_acp_host
         .install_session_realization_lease(
             secure_generation.session_id().as_str(),
-            awaken_session_resource_contract::SessionRealizationLease {
+            crate::session_resource::SessionRealizationLease {
                 owner: "worker-a".into(),
                 runtime_incarnation: secure_generation.runtime_incarnation().to_owned(),
                 epoch: secure_generation.lease_epoch().get(),
@@ -1320,7 +1317,7 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
     let workspace = "workspace-a";
     let (mcp_url, _seen) = crate::test_mcp::start(Some("Bearer mcp-bearer")).await;
     let target =
-        awaken_session_mcp_contract::McpTarget::parse_http(&mcp_url).expect("canonical MCP target");
+        awaken_agent_contract::McpTarget::parse_http(&mcp_url).expect("canonical MCP target");
     let holder = PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker");
     let usage = CredentialUsage::HttpHeader {
         name: "authorization".into(),
@@ -1337,7 +1334,7 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
     )
     .with_target(awaken_runtime_contract::CredentialTarget::new(
         awaken_credential_contract::CredentialPurpose::McpAuthorization,
-        awaken_session_mcp_contract::McpTarget::identity(target.http_url().unwrap())
+        awaken_agent_contract::McpTarget::identity(target.http_url().unwrap())
             .unwrap()
             .canonical_url(),
     ));
@@ -1364,7 +1361,7 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
     // The display name is not credential authority and must not enter the
     // recipient-bound payload fingerprint produced during Session authoring.
     managed
-        .stage_mcp_attachment(awaken_session_mcp_contract::StageMcpAttachment {
+        .stage_mcp_attachment(crate::session_mcp::StageMcpAttachment {
             workspace_id: workspace.into(),
             generation: crate::test_mcp::mcp_fence(
                 "session-a",
@@ -1422,10 +1419,13 @@ async fn dispatch_session_runtime_is_constructed_once_with_weak_host_ownership()
 /// | R2 | yes | failure | exact external error | never |
 #[tokio::test]
 async fn injected_mcp_realizer_is_exclusive_and_fails_without_local_fallback() {
-    use awaken_session_mcp_contract::{
-        McpGenerationRef, McpRealizationReceipt, McpTarget, StageMcpAttachment,
-    };
     use awaken_session_execution_contract::McpAttachmentRealizer;
+    use {
+        awaken_agent_contract::McpTarget,
+        awaken_session_configuration_contract::mcp::{
+            McpGenerationRef, McpRealizationReceipt, StageMcpAttachment,
+        },
+    };
 
     #[derive(Default)]
     struct RecordingRealizer {

@@ -6,7 +6,7 @@
 use awaken_credential_contract::{
     CredentialExecutionPolicy, CredentialSourceId, ModelExposurePolicy, PlaintextHolder,
 };
-use awaken_session_resource_contract::{
+use awaken_session_configuration_contract::resource::{
     ResolvedInput, ResolvedInputSource, ResolvedRepositoryCredential, ResolvedSessionResources,
 };
 use awaken_session_state_contract::PersistedSession;
@@ -94,19 +94,17 @@ impl SessionApplication {
                 "Repository credential requires a configured credential vault",
             ))
         })?;
-        let usage = awaken_session_resource_contract::repository_transport_credential_usage();
-        let target = awaken_session_resource_contract::repository_transport_credential_target(
-            &config.remote_url,
-        )
-        .map_err(|error| {
-            SessionPreparationError::Rejected(RunError::bad_request(error.to_string()))
-        })?;
-        let material_binding =
-            awaken_session_resource_contract::repository_transport_material_binding(
-                owner_scope,
-                repository_id,
-                config.version,
-            );
+        let usage = crate::session_resource::repository_transport_credential_usage();
+        let target =
+            crate::session_resource::repository_transport_credential_target(&config.remote_url)
+                .map_err(|error| {
+                    SessionPreparationError::Rejected(RunError::bad_request(error.to_string()))
+                })?;
+        let material_binding = crate::session_resource::repository_transport_material_binding(
+            owner_scope,
+            repository_id,
+            config.version,
+        );
         let access = credentials
             .credential_access_for_source(
                 &CredentialSourceId(binding.to_string()),

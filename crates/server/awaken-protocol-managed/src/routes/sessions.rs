@@ -714,7 +714,7 @@ async fn update_session(
                             .map(|server| {
                                 crate::state::agent_mcp_candidate(
                                     server,
-                                    awaken_session_mcp_contract::McpAttachmentOrigin::Session,
+                                    crate::session_mcp::McpAttachmentOrigin::Session,
                                 )
                             })
                             .collect(),

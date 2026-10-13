@@ -10,7 +10,7 @@ use awaken_session_application::{McpAttachmentCandidate, McpAttachmentCandidateT
 
 pub(crate) fn agent_mcp_candidate(
     server: AgentMcpServer,
-    origin: awaken_session_mcp_contract::McpAttachmentOrigin,
+    origin: crate::session_mcp::McpAttachmentOrigin,
 ) -> McpAttachmentCandidate {
     McpAttachmentCandidate {
         name: server.name,

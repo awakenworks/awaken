@@ -7,7 +7,7 @@
 
 use awaken_provisioning_contract::RepositoryPublicationExpectation;
 use awaken_resource_contract::{BindingId, ResourceAccess};
-use awaken_session_resource_contract::{ResolvedInput, ResolvedInputSource};
+use awaken_session_configuration_contract::resource::{ResolvedInput, ResolvedInputSource};
 use awaken_session_state_contract::{
     ManagedLifecycleFact, PersistedSession, SessionDisposition, SessionExecutionState,
     SessionRepositoryPublicationIntent, SessionRepositoryPublicationReceipt,

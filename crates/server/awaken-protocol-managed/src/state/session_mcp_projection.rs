@@ -6,13 +6,13 @@ pub(super) fn typed_mcp_servers(
     values
         .into_iter()
         .filter_map(|server| match server.target {
-            awaken_session_mcp_contract::McpTarget::Http(target) => {
+            awaken_agent_contract::McpTarget::Http(target) => {
                 Some(crate::types::agent::AgentMcpServer {
                     name: server.name,
                     url: target.url,
                 })
             }
-            awaken_session_mcp_contract::McpTarget::SandboxStdio(_) => None,
+            awaken_agent_contract::McpTarget::SandboxStdio(_) => None,
         })
         .collect()
 }

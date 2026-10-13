@@ -184,16 +184,16 @@ pub(crate) async fn install_complete_projection_for_snapshot(
 
 pub(super) fn frozen_projection_for_manifest(
     environment: awaken_session_configuration_contract::EnvironmentSnapshot,
-    manifest: &awaken_session_resource_contract::SessionResourceManifest,
+    manifest: &crate::session_resource::SessionResourceManifest,
 ) -> awaken_session_realization_contract::FrozenSessionProjection {
     let mut projection = empty_frozen_projection(&manifest.workspace_id, environment);
     projection.resource_revision = manifest.revision;
     projection.resources = manifest.resources.clone();
     projection.previous_resource_manifest = Some(
-        awaken_session_resource_contract::SessionResourceManifest::at_revision(
+        crate::session_resource::SessionResourceManifest::at_revision(
             manifest.workspace_id.clone(),
             0,
-            awaken_session_resource_contract::ResolvedSessionResources::default(),
+            crate::session_resource::ResolvedSessionResources::default(),
         ),
     );
     projection
@@ -210,8 +210,7 @@ fn empty_frozen_projection_with_model(
     let baseline = awaken_session_configuration_contract::SessionBaseline::compile(
         awaken_session_configuration_contract::SessionBaselineInputs {
             environment,
-            runtime_placement:
-                awaken_session_configuration_contract::SessionRuntimePlacement::Worker,
+            runtime_placement: awaken_session_types::SessionRuntimePlacement::Worker,
             mcp_authoring: Default::default(),
             agent_id: agent_id.into(),
             agent_revision: None,
@@ -235,12 +234,10 @@ fn empty_frozen_projection_with_model(
         environment: Default::default(),
         resource_revision: 0,
         resources: Default::default(),
-        previous_resource_manifest: Some(
-            awaken_session_resource_contract::SessionResourceManifest::new(
-                workspace_id,
-                awaken_session_resource_contract::ResolvedSessionResources::default(),
-            ),
-        ),
+        previous_resource_manifest: Some(crate::session_resource::SessionResourceManifest::new(
+            workspace_id,
+            crate::session_resource::ResolvedSessionResources::default(),
+        )),
         tools: Default::default(),
         mcp: Vec::new(),
         request_context: Vec::new(),
@@ -390,9 +387,9 @@ pub(crate) fn with_empty_session_resources(
     request: awaken_dispatch_contract::RunDispatch,
     workspace_id: &str,
 ) -> awaken_dispatch_contract::RunDispatch {
-    let manifest = awaken_session_resource_contract::SessionResourceManifest::new(
+    let manifest = crate::session_resource::SessionResourceManifest::new(
         workspace_id,
-        awaken_session_resource_contract::ResolvedSessionResources::default(),
+        crate::session_resource::ResolvedSessionResources::default(),
     );
     request
         .with_execution_scope(awaken_tenancy::ExecutionScopeRef(

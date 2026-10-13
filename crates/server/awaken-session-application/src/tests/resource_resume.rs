@@ -3,11 +3,13 @@
 // @formal evidence session_resources.restart_retries_same_pending_revision
 // @formal evidence session_resources.terminal_session_never_reactivates
 use super::*;
+use awaken_session_configuration_contract::resource::{
+    SessionRealizationLease, SessionResourceManifest,
+};
 use awaken_session_realization_contract::{
     ActivateSessionRealization, BeginSessionRealization, FrozenResourceTransitionUse,
     SessionRealizationControl, SessionRealizationTarget, SessionResourceMaterializationControl,
 };
-use awaken_session_resource_contract::{SessionRealizationLease, SessionResourceManifest};
 use awaken_session_state_contract::SessionResourceState;
 use awaken_session_types::SessionId;
 
@@ -46,12 +48,11 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                 };
                 baseline.runtime_placement = SessionRuntimePlacement::Worker;
                 let active = skill_resources("pinned-skill");
-                let mut desired =
-                    awaken_session_resource_contract::ResolvedSessionResources::try_new(
-                        file_resources("context-file").inputs().to_vec(),
-                        active.skills().to_vec(),
-                    )
-                    .unwrap();
+                let mut desired = crate::session_resource::ResolvedSessionResources::try_new(
+                    file_resources("context-file").inputs().to_vec(),
+                    active.skills().to_vec(),
+                )
+                .unwrap();
                 session.resources = SessionResourceState::from_active(active.clone());
                 session.realization = Some(SessionRealizationLease {
                     owner: "worker-a".into(),
@@ -273,7 +274,7 @@ async fn materialization_authorizes_retained_pairs_not_revision_watermarks() {
         );
         let id = "materialization-pairs";
         let resources = |name| {
-            awaken_session_resource_contract::ResolvedSessionResources::try_new(
+            crate::session_resource::ResolvedSessionResources::try_new(
                 file_resources(name).inputs().to_vec(),
                 skill_resources(name).skills().to_vec(),
             )

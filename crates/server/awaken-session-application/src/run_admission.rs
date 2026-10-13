@@ -17,12 +17,12 @@ use awaken_agent_contract::agent::message::Message;
 use awaken_session_application_contract::{
     OwnerScopedRunApplication, Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
+use awaken_session_configuration_contract::mcp::McpAttachmentOrigin;
 use awaken_session_configuration_contract::{
     ApplicationOriginBinding, ControlSessionCreationInputs, SessionBaselineState,
     SessionContextSeed, SessionCreationIntent, SessionMcpAuthoringContext, SessionNetworkPolicy,
     SessionSystemPromptSelection, SessionToolConfiguration, SessionTrigger,
 };
-use awaken_session_mcp_contract::McpAttachmentOrigin;
 use awaken_session_execution_contract::{
     AdmitSessionRun, AdmittedSessionRun, SessionRunActivityReceiptPlan, SessionRunDelivery,
     session_run_activity_operation_id, session_run_activity_receipt_plan,
@@ -45,7 +45,7 @@ use crate::{
 pub struct CreateProfiledSessionCommand {
     pub owner_scope: String,
     pub session_id: String,
-    pub mutation_policy: awaken_session_resource_contract::SessionMutationPolicy,
+    pub mutation_policy: crate::session_resource::SessionMutationPolicy,
     pub application_origin: Option<ApplicationOriginBinding>,
     pub agent_id: String,
     /// Exact executable publication source revision. `None` selects the current
@@ -62,7 +62,7 @@ pub struct CreateProfiledSessionCommand {
     /// Session-local typed attachments supplied by the product. They join the
     /// published Agent defaults inside this sole composer and therefore freeze
     /// in the original root rather than through a post-create Manifest write.
-    pub resource_inputs: Vec<awaken_session_resource_contract::SessionInputAttachment>,
+    pub resource_inputs: Vec<crate::session_resource::SessionInputAttachment>,
     /// Explicit Session candidates supplied by the product adapter. Published
     /// Agent candidates are joined and normalized inside the sole composer.
     pub mcp_candidates: Vec<McpAttachmentCandidate>,
@@ -147,8 +147,8 @@ fn profiled_repository_attachment(
     repository_id: awaken_resource_contract::RepositoryId,
     mount_path: String,
     binding_id: awaken_resource_contract::BindingId,
-) -> awaken_session_resource_contract::SessionInputAttachment {
-    awaken_session_resource_contract::SessionInputAttachment {
+) -> crate::session_resource::SessionInputAttachment {
+    crate::session_resource::SessionInputAttachment {
         binding: awaken_resource_contract::InputBinding {
             binding_id,
             target: awaken_resource_contract::InputResourceId::Repository(repository_id),
@@ -163,10 +163,10 @@ fn profiled_repository_attachment(
 fn preflight_profiled_resources(
     owner_scope: &str,
     session_id: &str,
-    mutation_policy: awaken_session_resource_contract::SessionMutationPolicy,
-    resource_inputs: &[awaken_session_resource_contract::SessionInputAttachment],
+    mutation_policy: crate::session_resource::SessionMutationPolicy,
+    resource_inputs: &[crate::session_resource::SessionInputAttachment],
     repositories: &[ProfiledSessionRepositoryInput],
-) -> Result<Vec<awaken_session_resource_contract::SessionInputAttachment>, RunError> {
+) -> Result<Vec<crate::session_resource::SessionInputAttachment>, RunError> {
     let repository_owner = SessionRepositoryOwner::profiled(session_id);
     for repository in repositories {
         if repository.binding_id.as_str().trim().is_empty()
@@ -194,11 +194,8 @@ fn preflight_profiled_resources(
             repository.binding_id.clone(),
         )
     }));
-    awaken_session_resource_contract::SessionInputResolver::effective_bindings(
-        &[],
-        &collision_preflight,
-    )
-    .map_err(|error| RunError::bad_request(error.to_string()))?;
+    crate::session_resource::SessionInputResolver::effective_bindings(&[], &collision_preflight)
+        .map_err(|error| RunError::bad_request(error.to_string()))?;
     Ok(collision_preflight)
 }
 
@@ -700,12 +697,11 @@ impl SessionApplication {
             .as_ref()
             .map(|profile| profile.resources.as_slice())
             .unwrap_or_default();
-        let effective_bindings =
-            awaken_session_resource_contract::SessionInputResolver::effective_bindings(
-                agent_resources,
-                &collision_preflight,
-            )
-            .map_err(|error| RunError::bad_request(error.to_string()))?;
+        let effective_bindings = crate::session_resource::SessionInputResolver::effective_bindings(
+            agent_resources,
+            &collision_preflight,
+        )
+        .map_err(|error| RunError::bad_request(error.to_string()))?;
         // Model-override cause/effect rules: R1 absent -> inherit the Agent
         // publication; R2 equal -> reuse it; R3 different + resolvable -> freeze
         // the complete replacement route; R4 different + invalid/unavailable ->
@@ -933,7 +929,7 @@ impl SessionApplication {
             return Err(first.into());
         }
         for input in resources.inputs() {
-            let awaken_session_resource_contract::ResolvedInputSource::Repository {
+            let crate::session_resource::ResolvedInputSource::Repository {
                 repository_id,
                 credential,
                 ..
@@ -1020,7 +1016,7 @@ impl SessionApplication {
         self.create_profiled_session(CreateProfiledSessionCommand {
             owner_scope: workspace_id.to_string(),
             session_id: thread_id.to_string(),
-            mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Managed,
+            mutation_policy: crate::session_resource::SessionMutationPolicy::Managed,
             application_origin: None,
             agent_id: agent_id.to_string(),
             source_revision: None,

@@ -23,7 +23,7 @@ pub(super) async fn claim_subject(
     app: &SessionApplication,
     repo: &dyn awaken_session_repository_contract::SessionStore,
     id: &str,
-    lease: &awaken_session_resource_contract::SessionRealizationLease,
+    lease: &crate::session_resource::SessionRealizationLease,
 ) {
     for epoch in 1..=lease.epoch {
         let mut root = awaken_session_state_contract::SessionAggregate::try_from(
@@ -32,7 +32,7 @@ pub(super) async fn claim_subject(
         .unwrap();
         root.assignment()
             .claim(
-                awaken_session_resource_contract::SessionRealizationLease {
+                crate::session_resource::SessionRealizationLease {
                     epoch,
                     ..lease.clone()
                 },
@@ -58,8 +58,8 @@ pub(super) async fn claim_subject(
     }
 }
 
-fn original_lease() -> awaken_session_resource_contract::SessionRealizationLease {
-    awaken_session_resource_contract::SessionRealizationLease {
+fn original_lease() -> crate::session_resource::SessionRealizationLease {
+    crate::session_resource::SessionRealizationLease {
         owner: "runtime-a".into(),
         runtime_incarnation: "runtime-a/boot-1".into(),
         epoch: 3,
@@ -69,7 +69,7 @@ fn original_lease() -> awaken_session_resource_contract::SessionRealizationLease
 
 fn intent(
     id: &str,
-    lease: &awaken_session_resource_contract::SessionRealizationLease,
+    lease: &crate::session_resource::SessionRealizationLease,
 ) -> awaken_session_state_contract::SessionEnvironmentEffectIntent {
     awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
         id,

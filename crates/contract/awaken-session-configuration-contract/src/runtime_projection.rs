@@ -6,9 +6,9 @@
 // @formal reason: assembled from already-authorized frozen Session configuration and Resource bindings.
 // @formal reason: They define no transition, admission, fallback, persistence, retry, or physical effect;
 // @formal reason: runtime roles and the Runtime Host remain the behavior owners.
+use crate::resource::ResolvedSessionResources;
 use awaken_provisioning_contract::{EnvVar, MountRequirement};
 use awaken_resource_contract::InputBinding;
-use awaken_session_resource_contract::ResolvedSessionResources;
 
 use crate::{
     EnvironmentSnapshot, SessionModelOverride, SessionRuntimePlacement, SessionToolConfiguration,

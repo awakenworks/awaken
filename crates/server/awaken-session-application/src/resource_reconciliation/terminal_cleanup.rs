@@ -429,7 +429,7 @@ impl SessionApplication {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_session_resource_contract::SessionRealizationLease;
+    use awaken_session_configuration_contract::resource::SessionRealizationLease;
     use awaken_session_execution_contract::RealizationRuntime as _;
     use std::sync::{
         Arc, Mutex,
@@ -627,7 +627,7 @@ mod tests {
         async fn invalidate_session_realization_lease(
             &self,
             thread: &str,
-            lease: &awaken_session_resource_contract::SessionRealizationLease,
+            lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         ) -> Result<(), awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .invalidate_session_realization_lease(thread, lease)
@@ -651,7 +651,7 @@ mod tests {
         async fn execute_terminal_repository_publication_for_lease(
             &self,
             command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
-            lease: &awaken_session_resource_contract::SessionRealizationLease,
+            lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         ) -> Result<
             awaken_session_state_contract::SessionRepositoryPublicationEffect,
             awaken_session_types::RunError,
@@ -732,7 +732,7 @@ mod tests {
         async fn acknowledge_completed_terminal_cleanup(
             &self,
             session_id: &awaken_session_types::SessionId,
-            lease: &awaken_session_resource_contract::SessionRealizationLease,
+            lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         ) {
             awaken_session_execution_contract::NeutralRuntime
                 .acknowledge_completed_terminal_cleanup(session_id, lease)
@@ -807,8 +807,7 @@ mod tests {
                             ),
                         },
                 },
-                runtime_placement:
-                    awaken_session_configuration_contract::SessionRuntimePlacement::Local,
+                runtime_placement: awaken_session_types::SessionRuntimePlacement::Local,
                 mcp_authoring: Default::default(),
                 agent_id: "agent".into(),
                 agent_revision: None,
@@ -836,7 +835,7 @@ mod tests {
                 resource_revision: 0,
                 resources: Default::default(),
                 previous_resource_manifest: Some(
-                    awaken_session_resource_contract::SessionResourceManifest::at_revision(
+                    awaken_session_configuration_contract::resource::SessionResourceManifest::at_revision(
                         "workspace",
                         0,
                         Default::default(),

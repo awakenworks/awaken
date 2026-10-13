@@ -277,7 +277,7 @@ async fn read_file_content(
                 manifest.resources.inputs().iter().any(|input| {
                     matches!(
                         &input.source,
-                        awaken_session_resource_contract::ResolvedInputSource::File { file_id }
+                        awaken_session_configuration_contract::resource::ResolvedInputSource::File { file_id }
                             if file_id.as_str() == request.file_id
                     )
                 })
@@ -343,7 +343,7 @@ async fn read_file_content(
                 awaken_session_realization_contract::SessionResourceMaterializationTarget::Input(input)
                     if matches!(
                         &input.source,
-                        awaken_session_resource_contract::ResolvedInputSource::File { file_id }
+                        awaken_session_configuration_contract::resource::ResolvedInputSource::File { file_id }
                             if file_id.as_str() == request.file_id
                     )
             );
@@ -489,7 +489,7 @@ async fn application_session_file_is_frozen(
         && session.resources.desired().inputs().iter().any(|input| {
             matches!(
                 &input.source,
-                awaken_session_resource_contract::ResolvedInputSource::File { file_id }
+                awaken_session_configuration_contract::resource::ResolvedInputSource::File { file_id }
                     if file_id.as_str() == request.file_id
             )
         })

@@ -17,14 +17,7 @@ pub enum SessionRepositoryRecoveryAction {
     Reject,
 }
 
-/// One corrupt durable Session row isolated by the authoritative store scan.
-/// The raw aggregate is deliberately absent so recovery reporting cannot leak
-/// persisted configuration or credentials.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionRecoveryQuarantine {
-    pub session_id: crate::SessionId,
-    pub reason: String,
-}
+use awaken_session_types::SessionRecoveryQuarantine;
 
 /// Opaque keyset position for the shared Session reconciliation index.
 ///

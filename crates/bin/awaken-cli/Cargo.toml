@@ -236,7 +236,6 @@ http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 awaken-acp-contract = { workspace = true }
 awaken-session-configuration-contract.workspace = true
-awaken-session-resource-contract.workspace = true
 awaken-session-state-contract.workspace = true
 awaken-session-types.workspace = true
 

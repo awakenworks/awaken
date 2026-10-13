@@ -70,7 +70,7 @@ async fn seed_expired_cleanup_affinity(
         0,
     )
     .unwrap();
-    root.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+    root.realization = Some(crate::session_resource::SessionRealizationLease {
         owner: incumbent_owner.into(),
         runtime_incarnation: format!("{incumbent_owner}:1:old-boot"),
         epoch: 4,

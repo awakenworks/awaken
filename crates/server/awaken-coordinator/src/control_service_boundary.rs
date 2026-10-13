@@ -86,7 +86,7 @@ struct McpSourceCommand {
 struct SourceCommand {
     source_id: CredentialSourceId,
     workspace_id: String,
-    target: awaken_session_mcp_contract::McpTarget,
+    target: awaken_agent_contract::McpTarget,
     selected_holder: awaken_runtime_contract::PlaintextHolder,
     binding: awaken_credential_contract::CredentialMaterialBinding,
 }
@@ -620,7 +620,7 @@ impl SessionCredentialSource for HttpControlServiceClient {
         &self,
         source_id: &CredentialSourceId,
         workspace_id: &str,
-        target: &awaken_session_mcp_contract::McpTarget,
+        target: &awaken_agent_contract::McpTarget,
         selected_holder: &awaken_runtime_contract::PlaintextHolder,
         binding: &awaken_credential_contract::CredentialMaterialBinding,
     ) -> Result<awaken_runtime_contract::CredentialAccess, String> {

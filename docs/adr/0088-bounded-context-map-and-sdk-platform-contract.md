@@ -300,3 +300,33 @@ awaken-cloud's `awaken-hosting-durable` must use the new provisioning name in
 tests must compile against the matching Native candidate before their dependency
 pin advances; an older Cloud checkout still naming the old type is not compatible.
 
+## Amendment 2026-10-13: Session configuration owns MCP and Resource values
+
+ADR-0091's configuration-boundary merge is implemented physically. Remove
+`awaken-session-mcp-contract` and `awaken-session-resource-contract`; their types
+and algorithms move into the `mcp` and `resource` modules of
+`awaken-session-configuration-contract`. There are no compatibility facade crates.
+The serialization, generation witnesses, fingerprints and fence laws are unchanged.
+
+Platform and awaken-cloud Rust consumers replace `awaken_session_mcp_contract::`
+with `awaken_session_configuration_contract::mcp::` and
+`awaken_session_resource_contract::` with
+`awaken_session_configuration_contract::resource::`. Former foreign re-exports
+are imported directly: MCP targets and canonical JSON hashing from
+`awaken-agent-contract`, `SessionId` from `awaken-session-types`, and checkpoint
+references and restore requests from `awaken-provisioning-contract`.
+
+The Runtime SDK release boundary and wire protocols are unchanged. Cloud must
+update these imports and compile its consumers against the matching Native
+candidate before advancing its dependency pin; this repository cannot certify
+an external Cloud checkout's build.
+
+`SessionRuntimePlacement` and the secret-free `SessionRecoveryQuarantine` report
+are defined in `awaken-session-types`; consumers import that leaf directly.
+`SessionEnvironmentProjectionSource` declares its `Snapshot` associated type,
+and `ResolvedSessionEnvironment<Snapshot>` carries that exact value. The Session
+application's composition requires `Snapshot = EnvironmentSnapshot` and retains
+its concrete `ResolvedSessionEnvironment` root alias. Environment implementers
+declare their output type without making the Environment contract depend on
+the Session configuration contract.
+

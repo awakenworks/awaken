@@ -301,7 +301,7 @@ pub fn terminal_cleanup_worker_requirements(
     let publication_has_credential = pending_publication.is_some_and(|intent| {
         matches!(
             &intent.input.source,
-            awaken_session_resource_contract::ResolvedInputSource::Repository { config, .. }
+            awaken_session_configuration_contract::resource::ResolvedInputSource::Repository { config, .. }
                 if config.credential_binding.is_some()
         )
     });

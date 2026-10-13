@@ -142,7 +142,9 @@ impl SessionApplication {
 
 #[cfg(test)]
 mod tests {
-    use awaken_session_state_contract::{SessionRecoveryQuarantine, SessionScan};
+    use {
+        awaken_session_state_contract::SessionScan, awaken_session_types::SessionRecoveryQuarantine,
+    };
 
     use super::*;
 

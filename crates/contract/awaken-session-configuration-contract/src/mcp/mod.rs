@@ -11,8 +11,7 @@ use awaken_credential_contract::{
 };
 use serde::{Deserialize, Serialize};
 
-pub use awaken_agent_contract::{McpTarget, McpTargetError, McpTargetIdentity};
-pub use awaken_session_types::SessionId;
+use awaken_agent_contract::McpTarget;
 
 fn is_false(value: &bool) -> bool {
     !*value

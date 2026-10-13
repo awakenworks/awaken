@@ -39,21 +39,9 @@ struct EventBatchRuntime {
     admission_barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
     reservation_barriers: Mutex<Option<(Arc<tokio::sync::Barrier>, Arc<tokio::sync::Barrier>)>>,
     reserved: Mutex<BTreeMap<String, AdmitSessionRun>>,
-    projected_resources: Mutex<
-        Option<(
-            u64,
-            awaken_session_resource_contract::ResolvedSessionResources,
-        )>,
-    >,
-    reserved_resource_generations: Mutex<
-        BTreeMap<
-            String,
-            (
-                u64,
-                awaken_session_resource_contract::ResolvedSessionResources,
-            ),
-        >,
-    >,
+    projected_resources: Mutex<Option<(u64, crate::session_resource::ResolvedSessionResources)>>,
+    reserved_resource_generations:
+        Mutex<BTreeMap<String, (u64, crate::session_resource::ResolvedSessionResources)>>,
     reservation_outcomes: Mutex<VecDeque<SessionRunReservation>>,
     fail_reservation: AtomicBool,
     fail_activation_once: AtomicBool,
@@ -280,7 +268,7 @@ impl awaken_session_execution_contract::RealizationRuntime for EventBatchRuntime
     async fn invalidate_session_realization_lease(
         &self,
         thread: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)

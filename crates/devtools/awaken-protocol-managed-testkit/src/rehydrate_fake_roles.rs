@@ -228,7 +228,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RehydrateFake {
         source_effect_id: &str,
         source_binding: &str,
         generation: &awaken_session_state_contract::SandboxGeneration,
-        expected_mcp_generations: &[awaken_session_mcp_contract::McpGenerationRef],
+        expected_mcp_generations: &[awaken_session_configuration_contract::mcp::McpGenerationRef],
     ) -> Result<awaken_session_state_contract::QuiescenceReceipt, awaken_session_types::RunError>
     {
         awaken_session_execution_contract::NeutralRuntime
@@ -329,7 +329,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RehydrateFake {
         workspace_id: &str,
         skills: &[awaken_agent_contract::AgentSkillBinding],
     ) -> Result<
-        Vec<awaken_session_resource_contract::ResolvedSkillBinding>,
+        Vec<awaken_session_configuration_contract::resource::ResolvedSkillBinding>,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
@@ -340,7 +340,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RehydrateFake {
     async fn apply_session_inputs(
         &self,
         thread: &str,
-        transition: &awaken_session_resource_contract::SessionResourceTransition,
+        transition: &awaken_session_configuration_contract::resource::SessionResourceTransition,
     ) -> Result<(), RunError> {
         self.order.lock().unwrap().push("resources");
         self.restored.lock().unwrap().push((
@@ -774,7 +774,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RehydrateFake
     async fn execute_terminal_repository_publication_for_lease(
         &self,
         command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<
         awaken_session_state_contract::SessionRepositoryPublicationEffect,
         awaken_session_types::RunError,
@@ -840,7 +840,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RehydrateFake
     async fn acknowledge_completed_terminal_cleanup(
         &self,
         session_id: &awaken_session_types::SessionId,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_completed_terminal_cleanup(session_id, lease)
@@ -939,8 +939,8 @@ impl awaken_session_execution_contract::CapabilityRuntime for RehydrateFake {
 impl awaken_session_execution_contract::McpAttachmentRealizer for RehydrateFake {
     async fn stage_mcp_attachment(
         &self,
-        request: awaken_session_mcp_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, RunError> {
+        request: awaken_session_configuration_contract::mcp::StageMcpAttachment,
+    ) -> Result<awaken_session_configuration_contract::mcp::McpRealizationReceipt, RunError> {
         self.order.lock().unwrap().push("mcp");
         if let Some(restored) = self
             .restored_runtimes
@@ -952,18 +952,20 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RehydrateFake 
             restored.2 += 1;
         }
         let receipt_fingerprint = request.fingerprint();
-        Ok(awaken_session_mcp_contract::McpRealizationReceipt {
-            generation: request.generation,
-            realization_id: request.realization_id,
-            selected_plaintext_holder: request.selected_plaintext_holder,
-            actual_realization_kind: None,
-            receipt_fingerprint,
-        })
+        Ok(
+            awaken_session_configuration_contract::mcp::McpRealizationReceipt {
+                generation: request.generation,
+                realization_id: request.realization_id,
+                selected_plaintext_holder: request.selected_plaintext_holder,
+                actual_realization_kind: None,
+                receipt_fingerprint,
+            },
+        )
     }
 
     async fn publish_mcp_generation(
         &self,
-        _generation: awaken_session_mcp_contract::McpGenerationRef,
+        _generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         if self
             .reject_mcp_publication
@@ -976,7 +978,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for RehydrateFake 
 
     async fn drain_mcp_generation(
         &self,
-        _generation: awaken_session_mcp_contract::McpGenerationRef,
+        _generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         Ok(())
     }

@@ -160,7 +160,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCreateRu
     async fn invalidate_session_realization_lease(
         &self,
         thread: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
@@ -328,7 +328,7 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for Profiled
                 mcp_servers: vec![
                     awaken_executable_agent_contract::ExecutableAgentMcpServer {
                         name: "agent-only".into(),
-                        target: awaken_session_mcp_contract::McpTarget::parse_http(
+                        target: awaken_agent_contract::McpTarget::parse_http(
                             "https://agent-only.example.test/mcp",
                         )
                         .unwrap(),
@@ -338,7 +338,7 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for Profiled
                     },
                     awaken_executable_agent_contract::ExecutableAgentMcpServer {
                         name: "shared".into(),
-                        target: awaken_session_mcp_contract::McpTarget::parse_http(
+                        target: awaken_agent_contract::McpTarget::parse_http(
                             "https://agent-shared.example.test/mcp",
                         )
                         .unwrap(),
@@ -422,8 +422,8 @@ fn direct_file_attachment(
     binding_id: &str,
     file_id: &str,
     mount_path: &str,
-) -> awaken_session_resource_contract::SessionInputAttachment {
-    awaken_session_resource_contract::SessionInputAttachment {
+) -> crate::session_resource::SessionInputAttachment {
+    crate::session_resource::SessionInputAttachment {
         binding: awaken_resource_contract::InputBinding {
             binding_id: awaken_resource_contract::BindingId::from(binding_id),
             target: awaken_resource_contract::InputResourceId::File(
@@ -441,6 +441,8 @@ fn direct_file_attachment(
 impl awaken_executable_environment_contract::SessionEnvironmentProjectionSource
     for AdmissionEnvironment
 {
+    type Snapshot = awaken_session_configuration_contract::EnvironmentSnapshot;
+
     async fn get(
         &self,
         _environment_id: &str,
@@ -452,7 +454,7 @@ impl awaken_executable_environment_contract::SessionEnvironmentProjectionSource
         &self,
         environment_id: &str,
         _runtime: Option<&str>,
-        _mcp_targets: &[awaken_session_mcp_contract::McpTarget],
+        _mcp_targets: &[awaken_agent_contract::McpTarget],
     ) -> Result<Option<ResolvedSessionEnvironment>, EnvironmentImageBuildError> {
         let mut snapshot = persisted("environment-template", false, "idle")
             .frozen_baseline()
@@ -478,7 +480,7 @@ impl awaken_executable_environment_contract::SessionEnvironmentProjectionSource
         environment_id: &str,
         _revision: u64,
         runtime: Option<&str>,
-        mcp_targets: &[awaken_session_mcp_contract::McpTarget],
+        mcp_targets: &[awaken_agent_contract::McpTarget],
     ) -> Result<Option<ResolvedSessionEnvironment>, EnvironmentImageBuildError> {
         self.resolve_current_for_session(environment_id, runtime, mcp_targets)
             .await
@@ -550,11 +552,10 @@ pub(super) fn creation_command(session_id: &str) -> CreateSessionCommand {
         session_id: session_id.into(),
         intent: awaken_session_configuration_contract::SessionCreationIntent {
             control: awaken_session_configuration_contract::ControlSessionCreationInputs {
-                mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Managed,
+                mutation_policy: crate::session_resource::SessionMutationPolicy::Managed,
                 application_origin: None,
                 environment,
-                runtime_placement:
-                    awaken_session_configuration_contract::SessionRuntimePlacement::Local,
+                runtime_placement: awaken_session_types::SessionRuntimePlacement::Local,
                 agent_id: "agent".into(),
                 agent_revision: None,
                 model_override: None,
@@ -617,7 +618,7 @@ async fn worker_projection_failure_is_rebuilt_from_the_durable_session_root() {
     );
     let mut command = creation_command("worker-projection-recovery");
     command.intent.control.runtime_placement =
-        awaken_session_configuration_contract::SessionRuntimePlacement::Worker;
+        awaken_session_types::SessionRuntimePlacement::Worker;
     command.intent.control.environment.self_hosted = false;
     command.intent.control.resources = skill_resources("pending-skill");
 
@@ -689,7 +690,7 @@ async fn worker_checkpoint_retention_is_rejected_before_durable_creation() {
     );
     let mut command = creation_command("worker-checkpoint-retention");
     command.intent.control.runtime_placement =
-        awaken_session_configuration_contract::SessionRuntimePlacement::Worker;
+        awaken_session_types::SessionRuntimePlacement::Worker;
     command.intent.control.environment.idle_retention =
         super::continuation::checkpoint_release_retention();
 
@@ -1032,7 +1033,7 @@ async fn self_hosted_work_dispatch_is_durable_but_not_a_fabricated_readiness_ack
     );
     let mut command = creation_command("external-create");
     command.intent.control.runtime_placement =
-        awaken_session_configuration_contract::SessionRuntimePlacement::Worker;
+        awaken_session_types::SessionRuntimePlacement::Worker;
 
     let created = tokio::time::timeout(
         std::time::Duration::from_secs(1),
@@ -1358,8 +1359,7 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
         payload_hash: "stable-product-request".into(),
     };
     let mut first = creation_command("create-replay-effects");
-    first.intent.control.runtime_placement =
-        awaken_session_configuration_contract::SessionRuntimePlacement::Worker;
+    first.intent.control.runtime_placement = awaken_session_types::SessionRuntimePlacement::Worker;
     first.idempotency = Some(idempotency.clone());
     let created = application.create_session(first).await.expect("R1/E1");
     let durable_before = repository
@@ -1377,8 +1377,7 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
     );
 
     let mut replay = creation_command("create-replay-effects");
-    replay.intent.control.runtime_placement =
-        awaken_session_configuration_contract::SessionRuntimePlacement::Worker;
+    replay.intent.control.runtime_placement = awaken_session_types::SessionRuntimePlacement::Worker;
     replay.title = Some("changed lowering must not replace durable truth".into());
     replay.idempotency = Some(idempotency);
     let replayed = application.create_session(replay).await.expect("R2/E2");
@@ -1426,7 +1425,7 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
     ));
     let mut terminal_replay = creation_command("create-replay-effects");
     terminal_replay.intent.control.runtime_placement =
-        awaken_session_configuration_contract::SessionRuntimePlacement::Worker;
+        awaken_session_types::SessionRuntimePlacement::Worker;
     terminal_replay.idempotency = Some(awaken_session_state_contract::IdempotencyRecord {
         key: "create-replay-effects".into(),
         payload_hash: "stable-product-request".into(),
@@ -1448,7 +1447,7 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
 
     let mut accepted_terminal_replay = creation_command("create-replay-effects");
     accepted_terminal_replay.intent.control.runtime_placement =
-        awaken_session_configuration_contract::SessionRuntimePlacement::Worker;
+        awaken_session_types::SessionRuntimePlacement::Worker;
     accepted_terminal_replay.idempotency = Some(awaken_session_state_contract::IdempotencyRecord {
         key: "create-replay-effects".into(),
         payload_hash: "stable-product-request".into(),
@@ -1699,7 +1698,7 @@ async fn creation_persists_only_a_complete_frozen_root_before_later_cas_failure(
     );
     let mut command = creation_command("atomic-create");
     command.intent.control.runtime_placement =
-        awaken_session_configuration_contract::SessionRuntimePlacement::Worker;
+        awaken_session_types::SessionRuntimePlacement::Worker;
 
     assert!(app.create_session(command).await.is_err(), "A1/E1");
     let committed = durable
@@ -1758,7 +1757,7 @@ fn profiled_session_command(session_id: &str, model: Option<&str>) -> CreateProf
     CreateProfiledSessionCommand {
         owner_scope: "workspace".into(),
         session_id: session_id.into(),
-        mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Managed,
+        mutation_policy: crate::session_resource::SessionMutationPolicy::Managed,
         application_origin: None,
         agent_id: "profiled".into(),
         source_revision: None,
@@ -1776,7 +1775,7 @@ fn profiled_session_command(session_id: &str, model: Option<&str>) -> CreateProf
                 ),
                 prompts_as_skills: false,
                 published_credential: None,
-                origin: awaken_session_mcp_contract::McpAttachmentOrigin::Session,
+                origin: crate::session_mcp::McpAttachmentOrigin::Session,
             },
             McpAttachmentCandidate {
                 name: "shared".into(),
@@ -1785,7 +1784,7 @@ fn profiled_session_command(session_id: &str, model: Option<&str>) -> CreateProf
                 ),
                 prompts_as_skills: false,
                 published_credential: None,
-                origin: awaken_session_mcp_contract::McpAttachmentOrigin::Session,
+                origin: crate::session_mcp::McpAttachmentOrigin::Session,
             },
         ],
         repositories: Vec::new(),
@@ -1972,17 +1971,17 @@ async fn assert_profiled_realization_and_environment_rules(
             (
                 "agent-only",
                 "https://agent-only.example.test/mcp",
-                awaken_session_mcp_contract::McpAttachmentOrigin::Agent,
+                crate::session_mcp::McpAttachmentOrigin::Agent,
             ),
             (
                 "session-only",
                 "https://session-only.example.test/mcp",
-                awaken_session_mcp_contract::McpAttachmentOrigin::Session,
+                crate::session_mcp::McpAttachmentOrigin::Session,
             ),
             (
                 "shared",
                 "https://session-shared.example.test/mcp",
-                awaken_session_mcp_contract::McpAttachmentOrigin::Session,
+                crate::session_mcp::McpAttachmentOrigin::Session,
             ),
         ],
         "P1/E3"
@@ -2232,7 +2231,7 @@ async fn assert_profiled_rejection_rules(
         ),
         prompts_as_skills: false,
         published_credential: None,
-        origin: awaken_session_mcp_contract::McpAttachmentOrigin::Session,
+        origin: crate::session_mcp::McpAttachmentOrigin::Session,
     });
     assert!(
         available
@@ -2288,7 +2287,7 @@ async fn assert_profiled_direct_resource_rules() {
             input.binding_id.as_str() == "direct-file"
                 && matches!(
                     &input.source,
-                    awaken_session_resource_contract::ResolvedInputSource::File { file_id }
+                    crate::session_resource::ResolvedInputSource::File { file_id }
                         if file_id.as_str() == "file-direct"
                 )
         }),
@@ -2547,7 +2546,7 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
     let make = || {
         let mut command = creation_command("default-clock-identity");
         command.intent.control.runtime_placement =
-            awaken_session_configuration_contract::SessionRuntimePlacement::Worker;
+            awaken_session_types::SessionRuntimePlacement::Worker;
         command.idempotency = None;
         command
     };

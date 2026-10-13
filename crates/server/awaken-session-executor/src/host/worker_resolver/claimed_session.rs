@@ -34,7 +34,7 @@ const fn local_claimed_projection_is_ready(
 fn claimed_realization_continuation(
     slot: &crate::installed_session::InstalledSession,
     claim: &awaken_dispatch_contract::RunClaim,
-) -> Option<awaken_session_resource_contract::SessionRealizationLease> {
+) -> Option<crate::session_resource::SessionRealizationLease> {
     slot.run
         .dispatch_claim
         .as_ref()
@@ -70,7 +70,7 @@ fn map_claimed_session_control_error(
 /// the Worker transport adapter.
 fn control_projection_matches_dispatched_manifest(
     projection: &awaken_session_realization_contract::FrozenSessionProjection,
-    dispatched: &awaken_session_resource_contract::SessionResourceManifest,
+    dispatched: &crate::session_resource::SessionResourceManifest,
 ) -> Result<bool, awaken_session_types::RunError> {
     Ok(projection
         .resource_transition(
@@ -87,7 +87,7 @@ pub(super) async fn install_claimed_session_projection(
     host: &SharedHost,
     claimed: &awaken_dispatch_contract::Claimed,
     thread_id: &awaken_agent_contract::agent::thread::Id,
-    dispatched_resources: Option<&awaken_session_resource_contract::SessionResourceManifest>,
+    dispatched_resources: Option<&crate::session_resource::SessionResourceManifest>,
 ) -> Result<(), awaken_dispatch_execution::Error> {
     let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
     let (_realization, continuation) = host
@@ -241,7 +241,7 @@ mod tests {
             owner: "worker:incarnation".into(),
             epoch: 2,
         };
-        let lease = awaken_session_resource_contract::SessionRealizationLease {
+        let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
             owner: "worker".into(),
             runtime_incarnation: claim.owner.clone(),
             epoch: 7,
@@ -352,11 +352,13 @@ mod tests {
         // | R3 | yes | revision mismatch | no | E2 reject |
         // | R4 | yes | resources mismatch | no | E2 reject |
         // | R5 | no | exact desired | yes | E3 error |
-        let desired = awaken_session_resource_contract::SessionResourceManifest::at_revision(
-            "workspace-a",
-            7,
-            awaken_session_resource_contract::ResolvedSessionResources::default(),
-        );
+        let desired =
+            awaken_session_configuration_contract::resource::SessionResourceManifest::at_revision(
+                "workspace-a",
+                7,
+                awaken_session_configuration_contract::resource::ResolvedSessionResources::default(
+                ),
+            );
         let projection = frozen_projection_for_manifest(deferred_environment(), &desired);
         assert!(
             control_projection_matches_dispatched_manifest(&projection, &desired)
@@ -365,20 +367,22 @@ mod tests {
         );
 
         let different_resources =
-            awaken_session_resource_contract::ResolvedSessionResources::try_new(
+            awaken_session_configuration_contract::resource::ResolvedSessionResources::try_new(
                 Vec::new(),
-                vec![awaken_session_resource_contract::ResolvedSkillBinding {
-                    kind: awaken_agent_contract::AgentSkillKind::Custom,
-                    skill_id: "different-skill".into(),
-                    version: 1,
-                    bundle_sha256: "sha256-different".into(),
-                }],
+                vec![
+                    awaken_session_configuration_contract::resource::ResolvedSkillBinding {
+                        kind: awaken_agent_contract::AgentSkillKind::Custom,
+                        skill_id: "different-skill".into(),
+                        version: 1,
+                        bundle_sha256: "sha256-different".into(),
+                    },
+                ],
             )
             .expect("R4 valid different resources");
         for (rule, carried) in [
             (
                 "R2",
-                awaken_session_resource_contract::SessionResourceManifest::at_revision(
+                awaken_session_configuration_contract::resource::SessionResourceManifest::at_revision(
                     "workspace-b",
                     7,
                     Default::default(),
@@ -386,7 +390,7 @@ mod tests {
             ),
             (
                 "R3",
-                awaken_session_resource_contract::SessionResourceManifest::at_revision(
+                awaken_session_configuration_contract::resource::SessionResourceManifest::at_revision(
                     "workspace-a",
                     8,
                     Default::default(),
@@ -394,7 +398,7 @@ mod tests {
             ),
             (
                 "R4",
-                awaken_session_resource_contract::SessionResourceManifest::at_revision(
+                awaken_session_configuration_contract::resource::SessionResourceManifest::at_revision(
                     "workspace-a",
                     7,
                     different_resources,

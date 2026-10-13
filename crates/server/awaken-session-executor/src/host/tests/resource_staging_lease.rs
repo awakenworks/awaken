@@ -15,7 +15,7 @@ async fn realization_revocation_selection_fences_removed_and_recreated_slots() {
             let host = (crate::HostDependencies::ephemeral(Arc::new(OkModel), "stub").await)
                 .build()
                 .expect("validated Host dependencies");
-            let lease = awaken_session_resource_contract::SessionRealizationLease {
+            let lease = crate::session_resource::SessionRealizationLease {
                 owner: "worker".into(),
                 runtime_incarnation: "worker/1".into(),
                 epoch: 1,
@@ -101,7 +101,7 @@ async fn worker_revocation_closes_all_before_drain_and_joins_independent_cleanup
     for session in ["held", "free"] {
         host.installed_sessions.update_realization(session, |r| {
             r.install_lease(crate::installed_session::test_observed_lease(
-                awaken_session_resource_contract::SessionRealizationLease {
+                crate::session_resource::SessionRealizationLease {
                     owner: "worker".into(),
                     runtime_incarnation: "worker/1".into(),
                     epoch: 1,
@@ -261,22 +261,20 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 .build()
                 .expect("validated Host dependencies");
                 let now = crate::terminal_repository_publication::runtime_unix_now_ms();
-                let lease = awaken_session_resource_contract::SessionRealizationLease {
+                let lease = crate::session_resource::SessionRealizationLease {
                     owner: "worker".into(),
                     runtime_incarnation: "worker/1".into(),
                     epoch: 1,
                     expires_at_unix_ms: now + 5_000,
                 };
                 install_test_renewal_authority(&host, &control, SESSION, lease.clone());
-                let generation = awaken_session_mcp_contract::McpGenerationRef::from_persisted(
+                let generation = crate::session_mcp::McpGenerationRef::from_persisted(
                     SESSION.into(),
-                    awaken_session_mcp_contract::McpGeneration::of_bare_target(
-                        awaken_session_mcp_contract::McpAttachmentId("mcp".into()),
+                    crate::session_mcp::McpGeneration::of_bare_target(
+                        crate::session_mcp::McpAttachmentId("mcp".into()),
                         1,
-                        &awaken_session_mcp_contract::McpTarget::parse_http(
-                            "https://fixture.test/mcp",
-                        )
-                        .unwrap(),
+                        &awaken_agent_contract::McpTarget::parse_http("https://fixture.test/mcp")
+                            .unwrap(),
                     ),
                     lease.runtime_incarnation.clone(),
                     lease.epoch,
@@ -471,7 +469,7 @@ struct StagingFixture {
     control: Arc<RemoteTerminalCleanupControl>,
     source: Arc<GatedFileSource>,
     projection: awaken_session_realization_contract::FrozenSessionProjection,
-    lease: awaken_session_resource_contract::SessionRealizationLease,
+    lease: crate::session_resource::SessionRealizationLease,
     now: u64,
 }
 
@@ -588,7 +586,7 @@ impl StagingFixture {
             initial_commit: None,
         }]);
         let now = crate::terminal_repository_publication::runtime_unix_now_ms();
-        let lease = awaken_session_resource_contract::SessionRealizationLease {
+        let lease = crate::session_resource::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/boot-1".into(),
             epoch: 2,
@@ -763,7 +761,7 @@ async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or
     let now = crate::terminal_repository_publication::runtime_unix_now_ms();
     let mut initial = Vec::new();
     for rule in ["L1", "L2", "L3", "L4", "L5", "L6"] {
-        let lease = awaken_session_resource_contract::SessionRealizationLease {
+        let lease = crate::session_resource::SessionRealizationLease {
             owner: if rule == "L3" { "foreign" } else { "local" }.into(),
             runtime_incarnation: if rule == "L4" { "foreign" } else { "boot" }.into(),
             epoch: 1,
@@ -835,7 +833,7 @@ async fn missing_control_is_required_only_for_due_leases_without_skipping_refres
         0,
         "D1"
     );
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = crate::session_resource::SessionRealizationLease {
         owner: "worker".into(),
         runtime_incarnation: "boot".into(),
         epoch: 1,
@@ -908,7 +906,7 @@ async fn trusted_host_scoped_session_candidate_binds_and_refreshes_without_due_l
             .with_execution_authority(gate.clone()))
         .build()
         .expect("validated Host dependencies");
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = crate::session_resource::SessionRealizationLease {
         owner: "worker".into(),
         runtime_incarnation: "runtime".into(),
         epoch: 1,

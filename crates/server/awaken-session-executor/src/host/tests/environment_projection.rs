@@ -532,7 +532,7 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
                 before_manifest.revision,
                 before_manifest.resources.clone(),
                 before_manifest.revision + 1,
-                awaken_session_resource_contract::ResolvedSessionResources::default(),
+                crate::session_resource::ResolvedSessionResources::default(),
             ),
         )
         .await
@@ -595,10 +595,10 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
         .staging
         .thread_resource_manifest("t-local-attach")
         .unwrap_or_else(|| {
-            awaken_session_resource_contract::SessionResourceManifest::at_revision(
+            crate::session_resource::SessionResourceManifest::at_revision(
                 host.local_workspace(),
                 0,
-                awaken_session_resource_contract::ResolvedSessionResources::default(),
+                crate::session_resource::ResolvedSessionResources::default(),
             )
         });
     let before = host.realizer.sandbox_spec("t-local-attach");
@@ -1271,7 +1271,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         .validate_session_sandbox_layout(
             "worker-prospective-valid",
             &layout(
-                awaken_session_configuration_contract::SessionRuntimePlacement::Worker,
+                awaken_session_types::SessionRuntimePlacement::Worker,
                 Vec::new(),
                 Vec::new(),
             ),
@@ -1281,7 +1281,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         .validate_session_sandbox_layout(
             "worker-prospective-conflict",
             &layout(
-                awaken_session_configuration_contract::SessionRuntimePlacement::Worker,
+                awaken_session_types::SessionRuntimePlacement::Worker,
                 vec![mount()],
                 vec![repository_binding],
             ),
@@ -1292,7 +1292,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         .validate_session_sandbox_layout(
             "local-prospective-valid",
             &layout(
-                awaken_session_configuration_contract::SessionRuntimePlacement::Local,
+                awaken_session_types::SessionRuntimePlacement::Local,
                 Vec::new(),
                 Vec::new(),
             ),
@@ -1309,8 +1309,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         let baseline = awaken_session_configuration_contract::SessionBaseline::compile(
             awaken_session_configuration_contract::SessionBaselineInputs {
                 environment: on_tool_use_environment(),
-                runtime_placement:
-                    awaken_session_configuration_contract::SessionRuntimePlacement::Worker,
+                runtime_placement: awaken_session_types::SessionRuntimePlacement::Worker,
                 mcp_authoring: Default::default(),
                 agent_id: "local-codex".into(),
                 agent_revision: None,
@@ -1335,9 +1334,9 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
             resource_revision: 0,
             resources,
             previous_resource_manifest: Some(
-                awaken_session_resource_contract::SessionResourceManifest::new(
+                crate::session_resource::SessionResourceManifest::new(
                     host.local_workspace(),
-                    awaken_session_resource_contract::ResolvedSessionResources::default(),
+                    crate::session_resource::ResolvedSessionResources::default(),
                 ),
             ),
             tools: Default::default(),
@@ -1349,7 +1348,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
         "worker-dispatch-valid",
         projection(
             Vec::new(),
-            awaken_session_resource_contract::ResolvedSessionResources::default(),
+            crate::session_resource::ResolvedSessionResources::default(),
         ),
     )
     .await
@@ -1402,7 +1401,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
             "worker-realization-missing-provider",
             projection(
                 Vec::new(),
-                awaken_session_resource_contract::ResolvedSessionResources::default(),
+                crate::session_resource::ResolvedSessionResources::default(),
             ),
             None,
             true,
@@ -1430,7 +1429,7 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
             "worker-realization-valid",
             projection(
                 Vec::new(),
-                awaken_session_resource_contract::ResolvedSessionResources::default(),
+                crate::session_resource::ResolvedSessionResources::default(),
             ),
             None,
             true,

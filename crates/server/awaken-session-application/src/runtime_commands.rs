@@ -17,7 +17,7 @@ use awaken_agent_contract::stream::sink::Sink;
 use awaken_session_application_contract::{DelegatedRun, Pending, StepOutcome};
 use awaken_session_budget_contract::SessionUsage;
 use awaken_session_configuration_contract::AgentCapabilities;
-use awaken_session_resource_contract::ResolvedSkillBinding;
+use awaken_session_configuration_contract::resource::ResolvedSkillBinding;
 use awaken_session_execution_contract::{
     CommittedOutcomeProjection, OutcomeDrive, ToolPermissionDecision,
 };
@@ -31,9 +31,9 @@ use crate::{
 
 use awaken_resource_contract::{SESSION_REPOSITORY_OWNER_KIND, SESSION_REPOSITORY_OWNER_SESSION};
 
-fn session_input_error(error: awaken_session_resource_contract::SessionInputError) -> RunError {
+fn session_input_error(error: crate::session_resource::SessionInputError) -> RunError {
     use awaken_resource_contract::ResourceRegistryError;
-    use awaken_session_resource_contract::SessionInputError;
+    use awaken_session_configuration_contract::resource::SessionInputError;
     match &error {
         SessionInputError::Registry(ResourceRegistryError::AuthorityUnavailable { .. })
         | SessionInputError::Registry(ResourceRegistryError::Indeterminate { .. }) => {
@@ -533,9 +533,9 @@ impl SessionApplication {
         &self,
         workspace_id: &str,
         agent_defaults: &[awaken_resource_contract::InputBinding],
-        session_inputs: &[awaken_session_resource_contract::SessionInputAttachment],
-    ) -> Result<awaken_session_resource_contract::ResolvedSessionResources, RunError> {
-        awaken_session_resource_contract::SessionInputResolver::resolve_inputs(
+        session_inputs: &[crate::session_resource::SessionInputAttachment],
+    ) -> Result<crate::session_resource::ResolvedSessionResources, RunError> {
+        crate::session_resource::SessionInputResolver::resolve_inputs(
             workspace_id,
             self.resource_registry
                 .as_deref()
@@ -601,10 +601,8 @@ impl SessionApplication {
         let repository_id = awaken_resource_contract::RepositoryId::from(id);
         let material_ingress = if let Some(material) = credential_material {
             let credential_target =
-                awaken_session_resource_contract::repository_transport_credential_target(
-                    &remote_url,
-                )
-                .map_err(|error| RunError::bad_request(error.to_string()))?;
+                crate::session_resource::repository_transport_credential_target(&remote_url)
+                    .map_err(|error| RunError::bad_request(error.to_string()))?;
             let ingress = self.credential_material_ingress.as_deref().ok_or_else(|| {
                 RunError::bad_request(
                     "repository authorization requires a configured credential Vault",
@@ -743,7 +741,7 @@ impl SessionApplication {
                 source_id: source_id.clone(),
                 workspace_id: definition.workspace_id.clone(),
                 target: credential_target,
-                usage: awaken_session_resource_contract::repository_transport_credential_usage(),
+                usage: crate::session_resource::repository_transport_credential_usage(),
                 material,
             })
             .await
@@ -1217,7 +1215,7 @@ mod input_error_tests {
         // -> Internal; R3 invalid caller binding -> BadRequest. Identical
         // diagnostic text in every row proves the type owns the decision.
         use awaken_resource_contract::ResourceRegistryError;
-        use awaken_session_resource_contract::SessionInputError;
+        use awaken_session_configuration_contract::resource::SessionInputError;
         use awaken_session_types::RunErrorKind;
         for (error, expected) in [
             (

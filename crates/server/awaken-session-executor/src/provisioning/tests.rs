@@ -7,6 +7,7 @@ use awaken_sandbox_container::{
     SandboxControlServiceKind, SandboxControlServicePublisher,
 };
 use awaken_sandbox_local::LocalProvider;
+use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_execution_contract::TerminalCleanupRuntime as _;
 
 /// The logical path a staged resource realizes under, recovered from a projected
@@ -101,8 +102,8 @@ impl pc::RepositoryRealizer for RecordingPublicationRealizer {
     }
 }
 
-fn terminal_cleanup_test_lease() -> awaken_session_resource_contract::SessionRealizationLease {
-    awaken_session_resource_contract::SessionRealizationLease {
+fn terminal_cleanup_test_lease() -> session_resource::SessionRealizationLease {
+    session_resource::SessionRealizationLease {
         owner: "terminal-provisioning-test".into(),
         runtime_incarnation: "terminal-provisioning-test/incarnation".into(),
         epoch: 1,
@@ -147,8 +148,7 @@ fn frozen_projection_with_model_override(
                     resource_holder: holder,
                 },
             },
-            runtime_placement:
-                awaken_session_configuration_contract::SessionRuntimePlacement::Local,
+            runtime_placement: awaken_session_types::SessionRuntimePlacement::Local,
             mcp_authoring: Default::default(),
             agent_id: "terminal-test-agent".into(),
             agent_revision: None,
@@ -172,12 +172,10 @@ fn frozen_projection_with_model_override(
         environment,
         resource_revision: 0,
         resources: Default::default(),
-        previous_resource_manifest: Some(
-            awaken_session_resource_contract::SessionResourceManifest::new(
-                workspace_id,
-                awaken_session_resource_contract::ResolvedSessionResources::default(),
-            ),
-        ),
+        previous_resource_manifest: Some(session_resource::SessionResourceManifest::new(
+            workspace_id,
+            session_resource::ResolvedSessionResources::default(),
+        )),
         tools: Default::default(),
         mcp: Vec::new(),
         request_context: Vec::new(),
@@ -246,7 +244,7 @@ fn install_terminal_artifact_environment(
 async fn root_terminal_cleanup_effect(
     host: &SharedHost,
     session_id: &str,
-    lease: awaken_session_resource_contract::SessionRealizationLease,
+    lease: session_resource::SessionRealizationLease,
 ) -> (
     awaken_session_state_contract::PersistedSession,
     awaken_session_state_contract::SessionTerminalCleanupEffect,
@@ -543,24 +541,24 @@ async fn checkpoint_memory_projection_is_typed_strict_and_replay_stable() {
         "M3/E2"
     );
 
-    let resolved = awaken_session_resource_contract::ResolvedSessionResources::try_new(
+    let resolved = session_resource::ResolvedSessionResources::try_new(
         vec![
-            awaken_session_resource_contract::ResolvedInput {
+            session_resource::ResolvedInput {
                 created_at_unix_ms: None,
                 updated_at_unix_ms: None,
                 binding_id: awaken_resource_contract::BindingId::from("file-binding"),
-                source: awaken_session_resource_contract::ResolvedInputSource::File {
+                source: session_resource::ResolvedInputSource::File {
                     file_id: awaken_resource_contract::FileId::from("file-a"),
                 },
                 mount_path: "/file-a".into(),
                 access: awaken_resource_contract::ResourceAccess::ReadOnly,
                 instructions: None,
             },
-            awaken_session_resource_contract::ResolvedInput {
+            session_resource::ResolvedInput {
                 created_at_unix_ms: None,
                 updated_at_unix_ms: None,
                 binding_id: awaken_resource_contract::BindingId::from("memory-binding"),
-                source: awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
+                source: session_resource::ResolvedInputSource::MemoryStore {
                     memory_store_id: awaken_resource_contract::MemoryStoreId::from("memory-store"),
                     config: awaken_resource_contract::MemoryStoreConfigVersion {
                         memory_store_id: awaken_resource_contract::MemoryStoreId::from(

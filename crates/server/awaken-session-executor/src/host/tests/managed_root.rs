@@ -122,7 +122,7 @@ impl ManagedSessionRootFixture {
         let mut root = match created {
             SessionCreateResult::Applied(root) | SessionCreateResult::Replayed(root) => root,
         };
-        let lease = awaken_session_resource_contract::SessionRealizationLease {
+        let lease = crate::session_resource::SessionRealizationLease {
             owner: "runtime-host-test".into(),
             runtime_incarnation: self.incarnation.clone(),
             epoch: 1,
@@ -251,7 +251,7 @@ impl ManagedSessionRootFixture {
 
     fn check_actor(
         &self,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         if lease.owner != "runtime-host-test" || lease.runtime_incarnation != self.incarnation {
             return Err(awaken_session_types::RunError::unavailable(
@@ -265,7 +265,7 @@ impl ManagedSessionRootFixture {
         &self,
         owner: &str,
         root: awaken_session_state_contract::PersistedSession,
-        lease: awaken_session_resource_contract::SessionRealizationLease,
+        lease: crate::session_resource::SessionRealizationLease,
     ) -> Result<awaken_session_state_contract::PersistedSession, awaken_session_types::RunError>
     {
         use awaken_session_state_contract::SessionAggregate;
@@ -326,7 +326,7 @@ impl ManagedSessionRootFixture {
         managed: &crate::ManagedHost,
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
-        desired: awaken_session_resource_contract::ResolvedSessionResources,
+        desired: crate::session_resource::ResolvedSessionResources,
     ) -> Result<
         awaken_session_realization_contract::FrozenSessionProjection,
         awaken_session_types::RunError,
@@ -397,7 +397,7 @@ impl ManagedSessionRootFixture {
         })?;
         self.check_actor(lease)?;
         let (revision, resources) = root.resources.desired_generation();
-        let prepared = awaken_session_resource_contract::SessionResourceManifest::at_revision(
+        let prepared = crate::session_resource::SessionResourceManifest::at_revision(
             projection.workspace_id.clone(),
             revision,
             resources.clone(),
@@ -541,7 +541,7 @@ impl ManagedSessionRootFixture {
         projection.resource_revision = resource_revision;
         projection.resources = desired.clone();
         projection.previous_resource_manifest = Some(
-            awaken_session_resource_contract::SessionResourceManifest::at_revision(
+            crate::session_resource::SessionResourceManifest::at_revision(
                 projection.workspace_id.clone(),
                 previous_revision,
                 previous.clone(),
@@ -558,7 +558,7 @@ impl ManagedSessionRootFixture {
         thread: &str,
         projection: awaken_session_realization_contract::FrozenSessionProjection,
         root: awaken_session_state_contract::PersistedSession,
-        expected: &awaken_session_resource_contract::SessionRealizationLease,
+        expected: &crate::session_resource::SessionRealizationLease,
     ) -> Result<
         awaken_session_realization_contract::FrozenSessionProjection,
         awaken_session_types::RunError,

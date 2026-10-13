@@ -23,8 +23,8 @@ struct ContinuationRuntime {
     terminal_cleanups: AtomicUsize,
     terminal_checkpoint_projections: AtomicUsize,
     checkpoint_scopes: Mutex<Vec<(String, u64)>>,
-    expected_mcp_generations: Mutex<Vec<Vec<awaken_session_mcp_contract::McpGenerationRef>>>,
-    quiescence_mcp_override: Mutex<Option<Vec<awaken_session_mcp_contract::McpGenerationRef>>>,
+    expected_mcp_generations: Mutex<Vec<Vec<crate::session_mcp::McpGenerationRef>>>,
+    quiescence_mcp_override: Mutex<Option<Vec<crate::session_mcp::McpGenerationRef>>>,
     source_tuples: Mutex<Vec<(&'static str, String, String, String)>>,
     preparation_effects: Mutex<Vec<awaken_session_state_contract::SourceReleasePreparationEffect>>,
     disposal_authorizations: Mutex<Vec<awaken_provisioning_contract::SandboxDisposalAuthorization>>,
@@ -166,7 +166,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ContinuationRunti
     async fn invalidate_session_realization_lease(
         &self,
         thread: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
@@ -217,7 +217,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ContinuationRunti
         source_effect_id: &str,
         source_binding: &str,
         generation: &awaken_session_state_contract::SandboxGeneration,
-        expected_mcp_generations: &[awaken_session_mcp_contract::McpGenerationRef],
+        expected_mcp_generations: &[crate::session_mcp::McpGenerationRef],
     ) -> Result<awaken_session_state_contract::QuiescenceReceipt, RunError> {
         self.quiesces.fetch_add(1, Ordering::SeqCst);
         self.source_tuples.lock().unwrap().push((
@@ -371,10 +371,8 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ContinuationRunti
         &self,
         workspace_id: &str,
         skills: &[awaken_agent_contract::AgentSkillBinding],
-    ) -> Result<
-        Vec<awaken_session_resource_contract::ResolvedSkillBinding>,
-        awaken_session_types::RunError,
-    > {
+    ) -> Result<Vec<crate::session_resource::ResolvedSkillBinding>, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .resolve_session_skills(workspace_id, skills)
             .await
@@ -389,7 +387,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ContinuationRunti
     async fn apply_session_inputs(
         &self,
         thread: &str,
-        transition: &awaken_session_resource_contract::SessionResourceTransition,
+        transition: &crate::session_resource::SessionResourceTransition,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .apply_session_inputs(thread, transition)
@@ -534,7 +532,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ContinuationR
     async fn execute_terminal_repository_publication_for_lease(
         &self,
         command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<
         awaken_session_state_contract::SessionRepositoryPublicationEffect,
         awaken_session_types::RunError,
@@ -605,7 +603,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ContinuationR
     async fn acknowledge_completed_terminal_cleanup(
         &self,
         session_id: &awaken_session_types::SessionId,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_completed_terminal_cleanup(session_id, lease)
@@ -704,7 +702,7 @@ fn generated_session(id: &str) -> PersistedSession {
         generation: Some(generation),
         idle_since_unix_ms: Some(1),
     };
-    session.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+    session.realization = Some(crate::session_resource::SessionRealizationLease {
         owner: "continuation-worker-a".into(),
         runtime_incarnation: "continuation-runtime-a".into(),
         epoch: 4,
@@ -724,27 +722,26 @@ fn add_acknowledged_active_mcp(
     session: &mut PersistedSession,
     name: &str,
     generation: u64,
-) -> awaken_session_mcp_contract::McpGenerationRef {
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+) -> crate::session_mcp::McpGenerationRef {
+    let lease = crate::session_resource::SessionRealizationLease {
         owner: "worker-a".into(),
         runtime_incarnation: "worker-a/boot-1".into(),
         epoch: 7,
         expires_at_unix_ms: u64::MAX,
     };
     session.realization = Some(lease.clone());
-    let attachment_id = awaken_session_mcp_contract::McpAttachmentId(name.into());
-    let target = awaken_session_mcp_contract::McpTarget::parse_http(format!(
-        "https://{name}.example.test/mcp"
-    ))
-    .expect("continuation MCP fixture endpoint is valid");
-    let witness = awaken_session_mcp_contract::McpGeneration::new(
+    let attachment_id = crate::session_mcp::McpAttachmentId(name.into());
+    let target =
+        awaken_agent_contract::McpTarget::parse_http(format!("https://{name}.example.test/mcp"))
+            .expect("continuation MCP fixture endpoint is valid");
+    let witness = crate::session_mcp::McpGeneration::new(
         attachment_id.clone(),
         generation,
-        awaken_session_mcp_contract::McpAttachmentContentDigest::of_content(
+        crate::session_mcp::McpAttachmentContentDigest::of_content(
             &target,
             false,
             None,
-            awaken_session_mcp_contract::McpAttachmentOrigin::Agent,
+            crate::session_mcp::McpAttachmentOrigin::Agent,
         ),
     );
     session
@@ -755,18 +752,18 @@ fn add_acknowledged_active_mcp(
     session
         .mcp
         .attachments
-        .push(awaken_session_mcp_contract::SessionMcpAttachment {
+        .push(crate::session_mcp::SessionMcpAttachment {
             attachment_id,
             name: name.into(),
             generation: witness.clone(),
             target,
             prompts_as_skills: false,
-            origin: awaken_session_mcp_contract::McpAttachmentOrigin::Agent,
+            origin: crate::session_mcp::McpAttachmentOrigin::Agent,
             credential: None,
             selected_plaintext_holder: None,
-            state: awaken_session_mcp_contract::McpAttachmentState::Active,
+            state: crate::session_mcp::McpAttachmentState::Active,
             publication_acknowledged: true,
-            realization: Some(awaken_session_mcp_contract::McpRealizationClaim {
+            realization: Some(crate::session_mcp::McpRealizationClaim {
                 realization_id: format!("realize-{name}-{generation}"),
                 runtime_incarnation: lease.runtime_incarnation.clone(),
                 lease_epoch: lease.epoch,
@@ -776,7 +773,7 @@ fn add_acknowledged_active_mcp(
             attempts: 1,
             last_error: None,
         });
-    awaken_session_mcp_contract::McpGenerationRef::from_persisted(
+    crate::session_mcp::McpGenerationRef::from_persisted(
         session.session_id.clone(),
         witness,
         lease.runtime_incarnation,
@@ -792,20 +789,19 @@ fn externally_placed(mut session: PersistedSession) -> PersistedSession {
     else {
         unreachable!("continuation fixture baseline is frozen")
     };
-    baseline.runtime_placement =
-        awaken_session_configuration_contract::SessionRuntimePlacement::Worker;
+    baseline.runtime_placement = awaken_session_types::SessionRuntimePlacement::Worker;
     session
 }
 
 fn memory_input(
     binding_id: &str,
     access: awaken_resource_contract::ResourceAccess,
-) -> awaken_session_resource_contract::ResolvedInput {
-    awaken_session_resource_contract::ResolvedInput {
+) -> crate::session_resource::ResolvedInput {
+    crate::session_resource::ResolvedInput {
         created_at_unix_ms: None,
         updated_at_unix_ms: None,
         binding_id: awaken_resource_contract::BindingId::from(binding_id),
-        source: awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
+        source: crate::session_resource::ResolvedInputSource::MemoryStore {
             memory_store_id: awaken_resource_contract::MemoryStoreId::from("continuation-memory"),
             config: awaken_resource_contract::MemoryStoreConfigVersion {
                 memory_store_id: awaken_resource_contract::MemoryStoreId::from(
@@ -950,7 +946,7 @@ async fn suspend_admission_reuses_the_closed_memory_evidence_decision() {
     for (id, mut session, should_suspend) in {
         let mut legacy_rw = generated_session("memory-legacy-rw");
         legacy_rw.resources = awaken_session_state_contract::SessionResourceState::from_active(
-            awaken_session_resource_contract::ResolvedSessionResources::try_new(
+            crate::session_resource::ResolvedSessionResources::try_new(
                 vec![memory_input(
                     "rw",
                     awaken_resource_contract::ResourceAccess::ReadWrite,
@@ -968,7 +964,7 @@ async fn suspend_admission_reuses_the_closed_memory_evidence_decision() {
 
         let mut pending = generated_session("memory-pending");
         pending.resources.pending = Some(
-            awaken_session_resource_contract::ResolvedSessionResources::try_new(
+            crate::session_resource::ResolvedSessionResources::try_new(
                 vec![memory_input(
                     "pending",
                     awaken_resource_contract::ResourceAccess::ReadOnly,
@@ -980,7 +976,7 @@ async fn suspend_admission_reuses_the_closed_memory_evidence_decision() {
 
         let mut legacy_ro = generated_session("memory-legacy-ro");
         legacy_ro.resources = awaken_session_state_contract::SessionResourceState::from_active(
-            awaken_session_resource_contract::ResolvedSessionResources::try_new(
+            crate::session_resource::ResolvedSessionResources::try_new(
                 vec![memory_input(
                     "ro",
                     awaken_resource_contract::ResourceAccess::ReadOnly,
@@ -1147,7 +1143,7 @@ async fn quiescence_requests_the_exact_durable_mcp_generation_set() {
     assert_eq!(mcp_stages.len(), 1, "D3 exact Stage");
     let request = &mcp_stages[0];
     assert_eq!(request.generation, generation, "D3 exact Stage");
-    let receipt = awaken_session_mcp_contract::McpRealizationReceipt {
+    let receipt = crate::session_mcp::McpRealizationReceipt {
         generation: request.generation.clone(),
         realization_id: request.realization_id.clone(),
         selected_plaintext_holder: request.selected_plaintext_holder.clone(),
@@ -1400,7 +1396,7 @@ async fn checkpoint_release_artifact_authorization_is_exact_root_truth() {
             .unwrap(),
     );
     let mut session = generated_session("checkpoint-artifact-auth");
-    session.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+    session.realization = Some(crate::session_resource::SessionRealizationLease {
         owner: "worker".into(),
         runtime_incarnation: "worker:boot".into(),
         epoch: 7,
@@ -1607,7 +1603,7 @@ async fn disposal_failure_retries_without_recheckpointing() {
         }
     ));
     let mut failed_over = repo.get(&SessionId::from("dispose-retry")).await.unwrap();
-    failed_over.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+    failed_over.realization = Some(crate::session_resource::SessionRealizationLease {
         owner: "continuation-worker-b".into(),
         runtime_incarnation: "continuation-runtime-b".into(),
         epoch: 5,
@@ -1729,7 +1725,7 @@ async fn preparation_response_loss_persists_the_exact_renewed_fence() {
         200_000,
         "P1 exact renewed preparation A",
     );
-    disposing.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+    disposing.realization = Some(crate::session_resource::SessionRealizationLease {
         owner: "continuation-worker-b".into(),
         runtime_incarnation: "continuation-runtime-b".into(),
         epoch: 5,

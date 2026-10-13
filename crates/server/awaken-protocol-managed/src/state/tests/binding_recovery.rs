@@ -189,9 +189,9 @@ async fn cold_projection_restores_every_frozen_agent_hidden_axis() {
     let mut persisted = sample_persisted("cold-hidden-axes");
     let (inputs, _) = persisted.resources.desired().clone().into_parts();
     persisted.resources = awaken_session_state_contract::SessionResourceState::from_active(
-        awaken_session_resource_contract::ResolvedSessionResources::try_new(
+        crate::session_resource::ResolvedSessionResources::try_new(
             inputs,
-            vec![awaken_session_resource_contract::ResolvedSkillBinding {
+            vec![crate::session_resource::ResolvedSkillBinding {
                 kind: awaken_agent_contract::AgentSkillKind::Custom,
                 skill_id: "pinned-skill".into(),
                 version: 9,
@@ -462,7 +462,7 @@ async fn rehydrated_session_restores_persisted_config() {
     // | T2 | no durable row | NotFound; no projection is constructed |
     let state = ManagedState::new_with_mcp(RehydrateFake::default()).await;
     let mut persisted = sample_persisted("sesn_1");
-    persisted.mcp.attachments[0].state = awaken_session_mcp_contract::McpAttachmentState::Requested;
+    persisted.mcp.attachments[0].state = crate::session_mcp::McpAttachmentState::Requested;
     assert!(
         persisted.visible_mcp_servers().is_empty(),
         "T1 execution visibility has not been acknowledged"
@@ -558,7 +558,7 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
         Arc::new(ephemeral_session_repo().await);
     let mut persisted = sample_persisted("sesn_1");
     persisted.environment.set_resident("opaque-runtime-binding");
-    persisted.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+    persisted.realization = Some(crate::session_resource::SessionRealizationLease {
         owner: "managed-runtime/prior-boot".into(),
         runtime_incarnation: "managed-runtime/prior-boot".into(),
         epoch: 3,
@@ -1368,8 +1368,7 @@ fn wire_projection_preserves_the_durable_execution_state() {
             else {
                 panic!("fixture has a frozen baseline")
             };
-            baseline.runtime_placement =
-                awaken_session_configuration_contract::SessionRuntimePlacement::Worker;
+            baseline.runtime_placement = awaken_session_types::SessionRuntimePlacement::Worker;
         }
         assert_eq!(ManagedState::wire_session_status(&root), public, "{rule}");
     }

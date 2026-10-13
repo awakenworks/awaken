@@ -871,7 +871,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     let workspace_id = host.local_workspace().to_string();
     let managed = managed_with_resource_source(host.clone());
     let session_id = "terminal-publication-local";
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = crate::session_resource::SessionRealizationLease {
         owner: "terminal-publication-worker".into(),
         runtime_incarnation: "terminal-publication-worker:incarnation".into(),
         epoch: 1,
@@ -905,8 +905,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
                 awaken_session_configuration_contract::SessionNetworkPolicy::Unrestricted,
                 serde_json::json!({}),
             ),
-            runtime_placement:
-                awaken_session_configuration_contract::SessionRuntimePlacement::Worker,
+            runtime_placement: awaken_session_types::SessionRuntimePlacement::Worker,
             mcp_authoring: Default::default(),
             agent_id: "agent".into(),
             agent_revision: None,
@@ -931,7 +930,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         resource_revision: 1,
         resources: resources.clone(),
         previous_resource_manifest: Some(
-            awaken_session_resource_contract::SessionResourceManifest::at_revision(
+            crate::session_resource::SessionResourceManifest::at_revision(
                 &workspace_id,
                 0,
                 Default::default(),
@@ -1107,7 +1106,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             idle_since_unix_ms: None,
         };
     terminal_projection.previous_resource_manifest = Some(
-        awaken_session_resource_contract::SessionResourceManifest::at_revision(
+        crate::session_resource::SessionResourceManifest::at_revision(
             &workspace_id,
             1,
             resources.clone(),

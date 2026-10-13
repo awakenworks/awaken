@@ -6,8 +6,9 @@ use super::ResourceStaging;
 use crate::skill_delivery::anthropic_skill;
 use awaken_agent_contract::AgentSkillKind;
 use awaken_resource_contract::{SkillStoreError, SkillVersion};
+use awaken_session_configuration_contract::resource as session_resource;
+use awaken_session_configuration_contract::resource::ResolvedSkillBinding;
 use awaken_session_realization_contract::ResourceOperationFence;
-use awaken_session_resource_contract::ResolvedSkillBinding;
 
 impl ResourceStaging {
     pub(crate) async fn load_pinned(
@@ -15,11 +16,7 @@ impl ResourceStaging {
         workspace: &str,
         bindings: &[ResolvedSkillBinding],
         claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization: Option<(
-            &str,
-            u64,
-            &awaken_session_resource_contract::SessionRealizationLease,
-        )>,
+        realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
     ) -> Result<Vec<SkillVersion>, SkillStoreError> {
         if bindings.is_empty() {
             return Ok(Vec::new());

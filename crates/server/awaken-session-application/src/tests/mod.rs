@@ -17,12 +17,15 @@ use std::sync::{
 
 use awaken_executable_environment_contract::EnvironmentImageBuildError;
 use awaken_service_lifecycle::run_composed_async_test;
-use awaken_session_configuration_contract::{SandboxProvisioning, SessionRuntimePlacement};
 use awaken_session_repository_contract::SessionRepository;
 use awaken_session_execution_contract::{McpAttachmentRealizer, SessionRuntime};
 use awaken_session_state_contract::PersistedSession;
 use awaken_session_types::RunError;
 use awaken_time::system_clock;
+use {
+    awaken_session_configuration_contract::SandboxProvisioning,
+    awaken_session_types::SessionRuntimePlacement,
+};
 
 use super::*;
 
@@ -549,12 +552,7 @@ struct RecordingCleanupRuntime {
     terminal_assignments:
         Mutex<Vec<awaken_session_realization_contract::SessionTerminalCleanupAssignment>>,
     acknowledged_effects: Mutex<Vec<awaken_session_state_contract::SessionTerminalCleanupEffect>>,
-    acknowledged_completed: Mutex<
-        Vec<(
-            String,
-            awaken_session_resource_contract::SessionRealizationLease,
-        )>,
-    >,
+    acknowledged_completed: Mutex<Vec<(String, crate::session_resource::SessionRealizationLease)>>,
     ordinary_resource_apply_calls: AtomicUsize,
 }
 
@@ -842,7 +840,7 @@ impl awaken_session_execution_contract::RealizationRuntime for NoopRuntime {
     async fn invalidate_session_realization_lease(
         &self,
         thread: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
@@ -1041,7 +1039,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for NoopRuntime {
     async fn execute_terminal_repository_publication_for_lease(
         &self,
         command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<
         awaken_session_state_contract::SessionRepositoryPublicationEffect,
         awaken_session_types::RunError,
@@ -1114,7 +1112,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for NoopRuntime {
     async fn acknowledge_completed_terminal_cleanup(
         &self,
         session_id: &awaken_session_types::SessionId,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_completed_terminal_cleanup(session_id, lease)
@@ -1297,7 +1295,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingReplyRun
     async fn invalidate_session_realization_lease(
         &self,
         thread: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
@@ -1899,7 +1897,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingAgentAdm
     async fn invalidate_session_realization_lease(
         &self,
         thread: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
@@ -2491,7 +2489,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingBoundary
     async fn invalidate_session_realization_lease(
         &self,
         thread: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
@@ -3125,7 +3123,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingCleanupR
     async fn invalidate_session_realization_lease(
         &self,
         thread: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
@@ -3450,7 +3448,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RecordingCleanupR
         source_effect_id: &str,
         source_binding: &str,
         generation: &awaken_session_state_contract::SandboxGeneration,
-        expected_mcp_generations: &[awaken_session_mcp_contract::McpGenerationRef],
+        expected_mcp_generations: &[crate::session_mcp::McpGenerationRef],
     ) -> Result<awaken_session_state_contract::QuiescenceReceipt, awaken_session_types::RunError>
     {
         awaken_session_execution_contract::NeutralRuntime
@@ -3550,10 +3548,8 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RecordingCleanupR
         &self,
         workspace_id: &str,
         skills: &[awaken_agent_contract::AgentSkillBinding],
-    ) -> Result<
-        Vec<awaken_session_resource_contract::ResolvedSkillBinding>,
-        awaken_session_types::RunError,
-    > {
+    ) -> Result<Vec<crate::session_resource::ResolvedSkillBinding>, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .resolve_session_skills(workspace_id, skills)
             .await
@@ -3562,7 +3558,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RecordingCleanupR
     async fn apply_session_inputs(
         &self,
         _thread: &str,
-        _transition: &awaken_session_resource_contract::SessionResourceTransition,
+        _transition: &crate::session_resource::SessionResourceTransition,
     ) -> Result<(), RunError> {
         self.ordinary_resource_apply_calls
             .fetch_add(1, Ordering::SeqCst);
@@ -3638,12 +3634,8 @@ struct FaultingSessionRepository {
     fail_operation_once: Mutex<Option<String>>,
     conflict_operation_once: Mutex<Option<String>>,
     running_conflict_operation_once: Mutex<Option<String>>,
-    realization_conflict_operation_once: Mutex<
-        Option<(
-            String,
-            awaken_session_resource_contract::SessionRealizationLease,
-        )>,
-    >,
+    realization_conflict_operation_once:
+        Mutex<Option<(String, crate::session_resource::SessionRealizationLease)>>,
     tombstone_after_operation_once: Mutex<Option<String>>,
     get_not_found_once: AtomicBool,
     fail_idempotency_receipt_once: AtomicBool,
@@ -3746,7 +3738,7 @@ impl FaultingSessionRepository {
     fn commit_concurrent_realization_then_conflict_once(
         &self,
         operation: &str,
-        realization: awaken_session_resource_contract::SessionRealizationLease,
+        realization: crate::session_resource::SessionRealizationLease,
     ) {
         *self.realization_conflict_operation_once.lock().unwrap() =
             Some((operation.to_string(), realization));
@@ -4106,7 +4098,7 @@ impl SessionRepository for FaultingSessionRepository {
         let mut scan = self.inner.scan(query).await?;
         if self.quarantine_recovery_scan_on_call.load(Ordering::SeqCst) == call {
             scan.quarantined
-                .push(awaken_session_state_contract::SessionRecoveryQuarantine {
+                .push(awaken_session_types::SessionRecoveryQuarantine {
                     session_id: "injected-quarantine".into(),
                     reason: "injected recovery quarantine".into(),
                 });
@@ -4218,13 +4210,13 @@ struct NoopMcpRealizer;
 impl McpAttachmentRealizer for NoopMcpRealizer {
     async fn stage_mcp_attachment(
         &self,
-        request: awaken_session_mcp_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, RunError> {
+        request: crate::session_mcp::StageMcpAttachment,
+    ) -> Result<crate::session_mcp::McpRealizationReceipt, RunError> {
         // Test-realizer rule: admitted exact generation -> matching idempotent
         // receipt. Production's unsupported default remains fail-closed and is
         // covered in the contract suite; application happy-path fixtures must
         // model the successful dependency effect they assert.
-        Ok(awaken_session_mcp_contract::McpRealizationReceipt {
+        Ok(crate::session_mcp::McpRealizationReceipt {
             receipt_fingerprint: request.fingerprint(),
             generation: request.generation,
             realization_id: request.realization_id,
@@ -4235,14 +4227,14 @@ impl McpAttachmentRealizer for NoopMcpRealizer {
 
     async fn publish_mcp_generation(
         &self,
-        _generation: awaken_session_mcp_contract::McpGenerationRef,
+        _generation: crate::session_mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         Ok(())
     }
 
     async fn drain_mcp_generation(
         &self,
-        _generation: awaken_session_mcp_contract::McpGenerationRef,
+        _generation: crate::session_mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         Ok(())
     }
@@ -4375,6 +4367,8 @@ impl RecordingEnvironmentSource {
 impl awaken_executable_environment_contract::SessionEnvironmentProjectionSource
     for RecordingEnvironmentSource
 {
+    type Snapshot = awaken_session_configuration_contract::EnvironmentSnapshot;
+
     async fn get(
         &self,
         _environment_id: &str,
@@ -4621,10 +4615,10 @@ fn application_with_configuration(
     )
 }
 
-fn skill_resources(id: &str) -> awaken_session_resource_contract::ResolvedSessionResources {
-    awaken_session_resource_contract::ResolvedSessionResources::try_new(
+fn skill_resources(id: &str) -> crate::session_resource::ResolvedSessionResources {
+    crate::session_resource::ResolvedSessionResources::try_new(
         Vec::new(),
-        vec![awaken_session_resource_contract::ResolvedSkillBinding {
+        vec![crate::session_resource::ResolvedSkillBinding {
             kind: awaken_agent_contract::AgentSkillKind::Custom,
             skill_id: id.into(),
             version: 1,
@@ -4634,13 +4628,13 @@ fn skill_resources(id: &str) -> awaken_session_resource_contract::ResolvedSessio
     .unwrap()
 }
 
-fn file_resources(id: &str) -> awaken_session_resource_contract::ResolvedSessionResources {
-    awaken_session_resource_contract::ResolvedSessionResources::try_new(
-        vec![awaken_session_resource_contract::ResolvedInput {
+fn file_resources(id: &str) -> crate::session_resource::ResolvedSessionResources {
+    crate::session_resource::ResolvedSessionResources::try_new(
+        vec![crate::session_resource::ResolvedInput {
             created_at_unix_ms: None,
             updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::from("input"),
-            source: awaken_session_resource_contract::ResolvedInputSource::File {
+            source: crate::session_resource::ResolvedInputSource::File {
                 file_id: awaken_resource_contract::FileId::from(id),
             },
             mount_path: "/workspace/input".into(),
@@ -4655,13 +4649,13 @@ fn file_resources(id: &str) -> awaken_session_resource_contract::ResolvedSession
 fn repository_resources(
     binding_id: &str,
     repository_id: &str,
-) -> awaken_session_resource_contract::ResolvedSessionResources {
-    awaken_session_resource_contract::ResolvedSessionResources::try_new(
-        vec![awaken_session_resource_contract::ResolvedInput {
+) -> crate::session_resource::ResolvedSessionResources {
+    crate::session_resource::ResolvedSessionResources::try_new(
+        vec![crate::session_resource::ResolvedInput {
             created_at_unix_ms: None,
             updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::from(binding_id),
-            source: awaken_session_resource_contract::ResolvedInputSource::Repository {
+            source: crate::session_resource::ResolvedInputSource::Repository {
                 repository_id: repository_id.into(),
                 config: awaken_resource_contract::RepositoryConfigVersion {
                     repository_id: repository_id.into(),
@@ -4686,24 +4680,21 @@ fn repository_resources(
 fn credentialed_repository_resources(
     binding_id: &str,
     repository_id: &str,
-) -> awaken_session_resource_contract::ResolvedSessionResources {
+) -> crate::session_resource::ResolvedSessionResources {
     let resources = repository_resources(binding_id, repository_id);
     let mut inputs = resources.inputs().to_vec();
-    let awaken_session_resource_contract::ResolvedInputSource::Repository { config, .. } =
+    let crate::session_resource::ResolvedInputSource::Repository { config, .. } =
         &mut inputs[0].source
     else {
         unreachable!("credential fixture is a Repository")
     };
     config.credential_binding = Some("repository-credential".into());
-    awaken_session_resource_contract::ResolvedSessionResources::try_new(
-        inputs,
-        resources.skills().to_vec(),
-    )
-    .expect("credentialed Repository fixture")
+    crate::session_resource::ResolvedSessionResources::try_new(inputs, resources.skills().to_vec())
+        .expect("credentialed Repository fixture")
 }
 
 fn repository_publication_intent(
-    resources: &awaken_session_resource_contract::ResolvedSessionResources,
+    resources: &crate::session_resource::ResolvedSessionResources,
 ) -> awaken_session_state_contract::SessionRepositoryPublicationIntent {
     awaken_session_state_contract::SessionRepositoryPublicationIntent {
         input: resources.inputs()[0].clone(),

@@ -142,7 +142,7 @@ impl HostWorkerResolver {
     pub(super) async fn reconcile_dispatched_mcp(
         host: &SharedHost,
         session_id: &str,
-        stages: Vec<awaken_session_mcp_contract::StageMcpAttachment>,
+        stages: Vec<crate::session_mcp::StageMcpAttachment>,
     ) -> Result<(), Error> {
         use awaken_session_execution_contract::McpAttachmentRealizer as _;
 

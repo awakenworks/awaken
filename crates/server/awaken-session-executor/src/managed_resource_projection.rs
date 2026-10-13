@@ -5,6 +5,7 @@
 //! prompt fragments. Keeping this boundary separate prevents protocol path rules
 //! from being reimplemented by individual Sandbox adapters.
 use awaken_provisioning_contract as pc;
+use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_realization_contract::ResourceOperationFence;
 use std::sync::Arc;
 
@@ -30,7 +31,7 @@ pub(crate) struct CompiledEffectiveInputs {
 }
 fn validate_preparation_publication(
     realization: &crate::session_realizations::SessionRealization,
-    asserted: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+    asserted: Option<&session_resource::SessionRealizationLease>,
 ) -> Result<(), RunError> {
     if realization.resource_preparation.is_some()
         && !asserted.is_some_and(|lease| realization.resource_preparation_authorized(lease))
@@ -44,9 +45,9 @@ fn validate_preparation_publication(
 }
 
 fn resource_requirement_effect_key(
-    transition: &awaken_session_resource_contract::SessionResourceTransition,
+    transition: &session_resource::SessionResourceTransition,
     claim: Option<&awaken_dispatch_contract::RunClaim>,
-    realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+    realization_lease: Option<&session_resource::SessionRealizationLease>,
 ) -> String {
     let authority = if let Some(claim) = claim {
         format!("run:{}", awaken_agent_contract::stable_fingerprint(claim))
@@ -71,13 +72,9 @@ impl crate::ManagedHost {
         &self,
         thread: &str,
         workspace: &str,
-        inputs: &awaken_session_resource_contract::ResolvedSessionResources,
+        inputs: &session_resource::ResolvedSessionResources,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization: Option<(
-            &str,
-            u64,
-            &awaken_session_resource_contract::SessionRealizationLease,
-        )>,
+        realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
     ) -> Result<CompiledEffectiveInputs, RunError> {
         let mut all = crate::staged_resources::StagedResources::default();
         let mut memory_bindings = std::collections::HashMap::new();
@@ -132,10 +129,10 @@ impl crate::ManagedHost {
         &self,
         session_thread: &str,
         workspace: &str,
-        input: &awaken_session_resource_contract::ResolvedInput,
+        input: &session_resource::ResolvedInput,
         materialization_reference: Option<String>,
     ) -> Result<Option<(String, Arc<crate::memory_binding::MemoryBinding>)>, RunError> {
-        let awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
+        let session_resource::ResolvedInputSource::MemoryStore {
             memory_store_id,
             config,
         } = &input.source
@@ -194,7 +191,7 @@ impl crate::ManagedHost {
     fn publish_active_resource_manifest(
         &self,
         thread: &str,
-        manifest: awaken_session_resource_contract::SessionResourceManifest,
+        manifest: session_resource::SessionResourceManifest,
     ) {
         let staging = &self.host.realizer.staging;
         staging.register_thread_resource_manifest(thread, manifest);
@@ -208,7 +205,7 @@ impl crate::ManagedHost {
         thread: &str,
         workspace: &str,
         resource_revision: u64,
-        resources: &awaken_session_resource_contract::ResolvedSessionResources,
+        resources: &session_resource::ResolvedSessionResources,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
     ) -> Result<(), RunError> {
         // Full-manifest preflight must precede even process-local Workspace or
@@ -230,10 +227,10 @@ impl crate::ManagedHost {
         thread: &str,
         workspace: &str,
         resource_revision: u64,
-        resources: &awaken_session_resource_contract::ResolvedSessionResources,
+        resources: &session_resource::ResolvedSessionResources,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
     ) -> Result<(), RunError> {
-        let desired = awaken_session_resource_contract::SessionResourceManifest::at_revision(
+        let desired = session_resource::SessionResourceManifest::at_revision(
             workspace,
             resource_revision,
             resources.clone(),
@@ -244,11 +241,8 @@ impl crate::ManagedHost {
         // below and therefore keys the same compiled requirements by the exact
         // aggregate transition consumed at realization.
         let effect_key = resource_requirement_effect_key(
-            &awaken_session_resource_contract::SessionResourceTransition::new(
-                desired.clone(),
-                desired.clone(),
-            )
-            .expect("a manifest is always a valid no-op transition"),
+            &session_resource::SessionResourceTransition::new(desired.clone(), desired.clone())
+                .expect("a manifest is always a valid no-op transition"),
             claim,
             None,
         );
@@ -263,9 +257,9 @@ impl crate::ManagedHost {
     pub(crate) async fn stage_prevalidated_resource_transition_under_resource_projection(
         &self,
         thread: &str,
-        transition: &awaken_session_resource_contract::SessionResourceTransition,
+        transition: &session_resource::SessionResourceTransition,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+        realization_lease: Option<&session_resource::SessionRealizationLease>,
         prospective_environment_binding: bool,
     ) -> Result<(), RunError> {
         let installed = self.host.realizer.staging.thread_resource_manifest(thread);
@@ -323,13 +317,9 @@ impl crate::ManagedHost {
     async fn stage_resource_requirements(
         &self,
         thread: &str,
-        desired: &awaken_session_resource_contract::SessionResourceManifest,
+        desired: &session_resource::SessionResourceManifest,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization: Option<(
-            &str,
-            u64,
-            &awaken_session_resource_contract::SessionRealizationLease,
-        )>,
+        realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
         effect_key: String,
     ) -> Result<(), RunError> {
         // Unclaimed replay may reuse the exact already-compiled cold
@@ -384,13 +374,9 @@ impl crate::ManagedHost {
     /// invent a second catalog or hash-validation path.
     async fn load_pinned_skill_requirements(
         &self,
-        desired: &awaken_session_resource_contract::SessionResourceManifest,
+        desired: &session_resource::SessionResourceManifest,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization: Option<(
-            &str,
-            u64,
-            &awaken_session_resource_contract::SessionRealizationLease,
-        )>,
+        realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
     ) -> Result<Vec<awaken_resource_contract::SkillVersion>, RunError> {
         let skill_realization = if self.host.authority.fetches_resources_upstream() {
             realization
@@ -472,9 +458,9 @@ impl crate::ManagedHost {
     pub(crate) async fn apply_session_inputs_with_context(
         &self,
         thread: &str,
-        transition: &awaken_session_resource_contract::SessionResourceTransition,
+        transition: &session_resource::SessionResourceTransition,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+        realization_lease: Option<&session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         let _lifecycle = self.host.installed_sessions.lock_lifecycle(thread).await;
         self.apply_session_inputs_under_lifecycle(thread, transition, claim, realization_lease)
@@ -489,9 +475,9 @@ impl crate::ManagedHost {
     pub(crate) async fn apply_session_inputs_under_lifecycle(
         &self,
         thread: &str,
-        transition: &awaken_session_resource_contract::SessionResourceTransition,
+        transition: &session_resource::SessionResourceTransition,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+        realization_lease: Option<&session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         let _resource_projection = self
             .host
@@ -509,9 +495,9 @@ impl crate::ManagedHost {
     async fn apply_session_inputs_body(
         &self,
         thread: &str,
-        transition: &awaken_session_resource_contract::SessionResourceTransition,
+        transition: &session_resource::SessionResourceTransition,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+        realization_lease: Option<&session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         let sessions = &self.host.installed_sessions;
         let previous_manifest = transition.previous();
@@ -594,7 +580,7 @@ impl crate::ManagedHost {
             .filter(|input| {
                 matches!(
                     input.source,
-                    awaken_session_resource_contract::ResolvedInputSource::MemoryStore { .. }
+                    session_resource::ResolvedInputSource::MemoryStore { .. }
                 )
             })
             .cloned()
@@ -606,7 +592,7 @@ impl crate::ManagedHost {
             .filter(|input| {
                 matches!(
                     input.source,
-                    awaken_session_resource_contract::ResolvedInputSource::MemoryStore { .. }
+                    session_resource::ResolvedInputSource::MemoryStore { .. }
                 )
             })
             .cloned()
@@ -658,7 +644,7 @@ impl crate::ManagedHost {
             .filter(|input| {
                 !matches!(
                     input.source,
-                    awaken_session_resource_contract::ResolvedInputSource::MemoryStore { .. }
+                    session_resource::ResolvedInputSource::MemoryStore { .. }
                 )
             })
             .chain(old_memory.iter())
@@ -891,7 +877,7 @@ impl crate::ManagedHost {
                     if (installed_manifest.is_some()
                         && matches!(
                             input.source,
-                            awaken_session_resource_contract::ResolvedInputSource::MemoryStore { .. }
+                            session_resource::ResolvedInputSource::MemoryStore { .. }
                         ))
                         || (reconciliation
                             == crate::staged_resources::EnvironmentResourceReconciliation::None
@@ -909,10 +895,8 @@ impl crate::ManagedHost {
                     }
                     let path = crate::managed_input_layout::resolved_input_effect_path(input);
                     match &input.source {
-                        awaken_session_resource_contract::ResolvedInputSource::File { .. }
-                        | awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
-                            ..
-                        } => {
+                        session_resource::ResolvedInputSource::File { .. }
+                        | session_resource::ResolvedInputSource::MemoryStore { .. } => {
                             let mount = new
                                 .mounts
                                 .iter()
@@ -936,9 +920,7 @@ impl crate::ManagedHost {
                                 .await
                                 .map_err(|error| RunError::internal(error.to_string()))?;
                         }
-                        awaken_session_resource_contract::ResolvedInputSource::Repository {
-                            ..
-                        } => {
+                        session_resource::ResolvedInputSource::Repository { .. } => {
                             let retain = reconciliation == crate::staged_resources::EnvironmentResourceReconciliation::Adopted
                                 && previous_manifest.resources.inputs().iter().any(|previous| previous == input);
                             let repository = new
@@ -1078,7 +1060,7 @@ impl crate::resource_staging::ResourceStaging {
     pub(crate) fn validate_resource_layout(
         &self,
         thread: &str,
-        resources: &awaken_session_resource_contract::ResolvedSessionResources,
+        resources: &session_resource::ResolvedSessionResources,
         provider: &crate::session_environment::SessionEnvironmentProvider,
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
@@ -1100,7 +1082,7 @@ impl crate::resource_staging::ResourceStaging {
     pub(crate) fn validate_structural_resource_layout(
         &self,
         thread: &str,
-        resources: &awaken_session_resource_contract::ResolvedSessionResources,
+        resources: &session_resource::ResolvedSessionResources,
         baseline_mounts: Option<&[awaken_provisioning_contract::MountRequirement]>,
         baseline_env: Option<&[awaken_provisioning_contract::EnvVar]>,
         environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
@@ -1173,44 +1155,43 @@ impl crate::ManagedHost {
                 None,
             )
             .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
-        let result = if layout.runtime_placement
-            == awaken_session_configuration_contract::SessionRuntimePlacement::Worker
-        {
-            staging.validate_structural_binding_layout(
-                thread,
-                &layout.resources,
-                Some(&layout.mounts),
-                Some(&layout.env),
-                Some(&environment),
-            )
-        } else {
-            let provider = if let Some(candidate) = candidate.as_ref() {
-                self.host
-                    .realizer
-                    .session_environment_provider_for_thread(thread, candidate.provisioning())
-            } else {
-                self.host.realizer.session_environment_provider_for_thread(
+        let result =
+            if layout.runtime_placement == awaken_session_types::SessionRuntimePlacement::Worker {
+                staging.validate_structural_binding_layout(
                     thread,
-                    &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+                    &layout.resources,
+                    Some(&layout.mounts),
+                    Some(&layout.env),
+                    Some(&environment),
                 )
-            }
-            .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
-            staging.validate_binding_layout(
-                thread,
-                &layout.resources,
-                provider,
-                Some(&layout.mounts),
-                Some(&layout.env),
-                Some(&environment),
-            )
-        };
+            } else {
+                let provider = if let Some(candidate) = candidate.as_ref() {
+                    self.host
+                        .realizer
+                        .session_environment_provider_for_thread(thread, candidate.provisioning())
+                } else {
+                    self.host.realizer.session_environment_provider_for_thread(
+                        thread,
+                        &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+                    )
+                }
+                .map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))?;
+                staging.validate_binding_layout(
+                    thread,
+                    &layout.resources,
+                    provider,
+                    Some(&layout.mounts),
+                    Some(&layout.env),
+                    Some(&environment),
+                )
+            };
         result.map_err(|error| awaken_session_types::RunError::bad_request(error.to_string()))
     }
 
     pub(super) fn validate_effective_resource_layout(
         &self,
         thread: &str,
-        resources: &awaken_session_resource_contract::ResolvedSessionResources,
+        resources: &session_resource::ResolvedSessionResources,
     ) -> Result<(), awaken_session_types::RunError> {
         let staging = &self.host.realizer.staging;
         let provider = self
@@ -1229,13 +1210,9 @@ impl crate::ManagedHost {
     pub(super) async fn stage_resolved_input(
         &self,
         workspace: &str,
-        input: &awaken_session_resource_contract::ResolvedInput,
+        input: &session_resource::ResolvedInput,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization: Option<(
-            &str,
-            u64,
-            &awaken_session_resource_contract::SessionRealizationLease,
-        )>,
+        realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
         environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
     ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
         let authority = if let (Some((session_id, resource_revision, lease)), true) = (
@@ -1273,7 +1250,7 @@ impl crate::ManagedHost {
         &self,
         workspace: &str,
         command: &awaken_session_state_contract::SessionRepositoryPublicationCommand,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &session_resource::SessionRealizationLease,
     ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
         command
             .intent
@@ -1282,7 +1259,7 @@ impl crate::ManagedHost {
         let input = &command.intent.input;
         if !matches!(
             input.source,
-            awaken_session_resource_contract::ResolvedInputSource::Repository { .. }
+            session_resource::ResolvedInputSource::Repository { .. }
         ) {
             return Err(awaken_session_types::RunError::bad_request(
                 "terminal Repository publication input is not a Repository",
@@ -1305,16 +1282,12 @@ impl crate::ManagedHost {
     async fn stage_resolved_input_with_resource_authority(
         &self,
         workspace: &str,
-        input: &awaken_session_resource_contract::ResolvedInput,
+        input: &session_resource::ResolvedInput,
         resource_authority: Option<&ResourceOperationFence>,
-        realization: Option<(
-            &str,
-            u64,
-            &awaken_session_resource_contract::SessionRealizationLease,
-        )>,
+        realization: Option<(&str, u64, &session_resource::SessionRealizationLease)>,
         environment: Option<&crate::frozen_inputs::FrozenEnvironmentInputs>,
     ) -> Result<crate::staged_resources::StagedResources, awaken_session_types::RunError> {
-        use awaken_session_resource_contract::ResolvedInputSource;
+        use awaken_session_configuration_contract::resource::ResolvedInputSource;
         use awaken_session_types::RunError;
 
         let execution = &self.host.session_execution;

@@ -39,14 +39,14 @@ impl VaultState {
         workspace: &str,
         url: &str,
     ) -> Result<Vec<McpCredentialChoice>, CredentialError> {
-        let target = awaken_session_mcp_contract::McpTarget::identity(url)
+        let target = awaken_agent_contract::McpTarget::identity(url)
             .map_err(|e| CredentialError::InvalidSource(e.to_string()))?;
         Ok(self
             .mcp_credential_inventory(workspace)
             .await?
             .into_iter()
             .filter(|choice| {
-                awaken_session_mcp_contract::McpTarget::identity(&choice.mcp_server_url)
+                awaken_agent_contract::McpTarget::identity(&choice.mcp_server_url)
                     .ok()
                     .as_ref()
                     == Some(&target)
@@ -72,7 +72,7 @@ impl VaultState {
                     AuthRecord::McpOauth { mcp_server_url, .. } => (mcp_server_url, "mcp_oauth"),
                     AuthRecord::EnvironmentVariable { .. } => continue,
                 };
-                let target = awaken_session_mcp_contract::McpTarget::parse_http(credential_url)
+                let target = awaken_agent_contract::McpTarget::parse_http(credential_url)
                     .map_err(|e| CredentialError::InvalidSource(e.to_string()))?;
                 let source = self.application.source(&credential.source_id).await?;
                 if inspection_source_admitted(&source, workspace, credential_url).is_err() {
@@ -168,7 +168,7 @@ impl VaultState {
         ),
         CredentialError,
     > {
-        awaken_session_mcp_contract::McpTarget::parse_http(url)
+        awaken_agent_contract::McpTarget::parse_http(url)
             .map_err(|e| CredentialError::InvalidSource(e.to_string()))?;
         let choice = if let Some(id) = credential_id {
             Some(
@@ -362,7 +362,7 @@ fn inspection_source_admitted(
     {
         return Err(CredentialError::NotActive(source.id.0.clone()));
     }
-    let audience = awaken_session_mcp_contract::McpTarget::identity(url)
+    let audience = awaken_agent_contract::McpTarget::identity(url)
         .map_err(|e| CredentialError::InvalidSource(e.to_string()))?
         .canonical_url();
     let target = awaken_credential_contract::CredentialTarget::new(

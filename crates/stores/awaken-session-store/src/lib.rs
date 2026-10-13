@@ -26,15 +26,17 @@ use async_trait::async_trait;
 use awaken_session_repository_contract::{LifecycleOutbox, SessionRepository};
 #[cfg(test)]
 use awaken_session_state_contract::SessionExecutionState;
-use awaken_session_state_contract::{
-    IdempotencyRecord, ManagedLifecycleFact, PersistedSession, ScopedPersistedSession,
-    SessionCreateResult, SessionEnvironmentPhase, SessionEnvironmentState,
-    SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
-    SessionRecoveryQuarantine, SessionRepositoryConflict, SessionRepositoryError, SessionScan,
-    SessionWorkerObligation,
-};
 use awaken_session_types::SessionRevision;
 use futures_util::TryStreamExt;
+use {
+    awaken_session_state_contract::{
+        IdempotencyRecord, ManagedLifecycleFact, PersistedSession, ScopedPersistedSession,
+        SessionCreateResult, SessionEnvironmentPhase, SessionEnvironmentState,
+        SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
+        SessionRepositoryConflict, SessionRepositoryError, SessionScan, SessionWorkerObligation,
+    },
+    awaken_session_types::SessionRecoveryQuarantine,
+};
 
 mod deployments;
 mod dream;

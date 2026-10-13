@@ -9,7 +9,7 @@
 use std::sync::{Arc, Weak};
 
 use awaken_dispatch_contract::SessionResourceEnvelope;
-use awaken_session_resource_contract::SessionResourceManifest;
+use awaken_session_configuration_contract::resource::SessionResourceManifest;
 use awaken_session_types::RunError;
 
 use crate::{ManagedHost, SharedHost};
@@ -27,7 +27,7 @@ const fn dispatched_resource_scope_is_admitted(
 /// wire interpretation.
 pub(crate) fn decode_dispatched_resource_manifest(
     dispatch: &awaken_dispatch_contract::RunDispatch,
-) -> Result<Option<awaken_session_resource_contract::SessionResourceManifest>, String> {
+) -> Result<Option<crate::session_resource::SessionResourceManifest>, String> {
     let Some(envelope) = &dispatch.session_resources else {
         return Ok(None);
     };
@@ -74,7 +74,7 @@ impl DispatchSessionRuntime {
     async fn install(
         &self,
         thread: &str,
-        manifest: &awaken_session_resource_contract::SessionResourceManifest,
+        manifest: &crate::session_resource::SessionResourceManifest,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
     ) -> Result<(), RunError> {
         let managed = self.managed()?;
@@ -148,16 +148,14 @@ impl DispatchSessionRuntime {
                 "a desired-only Resource manifest cannot identify the bound Environment's active generation",
             ));
         }
-        let empty = awaken_session_resource_contract::SessionResourceManifest::at_revision(
+        let empty = crate::session_resource::SessionResourceManifest::at_revision(
             manifest.workspace_id.clone(),
             0,
-            awaken_session_resource_contract::ResolvedSessionResources::default(),
+            crate::session_resource::ResolvedSessionResources::default(),
         );
-        let proven_transition = awaken_session_resource_contract::SessionResourceTransition::new(
-            empty,
-            manifest.clone(),
-        )
-        .map_err(|error| RunError::bad_request(error.to_string()))?;
+        let proven_transition =
+            crate::session_resource::SessionResourceTransition::new(empty, manifest.clone())
+                .map_err(|error| RunError::bad_request(error.to_string()))?;
         managed
             .stage_prevalidated_resource_transition_under_resource_projection(
                 thread,
@@ -181,9 +179,9 @@ impl DispatchSessionRuntime {
     async fn stage_prevalidated_transition_under_resource_projection(
         &self,
         thread: &str,
-        transition: &awaken_session_resource_contract::SessionResourceTransition,
+        transition: &crate::session_resource::SessionResourceTransition,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+        realization_lease: Option<&crate::session_resource::SessionRealizationLease>,
         prospective_environment_binding: bool,
     ) -> Result<(), RunError> {
         let managed = self.managed()?;
@@ -201,9 +199,9 @@ impl DispatchSessionRuntime {
     async fn apply_transition(
         &self,
         thread: &str,
-        transition: &awaken_session_resource_contract::SessionResourceTransition,
+        transition: &crate::session_resource::SessionResourceTransition,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+        realization_lease: Option<&crate::session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         self.managed()?
             .apply_session_inputs_with_context(thread, transition, claim, realization_lease)
@@ -213,9 +211,9 @@ impl DispatchSessionRuntime {
     async fn apply_transition_under_lifecycle(
         &self,
         thread: &str,
-        transition: &awaken_session_resource_contract::SessionResourceTransition,
+        transition: &crate::session_resource::SessionResourceTransition,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+        realization_lease: Option<&crate::session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         self.managed()?
             .apply_session_inputs_under_lifecycle(thread, transition, claim, realization_lease)
@@ -229,7 +227,7 @@ impl DispatchSessionRuntime {
     async fn compile_memory_binding(
         &self,
         session_thread: &str,
-        manifest: &awaken_session_resource_contract::SessionResourceManifest,
+        manifest: &crate::session_resource::SessionResourceManifest,
         binding_id: &str,
     ) -> Result<Arc<crate::memory_binding::MemoryBinding>, RunError> {
         let input = manifest
@@ -244,7 +242,7 @@ impl DispatchSessionRuntime {
             })?;
         if !matches!(
             &input.source,
-            awaken_session_resource_contract::ResolvedInputSource::MemoryStore { .. }
+            crate::session_resource::ResolvedInputSource::MemoryStore { .. }
         ) {
             return Err(RunError::internal(format!(
                 "frozen binding `{binding_id}` is not a MemoryStore"
@@ -259,8 +257,8 @@ impl DispatchSessionRuntime {
 
     async fn stage_mcp(
         &self,
-        request: awaken_session_mcp_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, RunError> {
+        request: crate::session_mcp::StageMcpAttachment,
+    ) -> Result<crate::session_mcp::McpRealizationReceipt, RunError> {
         let managed = self.managed()?;
         match &managed.host.session_execution.mcp_realizer {
             Some(realizer) => realizer.stage_mcp_attachment(request).await,
@@ -275,7 +273,7 @@ impl DispatchSessionRuntime {
 
     async fn publish_mcp(
         &self,
-        generation: awaken_session_mcp_contract::McpGenerationRef,
+        generation: crate::session_mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         let managed = self.managed()?;
         match &managed.host.session_execution.mcp_realizer {
@@ -291,7 +289,7 @@ impl DispatchSessionRuntime {
 
     async fn drain_mcp(
         &self,
-        generation: awaken_session_mcp_contract::McpGenerationRef,
+        generation: crate::session_mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         let managed = self.managed()?;
         match &managed.host.session_execution.mcp_realizer {
@@ -310,7 +308,7 @@ impl SharedHost {
     pub(crate) async fn install_dispatched_resources(
         &self,
         thread: &str,
-        manifest: &awaken_session_resource_contract::SessionResourceManifest,
+        manifest: &crate::session_resource::SessionResourceManifest,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
     ) -> Result<(), RunError> {
         self.dispatch_session_runtime()
@@ -326,9 +324,9 @@ impl SharedHost {
     pub(crate) async fn stage_prevalidated_dispatched_resource_transition_under_resource_projection(
         &self,
         thread: &str,
-        transition: &awaken_session_resource_contract::SessionResourceTransition,
+        transition: &crate::session_resource::SessionResourceTransition,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+        realization_lease: Option<&crate::session_resource::SessionRealizationLease>,
         prospective_environment_binding: bool,
     ) -> Result<(), RunError> {
         self.dispatch_session_runtime()
@@ -345,9 +343,9 @@ impl SharedHost {
     pub(crate) async fn apply_dispatched_resource_transition(
         &self,
         thread: &str,
-        transition: &awaken_session_resource_contract::SessionResourceTransition,
+        transition: &crate::session_resource::SessionResourceTransition,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+        realization_lease: Option<&crate::session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         self.dispatch_session_runtime()
             .apply_transition(thread, transition, claim, realization_lease)
@@ -357,9 +355,9 @@ impl SharedHost {
     pub(crate) async fn apply_dispatched_resource_transition_under_lifecycle(
         &self,
         thread: &str,
-        transition: &awaken_session_resource_contract::SessionResourceTransition,
+        transition: &crate::session_resource::SessionResourceTransition,
         claim: Option<&awaken_dispatch_contract::RunClaim>,
-        realization_lease: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+        realization_lease: Option<&crate::session_resource::SessionRealizationLease>,
     ) -> Result<(), RunError> {
         self.dispatch_session_runtime()
             .apply_transition_under_lifecycle(thread, transition, claim, realization_lease)
@@ -369,7 +367,7 @@ impl SharedHost {
     pub(crate) async fn compile_dispatched_memory_binding(
         &self,
         session_thread: &str,
-        manifest: &awaken_session_resource_contract::SessionResourceManifest,
+        manifest: &crate::session_resource::SessionResourceManifest,
         binding_id: &str,
     ) -> Result<Arc<crate::memory_binding::MemoryBinding>, RunError> {
         self.dispatch_session_runtime()
@@ -417,14 +415,14 @@ impl SharedHost {
 
     pub(crate) async fn stage_dispatched_mcp(
         &self,
-        request: awaken_session_mcp_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, RunError> {
+        request: crate::session_mcp::StageMcpAttachment,
+    ) -> Result<crate::session_mcp::McpRealizationReceipt, RunError> {
         self.dispatch_session_runtime().stage_mcp(request).await
     }
 
     pub(crate) async fn publish_dispatched_mcp(
         &self,
-        generation: awaken_session_mcp_contract::McpGenerationRef,
+        generation: crate::session_mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         self.dispatch_session_runtime()
             .publish_mcp(generation)
@@ -433,7 +431,7 @@ impl SharedHost {
 
     pub(crate) async fn drain_dispatched_mcp(
         &self,
-        generation: awaken_session_mcp_contract::McpGenerationRef,
+        generation: crate::session_mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         self.dispatch_session_runtime().drain_mcp(generation).await
     }

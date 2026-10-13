@@ -52,15 +52,7 @@ pub use awaken_provisioning_contract::{
     SandboxIdleRetentionPolicy as EnvironmentIdleRetentionPolicy, SandboxProvisioning,
 };
 
-/// Frozen owner class for the Session Runtime projection. Environment
-/// WorkQueue selection is an independent Environment concern and must not be
-/// reinterpreted as this deployment placement decision.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionRuntimePlacement {
-    Local,
-    Worker,
-}
+use awaken_session_types::SessionRuntimePlacement;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
@@ -226,7 +218,7 @@ impl SessionCreationIntent {
             resources,
             initial_mcp,
         } = self.control;
-        let initial_mcp = awaken_session_mcp_contract::resolve_mcp_draft_precedence(initial_mcp)
+        let initial_mcp = crate::mcp::resolve_mcp_draft_precedence(initial_mcp)
             .map_err(|error| SessionCreationFinalizeError::McpConflict(error.to_string()))?;
         let baseline = SessionBaseline::compile_with_policy_system_and_execution_model_ref(
             SessionBaselineInputs {
@@ -704,6 +696,101 @@ mod tests {
             credential: None,
             origin,
         }
+    }
+
+    #[test]
+    fn creation_replay_preserves_resource_and_mcp_authority_independently() {
+        // R1 a complete creation intent replays without changing frozen facts.
+        // R2 only a Resource input changes -> only its manifest changes.
+        // R3 only the selected MCP target changes -> only its generation changes.
+        // R4 duplicate Resource identity -> durable decoding refuses the whole intent.
+        let mut control = control_inputs(SessionNetworkPolicy::Unrestricted);
+        control.resources = control
+            .resources
+            .attach(crate::resource::ResolvedInput {
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
+                binding_id: awaken_resource_contract::BindingId::new("input"),
+                source: crate::resource::ResolvedInputSource::File {
+                    file_id: awaken_resource_contract::FileId::from("file"),
+                },
+                mount_path: "/inputs/file".into(),
+                access: awaken_resource_contract::ResourceAccess::ReadOnly,
+                instructions: None,
+            })
+            .unwrap();
+        control.initial_mcp.extend([
+            mcp_draft(
+                "lookup",
+                "https://agent.test/mcp",
+                crate::McpAttachmentOrigin::Agent,
+            ),
+            mcp_draft(
+                "lookup",
+                "https://session.test/mcp",
+                crate::McpAttachmentOrigin::Session,
+            ),
+        ]);
+        let intent = SessionCreationIntent { control };
+        let wire = serde_json::to_value(&intent).unwrap();
+        let compile = |value| {
+            serde_json::from_value::<SessionCreationIntent>(value)
+                .unwrap()
+                .finalize()
+                .unwrap()
+        };
+        let original = intent.finalize().unwrap();
+        let replayed = compile(wire.clone());
+        assert_eq!(replayed, original, "R1 exact durable replay");
+        assert_eq!(replayed.initial_mcp.len(), 1, "R1 Session precedence");
+        let generations = |creation: &CompiledSessionCreation| {
+            crate::mcp::SessionMcpAttachmentSet::from_initial(creation.initial_mcp.clone(), None)
+                .unwrap()
+        };
+        let first = generations(&original);
+        assert_eq!(
+            generations(&replayed),
+            first,
+            "R1 exact generation identity"
+        );
+
+        let mut changed_resource = wire.clone();
+        changed_resource["control"]["resources"]["inputs"][0]["mount_path"] =
+            serde_json::json!("/inputs/other");
+        let changed_resource = compile(changed_resource);
+        assert_ne!(
+            changed_resource.initial_resources, original.initial_resources,
+            "R2"
+        );
+        assert_eq!(changed_resource.baseline, original.baseline, "R2 baseline");
+        assert_eq!(generations(&changed_resource), first, "R2 MCP authority");
+
+        let mut changed_mcp = wire.clone();
+        changed_mcp["control"]["initial_mcp"][1]["target"] = serde_json::to_value(
+            awaken_agent_contract::McpTarget::parse_http("https://replacement.test/mcp").unwrap(),
+        )
+        .unwrap();
+        let changed_mcp = compile(changed_mcp);
+        assert_eq!(
+            changed_mcp.initial_resources, original.initial_resources,
+            "R3 Resource authority"
+        );
+        assert_ne!(
+            generations(&changed_mcp).desired_fingerprint,
+            first.desired_fingerprint,
+            "R3"
+        );
+
+        let mut duplicate_resource = wire;
+        let input = duplicate_resource["control"]["resources"]["inputs"][0].clone();
+        duplicate_resource["control"]["resources"]["inputs"]
+            .as_array_mut()
+            .unwrap()
+            .push(input);
+        assert!(
+            serde_json::from_value::<SessionCreationIntent>(duplicate_resource).is_err(),
+            "R4"
+        );
     }
 
     #[test]

@@ -36,7 +36,7 @@ use support::{ScheduledConflictRepository, replace_session_fixture};
 /// fails it), so a test can assert exactly what a session create provisions.
 struct PreparingFake {
     captured: Arc<Mutex<Vec<SessionInit>>>,
-    staged: Arc<Mutex<Vec<awaken_session_mcp_contract::StageMcpAttachment>>>,
+    staged: Arc<Mutex<Vec<awaken_session_configuration_contract::mcp::StageMcpAttachment>>>,
     observed_durable: Arc<Mutex<Vec<PersistedSession>>>,
     repo: Option<Arc<dyn awaken_session_repository_contract::SessionStore>>,
     fail_with: Option<RunErrorKind>,
@@ -229,7 +229,7 @@ impl awaken_session_execution_contract::RealizationRuntime for PreparingFake {
     async fn invalidate_session_realization_lease(
         &self,
         thread: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
@@ -365,7 +365,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for PreparingFake
     async fn execute_terminal_repository_publication_for_lease(
         &self,
         command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<
         awaken_session_state_contract::SessionRepositoryPublicationEffect,
         awaken_session_types::RunError,
@@ -430,7 +430,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for PreparingFake
     async fn acknowledge_completed_terminal_cleanup(
         &self,
         session_id: &awaken_session_types::SessionId,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_completed_terminal_cleanup(session_id, lease)
@@ -496,31 +496,33 @@ impl awaken_session_execution_contract::OutcomeRuntime for PreparingFake {
 impl awaken_session_execution_contract::McpAttachmentRealizer for PreparingFake {
     async fn stage_mcp_attachment(
         &self,
-        request: awaken_session_mcp_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, RunError> {
+        request: awaken_session_configuration_contract::mcp::StageMcpAttachment,
+    ) -> Result<awaken_session_configuration_contract::mcp::McpRealizationReceipt, RunError> {
         self.staged.lock().unwrap().push(request.clone());
         let receipt_fingerprint = request.fingerprint();
-        Ok(awaken_session_mcp_contract::McpRealizationReceipt {
-            generation: request.generation,
-            realization_id: request.realization_id,
-            selected_plaintext_holder: request.selected_plaintext_holder,
-            actual_realization_kind: Some(
-                awaken_credential_contract::CredentialRealizationKind::WorkerRelay,
-            ),
-            receipt_fingerprint,
-        })
+        Ok(
+            awaken_session_configuration_contract::mcp::McpRealizationReceipt {
+                generation: request.generation,
+                realization_id: request.realization_id,
+                selected_plaintext_holder: request.selected_plaintext_holder,
+                actual_realization_kind: Some(
+                    awaken_credential_contract::CredentialRealizationKind::WorkerRelay,
+                ),
+                receipt_fingerprint,
+            },
+        )
     }
 
     async fn publish_mcp_generation(
         &self,
-        _generation: awaken_session_mcp_contract::McpGenerationRef,
+        _generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         Ok(())
     }
 
     async fn drain_mcp_generation(
         &self,
-        _generation: awaken_session_mcp_contract::McpGenerationRef,
+        _generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         Ok(())
     }
@@ -530,7 +532,7 @@ struct Harness {
     app: Router,
     vaults: Arc<VaultState>,
     captured: Arc<Mutex<Vec<SessionInit>>>,
-    staged: Arc<Mutex<Vec<awaken_session_mcp_contract::StageMcpAttachment>>>,
+    staged: Arc<Mutex<Vec<awaken_session_configuration_contract::mcp::StageMcpAttachment>>>,
     observed_durable: Arc<Mutex<Vec<PersistedSession>>>,
     repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
 }
@@ -545,9 +547,9 @@ enum HotStageMode {
 
 #[derive(Default)]
 struct HotRuntimeState {
-    staged: Vec<awaken_session_mcp_contract::StageMcpAttachment>,
-    published: Vec<awaken_session_mcp_contract::McpGenerationRef>,
-    drained: Vec<awaken_session_mcp_contract::McpGenerationRef>,
+    staged: Vec<awaken_session_configuration_contract::mcp::StageMcpAttachment>,
+    published: Vec<awaken_session_configuration_contract::mcp::McpGenerationRef>,
+    drained: Vec<awaken_session_configuration_contract::mcp::McpGenerationRef>,
     durable_at_stage: Vec<PersistedSession>,
     mode: HotStageMode,
     fail_publish_next: bool,
@@ -692,7 +694,7 @@ impl awaken_session_execution_contract::RealizationRuntime for HotRuntime {
     async fn invalidate_session_realization_lease(
         &self,
         thread: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
@@ -743,7 +745,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for HotRuntime {
         source_effect_id: &str,
         source_binding: &str,
         generation: &awaken_session_state_contract::SandboxGeneration,
-        expected_mcp_generations: &[awaken_session_mcp_contract::McpGenerationRef],
+        expected_mcp_generations: &[awaken_session_configuration_contract::mcp::McpGenerationRef],
     ) -> Result<awaken_session_state_contract::QuiescenceReceipt, awaken_session_types::RunError>
     {
         awaken_session_execution_contract::NeutralRuntime
@@ -844,7 +846,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for HotRuntime {
         workspace_id: &str,
         skills: &[awaken_agent_contract::AgentSkillBinding],
     ) -> Result<
-        Vec<awaken_session_resource_contract::ResolvedSkillBinding>,
+        Vec<awaken_session_configuration_contract::resource::ResolvedSkillBinding>,
         awaken_session_types::RunError,
     > {
         awaken_session_execution_contract::NeutralRuntime
@@ -861,7 +863,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for HotRuntime {
     async fn apply_session_inputs(
         &self,
         thread: &str,
-        transition: &awaken_session_resource_contract::SessionResourceTransition,
+        transition: &awaken_session_configuration_contract::resource::SessionResourceTransition,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .apply_session_inputs(thread, transition)
@@ -1043,8 +1045,8 @@ impl awaken_session_execution_contract::OutcomeRuntime for HotRuntime {
 impl awaken_session_execution_contract::McpAttachmentRealizer for HotRuntime {
     async fn stage_mcp_attachment(
         &self,
-        request: awaken_session_mcp_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, RunError> {
+        request: awaken_session_configuration_contract::mcp::StageMcpAttachment,
+    ) -> Result<awaken_session_configuration_contract::mcp::McpRealizationReceipt, RunError> {
         let durable = self
             .repo
             .get(request.generation.session_id())
@@ -1064,18 +1066,20 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for HotRuntime {
             w.generation = w.generation.at_version(w.generation.version() + 1);
             generation = w.try_into().unwrap();
         }
-        Ok(awaken_session_mcp_contract::McpRealizationReceipt {
-            generation,
-            realization_id: request.realization_id,
-            selected_plaintext_holder: request.selected_plaintext_holder,
-            actual_realization_kind: None,
-            receipt_fingerprint,
-        })
+        Ok(
+            awaken_session_configuration_contract::mcp::McpRealizationReceipt {
+                generation,
+                realization_id: request.realization_id,
+                selected_plaintext_holder: request.selected_plaintext_holder,
+                actual_realization_kind: None,
+                receipt_fingerprint,
+            },
+        )
     }
 
     async fn publish_mcp_generation(
         &self,
-        generation: awaken_session_mcp_contract::McpGenerationRef,
+        generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         let mut state = self.state.lock().unwrap();
         state.published.push(generation);
@@ -1087,7 +1091,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for HotRuntime {
 
     async fn drain_mcp_generation(
         &self,
-        generation: awaken_session_mcp_contract::McpGenerationRef,
+        generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         let mut state = self.state.lock().unwrap();
         state.drained.push(generation);
@@ -1481,7 +1485,7 @@ async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape()
         assert!(observed[0].realization.is_some(), "A1 lease is durable");
         assert_eq!(
             observed[0].mcp.attachments[0].state,
-            awaken_session_mcp_contract::McpAttachmentState::Realizing,
+            awaken_session_configuration_contract::mcp::McpAttachmentState::Realizing,
             "A1 claim is durable before Runtime I/O"
         );
     }
@@ -1493,7 +1497,7 @@ async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape()
         .expect("active aggregate");
     assert_eq!(
         active.mcp.attachments[0].state,
-        awaken_session_mcp_contract::McpAttachmentState::Active,
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Active,
         "A1"
     );
     assert!(
@@ -1914,7 +1918,7 @@ async fn failing_complete_projection_fails_the_create_with_the_mapped_envelope()
             assert_eq!(failed.realization_progress.attempts, 1, "R3");
             assert_eq!(
                 failed.mcp.attachments[0].state,
-                awaken_session_mcp_contract::McpAttachmentState::Realizing,
+                awaken_session_configuration_contract::mcp::McpAttachmentState::Realizing,
                 "R3"
             );
         } else {
@@ -1937,7 +1941,7 @@ async fn failing_complete_projection_fails_the_create_with_the_mapped_envelope()
             );
             assert_eq!(
                 failed.mcp.attachments[0].state,
-                awaken_session_mcp_contract::McpAttachmentState::Failed,
+                awaken_session_configuration_contract::mcp::McpAttachmentState::Failed,
                 "R1/R2: {kind:?}"
             );
             assert!(failed.visible_mcp_servers().is_empty(), "R1/R2: {kind:?}");
@@ -2011,7 +2015,7 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
         assert_eq!(state.published.len(), 1, "H2");
         assert_eq!(
             state.durable_at_stage[0].mcp.attachments[0].state,
-            awaken_session_mcp_contract::McpAttachmentState::Realizing,
+            awaken_session_configuration_contract::mcp::McpAttachmentState::Realizing,
             "H2 claim before I/O"
         );
     }
@@ -2058,9 +2062,9 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
     assert_eq!(replaced["agent"]["mcp_servers"], json!([server_b]), "H3");
     {
         let state = h.state.lock().unwrap();
-        let version = |fence: Option<&awaken_session_mcp_contract::McpGenerationRef>| {
-            fence.map(|f| f.generation().version())
-        };
+        let version = |fence: Option<
+            &awaken_session_configuration_contract::mcp::McpGenerationRef,
+        >| { fence.map(|f| f.generation().version()) };
         let staged = state.staged.last().map(|request| &request.generation);
         assert_eq!(version(staged), Some(2), "H3 staged");
         assert_eq!(version(state.published.last()), Some(2), "H3 published");
@@ -2070,12 +2074,12 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
     assert_eq!(durable.visible_mcp_servers().len(), 1, "H3");
     assert_eq!(
         durable.mcp.attachments[0].state,
-        awaken_session_mcp_contract::McpAttachmentState::Removed,
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Removed,
         "H3"
     );
     assert_eq!(
         durable.mcp.attachments[1].state,
-        awaken_session_mcp_contract::McpAttachmentState::Active,
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Active,
         "H3"
     );
 
@@ -2132,12 +2136,12 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
         .expect("H5 durable");
     assert_eq!(
         durable.mcp.attachments[0].state,
-        awaken_session_mcp_contract::McpAttachmentState::Active,
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Active,
         "H5"
     );
     assert_eq!(
         durable.mcp.attachments[1].state,
-        awaken_session_mcp_contract::McpAttachmentState::Failed,
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Failed,
         "H5"
     );
     assert_eq!(
@@ -2197,7 +2201,7 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
         .expect("H7 durable");
     assert_eq!(
         durable.mcp.attachments[0].state,
-        awaken_session_mcp_contract::McpAttachmentState::Failed,
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Failed,
         "H7"
     );
     assert!(durable.visible_mcp_servers().is_empty(), "H7");
@@ -2283,16 +2287,19 @@ async fn mcp_recovery_lifecycle_decision_table_case() {
     requested
         .mcp
         .request_full_replacement(
-            vec![awaken_session_mcp_contract::McpAttachmentDraft {
-                name: "docs".into(),
-                target: awaken_session_mcp_contract::McpTarget::parse_http(
-                    "https://docs.example/mcp",
-                )
-                .unwrap(),
-                credential: None,
-                prompts_as_skills: false,
-                origin: awaken_session_mcp_contract::McpAttachmentOrigin::Session,
-            }],
+            vec![
+                awaken_session_configuration_contract::mcp::McpAttachmentDraft {
+                    name: "docs".into(),
+                    target: awaken_agent_contract::McpTarget::parse_http(
+                        "https://docs.example/mcp",
+                    )
+                    .unwrap(),
+                    credential: None,
+                    prompts_as_skills: false,
+                    origin:
+                        awaken_session_configuration_contract::mcp::McpAttachmentOrigin::Session,
+                },
+            ],
             None,
         )
         .unwrap();
@@ -2308,7 +2315,7 @@ async fn mcp_recovery_lifecycle_decision_table_case() {
     let mut active = h.repo.get(&SessionId::from(id)).await.unwrap();
     assert_eq!(
         active.mcp.attachments[0].state,
-        awaken_session_mcp_contract::McpAttachmentState::Active,
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Active,
         "R1"
     );
     let first_epoch = active.realization.as_ref().unwrap().epoch;
@@ -2330,7 +2337,7 @@ async fn mcp_recovery_lifecycle_decision_table_case() {
     );
     assert_eq!(
         active.mcp.attachments[0].state,
-        awaken_session_mcp_contract::McpAttachmentState::Active,
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Active,
         "R2"
     );
     assert_eq!(h.state.lock().unwrap().published.len(), 2, "R2");
@@ -2350,7 +2357,7 @@ async fn mcp_recovery_lifecycle_decision_table_case() {
     let removed = h.repo.get(&SessionId::from(id)).await.unwrap();
     assert_eq!(
         removed.mcp.attachments[0].state,
-        awaken_session_mcp_contract::McpAttachmentState::Removed,
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Removed,
         "R3"
     );
     assert_eq!(h.state.lock().unwrap().staged.len(), staged_before, "R3");
@@ -2394,16 +2401,19 @@ async fn mcp_recovery_retry_decision_table_case() {
     retry
         .mcp
         .request_full_replacement(
-            vec![awaken_session_mcp_contract::McpAttachmentDraft {
-                name: "retry".into(),
-                target: awaken_session_mcp_contract::McpTarget::parse_http(
-                    "https://retry.example/mcp",
-                )
-                .unwrap(),
-                credential: None,
-                prompts_as_skills: false,
-                origin: awaken_session_mcp_contract::McpAttachmentOrigin::Session,
-            }],
+            vec![
+                awaken_session_configuration_contract::mcp::McpAttachmentDraft {
+                    name: "retry".into(),
+                    target: awaken_agent_contract::McpTarget::parse_http(
+                        "https://retry.example/mcp",
+                    )
+                    .unwrap(),
+                    credential: None,
+                    prompts_as_skills: false,
+                    origin:
+                        awaken_session_configuration_contract::mcp::McpAttachmentOrigin::Session,
+                },
+            ],
             None,
         )
         .unwrap();
@@ -2413,7 +2423,7 @@ async fn mcp_recovery_retry_decision_table_case() {
     let failed_retry = h.repo.get(&SessionId::from(retry_id)).await.unwrap();
     assert_eq!(
         failed_retry.mcp.attachments[0].state,
-        awaken_session_mcp_contract::McpAttachmentState::Failed,
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Failed,
         "R5"
     );
     assert_eq!(failed_retry.execution, SessionExecutionState::Idle, "R5");
@@ -2434,7 +2444,7 @@ async fn mcp_recovery_retry_decision_table_case() {
     assert_eq!(retried.mcp.attachments.len(), 2, "R6");
     assert_eq!(
         retried.mcp.attachments[1].state,
-        awaken_session_mcp_contract::McpAttachmentState::Active,
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Active,
         "R6"
     );
     assert_eq!(retried.mcp.attachments[1].generation.version(), 2, "R6");
@@ -2484,7 +2494,7 @@ async fn publication_and_drain_gap_tests_are_generated_from_decision_table() {
     let unacknowledged = h.repo.get(&SessionId::from(id)).await.unwrap();
     assert_eq!(
         unacknowledged.mcp.attachments[0].state,
-        awaken_session_mcp_contract::McpAttachmentState::Active,
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Active,
         "P1"
     );
     assert!(
@@ -2525,7 +2535,7 @@ async fn publication_and_drain_gap_tests_are_generated_from_decision_table() {
             .mcp
             .attachments[0]
             .state,
-        awaken_session_mcp_contract::McpAttachmentState::Draining,
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Draining,
         "P3"
     );
 
@@ -2546,7 +2556,7 @@ async fn publication_and_drain_gap_tests_are_generated_from_decision_table() {
             .mcp
             .attachments[0]
             .state,
-        awaken_session_mcp_contract::McpAttachmentState::Removed,
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Removed,
         "P4"
     );
 }
@@ -3149,7 +3159,7 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
     );
     assert_eq!(
         durable_after_conflict.mcp.attachments[1].state,
-        awaken_session_mcp_contract::McpAttachmentState::Active,
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Active,
         "C3 publication occurred before acknowledgement"
     );
     assert!(
@@ -3237,11 +3247,10 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
     );
     assert_eq!(
         desired_after_c4[0].state,
-        awaken_session_mcp_contract::McpAttachmentState::Realizing,
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Realizing,
         "C4 desired generation remains recoverable"
     );
-    let awaken_session_mcp_contract::McpTarget::Http(desired_target) = &desired_after_c4[0].target
-    else {
+    let awaken_agent_contract::McpTarget::Http(desired_target) = &desired_after_c4[0].target else {
         panic!("C4 desired target must remain HTTP")
     };
     assert_eq!(
@@ -3427,7 +3436,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
         async fn invalidate_session_realization_lease(
             &self,
             thread: &str,
-            lease: &awaken_session_resource_contract::SessionRealizationLease,
+            lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         ) -> Result<(), awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .invalidate_session_realization_lease(thread, lease)

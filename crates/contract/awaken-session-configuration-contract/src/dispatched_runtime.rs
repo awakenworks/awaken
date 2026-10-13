@@ -5,8 +5,8 @@
 //! string and never decodes it except for rows written before the Session
 //! published its MCP credential requirements beside it.
 
+use crate::mcp::StageMcpAttachment;
 use awaken_credential_contract::{McpCredentialRequirement, McpCredentialRequirementError};
-use awaken_session_mcp_contract::StageMcpAttachment;
 use serde::{Deserialize, Serialize};
 
 use crate::{EnvironmentSnapshot, SessionToolConfiguration};
@@ -134,14 +134,14 @@ mod tests {
         credential: Option<CredentialAccess>,
         selected_plaintext_holder: Option<PlaintextHolder>,
     ) -> StageMcpAttachment {
-        let target = awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.example.test")
+        let target = awaken_agent_contract::McpTarget::parse_http("https://mcp.example.test")
             .expect("valid MCP target");
         StageMcpAttachment {
             workspace_id: "workspace-a".into(),
-            generation: awaken_session_mcp_contract::McpGenerationRef::from_persisted(
+            generation: crate::mcp::McpGenerationRef::from_persisted(
                 "session-a".into(),
-                awaken_session_mcp_contract::McpGeneration::of_bare_target(
-                    awaken_session_mcp_contract::McpAttachmentId(name.into()),
+                crate::mcp::McpGeneration::of_bare_target(
+                    crate::mcp::McpAttachmentId(name.into()),
                     1,
                     &target,
                 ),

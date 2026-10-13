@@ -1,6 +1,7 @@
 //! Background quiescence keys and terminal reconstruction/disposal replay.
 
 use super::*;
+use awaken_session_configuration_contract::resource as session_resource;
 
 #[tokio::test]
 async fn durable_activity_generation_is_the_only_background_quiescence_key() {
@@ -138,7 +139,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         host.install_dispatch_frozen_session_projection(thread, projection.clone())
             .await
             .expect("C1 install complete physical projection before creation");
-        let lease = awaken_session_resource_contract::SessionRealizationLease {
+        let lease = session_resource::SessionRealizationLease {
             owner: format!("terminal-background-worker-{thread}"),
             runtime_incarnation: format!("terminal-background-worker-{thread}:incarnation"),
             epoch: 1,
@@ -510,7 +511,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         projection.environment,
         awaken_session_state_contract::SessionEnvironmentState::Unmaterialized
     ));
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = session_resource::SessionRealizationLease {
         owner: "terminal-worker".into(),
         runtime_incarnation: "terminal-worker:boot".into(),
         epoch: 1,

@@ -50,10 +50,6 @@ mod tests {
         EnvironmentFingerprint, EnvironmentSnapshot, SessionBaseline, SessionBaselineInputs,
         SessionNetworkPolicy,
     };
-    use awaken_session_mcp_contract::{
-        McpAttachmentDraft, McpAttachmentOrigin, McpAttachmentState, McpGenerationRef,
-        McpRealizationReceipt, McpTarget, SessionMcpAttachmentSet, StageMcpAttachment,
-    };
     use awaken_session_realization_contract::{
         AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
         FailSessionRealization, RenewSessionRealization, SessionRealizationAction,
@@ -61,6 +57,13 @@ mod tests {
     };
     use awaken_session_execution_contract::{SessionRuntime, ToolPermissionDecision};
     use awaken_session_state_contract::{IdempotencyRecord, SessionResourceState};
+    use {
+        awaken_agent_contract::McpTarget,
+        awaken_session_configuration_contract::mcp::{
+            McpAttachmentDraft, McpAttachmentOrigin, McpAttachmentState, McpGenerationRef,
+            McpRealizationReceipt, SessionMcpAttachmentSet, StageMcpAttachment,
+        },
+    };
 
     struct NoopRuntime;
 
@@ -192,7 +195,7 @@ mod tests {
         async fn invalidate_session_realization_lease(
             &self,
             thread: &str,
-            lease: &awaken_session_resource_contract::SessionRealizationLease,
+            lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         ) -> Result<(), awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .invalidate_session_realization_lease(thread, lease)
@@ -301,8 +304,7 @@ mod tests {
                     resource_holder: holder(),
                 },
             },
-            runtime_placement:
-                awaken_session_configuration_contract::SessionRuntimePlacement::Local,
+            runtime_placement: awaken_session_types::SessionRuntimePlacement::Local,
             mcp_authoring: Default::default(),
             agent_id: "agent".into(),
             agent_revision: None,
@@ -729,7 +731,7 @@ mod tests {
             .active
             .clone()
             .with_skills(vec![
-                awaken_session_resource_contract::ResolvedSkillBinding {
+                awaken_session_configuration_contract::resource::ResolvedSkillBinding {
                     kind: awaken_agent_contract::AgentSkillKind::Custom,
                     skill_id: "design".into(),
                     version: 36,

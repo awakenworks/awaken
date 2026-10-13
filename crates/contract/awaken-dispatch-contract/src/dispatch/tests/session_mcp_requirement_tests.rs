@@ -55,30 +55,37 @@ fn session_projection(
             },
         },
         tools: Some(Default::default()),
-        mcp_stages: Some(vec![awaken_session_mcp_contract::StageMcpAttachment {
-            workspace_id: "workspace-a".into(),
-            generation: awaken_session_mcp_contract::McpGenerationRef::from_persisted(
-                "session-a".into(),
-                awaken_session_mcp_contract::McpGeneration::of_bare_target(
-                    awaken_session_mcp_contract::McpAttachmentId("mcp-a".into()),
-                    1,
-                    &awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.example.test")
-                        .expect("valid MCP target"),
-                ),
-                "worker-a".into(),
-                1,
-                10_000,
-            )
-            .expect("MCP generation fence epoch is nonzero"),
-            realization_id: "realization-a".into(),
-            stage_idempotency_key: "stage-a".into(),
-            name: "mcp-a".into(),
-            target: awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.example.test")
-                .expect("valid MCP target"),
-            prompts_as_skills: false,
-            credential,
-            selected_plaintext_holder,
-        }]),
+        mcp_stages: Some(vec![
+            awaken_session_configuration_contract::mcp::StageMcpAttachment {
+                workspace_id: "workspace-a".into(),
+                generation:
+                    awaken_session_configuration_contract::mcp::McpGenerationRef::from_persisted(
+                        "session-a".into(),
+                        awaken_session_configuration_contract::mcp::McpGeneration::of_bare_target(
+                            awaken_session_configuration_contract::mcp::McpAttachmentId(
+                                "mcp-a".into(),
+                            ),
+                            1,
+                            &awaken_agent_contract::McpTarget::parse_http(
+                                "https://mcp.example.test",
+                            )
+                            .expect("valid MCP target"),
+                        ),
+                        "worker-a".into(),
+                        1,
+                        10_000,
+                    )
+                    .expect("MCP generation fence epoch is nonzero"),
+                realization_id: "realization-a".into(),
+                stage_idempotency_key: "stage-a".into(),
+                name: "mcp-a".into(),
+                target: awaken_agent_contract::McpTarget::parse_http("https://mcp.example.test")
+                    .expect("valid MCP target"),
+                prompts_as_skills: false,
+                credential,
+                selected_plaintext_holder,
+            },
+        ]),
     }
 }
 

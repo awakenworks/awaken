@@ -197,7 +197,7 @@ impl awaken_resource_contract::CompleteGeneration for McpGeneration {
 pub struct McpRealization;
 
 impl TenureScope for McpRealization {
-    type Subject = (crate::SessionId, McpGeneration);
+    type Subject = (awaken_session_types::SessionId, McpGeneration);
     type Holder = String;
 }
 
@@ -228,7 +228,7 @@ pub struct McpGenerationRef {
 /// successor the kernel mints.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpGenerationRefWire {
-    pub session_id: crate::SessionId,
+    pub session_id: awaken_session_types::SessionId,
     pub generation: McpGeneration,
     pub runtime_incarnation: String,
     pub lease_epoch: u64,
@@ -272,9 +272,9 @@ impl McpGenerationRef {
     /// no realization lease grants. This is the only claim-to-fence mapping.
     #[must_use]
     pub fn from_claim(
-        session_id: &crate::SessionId,
+        session_id: &awaken_session_types::SessionId,
         generation: &McpGeneration,
-        claim: &crate::McpRealizationClaim,
+        claim: &super::McpRealizationClaim,
     ) -> Option<Self> {
         Self::from_persisted(
             session_id.clone(),
@@ -292,7 +292,7 @@ impl McpGenerationRef {
     /// realization lease grants.
     #[must_use]
     pub fn from_persisted(
-        session_id: crate::SessionId,
+        session_id: awaken_session_types::SessionId,
         generation: McpGeneration,
         runtime_incarnation: String,
         lease_epoch: u64,
@@ -372,7 +372,7 @@ impl McpGenerationRef {
     }
 
     #[must_use]
-    pub fn session_id(&self) -> &crate::SessionId {
+    pub fn session_id(&self) -> &awaken_session_types::SessionId {
         &self.lease.tenure().subject().0
     }
 
@@ -429,10 +429,10 @@ pub(crate) fn test_generation_at_version(
 
 #[cfg(test)]
 mod tests {
+    use super::super::McpRealizationClaim;
     use super::super::tests::draft;
     use super::super::{McpAttachmentError, McpAttachmentState, SessionMcpAttachmentSet};
     use super::*;
-    use crate::McpRealizationClaim;
     use awaken_resource_contract::CompleteGeneration;
 
     /// The reason `McpGeneration` is a triple and not a counter.

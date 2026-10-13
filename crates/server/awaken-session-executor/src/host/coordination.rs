@@ -941,17 +941,17 @@ mod tests {
         // | C3   | A      | none       | A      | A            | E3,E4,E5  |
 
         let manifest = |revision| {
-            awaken_session_resource_contract::SessionResourceManifest::at_revision(
+            awaken_session_configuration_contract::resource::SessionResourceManifest::at_revision(
                 "workspace-a",
                 revision,
-                awaken_session_resource_contract::ResolvedSessionResources::try_new(
-                    vec![awaken_session_resource_contract::ResolvedInput {
+                awaken_session_configuration_contract::resource::ResolvedSessionResources::try_new(
+                    vec![awaken_session_configuration_contract::resource::ResolvedInput {
                         created_at_unix_ms: None,
                         updated_at_unix_ms: None,
                         binding_id: awaken_resource_contract::BindingId::from(format!(
                             "file-binding-{revision}"
                         )),
-                        source: awaken_session_resource_contract::ResolvedInputSource::File {
+                        source: awaken_session_configuration_contract::resource::ResolvedInputSource::File {
                             file_id: format!("file-{revision}").into(),
                         },
                         mount_path: format!("/mnt/files/confirmed-{revision}.json"),
@@ -973,7 +973,7 @@ mod tests {
             let child_run = RunId(format!("coordinated-resource-run-{rule}"));
             let active = active_revision.map(manifest);
             let transition = desired_revision.map(|revision| {
-                awaken_session_resource_contract::SessionResourceTransition::new(
+                awaken_session_configuration_contract::resource::SessionResourceTransition::new(
                     active.clone().unwrap_or_else(|| manifest(0)),
                     manifest(revision),
                 )
@@ -997,7 +997,7 @@ mod tests {
                         credential_realization:
                             awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
                     },
-                    runtime_placement: awaken_session_configuration_contract::SessionRuntimePlacement::Worker,
+                    runtime_placement: awaken_session_types::SessionRuntimePlacement::Worker,
                     mcp_authoring: Default::default(),
                     agent_id: "agent-a".into(),
                     agent_revision: Some(1),
@@ -1084,7 +1084,7 @@ mod tests {
                 .as_ref()
                 .unwrap_or_else(|| panic!("{rule} child Resource envelope"))
                 .decode_with(
-                    awaken_session_resource_contract::SessionResourceManifest::decode_resources,
+                    awaken_session_configuration_contract::resource::SessionResourceManifest::decode_resources,
                 )
                 .unwrap_or_else(|error| panic!("{rule} decode child Resource envelope: {error}"));
             assert_eq!(carried.revision, expected_revision, "{rule} generation");
