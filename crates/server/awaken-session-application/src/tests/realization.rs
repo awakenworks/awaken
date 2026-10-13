@@ -902,12 +902,17 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
         repository: Some(repo.clone()),
         ..Default::default()
     });
-    let app = application_with_runtime(
+    let app = SessionApplicationBuilder::fixture(
         runtime.clone(),
-        repo.clone(),
+        Arc::new(NoopMcpRealizer),
+        SessionPersistence::new(
+            repo.clone(),
+            Arc::new(awaken_lease_testkit::ManualClock::new(100)),
+        ),
         Arc::new(RecordingEnvironmentSource::default()),
     )
-    .with_clock(Arc::new(awaken_lease_testkit::ManualClock::new(100)));
+    .build()
+    .expect("valid fixture Store/Clock composition");
     let desired = file_resources("safe-boundary");
     let outcome = app
         .replace_session_resource_manifest(
@@ -2423,10 +2428,9 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
             watermark: 31,
             runtime_commit_cursor: 41,
         };
-    let application = SessionApplication::new_with_configuration(
+    let application = configured_application(
         runtime.clone(),
-        Arc::new(NoopMcpRealizer),
-        crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
+        repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
@@ -2631,10 +2635,9 @@ async fn restoring_terminal_cleanup_binds_the_exact_target_only_to_the_root() {
             watermark: 5,
             runtime_commit_cursor: 8,
         };
-    let application = SessionApplication::new_with_configuration(
+    let application = configured_application(
         coordinator_runtime,
-        Arc::new(NoopMcpRealizer),
-        crate::SessionPersistence::new(repo.clone(), awaken_time::system_clock()),
+        repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
@@ -2844,10 +2847,9 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     let retained_cold = repo.get(&cold_id).await.unwrap();
     let retained_rejected = repo.get(&rejected_id).await.unwrap();
     let observation_runtime = Arc::new(RecordingCleanupRuntime::default());
-    let application = SessionApplication::new_with_configuration(
+    let application = configured_application(
         observation_runtime.clone(),
-        Arc::new(NoopMcpRealizer),
-        crate::SessionPersistence::new(repo.clone(), system_clock()),
+        repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
@@ -2940,6 +2942,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     let workers = Arc::new(RecordingWorkerObservations::default());
     workers.replace(vec![terminal_cleanup_worker(&target, manifest.clone())]);
     application
+        .execution_admission()
         .set_worker_observation_source(workers.clone())
         .expect("install publication Worker observations");
     assert!(
@@ -3367,6 +3370,7 @@ async fn cold_terminal_cleanup_claim_pages_past_a_saturated_invalid_batch() {
         terminal_cleanup_manifest(),
     )]);
     application
+        .execution_admission()
         .set_worker_observation_source(workers.clone())
         .expect("install the one Worker observation authority");
 
@@ -3538,6 +3542,7 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
         terminal_cleanup_manifest(),
     )]);
     application
+        .execution_admission()
         .set_worker_observation_source(workers.clone())
         .expect("install the one Worker observation authority");
     let mut after = None;
@@ -3642,6 +3647,7 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
         terminal_cleanup_manifest(),
     )]);
     application
+        .execution_admission()
         .set_worker_observation_source(workers.clone())
         .expect("install the one Worker observation authority");
     let replayed = application
@@ -4078,6 +4084,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
         WorkerObservationStep::Workers(Vec::new()),
     ]);
     r1_application
+        .execution_admission()
         .set_worker_observation_source(r1_workers.clone())
         .expect("R1 Worker observation authority");
     assert!(
@@ -4112,6 +4119,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
         WorkerObservationStep::Fail,
     ]);
     r2_application
+        .execution_admission()
         .set_worker_observation_source(r2_workers.clone())
         .expect("R2 Worker observation authority");
     assert!(
@@ -4154,6 +4162,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
     let r0_workers = Arc::new(RecordingWorkerObservations::default());
     r0_workers.replace(vec![registered()]);
     r0_application
+        .execution_admission()
         .set_worker_observation_source(r0_workers.clone())
         .expect("R0 Worker observation authority");
     assert!(
@@ -4195,6 +4204,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
         WorkerObservationStep::Workers(Vec::new()),
     ]);
     r3_application
+        .execution_admission()
         .set_worker_observation_source(r3_workers.clone())
         .expect("R3 Worker observation authority");
     assert!(
@@ -4246,6 +4256,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
         WorkerObservationStep::Workers(Vec::new()),
     ]);
     r3b_application
+        .execution_admission()
         .set_worker_observation_source(r3b_workers)
         .expect("R3b Worker observation authority");
     assert!(
@@ -4287,6 +4298,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
         WorkerObservationStep::Workers(Vec::new()),
     ]);
     r3c_application
+        .execution_admission()
         .set_worker_observation_source(r3c_workers)
         .expect("R3c Worker observation authority");
     assert!(
@@ -4356,10 +4368,9 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     create(repo.as_ref(), requested).await;
 
     let observation_runtime = Arc::new(RecordingCleanupRuntime::default());
-    let application = SessionApplication::new_with_configuration(
+    let application = configured_application(
         observation_runtime.clone(),
-        Arc::new(NoopMcpRealizer),
-        crate::SessionPersistence::new(repo.clone(), system_clock()),
+        repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
         SessionApplicationConfiguration {
             execution_placement: SessionExecutionPlacement::RegisteredWorker,
@@ -4394,6 +4405,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
         awaken_worker_contract::WorkerIdentity::new(target.owner.clone(), "stale-boot", 4);
     workers.replace(vec![stale]);
     application
+        .execution_admission()
         .set_worker_observation_source(workers.clone())
         .expect("install exact Worker observations");
     workers.fail.store(true, Ordering::SeqCst);
@@ -6276,11 +6288,14 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
      * retains the already-open interval. */
     let repo = sqlite_session_repository("session repository").await;
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(500));
-    let application = application(
-        repo.clone(),
+    let application = SessionApplicationBuilder::fixture(
+        Arc::new(NoopRuntime),
+        Arc::new(NoopMcpRealizer),
+        SessionPersistence::new(repo.clone(), clock.clone()),
         Arc::new(RecordingEnvironmentSource::default()),
     )
-    .with_clock(clock.clone());
+    .build()
+    .expect("valid fixture Store/Clock composition");
     let lease = crate::session_resource::SessionRealizationLease {
         owner: "worker-a".into(),
         runtime_incarnation: "worker-a/boot-2".into(),

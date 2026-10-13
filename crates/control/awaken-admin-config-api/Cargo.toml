@@ -78,7 +78,8 @@ schema = [
 ]
 
 [[example]]
-name = "export_schemas"
+name = "export_admin_schemas"
+path = "examples/export_schemas.rs"
 required-features = ["schema"]
 
 [[example]]

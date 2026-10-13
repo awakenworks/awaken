@@ -137,6 +137,13 @@ def compile_scope(metadata: dict, changed: list[str], original: list[str], root:
 
 
 class PlanTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        if os.name != "nt":
+            return
+        from _native_test_launcher import native_fixture_launcher
+        cls.fixture_launcher = native_fixture_launcher()
+
     def setUp(self) -> None:
         # Reuse the existing Git-environment authority. A hook exports its own
         # repository/index; no throwaway fixture may initialize or configure it.
@@ -236,7 +243,7 @@ else:
     sys.exit(91)
 ''', encoding="utf-8")
         if os.name == "nt":
-            (tools / "cargo.cmd").write_text(f'@"{sys.executable}" "{shim}" %*\n', encoding="utf-8")
+            shutil.copyfile(self.fixture_launcher, tools / "cargo.exe")
         else:
             cargo = tools / "cargo"
             cargo.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{shim}" "$@"\n', encoding="utf-8")
@@ -247,6 +254,7 @@ else:
                            CARGO_TARGET_DIR=str(target), CARGO_BUILD_BUILD_DIR=str(target),
                            W41_FIXTURE_METADATA=str(metadata_path), W41_FIXTURE_CALLS=str(calls_path),
                            W41_FIXTURE_ARGV=str(outer / "argv.jsonl"),
+                           AWAKEN_FIXTURE_PROGRAM=sys.executable, AWAKEN_FIXTURE_SCRIPT=str(shim),
                            W41_FIXTURE_METADATA_STATUS=str(metadata_status), W41_FIXTURE_EXECUTION_STATUS=str(execution_status),
                            W41_FIXTURE_MUTATE=mutate, W41_FIXTURE_BROKEN=str(int(broken_metadata)))
         result = subprocess.run([sys.executable, "-B", str(root / "scripts/ci/rust_test_plan.py"), "--base", "HEAD", *(["--run"] if run else []),

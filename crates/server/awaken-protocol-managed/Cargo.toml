@@ -186,5 +186,6 @@ awaken-config-resolver.workspace = true
 awaken-lease-testkit.workspace = true
 
 [[example]]
-name = "export_schemas"
+name = "export_managed_schemas"
+path = "examples/export_schemas.rs"
 required-features = ["schema"]

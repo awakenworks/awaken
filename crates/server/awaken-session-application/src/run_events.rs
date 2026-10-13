@@ -94,7 +94,8 @@ impl SessionApplication {
                 next_cursor: dispatch_after,
             }
         } else {
-            self.dispatch_observations
+            self.execution_admission
+                .dispatch
                 .get()
                 .ok_or_else(|| {
                     SessionProjectionRecoveryError::Unavailable(

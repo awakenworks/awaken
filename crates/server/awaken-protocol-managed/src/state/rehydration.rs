@@ -424,17 +424,21 @@ mod tests {
         let environments =
             awaken_protocol_managed_testkit::environment_fixture(awaken_time::system_clock())
                 .execution;
-        let application = awaken_session_application::SessionApplication::new_with_configuration(
+        let application = awaken_session_application::SessionApplicationBuilder::fixture(
             runtime.clone(),
             runtime,
             awaken_session_application::SessionPersistence::new(repo, awaken_time::system_clock()),
             environments.clone(),
+        )
+        .configuration(
             awaken_session_application::SessionApplicationConfiguration {
                 execution_placement:
                     awaken_session_application::SessionExecutionPlacement::RegisteredWorker,
                 ..Default::default()
             },
-        );
+        )
+        .build()
+        .expect("valid fixture Session application");
         let restarted = ManagedState::from_application(
             Arc::new(application),
             environments,

@@ -59,11 +59,14 @@ async fn named_activity_cas_replay_retains_original_raw_identity_before_first_cr
     .await;
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(200));
     let app = Arc::new(
-        application(
-            faulting.clone(),
+        SessionApplicationBuilder::fixture(
+            Arc::new(NoopRuntime),
+            Arc::new(NoopMcpRealizer),
+            SessionPersistence::new(faulting.clone(), clock.clone()),
             Arc::new(RecordingEnvironmentSource::default()),
         )
-        .with_clock(clock.clone()),
+        .build()
+        .expect("valid fixture Store/Clock composition"),
     );
     let thread = ThreadId(id.to_string());
     let run = RunId("same-original-run".into());

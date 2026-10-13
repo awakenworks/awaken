@@ -196,12 +196,16 @@ impl ManagedState {
         clock: Arc<dyn awaken_time::WallClock>,
     ) -> Self {
         Self::from_application(
-            Arc::new(SessionApplication::new(
-                runtime,
-                mcp_realizer.unwrap_or_else(|| Arc::new(UnsupportedMcpAttachmentRealizer)),
-                awaken_session_application::SessionPersistence::new(sessions_repo, clock),
-                environments.clone(),
-            )),
+            Arc::new(
+                awaken_session_application::SessionApplicationBuilder::fixture(
+                    runtime,
+                    mcp_realizer.unwrap_or_else(|| Arc::new(UnsupportedMcpAttachmentRealizer)),
+                    awaken_session_application::SessionPersistence::new(sessions_repo, clock),
+                    environments.clone(),
+                )
+                .build()
+                .expect("valid fixture Session application"),
+            ),
             environments,
             awaken_data_governance_contract::CapturePolicy::default(),
         )

@@ -42,11 +42,14 @@ async fn live_session_usage_projects_the_same_clock_that_opened_its_root_interva
     )
     .unwrap();
     create(repo.as_ref(), session.into_snapshot()).await;
-    let app = application(
-        repo.clone(),
+    let app = SessionApplicationBuilder::fixture(
+        Arc::new(NoopRuntime),
+        Arc::new(NoopMcpRealizer),
+        SessionPersistence::new(repo.clone(), clock.clone()),
         Arc::new(RecordingEnvironmentSource::default()),
     )
-    .with_clock(clock.clone());
+    .build()
+    .expect("valid fixture Store/Clock composition");
     let before = repo.get(&id).await.unwrap();
     for (now, seconds) in [(1_000_000, 0), (1_007_999, 7), (1_008_000, 8), (999_999, 0)] {
         clock.set(now);
@@ -153,16 +156,21 @@ async fn cold_cleanup_registry_window_and_receipt_use_one_application_clock_afte
         }
         create(repo.as_ref(), requested).await;
         let before = repo.get(&id).await.unwrap();
-        let app = application_with_configuration(
-            repo.clone(),
+        let app = SessionApplicationBuilder::fixture(
+            Arc::new(NoopRuntime),
+            Arc::new(NoopMcpRealizer),
+            SessionPersistence::new(repo.clone(), clock.clone()),
             Arc::new(RecordingEnvironmentSource::default()),
-            SessionApplicationConfiguration {
-                execution_placement: SessionExecutionPlacement::RegisteredWorker,
-                ..Default::default()
-            },
         )
-        .with_clock(clock.clone());
-        app.set_worker_observation_source(workers.clone()).unwrap();
+        .configuration(SessionApplicationConfiguration {
+            execution_placement: SessionExecutionPlacement::RegisteredWorker,
+            ..Default::default()
+        })
+        .build()
+        .expect("valid fixture Store/Clock composition");
+        app.execution_admission()
+            .set_worker_observation_source(workers.clone())
+            .unwrap();
         let target = awaken_session_realization_contract::SessionRealizationTarget {
             owner: registered.snapshot.identity.worker_id.clone(),
             runtime_incarnation: registered.snapshot.identity.lease_owner(),

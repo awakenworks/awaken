@@ -606,16 +606,18 @@ async fn worker_projection_failure_is_rebuilt_from_the_durable_session_root() {
     );
     let runtime = Arc::new(RecordingCreateRuntime::default());
     runtime.projection_failure.store(1, Ordering::SeqCst);
-    let application = SessionApplication::new_with_configuration(
+    let application = SessionApplicationBuilder::fixture(
         runtime.clone(),
         Arc::new(NoopMcpRealizer),
         crate::SessionPersistence::new(repository.clone(), awaken_time::system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
-        SessionApplicationConfiguration {
-            execution_placement: SessionExecutionPlacement::RegisteredWorker,
-            ..Default::default()
-        },
-    );
+    )
+    .configuration(SessionApplicationConfiguration {
+        execution_placement: SessionExecutionPlacement::RegisteredWorker,
+        ..Default::default()
+    })
+    .build()
+    .expect("valid fixture Session application");
     let mut command = creation_command("worker-projection-recovery");
     command.intent.control.runtime_placement =
         awaken_session_types::SessionRuntimePlacement::Worker;
@@ -1122,12 +1124,14 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                             .expect("open original authority"),
                     );
                 let runtime = Arc::new(RecordingCreateRuntime::default());
-                let application = SessionApplication::new(
+                let application = SessionApplicationBuilder::fixture(
                     runtime.clone(),
                     Arc::new(NoopMcpRealizer),
                     crate::SessionPersistence::new(repository.clone(), awaken_time::system_clock()),
                     Arc::new(RecordingEnvironmentSource::default()),
-                );
+                )
+                .build()
+                .expect("valid fixture Session application");
                 let accepted = application
                     .accept_session(make_command())
                     .await
@@ -1210,12 +1214,14 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
                 serde_json::to_value(repository.pending_lifecycle().await.unwrap()).unwrap();
             let faulting = Arc::new(FaultingSessionRepository::new(repository.clone()));
             let runtime = Arc::new(RecordingCreateRuntime::default());
-            let application = SessionApplication::new(
+            let application = SessionApplicationBuilder::fixture(
                 runtime.clone(),
                 Arc::new(NoopMcpRealizer),
                 crate::SessionPersistence::new(faulting.clone(), awaken_time::system_clock()),
                 Arc::new(RecordingEnvironmentSource::default()),
-            );
+            )
+            .build()
+            .expect("valid fixture Session application");
             if failed_scan {
                 faulting.fail_recovery_scan_once();
                 let failed = application.reconcile_session_realizations().await;
@@ -1344,16 +1350,18 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
     );
     let runtime = Arc::new(RecordingCreateRuntime::default());
     let environments = Arc::new(RecordingEnvironmentSource::default());
-    let application = SessionApplication::new_with_configuration(
+    let application = SessionApplicationBuilder::fixture(
         runtime.clone(),
         Arc::new(NoopMcpRealizer),
         crate::SessionPersistence::new(repository.clone(), awaken_time::system_clock()),
         environments.clone(),
-        SessionApplicationConfiguration {
-            execution_placement: SessionExecutionPlacement::RegisteredWorker,
-            ..Default::default()
-        },
-    );
+    )
+    .configuration(SessionApplicationConfiguration {
+        execution_placement: SessionExecutionPlacement::RegisteredWorker,
+        ..Default::default()
+    })
+    .build()
+    .expect("valid fixture Session application");
     let idempotency = awaken_session_state_contract::IdempotencyRecord {
         key: "create-replay-effects".into(),
         payload_hash: "stable-product-request".into(),
@@ -1543,12 +1551,14 @@ async fn committed_create_conflicts_recover_only_through_the_exact_receipt() {
             faulting.fail_once(fault_operation);
         }
         let runtime = Arc::new(RecordingCreateRuntime::default());
-        let application = SessionApplication::new(
+        let application = SessionApplicationBuilder::fixture(
             runtime.clone(),
             Arc::new(NoopMcpRealizer),
             crate::SessionPersistence::new(faulting, awaken_time::system_clock()),
             Arc::new(RecordingEnvironmentSource::default()),
-        );
+        )
+        .build()
+        .expect("valid fixture Session application");
         let stable = stable_receipt.then(|| awaken_session_state_contract::IdempotencyRecord {
             key: "public-create-key".into(),
             payload_hash: "public-create-payload".into(),
@@ -1638,12 +1648,14 @@ async fn create_failure_cleanup_is_authorized_only_by_a_terminal_durable_root() 
         );
         let runtime = Arc::new(RecordingCreateRuntime::default());
         runtime.projection_failure.store(failure, Ordering::SeqCst);
-        let application = SessionApplication::new(
+        let application = SessionApplicationBuilder::fixture(
             runtime,
             Arc::new(NoopMcpRealizer),
             crate::SessionPersistence::new(repository.clone(), awaken_time::system_clock()),
             Arc::new(RecordingEnvironmentSource::default()),
-        );
+        )
+        .build()
+        .expect("valid fixture Session application");
         let session_id = format!("create-cleanup-{rule}");
 
         assert!(
@@ -2533,16 +2545,18 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
     let runtime = Arc::new(RecordingCreateRuntime::default());
     let captured = Arc::new(FaultingSessionRepository::new(repository.clone()));
     let clock = Arc::new(awaken_lease_testkit::ManualClock::new(1_800_000_000_123));
-    let application = SessionApplication::new_with_configuration(
+    let application = SessionApplicationBuilder::fixture(
         runtime.clone(),
         Arc::new(NoopMcpRealizer),
         crate::SessionPersistence::new(captured.clone(), clock.clone()),
         Arc::new(RecordingEnvironmentSource::default()),
-        SessionApplicationConfiguration {
-            execution_placement: SessionExecutionPlacement::RegisteredWorker,
-            ..Default::default()
-        },
-    );
+    )
+    .configuration(SessionApplicationConfiguration {
+        execution_placement: SessionExecutionPlacement::RegisteredWorker,
+        ..Default::default()
+    })
+    .build()
+    .expect("valid fixture Session application");
     let make = || {
         let mut command = creation_command("default-clock-identity");
         command.intent.control.runtime_placement =
@@ -2595,16 +2609,18 @@ async fn server_times_do_not_change_default_create_identity_or_retry_receipts() 
         .unwrap();
     let old_readback = historical.get(&created.session_id).await.unwrap();
     let historical_runtime = Arc::new(RecordingCreateRuntime::default());
-    let new_reader = SessionApplication::new_with_configuration(
+    let new_reader = SessionApplicationBuilder::fixture(
         historical_runtime.clone(),
         Arc::new(NoopMcpRealizer),
         crate::SessionPersistence::new(historical.clone(), clock.clone()),
         Arc::new(RecordingEnvironmentSource::default()),
-        SessionApplicationConfiguration {
-            execution_placement: SessionExecutionPlacement::RegisteredWorker,
-            ..Default::default()
-        },
-    );
+    )
+    .configuration(SessionApplicationConfiguration {
+        execution_placement: SessionExecutionPlacement::RegisteredWorker,
+        ..Default::default()
+    })
+    .build()
+    .expect("valid fixture Session application");
     assert_eq!(
         new_reader.create_session(make()).await.unwrap(),
         old_readback,

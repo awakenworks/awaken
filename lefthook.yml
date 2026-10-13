@@ -25,7 +25,10 @@
 glob_matcher: doublestar
 
 pre-commit:
-  parallel: true
+  # Cargo, code generation and workspace formatting share the same resource
+  # budget. Keep every check, but avoid concurrent compiler processes during
+  # commits; low-memory Windows hosts otherwise fail before a useful diagnosis.
+  parallel: false
   commands:
     # 1. Repository-wide hygiene that should never depend on project language.
     repository-hygiene:
@@ -392,12 +395,11 @@ pre-commit:
     #    Skips with a hint if cargo-deny is not installed.
     check-dep-direction:
       glob: "{Cargo.toml,Cargo.lock,deny.toml,crates/**/Cargo.toml}"
-      run: |
-        if command -v cargo-deny >/dev/null 2>&1; then
-          cargo deny --log-level error check bans
-        else
-          echo "cargo-deny not installed; skipping dependency-direction check (cargo install cargo-deny)"
-        fi
+      # Fold to one shell command: Windows' hook launcher cannot carry the
+      # nested double-quoted, multiline `sh -c` body intact.
+      run: >-
+        if command -v cargo-deny >/dev/null 2>&1; then cargo deny --log-level error check bans;
+        else echo 'cargo-deny not installed; skipping dependency-direction check (cargo install cargo-deny)'; fi
 
 commit-msg:
   commands:

@@ -1436,7 +1436,7 @@ mod tests {
         // | W1 | exact Arc | absent | 503 pending |
         // | W2 | same Arc | generation 1 | 200 exact zero counts |
         let source = std::sync::Arc::new(
-            awaken_session_application::SessionEventBatchCutoverValidationSource::new_for_test(),
+            awaken_session_application::SessionEventBatchCutoverValidationSource::default(),
         );
         let process = crate::PreparedProcess {
             public_router: axum::Router::new(),

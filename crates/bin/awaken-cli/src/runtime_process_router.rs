@@ -688,13 +688,20 @@ fn assemble_session_plane(
                 resources.resource_authorities.file_catalog(),
                 resources.resource_application.purge_scheduler(),
             );
-    let mut builder = awaken_session_application::SessionApplication::builder(
+    let mut builder = awaken_session_application::SessionApplicationBuilder::new(
         managed_host.clone(),
         managed_host.clone(),
         host.session_persistence
             .take()
             .ok_or("Session persistence was already consumed")?,
         execution.environment_execution.clone(),
+        awaken_session_application::SessionExecutionAdmission::new(
+            managed_host
+                .dispatch_observation_source()
+                .map_err(|error| error.to_string())?,
+            base.worker_directory.clone(),
+            host.host.clone(),
+        ),
     )
     .configuration(
         awaken_session_application::SessionApplicationConfiguration {

@@ -26,29 +26,18 @@ pub struct SessionEventBatchCutoverValidationSnapshot {
 }
 
 /// Read-only process-local projection published by the sole Session supervisor.
+#[derive(Default)]
 pub struct SessionEventBatchCutoverValidationSource {
     latest: RwLock<Option<SessionEventBatchCutoverValidationSnapshot>>,
 }
 
 impl SessionEventBatchCutoverValidationSource {
-    pub(crate) fn new() -> Self {
-        Self {
-            latest: RwLock::new(None),
-        }
-    }
-
     #[must_use]
     pub fn snapshot(&self) -> Option<SessionEventBatchCutoverValidationSnapshot> {
         *self
             .latest
             .read()
             .expect("Session Event-batch cutover validation lock poisoned")
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn new_for_test() -> Self {
-        Self::new()
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -162,7 +151,7 @@ mod tests {
         // |---|---|---|---|
         // | Q1 | absent | one quarantine, global restoring 2 | generation 1, counts 1/2 |
         // | Q2 | Q1 | clean | generation 2, all counts 0 |
-        let projection = SessionEventBatchCutoverValidationSource::new();
+        let projection = SessionEventBatchCutoverValidationSource::default();
         assert_eq!(projection.snapshot(), None, "E1");
         let first = projection.complete_scan_for_test(
             &SessionScan {

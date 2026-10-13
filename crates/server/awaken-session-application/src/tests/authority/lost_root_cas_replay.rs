@@ -32,12 +32,17 @@ async fn publication_race_fixture(
     let runtime = Arc::new(RecordingCleanupRuntime::default());
     let application_at = |time| {
         Arc::new(
-            application_with_runtime(
+            SessionApplicationBuilder::fixture(
                 runtime.clone(),
-                repo.clone(),
+                Arc::new(NoopMcpRealizer),
+                SessionPersistence::new(
+                    repo.clone(),
+                    Arc::new(awaken_lease_testkit::ManualClock::new(time)),
+                ),
                 Arc::new(RecordingEnvironmentSource::default()),
             )
-            .with_clock(Arc::new(awaken_lease_testkit::ManualClock::new(time))),
+            .build()
+            .expect("valid fixture Store/Clock composition"),
         )
     };
     let delayed = application_at(100);
