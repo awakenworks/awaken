@@ -14,8 +14,8 @@ mod step_verification;
 
 pub(super) use projection::session_thread_reply_result;
 use projection::{
-    StepCommitExpectation, client_result_for_ticket, delegation_registry_from_snapshot,
-    project_delegated_runs, recovery_ticket,
+    StepCommitExpectation, client_result_for_ticket, delegation_registries_from_commands,
+    delegation_registry_from_snapshot, project_delegated_runs, recovery_ticket,
 };
 use step_verification::{message_prefix_before_exact_inputs, verify_committed_step};
 
@@ -214,22 +214,9 @@ impl SharedHost {
         let runtime_commit_cursor = recovery
             .as_ref()
             .map_or(0, |snapshot| snapshot.store_cursor);
-        let mut stores: HashMap<RunId, Store> = HashMap::new();
-        for command in commands {
-            let Some(run_id) = command
-                .run_id
-                .clone()
-                .filter(|_| command.scope == Scope::Run)
-            else {
-                continue;
-            };
-            stores.entry(run_id).or_default().apply(command);
-        }
         let mut projected = Vec::new();
-        for store in stores.values() {
-            let registry = RunDelegations::load(store)
-                .map_err(|error| HostError::internal(error.to_string()))?;
-            projected.extend(project_delegated_runs(registry.as_ref()));
+        for registry in delegation_registries_from_commands(commands, None)? {
+            projected.extend(project_delegated_runs(Some(&registry)));
         }
         projected.sort_by(|left, right| left.run_id.0.cmp(&right.run_id.0));
         projected.dedup_by(|left, right| left.run_id == right.run_id);

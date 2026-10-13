@@ -3,6 +3,7 @@
 // @formal reason: transitions; it adds no durable state, registry, cache, or parallel owner.
 //! Strong process-local ownership state for one Session Environment.
 
+use awaken_tool_contract::tool_batch::ResourceOriginRef;
 use std::sync::Arc;
 
 /// Exact origin of an Environment owner that predates generated durable
@@ -269,10 +270,10 @@ impl SessionEnvironmentOwner {
     /// direct Sessions retain their existing physical-sandbox key. Checking both
     /// Arc identity and the evidence-bearing handle prevents a stale wrapper from
     /// borrowing another Resident owner's background/quiescence domain.
-    pub(crate) fn resident_activity_generation_id(
+    pub(crate) fn resident_activity_identity(
         &self,
         environment: &Arc<crate::session_environment::SessionEnvironment>,
-    ) -> Option<String> {
+    ) -> Option<(String, Option<ResourceOriginRef>)> {
         let Self::Resident(owned) = self else {
             return None;
         };
@@ -281,7 +282,16 @@ impl SessionEnvironmentOwner {
         {
             return None;
         }
-        Some(owned.activity_generation_id())
+        let activity = owned.activity_generation_id();
+        let origin = if matches!(
+            owned.identity,
+            BoundSessionEnvironmentIdentity::Durable { .. }
+        ) {
+            Some(ResourceOriginRef::new(activity.clone()).ok()?)
+        } else {
+            None
+        };
+        Some((activity, origin))
     }
 
     /// Snapshot the exact published Environment owner used by terminal cleanup.

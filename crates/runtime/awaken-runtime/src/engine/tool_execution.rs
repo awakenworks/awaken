@@ -958,7 +958,30 @@ pub(super) async fn prepare_tool_domain(
         )
         .await;
     Ok(tool_executor_result(context, call, result)?
-        .map_err(|error| ToolOutput::error(&call.call_id, error.to_string())))
+        .map_err(|error| ToolOutput::error(&call.call_id, error.to_string()))
+        .and_then(|domain| {
+            domain
+                .bind_resource_origin(context.resource_origin.as_ref())
+                .map_err(|error| ToolOutput::error(&call.call_id, error.to_string()))
+        }))
+}
+
+/// Consume only the aggregate's actually admitted, uncommitted new entry.
+/// Recovery/wait rejection happens before this shell can perform lazy I/O.
+pub(super) async fn enter_pending_tool(
+    runtime: &Runtime,
+    env: &ResolvedExecutionEnv,
+    context: &RuntimeRunContext,
+    call: &ToolCall,
+    entry: awaken_tool_contract::tool_batch::PendingToolExecutionEntry<'_>,
+) -> Result<()> {
+    let domain = prepare_tool_domain(runtime, env, context, call)
+        .await?
+        .map_err(|output| Error::Execution(output.text()))?;
+    entry
+        .enter(Some(domain))
+        .map_err(|error| Error::Execution(error.to_string()))?;
+    Ok(())
 }
 
 #[async_trait::async_trait]

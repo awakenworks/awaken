@@ -24,7 +24,7 @@ use std::num::NonZeroU16;
 mod execution_domain;
 mod result_identity;
 mod source;
-pub use execution_domain::ToolExecutionDomain;
+pub use execution_domain::{PendingToolExecutionEntry, ResourceOriginRef, ToolExecutionDomain};
 pub use source::store_from_run_commands;
 
 use crate::tool::{
@@ -123,14 +123,17 @@ pub enum ToolBatchPhase {
     Finalized,
 }
 
-/// The one durable phase effect admitted by recovery for an unfinished call.
+/// The one phase decision for recovery of an unfinished call. A permitted
+/// entry is borrowed and uncommitted until its actual domain is installed.
 ///
 /// `Indeterminate` means the aggregate has already sealed the call with the
 /// exact fail-closed reason. The caller only persists and publishes that state;
 /// it must not maintain a parallel recovery receipt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolRecoveryAction {
-    Entered { attempt: u16 },
+#[derive(Debug)]
+pub enum ToolRecoveryAction<'a> {
+    Entered {
+        entry: PendingToolExecutionEntry<'a>,
+    },
     Indeterminate,
 }
 
@@ -414,6 +417,8 @@ const fn executor_entry_attempt(phase: CallPhaseView) -> Option<u16> {
     }
 }
 
+const FIRST_EXECUTION_ATTEMPT: u16 = 1;
+
 /// Heap-free production transition kernel shared by the aggregate methods and
 /// Kani. It is the single authority for entering an executor attempt.
 fn next_execution_attempt(
@@ -422,7 +427,7 @@ fn next_execution_attempt(
     request: ExecutionRequest,
 ) -> Result<u16, ToolBatchError> {
     let attempt = match (phase, request) {
-        (CallPhaseView::Requested, ExecutionRequest::StartOrRetry) => 1,
+        (CallPhaseView::Requested, ExecutionRequest::StartOrRetry) => FIRST_EXECUTION_ATTEMPT,
         (CallPhaseView::Executing(attempt), ExecutionRequest::StartOrRetry) => attempt
             .checked_add(1)
             .ok_or(ToolBatchError::AttemptsExhausted)?,
@@ -432,7 +437,7 @@ fn next_execution_attempt(
                 expected_kind,
                 correlation_matches: true,
             },
-        ) if actual_kind == expected_kind => 1,
+        ) if actual_kind == expected_kind => FIRST_EXECUTION_ATTEMPT,
         (CallPhaseView::Awaiting(_), ExecutionRequest::Resume { .. }) => {
             return Err(ToolBatchError::WaitMismatch);
         }
@@ -647,21 +652,21 @@ impl ToolBatch {
     /// `NeverReplay`. Once an `Executing` call is recovered, NeverReplay,
     /// unsupported capability and an exhausted attempt budget all seal it as
     /// `Indeterminate`; only a supported policy with remaining budget advances
-    /// to the exact next attempt.
+    /// to the exact next attempt. A permitted entry is staged without mutation
+    /// so domain preparation happens after this decision and before persistence.
     pub fn recover_execution(
         &mut self,
         call_id: &str,
         capability: ToolRecoveryCapability,
-    ) -> Result<ToolRecoveryAction, ToolBatchError> {
+    ) -> Result<ToolRecoveryAction<'_>, ToolBatchError> {
         self.ensure_open()?;
         let call = self.call_mut(call_id)?;
         let transition =
             recovery_transition(phase_view(&call.phase), &call.recovery_policy, capability)?;
         match transition {
-            RecoveryTransition::Enter(attempt) => {
-                call.phase = ToolCallPhase::Executing { attempt };
-                Ok(ToolRecoveryAction::Entered { attempt })
-            }
+            RecoveryTransition::Enter(attempt) => Ok(ToolRecoveryAction::Entered {
+                entry: PendingToolExecutionEntry::new(call, attempt),
+            }),
             RecoveryTransition::NeverReplay => {
                 call.phase = ToolCallPhase::Indeterminate {
                     reason: "owner lease expired after the executor was entered".into(),
@@ -694,7 +699,7 @@ impl ToolBatch {
         call_id: &str,
         expected_kind: ToolWaitKind,
         correlation_id: &str,
-    ) -> Result<u16, ToolBatchError> {
+    ) -> Result<PendingToolExecutionEntry<'_>, ToolBatchError> {
         self.ensure_open()?;
         let call = self.call_mut(call_id)?;
         let correlation_matches = match &call.phase {
@@ -709,8 +714,7 @@ impl ToolBatch {
                 correlation_matches,
             },
         )?;
-        call.phase = ToolCallPhase::Executing { attempt };
-        Ok(attempt)
+        Ok(PendingToolExecutionEntry::new(call, attempt))
     }
 
     pub fn mark_awaiting(
@@ -964,6 +968,10 @@ mod tests {
     use awaken_agent_contract::agent::awaiting::{PauseReason, PendingTool};
 
     pub(super) fn batch() -> ToolBatch {
+        batch_with_policy(ToolRecoveryPolicy::replay_safe())
+    }
+
+    pub(super) fn batch_with_policy(policy: ToolRecoveryPolicy) -> ToolBatch {
         ToolBatch::for_step(
             RunId("r".into()),
             0,
@@ -973,7 +981,7 @@ mod tests {
                     tool_id: "t".into(),
                     arguments: serde_json::json!({}),
                 },
-                ToolRecoveryPolicy::replay_safe(),
+                policy,
             )],
         )
         .unwrap()
@@ -1307,6 +1315,16 @@ mod tests {
         );
     }
 
+    fn recover_and_enter(
+        batch: &mut ToolBatch,
+        capability: ToolRecoveryCapability,
+    ) -> Result<Option<u16>, ToolBatchError> {
+        match batch.recover_execution("c", capability)? {
+            ToolRecoveryAction::Entered { entry } => entry.enter(None).map(Some),
+            ToolRecoveryAction::Indeterminate => Ok(None),
+        }
+    }
+
     #[test]
     fn recovery_policy_and_attempt_budget_have_one_phase_owner() {
         // Causes: C1 durable phase is Requested, Executing, Awaiting, Completed,
@@ -1358,12 +1376,8 @@ mod tests {
                 let supported = mode.is_supported_by(capability);
                 let mut requested = candidate(mode, 3, ToolCallPhase::Requested);
                 assert_eq!(
-                    requested.recover_execution("c", capability),
-                    Ok(if supported {
-                        ToolRecoveryAction::Entered { attempt: 1 }
-                    } else {
-                        ToolRecoveryAction::Indeterminate
-                    }),
+                    recover_and_enter(&mut requested, capability),
+                    Ok(if supported { Some(1) } else { None }),
                     "R1/R4 requested {mode:?}/{capability:?}"
                 );
                 assert_eq!(
@@ -1387,12 +1401,8 @@ mod tests {
                 let mut executing = candidate(mode, 3, ToolCallPhase::Executing { attempt: 1 });
                 let replays = mode != ToolRecoveryMode::NeverReplay && supported;
                 assert_eq!(
-                    executing.recover_execution("c", capability),
-                    Ok(if replays {
-                        ToolRecoveryAction::Entered { attempt: 2 }
-                    } else {
-                        ToolRecoveryAction::Indeterminate
-                    }),
+                    recover_and_enter(&mut executing, capability),
+                    Ok(if replays { Some(2) } else { None }),
                     "R2/R3/R4 executing {mode:?}/{capability:?}"
                 );
                 assert_eq!(
@@ -1421,8 +1431,8 @@ mod tests {
             ToolCallPhase::Executing { attempt: 1 },
         );
         assert_eq!(
-            exhausted.recover_execution("c", ToolRecoveryCapability::ReplaySafe),
-            Ok(ToolRecoveryAction::Indeterminate),
+            recover_and_enter(&mut exhausted, ToolRecoveryCapability::ReplaySafe),
+            Ok(None),
             "R5"
         );
         assert!(matches!(
@@ -1446,7 +1456,7 @@ mod tests {
             let mut invalid = candidate(ToolRecoveryMode::ReplaySafe, 3, phase);
             let before = invalid.clone();
             assert_eq!(
-                invalid.recover_execution("c", ToolRecoveryCapability::ReplaySafe),
+                recover_and_enter(&mut invalid, ToolRecoveryCapability::ReplaySafe),
                 Err(ToolBatchError::InvalidTransition),
                 "R6"
             );
@@ -1461,15 +1471,21 @@ mod tests {
             .mark_awaiting("c", ToolWaitKind::ToolPermission, "approval-1")
             .unwrap();
         assert_eq!(
-            batch.resume_executing("c", ToolWaitKind::ToolPermission, "stale"),
-            Err(ToolBatchError::WaitMismatch)
+            batch
+                .resume_executing("c", ToolWaitKind::ToolPermission, "stale")
+                .err(),
+            Some(ToolBatchError::WaitMismatch)
         );
         assert_eq!(
-            batch.resume_executing("c", ToolWaitKind::Delegation, "approval-1"),
-            Err(ToolBatchError::WaitMismatch)
+            batch
+                .resume_executing("c", ToolWaitKind::Delegation, "approval-1")
+                .err(),
+            Some(ToolBatchError::WaitMismatch)
         );
         assert_eq!(
-            batch.resume_executing("c", ToolWaitKind::ToolPermission, "approval-1"),
+            batch
+                .resume_executing("c", ToolWaitKind::ToolPermission, "approval-1")
+                .and_then(|entry| entry.enter(None)),
             Ok(1)
         );
     }

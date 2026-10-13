@@ -330,6 +330,10 @@ pub struct RuntimeRunContext {
     /// persisted on durable dispatch; tools may consume it as trusted execution
     /// context, but models and provider-authored arguments can never set it.
     pub execution_scope: Option<awaken_agent_contract::ExecutionScopeRef>,
+    /// Original borrowed resource key supplied by composition, never a grant.
+    /// Historical absence remains unknown; the Runtime persists it only on a
+    /// newly admitted executor entry through the original ToolBatch journal.
+    pub resource_origin: Option<awaken_tool_contract::tool_batch::ResourceOriginRef>,
     /// Request-only context assembled for this attempt. Executors may project
     /// these messages into the model request, but must never append them to the
     /// durable Thread transcript.

@@ -80,27 +80,11 @@ pub(super) async fn assemble(
                 runtime = runtime.with_tool(tool);
             }
         }
-        // Advisor is an internal target of the existing durable child-Run
-        // service. Installing the shared service does not re-enable
-        // `agent_run`: Runtime dispatch additionally requires the exact
-        // AgentDelegation descriptor, which the Managed surface removed.
-        if has_published_advisor
-            && let Some(env) = env.clone()
-            && let Some(service) = host.run_delegation(
-                thread,
-                env,
-                commit.clone(),
-                installed.as_ref(),
-                publication_source.clone(),
-                crate::delegate::CallerToolConfiguration {
-                    toolsets: toolsets.clone(),
-                    inherited: None,
-                },
-            )?
-        {
-            runtime = runtime.with_run_delegation(service);
-        }
-    } else if let Some(env) = env.clone()
+    }
+    // One service assembly: Managed admission narrows this to the published
+    // Advisor. Installing it cannot restore a removed AgentDelegation descriptor.
+    if (!managed_coordination || has_published_advisor)
+        && let Some(env) = env.clone()
         && let Some(service) = host.run_delegation(
             thread,
             env,
@@ -420,13 +404,17 @@ pub(super) async fn assemble(
     // are additive; an Environment/placement hand overrides only the tool
     // executor; one canonical RuntimeRunContext crosses the ingress boundary.
     let workspace_id = host.thread_workspace(thread).to_owned();
-    let environment_generation = match env.as_ref() {
+    let (environment_generation, resource_origin) = match env.as_ref() {
         Some(environment) => host
             .realizer
-            .resident_environment_activity_generation_id(thread, environment)?,
-        None => "brain".to_string(),
+            .resident_environment_activity_identity(thread, environment)?,
+        None => ("brain".to_string(), None),
     };
-    let run_context = awaken_runtime_contract::RuntimeRunContext::new()
+    let dispatch_claim = host
+        .installed_sessions
+        .read_run(thread, |run| run.dispatch_claim.clone())
+        .flatten();
+    let mut run_context = awaken_runtime_contract::RuntimeRunContext::new()
         .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
             awaken_tenancy::ScopeId::from(workspace_id.as_str()),
         ))
@@ -435,31 +423,29 @@ pub(super) async fn assemble(
                 .memory
                 .background()
                 .tool_execution_admission(thread, &environment_generation),
-        );
-    let dispatch_claim = host
-        .installed_sessions
-        .read_run(thread, |run| run.dispatch_claim.clone())
-        .flatten();
-    let mut run_context = run_context.with_model_content_materializer(Arc::new(
-        crate::model_content_materializer::ResourceModelContentMaterializer::new(
-            host.resources.file_content_source.clone(),
-            workspace_id,
-            thread,
-            dispatch_claim,
-        ),
-    ));
+        )
+        .with_model_content_materializer(Arc::new(
+            crate::model_content_materializer::ResourceModelContentMaterializer::new(
+                host.resources.file_content_source.clone(),
+                workspace_id,
+                thread,
+                dispatch_claim,
+            ),
+        ));
+    run_context.resource_origin = resource_origin;
     run_context.request_context = host
         .installed_sessions
         .read(thread, |slot| slot.inputs.request_context.clone())
         .unwrap_or_default();
-    let run_context = mcp.plugins.iter().cloned().fold(
-        run_context,
-        awaken_runtime_contract::RuntimeRunContext::with_session_plugin,
-    );
-    let run_context = session_content_plugins.into_iter().fold(
-        run_context,
-        awaken_runtime_contract::RuntimeRunContext::with_session_plugin,
-    );
+    let run_context = mcp
+        .plugins
+        .iter()
+        .cloned()
+        .chain(session_content_plugins)
+        .fold(
+            run_context,
+            awaken_runtime_contract::RuntimeRunContext::with_session_plugin,
+        );
     let run_context = match (session_dispatch, coordination_endpoint.clone()) {
         (true, Some(endpoint)) => run_context.with_model_request_gate(Arc::new(
             crate::coordination::HostModelRequestGate::new(endpoint, thread),

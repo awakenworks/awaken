@@ -64,6 +64,12 @@ impl SharedHost {
             None => self.commit_for_read(thread).await?,
         };
         let commit = parent_commit.for_independent_child();
+        // Reconciliation may replace the physical owner. Even a warm Context
+        // must capture the actual Resident Arc/generation, not retain an old
+        // parent's label or infer origin from a current desired projection.
+        let (_, resource_origin) = self
+            .realizer
+            .resident_environment_activity_identity(thread, &environment)?;
         let mut attempt_context = match warm_context {
             Some(context) => context.attempt_context.for_child_run(),
             None => {
@@ -101,6 +107,7 @@ impl SharedHost {
         // Settlement owns claimed terminal observation. Inheriting a warm
         // parent's observers would enqueue the child through the wrong owner.
         attempt_context.terminal_observers.clear();
+        attempt_context.resource_origin = resource_origin;
         Ok(ChildExecutionSubstrate {
             environment,
             commit,

@@ -873,8 +873,10 @@ async fn record_tool_output(
             .physical_quiescence
             .observe_return(spiller.execution_domain(run_id, &output.call_id, &output.text()))
             .await
+            .map_err(|error| Error::Execution(error.to_string()))?
+            .bind_resource_origin(context.resource_origin.as_ref())
             .map_err(|error| Error::Execution(error.to_string()))?;
-        let effectful = domain != awaken_tool_contract::tool_batch::ToolExecutionDomain::Worker {};
+        let effectful = !domain.is_worker_contained();
         batch
             .bind_materialization_domain(&output.call_id, domain)
             .map_err(|error| Error::Execution(error.to_string()))?;
@@ -1025,20 +1027,15 @@ pub(super) async fn recover_tool_batch(
                         format!("orphan {:?} correlation {}", wait.kind, wait.correlation_id),
                     )
                     .map_err(|error| Error::Execution(error.to_string()))?;
-                let output = batch.output(&call.call_id).expect("now terminal");
-                let result_message = tool_result_message(&batch, &call, &output)?;
-                batch
-                    .set_result_messages(&call.call_id, vec![result_message])
-                    .map_err(|error| Error::Execution(error.to_string()))?;
                 if let Some(disposition) = abandon_delegation_on_indeterminate(
                     runtime,
                     resolved,
                     delegation_origin,
                     &call,
-                    &batch,
+                    &mut batch,
                     ledger,
                     store,
-                ) {
+                )? {
                     return Ok(Some(disposition));
                 }
                 persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
@@ -1178,22 +1175,23 @@ pub(super) async fn recover_tool_batch(
             .recover_execution(&call.call_id, capability)
             .map_err(|error| Error::Execution(error.to_string()))?
         {
-            ToolRecoveryAction::Entered { .. } => {}
+            ToolRecoveryAction::Entered { entry } => {
+                // Scalar admission precedes lazy realization. Consuming this
+                // uncommitted borrow installs the one entry; failure/cancel
+                // leaves the call unchanged, before executor authority exists.
+                super::tool_execution::enter_pending_tool(runtime, env, context, &call, entry)
+                    .await?;
+            }
             ToolRecoveryAction::Indeterminate => {
-                let output = batch.output(&call.call_id).expect("now terminal");
-                let result_message = tool_result_message(&batch, &call, &output)?;
-                batch
-                    .set_result_messages(&call.call_id, vec![result_message])
-                    .map_err(|error| Error::Execution(error.to_string()))?;
                 if let Some(disposition) = abandon_delegation_on_indeterminate(
                     runtime,
                     resolved,
                     delegation_origin,
                     &call,
-                    &batch,
+                    &mut batch,
                     ledger,
                     store,
-                ) {
+                )? {
                     return Ok(Some(disposition));
                 }
                 persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
@@ -1424,14 +1422,21 @@ fn abandon_delegation_on_indeterminate(
     resolved: &ResolvedRun,
     delegation_origin: Option<&DelegationOrigin>,
     call: &ToolCall,
-    batch: &ToolBatch,
+    batch: &mut ToolBatch,
     ledger: &mut StepLedger,
     store: &mut Store,
-) -> Option<RunDisposition> {
-    is_resolved_delegation_call(runtime, resolved, delegation_origin, call).then(|| {
-        stage_batch(batch, ledger, store);
-        RunDisposition::ended(batch.run_id().clone(), EndCause::Indeterminate)
-    })
+) -> Result<Option<RunDisposition>> {
+    let output = batch.output(&call.call_id).expect("now terminal");
+    let result = tool_result_message(batch, call, &output)?;
+    batch
+        .set_result_messages(&call.call_id, vec![result])
+        .map_err(|error| Error::Execution(error.to_string()))?;
+    Ok(
+        is_resolved_delegation_call(runtime, resolved, delegation_origin, call).then(|| {
+            stage_batch(batch, ledger, store);
+            RunDisposition::ended(batch.run_id().clone(), EndCause::Indeterminate)
+        }),
+    )
 }
 
 async fn persist_batch(

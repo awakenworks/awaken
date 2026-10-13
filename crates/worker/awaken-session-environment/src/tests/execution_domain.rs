@@ -54,9 +54,12 @@ async fn realized_and_deferred_hand_share_the_same_pre_entry_process_domain() {
                     ToolExecutionDomain::ControlledProcess {
                         provider_ref: "kubernetes-sandbox".into(),
                         execution_ref: "retained-pod-uid".into(),
+                        resource_origin: None,
                     }
                 } else {
-                    ToolExecutionDomain::Opaque {}
+                    ToolExecutionDomain::Opaque {
+                        resource_origin: None,
+                    }
                 };
                 assert_eq!(environment_domain.unwrap(), expected, "{row}");
                 assert_eq!(hand_domain.unwrap(), expected, "{row}");

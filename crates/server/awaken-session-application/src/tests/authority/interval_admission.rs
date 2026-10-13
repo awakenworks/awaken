@@ -43,6 +43,8 @@ async fn named_activity_cas_replay_retains_original_raw_identity_before_first_cr
     // R3 C4 conflicts without a CAS; R4 C5 appends, never rewrites the first;
     // R5 C6 exact receipt wins before current admission policy. The raw record
     // is not a physical domain/stop grant; there is only one real SQLite CAS.
+    // C7 the recording Runtime knows no Thread commit (Ok(None)), rather
+    // than refusing the read as unsupported: R1/R2 must reach the actual CAS.
     let id = SessionId::from("named-activity-race");
     let durable = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()

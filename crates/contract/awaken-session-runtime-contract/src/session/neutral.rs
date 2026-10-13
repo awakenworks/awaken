@@ -691,19 +691,12 @@ impl $crate::SessionCoordinationReads for $ty {
                 Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
                 $crate::__macro_support::RunError,
             > {
-                let Some(mut snapshot) =
+                let snapshot =
                     $crate::ThreadReadRuntime::session_thread_recovery_snapshot(
                         self, session_id, thread_id,
                     )
-                    .await?
-                else {
-                    return Ok(None);
-                };
-                if !snapshot.runs.iter().any(|run| &run.id == run_id) {
-                    return Ok(None);
-                }
-                snapshot.claimed_run_id = run_id.clone();
-                Ok(Some(snapshot))
+                    .await?;
+                $crate::select_recovery_snapshot_run(snapshot, run_id)
             }
 
             /// Read the durable disposition of one logical child Thread through its

@@ -143,9 +143,11 @@ impl SessionApplication {
             });
         };
         let run = snapshot
-            .runs
-            .iter()
-            .find(|run| &run.id == run_id && run.thread_id.0 == session_id.as_str())
+            .run_record(run_id)
+            .map_err(|error| {
+                SessionProjectionRecoveryError::Rejected(RunError::internal(error.to_string()))
+            })?
+            .filter(|run| run.thread_id.0 == session_id.as_str())
             .ok_or(SessionProjectionRecoveryError::NotFound)?;
         let mut lifecycle = snapshot
             .lifecycle_events_after(lifecycle_after, limit)

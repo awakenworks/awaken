@@ -154,6 +154,25 @@ pub struct RunRecoverySnapshot {
     pub next_commit_ordinal: u64,
 }
 
+/// Why an exact Run record cannot be selected from a committed prefix.
+/// Equal duplicate rows are ambiguous too: selection never repairs the value
+/// by taking the first row or deduplicating a malformed published snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RunRecordSelectionError {
+    #[error("recovery Run identity is blank")]
+    BlankRunId,
+    #[error("recovery Thread identity is blank")]
+    BlankThreadId,
+    #[error("recovery prefix has multiple records for Run {0:?}")]
+    MultipleRunRecords(RunId),
+    #[error("Run {run_id:?} belongs to Thread {actual:?}, not snapshot Thread {expected:?}")]
+    ForeignThread {
+        run_id: RunId,
+        expected: ThreadId,
+        actual: ThreadId,
+    },
+}
+
 /// Why a recovery prefix cannot name its current Run.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CurrentRunError {
@@ -164,9 +183,59 @@ pub enum CurrentRunError {
     /// The latest coordinate names a Run whose committed state is absent.
     #[error("recovery prefix names latest Run {0:?} without its committed state")]
     LatestStateMissing(RunId),
+    #[error(transparent)]
+    RunRecordSelection(#[from] RunRecordSelectionError),
 }
 
 impl RunRecoverySnapshot {
+    /// Select one exact Run from this already observed prefix. This borrows
+    /// committed data only; it performs no query or execution authorization.
+    /// An absent id returns `None`, a unique row must belong to this Thread,
+    /// and multiple matching rows always fail regardless of content equality.
+    pub fn run_record(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<&RunRecord>, RunRecordSelectionError> {
+        let mut matching = self.runs.iter().filter(|record| &record.id == run_id);
+        let record = matching.next();
+        self.select_run_record(run_id, record, matching.next().is_some())
+    }
+
+    /// The iterator and lifecycle's existing transient index supply only
+    /// observed cardinality. One law validates the selected identity/owner;
+    /// index construction may not erase duplicate evidence or reject an
+    /// unassociated row before the lifecycle page reaches its original event.
+    pub(super) fn select_run_record<'a>(
+        &self,
+        run_id: &RunId,
+        record: Option<&'a RunRecord>,
+        repeated: bool,
+    ) -> Result<Option<&'a RunRecord>, RunRecordSelectionError> {
+        if run_id.0.trim().is_empty() {
+            return Err(RunRecordSelectionError::BlankRunId);
+        }
+        if self.thread_id.0.trim().is_empty() {
+            return Err(RunRecordSelectionError::BlankThreadId);
+        }
+        let Some(record) = record else {
+            return Ok(None);
+        };
+        if repeated {
+            return Err(RunRecordSelectionError::MultipleRunRecords(run_id.clone()));
+        }
+        if record.thread_id.0.trim().is_empty() {
+            return Err(RunRecordSelectionError::BlankThreadId);
+        }
+        if record.thread_id != self.thread_id {
+            return Err(RunRecordSelectionError::ForeignThread {
+                run_id: run_id.clone(),
+                expected: self.thread_id.clone(),
+                actual: record.thread_id.clone(),
+            });
+        }
+        Ok(Some(record))
+    }
+
     /// The Thread's current Run: the Run of the last commit in this prefix.
     ///
     /// Consumers (answerable-ticket selection, interruption, follow-up and
@@ -182,8 +251,9 @@ impl RunRecoverySnapshot {
     /// |---|---|---|
     /// | `None` | empty | `Ok(None)`: nothing committed yet |
     /// | `None` | non-empty | `Err(LatestOmitted)` |
-    /// | `Some(id)` | contains `id` | `Ok(Some(record))` |
+    /// | `Some(id)` | one `id` owned by this Thread | `Ok(Some(record))` |
     /// | `Some(id)` | lacks `id` | `Err(LatestStateMissing)` |
+    /// | `Some(id)` | invalid/ambiguous selected record | `Err(RunRecordSelection)` |
     pub fn current_run(&self) -> Result<Option<&RunRecord>, CurrentRunError> {
         let Some(latest_run_id) = self.latest_run_id.as_ref() else {
             return if self.runs.is_empty() {
@@ -192,9 +262,7 @@ impl RunRecoverySnapshot {
                 Err(CurrentRunError::LatestOmitted)
             };
         };
-        self.runs
-            .iter()
-            .find(|run| &run.id == latest_run_id)
+        self.run_record(latest_run_id)?
             .map(Some)
             .ok_or_else(|| CurrentRunError::LatestStateMissing(latest_run_id.clone()))
     }
@@ -405,6 +473,14 @@ mod tests {
         // LatestOmitted; E4 LatestStateMissing. Rules: R1 !C1+C2 => E1;
         // R2 !C1+!C2 => E3 (even when the claimed Run is in the vector);
         // R3 C1+C3 => E2 regardless of C4; R4 C1+!C3 => E4.
+        // Exact-selection causes: C5 0/1/multiple matching rows; C6 duplicate
+        // rows equal/conflicting; C7 blank Run/snapshot Thread/record Thread or
+        // unique foreign owner. E5 exact old selection retains new latest;
+        // E6 0 rows is None, 1 exact row is borrowed, any multiple is typed
+        // ambiguous; E7 blanks/foreign owner are typed failures. R5=unique old
+        // +new latest => E5; R6=0|1|multiple x equal/conflicting => E6;
+        // R7=C7 => E7. current_run uses the same law after its original R1-R4
+        // priority. No selection mutates/deduplicates or repairs the JSON value.
         let thread = ThreadId("t".into());
         let record = |id: &str, state: RunState| RunRecord {
             id: RunId(id.into()),
@@ -458,6 +534,88 @@ mod tests {
             Err(CurrentRunError::LatestStateMissing(RunId("gone".into()))),
             "R4/E4"
         );
+        let old = RunId("old".into());
+        let observed = snapshot("new", Some("new"), two());
+        let before = serde_json::to_vec(&observed).unwrap();
+        let cold: RunRecoverySnapshot = serde_json::from_slice(&before).unwrap();
+        for prefix in [&observed, &cold] {
+            assert_eq!(
+                prefix.run_record(&old).unwrap().unwrap().state,
+                RunState::Awaiting,
+                "R5/E5 exact old Run"
+            );
+            assert_eq!(
+                prefix.latest_run_id,
+                Some(RunId("new".into())),
+                "R5/E5 latest stays distinct"
+            );
+            assert_eq!(
+                prefix.run_record(&RunId("gone".into())),
+                Ok(None),
+                "R6/E6 absent"
+            );
+            assert_eq!(
+                prefix.run_record(&RunId(" ".into())),
+                Err(RunRecordSelectionError::BlankRunId),
+                "R7/E7 blank requested Run"
+            );
+            assert_eq!(
+                serde_json::to_vec(prefix).unwrap(),
+                before,
+                "R5-R7 immutable warm/cold prefix"
+            );
+        }
+        for later_state in [RunState::Awaiting, RunState::Running] {
+            let duplicate = snapshot(
+                "old",
+                Some("old"),
+                vec![
+                    record("old", RunState::Awaiting),
+                    record("old", later_state),
+                ],
+            );
+            let error = RunRecordSelectionError::MultipleRunRecords(old.clone());
+            assert_eq!(
+                duplicate.run_record(&old),
+                Err(error.clone()),
+                "R6/E6 same or conflicting duplicate cannot select first"
+            );
+            assert_eq!(
+                duplicate.current_run(),
+                Err(CurrentRunError::RunRecordSelection(error)),
+                "R6/E6 current shares the exact selection law"
+            );
+        }
+        let mut foreign = snapshot("old", Some("old"), vec![record("old", RunState::Awaiting)]);
+        foreign.runs[0].thread_id = ThreadId("foreign".into());
+        let error = RunRecordSelectionError::ForeignThread {
+            run_id: old.clone(),
+            expected: thread.clone(),
+            actual: ThreadId("foreign".into()),
+        };
+        assert_eq!(
+            foreign.run_record(&old),
+            Err(error.clone()),
+            "R7/E7 foreign owner"
+        );
+        assert_eq!(
+            foreign.current_run(),
+            Err(CurrentRunError::RunRecordSelection(error)),
+            "R7/E7 current cannot use foreign record"
+        );
+        for blank_snapshot_thread in [false, true] {
+            let mut blank = snapshot("old", Some("old"), vec![record("old", RunState::Awaiting)]);
+            if blank_snapshot_thread {
+                blank.thread_id = ThreadId(" ".into());
+            } else {
+                blank.runs[0].thread_id = ThreadId(" ".into());
+            }
+            assert_eq!(
+                blank.run_record(&old),
+                Err(RunRecordSelectionError::BlankThreadId),
+                "R7/E7 snapshot or selected record Thread is blank"
+            );
+        }
     }
 
     #[test]

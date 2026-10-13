@@ -44,15 +44,23 @@ impl ToolExecutor for DeferredSandboxExecutor {
                 .flatten()
                 .is_some()
             {
-                return Ok(awaken_tool_contract::tool_batch::ToolExecutionDomain::Worker {});
+                return Ok(awaken_tool_contract::tool_batch::ToolExecutionDomain::worker());
             }
         }
-        host.ensure_session_environment_for_tool(&self.thread)
+        let environment = host
+            .ensure_session_environment_for_tool(&self.thread)
             .await
-            .map_err(|error| ToolError::UnavailableBeforeDispatch(error.to_string()))?
+            .map_err(|error| ToolError::UnavailableBeforeDispatch(error.to_string()))?;
+        let (_, origin) = host
+            .realizer
+            .resident_environment_activity_identity(&self.thread, &environment)
+            .map_err(|error| ToolError::UnavailableBeforeDispatch(error.to_string()))?;
+        environment
             .agent_tools()
             .tool_execution_domain()
             .await
+            .map_err(|error| ToolError::UnavailableBeforeDispatch(error.to_string()))?
+            .bind_resource_origin(origin.as_ref())
             .map_err(|error| ToolError::UnavailableBeforeDispatch(error.to_string()))
     }
     fn recovery_capability(&self, tool_id: &str) -> ToolRecoveryCapability {

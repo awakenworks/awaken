@@ -14,6 +14,7 @@ use crate::environment_owner::{
     SessionEnvironmentPreparation, SessionEnvironmentRetirementCause, UnboundSessionEnvironment,
 };
 use awaken_session_configuration_contract::resource as session_resource;
+use awaken_tool_contract::tool_batch::ResourceOriginRef;
 
 mod publication;
 mod state;
@@ -1451,15 +1452,14 @@ impl crate::environment_holding::EnvironmentHolding {
     /// Resolve the shared-background/quiescence key from the sole exact
     /// process-local Environment owner. The durable generation remains owned by
     /// the Session aggregate; this method only projects it into Runtime.
-    pub(crate) fn resident_environment_activity_generation_id(
+    pub(crate) fn resident_environment_activity_identity(
         &self,
         thread: &str,
         environment: &Arc<crate::session_environment::SessionEnvironment>,
-    ) -> Result<String, HostError> {
+    ) -> Result<(String, Option<ResourceOriginRef>), HostError> {
         self.sessions
             .read_realization(thread, |r| {
-                r.environment_owner
-                    .resident_activity_generation_id(environment)
+                r.environment_owner.resident_activity_identity(environment)
             })
             .flatten()
             .ok_or_else(|| {

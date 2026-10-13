@@ -1634,6 +1634,7 @@ pub awaken_runtime_contract::runtime_context::RuntimeRunContext::provider_server
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::request_context: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::request_timezone: core::option::Option<alloc::string::String>
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::resource_origin: core::option::Option<awaken_tool_contract::tool_batch::execution_domain::ResourceOriginRef>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::session_plugins: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::Plugin>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::stream_checkpoint: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::stream_sink: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>
@@ -2238,6 +2239,7 @@ pub awaken_runtime_contract::RuntimeRunContext::provider_server_tools: alloc::ve
 pub awaken_runtime_contract::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView>>
 pub awaken_runtime_contract::RuntimeRunContext::request_context: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_runtime_contract::RuntimeRunContext::request_timezone: core::option::Option<alloc::string::String>
+pub awaken_runtime_contract::RuntimeRunContext::resource_origin: core::option::Option<awaken_tool_contract::tool_batch::execution_domain::ResourceOriginRef>
 pub awaken_runtime_contract::RuntimeRunContext::session_plugins: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::Plugin>>
 pub awaken_runtime_contract::RuntimeRunContext::stream_checkpoint: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>>
 pub awaken_runtime_contract::RuntimeRunContext::stream_sink: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>

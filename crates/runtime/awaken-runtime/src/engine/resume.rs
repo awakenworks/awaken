@@ -102,7 +102,12 @@ pub(super) async fn drive_resumed(
     // A tool resume has exactly one durable execution authority. Validate every
     // ticket/batch axis before permission pre-commit or any tool/delegation
     // effect; non-tool pauses keep the direct resume path.
-    let waiting_call_id = ticket.tool_call().map(|(call_id, _)| call_id.to_string());
+    let pending_call = ticket.tool_call().map(|(call_id, pending)| ToolCall {
+        call_id: call_id.to_string(),
+        tool_id: pending.tool_id.clone(),
+        arguments: pending.arguments.clone(),
+    });
+    let waiting_call_id = pending_call.as_ref().map(|call| call.call_id.clone());
     let mut waiting_batch = if waiting_call_id.is_some() {
         let batch = ActiveToolBatch::load(&store)
             .map_err(|error| Error::Execution(error.to_string()))?
@@ -135,14 +140,9 @@ pub(super) async fn drive_resumed(
     let mut delegation_state = Vec::new();
     if ticket.reason() == AwaitReason::Delegation
         && matches!(&result, ResumeResult::ToolResult(_))
-        && let Some((call_id, pending)) = ticket.tool_call()
+        && let Some(call) = pending_call.as_ref()
     {
-        let call = ToolCall {
-            call_id: call_id.to_string(),
-            tool_id: pending.tool_id.clone(),
-            arguments: pending.arguments.clone(),
-        };
-        stage_delegation_completed(runtime, run_id, &call, &mut store, &mut delegation_state)?;
+        stage_delegation_completed(runtime, run_id, call, &mut store, &mut delegation_state)?;
     }
     // Approval is a lifecycle decision, not a chat message. For a batch-aware
     // ticket, commit Awaiting(Approval) -> Executing before entering the tool.
@@ -153,8 +153,9 @@ pub(super) async fn drive_resumed(
     ) && matches!(
         ticket.reason(),
         AwaitReason::ToolPermission | AwaitReason::ScheduledAction
-    ) && let Some((call_id, pending)) = ticket.tool_call()
+    ) && let Some(call) = pending_call.as_ref()
     {
+        let call_id = call.call_id.as_str();
         let batch = waiting_batch.as_mut().ok_or_else(|| {
             Error::Execution("approved tool resume lost its committed tool batch".to_string())
         })?;
@@ -163,22 +164,20 @@ pub(super) async fn drive_resumed(
             AwaitReason::ScheduledAction => ToolWaitKind::ScheduledAction,
             _ => unreachable!("guarded by the resume reason above"),
         };
-        batch
+        let entry = batch
             .resume_executing(call_id, wait_kind, &ticket.correlation_id)
             .map_err(|error| Error::Execution(error.to_string()))?;
+        // Exact wait admission comes first. Domain preparation can perform
+        // lazy realization; failure leaves the old call and ticket unchanged.
+        super::tool_execution::enter_pending_tool(runtime, env, context, call, entry).await?;
         let command = ActiveToolBatch::write(&Some(batch.clone()));
         let mut approval_state = Vec::new();
-        let call = ToolCall {
-            call_id: call_id.to_string(),
-            tool_id: pending.tool_id.clone(),
-            arguments: pending.arguments.clone(),
-        };
         stage_delegation_request(
             runtime,
             resolved,
             ticket.delegation_origin.as_ref(),
             run_id,
-            &call,
+            call,
             &mut store,
             &mut approval_state,
         )?;
@@ -195,7 +194,7 @@ pub(super) async fn drive_resumed(
                         // A person answered the ticket: a confirmation, not a
                         // second decision of the gate.
                         RunEvent::PermissionConfirmed {
-                            tool_id: pending.tool_id.clone(),
+                            tool_id: call.tool_id.clone(),
                             call_id: call_id.to_string(),
                             result: awaken_agent_contract::audit::permission::PermissionConfirmation::Allow,
                         }
@@ -210,18 +209,9 @@ pub(super) async fn drive_resumed(
         store.apply(&command);
         decision_precommitted = true;
     }
-    let result = if approved && let Some((call_id, pending)) = ticket.tool_call() {
-        let call = ToolCall {
-            call_id: call_id.to_string(),
-            tool_id: pending.tool_id.clone(),
-            arguments: pending.arguments.clone(),
-        };
-        let delegation_started = is_resolved_delegation_call(
-            runtime,
-            resolved,
-            ticket.delegation_origin.as_ref(),
-            &call,
-        );
+    let result = if approved && let Some(call) = pending_call.as_ref() {
+        let delegation_started =
+            is_resolved_delegation_call(runtime, resolved, ticket.delegation_origin.as_ref(), call);
         let result = match run_delegation(
             runtime,
             resolved,
@@ -232,7 +222,7 @@ pub(super) async fn drive_resumed(
                 run_id,
                 thread_id,
             },
-            &call,
+            call,
             &mut store,
         )
         .await
@@ -245,7 +235,7 @@ pub(super) async fn drive_resumed(
                 stage_delegation_awaiting(
                     runtime,
                     run_id,
-                    &call,
+                    call,
                     &continuation,
                     &mut store,
                     &mut delegation_state,
@@ -256,7 +246,7 @@ pub(super) async fn drive_resumed(
                     run_id,
                     ticket.delegation_origin.as_ref(),
                     &call.call_id,
-                    &call,
+                    call,
                     ToolAwaitReason::Delegation,
                 );
                 let batch = waiting_batch.as_mut().ok_or_else(|| {
@@ -288,9 +278,9 @@ pub(super) async fn drive_resumed(
                 .await;
             }
             Some(Err(error)) => {
-                ResumeResult::ToolResult(delegation_error_output(resolved, &call, error)?)
+                ResumeResult::ToolResult(delegation_error_output(resolved, call, error)?)
             }
-            None if is_resolved_advisor_call(resolved, &call) => {
+            None if is_resolved_advisor_call(resolved, call) => {
                 ResumeResult::ToolResult(ToolOutput::error(
                     &call.call_id,
                     awaken_runtime_contract::resolved::ADVISOR_UNAVAILABLE_NOTICE,
@@ -299,7 +289,7 @@ pub(super) async fn drive_resumed(
             None => result,
         };
         if delegation_started {
-            stage_delegation_completed(runtime, run_id, &call, &mut store, &mut delegation_state)?;
+            stage_delegation_completed(runtime, run_id, call, &mut store, &mut delegation_state)?;
         }
         result
     } else {
