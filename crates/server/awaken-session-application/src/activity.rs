@@ -8,16 +8,15 @@
 
 use crate::SessionAggregate;
 
-use awaken_agent_contract::RunLifecycleCursor;
-use awaken_agent_contract::agent::run::{Id as RunId, RunState};
+use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_session_event_contract::SessionEventProjectionAnchor;
 #[cfg(any(test, kani))]
 use awaken_session_state_contract::session_activity_open_plan;
 use awaken_session_state_contract::{
-    IdempotencyRecord, ManagedLifecycleFact, PersistedSession,
-    SessionEventDispatchSettlementEffect, SessionExecutionState, SessionRuntimeInterval,
-    SessionRuntimeIntervalObservation,
+    IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionActivitySettlementPlan,
+    SessionEventDispatchSettlementEffect, SessionExecutionState, SessionRuntimeIntervalObservation,
+    session_activity_settlement_plan,
 };
 use awaken_session_types::RunError;
 use awaken_session_types::SessionRevision;
@@ -25,19 +24,25 @@ use awaken_time::WallClockExt as _;
 
 use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
 
-pub(crate) fn runtime_interval_fact(
-    owner_scope: &str,
-    session_id: &str,
-    interval: SessionRuntimeInterval,
-) -> ManagedLifecycleFact {
-    ManagedLifecycleFact {
-        id: interval.interval_id.clone(),
-        object_id: session_id.to_string(),
-        workspace_id: Some(owner_scope.to_string()),
-        event_type: "session.runtime_interval_closed".to_string(),
-        timestamp: i64::try_from(interval.ended_at_unix_ms / 1_000).unwrap_or(i64::MAX),
-        runtime_interval: Some(interval),
+fn closed_runtime_facts(
+    app: &SessionApplication,
+    session: &mut SessionAggregate,
+    plan: SessionActivitySettlementPlan,
+    owner: &str,
+    session_id: &awaken_session_types::SessionId,
+) -> Result<Vec<ManagedLifecycleFact>, SessionActivityError> {
+    if plan != SessionActivitySettlementPlan::CloseRunningInterval {
+        return Ok(Vec::new());
     }
+    Ok(session
+        .activity()
+        .finish_running(app.clock.now_ms())
+        .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?
+        .map(|interval| {
+            ManagedLifecycleFact::runtime_interval_closed(owner, session_id.as_str(), interval)
+        })
+        .into_iter()
+        .collect::<Vec<_>>())
 }
 
 /// Failure from a Session activity transition.
@@ -71,31 +76,6 @@ const fn activity_projection_revision_matches(
     match projected_revision {
         None => true,
         Some(projected) => projected == current_revision,
-    }
-}
-
-/// The logical effects after settling one exact activity epoch.
-#[must_use]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SessionActivitySettlementPlan {
-    Stutter,
-    RetainExecution,
-    CloseRunningInterval,
-}
-
-/// Decide the logical effect after the aggregate's exact epoch set has applied
-/// a removal. Only removal of the final current epoch may close Running.
-const fn session_activity_settlement_plan(
-    exact_epoch_removed: bool,
-    last_active: bool,
-    execution_running: bool,
-) -> SessionActivitySettlementPlan {
-    if !exact_epoch_removed {
-        SessionActivitySettlementPlan::Stutter
-    } else if last_active && execution_running {
-        SessionActivitySettlementPlan::CloseRunningInterval
-    } else {
-        SessionActivitySettlementPlan::RetainExecution
     }
 }
 
@@ -956,20 +936,13 @@ impl SessionApplication {
             // Initial Worker realization may still be preparing/activating, in
             // which case settlement records the activity completion without
             // overwriting that stronger execution phase.
-            let lifecycle_facts =
-                if settlement_plan == SessionActivitySettlementPlan::CloseRunningInterval {
-                    session
-                        .activity()
-                        .finish_running(self.clock.now_ms())
-                        .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?
-                        .map(|interval| {
-                            runtime_interval_fact(&owner_scope, session_id.as_str(), interval)
-                        })
-                        .into_iter()
-                        .collect::<Vec<_>>()
-                } else {
-                    Vec::new()
-                };
+            let lifecycle_facts = closed_runtime_facts(
+                self,
+                &mut session,
+                settlement_plan,
+                &owner_scope,
+                session_id,
+            )?;
             let emitted_runtime_interval = !lifecycle_facts.is_empty();
             match self
                 .commit_session_snapshot_with_outcome(
@@ -1066,36 +1039,5 @@ impl SessionApplication {
             }
         }
         Err(SessionActivityError::Conflict)
-    }
-
-    /// Resolve an exact terminal coordinate from the same prefix used to settle
-    /// this Run. The activity clock must not reopen a global lifecycle history.
-    pub(crate) fn runtime_interval_observation(
-        activity_epoch: u64,
-        thread_id: &ThreadId,
-        run_id: &RunId,
-        state: &RunState,
-        snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
-    ) -> Result<Option<SessionRuntimeIntervalObservation>, RunError> {
-        let mut selected = None;
-        let page = snapshot
-            .lifecycle_events_after(RunLifecycleCursor::default(), usize::MAX)
-            .map_err(|error| RunError::internal(error.to_string()))?;
-        for event in page.events {
-            if &event.thread_id == thread_id
-                && &event.run_id == run_id
-                && &event.state == state
-                && awaken_session_event_contract::SessionAgentRunBoundary::is_boundary(event.kind)
-            {
-                selected = Some(SessionRuntimeIntervalObservation {
-                    activity_epoch,
-                    thread_id: event.thread_id,
-                    run_id: event.run_id,
-                    lifecycle_cursor: event.cursor,
-                    source_commit_cursor: event.source_commit_cursor,
-                });
-            }
-        }
-        Ok(selected)
     }
 }

@@ -1230,6 +1230,18 @@ impl awaken_session_execution_contract::CoordinationRuntime for EchoFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for EchoFake {
+    async fn coordinated_admission_receipt(
+        &self,
+        command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
+    ) -> Result<
+        Option<awaken_session_execution_contract::SessionAgentMessageReceipt>,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .coordinated_admission_receipt(command)
+            .await
+    }
+
     async fn session_run_state(
         &self,
         _session_id: &SessionId,
@@ -3055,6 +3067,18 @@ impl awaken_session_execution_contract::CoordinationRuntime for ToolAwaitingFake
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for ToolAwaitingFake {
+    async fn coordinated_admission_receipt(
+        &self,
+        command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
+    ) -> Result<
+        Option<awaken_session_execution_contract::SessionAgentMessageReceipt>,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .coordinated_admission_receipt(command)
+            .await
+    }
+
     async fn session_run_state(
         &self,
         session_id: &SessionId,
@@ -4864,6 +4888,18 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingFake {
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for RecordingFake {
+    async fn coordinated_admission_receipt(
+        &self,
+        command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
+    ) -> Result<
+        Option<awaken_session_execution_contract::SessionAgentMessageReceipt>,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .coordinated_admission_receipt(command)
+            .await
+    }
+
     async fn session_run_state(
         &self,
         session_id: &SessionId,
@@ -5789,6 +5825,18 @@ impl awaken_session_execution_contract::CoordinationRuntime for InterruptRedirec
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for InterruptRedirectFake {
+    async fn coordinated_admission_receipt(
+        &self,
+        command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
+    ) -> Result<
+        Option<awaken_session_execution_contract::SessionAgentMessageReceipt>,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .coordinated_admission_receipt(command)
+            .await
+    }
+
     async fn session_run_state(
         &self,
         session_id: &SessionId,

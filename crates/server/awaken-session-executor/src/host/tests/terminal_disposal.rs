@@ -41,6 +41,13 @@ async fn unmaterialized_terminal_cleanup_rejects_known_candidate_binding() {
 }
 
 async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
+    // Physical Run boundary: primary active or (delegated occupies-slot AND
+    // active) rejects preparation before participant/provider preparation;
+    // absent/inactive contexts do not reject. Context presence is not the
+    // physical marker. This query leaves lease, request closure, resource-domain
+    // access, all-participant preparation and UID disposal proof unchanged:
+    // inactive alone never qualifies a whole cleanup. Exact owner/replay rules
+    // below still govern even when the cached Runtime is evicted or retained.
     use awaken_provisioning_contract::SandboxStatus;
     // Each rule owns its filesystem, including the durable Removed marker.
     // Reusing a thread id across independent rows must not reuse that marker.

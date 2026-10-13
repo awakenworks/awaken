@@ -11,19 +11,18 @@
 //! the Session baseline and delegates ordinary Thread/Run persistence to the
 //! existing [`awaken_session_execution_contract::SessionRuntime`] port.
 
-use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_session_application_contract::{Pending, RunResume, StepOutcome};
 use awaken_session_execution_contract::{
-    CoordinatedRunCommand, CoordinatedRunIntent, SessionAgentBoundaryAction,
-    SessionAgentBoundaryCommand, SessionAgentBoundaryRole, SessionAgentBoundaryVisibility,
-    SessionAgentCommittedReport, SessionAgentCoordination, SessionAgentMessageCommand,
-    SessionAgentMessageReceipt, SessionAgentReportContinuation, SessionAgentRosterEntry,
-    SessionAgentTarget, SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
-    SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyCommand,
-    SessionThreadToolReplyDelivery, coordinated_thread_closed, session_agent_boundary_action,
-    session_agent_report_text, session_agent_run_boundary, session_run_activity_operation_id,
+    CoordinatedRunIntent, SessionAgentBoundaryAction, SessionAgentBoundaryCommand,
+    SessionAgentBoundaryRole, SessionAgentBoundaryVisibility, SessionAgentCommittedReport,
+    SessionAgentCoordination, SessionAgentMessageCommand, SessionAgentMessageReceipt,
+    SessionAgentReportContinuation, SessionAgentRosterEntry, SessionAgentTarget,
+    SessionRunActivityAdmission, SessionRunActivityAdmissionMode, SessionThreadTarget,
+    SessionThreadToolReply, SessionThreadToolReplyCommand, SessionThreadToolReplyDelivery,
+    coordinated_thread_closed, session_agent_boundary_action, session_agent_report_text,
+    session_agent_run_boundary, session_run_activity_operation_id,
 };
 use awaken_session_types::RunError;
 
@@ -39,7 +38,70 @@ struct ResolvedRosterMember {
 // consultations are explicitly capacity-exempt at the dispatch boundary.
 const MAX_UNARCHIVED_AGENT_CHILD_THREADS: usize = 24;
 
+async fn admit_fresh_agent_report(
+    app: &SessionApplication,
+    owner: &str,
+    settled: awaken_session_state_contract::PersistedSession,
+    observation: awaken_session_state_contract::SessionRuntimeIntervalObservation,
+    continuation: SessionAgentReportContinuation,
+) -> Result<(), RunError> {
+    // Only confirmed Missing with the original active membership reaches
+    // the existing fresh order: usage, interval, projection, admission.
+    // A dependency failure remains pending; it does not settle the epoch.
+    let settled = app
+        .reconcile_coordination_boundary_usage(settled, &continuation.source_thread_id)
+        .await?;
+    app.observe_activity_runtime_boundary(&continuation.session_id, observation)
+        .await
+        .map_err(crate::SessionActivityError::run_error)?;
+    app.install_dispatch_projection(owner, &settled)
+        .await
+        .map_err(|error| {
+            RunError::unavailable(format!(
+                "Agent report Resource projection is unavailable: {error}"
+            ))
+        })?;
+    let session_id = continuation.session_id.clone();
+    let epoch = continuation.session_activity_epoch;
+    let continued = app
+        .runtime()
+        .coordination()
+        .continue_session_agent_report(continuation)
+        .await;
+    app.settle_definitive_coordination_rejection(session_id.as_str(), epoch, &continued)
+        .await?;
+    continued
+}
+
 impl SessionApplication {
+    async fn recover_coordinated_admission(
+        &self,
+        session: &awaken_session_state_contract::PersistedSession,
+        command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
+    ) -> Result<Option<SessionAgentMessageReceipt>, RunError> {
+        let (operation, thread, run) = command.activity_source();
+        let epoch = command.activity_epoch();
+        awaken_session_state_contract::validate_complete_run_activity(
+            session, operation, epoch, thread, run,
+        )
+        .map_err(|error| RunError::unavailable(error.to_string()))?;
+        let receipt = self
+            .runtime()
+            .coordination_reads()
+            .coordinated_admission_receipt(command)
+            .await
+            .map_err(|error| RunError::unavailable(error.message))?;
+        match receipt {
+            Some(receipt) if receipt.thread_id == command.thread_id() => Ok(Some(receipt)),
+            None if epoch.is_none_or(|epoch| session.active_activity_epochs.contains(&epoch)) => {
+                Ok(None)
+            }
+            _ => Err(RunError::unavailable(
+                "original coordinated admission cannot be proven",
+            )),
+        }
+    }
+
     async fn settle_definitive_coordination_rejection<T>(
         &self,
         session_id: &str,
@@ -111,13 +173,13 @@ impl SessionApplication {
                 "Agent settlement does not identify a committed child boundary",
             ));
         }
-        let observation = Self::runtime_interval_observation(
+        let observation = awaken_session_state_contract::SessionRuntimeIntervalObservation::from_committed_boundary(
             command.session_activity_epoch,
             &command.source_thread_id,
             &command.source_run_id,
             &state,
             &snapshot,
-        )?;
+        ).map_err(|error| RunError::internal(error.to_string()))?;
         Ok((snapshot, state, observation))
     }
 
@@ -610,19 +672,7 @@ impl SessionAgentCoordination for SessionApplication {
         let coordination_reads = self.runtime().coordination_reads();
         let thread_reads = self.runtime().thread_reads();
 
-        if command.source_thread_id.0 != command.session_id {
-            return Err(RunError::bad_request(
-                "only the primary Session Thread may coordinate Agents",
-            ));
-        }
-        if command.message.trim().is_empty()
-            || command.operation_id.trim().is_empty()
-            || command.source_call_id.trim().is_empty()
-        {
-            return Err(RunError::bad_request(
-                "Agent coordination requires a message and Runtime operation identity",
-            ));
-        }
+        command.validate_coordinates()?;
         let command = coordination_reads
             .validate_session_agent_message_source(&command)
             .await?;
@@ -702,14 +752,32 @@ impl SessionAgentCoordination for SessionApplication {
             }
         };
 
-        let run_identity = awaken_agent_contract::stable_fingerprint(&(
-            "managed-coordinated-run-v1",
-            command.session_id.as_str(),
-            thread_id.0.as_str(),
-            command.source_run_id.0.as_str(),
-            command.operation_id.as_str(),
-        ));
-        let run_id = RunId(format!("coord-run-{run_identity}"));
+        let mut admission = command.into_coordinated_run(
+            intent,
+            thread_id.clone(),
+            member.snapshot,
+            None,
+            MAX_UNARCHIVED_AGENT_CHILD_THREADS,
+        );
+        let replayed = self
+            .recover_activity_for_operation(
+                &admission.session_id,
+                &admission.operation_id,
+                Some((&thread_id, &admission.run_id)),
+            )
+            .await
+            .map_err(crate::SessionActivityError::run_error)?;
+        let original = replayed.as_ref().map_or(&session, |(session, _)| session);
+        admission.session_activity_epoch = replayed.as_ref().map(|(_, epoch)| *epoch);
+        if let Some(receipt) = self
+            .recover_coordinated_admission(
+                original,
+                awaken_session_execution_contract::CoordinatedAdmissionRef::Child(&admission),
+            )
+            .await?
+        {
+            return Ok(receipt);
+        }
         // A new child is authored after the committed source call, so its
         // Resource envelope must use the Session's current desired generation.
         // Reuse complete dispatch projection; this stages facts only. The
@@ -723,31 +791,18 @@ impl SessionAgentCoordination for SessionApplication {
             })?;
         let (_, activity_epoch) = self
             .begin_activity_for_operation_with_policy(
-                &command.session_id,
-                &command.operation_id,
+                &admission.session_id,
+                &admission.operation_id,
                 false,
                 None,
                 None,
-                Some((&thread_id, &run_id)),
+                Some((&thread_id, &admission.run_id)),
             )
             .await
             .map_err(crate::SessionActivityError::run_error)?;
-        let session_id = command.session_id.clone();
-        let admitted = coordination_runtime
-            .admit_coordinated_run(CoordinatedRunCommand {
-                intent,
-                session_id: command.session_id,
-                thread_id: thread_id.clone(),
-                run_id,
-                parent_run_id: command.source_run_id,
-                parent_call_id: command.source_call_id,
-                operation_id: command.operation_id,
-                snapshot: member.snapshot,
-                message: command.message,
-                session_activity_epoch: activity_epoch,
-                max_unarchived_threads: MAX_UNARCHIVED_AGENT_CHILD_THREADS,
-            })
-            .await;
+        let session_id = admission.session_id.clone();
+        admission.session_activity_epoch = Some(activity_epoch);
+        let admitted = coordination_runtime.admit_coordinated_run(admission).await;
         self.settle_definitive_coordination_rejection(
             session_id.as_str(),
             activity_epoch,
@@ -864,16 +919,9 @@ impl SessionAgentCoordination for SessionApplication {
         }
 
         let settled = current;
-        // Child execution happens outside the Managed HTTP request that
-        // normally reconciles cumulative usage. Reconcile at the terminal
-        // boundary while retaining the activity epoch; the cumulative cursor
-        // makes crash redelivery idempotent.
-        let settled = self
-            .reconcile_coordination_boundary_usage(settled, &command.source_thread_id)
-            .await?;
-        self.observe_activity_runtime_boundary(&command.session_id, observation)
-            .await
-            .map_err(crate::SessionActivityError::run_error)?;
+        // Current ownership, frozen roster and exact committed source are
+        // checked before recovery. Mutable fresh preparation follows only a
+        // confirmed Missing request, so lost-ACK replay has no new effects.
         let owner = self.owner(&command.session_id).await.map_err(|error| {
             RunError::unavailable(format!("Session ownership is unavailable: {error}"))
         })?;
@@ -885,41 +933,28 @@ impl SessionAgentCoordination for SessionApplication {
                 RunError::bad_request("settled child Agent is not in the frozen Session roster")
             })?;
         let child_report = child_report.expect("continue action requires a committed child report");
-        let report = format!(
-            "Message from agent {} (thread {}):\n{}",
-            member.entry.name, command.source_thread_id.0, child_report
+        let continuation = SessionAgentReportContinuation::from_committed_report(
+            &command,
+            &member.entry.name,
+            &child_report,
         );
-        // Cold boundary recovery may have only a lease/Environment projection.
-        // Restore the complete frozen Agent/model/Resource facts before root
-        // admission, just as for a newly coordinated child. No physical owner
-        // is acquired by this Coordinator operation.
-        self.install_dispatch_projection(&owner, &settled)
-            .await
-            .map_err(|error| {
-                RunError::unavailable(format!(
-                    "Agent report Resource projection is unavailable: {error}"
-                ))
-            })?;
-        let continued = coordination_runtime
-            .continue_session_agent_report(SessionAgentReportContinuation {
-                session_id: command.session_id.clone(),
-                source_thread_id: command.source_thread_id,
-                source_run_id: command.source_run_id.clone(),
-                session_activity_epoch: command.session_activity_epoch,
-                message: Message::text(
-                    MessageId::agent_thread_report(&command.source_run_id),
-                    Role::User,
-                    report,
+        let baseline = settled
+            .frozen_baseline()
+            .ok_or_else(|| RunError::unavailable("original report root publication is unknown"))?;
+        if self
+            .recover_coordinated_admission(
+                &settled,
+                awaken_session_execution_contract::CoordinatedAdmissionRef::Report(
+                    &continuation,
+                    baseline,
                 ),
-            })
-            .await;
-        self.settle_definitive_coordination_rejection(
-            command.session_id.as_str(),
-            command.session_activity_epoch,
-            &continued,
-        )
-        .await?;
-        continued
+            )
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+        admit_fresh_agent_report(self, &owner, settled, observation, continuation).await
     }
 
     async fn finalize_session_agent_boundary(

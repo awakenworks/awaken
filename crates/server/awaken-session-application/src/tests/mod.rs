@@ -145,6 +145,12 @@ struct RecordingReplyRuntime {
 }
 
 struct RecordingBoundaryBudgetRuntime {
+    admission_observations: Mutex<
+        VecDeque<
+            Result<Option<awaken_session_execution_contract::SessionAgentMessageReceipt>, RunError>,
+        >,
+    >,
+    admission_reads: AtomicUsize,
     root_usage: Mutex<awaken_session_budget_contract::SessionUsage>,
     child_usage: Mutex<awaken_session_budget_contract::SessionUsage>,
     child_target: awaken_session_execution_contract::CoordinatedThreadTarget,
@@ -170,6 +176,12 @@ enum AgentAdmissionOutcome {
 }
 
 struct RecordingAgentAdmissionRuntime {
+    admission_observations: Mutex<
+        VecDeque<
+            Result<Option<awaken_session_execution_contract::SessionAgentMessageReceipt>, RunError>,
+        >,
+    >,
+    admission_reads: AtomicUsize,
     outcomes: Mutex<VecDeque<AgentAdmissionOutcome>>,
     admissions: Mutex<Vec<awaken_session_execution_contract::CoordinatedRunCommand>>,
     committed_links: Mutex<Vec<awaken_session_execution_contract::CoordinatedThreadLink>>,
@@ -299,8 +311,24 @@ impl RecordingBoundaries {
 }
 
 impl RecordingAgentAdmissionRuntime {
+    fn set_admission_observations(
+        &self,
+        observations: impl IntoIterator<
+            Item = Result<
+                Option<awaken_session_execution_contract::SessionAgentMessageReceipt>,
+                RunError,
+            >,
+        >,
+    ) {
+        // Explicit observer answers are independent of attempted admissions:
+        // an unavailable acknowledgement cannot establish accepted or Missing.
+        *self.admission_observations.lock().unwrap() = observations.into_iter().collect();
+    }
+
     fn new(outcomes: impl IntoIterator<Item = AgentAdmissionOutcome>) -> Self {
         Self {
+            admission_observations: Mutex::new(VecDeque::new()),
+            admission_reads: AtomicUsize::new(0),
             outcomes: Mutex::new(outcomes.into_iter().collect()),
             admissions: Mutex::new(Vec::new()),
             committed_links: Mutex::new(Vec::new()),
@@ -416,8 +444,24 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for Coordina
 }
 
 impl RecordingBoundaryBudgetRuntime {
+    fn set_admission_observations(
+        &self,
+        observations: impl IntoIterator<
+            Item = Result<
+                Option<awaken_session_execution_contract::SessionAgentMessageReceipt>,
+                RunError,
+            >,
+        >,
+    ) {
+        // Explicit observer answers are independent of attempted admissions:
+        // an unavailable acknowledgement cannot establish accepted or Missing.
+        *self.admission_observations.lock().unwrap() = observations.into_iter().collect();
+    }
+
     fn new(child_usage: awaken_session_budget_contract::SessionUsage) -> Self {
         Self {
+            admission_observations: Mutex::new(VecDeque::new()),
+            admission_reads: AtomicUsize::new(0),
             root_usage: Mutex::new(Default::default()),
             child_usage: Mutex::new(child_usage),
             child_target: awaken_session_execution_contract::CoordinatedThreadTarget::Agent {
@@ -1369,6 +1413,18 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingReplyRu
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for RecordingReplyRuntime {
+    async fn coordinated_admission_receipt(
+        &self,
+        command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
+    ) -> Result<
+        Option<awaken_session_execution_contract::SessionAgentMessageReceipt>,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .coordinated_admission_receipt(command)
+            .await
+    }
+
     /// Read the exact Run lifecycle from existing committed Thread truth. This
     /// is the recovery observation for batch advancement, not a completion
     /// registry or protocol event cache.
@@ -1982,6 +2038,26 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingAgentAd
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for RecordingAgentAdmissionRuntime {
+    async fn coordinated_admission_receipt(
+        &self,
+        command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
+    ) -> Result<
+        Option<awaken_session_execution_contract::SessionAgentMessageReceipt>,
+        awaken_session_types::RunError,
+    > {
+        let _ = command;
+        self.admission_reads.fetch_add(1, Ordering::SeqCst);
+        self.admission_observations
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| {
+                Err(RunError::unavailable(
+                    "admission observation was not scripted",
+                ))
+            })
+    }
+
     /// Read the exact Run lifecycle from existing committed Thread truth. This
     /// is the recovery observation for batch advancement, not a completion
     /// registry or protocol event cache.
@@ -2553,6 +2629,26 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingBoundar
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for RecordingBoundaryBudgetRuntime {
+    async fn coordinated_admission_receipt(
+        &self,
+        command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
+    ) -> Result<
+        Option<awaken_session_execution_contract::SessionAgentMessageReceipt>,
+        awaken_session_types::RunError,
+    > {
+        let _ = command;
+        self.admission_reads.fetch_add(1, Ordering::SeqCst);
+        self.admission_observations
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| {
+                Err(RunError::unavailable(
+                    "admission observation was not scripted",
+                ))
+            })
+    }
+
     /// Read the exact Run lifecycle from existing committed Thread truth. This
     /// is the recovery observation for batch advancement, not a completion
     /// registry or protocol event cache.
@@ -3177,6 +3273,18 @@ impl awaken_session_execution_contract::CoordinationRuntime for RecordingCleanup
 
 #[async_trait::async_trait]
 impl awaken_session_execution_contract::SessionCoordinationReads for RecordingCleanupRuntime {
+    async fn coordinated_admission_receipt(
+        &self,
+        command: awaken_session_execution_contract::CoordinatedAdmissionRef<'_>,
+    ) -> Result<
+        Option<awaken_session_execution_contract::SessionAgentMessageReceipt>,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_execution_contract::NeutralRuntime
+            .coordinated_admission_receipt(command)
+            .await
+    }
+
     /// Read the exact Run lifecycle from existing committed Thread truth. This
     /// is the recovery observation for batch advancement, not a completion
     /// registry or protocol event cache.

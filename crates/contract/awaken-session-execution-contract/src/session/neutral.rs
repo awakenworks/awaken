@@ -275,6 +275,15 @@ macro_rules! neutral_role {
     (SessionCoordinationReads for $ty:ty) => {
         #[$crate::__macro_support::async_trait::async_trait]
 impl $crate::SessionCoordinationReads for $ty {
+            async fn coordinated_admission_receipt(
+                &self,
+                _command: $crate::CoordinatedAdmissionRef<'_>,
+            ) -> Result<Option<$crate::SessionAgentMessageReceipt>, $crate::__macro_support::RunError> {
+                Err($crate::__macro_support::RunError::unavailable(
+                    "original coordinated admission recovery is unsupported",
+                ))
+            }
+
             /// Read the exact Run lifecycle from existing committed Thread truth. This
             /// is the recovery observation for batch advancement, not a completion
             /// registry or protocol event cache.

@@ -88,14 +88,11 @@ impl SessionAggregate {
                 .iter()
                 .filter(|interval| interval.closed_revision == next)
             {
-                let required = ManagedLifecycleFact {
-                    id: interval.interval_id.clone(),
-                    object_id: self.state.session_id.to_string(),
-                    workspace_id: Some(owner_scope.into()),
-                    event_type: "session.runtime_interval_closed".into(),
-                    timestamp: i64::try_from(interval.ended_at_unix_ms / 1_000).unwrap_or(i64::MAX),
-                    runtime_interval: Some(interval.clone()),
-                };
+                let required = ManagedLifecycleFact::runtime_interval_closed(
+                    owner_scope,
+                    self.state.session_id.as_str(),
+                    interval.clone(),
+                );
                 if !lifecycle_facts.contains(&required) {
                     lifecycle_facts.push(required);
                 }

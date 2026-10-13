@@ -23,6 +23,8 @@ pub(crate) use state::{SessionRealization, SessionRealizationAuthority};
 pub(crate) trait SessionRunQuery {
     /// A run context is currently built for the Session.
     fn holds_context(&self) -> bool;
+    /// The cached Runtime currently drives a physical Run (not merely a context).
+    fn has_active_run(&self) -> bool;
     /// The Session's dispatch crosses the claimed Session realization boundary.
     fn session_dispatch(&self) -> bool;
     /// The durable dispatch claim the Session currently serves.

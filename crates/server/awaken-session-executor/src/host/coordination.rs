@@ -20,8 +20,8 @@ use committed_links::{apply_lifecycle_latest_runs, project_committed_coordinatio
 pub(super) use session_reply_receipt::{SessionReplyReceipt, validate_awaiting_tool_authority};
 
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
-use awaken_agent_contract::agent::delegation::{DelegationId, DelegationOrigin};
 use awaken_agent_contract::thread::read::lifecycle::{RunLifecycleCursor, RunLifecycleFeed as _};
+use awaken_dispatch_execution::coordinated_run_activation;
 use awaken_ext_builtin_tools::{AgentMessageReceipt, SendMessageArgs};
 use awaken_dispatch_contract::Outbox as _;
 use awaken_session_execution_contract::{
@@ -75,26 +75,42 @@ fn dispatch_admission_error(error: awaken_dispatch_contract::DispatchError) -> H
     }
 }
 
-fn coordinated_activation_input(
+async fn finish_coordinated_child_admission(
+    host: &SharedHost,
     session_id: &str,
-    thread_id: &ThreadId,
-    run_id: &RunId,
-    operation_id: &str,
-    message: String,
-) -> Vec<Message> {
-    vec![Message::text(
-        MessageId(format!(
-            "coord-input-{}",
-            awaken_agent_contract::stable_fingerprint(&(
-                session_id,
-                thread_id.0.as_str(),
-                run_id.0.as_str(),
-                operation_id,
-            ))
-        )),
-        Role::User,
-        message,
-    )]
+    thread_id: ThreadId,
+    intent: CoordinatedRunIntent,
+) -> Result<SessionAgentMessageReceipt, HostError> {
+    // Thread disposition, Run commits, and dispatch admission may use
+    // different durable adapters. Re-read both existing admission fences
+    // after enqueue: whichever side won records cancellation on this exact
+    // dispatch and waits for settlement. No relation flag, terminal cache,
+    // or process-local lock is introduced.
+    let archived = host
+        .session_thread_disposition(session_id, &thread_id)
+        .await?
+        == awaken_agent_contract::ThreadDisposition::Archived;
+    // Follow-up admission above accepted only ordinary Agent Threads.
+    let failed = intent == CoordinatedRunIntent::FollowUp
+        && host
+            .coordinated_thread_is_closed(session_id, &thread_id, CoordinatedThreadKind::Agent)
+            .await?;
+    if archived || failed {
+        // This admission may already be durable, so it is not a definitive
+        // caller rejection until cancellation has settled. Once quiescent,
+        // the bad request is safe: no accepted child execution remains.
+        host.cancel_and_await_coordinated_thread_quiescence(session_id, &thread_id)
+            .await?;
+        return Err(HostError::bad_request(if archived {
+            "Agent Thread is archived"
+        } else {
+            "Agent Thread terminated after a failed Run"
+        }));
+    }
+    if let Some(pool) = host.dispatch.dispatch_pool.get() {
+        pool.notify().await;
+    }
+    Ok(SessionAgentMessageReceipt { thread_id })
 }
 
 impl SharedHost {
@@ -428,19 +444,17 @@ impl SharedHost {
         &self,
         command: CoordinatedRunCommand,
     ) -> Result<SessionAgentMessageReceipt, HostError> {
-        let CoordinatedRunCommand {
-            intent,
-            session_id,
-            thread_id,
-            run_id,
-            parent_run_id,
-            parent_call_id,
-            operation_id,
-            snapshot,
-            message,
-            session_activity_epoch,
-            max_unarchived_threads,
-        } = command;
+        let mut command = command;
+        let intent = command.intent;
+        let max_unarchived_threads = command.max_unarchived_threads;
+        let session_id = command.session_id.clone();
+        let thread_id = command.thread_id.clone();
+        let session_activity_epoch = command
+            .session_activity_epoch
+            .filter(|epoch| *epoch != 0)
+            .ok_or_else(|| {
+                HostError::unavailable("fresh coordination requires an original nonzero activity")
+            })?;
         let (baseline, tools, resources, coordinator_publication) = self
             .installed_sessions
             .read(session_id.as_str(), |slot| {
@@ -462,15 +476,15 @@ impl SharedHost {
         let resources = resources.ok_or_else(|| {
             HostError::bad_request("Session resource manifest is unavailable for coordination")
         })?;
-        if snapshot.metadata.source.revision == 0
-            || snapshot.metadata.source.agent_id != snapshot.root_agent_id
+        if command.snapshot.metadata.source.revision == 0
+            || command.snapshot.metadata.source.agent_id != command.snapshot.root_agent_id
         {
             return Err(HostError::bad_request(
                 "coordinated Run does not carry an exact Agent publication",
             ));
         }
 
-        let mut snapshot = snapshot;
+        let mut snapshot = command.snapshot;
         let inherit_session_overrides = snapshot.root_agent_id.0 == baseline.agent_id;
         if inherit_session_overrides {
             snapshot = awaken_session_realization_contract::project_effective_agent_publication(
@@ -502,26 +516,6 @@ impl SharedHost {
         // authority; the target's deterministic fresh Run owns the accepted
         // message as frozen activation input.  Dispatch carries that complete
         // Run activation and never stages a parallel PendingInput/outbox fact.
-        let activation_input = coordinated_activation_input(
-            session_id.as_str(),
-            &thread_id,
-            &run_id,
-            &operation_id,
-            message,
-        );
-        let origin = DelegationOrigin {
-            delegation_id: DelegationId(format!(
-                "coordination:{}",
-                awaken_agent_contract::stable_fingerprint(&(
-                    session_id.as_str(),
-                    operation_id.as_str(),
-                ))
-            )),
-            parent_run_id: parent_run_id.clone(),
-            parent_call_id,
-            depth: 1,
-            agent_lineage: vec![baseline.agent_id],
-        };
         let coordinator_toolsets = tools
             .as_ref()
             .map(|tools| tools.toolsets.clone())
@@ -540,15 +534,9 @@ impl SharedHost {
                     "coordinated Run has no exact coordinator tool configuration",
                 )
             })?;
-        let mut activation =
-            RunActivation::new(run_id, thread_id.clone(), snapshot, activation_input)
-                .with_delegation_origin(origin);
-        activation = activation.with_inherited_toolsets(Some(
-            awaken_runtime_contract::activation::InheritedToolsets::with_caller(
-                coordinator_toolsets,
-                None,
-            ),
-        ));
+        command.snapshot = snapshot;
+        let activation =
+            coordinated_run_activation(command, baseline.agent_id, coordinator_toolsets);
         let request = crate::agent_runner::child_dispatch_request(
             activation,
             ThreadId(session_id.to_string()),
@@ -571,40 +559,7 @@ impl SharedHost {
             .enqueue_session_child(request, admission)
             .await
             .map_err(dispatch_admission_error)?;
-        // Thread disposition, Run commits, and dispatch admission may use
-        // different durable adapters. Re-read both existing admission fences
-        // after enqueue: whichever side won records cancellation on this exact
-        // dispatch and waits for settlement. No relation flag, terminal cache,
-        // or process-local lock is introduced.
-        let archived = self
-            .session_thread_disposition(session_id.as_str(), &thread_id)
-            .await?
-            == awaken_agent_contract::ThreadDisposition::Archived;
-        // Follow-up admission above accepted only ordinary Agent Threads.
-        let failed = intent == CoordinatedRunIntent::FollowUp
-            && self
-                .coordinated_thread_is_closed(
-                    session_id.as_str(),
-                    &thread_id,
-                    CoordinatedThreadKind::Agent,
-                )
-                .await?;
-        if archived || failed {
-            // This admission may already be durable, so it is not a definitive
-            // caller rejection until cancellation has settled. Once quiescent,
-            // the bad request is safe: no accepted child execution remains.
-            self.cancel_and_await_coordinated_thread_quiescence(session_id.as_str(), &thread_id)
-                .await?;
-            return Err(HostError::bad_request(if archived {
-                "Agent Thread is archived"
-            } else {
-                "Agent Thread terminated after a failed Run"
-            }));
-        }
-        if let Some(pool) = self.dispatch.dispatch_pool.get() {
-            pool.notify().await;
-        }
-        Ok(SessionAgentMessageReceipt { thread_id })
+        finish_coordinated_child_admission(self, session_id.as_str(), thread_id, intent).await
     }
 
     /// Admit one terminal child report as immutable input of a deterministic
@@ -633,14 +588,7 @@ impl SharedHost {
         let ctx = self
             .ctx_for_session_coordination(command.session_id.as_str(), None)
             .await?;
-        let run_id = RunId(format!(
-            "coord-report-run-{}",
-            awaken_agent_contract::stable_fingerprint(&(
-                "managed-agent-report-run-v1",
-                command.session_id.as_str(),
-                command.source_run_id.0.as_str(),
-            ))
-        ));
+        let run_id = command.run_id();
         let activation = RunActivation::new(
             run_id,
             ThreadId(command.session_id.to_string()),
@@ -868,6 +816,7 @@ use awaken_dispatch_contract::{
 mod tests {
     use super::*;
     use awaken_dispatch_contract::DispatchClaims;
+    use awaken_session_execution_contract::coordinated_activation_input;
 
     #[tokio::test]
     async fn dispatch_admission_errors_preserve_commit_certainty() {
@@ -910,24 +859,70 @@ mod tests {
 
         use crate::host::worker_resolver::test_support::{eager_environment, test_activation};
         use awaken_dispatch_contract::{
-            DispatchCursor, DispatchOperationalFeed as _, SessionChildAdmission,
-            SessionRuntimeEnvelope,
+            DispatchCursor, DispatchEnqueue as _, DispatchOperationalFeed as _, DispatchOutcome,
+            DispatchSettlement as _, SessionChildAdmission, SessionRuntimeEnvelope,
+        };
+        use awaken_session_execution_contract::{
+            CoordinatedAdmissionRef, SessionCoordinationReads as _,
         };
 
         let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
-        let dispatch = awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock)
-            .await
-            .expect("R2 original dispatch owner");
+        let dispatch = Arc::new(
+            awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock)
+                .await
+                .expect("R2 original dispatch owner"),
+        );
+        let managed = crate::ManagedHost::new(
+            crate::host::worker_resolver::test_support::adoption_host_over(dispatch.clone()).await,
+        );
+        let session = awaken_session_types::SessionId::from("certainty-session");
+        let parent = RunId("certainty-parent".into());
+        let thread = awaken_session_execution_contract::coordinated_thread_id(
+            &session,
+            &parent,
+            "certainty-operation",
+        );
+        let run = awaken_session_execution_contract::coordinated_run_id(
+            &session,
+            &thread,
+            &parent,
+            "certainty-operation",
+        );
+        let mut snapshot = test_activation("certainty-child", "certainty-run").snapshot;
+        snapshot.metadata.source.agent_id = snapshot.root_agent_id.clone();
+        snapshot.metadata.source.revision = 1;
+        snapshot.recompute_fingerprint().unwrap();
+        let command = CoordinatedRunCommand {
+            intent: CoordinatedRunIntent::Spawn,
+            session_id: session.clone(),
+            thread_id: thread,
+            run_id: run,
+            parent_run_id: parent,
+            parent_call_id: "certainty-call".into(),
+            operation_id: "certainty-operation".into(),
+            snapshot,
+            message: "original message".into(),
+            session_activity_epoch: Some(1),
+            max_unarchived_threads: 24,
+        };
+        assert_eq!(
+            managed
+                .coordinated_admission_receipt(CoordinatedAdmissionRef::Child(&command))
+                .await
+                .unwrap(),
+            None,
+            "R0 actual Missing"
+        );
         let mut runtime = awaken_session_configuration_contract::SessionRuntimeProjection {
             environment: eager_environment(),
             tools: None,
             mcp_stages: Some(Vec::new()),
         };
         let (encoded, requirements) = runtime.dispatch().expect("R2 frozen runtime A");
-        let mut accepted = awaken_dispatch_contract::RunDispatch::new(test_activation(
-            "certainty-child",
-            "certainty-run",
-        ))
+        let mut accepted = awaken_dispatch_contract::RunDispatch::new(
+            coordinated_run_activation(command.clone(), "coord-root".into(), Vec::new())
+                .with_model_ref_override(Some("frozen-original-route".into())),
+        )
         .for_session(ThreadId("certainty-session".into()))
         .with_session_activity_epoch(1)
         .with_session_runtime(SessionRuntimeEnvelope::new(encoded));
@@ -944,6 +939,47 @@ mod tests {
             .await
             .expect("R2 original operation cursor")
             .next_cursor;
+
+        // R5 axes: actual Live A permits its original business ACK despite
+        // mutable fresh-input drift. Original inherited ceiling, model override
+        // and resource/runtime bytes remain stored A; this ACK grants no effects
+        // and does not prove the separate full-input/P0 execution obligation.
+        // Changed Session/Thread/Run/parent/call /
+        // message/publication/epoch cannot be projected as that accepted A.
+        let receipt = managed
+            .coordinated_admission_receipt(CoordinatedAdmissionRef::Child(&command))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.thread_id, command.thread_id, "R5 Live A");
+        for axis in 0..9 {
+            let mut changed = command.clone();
+            match axis {
+                0 => changed.session_id = "foreign-session".into(),
+                1 => changed.thread_id = ThreadId("foreign-thread".into()),
+                2 => changed.parent_run_id = RunId("foreign-parent".into()),
+                3 => changed.parent_call_id = "foreign-call".into(),
+                4 => changed.message = "different input".into(),
+                5 => changed.snapshot.metadata.source.revision += 1,
+                6 => changed.session_activity_epoch = None,
+                7 => changed.session_activity_epoch = Some(0),
+                _ => changed.session_activity_epoch = Some(2),
+            }
+            let error = managed
+                .coordinated_admission_receipt(CoordinatedAdmissionRef::Child(&changed))
+                .await
+                .expect_err("R5 mismatch is unknown");
+            assert_eq!(
+                error.kind,
+                awaken_session_types::RunErrorKind::Unavailable,
+                "R5 axis {axis}"
+            );
+        }
+        assert_eq!(
+            dispatch.list_dispatches().await.unwrap(),
+            before,
+            "R5 observer stutter"
+        );
 
         runtime.tools = Some(Default::default());
         let (encoded, requirements) = runtime.dispatch().expect("R2 frozen runtime B");
@@ -984,13 +1020,72 @@ mod tests {
         );
 
         dispatch
-            .enqueue_session_child(accepted, admission)
+            .enqueue_session_child(accepted.clone(), admission)
             .await
             .expect("R4 exact A still replays");
         assert_eq!(dispatch.list_dispatches().await.unwrap(), before, "R4/E3");
         let after = dispatch.events_after(cursor, 16, None).await.unwrap();
         assert!(after.events.is_empty(), "R2/R4 no claim or settlement");
         assert_eq!(after.next_cursor, cursor, "R2/R4 cursor stutter");
+        // R6: a SessionCommand row is not an ordinary child/report admission.
+        // Same original read role sees the row but cannot grant its ACK.
+        let mut scoped = command.clone();
+        scoped.operation_id = "reserved-root-operation".into();
+        scoped.thread_id = awaken_session_execution_contract::coordinated_thread_id(
+            &scoped.session_id,
+            &scoped.parent_run_id,
+            &scoped.operation_id,
+        );
+        scoped.run_id = awaken_session_execution_contract::coordinated_run_id(
+            &scoped.session_id,
+            &scoped.thread_id,
+            &scoped.parent_run_id,
+            &scoped.operation_id,
+        );
+        let scoped_request = awaken_dispatch_contract::RunDispatch::new(
+            coordinated_run_activation(scoped.clone(), "coord-root".into(), Vec::new()),
+        )
+        .for_session(ThreadId(session.to_string()))
+        .with_session_activity_epoch(1)
+        .with_session_command_identity();
+        dispatch.enqueue(scoped_request).await.unwrap();
+        assert!(
+            managed
+                .coordinated_admission_receipt(CoordinatedAdmissionRef::Child(&scoped))
+                .await
+                .is_err(),
+            "R6 no root-reservation ACK"
+        );
+
+        // R7: completion tombstones lack immutable body/epoch proof; never
+        // fabricate an accepted receipt or turn this retained identity Missing.
+        let claimed = dispatch
+            .claim_run(
+                accepted.run_id(),
+                "completion-owner",
+                1_000,
+                &Default::default(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        dispatch
+            .settle(
+                accepted.run_id(),
+                claimed.lease.epoch(),
+                DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .unwrap();
+        let completed = managed
+            .coordinated_admission_receipt(CoordinatedAdmissionRef::Child(&command))
+            .await
+            .expect_err("R7 insufficient tombstone");
+        assert_eq!(
+            completed.kind,
+            awaken_session_types::RunErrorKind::Unavailable
+        );
     }
 
     #[test]
@@ -1162,7 +1257,7 @@ mod tests {
                     operation_id: format!("coordinated-resource-operation-{rule}"),
                     snapshot,
                     message: format!("coordinate Resource rule {rule}"),
-                    session_activity_epoch: 1,
+                    session_activity_epoch: Some(1),
                     max_unarchived_threads: 24,
                 })
                 .await
@@ -1258,7 +1353,7 @@ mod tests {
                 operation_id: format!("next-source-{rule}"),
                 snapshot: target,
                 message: "next turn".into(),
-                session_activity_epoch: 1,
+                session_activity_epoch: Some(1),
                 max_unarchived_threads: 24,
             })
             .await
@@ -1291,6 +1386,101 @@ mod tests {
             assert_eq!(
                 claimed.request.activation, before,
                 "W2 existing run remains frozen"
+            );
+
+            use awaken_dispatch_contract::DispatchEnqueue as _;
+            use awaken_session_execution_contract::SessionCoordinationReads as _;
+            let managed = crate::ManagedHost::new(host.clone());
+            let baseline = host
+                .installed_sessions
+                .read(&session_id, |slot| slot.inputs.baseline.clone())
+                .unwrap()
+                .unwrap();
+            // R8 exact report Message and source Run bind the original continuation;
+            // a changed rendered name/body is not guessed from current configuration.
+            let report = SessionAgentReportContinuation {
+                session_id: awaken_session_types::SessionId::from(&session_id),
+                source_thread_id: child_thread.clone(),
+                source_run_id: child_run.clone(),
+                session_activity_epoch: 1,
+                message: Message::text(
+                    awaken_agent_contract::agent::message::Id::agent_thread_report(&child_run),
+                    Role::User,
+                    "Message from agent Child: original report",
+                ),
+            };
+            let report_request = awaken_dispatch_contract::RunDispatch::new(RunActivation::new(
+                report.run_id(),
+                ThreadId(report.session_id.to_string()),
+                before.snapshot.clone(),
+                vec![report.message.clone()],
+            ))
+            .for_session(ThreadId(report.session_id.to_string()))
+            .with_session_activity_epoch(1);
+            dispatch.enqueue(report_request).await.unwrap();
+            let report_rows = dispatch.list_dispatches().await.unwrap();
+            assert_eq!(
+                managed
+                    .coordinated_admission_receipt(
+                        awaken_session_execution_contract::CoordinatedAdmissionRef::Report(
+                            &report, &baseline
+                        )
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .thread_id
+                    .0,
+                report.session_id.as_str()
+            );
+            let mut changed = report.clone();
+            changed.message = Message::text(
+                changed.message.id.clone(),
+                Role::User,
+                "Message from agent Renamed: original report",
+            );
+            assert!(
+                managed
+                    .coordinated_admission_receipt(
+                        awaken_session_execution_contract::CoordinatedAdmissionRef::Report(
+                            &changed, &baseline
+                        )
+                    )
+                    .await
+                    .is_err(),
+                "R8 no body normalization"
+            );
+            assert_eq!(
+                dispatch.list_dispatches().await.unwrap(),
+                report_rows,
+                "R8 no effect"
+            );
+            let mut unknown_root = baseline.clone();
+            unknown_root.agent_revision = None;
+            assert!(
+                managed
+                    .coordinated_admission_receipt(
+                        awaken_session_execution_contract::CoordinatedAdmissionRef::Report(
+                            &report,
+                            &unknown_root
+                        )
+                    )
+                    .await
+                    .is_err(),
+                "R8 legacy root pin stays Unknown"
+            );
+            unknown_root.agent_revision = Some(2);
+            assert!(
+                managed
+                    .coordinated_admission_receipt(
+                        awaken_session_execution_contract::CoordinatedAdmissionRef::Report(
+                            &report,
+                            &unknown_root
+                        )
+                    )
+                    .await
+                    .is_err(),
+                "R8 different root pin"
             );
         }
     }

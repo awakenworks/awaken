@@ -162,12 +162,7 @@ impl SharedHost {
                     let deadline =
                         awaken_time::mono::MonoDeadline::after(std::time::Duration::from_secs(10));
                     loop {
-                        if ctx
-                            .active_run
-                            .lock()
-                            .expect("active run mutex poisoned")
-                            .is_none()
-                        {
+                        if !ctx.has_active_run() {
                             break;
                         }
                         if deadline.has_passed() {
@@ -239,12 +234,7 @@ impl SharedHost {
             let deadline =
                 awaken_time::mono::MonoDeadline::after(std::time::Duration::from_secs(10));
             loop {
-                if ctx
-                    .active_run
-                    .lock()
-                    .expect("active run mutex poisoned")
-                    .is_none()
-                {
+                if !ctx.has_active_run() {
                     break;
                 }
                 if deadline.has_passed() {
@@ -277,6 +267,10 @@ impl SharedHost {
 /// @obligation session_terminal.unstarted_reservation_is_rejected_after_cancel
 #[kani::proof]
 fn terminal_quiescence_rejects_only_unstarted_reservations() {
+    // The reused Runtime physical-marker primitive only replaces the two
+    // existing is_none probes. Cancellation intent still precedes local signal;
+    // pass/deadline/retry and persisted physical-slot decisions stay below.
+    // A local inactive marker cannot prove a remote Worker or request is closed.
     // Cause/effect decision table: C1 is the closed durable Dispatch phase.
     // E1 Reserved/ReservationLeased is canceled and guarded-rejected because no
     // executor was admitted; E2 Pending/Leased/Awaiting/DeadLetter follows the

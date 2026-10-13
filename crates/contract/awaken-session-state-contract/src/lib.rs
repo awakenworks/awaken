@@ -85,7 +85,7 @@ pub use resource_activation::{
     SessionResourceState,
 };
 pub use session_repo::{
-    IdempotencyRecord, PersistedSession, ScopedPersistedSession,
+    IdempotencyRecord, PersistedSession, ScopedPersistedSession, SessionActivitySettlementPlan,
     SessionArchiveWithRepositoryPublicationError, SessionCreateResult, SessionDisposition,
     SessionDispositionTransitionError, SessionEventDispatchSettlementEffect, SessionExecutionState,
     SessionExecutionStateError, SessionExecutionTransitionError, SessionIdempotencyReceipt,
@@ -93,7 +93,8 @@ pub use session_repo::{
     SessionPlacementClass, SessionPublicStatus, SessionRepositoryConflict, SessionRepositoryError,
     SessionRepositoryRecoveryAction, SessionRunActivityAdmissionRecord, SessionScan,
     SessionScanCursor, SessionScanQuery, SessionTombstone, SessionWorkerObligation,
-    VisibleMcpServer, session_is_terminal, session_is_unattempted_profiled_preparation,
+    VisibleMcpServer, session_activity_settlement_plan, session_is_terminal,
+    session_is_unattempted_profiled_preparation, validate_complete_run_activity,
 };
 pub use terminal_cleanup::{
     SessionCleanupCommand, SessionCleanupDisposalCommand, SessionCleanupDisposalReceipt,
