@@ -12,7 +12,7 @@
 //! duration are derived from trusted server-side SPIs before the neutral
 //! `DispatchQueue` is called.
 
-use awaken_session_resource_contract::SessionResourceManifest;
+use awaken_session_configuration_contract::resource::SessionResourceManifest;
 use std::sync::Arc;
 
 use axum::extract::{Extension, State};
@@ -471,7 +471,7 @@ async fn verify_session_realization_authority(
     worker: &VerifiedWorkerContext,
     identity: &WorkerIdentity,
     session_id: &str,
-    lease: &awaken_session_resource_contract::SessionRealizationLease,
+    lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     purpose: RealizationAuthorityPurpose,
 ) -> Result<(), RealizationHttpError> {
     verify_worker_identity(worker, identity)

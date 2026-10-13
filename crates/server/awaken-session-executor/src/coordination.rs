@@ -730,7 +730,9 @@ mod tests {
             _claim: &RunClaim,
             _session_id: &str,
             _session_work_authority: Option<&awaken_worker_contract::SessionWorkAuthorityReceipt>,
-            _continuation: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+            _continuation: Option<
+                &awaken_session_configuration_contract::resource::SessionRealizationLease,
+            >,
         ) -> Result<
             Option<awaken_session_realization_contract::SessionRealizationDirective>,
             awaken_session_realization_contract::ClaimedSessionControlError,

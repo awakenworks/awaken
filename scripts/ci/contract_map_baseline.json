@@ -1,7 +1,7 @@
 {
   "$comment": "Shrink-only ratchet of scripts/ci/_contract_map_fitness.py (ADR-0091). Numbers may only fall; write it with `python3 scripts/ci/_contract_map_fitness.py --write-baseline`; raising one needs --reason, kept in growth_reasons.",
   "contract-crates": {
-    "contract crates": 35
+    "contract crates": 33
   },
   "optional-role": {
     "AcpToolExporter::attached_channels": 1,
@@ -73,9 +73,7 @@
     "awaken-runtime-contract": 90,
     "awaken-session-application-contract": 5,
     "awaken-session-configuration-contract": 4,
-    "awaken-session-mcp-contract": 4,
     "awaken-session-realization-contract": 3,
-    "awaken-session-resource-contract": 6,
     "awaken-session-execution-contract": 52,
     "awaken-session-state-contract": 8,
     "awaken-tenancy": 2,
@@ -105,7 +103,6 @@
     "SessionIdempotencyReceipt": 2,
     "SessionMutation": 4,
     "SessionRealizationProgress": 5,
-    "SessionRecoveryQuarantine": 2,
     "SessionRepositoryPublicationCommand": 3,
     "SessionRepositoryPublicationIntent": 2,
     "SessionRepositoryPublicationReceipt": 3,

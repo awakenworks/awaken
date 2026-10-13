@@ -26,7 +26,6 @@ awaken-session-configuration-contract.workspace = true
 awaken-session-realization-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-state-contract.workspace = true
-awaken-session-resource-contract.workspace = true
 awaken-session-types.workspace = true
 awaken-worker-contract.workspace = true
 awaken-worker-transport-security.workspace = true

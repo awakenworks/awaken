@@ -905,16 +905,16 @@ async fn cold_skill_read_keeps_pin_after_catalog_update_and_rejects_stale_projec
     host.installed_sessions.update("cold", |slot| {
         slot.realization.skills = Some(vec![v1.clone()]);
         slot.replace_frozen_with(|next| next.workspace = Some(host.local_workspace().into()));
-        let binding = awaken_session_resource_contract::ResolvedSkillBinding {
+        let binding = crate::session_resource::ResolvedSkillBinding {
             kind: awaken_agent_contract::AgentSkillKind::Custom,
             skill_id: "pinned".into(),
             version: 1,
             bundle_sha256: v1.bundle_sha256.clone(),
         };
-        let resources = awaken_session_resource_contract::ResolvedSessionResources::default()
+        let resources = crate::session_resource::ResolvedSessionResources::default()
             .with_skills(vec![
                 binding.clone(),
-                awaken_session_resource_contract::ResolvedSkillBinding {
+                crate::session_resource::ResolvedSkillBinding {
                     skill_id: "pinned!".into(),
                     ..binding
                 },

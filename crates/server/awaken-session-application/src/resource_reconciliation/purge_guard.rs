@@ -15,8 +15,8 @@ use awaken_resource_contract::{
     FileCatalog, ResourceKind, ResourcePurgeError, ResourcePurgeGuard, ResourceReference,
     ResourceReferenceKind, ResourceTarget,
 };
+use awaken_session_configuration_contract::resource::ResolvedInputSource;
 use awaken_session_repository_contract::SessionRepository;
-use awaken_session_resource_contract::ResolvedInputSource;
 use awaken_session_state_contract::SessionResourceReferences;
 
 pub(super) async fn resource_targets(

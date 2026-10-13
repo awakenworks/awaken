@@ -31,8 +31,10 @@ use awaken_runtime_contract::{
     CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
 };
 use awaken_session_configuration_contract::SessionRuntimeProjection;
+use awaken_session_configuration_contract::resource::{
+    SessionRealizationLease, SessionResourceManifest,
+};
 use awaken_session_realization_contract::ResourceOperationFence;
-use awaken_session_resource_contract::{SessionRealizationLease, SessionResourceManifest};
 use awaken_session_execution_contract::{AdmitSessionRun, SessionRunExecutionRequirements};
 use awaken_session_types::{SessionRunCommandFingerprint, SessionRunReplacement};
 
@@ -137,15 +139,15 @@ fn environment() -> awaken_session_configuration_contract::EnvironmentSnapshot {
     }
 }
 
-fn mcp_stage() -> awaken_session_mcp_contract::StageMcpAttachment {
-    let target = awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.golden.test")
+fn mcp_stage() -> awaken_session_configuration_contract::mcp::StageMcpAttachment {
+    let target = awaken_agent_contract::McpTarget::parse_http("https://mcp.golden.test")
         .expect("valid MCP target");
-    awaken_session_mcp_contract::StageMcpAttachment {
+    awaken_session_configuration_contract::mcp::StageMcpAttachment {
         workspace_id: "workspace-golden".into(),
-        generation: awaken_session_mcp_contract::McpGenerationRef::from_persisted(
+        generation: awaken_session_configuration_contract::mcp::McpGenerationRef::from_persisted(
             "session-golden".into(),
-            awaken_session_mcp_contract::McpGeneration::of_bare_target(
-                awaken_session_mcp_contract::McpAttachmentId("mcp-golden".into()),
+            awaken_session_configuration_contract::mcp::McpGeneration::of_bare_target(
+                awaken_session_configuration_contract::mcp::McpAttachmentId("mcp-golden".into()),
                 1,
                 &target,
             ),

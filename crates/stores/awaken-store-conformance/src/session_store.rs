@@ -20,7 +20,6 @@ use awaken_deployment_contract::{
     DeploymentTrigger, DeploymentView, DeploymentWriteOutcome, ScheduledRunClaimOutcome,
 };
 use awaken_session_event_contract::SessionEventProjectionAnchor;
-use awaken_session_mcp_contract::{McpAttachmentDraft, McpAttachmentOrigin, McpTarget};
 use awaken_session_state_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, ScopedPersistedSession,
     SessionCreateResult, SessionEnvironmentPhase, SessionExecutionState, SessionMutation,
@@ -30,6 +29,10 @@ use awaken_session_state_contract::{
 use awaken_session_types::SessionId;
 use awaken_session_types::SessionRevision;
 use serde_json::json;
+use {
+    awaken_agent_contract::McpTarget,
+    awaken_session_configuration_contract::mcp::{McpAttachmentDraft, McpAttachmentOrigin},
+};
 
 /// Observation timestamp for a fixture record, derived from an epoch reading
 /// rather than written as a date literal, so every fixture time is one value
@@ -83,8 +86,7 @@ pub fn session(id: &str, title: &str) -> PersistedSession {
         awaken_session_configuration_contract::SessionBaseline::compile(
             awaken_session_configuration_contract::SessionBaselineInputs {
                 environment,
-                runtime_placement:
-                    awaken_session_configuration_contract::SessionRuntimePlacement::Local,
+                runtime_placement: awaken_session_types::SessionRuntimePlacement::Local,
                 mcp_authoring: Default::default(),
                 agent_id: "assistant".into(),
                 agent_revision: None,
@@ -110,7 +112,7 @@ pub fn session(id: &str, title: &str) -> PersistedSession {
             }))
             .unwrap(),
         ),
-        awaken_session_mcp_contract::SessionMcpAttachmentSet::from_initial(
+        awaken_session_configuration_contract::mcp::SessionMcpAttachmentSet::from_initial(
             vec![McpAttachmentDraft {
                 name: "github".into(),
                 target: McpTarget::parse_http("https://mcp.example").unwrap(),
@@ -844,8 +846,7 @@ fn run_free_worker_candidate(id: &str) -> PersistedSession {
     else {
         panic!("run-free fixture requires frozen baseline");
     };
-    baseline.runtime_placement =
-        awaken_session_configuration_contract::SessionRuntimePlacement::Worker;
+    baseline.runtime_placement = awaken_session_types::SessionRuntimePlacement::Worker;
     pending.realization_progress.run_free_initial_preparation = true;
     assert!(
         pending.is_run_free_initial_preparation_candidate(),
@@ -905,7 +906,7 @@ pub async fn worker_realization_owner_scan_decision_table<
     // -> two new retained owners and one shared first-placement slot if no
     // earlier unbound work already needs that slot; C5 appears in the
     // preparation candidate query. Expiry is never physical-exit evidence.
-    use awaken_session_resource_contract::SessionRealizationLease;
+    use awaken_session_configuration_contract::resource::SessionRealizationLease;
     use awaken_session_state_contract::{SessionScanQuery, SessionWorkerObligation};
     let prior_demand = r.worker_demand().await.expect("R3 prior repository demand");
     let mut prior_unbound = false;
@@ -1581,7 +1582,8 @@ pub async fn pending_resource_activation_index_is_durable<
     assert_eq!(indexed.sessions.len(), 1, "active MCP remains restart work");
     assert!(indexed.sessions[0].session.mcp.needs_reconciliation());
 
-    pending.mcp.attachments[0].state = awaken_session_mcp_contract::McpAttachmentState::Failed;
+    pending.mcp.attachments[0].state =
+        awaken_session_configuration_contract::mcp::McpAttachmentState::Failed;
     pending = replace_session(r, "ws_a", pending, "test:mcp-failed", Vec::new()).await;
     assert_eq!(
         r.scan(awaken_session_state_contract::SessionScanQuery::Reconcilable { after: None })

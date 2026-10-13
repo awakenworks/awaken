@@ -10,8 +10,9 @@ use std::collections::BTreeMap;
 use std::future::Future;
 
 use awaken_session_repository_contract::SessionRepository;
-use awaken_session_state_contract::{
-    SessionRecoveryQuarantine, SessionRepositoryError, SessionScan, SessionScanQuery,
+use {
+    awaken_session_state_contract::{SessionRepositoryError, SessionScan, SessionScanQuery},
+    awaken_session_types::SessionRecoveryQuarantine,
 };
 
 use super::SessionRecoveryCandidates;

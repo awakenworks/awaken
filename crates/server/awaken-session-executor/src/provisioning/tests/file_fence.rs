@@ -1,4 +1,5 @@
 use super::*;
+use awaken_session_configuration_contract::resource as session_resource;
 
 struct FileFenceProbe {
     accepted: Option<crate::ResourceOperationFence>,
@@ -61,11 +62,11 @@ async fn file_staging_passes_one_exact_prepared_fence_to_one_source_read() {
     use awaken_dispatch_contract::RunClaim;
     use awaken_session_realization_contract::SessionResourceMaterializationIntent as Intent;
 
-    let input = awaken_session_resource_contract::ResolvedInput {
+    let input = session_resource::ResolvedInput {
         created_at_unix_ms: None,
         updated_at_unix_ms: None,
         binding_id: awaken_resource_contract::BindingId::from("file-binding"),
-        source: awaken_session_resource_contract::ResolvedInputSource::File {
+        source: session_resource::ResolvedInputSource::File {
             file_id: awaken_resource_contract::FileId::from("file-a"),
         },
         mount_path: "/file-a".into(),
@@ -81,7 +82,7 @@ async fn file_staging_passes_one_exact_prepared_fence_to_one_source_read() {
         epoch: 1,
         ..current.clone()
     };
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = session_resource::SessionRealizationLease {
         owner: "worker-a".into(),
         runtime_incarnation: "worker-a/boot-1".into(),
         epoch: 7,
@@ -215,11 +216,11 @@ async fn terminal_repository_guard_rejects_file_before_any_source_read() {
     // R6 the existing intent guard rejects before FileContentSource, transport,
     // or physical effects. This is the excluded terminal arm of the File fence
     // decision table above, not a second terminal publication path.
-    let input = awaken_session_resource_contract::ResolvedInput {
+    let input = session_resource::ResolvedInput {
         created_at_unix_ms: None,
         updated_at_unix_ms: None,
         binding_id: awaken_resource_contract::BindingId::from("terminal-file"),
-        source: awaken_session_resource_contract::ResolvedInputSource::File {
+        source: session_resource::ResolvedInputSource::File {
             file_id: awaken_resource_contract::FileId::from("file-a"),
         },
         mount_path: "/file-a".into(),

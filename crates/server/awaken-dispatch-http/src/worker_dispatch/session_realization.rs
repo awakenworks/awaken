@@ -10,14 +10,14 @@ pub(super) struct SessionResumeReq {
     identity: WorkerIdentity,
     session_id: String,
     session_work_authority: Option<awaken_worker_contract::SessionWorkAuthorityReceipt>,
-    continuation: Option<awaken_session_resource_contract::SessionRealizationLease>,
+    continuation: Option<awaken_session_configuration_contract::resource::SessionRealizationLease>,
 }
 
 #[derive(Deserialize)]
 pub(super) struct SessionCleanupPollReq {
     pub(super) identity: WorkerIdentity,
     pub(super) session_id: String,
-    pub(super) lease: awaken_session_resource_contract::SessionRealizationLease,
+    pub(super) lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
 }
 
 #[derive(Deserialize)]
@@ -95,7 +95,7 @@ pub(super) async fn session_preparation_claim_next(
 #[derive(Deserialize)]
 pub(super) struct SessionCleanupPreparationRecordReq {
     identity: WorkerIdentity,
-    lease: awaken_session_resource_contract::SessionRealizationLease,
+    lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
     preparation: awaken_session_state_contract::SessionCleanupPreparation,
 }
 
@@ -114,7 +114,7 @@ pub(super) struct SessionCleanupDisposalAuthorizeReq {
 #[derive(Deserialize)]
 pub(super) struct SessionCleanupDisposalRecordReq {
     identity: WorkerIdentity,
-    lease: awaken_session_resource_contract::SessionRealizationLease,
+    lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
     receipt: awaken_session_state_contract::SessionCleanupDisposalReceipt,
 }
 
@@ -182,7 +182,7 @@ pub(super) async fn verify_terminal_cleanup_authority(
     service: &WorkerDispatchService,
     worker: &VerifiedWorkerContext,
     identity: &WorkerIdentity,
-    lease: &awaken_session_resource_contract::SessionRealizationLease,
+    lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
 ) -> Result<ClaimAuthority, RealizationHttpError> {
     verify_worker_identity(worker, identity)
         .map_err(HostError::bad_request)

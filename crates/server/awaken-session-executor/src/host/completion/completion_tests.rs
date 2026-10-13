@@ -99,12 +99,12 @@ fn projected_acp_models() -> awaken_runtime_contract::resolved::ResolvedSpec {
     models
 }
 
-fn repository_manifest() -> awaken_session_resource_contract::SessionResourceManifest {
+fn repository_manifest() -> crate::session_resource::SessionResourceManifest {
     use awaken_resource_contract::{
         BindingId, ClonePolicy, ConfigVersion, RepositoryConfigVersion, RepositoryId,
         ResourceAccess,
     };
-    use awaken_session_resource_contract::{
+    use awaken_session_configuration_contract::resource::{
         ResolvedInput, ResolvedInputSource, ResolvedSessionResources, SessionResourceManifest,
     };
 
@@ -1112,9 +1112,9 @@ fn resource_placement_requires_resource_and_repository_credential_capabilities()
 
 #[test]
 fn explicit_empty_manifest_still_requires_the_revocation_capability() {
-    let resources = awaken_session_resource_contract::SessionResourceManifest::new(
+    let resources = crate::session_resource::SessionResourceManifest::new(
         "workspace-a",
-        awaken_session_resource_contract::ResolvedSessionResources::default(),
+        crate::session_resource::ResolvedSessionResources::default(),
     );
     let placement = remote_worker_placement(&host_models(), None, Some(&resources), true);
     assert!(

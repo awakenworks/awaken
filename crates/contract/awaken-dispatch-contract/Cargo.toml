@@ -35,14 +35,14 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+awaken-agent-contract.workspace = true
+awaken-session-configuration-contract.workspace = true
 # Drive the async port default methods (enqueue → enqueue_with, bind_sandbox) in unit tests.
 tokio = { workspace = true, features = ["rt", "macros"] }
 awaken-environment-contract.workspace = true
-awaken-session-mcp-contract.workspace = true
 awaken-session-execution-contract.workspace = true
 awaken-session-realization-contract.workspace = true
 awaken-session-state-contract.workspace = true
-awaken-session-resource-contract.workspace = true
 
 [lints]
 workspace = true

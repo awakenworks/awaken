@@ -173,9 +173,13 @@ async fn resource_registry() -> std::sync::Arc<awaken_resource_application::Regi
 #[derive(Clone, Default)]
 struct AcceptingFake {
     prepared: std::sync::Arc<std::sync::Mutex<Vec<SessionInit>>>,
-    staged: std::sync::Arc<std::sync::Mutex<Vec<awaken_session_mcp_contract::StageMcpAttachment>>>,
+    staged: std::sync::Arc<
+        std::sync::Mutex<Vec<awaken_session_configuration_contract::mcp::StageMcpAttachment>>,
+    >,
     applied: std::sync::Arc<
-        std::sync::Mutex<Vec<awaken_session_resource_contract::ResolvedSessionResources>>,
+        std::sync::Mutex<
+            Vec<awaken_session_configuration_contract::resource::ResolvedSessionResources>,
+        >,
     >,
     stall_projection_install: std::sync::Arc<std::sync::atomic::AtomicBool>,
     recovery_reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -358,7 +362,7 @@ impl ExecutableAgentProfileSource for AgentWithIntegrations {
             mcp_servers: vec![
                 awaken_executable_agent_contract::ExecutableAgentMcpServer {
                     name: "docs".into(),
-                    target: awaken_session_mcp_contract::McpTarget::parse_http(
+                    target: awaken_agent_contract::McpTarget::parse_http(
                         "https://mcp.example.test",
                     )
                     .unwrap(),
@@ -368,7 +372,7 @@ impl ExecutableAgentProfileSource for AgentWithIntegrations {
                 },
                 awaken_executable_agent_contract::ExecutableAgentMcpServer {
                     name: "public-docs".into(),
-                    target: awaken_session_mcp_contract::McpTarget::parse_http(
+                    target: awaken_agent_contract::McpTarget::parse_http(
                         "https://public.example.test",
                     )
                     .unwrap(),
@@ -1924,7 +1928,7 @@ impl awaken_session_execution_contract::RealizationRuntime for AcceptingFake {
     async fn invalidate_session_realization_lease(
         &self,
         thread: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
@@ -2296,7 +2300,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for AcceptingFake {
         source_effect_id: &str,
         source_binding: &str,
         generation: &awaken_session_state_contract::SandboxGeneration,
-        expected_mcp_generations: &[awaken_session_mcp_contract::McpGenerationRef],
+        expected_mcp_generations: &[awaken_session_configuration_contract::mcp::McpGenerationRef],
     ) -> Result<awaken_session_state_contract::QuiescenceReceipt, awaken_session_types::RunError>
     {
         awaken_session_execution_contract::NeutralRuntime
@@ -2391,11 +2395,12 @@ impl awaken_session_execution_contract::EnvironmentRuntime for AcceptingFake {
         &self,
         _workspace_id: &str,
         skills: &[awaken_agent_contract::AgentSkillBinding],
-    ) -> Result<Vec<awaken_session_resource_contract::ResolvedSkillBinding>, RunError> {
+    ) -> Result<Vec<awaken_session_configuration_contract::resource::ResolvedSkillBinding>, RunError>
+    {
         Ok(skills
             .iter()
             .map(
-                |skill| awaken_session_resource_contract::ResolvedSkillBinding {
+                |skill| awaken_session_configuration_contract::resource::ResolvedSkillBinding {
                     kind: skill.kind,
                     skill_id: skill.skill_id.clone(),
                     version: 1,
@@ -2408,7 +2413,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for AcceptingFake {
     async fn apply_session_inputs(
         &self,
         _thread: &str,
-        transition: &awaken_session_resource_contract::SessionResourceTransition,
+        transition: &awaken_session_configuration_contract::resource::SessionResourceTransition,
     ) -> Result<(), RunError> {
         self.applied
             .lock()
@@ -2572,7 +2577,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for AcceptingFake
     async fn execute_terminal_repository_publication_for_lease(
         &self,
         command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
-        _lease: &awaken_session_resource_contract::SessionRealizationLease,
+        _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<awaken_session_state_contract::SessionRepositoryPublicationEffect, RunError> {
         // Cause/effect fixture rule: C1 application has already verified the
         // exact aggregate lease before entering this Runtime port; C2 the
@@ -2638,7 +2643,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for AcceptingFake
     async fn acknowledge_completed_terminal_cleanup(
         &self,
         session_id: &awaken_session_types::SessionId,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_completed_terminal_cleanup(session_id, lease)
@@ -2733,7 +2738,7 @@ impl AcceptingFake {
         &self,
         command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
     ) -> Result<awaken_session_state_contract::SessionRepositoryPublicationReceipt, RunError> {
-        let awaken_session_resource_contract::ResolvedInputSource::Repository {
+        let awaken_session_configuration_contract::resource::ResolvedInputSource::Repository {
             repository_id,
             config,
             ..
@@ -2763,31 +2768,33 @@ impl AcceptingFake {
 impl awaken_session_execution_contract::McpAttachmentRealizer for AcceptingFake {
     async fn stage_mcp_attachment(
         &self,
-        request: awaken_session_mcp_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, RunError> {
+        request: awaken_session_configuration_contract::mcp::StageMcpAttachment,
+    ) -> Result<awaken_session_configuration_contract::mcp::McpRealizationReceipt, RunError> {
         self.staged.lock().unwrap().push(request.clone());
         let receipt_fingerprint = request.fingerprint();
-        Ok(awaken_session_mcp_contract::McpRealizationReceipt {
-            generation: request.generation,
-            realization_id: request.realization_id,
-            selected_plaintext_holder: request.selected_plaintext_holder,
-            actual_realization_kind: Some(
-                awaken_credential_contract::CredentialRealizationKind::WorkerRelay,
-            ),
-            receipt_fingerprint,
-        })
+        Ok(
+            awaken_session_configuration_contract::mcp::McpRealizationReceipt {
+                generation: request.generation,
+                realization_id: request.realization_id,
+                selected_plaintext_holder: request.selected_plaintext_holder,
+                actual_realization_kind: Some(
+                    awaken_credential_contract::CredentialRealizationKind::WorkerRelay,
+                ),
+                receipt_fingerprint,
+            },
+        )
     }
 
     async fn publish_mcp_generation(
         &self,
-        _generation: awaken_session_mcp_contract::McpGenerationRef,
+        _generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         Ok(())
     }
 
     async fn drain_mcp_generation(
         &self,
-        _generation: awaken_session_mcp_contract::McpGenerationRef,
+        _generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         Ok(())
     }
@@ -2933,9 +2940,9 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
     let secrets = std::sync::Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let credentials =
         std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
-    let target = awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.example.test")
+    let target = awaken_agent_contract::McpTarget::parse_http("https://mcp.example.test")
         .expect("published MCP target");
-    let audience = awaken_session_mcp_contract::McpTarget::identity(
+    let audience = awaken_agent_contract::McpTarget::identity(
         target.http_url().expect("published HTTP MCP target"),
     )
     .expect("canonical published MCP target")
@@ -3079,12 +3086,12 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
         .expect("created Session is durable");
     assert_eq!(
         durable.mcp.attachments[0].origin,
-        awaken_session_mcp_contract::McpAttachmentOrigin::Agent,
+        awaken_session_configuration_contract::mcp::McpAttachmentOrigin::Agent,
         "credential presence does not define origin"
     );
     assert_eq!(
         durable.mcp.attachments[1].origin,
-        awaken_session_mcp_contract::McpAttachmentOrigin::Agent,
+        awaken_session_configuration_contract::mcp::McpAttachmentOrigin::Agent,
         "both inherited declarations retain Agent origin"
     );
     assert_eq!(
@@ -3149,7 +3156,7 @@ async fn session_mcp_override_replaces_the_published_set() {
     assert_eq!(durable.mcp.attachments.len(), 1);
     assert_eq!(
         durable.mcp.attachments[0].origin,
-        awaken_session_mcp_contract::McpAttachmentOrigin::Agent
+        awaken_session_configuration_contract::mcp::McpAttachmentOrigin::Agent
     );
 }
 
@@ -3633,12 +3640,12 @@ async fn session_resolves_scoped_defaults_and_attachments_once_before_runtime() 
     );
     assert!(calls[0].resources.inputs().iter().any(|resource| matches!(
         &resource.source,
-        awaken_session_resource_contract::ResolvedInputSource::MemoryStore { memory_store_id, .. }
+        awaken_session_configuration_contract::resource::ResolvedInputSource::MemoryStore { memory_store_id, .. }
             if memory_store_id.as_str() == "agent-memory"
     )));
     assert!(calls[0].resources.inputs().iter().any(|resource| matches!(
         &resource.source,
-        awaken_session_resource_contract::ResolvedInputSource::File { file_id }
+        awaken_session_configuration_contract::resource::ResolvedInputSource::File { file_id }
             if file_id.as_str() == "agent-file"
     )));
 }
@@ -3692,9 +3699,10 @@ async fn resource_config_publication_only_affects_later_sessions() {
 
     let calls = prepared.lock().unwrap();
     let version = |call: &SessionInit| match &call.resources.inputs()[0].source {
-        awaken_session_resource_contract::ResolvedInputSource::MemoryStore { config, .. } => {
-            config.version
-        }
+        awaken_session_configuration_contract::resource::ResolvedInputSource::MemoryStore {
+            config,
+            ..
+        } => config.version,
         other => panic!("expected memory input, got {other:?}"),
     };
     assert_eq!(version(&calls[0]), ConfigVersion::INITIAL);
@@ -3800,7 +3808,8 @@ async fn repository_access_compiler_follows_the_decision_table() {
         let credentials =
             std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
         let declared_usage =
-            awaken_session_resource_contract::repository_transport_credential_usage();
+            awaken_session_configuration_contract::resource::repository_transport_credential_usage(
+            );
         let declared_target = awaken_credential_contract::CredentialTarget::new(
             awaken_credential_contract::CredentialPurpose::RepositoryTransport,
             awaken_credential_contract::repository_transport_audience(
@@ -3909,7 +3918,7 @@ async fn repository_access_compiler_follows_the_decision_table() {
                 assert_eq!(access.target, Some(target), "{}", rule.id);
                 assert_eq!(
                     access.usage,
-                    awaken_session_resource_contract::repository_transport_credential_usage(),
+                    awaken_session_configuration_contract::resource::repository_transport_credential_usage(),
                     "{}",
                     rule.id
                 );
@@ -3952,8 +3961,10 @@ async fn terminal_session_retires_only_its_compatibility_repository_definition()
         .unwrap()
         .id;
     let persisted = repo.get(&SessionId::from(&id)).await.unwrap();
-    let awaken_session_resource_contract::ResolvedInputSource::Repository { repository_id, .. } =
-        &persisted.resources.active.inputs()[0].source
+    let awaken_session_configuration_contract::resource::ResolvedInputSource::Repository {
+        repository_id,
+        ..
+    } = &persisted.resources.active.inputs()[0].source
     else {
         panic!("expected compatibility Repository")
     };
@@ -4013,7 +4024,8 @@ async fn terminal_profiled_session_retires_its_marked_repository_definition() {
         .create_profiled_session(awaken_session_application::CreateProfiledSessionCommand {
             owner_scope: "default".into(),
             session_id: session_id.into(),
-            mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Frozen,
+            mutation_policy:
+                awaken_session_configuration_contract::resource::SessionMutationPolicy::Frozen,
             application_origin: None,
             agent_id: "a".into(),
             source_revision: None,
@@ -4128,7 +4140,7 @@ async fn terminal_repository_reclaims_only_its_exact_inline_credential() {
     .expect_for(StatusCode::OK, "T1 create");
     let session_id = session["id"].as_str().unwrap();
     let persisted = repository.get(&SessionId::from(session_id)).await.unwrap();
-    let awaken_session_resource_contract::ResolvedInputSource::Repository {
+    let awaken_session_configuration_contract::resource::ResolvedInputSource::Repository {
         repository_id,
         credential: Some(credential),
         ..
@@ -4250,7 +4262,7 @@ async fn platform_repository_default_is_shared_and_replaceable_without_a_false_p
     assert!(
         matches!(
             &replacement.resources.active.inputs()[0].source,
-            awaken_session_resource_contract::ResolvedInputSource::Repository { repository_id, .. }
+            awaken_session_configuration_contract::resource::ResolvedInputSource::Repository { repository_id, .. }
                 if repository_id.as_str() != "platform-repository"
         ),
         "P2 freezes the Session-owned compatibility Repository"
@@ -4735,7 +4747,7 @@ async fn file_item_resource_fence_rejects_resource_races_and_rebases_root_races(
             .iter()
             .all(|input| !matches!(
                 &input.source,
-                awaken_session_resource_contract::ResolvedInputSource::File { file_id }
+                awaken_session_configuration_contract::resource::ResolvedInputSource::File { file_id }
                     if file_id.as_str() == "file-race"
             )),
         "F1 stale File create is absent"
@@ -4774,7 +4786,7 @@ async fn file_item_resource_fence_rejects_resource_races_and_rebases_root_races(
         durable.resources.desired().inputs().iter().all(|input| {
             !matches!(
                 &input.source,
-                awaken_session_resource_contract::ResolvedInputSource::File { file_id }
+                awaken_session_configuration_contract::resource::ResolvedInputSource::File { file_id }
                     if file_id.as_str() == "file-delete-race"
             )
         }),
@@ -4893,8 +4905,9 @@ async fn repository_item_delete_uses_durable_manifest_retirement() {
         .inputs()[0]
         .source
     {
-        awaken_session_resource_contract::ResolvedInputSource::Repository {
-            repository_id, ..
+        awaken_session_configuration_contract::resource::ResolvedInputSource::Repository {
+            repository_id,
+            ..
         } => repository_id.clone(),
         _ => panic!("U1 Repository fixture"),
     };
@@ -4967,8 +4980,9 @@ async fn whole_manifest_omission_uses_durable_repository_retirement() {
         .inputs()[0]
         .source
     {
-        awaken_session_resource_contract::ResolvedInputSource::Repository {
-            repository_id, ..
+        awaken_session_configuration_contract::resource::ResolvedInputSource::Repository {
+            repository_id,
+            ..
         } => repository_id.clone(),
         _ => panic!("U2 Repository fixture"),
     };
@@ -5699,7 +5713,7 @@ async fn repository_rotation_slot_case(slot: &str) {
     }
     let active_before = durable.resources.active.clone();
     let resource_revision = durable.resources.revision;
-    let awaken_session_resource_contract::ResolvedInputSource::Repository {
+    let awaken_session_configuration_contract::resource::ResolvedInputSource::Repository {
         config,
         credential,
         ..
@@ -5738,7 +5752,7 @@ async fn repository_rotation_slot_case(slot: &str) {
         descriptor
             .admit(
                 credential.access.target.as_ref().expect("B2 target"),
-                &awaken_session_resource_contract::repository_transport_credential_usage(),
+                &awaken_session_configuration_contract::resource::repository_transport_credential_usage(),
             )
             .is_ok(),
         "B2 exact target/usage"
@@ -5835,8 +5849,10 @@ async fn repository_rotation_slot_case(slot: &str) {
         "B3 changes no Runtime effect"
     );
     let stranded = sessions.get(&SessionId::from(session_id)).await.unwrap();
-    let awaken_session_resource_contract::ResolvedInputSource::Repository { credential, .. } =
-        &stranded.resources.desired().inputs()[0].source
+    let awaken_session_configuration_contract::resource::ResolvedInputSource::Repository {
+        credential,
+        ..
+    } = &stranded.resources.desired().inputs()[0].source
     else {
         panic!("B3 must retain one Repository input")
     };
@@ -5925,8 +5941,10 @@ async fn repository_rotation_slot_case(slot: &str) {
             "B8 rebase only this pin over the other root winner"
         );
     }
-    let awaken_session_resource_contract::ResolvedInputSource::Repository { credential, .. } =
-        &durable.resources.desired().inputs()[0].source
+    let awaken_session_configuration_contract::resource::ResolvedInputSource::Repository {
+        credential,
+        ..
+    } = &durable.resources.desired().inputs()[0].source
     else {
         panic!("B5 must retain one Repository input")
     };
@@ -6613,8 +6631,9 @@ async fn profiled_create_receipt_replays_a_historical_repository_path_without_re
     .expect("historical aggregate remains durably decodable");
     historical.revision = Default::default();
     let historical_repository_id = match &historical.resources.active.inputs()[0].source {
-        awaken_session_resource_contract::ResolvedInputSource::Repository {
-            repository_id, ..
+        awaken_session_configuration_contract::resource::ResolvedInputSource::Repository {
+            repository_id,
+            ..
         } => repository_id.clone(),
         _ => panic!("historical fixture must retain its Repository input"),
     };

@@ -60,13 +60,13 @@ impl ManagedState {
         owner_scope: &str,
         binding_id: String,
         parsed: &awaken_session_application::SessionInputRequest,
-    ) -> Result<awaken_session_resource_contract::ResolvedInput, StateError> {
+    ) -> Result<crate::session_resource::ResolvedInput, StateError> {
         debug_assert!(matches!(
             parsed.target,
             awaken_session_application::SessionInputTarget::File(_)
         ));
         let binding = awaken_session_application::input_binding(binding_id, parsed, None);
-        let attachment = awaken_session_resource_contract::SessionInputAttachment {
+        let attachment = crate::session_resource::SessionInputAttachment {
             binding,
             replaces: None,
         };
@@ -90,7 +90,7 @@ impl ManagedState {
         session: &awaken_session_state_contract::PersistedSession,
     ) -> Result<
         (
-            awaken_session_resource_contract::ResolvedSessionResources,
+            crate::session_resource::ResolvedSessionResources,
             Vec<awaken_session_application::ConfiguredSessionRepository>,
         ),
         StateError,
@@ -151,11 +151,8 @@ impl ManagedState {
             })
             .collect::<Vec<_>>();
         let effective_bindings =
-            awaken_session_resource_contract::SessionInputResolver::effective_bindings(
-                &provisional,
-                &[],
-            )
-            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+            crate::session_resource::SessionInputResolver::effective_bindings(&provisional, &[])
+                .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
         self.roles
             .resources
             .validate_persisted_session_resource_layout(owner_scope, session, effective_bindings)
@@ -181,11 +178,11 @@ impl ManagedState {
             let reusable = same_mount.filter(|existing| match (&input.target, &existing.source) {
                 (
                     awaken_session_application::SessionInputTarget::File(requested),
-                    awaken_session_resource_contract::ResolvedInputSource::File { file_id },
+                    crate::session_resource::ResolvedInputSource::File { file_id },
                 ) => requested == file_id,
                 (
                     awaken_session_application::SessionInputTarget::MemoryStore(requested),
-                    awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
+                    crate::session_resource::ResolvedInputSource::MemoryStore {
                         memory_store_id,
                         ..
                     },
@@ -197,10 +194,7 @@ impl ManagedState {
                         initial_branch,
                         initial_commit,
                     },
-                    awaken_session_resource_contract::ResolvedInputSource::Repository {
-                        config,
-                        ..
-                    },
+                    crate::session_resource::ResolvedInputSource::Repository { config, .. },
                 ) => {
                     access_token.is_none()
                         && remote_url == &config.remote_url
@@ -297,7 +291,7 @@ impl ManagedState {
                 } else {
                     None
                 };
-            let attachment = awaken_session_resource_contract::SessionInputAttachment {
+            let attachment = crate::session_resource::SessionInputAttachment {
                 binding: awaken_session_application::input_binding(
                     binding_id,
                     &input,
@@ -346,7 +340,7 @@ impl ManagedState {
             };
             inputs.push(resolved);
         }
-        let resources = match awaken_session_resource_contract::ResolvedSessionResources::try_new(
+        let resources = match crate::session_resource::ResolvedSessionResources::try_new(
             inputs,
             current.skills().to_vec(),
         ) {
@@ -573,7 +567,7 @@ impl ManagedState {
                 input.mount_path.trim_start_matches('/') == normalized_mount
                     && matches!(
                         &input.source,
-                        awaken_session_resource_contract::ResolvedInputSource::File { file_id }
+                        crate::session_resource::ResolvedInputSource::File { file_id }
                             if file_id == requested_file
                     )
             })
@@ -615,7 +609,7 @@ impl ManagedState {
             .filter(|input| {
                 matches!(
                     input.source,
-                    awaken_session_resource_contract::ResolvedInputSource::File { .. }
+                    crate::session_resource::ResolvedInputSource::File { .. }
                 )
             })
             .count()
@@ -736,7 +730,7 @@ impl ManagedState {
             .ok_or(StateError::NotFound)?;
         if matches!(
             input.source,
-            awaken_session_resource_contract::ResolvedInputSource::MemoryStore { .. }
+            crate::session_resource::ResolvedInputSource::MemoryStore { .. }
         ) {
             return Err(StateError::Run(RunError::bad_request(MEMORY_CREATE_ONLY)));
         }

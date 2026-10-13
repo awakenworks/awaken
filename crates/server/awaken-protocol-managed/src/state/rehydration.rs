@@ -339,36 +339,42 @@ mod tests {
         let mut cases = Vec::new();
         for (owner_name, placement) in [(
             "topology",
-            awaken_session_configuration_contract::SessionRuntimePlacement::Worker,
+            awaken_session_types::SessionRuntimePlacement::Worker,
         )] {
             for (lease_name, realization) in [
                 ("absent", None),
                 (
                     "local_live",
-                    Some(awaken_session_resource_contract::SessionRealizationLease {
-                        owner: "managed-runtime/boot-1".into(),
-                        runtime_incarnation: "managed-runtime/boot-1".into(),
-                        epoch: 4,
-                        expires_at_unix_ms: u64::MAX,
-                    }),
+                    Some(
+                        awaken_session_configuration_contract::resource::SessionRealizationLease {
+                            owner: "managed-runtime/boot-1".into(),
+                            runtime_incarnation: "managed-runtime/boot-1".into(),
+                            epoch: 4,
+                            expires_at_unix_ms: u64::MAX,
+                        },
+                    ),
                 ),
                 (
                     "worker_live",
-                    Some(awaken_session_resource_contract::SessionRealizationLease {
-                        owner: "worker-a".into(),
-                        runtime_incarnation: "worker-a/boot-1".into(),
-                        epoch: 4,
-                        expires_at_unix_ms: u64::MAX,
-                    }),
+                    Some(
+                        awaken_session_configuration_contract::resource::SessionRealizationLease {
+                            owner: "worker-a".into(),
+                            runtime_incarnation: "worker-a/boot-1".into(),
+                            epoch: 4,
+                            expires_at_unix_ms: u64::MAX,
+                        },
+                    ),
                 ),
                 (
                     "worker_expired",
-                    Some(awaken_session_resource_contract::SessionRealizationLease {
-                        owner: "worker-a".into(),
-                        runtime_incarnation: "worker-a/boot-1".into(),
-                        epoch: 4,
-                        expires_at_unix_ms: 0,
-                    }),
+                    Some(
+                        awaken_session_configuration_contract::resource::SessionRealizationLease {
+                            owner: "worker-a".into(),
+                            runtime_incarnation: "worker-a/boot-1".into(),
+                            epoch: 4,
+                            expires_at_unix_ms: 0,
+                        },
+                    ),
                 ),
             ] {
                 for (mcp_name, mcp_recovery) in [("settled", false), ("pending", true)] {

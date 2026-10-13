@@ -224,20 +224,19 @@ async fn start_with_options(
 /// The generation fence of one bare `https://fixture.test/mcp` attachment,
 /// admitted through the fence's one persisted-coordinate door.
 pub fn mcp_fence(
-    session: impl Into<awaken_session_mcp_contract::SessionId>,
+    session: impl Into<awaken_session_types::SessionId>,
     attachment: impl Into<String>,
     version: u64,
     incarnation: impl Into<String>,
     epoch: u64,
     expires_at_unix_ms: u64,
-) -> awaken_session_mcp_contract::McpGenerationRef {
-    awaken_session_mcp_contract::McpGenerationRef::from_persisted(
+) -> awaken_session_configuration_contract::mcp::McpGenerationRef {
+    awaken_session_configuration_contract::mcp::McpGenerationRef::from_persisted(
         session.into(),
-        awaken_session_mcp_contract::McpGeneration::of_bare_target(
-            awaken_session_mcp_contract::McpAttachmentId(attachment.into()),
+        awaken_session_configuration_contract::mcp::McpGeneration::of_bare_target(
+            awaken_session_configuration_contract::mcp::McpAttachmentId(attachment.into()),
             version,
-            &awaken_session_mcp_contract::McpTarget::parse_http("https://fixture.test/mcp")
-                .unwrap(),
+            &awaken_agent_contract::McpTarget::parse_http("https://fixture.test/mcp").unwrap(),
         ),
         incarnation.into(),
         epoch,

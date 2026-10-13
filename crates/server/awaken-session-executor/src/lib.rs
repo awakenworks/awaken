@@ -346,7 +346,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ManagedHost {
     async fn invalidate_session_realization_lease(
         &self,
         thread: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<(), RunError> {
         self.host
             .invalidate_session_realization_lease(thread, lease);
@@ -843,7 +843,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ManagedHost {
         source_effect_id: &str,
         source_binding: &str,
         generation: &awaken_session_state_contract::SandboxGeneration,
-        expected_mcp_generations: &[awaken_session_mcp_contract::McpGenerationRef],
+        expected_mcp_generations: &[crate::session_mcp::McpGenerationRef],
     ) -> Result<awaken_session_state_contract::QuiescenceReceipt, RunError> {
         self.quiesce_environment_continuation(
             thread,
@@ -910,7 +910,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ManagedHost {
         &self,
         workspace_id: &str,
         skills: &[awaken_agent_contract::AgentSkillBinding],
-    ) -> Result<Vec<awaken_session_resource_contract::ResolvedSkillBinding>, RunError> {
+    ) -> Result<Vec<crate::session_resource::ResolvedSkillBinding>, RunError> {
         if skills.is_empty() {
             return Ok(Vec::new());
         }
@@ -925,7 +925,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ManagedHost {
     async fn apply_session_inputs(
         &self,
         thread: &str,
-        transition: &awaken_session_resource_contract::SessionResourceTransition,
+        transition: &crate::session_resource::SessionResourceTransition,
     ) -> Result<(), RunError> {
         self.apply_session_inputs_with_context(thread, transition, None, None)
             .await
@@ -1033,7 +1033,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
     async fn execute_terminal_repository_publication_for_lease(
         &self,
         command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<awaken_session_state_contract::SessionRepositoryPublicationEffect, RunError> {
         self.publish_terminal_repository(command, lease).await
     }
@@ -1080,7 +1080,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for ManagedHost {
     async fn acknowledge_completed_terminal_cleanup(
         &self,
         session_id: &awaken_session_types::SessionId,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) {
         self.host
             .acknowledge_completed_terminal_cleanup(session_id.as_str(), lease)
@@ -1243,3 +1243,7 @@ impl awaken_session_execution_contract::CapabilityRuntime for ManagedHost {
 include!("managed_host_mcp_attachment.rs");
 
 use awaken_dispatch_contract::SessionRunReservations as _;
+
+pub(crate) use awaken_session_configuration_contract::mcp as session_mcp;
+
+pub(crate) use awaken_session_configuration_contract::resource as session_resource;

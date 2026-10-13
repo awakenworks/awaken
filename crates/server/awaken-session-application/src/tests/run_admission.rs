@@ -167,7 +167,7 @@ impl awaken_session_execution_contract::RealizationRuntime for ActivationOnlySes
     async fn invalidate_session_realization_lease(
         &self,
         thread: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
@@ -495,7 +495,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ActivationOnlySes
         source_effect_id: &str,
         source_binding: &str,
         generation: &awaken_session_state_contract::SandboxGeneration,
-        expected_mcp_generations: &[awaken_session_mcp_contract::McpGenerationRef],
+        expected_mcp_generations: &[crate::session_mcp::McpGenerationRef],
     ) -> Result<awaken_session_state_contract::QuiescenceReceipt, awaken_session_types::RunError>
     {
         awaken_session_execution_contract::NeutralRuntime
@@ -597,10 +597,8 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ActivationOnlySes
         &self,
         workspace_id: &str,
         skills: &[awaken_agent_contract::AgentSkillBinding],
-    ) -> Result<
-        Vec<awaken_session_resource_contract::ResolvedSkillBinding>,
-        awaken_session_types::RunError,
-    > {
+    ) -> Result<Vec<crate::session_resource::ResolvedSkillBinding>, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .resolve_session_skills(workspace_id, skills)
             .await
@@ -615,7 +613,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for ActivationOnlySes
     async fn apply_session_inputs(
         &self,
         thread: &str,
-        transition: &awaken_session_resource_contract::SessionResourceTransition,
+        transition: &crate::session_resource::SessionResourceTransition,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .apply_session_inputs(thread, transition)
@@ -1222,7 +1220,7 @@ impl awaken_session_execution_contract::RealizationRuntime for BlockingSessionRu
     async fn invalidate_session_realization_lease(
         &self,
         thread: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)

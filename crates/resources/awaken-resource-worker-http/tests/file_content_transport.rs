@@ -26,19 +26,24 @@ use awaken_session_realization_contract::ResourceOperationFence;
 use awaken_session_repository_contract::SessionRepository as _;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
-fn resources(file_id: &str) -> awaken_session_resource_contract::ResolvedSessionResources {
-    awaken_session_resource_contract::ResolvedSessionResources::try_new(
-        vec![awaken_session_resource_contract::ResolvedInput {
-            created_at_unix_ms: None,
-            updated_at_unix_ms: None,
-            binding_id: awaken_resource_contract::BindingId::new("file-binding"),
-            source: awaken_session_resource_contract::ResolvedInputSource::File {
-                file_id: awaken_resource_contract::FileId::from(file_id),
+fn resources(
+    file_id: &str,
+) -> awaken_session_configuration_contract::resource::ResolvedSessionResources {
+    awaken_session_configuration_contract::resource::ResolvedSessionResources::try_new(
+        vec![
+            awaken_session_configuration_contract::resource::ResolvedInput {
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
+                binding_id: awaken_resource_contract::BindingId::new("file-binding"),
+                source:
+                    awaken_session_configuration_contract::resource::ResolvedInputSource::File {
+                        file_id: awaken_resource_contract::FileId::from(file_id),
+                    },
+                mount_path: "/workspace/input.txt".into(),
+                access: awaken_resource_contract::ResourceAccess::ReadOnly,
+                instructions: None,
             },
-            mount_path: "/workspace/input.txt".into(),
-            access: awaken_resource_contract::ResourceAccess::ReadOnly,
-            instructions: None,
-        }],
+        ],
         Vec::new(),
     )
     .unwrap()
@@ -223,8 +228,7 @@ fn frozen_application_session(
         awaken_session_configuration_contract::SessionBaseline::compile(
             awaken_session_configuration_contract::SessionBaselineInputs {
                 environment,
-                runtime_placement:
-                    awaken_session_configuration_contract::SessionRuntimePlacement::Worker,
+                runtime_placement: awaken_session_types::SessionRuntimePlacement::Worker,
                 mcp_authoring: Default::default(),
                 agent_id: "agent".into(),
                 agent_revision: None,
@@ -247,12 +251,14 @@ fn frozen_application_session(
         Default::default(),
     );
     legacy.execution = awaken_session_state_contract::SessionExecutionState::Running;
-    legacy.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
-        owner: identity.worker_id.clone(),
-        runtime_incarnation: identity.lease_owner(),
-        epoch: 1,
-        expires_at_unix_ms: support::unix_now_ms().saturating_add(60_000),
-    });
+    legacy.realization = Some(
+        awaken_session_configuration_contract::resource::SessionRealizationLease {
+            owner: identity.worker_id.clone(),
+            runtime_incarnation: identity.lease_owner(),
+            epoch: 1,
+            expires_at_unix_ms: support::unix_now_ms().saturating_add(60_000),
+        },
+    );
     // This fixture models the pre-cutover missing field, not a fresh creation.
     let mut wire = serde_json::to_value(legacy).unwrap();
     wire.as_object_mut()

@@ -47,9 +47,9 @@ const MATERIALIZED_HTTP_MCP_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(30
 /// workload-held credential crosses only the process-local ACP Session field.
 pub fn project_mcp_session_transport(
     prepared: &McpTransportMaterial,
-    request: &awaken_session_mcp_contract::StageMcpAttachment,
+    request: &awaken_session_configuration_contract::mcp::StageMcpAttachment,
     relay: Option<&crate::mcp_relay::McpRelay>,
-    receipt: &awaken_session_mcp_contract::McpRealizationReceipt,
+    receipt: &awaken_session_configuration_contract::mcp::McpRealizationReceipt,
     adapter_policy: &dyn awaken_acp_contract::AcpAdapterPolicy<
         awaken_runtime_contract::resolved::ProviderServerTool,
     >,
@@ -434,21 +434,21 @@ mod acp_projection_tests {
         }
     }
 
-    fn generation() -> awaken_session_mcp_contract::McpGenerationRef {
+    fn generation() -> awaken_session_configuration_contract::mcp::McpGenerationRef {
         crate::test_mcp::mcp_fence("t1", "mcp-gh", 3, "runtime-1", 2, u64::MAX)
     }
 
     fn request(
         boundary: awaken_runtime_contract::PlaintextBoundary,
-    ) -> awaken_session_mcp_contract::StageMcpAttachment {
+    ) -> awaken_session_configuration_contract::mcp::StageMcpAttachment {
         let holder = awaken_runtime_contract::PlaintextHolder::new(boundary, "test-holder");
-        awaken_session_mcp_contract::StageMcpAttachment {
+        awaken_session_configuration_contract::mcp::StageMcpAttachment {
             workspace_id: "workspace-a".into(),
             generation: generation(),
             realization_id: "realize-gh".into(),
             stage_idempotency_key: "stage-gh".into(),
             name: "gh".into(),
-            target: awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.gh").unwrap(),
+            target: awaken_agent_contract::McpTarget::parse_http("https://mcp.gh").unwrap(),
             prompts_as_skills: false,
             credential: Some(awaken_credential_contract::CredentialAccess::new(
                 awaken_credential_contract::CredentialRef {
@@ -470,10 +470,10 @@ mod acp_projection_tests {
     }
 
     fn receipt(
-        request: &awaken_session_mcp_contract::StageMcpAttachment,
+        request: &awaken_session_configuration_contract::mcp::StageMcpAttachment,
         realization: awaken_credential_contract::CredentialRealizationKind,
-    ) -> awaken_session_mcp_contract::McpRealizationReceipt {
-        awaken_session_mcp_contract::McpRealizationReceipt {
+    ) -> awaken_session_configuration_contract::mcp::McpRealizationReceipt {
+        awaken_session_configuration_contract::mcp::McpRealizationReceipt {
             generation: request.generation.clone(),
             realization_id: request.realization_id.clone(),
             selected_plaintext_holder: request.selected_plaintext_holder.clone(),
@@ -483,9 +483,9 @@ mod acp_projection_tests {
     }
 
     fn legacy_receipt(
-        request: &awaken_session_mcp_contract::StageMcpAttachment,
-    ) -> awaken_session_mcp_contract::McpRealizationReceipt {
-        awaken_session_mcp_contract::McpRealizationReceipt {
+        request: &awaken_session_configuration_contract::mcp::StageMcpAttachment,
+    ) -> awaken_session_configuration_contract::mcp::McpRealizationReceipt {
+        awaken_session_configuration_contract::mcp::McpRealizationReceipt {
             generation: request.generation.clone(),
             realization_id: request.realization_id.clone(),
             selected_plaintext_holder: request.selected_plaintext_holder.clone(),
@@ -672,7 +672,7 @@ mod acp_projection_tests {
         };
         let mut request = request(awaken_runtime_contract::PlaintextBoundary::Worker);
         request.name = "playwright".into();
-        request.target = awaken_session_mcp_contract::McpTarget::sandbox_stdio(
+        request.target = awaken_agent_contract::McpTarget::sandbox_stdio(
             "playwright-mcp",
             vec!["--headless".into()],
         )

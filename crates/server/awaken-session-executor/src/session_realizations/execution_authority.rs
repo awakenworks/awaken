@@ -7,7 +7,7 @@ use std::sync::{Arc, Weak};
 use std::{io, time::Duration};
 
 use awaken_provisioning_contract::{CurrentExecutionAuthority, SandboxEffectFence};
-use awaken_session_resource_contract::SessionRealizationLease;
+use awaken_session_configuration_contract::resource::SessionRealizationLease;
 
 use super::{SessionRealization, SessionRealizationSource, SessionRealizations};
 use crate::host_error::HostError;

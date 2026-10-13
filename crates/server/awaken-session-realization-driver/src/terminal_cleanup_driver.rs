@@ -50,7 +50,7 @@ async fn next_work<R: awaken_session_execution_contract::RealizationRuntime + ?S
     control: &dyn SessionTerminalCleanupControl,
     runtime: &R,
     session_id: &awaken_session_types::SessionId,
-    lease: &awaken_session_resource_contract::SessionRealizationLease,
+    lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
 ) -> Result<
     Option<(
         SessionTerminalCleanupWork,
@@ -75,7 +75,7 @@ async fn next_work<R: awaken_session_execution_contract::RealizationRuntime + ?S
 /// durable.
 pub async fn drive_session_terminal_cleanup(
     session_id: &awaken_session_types::SessionId,
-    asserted_lease: &awaken_session_resource_contract::SessionRealizationLease,
+    asserted_lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     control: &dyn SessionTerminalCleanupControl,
     realization: &dyn awaken_session_execution_contract::RealizationRuntime,
     runtime: &dyn awaken_session_execution_contract::TerminalCleanupRuntime,
@@ -312,8 +312,8 @@ mod tests {
         },
     };
 
-    fn lease() -> awaken_session_resource_contract::SessionRealizationLease {
-        awaken_session_resource_contract::SessionRealizationLease {
+    fn lease() -> awaken_session_configuration_contract::resource::SessionRealizationLease {
+        awaken_session_configuration_contract::resource::SessionRealizationLease {
             owner: "worker".into(),
             runtime_incarnation: "worker/boot".into(),
             epoch: 3,
@@ -385,8 +385,7 @@ mod tests {
                             ),
                         },
                 },
-                runtime_placement:
-                    awaken_session_configuration_contract::SessionRuntimePlacement::Local,
+                runtime_placement: awaken_session_types::SessionRuntimePlacement::Local,
                 mcp_authoring: Default::default(),
                 agent_id: "agent".into(),
                 agent_revision: None,
@@ -411,7 +410,7 @@ mod tests {
             resource_revision: 0,
             resources: Default::default(),
             previous_resource_manifest: Some(
-                awaken_session_resource_contract::SessionResourceManifest::at_revision(
+                awaken_session_configuration_contract::resource::SessionResourceManifest::at_revision(
                     "workspace",
                     0,
                     Default::default(),
@@ -425,7 +424,7 @@ mod tests {
 
     fn work(
         action: SessionTerminalCleanupAction,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> SessionTerminalCleanupWork {
         SessionTerminalCleanupWork {
             assignment: SessionTerminalCleanupAssignment {
@@ -468,7 +467,7 @@ mod tests {
         async fn terminal_cleanup_work(
             &self,
             _session_id: &awaken_session_types::SessionId,
-            _lease: &awaken_session_resource_contract::SessionRealizationLease,
+            _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         ) -> Result<Option<SessionTerminalCleanupWork>, SessionRealizationControlFailure> {
             self.events.lock().unwrap().push("poll".into());
             Ok(self.work.lock().unwrap().pop_front())
@@ -500,7 +499,7 @@ mod tests {
 
         async fn record_terminal_cleanup_preparation(
             &self,
-            _lease: &awaken_session_resource_contract::SessionRealizationLease,
+            _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
             preparation: awaken_session_state_contract::SessionCleanupPreparation,
         ) -> Result<(), SessionRealizationControlFailure> {
             self.events
@@ -526,7 +525,7 @@ mod tests {
 
         async fn record_terminal_cleanup_disposal(
             &self,
-            _lease: &awaken_session_resource_contract::SessionRealizationLease,
+            _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
             _receipt: SessionCleanupDisposalReceipt,
         ) -> Result<(), SessionRealizationControlFailure> {
             self.events.lock().unwrap().push("record-disposal".into());
@@ -541,7 +540,7 @@ mod tests {
         async fn terminal_repository_publication_command(
             &self,
             _session_id: &awaken_session_types::SessionId,
-            _lease: &awaken_session_resource_contract::SessionRealizationLease,
+            _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         ) -> Result<
             Option<awaken_session_realization_contract::SessionRepositoryPublicationProjection>,
             SessionRealizationControlFailure,
@@ -556,7 +555,7 @@ mod tests {
         async fn record_terminal_repository_publication_receipt(
             &self,
             _session_id: &awaken_session_types::SessionId,
-            lease: &awaken_session_resource_contract::SessionRealizationLease,
+            lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
             _receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt,
         ) -> Result<(), SessionRealizationControlFailure> {
             self.events.lock().unwrap().push(format!(
@@ -569,7 +568,7 @@ mod tests {
         async fn record_terminal_repository_publication_rejection(
             &self,
             _session_id: &awaken_session_types::SessionId,
-            lease: &awaken_session_resource_contract::SessionRealizationLease,
+            lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
             _rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection,
         ) -> Result<(), SessionRealizationControlFailure> {
             self.events.lock().unwrap().push(format!(
@@ -728,7 +727,7 @@ mod tests {
         async fn invalidate_session_realization_lease(
             &self,
             thread: &str,
-            lease: &awaken_session_resource_contract::SessionRealizationLease,
+            lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         ) -> Result<(), awaken_session_types::RunError> {
             awaken_session_execution_contract::NeutralRuntime
                 .invalidate_session_realization_lease(thread, lease)
@@ -741,7 +740,7 @@ mod tests {
         async fn execute_terminal_repository_publication_for_lease(
             &self,
             _command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
-            lease: &awaken_session_resource_contract::SessionRealizationLease,
+            lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         ) -> Result<
             awaken_session_state_contract::SessionRepositoryPublicationEffect,
             awaken_session_types::RunError,
@@ -813,7 +812,7 @@ mod tests {
         async fn acknowledge_completed_terminal_cleanup(
             &self,
             _session_id: &awaken_session_types::SessionId,
-            _lease: &awaken_session_resource_contract::SessionRealizationLease,
+            _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         ) {
             self.events.lock().unwrap().push("ack-completed".into());
         }

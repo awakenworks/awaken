@@ -187,7 +187,8 @@ impl BuiltInDreamAgent {
             .create_profiled_session(CreateProfiledSessionCommand {
                 owner_scope: request.workspace_id.clone(),
                 session_id: session_id.clone(),
-                mutation_policy: awaken_session_resource_contract::SessionMutationPolicy::Frozen,
+                mutation_policy:
+                    awaken_session_configuration_contract::resource::SessionMutationPolicy::Frozen,
                 application_origin: None,
                 agent_id: request.agent_id.clone(),
                 source_revision: None,
@@ -202,7 +203,7 @@ impl BuiltInDreamAgent {
                 env: Vec::new(),
                 prompts,
                 resource_inputs: vec![
-                    awaken_session_resource_contract::SessionInputAttachment {
+                    awaken_session_configuration_contract::resource::SessionInputAttachment {
                         binding: InputBinding {
                             binding_id: BindingId::from(format!(
                                 "dream:{}:input-memory",
@@ -222,7 +223,7 @@ impl BuiltInDreamAgent {
                         },
                         replaces: None,
                     },
-                    awaken_session_resource_contract::SessionInputAttachment {
+                    awaken_session_configuration_contract::resource::SessionInputAttachment {
                         binding: InputBinding {
                             binding_id: BindingId::from(format!(
                                 "dream:{}:output-memory",

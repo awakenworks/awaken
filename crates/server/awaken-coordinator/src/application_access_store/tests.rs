@@ -650,13 +650,13 @@ async fn run_postgres_repository_conformance(url: &str) {
     use sqlx::Executor;
     use sqlx::postgres::{PgPool, PgPoolOptions};
 
-    async fn schema_pool(url: &str) -> PgPool {
+    async fn schema_pool(url: &str, schema: &str) -> PgPool {
+        let search_path = format!("SET search_path = {schema}");
         PgPoolOptions::new()
-            .after_connect(|connection, _| {
+            .after_connect(move |connection, _| {
+                let search_path = search_path.clone();
                 Box::pin(async move {
-                    connection
-                        .execute("SET search_path = t_application_access")
-                        .await?;
+                    connection.execute(search_path.as_str()).await?;
                     Ok(())
                 })
             })
@@ -668,11 +668,11 @@ async fn run_postgres_repository_conformance(url: &str) {
     let admin = PgPool::connect(url)
         .await
         .expect("connect provisioned application access Postgres");
-    let _ = admin
-        .execute("DROP SCHEMA IF EXISTS t_application_access CASCADE")
-        .await;
+    // The convenience probe and required release gate may run concurrently.
+    // Each invocation owns a separate schema; neither can drop a peer's tables.
+    let schema = format!("t_application_access_{}", uuid::Uuid::new_v4().simple());
     admin
-        .execute("CREATE SCHEMA t_application_access")
+        .execute(format!("CREATE SCHEMA {schema}").as_str())
         .await
         .expect("create application access schema");
     admin.close().await;
@@ -692,27 +692,29 @@ async fn run_postgres_repository_conformance(url: &str) {
      * | PG-M4 | migrated | verify | no | E4 both runtime repositories open |
      */
     assert!(
-        PostgresApplicationAccessRepository::with_existing_pool(schema_pool(url).await)
+        PostgresApplicationAccessRepository::with_existing_pool(schema_pool(url, &schema).await)
             .await
             .is_err(),
         "PG-M1"
     );
-    let migration_pool = schema_pool(url).await;
+    let migration_pool = schema_pool(url, &schema).await;
     PostgresApplicationAccessRepository::migrate_pool(&migration_pool)
         .await
         .expect("PG-M2 migration-only installs application access bundle");
     migration_pool.close().await;
-    let repeated_migration_pool = schema_pool(url).await;
+    let repeated_migration_pool = schema_pool(url, &schema).await;
     PostgresApplicationAccessRepository::migrate_pool(&repeated_migration_pool)
         .await
         .expect("PG-M3 repeated migration is idempotent");
     repeated_migration_pool.close().await;
-    let first = PostgresApplicationAccessRepository::with_existing_pool(schema_pool(url).await)
-        .await
-        .expect("PG-M4 first verified Postgres repository");
-    let second = PostgresApplicationAccessRepository::with_existing_pool(schema_pool(url).await)
-        .await
-        .expect("PG-M4 second verified Postgres repository");
+    let first =
+        PostgresApplicationAccessRepository::with_existing_pool(schema_pool(url, &schema).await)
+            .await
+            .expect("PG-M4 first verified Postgres repository");
+    let second =
+        PostgresApplicationAccessRepository::with_existing_pool(schema_pool(url, &schema).await)
+            .await
+            .expect("PG-M4 second verified Postgres repository");
     repository_decision_table(&first, &second).await;
 
     /* Hosted store-level cause/effect graph:
@@ -757,7 +759,7 @@ async fn run_postgres_repository_conformance(url: &str) {
 
     drop(peer);
     let restarted_peer = ApplicationAccessStore::over(
-        PostgresApplicationAccessRepository::with_existing_pool(schema_pool(url).await)
+        PostgresApplicationAccessRepository::with_existing_pool(schema_pool(url, &schema).await)
             .await
             .expect("PG-S2 reconnect peer through schema verification"),
         awaken_time::system_clock(),
@@ -778,6 +780,14 @@ async fn run_postgres_repository_conformance(url: &str) {
         Err(ApplicationAuthenticationError::Invalid),
         "PG-S3 origin observes peer revocation"
     );
+    drop(origin);
+    drop(restarted_peer);
+    let cleanup = PgPool::connect(url).await.expect("connect fixture cleanup");
+    cleanup
+        .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+        .await
+        .expect("drop only this invocation's fixture schema");
+    cleanup.close().await;
 }
 
 /// Developer-probe coverage rules: C1 Postgres is reachable -> PG-D1 runs the

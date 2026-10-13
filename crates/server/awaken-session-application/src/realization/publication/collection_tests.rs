@@ -1,9 +1,11 @@
 // @formal evidence session_realization.publication_excludes_staged_retired_generation
 //! Real aggregate transitions and publication collections, without assumed uniqueness.
 use super::*;
-use awaken_session_mcp_contract::{
-    McpAttachmentDraft, McpAttachmentOrigin, McpRealizationClaim, McpTarget,
-    SessionMcpAttachmentSet,
+use {
+    awaken_agent_contract::McpTarget,
+    awaken_session_configuration_contract::mcp::{
+        McpAttachmentDraft, McpAttachmentOrigin, McpRealizationClaim, SessionMcpAttachmentSet,
+    },
 };
 
 fn draft(target: &str) -> McpAttachmentDraft {
@@ -109,8 +111,8 @@ fn check_replacement(renewed: bool, reverse: bool, removed: bool, acknowledged: 
         8 => {
             actual_new = actual_new
                 .with_persisted(|w| {
-                    w.generation = awaken_session_mcp_contract::McpGeneration::new(
-                        awaken_session_mcp_contract::McpAttachmentId("b".into()),
+                    w.generation = crate::session_mcp::McpGeneration::new(
+                        crate::session_mcp::McpAttachmentId("b".into()),
                         actual_new.generation().version(),
                         actual_new.generation().digest().clone(),
                     )

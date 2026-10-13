@@ -2,7 +2,7 @@
 
 use crate::*;
 use awaken_credential_contract::PlaintextHolder;
-use awaken_session_mcp_contract::{
+use awaken_session_configuration_contract::mcp::{
     McpAttachmentDraft, McpAttachmentError, McpGeneration, McpRealizationClaim, McpReplacementPlan,
 };
 use std::ops::Deref;

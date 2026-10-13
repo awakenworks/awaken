@@ -365,17 +365,17 @@ fn on_tool_use_environment() -> awaken_session_configuration_contract::Environme
 fn resource_transition(
     workspace: &str,
     previous_revision: u64,
-    previous: awaken_session_resource_contract::ResolvedSessionResources,
+    previous: crate::session_resource::ResolvedSessionResources,
     desired_revision: u64,
-    desired: awaken_session_resource_contract::ResolvedSessionResources,
-) -> awaken_session_resource_contract::SessionResourceTransition {
-    awaken_session_resource_contract::SessionResourceTransition::new(
-        awaken_session_resource_contract::SessionResourceManifest::at_revision(
+    desired: crate::session_resource::ResolvedSessionResources,
+) -> crate::session_resource::SessionResourceTransition {
+    crate::session_resource::SessionResourceTransition::new(
+        crate::session_resource::SessionResourceManifest::at_revision(
             workspace,
             previous_revision,
             previous,
         ),
-        awaken_session_resource_contract::SessionResourceManifest::at_revision(
+        crate::session_resource::SessionResourceManifest::at_revision(
             workspace,
             desired_revision,
             desired,
@@ -490,16 +490,14 @@ async fn install_pinned_managed_skill_session_with_tools(
 
 fn pinned_skill_resources(
     version: &awaken_skill_store::SkillVersion,
-) -> awaken_session_resource_contract::ResolvedSessionResources {
-    awaken_session_resource_contract::ResolvedSessionResources::default()
-        .with_skills(vec![
-            awaken_session_resource_contract::ResolvedSkillBinding {
-                kind: awaken_agent_contract::AgentSkillKind::Custom,
-                skill_id: version.skill_id.to_string(),
-                version: version.version,
-                bundle_sha256: version.bundle_sha256.clone(),
-            },
-        ])
+) -> crate::session_resource::ResolvedSessionResources {
+    crate::session_resource::ResolvedSessionResources::default()
+        .with_skills(vec![crate::session_resource::ResolvedSkillBinding {
+            kind: awaken_agent_contract::AgentSkillKind::Custom,
+            skill_id: version.skill_id.to_string(),
+            version: version.version,
+            bundle_sha256: version.bundle_sha256.clone(),
+        }])
         .expect("exact Skill Resource binding")
 }
 
@@ -874,13 +872,13 @@ fn http_basic_material(username: &str, password: &str) -> awaken_agent_contract:
 
 fn effective_resources(
     resources: Vec<TestInput>,
-) -> awaken_session_resource_contract::ResolvedSessionResources {
+) -> crate::session_resource::ResolvedSessionResources {
     use awaken_resource_contract::{
         BindingId, FileId, MemoryStoreId, RepositoryId, ResourceAccess,
     };
-    use awaken_session_resource_contract::{ResolvedInput, ResolvedInputSource};
+    use awaken_session_configuration_contract::resource::{ResolvedInput, ResolvedInputSource};
 
-    awaken_session_resource_contract::ResolvedSessionResources::try_new(
+    crate::session_resource::ResolvedSessionResources::try_new(
         resources
             .into_iter()
             .enumerate()
@@ -936,38 +934,36 @@ fn effective_repository(
     url: &str,
     mount_path: &str,
     credential_binding: Option<String>,
-) -> awaken_session_resource_contract::ResolvedSessionResources {
+) -> crate::session_resource::ResolvedSessionResources {
     let holder = awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
         .resource_holder;
     let credential = credential_binding.as_ref().map(|binding| {
-        Box::new(
-            awaken_session_resource_contract::ResolvedRepositoryCredential {
-                access: awaken_runtime_contract::CredentialAccess::new(
-                    awaken_runtime_contract::CredentialRef {
-                        id: binding.clone(),
-                        revision: 1,
-                    },
-                    awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-                    awaken_session_resource_contract::repository_transport_credential_usage(),
-                    awaken_runtime_contract::CredentialExecutionPolicy::exact(
-                        holder.clone(),
-                        awaken_runtime_contract::ModelExposurePolicy::Forbidden,
-                    ),
-                )
-                .with_target(
-                    awaken_session_resource_contract::repository_transport_credential_target(url)
-                        .expect("HTTPS Repository target"),
+        Box::new(crate::session_resource::ResolvedRepositoryCredential {
+            access: awaken_runtime_contract::CredentialAccess::new(
+                awaken_runtime_contract::CredentialRef {
+                    id: binding.clone(),
+                    revision: 1,
+                },
+                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                crate::session_resource::repository_transport_credential_usage(),
+                awaken_runtime_contract::CredentialExecutionPolicy::exact(
+                    holder.clone(),
+                    awaken_runtime_contract::ModelExposurePolicy::Forbidden,
                 ),
-                selected_plaintext_holder: holder,
-            },
-        )
+            )
+            .with_target(
+                crate::session_resource::repository_transport_credential_target(url)
+                    .expect("HTTPS Repository target"),
+            ),
+            selected_plaintext_holder: holder,
+        })
     });
-    awaken_session_resource_contract::ResolvedSessionResources::try_new(
-        vec![awaken_session_resource_contract::ResolvedInput {
+    crate::session_resource::ResolvedSessionResources::try_new(
+        vec![crate::session_resource::ResolvedInput {
             created_at_unix_ms: None,
             updated_at_unix_ms: None,
             binding_id: awaken_resource_contract::BindingId::from("test-repository"),
-            source: awaken_session_resource_contract::ResolvedInputSource::Repository {
+            source: crate::session_resource::ResolvedInputSource::Repository {
                 repository_id: awaken_resource_contract::RepositoryId::from(id),
                 config: awaken_resource_contract::RepositoryConfigVersion {
                     repository_id: id.into(),
@@ -1167,8 +1163,7 @@ fn compile_complete_test_session_projection(
     let baseline = awaken_session_configuration_contract::SessionBaseline::compile(
         awaken_session_configuration_contract::SessionBaselineInputs {
             environment,
-            runtime_placement:
-                awaken_session_configuration_contract::SessionRuntimePlacement::Worker,
+            runtime_placement: awaken_session_types::SessionRuntimePlacement::Worker,
             mcp_authoring: Default::default(),
             agent_id,
             agent_revision: None,
@@ -1183,10 +1178,10 @@ fn compile_complete_test_session_projection(
             transcript_prefix: None,
         },
     );
-    let previous = awaken_session_resource_contract::SessionResourceManifest::at_revision(
+    let previous = crate::session_resource::SessionResourceManifest::at_revision(
         workspace_id.clone(),
         0,
-        awaken_session_resource_contract::ResolvedSessionResources::default(),
+        crate::session_resource::ResolvedSessionResources::default(),
     );
     awaken_session_realization_contract::FrozenSessionProjection {
         workspace_id,
@@ -1264,7 +1259,7 @@ async fn install_complete_test_session_for_realization(
         .host
         .install_session_realization_lease(
             thread,
-            awaken_session_resource_contract::SessionRealizationLease {
+            crate::session_resource::SessionRealizationLease {
                 owner: "runtime-host-test".into(),
                 runtime_incarnation: format!("runtime-host-test-{thread}"),
                 epoch: 1,
@@ -2157,10 +2152,10 @@ pub(super) fn terminal_recovery_effect(
     thread: &str,
     owner: &str,
 ) -> (
-    awaken_session_resource_contract::SessionRealizationLease,
+    crate::session_resource::SessionRealizationLease,
     awaken_session_state_contract::SessionTerminalCleanupEffect,
 ) {
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = crate::session_resource::SessionRealizationLease {
         owner: owner.into(),
         runtime_incarnation: format!("{owner}:incarnation"),
         epoch: 1,
@@ -2181,7 +2176,7 @@ pub(super) fn terminal_recovery_effect(
 
 pub(super) fn disposing_terminal_environment(
     thread: &str,
-    lease: &awaken_session_resource_contract::SessionRealizationLease,
+    lease: &crate::session_resource::SessionRealizationLease,
     handle: &pc::SandboxHandle,
     checkpoint_id: &str,
 ) -> (
@@ -2247,7 +2242,7 @@ pub(super) fn disposing_terminal_environment(
 pub(super) fn fresh_terminal_fixture_before_create(
     session_id: &str,
     projection: &mut awaken_session_realization_contract::FrozenSessionProjection,
-    lease: &awaken_session_resource_contract::SessionRealizationLease,
+    lease: &crate::session_resource::SessionRealizationLease,
 ) -> awaken_session_state_contract::PersistedSession {
     assert!(matches!(
         projection.environment,
@@ -2294,7 +2289,7 @@ pub(super) fn fresh_terminal_fixture_before_create(
 fn terminal_test_session(
     session_id: &str,
     projection: &awaken_session_realization_contract::FrozenSessionProjection,
-    lease: awaken_session_resource_contract::SessionRealizationLease,
+    lease: crate::session_resource::SessionRealizationLease,
     children: impl IntoIterator<Item = String>,
     publication: Option<awaken_session_state_contract::SessionRepositoryPublicationIntent>,
 ) -> awaken_session_state_contract::PersistedSession {
@@ -2370,7 +2365,7 @@ fn terminal_preparation_authorization(
 
 fn terminal_disposal_effect(
     preparation: awaken_session_state_contract::SessionCleanupPreparation,
-    current_lease: awaken_session_resource_contract::SessionRealizationLease,
+    current_lease: crate::session_resource::SessionRealizationLease,
     projection: &awaken_session_realization_contract::FrozenSessionProjection,
 ) -> awaken_session_state_contract::SessionTerminalCleanupDisposalEffect {
     let session_id = preparation.effect.command.session_id.clone();
@@ -2429,7 +2424,7 @@ async fn install_terminal_recovery_projection(
     host: &Arc<SharedHost>,
     managed: &crate::ManagedHost,
     thread: &str,
-    lease: awaken_session_resource_contract::SessionRealizationLease,
+    lease: crate::session_resource::SessionRealizationLease,
     environment: awaken_session_state_contract::SessionEnvironmentState,
 ) -> awaken_session_realization_contract::FrozenSessionProjection {
     let mut projection = remote_terminal_cleanup_projection();
@@ -2473,8 +2468,7 @@ fn remote_terminal_cleanup_projection_with_idle_retention(
     let baseline = awaken_session_configuration_contract::SessionBaseline::compile(
         awaken_session_configuration_contract::SessionBaselineInputs {
             environment,
-            runtime_placement:
-                awaken_session_configuration_contract::SessionRuntimePlacement::Worker,
+            runtime_placement: awaken_session_types::SessionRuntimePlacement::Worker,
             mcp_authoring: Default::default(),
             agent_id: "terminal-agent".into(),
             agent_revision: None,
@@ -2498,12 +2492,10 @@ fn remote_terminal_cleanup_projection_with_idle_retention(
         environment: Default::default(),
         resource_revision: 0,
         resources: Default::default(),
-        previous_resource_manifest: Some(
-            awaken_session_resource_contract::SessionResourceManifest::new(
-                "terminal-workspace",
-                awaken_session_resource_contract::ResolvedSessionResources::default(),
-            ),
-        ),
+        previous_resource_manifest: Some(crate::session_resource::SessionResourceManifest::new(
+            "terminal-workspace",
+            crate::session_resource::ResolvedSessionResources::default(),
+        )),
         mcp: Vec::new(),
         tools: Default::default(),
         request_context: Vec::new(),
@@ -2514,7 +2506,7 @@ fn install_test_renewal_authority(
     host: &SharedHost,
     control: &RemoteTerminalCleanupControl,
     session_id: &str,
-    lease: awaken_session_resource_contract::SessionRealizationLease,
+    lease: crate::session_resource::SessionRealizationLease,
 ) {
     host.install_session_realization_lease(session_id, lease.clone())
         .unwrap();

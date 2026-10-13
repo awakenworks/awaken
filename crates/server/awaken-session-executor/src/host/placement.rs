@@ -178,7 +178,7 @@ pub fn self_hosted_inference_holder(
 pub fn remote_worker_placement(
     models: &awaken_runtime_contract::resolved::ResolvedSpec,
     environment: Option<&awaken_session_configuration_contract::EnvironmentSnapshot>,
-    resources: Option<&awaken_session_resource_contract::SessionResourceManifest>,
+    resources: Option<&crate::session_resource::SessionResourceManifest>,
     remote_required: bool,
 ) -> PlacementRequirements {
     let required_credentials = worker_local_credentials(models);
@@ -226,7 +226,7 @@ pub fn remote_worker_placement(
 fn apply_session_physical_placement(
     placement: &mut PlacementRequirements,
     environment: Option<&awaken_session_configuration_contract::EnvironmentSnapshot>,
-    resources: Option<&awaken_session_resource_contract::ResolvedSessionResources>,
+    resources: Option<&crate::session_resource::ResolvedSessionResources>,
     requires_local_environment: bool,
     requires_opaque_process: bool,
 ) {
@@ -295,7 +295,7 @@ fn apply_session_physical_placement(
 #[must_use]
 pub fn session_preparation_placement(
     environment: &awaken_session_configuration_contract::EnvironmentSnapshot,
-    resources: &awaken_session_resource_contract::ResolvedSessionResources,
+    resources: &crate::session_resource::ResolvedSessionResources,
     requires_opaque_process: bool,
 ) -> PlacementRequirements {
     let mut placement = PlacementRequirements::remote_required();
@@ -391,7 +391,8 @@ mod preparation_tests {
             credential_realization:
                 awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
         };
-        let resources = awaken_session_resource_contract::ResolvedSessionResources::default();
+        let resources =
+            awaken_session_configuration_contract::resource::ResolvedSessionResources::default();
         for opaque in [false, true] {
             let required = session_preparation_placement(&environment, &resources, opaque);
             assert_eq!(

@@ -5,8 +5,11 @@
 // @formal reason: rather than a direct formal-proof claim.
 //! Session Environment quiescence over the canonical durable MCP aggregate.
 
-use super::*;
-use crate::SessionId;
+use super::{
+    McpAttachmentError, McpAttachmentState, McpGenerationRef, McpSetRevision,
+    SessionMcpAttachmentSet,
+};
+use awaken_session_types::SessionId;
 
 impl SessionMcpAttachmentSet {
     /// Project the exact durable MCP generations whose published Runtime
@@ -82,6 +85,7 @@ impl SessionMcpAttachmentSet {
 
 #[cfg(test)]
 mod tests {
+    use super::super::McpRealizationClaim;
     use super::super::tests::draft;
     use super::*;
 
@@ -135,7 +139,7 @@ mod tests {
             set
         };
         let exact = acknowledged()
-            .active_generation_refs(&crate::SessionId::from("session-a"))
+            .active_generation_refs(&awaken_session_types::SessionId::from("session-a"))
             .expect("Q1 exact Active set");
 
         let mut accepted = acknowledged();
@@ -152,7 +156,10 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             accepted
-                .require_reprojection_after_quiescence(&crate::SessionId::from("session-a"), &exact)
+                .require_reprojection_after_quiescence(
+                    &awaken_session_types::SessionId::from("session-a"),
+                    &exact
+                )
                 .unwrap(),
             2,
             "Q1/E1"
@@ -182,7 +189,10 @@ mod tests {
         let replay_revision = accepted.revision;
         assert_eq!(
             accepted
-                .require_reprojection_after_quiescence(&crate::SessionId::from("session-a"), &exact)
+                .require_reprojection_after_quiescence(
+                    &awaken_session_types::SessionId::from("session-a"),
+                    &exact
+                )
                 .unwrap(),
             0,
             "Q4/E3"
@@ -203,7 +213,7 @@ mod tests {
             let before = set.clone();
             assert_eq!(
                 set.require_reprojection_after_quiescence(
-                    &crate::SessionId::from("session-a"),
+                    &awaken_session_types::SessionId::from("session-a"),
                     &asserted
                 ),
                 Err(McpAttachmentError::QuiescenceSetMismatch),
@@ -217,7 +227,7 @@ mod tests {
         let before = exhausted.clone();
         assert_eq!(
             exhausted.require_reprojection_after_quiescence(
-                &crate::SessionId::from("session-a"),
+                &awaken_session_types::SessionId::from("session-a"),
                 &exact
             ),
             Err(McpAttachmentError::CounterExhausted),

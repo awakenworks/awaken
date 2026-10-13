@@ -11,6 +11,8 @@ use crate::host_error::to_run_error;
 use crate::session_environment::{
     CanonicalSessionProjection, SessionEnvironmentAdoptionDisposition, requires_local_environment,
 };
+use awaken_session_configuration_contract::mcp as session_mcp;
+use awaken_session_configuration_contract::resource as session_resource;
 
 pub(super) struct WorkerProjectionSynchronizer<'a> {
     pub(super) host: &'a SharedHost,
@@ -361,7 +363,7 @@ impl awaken_session_realization_contract::SessionProjectionSynchronizer
     async fn invalidate_session_realization_lease(
         &self,
         session_id: &awaken_session_types::SessionId,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &session_resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         self.host
             .invalidate_session_realization_lease(session_id.as_str(), lease);
@@ -377,22 +379,21 @@ pub(in crate::host::worker_resolver) struct WorkerMcpEffects<'a>(
 impl awaken_session_execution_contract::McpAttachmentRealizer for WorkerMcpEffects<'_> {
     async fn stage_mcp_attachment(
         &self,
-        request: awaken_session_mcp_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, awaken_session_types::RunError>
-    {
+        request: session_mcp::StageMcpAttachment,
+    ) -> Result<session_mcp::McpRealizationReceipt, awaken_session_types::RunError> {
         self.0.stage_dispatched_mcp(request).await
     }
 
     async fn publish_mcp_generation(
         &self,
-        generation: awaken_session_mcp_contract::McpGenerationRef,
+        generation: session_mcp::McpGenerationRef,
     ) -> Result<(), awaken_session_types::RunError> {
         self.0.publish_dispatched_mcp(generation).await
     }
 
     async fn drain_mcp_generation(
         &self,
-        generation: awaken_session_mcp_contract::McpGenerationRef,
+        generation: session_mcp::McpGenerationRef,
     ) -> Result<(), awaken_session_types::RunError> {
         self.0.drain_dispatched_mcp(generation).await
     }
@@ -738,12 +739,12 @@ mod tests {
                 .create(memory_store, "/note.txt", "seed")
                 .await
                 .unwrap();
-            let resources = awaken_session_resource_contract::ResolvedSessionResources::try_new(
-                vec![awaken_session_resource_contract::ResolvedInput {
+            let resources = awaken_session_configuration_contract::resource::ResolvedSessionResources::try_new(
+                vec![awaken_session_configuration_contract::resource::ResolvedInput {
                     created_at_unix_ms: None,
                     updated_at_unix_ms: None,
                     binding_id: "chain-memory".into(),
-                    source: awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
+                    source: awaken_session_configuration_contract::resource::ResolvedInputSource::MemoryStore {
                         memory_store_id: memory_store.into(),
                         config: awaken_resource_contract::MemoryStoreConfigVersion {
                             memory_store_id: memory_store.into(),
@@ -760,7 +761,7 @@ mod tests {
             .unwrap();
             projection = crate::host::worker_resolver::test_support::frozen_projection_for_manifest(
                 projection.baseline.environment.clone(),
-                &awaken_session_resource_contract::SessionResourceManifest::at_revision(
+                &awaken_session_configuration_contract::resource::SessionResourceManifest::at_revision(
                     projection.workspace_id.clone(),
                     1,
                     resources,
@@ -771,13 +772,14 @@ mod tests {
         let control = RecoveryControl::fixed(projection.clone());
         let binding_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&control));
         managed.install_test_environment_binding_sink(binding_sink.clone());
-        let initial_lease = awaken_session_resource_contract::SessionRealizationLease {
-            owner: "worker-a".into(),
-            runtime_incarnation: "worker-a/boot-1".into(),
-            epoch: 1,
-            expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms()
-                + 60_000,
-        };
+        let initial_lease =
+            awaken_session_configuration_contract::resource::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "worker-a/boot-1".into(),
+                epoch: 1,
+                expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms()
+                    + 60_000,
+            };
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
             &managed,
             thread,
@@ -1052,7 +1054,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let claim = awaken_dispatch_contract::RunClaim::from(&claimed.lease);
-        let lease = awaken_session_resource_contract::SessionRealizationLease {
+        let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
             owner: claim.owner.clone(),
             runtime_incarnation: "worker-a/boot-2".into(),
             epoch: 2,
@@ -1194,7 +1196,7 @@ mod tests {
         let mut retired = vec![original.clone()];
         for round in 0..=successor_cancellations.len() {
             let projection = control.current_projection();
-            let lease = awaken_session_resource_contract::SessionRealizationLease {
+            let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
                 epoch: 2 + round as u64,
                 runtime_incarnation: format!("worker-a/boot-{}", 2 + round),
                 ..lease.clone()
@@ -1618,7 +1620,7 @@ mod tests {
                 .applied(),
             "CR1 C1 exact Run owns the original raw binding"
         );
-        let lease = awaken_session_resource_contract::SessionRealizationLease {
+        let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
             owner: claim.owner.clone(),
             runtime_incarnation: "worker-a/boot-1".into(),
             epoch: claim.epoch,
@@ -1838,12 +1840,13 @@ mod tests {
         let local_snapshot = test_activation(thread, "run-local-owner").snapshot;
         let mut local_projection = frozen_projection();
         local_projection.agent_publication = Some(local_snapshot.clone());
-        let cached_lease = awaken_session_resource_contract::SessionRealizationLease {
-            owner: "previous-worker".into(),
-            runtime_incarnation: "previous-worker/boot-1".into(),
-            epoch: 1,
-            expires_at_unix_ms: u64::MAX,
-        };
+        let cached_lease =
+            awaken_session_configuration_contract::resource::SessionRealizationLease {
+                owner: "previous-worker".into(),
+                runtime_incarnation: "previous-worker/boot-1".into(),
+                epoch: 1,
+                expires_at_unix_ms: u64::MAX,
+            };
         host.install_frozen_session_projection(
             thread,
             local_projection,
@@ -1891,7 +1894,7 @@ mod tests {
             owner: "worker-a".into(),
             epoch: 2,
         };
-        let lease = awaken_session_resource_contract::SessionRealizationLease {
+        let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
             owner: claim.owner.clone(),
             runtime_incarnation: "worker-a/boot-2".into(),
             epoch: claim.epoch,

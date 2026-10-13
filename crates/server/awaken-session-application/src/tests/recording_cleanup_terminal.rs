@@ -6,7 +6,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RecordingClea
     async fn execute_terminal_repository_publication_for_lease(
         &self,
         command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<awaken_session_state_contract::SessionRepositoryPublicationEffect, RunError> {
         let exact = self
             .terminal_assignments
@@ -76,7 +76,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RecordingClea
                 ),
             );
         }
-        let awaken_session_resource_contract::ResolvedInputSource::Repository {
+        let crate::session_resource::ResolvedInputSource::Repository {
             repository_id,
             config,
             ..
@@ -188,7 +188,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for RecordingClea
     async fn acknowledge_completed_terminal_cleanup(
         &self,
         session_id: &SessionId,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) {
         self.acknowledged_completed
             .lock()

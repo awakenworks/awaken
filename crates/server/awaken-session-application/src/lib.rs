@@ -8,17 +8,23 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
+use awaken_agent_contract::McpTarget;
 use awaken_environment_contract::EnvItem;
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
 use awaken_session_application_contract::LifecycleFactNotifier;
-use awaken_session_configuration_contract::{SandboxProvisioning, SessionRuntimePlacement};
-use awaken_session_mcp_contract::McpTarget;
 use awaken_session_repository_contract::SessionRepository;
 use awaken_session_execution_contract::{McpAttachmentRealizer, SessionEnvironmentBindingSink};
 #[cfg(test)]
 use awaken_session_state_contract::SessionExecutionState;
-use awaken_session_state_contract::{PersistedSession, SessionRecoveryQuarantine, SessionScan};
 use awaken_session_types::RunError;
+use {
+    awaken_session_configuration_contract::{EnvironmentSnapshot, SandboxProvisioning},
+    awaken_session_types::SessionRuntimePlacement,
+};
+use {
+    awaken_session_state_contract::{PersistedSession, SessionScan},
+    awaken_session_types::SessionRecoveryQuarantine,
+};
 
 pub use awaken_session_execution_contract::SessionExecutor;
 
@@ -254,7 +260,8 @@ pub use awaken_session_application_contract::{
     WorkDispatchFailure, WorkDispatchReconciliation, runtime_placement_for_topology,
 };
 
-pub use awaken_executable_environment_contract::ResolvedSessionEnvironment;
+pub type ResolvedSessionEnvironment =
+    awaken_executable_environment_contract::ResolvedSessionEnvironment<EnvironmentSnapshot>;
 use awaken_executable_environment_contract::SessionEnvironmentProjectionSource;
 use awaken_worker_contract::SessionWorkSource;
 /// One required Environment assembly, with query and Work roles from their owners.
@@ -264,10 +271,18 @@ use awaken_worker_contract::SessionWorkSource;
 /// use awaken_executable_environment_contract::SessionEnvironmentProjectionSource;
 /// use awaken_session_application::SessionEnvironmentSource;
 /// fn complete<T: SessionEnvironmentSource>() {}
-/// fn query_only<T: SessionEnvironmentProjectionSource>() { complete::<T>(); }
+/// fn query_only<T: SessionEnvironmentProjectionSource<Snapshot = awaken_session_configuration_contract::EnvironmentSnapshot>>() { complete::<T>(); }
 /// ```
-pub trait SessionEnvironmentSource: SessionEnvironmentProjectionSource + SessionWorkSource {}
-impl<T: SessionEnvironmentProjectionSource + SessionWorkSource + ?Sized> SessionEnvironmentSource
-    for T
+pub trait SessionEnvironmentSource:
+    SessionEnvironmentProjectionSource<Snapshot = EnvironmentSnapshot> + SessionWorkSource
 {
 }
+impl<
+    T: SessionEnvironmentProjectionSource<Snapshot = EnvironmentSnapshot> + SessionWorkSource + ?Sized,
+> SessionEnvironmentSource for T
+{
+}
+
+pub(crate) use awaken_session_configuration_contract::mcp as session_mcp;
+
+pub(crate) use awaken_session_configuration_contract::resource as session_resource;

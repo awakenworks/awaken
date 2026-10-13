@@ -27,7 +27,7 @@ impl ManagedHost {
 impl awaken_session_mcp::McpStagingSession for ManagedHost {
     fn mcp_generation_is_authorized_at(
         &self,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
+        generation: &crate::session_mcp::McpGenerationRef,
         now_unix_ms: u64,
     ) -> bool {
         self.host
@@ -121,8 +121,8 @@ impl awaken_session_mcp::McpStagingSession for ManagedHost {
 impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
     async fn stage_mcp_attachment(
         &self,
-        request: awaken_session_mcp_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, RunError> {
+        request: crate::session_mcp::StageMcpAttachment,
+    ) -> Result<crate::session_mcp::McpRealizationReceipt, RunError> {
         self.host
             .mcp
             .stage_attachment(
@@ -136,7 +136,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
 
     async fn publish_mcp_generation(
         &self,
-        generation: awaken_session_mcp_contract::McpGenerationRef,
+        generation: crate::session_mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         self.host
             .mcp
@@ -146,7 +146,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
 
     async fn drain_mcp_generation(
         &self,
-        generation: awaken_session_mcp_contract::McpGenerationRef,
+        generation: crate::session_mcp::McpGenerationRef,
     ) -> Result<(), RunError> {
         self.host
             .mcp

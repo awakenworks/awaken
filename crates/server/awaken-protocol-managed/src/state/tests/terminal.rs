@@ -217,7 +217,7 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
             .session
             .frozen_baseline()
             .is_some_and(|baseline| baseline.runtime_placement
-                == awaken_session_configuration_contract::SessionRuntimePlacement::Worker),
+                == awaken_session_types::SessionRuntimePlacement::Worker),
         "P1 freezes the Runtime placement fact"
     );
     assert!(persisted.session.realization.is_none(), "P1/E2");
@@ -1776,7 +1776,7 @@ impl awaken_session_execution_contract::RealizationRuntime for EndSessionFailer 
     async fn invalidate_session_realization_lease(
         &self,
         thread: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
@@ -2190,7 +2190,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for EndSessionFai
     async fn execute_terminal_repository_publication_for_lease(
         &self,
         command: awaken_session_state_contract::SessionRepositoryPublicationCommand,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<
         awaken_session_state_contract::SessionRepositoryPublicationEffect,
         awaken_session_types::RunError,
@@ -2255,7 +2255,7 @@ impl awaken_session_execution_contract::TerminalCleanupRuntime for EndSessionFai
     async fn acknowledge_completed_terminal_cleanup(
         &self,
         session_id: &awaken_session_types::SessionId,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) {
         awaken_session_execution_contract::NeutralRuntime
             .acknowledge_completed_terminal_cleanup(session_id, lease)

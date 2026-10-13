@@ -83,7 +83,7 @@ struct RecordingSessionControl {
 impl RecordingSessionControl {
     fn receipt(
         &self,
-        lease: awaken_session_resource_contract::SessionRealizationLease,
+        lease: awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<
         awaken_session_realization_contract::SessionRealizationLeaseReceipt,
         awaken_session_realization_contract::SessionRealizationControlFailure,
@@ -282,8 +282,7 @@ fn frozen_projection() -> awaken_session_realization_contract::FrozenSessionProj
                     resource_holder: holder,
                 },
             },
-            runtime_placement:
-                awaken_session_configuration_contract::SessionRuntimePlacement::Worker,
+            runtime_placement: awaken_session_types::SessionRuntimePlacement::Worker,
             mcp_authoring: Default::default(),
             agent_id: "agent".into(),
             agent_revision: None,
@@ -330,7 +329,7 @@ impl awaken_session_realization_contract::SessionRealizationControl for Recordin
             awaken_session_realization_contract::SessionRealizationDirective {
                 projection,
                 authority: self.receipt(
-                    awaken_session_resource_contract::SessionRealizationLease {
+                    awaken_session_configuration_contract::resource::SessionRealizationLease {
                         owner: command.target.owner,
                         runtime_incarnation: command.target.runtime_incarnation,
                         epoch: 2,
@@ -432,7 +431,7 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue for Record
                 session_id: "signed-terminal-recovery".into(),
                 projection,
                 authority: self.receipt(
-                    awaken_session_resource_contract::SessionRealizationLease {
+                    awaken_session_configuration_contract::resource::SessionRealizationLease {
                         owner: target.owner,
                         runtime_incarnation: target.runtime_incarnation,
                         epoch: 9,
@@ -446,7 +445,7 @@ impl awaken_session_realization_contract::SessionTerminalCleanupQueue for Record
     async fn terminal_cleanup_work(
         &self,
         session_id: &SessionId,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_realization_contract::SessionTerminalCleanupWork>,
         awaken_session_realization_contract::SessionRealizationControlFailure,
@@ -497,7 +496,7 @@ impl awaken_session_realization_contract::SessionTerminalPreparationControl
 
     async fn record_terminal_cleanup_preparation(
         &self,
-        _lease: &awaken_session_resource_contract::SessionRealizationLease,
+        _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         preparation: awaken_session_state_contract::SessionCleanupPreparation,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
@@ -524,7 +523,7 @@ impl awaken_session_realization_contract::SessionTerminalDisposalControl
 
     async fn record_terminal_cleanup_disposal(
         &self,
-        _lease: &awaken_session_resource_contract::SessionRealizationLease,
+        _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         receipt: awaken_session_state_contract::SessionCleanupDisposalReceipt,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
@@ -540,7 +539,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
     async fn terminal_repository_publication_command(
         &self,
         _session_id: &SessionId,
-        _lease: &awaken_session_resource_contract::SessionRealizationLease,
+        _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_realization_contract::SessionRepositoryPublicationProjection>,
         awaken_session_realization_contract::SessionRealizationControlFailure,
@@ -556,7 +555,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
     async fn record_terminal_repository_publication_receipt(
         &self,
         _session_id: &SessionId,
-        _lease: &awaken_session_resource_contract::SessionRealizationLease,
+        _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
@@ -570,7 +569,7 @@ impl awaken_session_realization_contract::SessionTerminalRepositoryPublicationCo
     async fn record_terminal_repository_publication_rejection(
         &self,
         _session_id: &SessionId,
-        _lease: &awaken_session_resource_contract::SessionRealizationLease,
+        _lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.terminal_control_calls.fetch_add(1, Ordering::SeqCst);
@@ -1078,11 +1077,12 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     );
     // T31: the signed resume body has no resource selector. Only the guarded
     // durable dispatch supplies the exact pin, including explicit empty input.
-    let carried_resources = awaken_session_resource_contract::SessionResourceManifest::at_revision(
-        "signed-workspace",
-        7,
-        Default::default(),
-    );
+    let carried_resources =
+        awaken_session_configuration_contract::resource::SessionResourceManifest::at_revision(
+            "signed-workspace",
+            7,
+            Default::default(),
+        );
     let mut request = standard_worker_dispatch(activation());
     request.session_resources = Some(awaken_dispatch::SessionResourceEnvelope::at_revision(
         carried_resources.workspace_id.clone(),
@@ -2031,7 +2031,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
 
     let renewal = awaken_session_realization_contract::RenewSessionRealization {
         session_id: "signed-thread".into(),
-        asserted_lease: awaken_session_resource_contract::SessionRealizationLease {
+        asserted_lease: awaken_session_configuration_contract::resource::SessionRealizationLease {
             owner: registered.snapshot.identity.worker_id.clone(),
             runtime_incarnation: registered.snapshot.identity.lease_owner(),
             epoch: realization_lease.epoch,
@@ -2908,7 +2908,7 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
 
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
         owner: identity.worker_id.clone(),
         runtime_incarnation: identity.lease_owner(),
         epoch: 2,

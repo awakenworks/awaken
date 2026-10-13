@@ -18,7 +18,7 @@ async fn captured_environment_intent_survives_renewal_without_rebuilding_adopt()
         .unwrap();
     let sink = Arc::new(ResponseLossBindingSink::default());
     crate::ManagedHost::new(host.clone()).install_test_environment_binding_sink(sink.clone());
-    let original_lease = awaken_session_resource_contract::SessionRealizationLease {
+    let original_lease = crate::session_resource::SessionRealizationLease {
         owner: "worker".into(),
         runtime_incarnation: "boot".into(),
         epoch: 1,
@@ -31,7 +31,7 @@ async fn captured_environment_intent_survives_renewal_without_rebuilding_adopt()
     )
     .from_binding("original-source");
     let proof = awaken_session_realization_contract::SessionRealizationLeaseReceipt::issued_at(
-        awaken_session_resource_contract::SessionRealizationLease {
+        crate::session_resource::SessionRealizationLease {
             expires_at_unix_ms: 120_000,
             ..original_lease
         },
@@ -47,7 +47,7 @@ async fn captured_environment_intent_survives_renewal_without_rebuilding_adopt()
         let requested = awaken_session_state_contract::SessionEnvironmentEffectIntent::new(
             thread,
             awaken_session_state_contract::SessionEnvironmentEffectKind::Adopt,
-            Some(awaken_session_resource_contract::SessionRealizationLease {
+            Some(crate::session_resource::SessionRealizationLease {
                 expires_at_unix_ms: request_expiry,
                 ..original.realization().unwrap().clone()
             }),
@@ -777,7 +777,7 @@ async fn recovered_environment_waits_for_replacement_realization_before_publish(
     );
     host.install_session_realization_lease(
         "binding-restart",
-        awaken_session_resource_contract::SessionRealizationLease {
+        crate::session_resource::SessionRealizationLease {
             owner: "local-worker".into(),
             runtime_incarnation: "replacement".into(),
             epoch: 2,
@@ -820,7 +820,7 @@ async fn environment_binding_catches_up_across_multiple_realization_fences() {
     for epoch in [2, 3] {
         host.install_session_realization_lease(
             "binding-moving-fence",
-            awaken_session_resource_contract::SessionRealizationLease {
+            crate::session_resource::SessionRealizationLease {
                 owner: "worker".into(),
                 runtime_incarnation: "worker/incarnation".into(),
                 epoch,

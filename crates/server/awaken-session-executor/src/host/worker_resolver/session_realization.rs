@@ -280,9 +280,9 @@ mod tests {
     impl awaken_session_execution_contract::McpAttachmentRealizer for RecordingMcpRealizer {
         async fn stage_mcp_attachment(
             &self,
-            request: awaken_session_mcp_contract::StageMcpAttachment,
+            request: awaken_session_configuration_contract::mcp::StageMcpAttachment,
         ) -> Result<
-            awaken_session_mcp_contract::McpRealizationReceipt,
+            awaken_session_configuration_contract::mcp::McpRealizationReceipt,
             awaken_session_types::RunError,
         > {
             let first_stage = {
@@ -314,18 +314,20 @@ mod tests {
                     "MCP stage ran before the frozen Environment was resident",
                 ));
             }
-            Ok(awaken_session_mcp_contract::McpRealizationReceipt {
-                receipt_fingerprint: request.fingerprint(),
-                generation: request.generation,
-                realization_id: request.realization_id,
-                selected_plaintext_holder: request.selected_plaintext_holder,
-                actual_realization_kind: None,
-            })
+            Ok(
+                awaken_session_configuration_contract::mcp::McpRealizationReceipt {
+                    receipt_fingerprint: request.fingerprint(),
+                    generation: request.generation,
+                    realization_id: request.realization_id,
+                    selected_plaintext_holder: request.selected_plaintext_holder,
+                    actual_realization_kind: None,
+                },
+            )
         }
 
         async fn publish_mcp_generation(
             &self,
-            _generation: awaken_session_mcp_contract::McpGenerationRef,
+            _generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
         ) -> Result<(), awaken_session_types::RunError> {
             self.calls.lock().unwrap().push("publish");
             Ok(())
@@ -333,7 +335,7 @@ mod tests {
 
         async fn drain_mcp_generation(
             &self,
-            _generation: awaken_session_mcp_contract::McpGenerationRef,
+            _generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
         ) -> Result<(), awaken_session_types::RunError> {
             self.calls.lock().unwrap().push("drain");
             Ok(())
@@ -474,8 +476,8 @@ mod tests {
 
     struct RenewalDuringStageControl {
         projection: awaken_session_realization_contract::FrozenSessionProjection,
-        stage: awaken_session_mcp_contract::StageMcpAttachment,
-        lease: Mutex<awaken_session_resource_contract::SessionRealizationLease>,
+        stage: awaken_session_configuration_contract::mcp::StageMcpAttachment,
+        lease: Mutex<awaken_session_configuration_contract::resource::SessionRealizationLease>,
         renewal_calls: std::sync::atomic::AtomicUsize,
         renewals_on_activate_remaining: std::sync::atomic::AtomicUsize,
         repeat_stage_without_progress: bool,
@@ -629,7 +631,9 @@ mod tests {
             _claim: &awaken_dispatch_contract::RunClaim,
             _session_id: &str,
             _session_work_authority: Option<&awaken_worker_contract::SessionWorkAuthorityReceipt>,
-            _continuation: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+            _continuation: Option<
+                &awaken_session_configuration_contract::resource::SessionRealizationLease,
+            >,
         ) -> Result<
             Option<awaken_session_realization_contract::SessionRealizationDirective>,
             awaken_session_realization_contract::ClaimedSessionControlError,
@@ -647,17 +651,17 @@ mod tests {
         expires_at_unix_ms: u64,
     ) -> (
         awaken_session_realization_contract::FrozenSessionProjection,
-        awaken_session_resource_contract::SessionRealizationLease,
-        awaken_session_mcp_contract::StageMcpAttachment,
+        awaken_session_configuration_contract::resource::SessionRealizationLease,
+        awaken_session_configuration_contract::mcp::StageMcpAttachment,
     ) {
         let mut projection = frozen_projection();
-        let lease = awaken_session_resource_contract::SessionRealizationLease {
+        let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/boot-1".into(),
             epoch: 1,
             expires_at_unix_ms,
         };
-        let stage = awaken_session_mcp_contract::StageMcpAttachment {
+        let stage = awaken_session_configuration_contract::mcp::StageMcpAttachment {
             workspace_id: "workspace".into(),
             generation: crate::test_mcp::mcp_fence(
                 thread,
@@ -670,7 +674,7 @@ mod tests {
             realization_id: "realize-browser-1".into(),
             stage_idempotency_key: "stage-browser-1".into(),
             name: "browser".into(),
-            target: awaken_session_mcp_contract::McpTarget::parse_http(
+            target: awaken_agent_contract::McpTarget::parse_http(
                 "https://browser.example.test/mcp",
             )
             .expect("HTTP MCP target"),
@@ -678,29 +682,31 @@ mod tests {
             prompts_as_skills: false,
             selected_plaintext_holder: None,
         };
-        projection
-            .mcp
-            .push(awaken_session_mcp_contract::SessionMcpAttachment {
+        projection.mcp.push(
+            awaken_session_configuration_contract::mcp::SessionMcpAttachment {
                 attachment_id: stage.generation.attachment_id().clone(),
                 name: stage.name.clone(),
                 generation: stage.generation.generation().clone(),
                 target: stage.target.clone(),
                 prompts_as_skills: stage.prompts_as_skills,
-                origin: awaken_session_mcp_contract::McpAttachmentOrigin::Agent,
+                origin: awaken_session_configuration_contract::mcp::McpAttachmentOrigin::Agent,
                 credential: stage.credential.clone(),
                 selected_plaintext_holder: stage.selected_plaintext_holder.clone(),
-                state: awaken_session_mcp_contract::McpAttachmentState::Realizing,
+                state: awaken_session_configuration_contract::mcp::McpAttachmentState::Realizing,
                 publication_acknowledged: false,
-                realization: Some(awaken_session_mcp_contract::McpRealizationClaim {
-                    realization_id: stage.realization_id.clone(),
-                    runtime_incarnation: stage.generation.runtime_incarnation().to_owned(),
-                    lease_epoch: stage.generation.lease_epoch().get(),
-                    lease_expires_at_unix_ms: stage.generation.lease_expires_at_unix_ms(),
-                    stage_idempotency_key: stage.stage_idempotency_key.clone(),
-                }),
+                realization: Some(
+                    awaken_session_configuration_contract::mcp::McpRealizationClaim {
+                        realization_id: stage.realization_id.clone(),
+                        runtime_incarnation: stage.generation.runtime_incarnation().to_owned(),
+                        lease_epoch: stage.generation.lease_epoch().get(),
+                        lease_expires_at_unix_ms: stage.generation.lease_expires_at_unix_ms(),
+                        stage_idempotency_key: stage.stage_idempotency_key.clone(),
+                    },
+                ),
                 attempts: 1,
                 last_error: None,
-            });
+            },
+        );
         (projection, lease, stage)
     }
 
@@ -831,8 +837,7 @@ mod tests {
                             resource_holder: holder,
                         },
                 },
-                runtime_placement:
-                    awaken_session_configuration_contract::SessionRuntimePlacement::Worker,
+                runtime_placement: awaken_session_types::SessionRuntimePlacement::Worker,
                 mcp_authoring: Default::default(),
                 agent_id: "agent-a".into(),
                 agent_revision: None,
@@ -857,9 +862,9 @@ mod tests {
             resource_revision: 0,
             resources: Default::default(),
             previous_resource_manifest: Some(
-                awaken_session_resource_contract::SessionResourceManifest::new(
+                awaken_session_configuration_contract::resource::SessionResourceManifest::new(
                     "workspace",
-                    awaken_session_resource_contract::ResolvedSessionResources::default(),
+                    awaken_session_configuration_contract::resource::ResolvedSessionResources::default(),
                 ),
             ),
             tools: Default::default(),
@@ -901,7 +906,7 @@ mod tests {
         remote.resources = remote
             .resources
             .with_skills(vec![
-                awaken_session_resource_contract::ResolvedSkillBinding {
+                awaken_session_configuration_contract::resource::ResolvedSkillBinding {
                     kind: awaken_agent_contract::AgentSkillKind::Custom,
                     skill_id: "design".into(),
                     version: 36,
@@ -909,7 +914,7 @@ mod tests {
                 },
             ])
             .unwrap();
-        let lease = awaken_session_resource_contract::SessionRealizationLease {
+        let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/boot-1".into(),
             epoch: 1,
@@ -1009,7 +1014,7 @@ mod tests {
             .recompute_fingerprint()
             .expect("P1 frozen publication has a canonical fingerprint");
         projection.agent_publication = Some(snapshot.clone());
-        let lease = awaken_session_resource_contract::SessionRealizationLease {
+        let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/boot-1".into(),
             epoch: 1,
@@ -1560,7 +1565,7 @@ mod tests {
         let storage = tempfile::tempdir().expect("storage");
         let thread = "cold-frozen-environment";
         let activation = test_activation(thread, "run-cold-frozen-environment");
-        let lease = awaken_session_resource_contract::SessionRealizationLease {
+        let lease = awaken_session_configuration_contract::resource::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a".into(),
             epoch: 1,
@@ -1619,13 +1624,13 @@ mod tests {
         drop(original_managed);
         drop(original);
 
-        let stage = awaken_session_mcp_contract::StageMcpAttachment {
+        let stage = awaken_session_configuration_contract::mcp::StageMcpAttachment {
             workspace_id: "workspace".into(),
             generation: crate::test_mcp::mcp_fence(thread, "browser", 1, "worker-a", 1, u64::MAX),
             realization_id: "realize-browser-1".into(),
             stage_idempotency_key: "recover-browser-1".into(),
             name: "browser".into(),
-            target: awaken_session_mcp_contract::McpTarget::sandbox_stdio(
+            target: awaken_agent_contract::McpTarget::sandbox_stdio(
                 "playwright-mcp",
                 vec!["--headless".into()],
             )
@@ -1881,7 +1886,7 @@ mod tests {
         let first_use_thread = "cold-first-use-environment";
         let first_use_activation = test_activation(first_use_thread, "run-cold-first-use");
         let first_use_projection = frozen_projection();
-        let first_use_stage = awaken_session_mcp_contract::StageMcpAttachment {
+        let first_use_stage = awaken_session_configuration_contract::mcp::StageMcpAttachment {
             generation: stage
                 .generation
                 .with_persisted(|w| w.session_id = first_use_thread.into())
@@ -1894,7 +1899,7 @@ mod tests {
             awaken_session_realization_contract::SessionRealizationDirective {
                 projection: first_use_projection.clone(),
                 authority: crate::installed_session::test_lease_receipt(
-                    awaken_session_resource_contract::SessionRealizationLease {
+                    awaken_session_configuration_contract::resource::SessionRealizationLease {
                         owner: "worker-a".into(),
                         runtime_incarnation: "worker-a".into(),
                         epoch: 1,

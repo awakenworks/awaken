@@ -25,7 +25,7 @@ pub(crate) const MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS: usize =
 pub(super) struct ResourcePreparation<'a> {
     host: &'a crate::SharedHost,
     session: &'a str,
-    asserted: awaken_session_resource_contract::SessionRealizationLease,
+    asserted: crate::session_resource::SessionRealizationLease,
     cancellation: Arc<awaken_runtime_contract::CancellationToken>,
     introduced_lease: bool,
 }
@@ -166,7 +166,7 @@ impl crate::SharedHost {
         &self,
         control: &DeadlineSessionRealizationControl<'_>,
         session_id: String,
-        lease: awaken_session_resource_contract::SessionRealizationLease,
+        lease: crate::session_resource::SessionRealizationLease,
         requested_expiry_unix_ms: u64,
     ) -> Result<bool, crate::HostError> {
         // Cause/effect decision table: C1 this lease was selected by the due-only
@@ -403,12 +403,12 @@ impl crate::SharedHost {
         // lane owns cold claim-next recovery and complete effect execution.
         let order = |left: &(
             String,
-            awaken_session_resource_contract::SessionRealizationLease,
+            crate::session_resource::SessionRealizationLease,
             std::time::Duration,
         ),
                      right: &(
             String,
-            awaken_session_resource_contract::SessionRealizationLease,
+            crate::session_resource::SessionRealizationLease,
             std::time::Duration,
         )| { left.2.cmp(&right.2).then_with(|| left.0.cmp(&right.0)) };
         due.sort_by(order);

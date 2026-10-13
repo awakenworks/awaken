@@ -47,7 +47,7 @@ struct Route {
     /// Opaque sandbox-held capability. It is scoped by the surrounding route
     /// key and never persisted as Session desired state.
     capability: String,
-    generation: awaken_session_mcp_contract::McpGenerationRef,
+    generation: awaken_session_configuration_contract::mcp::McpGenerationRef,
     /// The existing MCP activity primitive, retained by this unique route
     /// owner so already-cloned Axum handlers cannot outlive generation drain.
     call_fence: awaken_ext_mcp::transport::McpCallFence,
@@ -55,8 +55,11 @@ struct Route {
 
 type RouteKey = (String, String, u64);
 type Routes = Arc<Mutex<HashMap<RouteKey, Route>>>;
-type GenerationAuthority =
-    Arc<dyn Fn(&awaken_session_mcp_contract::McpGenerationRef, u64) -> bool + Send + Sync>;
+type GenerationAuthority = Arc<
+    dyn Fn(&awaken_session_configuration_contract::mcp::McpGenerationRef, u64) -> bool
+        + Send
+        + Sync,
+>;
 
 /// Deployment-owned issuer for the existing authenticated HTTPS CONNECT path.
 /// It never chooses an MCP target or handles the upstream bearer; the relay
@@ -263,7 +266,7 @@ impl McpRelay {
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_route(
         &self,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
         server: &McpTransportMaterial,
     ) {
         if !self.stage_route(generation, server) {
@@ -276,7 +279,7 @@ impl McpRelay {
     /// request's material.
     pub fn stage_route(
         &self,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
         server: &McpTransportMaterial,
     ) -> bool {
         let Some(url) = server.http_url() else {
@@ -306,7 +309,7 @@ impl McpRelay {
     /// not create the route through the canonical realizer path.
     pub fn update_staged_route(
         &self,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
         server: &McpTransportMaterial,
     ) -> bool {
         let mut routes = self.routes.lock().unwrap();
@@ -335,7 +338,10 @@ impl McpRelay {
     /// The route is removed only for its own tenure: a late drain asserted
     /// under a predecessor (or any other) tenure of the same route key leaves
     /// the current owner's route in place.
-    pub fn remove_route(&self, generation: &awaken_session_mcp_contract::McpGenerationRef) {
+    pub fn remove_route(
+        &self,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
+    ) {
         let mut routes = self.routes.lock().unwrap();
         let key = route_key(generation);
         if routes
@@ -352,7 +358,7 @@ impl McpRelay {
     /// same route key gets nothing, so it can never close the owner's fence.
     pub fn route_call_fence(
         &self,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Option<awaken_ext_mcp::transport::McpCallFence> {
         self.routes
             .lock()
@@ -376,7 +382,7 @@ impl McpRelay {
     /// tenure may read its capability.
     pub fn route_url(
         &self,
-        generation: &awaken_session_mcp_contract::McpGenerationRef,
+        generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
     ) -> Option<String> {
         let capability = self
             .routes
@@ -397,7 +403,9 @@ impl McpRelay {
     }
 }
 
-fn route_key(generation: &awaken_session_mcp_contract::McpGenerationRef) -> RouteKey {
+fn route_key(
+    generation: &awaken_session_configuration_contract::mcp::McpGenerationRef,
+) -> RouteKey {
     (
         generation.session_id().to_string(),
         generation.attachment_id().0.clone(),
@@ -589,7 +597,7 @@ mod tests {
         session: &str,
         attachment: &str,
         generation: u64,
-    ) -> awaken_session_mcp_contract::McpGenerationRef {
+    ) -> awaken_session_configuration_contract::mcp::McpGenerationRef {
         crate::test_mcp::mcp_fence(session, attachment, generation, "runtime-1", 4, u64::MAX)
     }
 

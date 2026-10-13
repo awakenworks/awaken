@@ -13,9 +13,8 @@ pub(super) struct UnsupportedMcpAttachmentRealizer;
 impl awaken_session_execution_contract::McpAttachmentRealizer for UnsupportedMcpAttachmentRealizer {
     async fn stage_mcp_attachment(
         &self,
-        _request: awaken_session_mcp_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_mcp_contract::McpRealizationReceipt, awaken_session_types::RunError>
-    {
+        _request: crate::session_mcp::StageMcpAttachment,
+    ) -> Result<crate::session_mcp::McpRealizationReceipt, awaken_session_types::RunError> {
         Err(awaken_session_types::RunError::classified(
             "mcp_runtime_unsupported",
             "fixture does not support generation-fenced MCP realization",
@@ -24,7 +23,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for UnsupportedMcp
 
     async fn publish_mcp_generation(
         &self,
-        _generation: awaken_session_mcp_contract::McpGenerationRef,
+        _generation: crate::session_mcp::McpGenerationRef,
     ) -> Result<(), awaken_session_types::RunError> {
         Err(awaken_session_types::RunError::classified(
             "mcp_runtime_unsupported",
@@ -34,7 +33,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for UnsupportedMcp
 
     async fn drain_mcp_generation(
         &self,
-        _generation: awaken_session_mcp_contract::McpGenerationRef,
+        _generation: crate::session_mcp::McpGenerationRef,
     ) -> Result<(), awaken_session_types::RunError> {
         Err(awaken_session_types::RunError::classified(
             "mcp_runtime_unsupported",

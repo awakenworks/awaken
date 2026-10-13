@@ -7,7 +7,7 @@
 // @formal reason: product-requirement classification, not a direct formal-proof claim.
 use std::time::Duration;
 
-use awaken_session_resource_contract::SessionRealizationLease;
+use awaken_session_configuration_contract::resource::SessionRealizationLease;
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{VerifiedWorkerContext, verify_current_worker_identity};
 use axum::http::StatusCode;
@@ -112,13 +112,13 @@ pub(crate) fn clock_ms(clock: &dyn awaken_time::WallClock) -> u64 {
 pub(crate) fn frozen_resource_manifest(
     envelope: Option<&awaken_dispatch_contract::SessionResourceEnvelope>,
     workspace_id: &str,
-) -> Option<awaken_session_resource_contract::SessionResourceManifest> {
+) -> Option<awaken_session_configuration_contract::resource::SessionResourceManifest> {
     envelope
         .filter(|envelope| envelope.workspace_id == workspace_id)
         .and_then(|envelope| {
             envelope
                 .decode_with(
-                    awaken_session_resource_contract::SessionResourceManifest::decode_resources,
+                    awaken_session_configuration_contract::resource::SessionResourceManifest::decode_resources,
                 )
                 .ok()
         })

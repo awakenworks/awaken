@@ -13,7 +13,7 @@ async fn invalid_worker_demand_projection_does_not_reject_the_session_root() {
             .unwrap(),
     );
     let mut root = persisted("invalid-worker-owner", true, "idle");
-    root.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+    root.realization = Some(crate::session_resource::SessionRealizationLease {
         owner: String::new(),
         runtime_incarnation: "invalid:pod".into(),
         epoch: 1,
@@ -55,7 +55,7 @@ async fn session_worker_demand_counts_live_affinity_and_terminal_cleanup() {
         let mut session = persisted(id, false, "terminated");
         session.archive("2026-10-05T00:00:00Z", 1).unwrap();
         if let Some(owner) = owner {
-            session.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+            session.realization = Some(crate::session_resource::SessionRealizationLease {
                 owner: owner.into(),
                 runtime_incarnation: format!("{owner}:pod-uid"),
                 epoch: 1,
@@ -65,7 +65,7 @@ async fn session_worker_demand_counts_live_affinity_and_terminal_cleanup() {
         create(repo.as_ref(), session).await;
     }
     let mut live = persisted("live-c", true, "idle");
-    live.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+    live.realization = Some(crate::session_resource::SessionRealizationLease {
         owner: "worker-c".into(),
         runtime_incarnation: "worker-c:pod-uid".into(),
         epoch: 1,
@@ -143,7 +143,7 @@ async fn worker_realization_owner_read_keeps_expired_unfinished_session_occupied
             .unwrap(),
     );
     let mut retained = persisted("affinity-expired", true, "idle");
-    retained.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+    retained.realization = Some(crate::session_resource::SessionRealizationLease {
         owner: "worker-affinity".into(),
         runtime_incarnation: "worker-affinity:pod-uid".into(),
         epoch: 7,
@@ -151,7 +151,7 @@ async fn worker_realization_owner_read_keeps_expired_unfinished_session_occupied
     });
     create(repo.as_ref(), retained).await;
     let mut terminal = persisted("affinity-completed", false, "terminated");
-    terminal.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+    terminal.realization = Some(crate::session_resource::SessionRealizationLease {
         owner: "worker-completed".into(),
         runtime_incarnation: "worker-completed:pod-uid".into(),
         epoch: 1,

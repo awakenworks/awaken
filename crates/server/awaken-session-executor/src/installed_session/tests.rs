@@ -16,10 +16,10 @@ fn dispatch_resource_manifest_has_one_session_generation_selector() {
     // | S3   | Session  | A->B | A    | B        | A            |
     // | S4   | Session  | none | A    | A        | A            |
     let manifest = |revision| {
-        awaken_session_resource_contract::SessionResourceManifest::at_revision(
+        crate::session_resource::SessionResourceManifest::at_revision(
             "workspace-a",
             revision,
-            awaken_session_resource_contract::ResolvedSessionResources::default(),
+            crate::session_resource::ResolvedSessionResources::default(),
         )
     };
     for (rule, session_dispatch, active, desired, expected) in [
@@ -30,7 +30,7 @@ fn dispatch_resource_manifest_has_one_session_generation_selector() {
     ] {
         let active = active.map(manifest);
         let transition = desired.map(|revision| {
-            awaken_session_resource_contract::SessionResourceTransition::new(
+            crate::session_resource::SessionResourceTransition::new(
                 active.clone().unwrap_or_else(|| manifest(0)),
                 manifest(revision),
             )
@@ -73,7 +73,7 @@ fn environment_only_session_lease_remains_supervised() {
     slots.update_realization("environment-only", |r| {
         assert!(!r.mcp.has_frozen_attachment(), "C2");
         r.authority = crate::installed_session::SessionRealizationAuthority::Live(
-            test_observed_lease(awaken_session_resource_contract::SessionRealizationLease {
+            test_observed_lease(crate::session_resource::SessionRealizationLease {
                 owner: "worker".into(),
                 runtime_incarnation: "worker/incarnation".into(),
                 epoch: 1,
@@ -105,14 +105,13 @@ async fn unpolled_staging_future_drop_releases_drain_without_false_proof() {
         .expect("validated Host dependencies");
     let generation =
         crate::test_mcp::mcp_fence("unpolled-staging", "docs", 1, "runtime-1", 1, u64::MAX);
-    let request = awaken_session_mcp_contract::StageMcpAttachment {
+    let request = crate::session_mcp::StageMcpAttachment {
         workspace_id: "workspace-a".into(),
         generation: generation.clone(),
         realization_id: "realize-1".into(),
         stage_idempotency_key: "stage-1".into(),
         name: "docs".into(),
-        target: awaken_session_mcp_contract::McpTarget::parse_http("https://mcp.example.test")
-            .unwrap(),
+        target: awaken_agent_contract::McpTarget::parse_http("https://mcp.example.test").unwrap(),
         prompts_as_skills: false,
         credential: None,
         selected_plaintext_holder: None,
@@ -124,7 +123,7 @@ async fn unpolled_staging_future_drop_releases_drain_without_false_proof() {
         std::future::pending::<()>().await;
     };
     host.insert_mcp_projection(McpGenerationProjection {
-        receipt: awaken_session_mcp_contract::McpRealizationReceipt {
+        receipt: crate::session_mcp::McpRealizationReceipt {
             generation: generation.clone(),
             realization_id: request.realization_id.clone(),
             selected_plaintext_holder: None,

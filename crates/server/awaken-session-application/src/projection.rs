@@ -3,7 +3,9 @@
 // @formal entrypoint session_resources.terminal_assignment_retains_desired_generation
 //! Neutral frozen Session and MCP realization projections.
 
-use awaken_session_mcp_contract::{McpGenerationRef, SessionMcpAttachment, StageMcpAttachment};
+use awaken_session_configuration_contract::mcp::{
+    McpGenerationRef, SessionMcpAttachment, StageMcpAttachment,
+};
 use awaken_session_realization_contract::FrozenSessionProjection;
 use awaken_session_state_contract::PersistedSession;
 use awaken_session_types::RunError;
@@ -52,7 +54,7 @@ impl SessionApplication {
         owner_scope: String,
         session: &PersistedSession,
         resource_revision: u64,
-        resources: awaken_session_resource_contract::ResolvedSessionResources,
+        resources: crate::session_resource::ResolvedSessionResources,
         materialize_request_context: bool,
     ) -> Result<FrozenSessionProjection, RunError> {
         let baseline = session
@@ -67,7 +69,7 @@ impl SessionApplication {
         let (previous_resource_revision, previous_resources) =
             session.resources.active_generation();
         let previous_resource_manifest = Some(
-            awaken_session_resource_contract::SessionResourceManifest::at_revision(
+            crate::session_resource::SessionResourceManifest::at_revision(
                 owner_scope.clone(),
                 previous_resource_revision,
                 previous_resources.clone(),

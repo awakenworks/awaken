@@ -226,7 +226,7 @@ async fn terminal_assignment_preserves_the_complete_retained_resource_transition
     // active_generation/desired_generation getters also used by projection.
     // Sending A -> A while B is pending regresses an already-staged Worker;
     // pairing A with attempted watermark 3 invents an installed generation.
-    let empty = awaken_session_resource_contract::ResolvedSessionResources::default();
+    let empty = crate::session_resource::ResolvedSessionResources::default();
     for (history, active, rollback_twice, active_revision) in [
         ("legacy-empty", empty.clone(), false, 0),
         ("legacy-file", file_resources("active"), false, 1),
@@ -241,7 +241,7 @@ async fn terminal_assignment_preserves_the_complete_retained_resource_transition
             let session_id = "terminal-transition";
             let desired = file_resources("pending");
             let mut session = persisted(session_id, true, "idle");
-            session.realization = Some(awaken_session_resource_contract::SessionRealizationLease {
+            session.realization = Some(crate::session_resource::SessionRealizationLease {
                 owner: "worker".into(),
                 runtime_incarnation: "incarnation".into(),
                 epoch: 1,
@@ -303,22 +303,20 @@ async fn terminal_assignment_preserves_the_complete_retained_resource_transition
                 active_revision
             };
             assert_eq!(session.resources.committed_revision, Some(active_revision));
-            let expected_previous =
-                awaken_session_resource_contract::SessionResourceManifest::at_revision(
-                    "workspace",
-                    active_revision,
-                    active.clone(),
-                );
-            let expected_desired =
-                awaken_session_resource_contract::SessionResourceManifest::at_revision(
-                    "workspace",
-                    desired_revision,
-                    if pending.is_some() {
-                        desired
-                    } else {
-                        active.clone()
-                    },
-                );
+            let expected_previous = crate::session_resource::SessionResourceManifest::at_revision(
+                "workspace",
+                active_revision,
+                active.clone(),
+            );
+            let expected_desired = crate::session_resource::SessionResourceManifest::at_revision(
+                "workspace",
+                desired_revision,
+                if pending.is_some() {
+                    desired
+                } else {
+                    active.clone()
+                },
+            );
             let resources_before_termination = session.resources.clone();
             session
                 .transition_execution(
@@ -424,12 +422,7 @@ fn one_recovery_cycle_scans_candidates_once_before_the_final_audit() {
 
 #[derive(Default)]
 pub(super) struct RecordingResourceRuntime {
-    applied: Mutex<
-        Vec<(
-            u64,
-            awaken_session_resource_contract::ResolvedSessionResources,
-        )>,
-    >,
+    applied: Mutex<Vec<(u64, crate::session_resource::ResolvedSessionResources)>>,
     repository: Option<Arc<dyn awaken_session_repository_contract::SessionStore>>,
     roots_observed_before_apply: Mutex<Vec<PersistedSession>>,
     pub(super) replaced_tools: Mutex<
@@ -567,7 +560,7 @@ impl awaken_session_execution_contract::RealizationRuntime for RecordingResource
     async fn invalidate_session_realization_lease(
         &self,
         thread: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &crate::session_resource::SessionRealizationLease,
     ) -> Result<(), awaken_session_types::RunError> {
         awaken_session_execution_contract::NeutralRuntime
             .invalidate_session_realization_lease(thread, lease)
@@ -617,7 +610,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RecordingResource
         source_effect_id: &str,
         source_binding: &str,
         generation: &awaken_session_state_contract::SandboxGeneration,
-        expected_mcp_generations: &[awaken_session_mcp_contract::McpGenerationRef],
+        expected_mcp_generations: &[crate::session_mcp::McpGenerationRef],
     ) -> Result<awaken_session_state_contract::QuiescenceReceipt, awaken_session_types::RunError>
     {
         awaken_session_execution_contract::NeutralRuntime
@@ -717,10 +710,8 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RecordingResource
         &self,
         workspace_id: &str,
         skills: &[awaken_agent_contract::AgentSkillBinding],
-    ) -> Result<
-        Vec<awaken_session_resource_contract::ResolvedSkillBinding>,
-        awaken_session_types::RunError,
-    > {
+    ) -> Result<Vec<crate::session_resource::ResolvedSkillBinding>, awaken_session_types::RunError>
+    {
         awaken_session_execution_contract::NeutralRuntime
             .resolve_session_skills(workspace_id, skills)
             .await
@@ -729,7 +720,7 @@ impl awaken_session_execution_contract::EnvironmentRuntime for RecordingResource
     async fn apply_session_inputs(
         &self,
         thread: &str,
-        transition: &awaken_session_resource_contract::SessionResourceTransition,
+        transition: &crate::session_resource::SessionResourceTransition,
     ) -> Result<(), RunError> {
         if let Some(repository) = &self.repository {
             let root = repository
@@ -1031,17 +1022,17 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
 /// File/Skill/Memory preparation is in flight; that is not ownership loss.
 #[tokio::test]
 async fn resource_authority_is_the_exact_pending_session_generation() {
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = crate::session_resource::SessionRealizationLease {
         owner: "worker-resource-memory".into(),
         runtime_incarnation: "worker-resource-memory:1:boot".into(),
         epoch: 7,
         expires_at_unix_ms: u64::MAX - 1,
     };
-    let input = awaken_session_resource_contract::ResolvedInput {
+    let input = crate::session_resource::ResolvedInput {
         created_at_unix_ms: None,
         updated_at_unix_ms: None,
         binding_id: awaken_resource_contract::BindingId::from("pending-memory"),
-        source: awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
+        source: crate::session_resource::ResolvedInputSource::MemoryStore {
             memory_store_id: awaken_resource_contract::MemoryStoreId::from("memory-pending"),
             config: awaken_resource_contract::MemoryStoreConfigVersion {
                 memory_store_id: awaken_resource_contract::MemoryStoreId::from("memory-pending"),
@@ -1055,7 +1046,7 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
     };
     let file = file_resources("file-pending").inputs()[0].clone();
     let skill = skill_resources("skill-pending").skills()[0].clone();
-    let desired = awaken_session_resource_contract::ResolvedSessionResources::try_new(
+    let desired = crate::session_resource::ResolvedSessionResources::try_new(
         vec![input.clone(), file.clone()],
         vec![skill.clone()],
     )
@@ -1210,7 +1201,7 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
         "resource-memory-current",
         1,
         input.clone(),
-        awaken_session_resource_contract::SessionRealizationLease {
+        crate::session_resource::SessionRealizationLease {
             epoch: lease.epoch + 1,
             ..lease.clone()
         },
@@ -1292,13 +1283,12 @@ async fn resource_authority_is_the_exact_pending_session_generation() {
 fn profiled_policy_manifest(
     file: &str,
     skill_version: u64,
-) -> awaken_session_resource_contract::ResolvedSessionResources {
+) -> crate::session_resource::ResolvedSessionResources {
     let (inputs, _) = file_resources(file).into_parts();
     let mut skill = skill_resources("review").skills()[0].clone();
     skill.version = skill_version;
     skill.bundle_sha256 = format!("sha-review-{skill_version}");
-    awaken_session_resource_contract::ResolvedSessionResources::try_new(inputs, vec![skill])
-        .unwrap()
+    crate::session_resource::ResolvedSessionResources::try_new(inputs, vec![skill]).unwrap()
 }
 
 async fn seed_profiled_resource_policy_sessions(
@@ -1307,15 +1297,15 @@ async fn seed_profiled_resource_policy_sessions(
     for (id, policy) in [
         (
             "resource-managed",
-            awaken_session_resource_contract::SessionMutationPolicy::Managed,
+            crate::session_resource::SessionMutationPolicy::Managed,
         ),
         (
             "resource-frozen",
-            awaken_session_resource_contract::SessionMutationPolicy::Frozen,
+            crate::session_resource::SessionMutationPolicy::Frozen,
         ),
         (
             "resource-files",
-            awaken_session_resource_contract::SessionMutationPolicy::FileResources,
+            crate::session_resource::SessionMutationPolicy::FileResources,
         ),
     ] {
         let mut session = persisted(id, false, "idle");
@@ -1622,7 +1612,7 @@ async fn failed_nonterminal_realization_expires_assignment_before_same_incarnati
         for retryable in [false, true] {
             for attempts in [1, 2] {
                 let id = format!("failure-{idle}-{retryable}-{attempts}");
-                let lease = awaken_session_resource_contract::SessionRealizationLease {
+                let lease = crate::session_resource::SessionRealizationLease {
                     owner: "worker".into(),
                     runtime_incarnation: "worker/1".into(),
                     epoch: 7,
@@ -1722,7 +1712,7 @@ async fn lease_renewal_is_a_projection_free_root_cas() {
     // | R4 | stale epoch | newer | any | E4 + E5 |
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
         sqlite_session_repository("renewal Session repository").await;
-    let asserted = awaken_session_resource_contract::SessionRealizationLease {
+    let asserted = crate::session_resource::SessionRealizationLease {
         owner: "worker-a".into(),
         runtime_incarnation: "worker-a/boot-1".into(),
         epoch: 7,
@@ -1824,7 +1814,7 @@ async fn terminal_root_renewal_preserves_frozen_mcp_cleanup_identity() {
     let repo: Arc<dyn awaken_session_repository_contract::SessionStore> =
         sqlite_session_repository("terminal renewal Session repository").await;
     let prior_expiry = u64::MAX - 3;
-    let current = awaken_session_resource_contract::SessionRealizationLease {
+    let current = crate::session_resource::SessionRealizationLease {
         owner: "terminal-worker".into(),
         runtime_incarnation: "terminal-worker/boot-2".into(),
         epoch: 8,
@@ -1837,16 +1827,16 @@ async fn terminal_root_renewal_preserves_frozen_mcp_cleanup_identity() {
             .request(&session.session_id.clone())
     );
     session.realization = Some(current.clone());
-    session.mcp = awaken_session_mcp_contract::SessionMcpAttachmentSet::from_initial(
-        vec![awaken_session_mcp_contract::McpAttachmentDraft {
+    session.mcp = crate::session_mcp::SessionMcpAttachmentSet::from_initial(
+        vec![crate::session_mcp::McpAttachmentDraft {
             name: "browser".into(),
-            target: awaken_session_mcp_contract::McpTarget::parse_http(
+            target: awaken_agent_contract::McpTarget::parse_http(
                 "https://browser.example.test/mcp",
             )
             .unwrap(),
             prompts_as_skills: false,
             credential: None,
-            origin: awaken_session_mcp_contract::McpAttachmentOrigin::Session,
+            origin: crate::session_mcp::McpAttachmentOrigin::Session,
         }],
         None,
     )
@@ -1858,7 +1848,7 @@ async fn terminal_root_renewal_preserves_frozen_mcp_cleanup_identity() {
         .mcp
         .claim_realization(
             &generation,
-            awaken_session_mcp_contract::McpRealizationClaim {
+            crate::session_mcp::McpRealizationClaim {
                 realization_id: "browser-realization".into(),
                 runtime_incarnation: "terminal-worker/boot-1".into(),
                 lease_epoch: 7,
@@ -2174,7 +2164,7 @@ async fn remote_realization_adopts_only_the_exact_legacy_resource_generation() {
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = crate::session_resource::SessionRealizationLease {
         owner: "worker-a".into(),
         runtime_incarnation: "worker-a/boot-1".into(),
         epoch: 1,
@@ -2293,7 +2283,7 @@ async fn worker_placement_defers_live_effects_but_not_terminal_cleanup_case() {
     create(repo.as_ref(), live).await;
 
     let mut terminal = worker_baseline("worker-terminal", "terminated");
-    let asserted_terminal_lease = awaken_session_resource_contract::SessionRealizationLease {
+    let asserted_terminal_lease = crate::session_resource::SessionRealizationLease {
         owner: "worker-terminal-owner".into(),
         runtime_incarnation: "worker-terminal-incarnation".into(),
         epoch: 1,
@@ -2302,7 +2292,7 @@ async fn worker_placement_defers_live_effects_but_not_terminal_cleanup_case() {
             .as_epoch_ms()
             .saturating_sub(20_001),
     };
-    let terminal_lease = awaken_session_resource_contract::SessionRealizationLease {
+    let terminal_lease = crate::session_resource::SessionRealizationLease {
         expires_at_unix_ms: awaken_time::system_clock()
             .now()
             .as_epoch_ms()
@@ -2407,13 +2397,13 @@ async fn remote_terminal_cleanup_uses_canonical_driver_and_cold_completion_repla
     // | W3 | exact | Requested | E3 |
     // | W4 | force archive replay after exact receipt | Completed | E5 + success |
     let repo = sqlite_session_repository("remote cleanup Session repository").await;
-    let asserted_lease = awaken_session_resource_contract::SessionRealizationLease {
+    let asserted_lease = crate::session_resource::SessionRealizationLease {
         owner: "worker-a".into(),
         runtime_incarnation: "worker-a:incarnation-1".into(),
         epoch: 7,
         expires_at_unix_ms: 1,
     };
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = crate::session_resource::SessionRealizationLease {
         expires_at_unix_ms: awaken_time::system_clock()
             .now()
             .as_epoch_ms()
@@ -2580,7 +2570,7 @@ async fn restoring_terminal_cleanup_binds_the_exact_target_only_to_the_root() {
     let repo = sqlite_session_repository("Restoring cleanup Session repository").await;
     let session_id = "restoring-cleanup";
     let child_id = "restoring-cleanup-child";
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = crate::session_resource::SessionRealizationLease {
         owner: "worker-restoring".into(),
         runtime_incarnation: "worker-restoring:incarnation-1".into(),
         epoch: 3,
@@ -2769,7 +2759,7 @@ async fn restoring_terminal_cleanup_binds_the_exact_target_only_to_the_root() {
 fn repository_publication_terminal_session(
     session_id: &str,
     child: Option<&str>,
-    lease: Option<awaken_session_resource_contract::SessionRealizationLease>,
+    lease: Option<crate::session_resource::SessionRealizationLease>,
     environment: awaken_session_state_contract::SessionEnvironmentState,
     intent: Option<awaken_session_state_contract::SessionRepositoryPublicationIntent>,
 ) -> PersistedSession {
@@ -2804,13 +2794,13 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     let rejected_id = SessionId::from("publication-rejected");
     let current_rejected_id = SessionId::from("publication-rejected-current");
     let invalid_id = SessionId::from("publication-unmaterialized");
-    let exact_lease = awaken_session_resource_contract::SessionRealizationLease {
+    let exact_lease = crate::session_resource::SessionRealizationLease {
         owner: "worker-a".into(),
         runtime_incarnation: "worker-a:publication".into(),
         epoch: 4,
         expires_at_unix_ms: u64::MAX,
     };
-    let expired_cold_lease = awaken_session_resource_contract::SessionRealizationLease {
+    let expired_cold_lease = crate::session_resource::SessionRealizationLease {
         owner: "worker-b".into(),
         runtime_incarnation: "worker-b:previous-publication".into(),
         epoch: 2,
@@ -2990,7 +2980,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
     );
     // New exact-Runtime subjects exercise ordinary continuation without
     // rewriting either original physical predecessor or fabricating history.
-    let expired_current = awaken_session_resource_contract::SessionRealizationLease {
+    let expired_current = crate::session_resource::SessionRealizationLease {
         runtime_incarnation: target.runtime_incarnation.clone(),
         ..expired_cold_lease.clone()
     };
@@ -3064,7 +3054,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         ),
         "P3/E3"
     );
-    let expired_assertion = awaken_session_resource_contract::SessionRealizationLease {
+    let expired_assertion = crate::session_resource::SessionRealizationLease {
         expires_at_unix_ms: 1,
         ..assignment.authority.lease.clone()
     };
@@ -3079,7 +3069,7 @@ async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayabl
         "P3c/E8 projection carries the current live same-generation root"
     );
     let publication = publication.command;
-    let awaken_session_resource_contract::ResolvedInputSource::Repository {
+    let crate::session_resource::ResolvedInputSource::Repository {
         repository_id,
         config,
         ..
@@ -3455,7 +3445,7 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
         reassign_existing_lease: false,
     };
     let lease = |owner: &str, incarnation: &str, epoch: u64, expiry: u64| {
-        awaken_session_resource_contract::SessionRealizationLease {
+        crate::session_resource::SessionRealizationLease {
             owner: owner.into(),
             runtime_incarnation: incarnation.into(),
             epoch,
@@ -3672,7 +3662,7 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
 
 fn registry_race_terminal_session(
     session_id: &str,
-    realization: Option<awaken_session_resource_contract::SessionRealizationLease>,
+    realization: Option<crate::session_resource::SessionRealizationLease>,
 ) -> PersistedSession {
     let mut session = persisted(session_id, true, "terminated");
     assert!(
@@ -3717,21 +3707,21 @@ fn registry_race_target() -> awaken_session_realization_contract::SessionRealiza
 #[tokio::test]
 async fn terminal_effect_authorization_requires_current_live_same_generation() {
     let now = awaken_time::system_clock().now().as_epoch_ms();
-    let asserted = awaken_session_resource_contract::SessionRealizationLease {
+    let asserted = crate::session_resource::SessionRealizationLease {
         owner: "worker-terminal-authority".into(),
         runtime_incarnation: "worker-terminal-authority:2:boot-current".into(),
         epoch: 29,
         expires_at_unix_ms: now.saturating_sub(20_001),
     };
-    let renewed = awaken_session_resource_contract::SessionRealizationLease {
+    let renewed = crate::session_resource::SessionRealizationLease {
         expires_at_unix_ms: now.saturating_add(30_000),
         ..asserted.clone()
     };
-    let memory_input = awaken_session_resource_contract::ResolvedInput {
+    let memory_input = crate::session_resource::ResolvedInput {
         created_at_unix_ms: None,
         updated_at_unix_ms: None,
         binding_id: awaken_resource_contract::BindingId::from("terminal-memory"),
-        source: awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
+        source: crate::session_resource::ResolvedInputSource::MemoryStore {
             memory_store_id: awaken_resource_contract::MemoryStoreId::from(
                 "terminal-authority-memory",
             ),
@@ -3755,11 +3745,11 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
     .expect("terminal authority Memory evidence");
     let terminal_session = |session_id: &str,
                             realization: Option<
-        awaken_session_resource_contract::SessionRealizationLease,
+        crate::session_resource::SessionRealizationLease,
     >| {
         let mut session = registry_race_terminal_session(session_id, realization);
         session.resources = awaken_session_state_contract::SessionResourceState::from_active(
-            awaken_session_resource_contract::ResolvedSessionResources::try_new(
+            crate::session_resource::ResolvedSessionResources::try_new(
                 vec![memory_input.clone()],
                 Vec::new(),
             )
@@ -3832,7 +3822,7 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
     let effect_for =
         |session_id: &str,
          work: awaken_session_realization_contract::SessionTerminalCleanupWork,
-         lease: awaken_session_resource_contract::SessionRealizationLease| {
+         lease: crate::session_resource::SessionRealizationLease| {
             awaken_session_state_contract::SessionTerminalCleanupEffect::new(
                 terminal_prepare_commands(work)
                     .into_iter()
@@ -3993,7 +3983,7 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
 
     let foreign_effect = awaken_session_state_contract::SessionTerminalCleanupEffect::new(
         renewed_effect.command.clone(),
-        awaken_session_resource_contract::SessionRealizationLease {
+        crate::session_resource::SessionRealizationLease {
             epoch: asserted.epoch + 1,
             ..asserted.clone()
         },
@@ -4142,7 +4132,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
     assert_eq!(r2_durable.revision, r2_revision, "R2/E2 zero root CAS");
     assert_eq!(r2_workers.list_calls.load(Ordering::SeqCst), 2, "R2/E2");
 
-    let r3_predecessor = awaken_session_resource_contract::SessionRealizationLease {
+    let r3_predecessor = crate::session_resource::SessionRealizationLease {
         owner: target.owner.clone(),
         runtime_incarnation: "worker-registry-race:1:boot-prior".into(),
         epoch: 7,
@@ -4179,7 +4169,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
         r0_before,
         "R0 zero root CAS",
     );
-    let r3_prior = awaken_session_resource_contract::SessionRealizationLease {
+    let r3_prior = crate::session_resource::SessionRealizationLease {
         runtime_incarnation: target.runtime_incarnation.clone(),
         ..r3_predecessor
     };
@@ -4233,7 +4223,7 @@ async fn cold_terminal_cleanup_claim_revalidates_registry_around_root_cas() {
         registry_race_terminal_session("registry-race-r3b", None),
     )
     .await;
-    let r3b_successor = awaken_session_resource_contract::SessionRealizationLease {
+    let r3b_successor = crate::session_resource::SessionRealizationLease {
         owner: target.owner.clone(),
         runtime_incarnation: "worker-registry-race:3:boot-successor".into(),
         epoch: 99,
@@ -4575,7 +4565,7 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
     ] {
         let mut checkpoint = registry_race_terminal_session(
             id,
-            Some(awaken_session_resource_contract::SessionRealizationLease {
+            Some(crate::session_resource::SessionRealizationLease {
                 owner: target.owner.clone(),
                 runtime_incarnation: runtime.into(),
                 epoch: 5,
@@ -5514,8 +5504,7 @@ async fn realization_owner_follows_the_frozen_placement_decision_table() {
         value.baseline = awaken_session_configuration_contract::SessionBaselineState::Preparing(
             awaken_session_configuration_contract::SessionCreationIntent {
                 control: awaken_session_configuration_contract::ControlSessionCreationInputs {
-                    mutation_policy:
-                        awaken_session_resource_contract::SessionMutationPolicy::Managed,
+                    mutation_policy: crate::session_resource::SessionMutationPolicy::Managed,
                     application_origin: baseline.application_origin,
                     environment: baseline.environment,
                     runtime_placement: SessionRuntimePlacement::Local,
@@ -5567,32 +5556,31 @@ pub(super) fn publication_fixture(
     id: &str,
 ) -> (
     PersistedSession,
-    awaken_session_resource_contract::SessionRealizationLease,
-    awaken_session_mcp_contract::McpGenerationRef,
+    crate::session_resource::SessionRealizationLease,
+    crate::session_mcp::McpGenerationRef,
 ) {
     let mut session = persisted(id, false, "activating");
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = crate::session_resource::SessionRealizationLease {
         owner: "worker-a".into(),
         runtime_incarnation: "worker-a/boot-1".into(),
         epoch: 7,
         expires_at_unix_ms: (u64::MAX - 1_024),
     };
-    let attachment_id = awaken_session_mcp_contract::McpAttachmentId("browser".into());
-    let target =
-        awaken_session_mcp_contract::McpTarget::parse_http("https://browser.example.test/mcp")
-            .expect("MCP target");
-    let generation = awaken_session_mcp_contract::McpGeneration::new(
+    let attachment_id = crate::session_mcp::McpAttachmentId("browser".into());
+    let target = awaken_agent_contract::McpTarget::parse_http("https://browser.example.test/mcp")
+        .expect("MCP target");
+    let generation = crate::session_mcp::McpGeneration::new(
         attachment_id,
         1,
-        awaken_session_mcp_contract::McpAttachmentContentDigest::of_content(
+        crate::session_mcp::McpAttachmentContentDigest::of_content(
             &target,
             false,
             None,
-            awaken_session_mcp_contract::McpAttachmentOrigin::Agent,
+            crate::session_mcp::McpAttachmentOrigin::Agent,
         ),
     );
     session.realization = Some(lease.clone());
-    let claim = awaken_session_mcp_contract::McpRealizationClaim {
+    let claim = crate::session_mcp::McpRealizationClaim {
         realization_id: "realize-browser-1".into(),
         runtime_incarnation: lease.runtime_incarnation.clone(),
         lease_epoch: lease.epoch,
@@ -5602,23 +5590,23 @@ pub(super) fn publication_fixture(
     session
         .mcp
         .attachments
-        .push(awaken_session_mcp_contract::SessionMcpAttachment {
+        .push(crate::session_mcp::SessionMcpAttachment {
             attachment_id: generation.attachment_id().clone(),
             name: "browser".into(),
             generation: generation.clone(),
             target,
             prompts_as_skills: false,
-            origin: awaken_session_mcp_contract::McpAttachmentOrigin::Agent,
+            origin: crate::session_mcp::McpAttachmentOrigin::Agent,
             credential: None,
             selected_plaintext_holder: None,
-            state: awaken_session_mcp_contract::McpAttachmentState::Active,
+            state: crate::session_mcp::McpAttachmentState::Active,
             publication_acknowledged: false,
             realization: Some(claim.clone()),
             attempts: 1,
             last_error: None,
         });
     let generation_ref =
-        awaken_session_mcp_contract::McpGenerationRef::from_claim(&id.into(), &generation, &claim);
+        crate::session_mcp::McpGenerationRef::from_claim(&id.into(), &generation, &claim);
     (session, lease, generation_ref.unwrap())
 }
 
@@ -5666,10 +5654,10 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                 for index in 0..count {
                     let mut next = template.clone();
                     next.attachment_id =
-                        awaken_session_mcp_contract::McpAttachmentId(format!("tool-{index}"));
+                        crate::session_mcp::McpAttachmentId(format!("tool-{index}"));
                     // The witness carries the attachment identity, so renaming
                     // the row must re-mint it or the two would disagree.
-                    next.generation = awaken_session_mcp_contract::McpGeneration::new(
+                    next.generation = crate::session_mcp::McpGeneration::new(
                         next.attachment_id.clone(),
                         next.generation.version(),
                         next.generation.digest().clone(),
@@ -5679,7 +5667,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                         session.mcp.attachments.push(next.clone());
                     }
                     next.generation = next.generation.at_version(2);
-                    next.state = awaken_session_mcp_contract::McpAttachmentState::Realizing;
+                    next.state = crate::session_mcp::McpAttachmentState::Realizing;
                     next.realization.as_mut().unwrap().realization_id =
                         format!("realize-{index}-2");
                     next.realization.as_mut().unwrap().stage_idempotency_key =
@@ -5704,7 +5692,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                 for request in requests {
                     receipts.push(NoopMcpRealizer.stage_mcp_attachment(request).await.unwrap());
                 }
-                let key = |g: &awaken_session_mcp_contract::McpGenerationRef| {
+                let key = |g: &crate::session_mcp::McpGenerationRef| {
                     format!("{}:{}", g.attachment_id().0, g.generation().version())
                 };
                 let staged = receipts
@@ -5753,7 +5741,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                     .mcp
                     .attachments
                     .iter()
-                    .filter(|a| a.state == awaken_session_mcp_contract::McpAttachmentState::Active)
+                    .filter(|a| a.state == crate::session_mcp::McpAttachmentState::Active)
                     .map(|a| format!("{}:{}", a.attachment_id.0, a.generation.version()))
                     .collect::<Vec<_>>();
                 publication_traces.push(serde_json::json!({"rule": format!("count-{count}-predecessor-{predecessor}-renewed-{renewed}"), "cause": {"expiry_before": expiry_before, "expiry_after": durable.realization.as_ref().unwrap().expires_at_unix_ms}, "staged": staged, "active": active, "published": publish.iter().map(key).collect::<Vec<_>>(), "drained": drain.iter().map(key).collect::<Vec<_>>() }));
@@ -5934,7 +5922,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
         let (mut original, mut lease, _) = fixture(&id);
         if fault == "duplicate-expiry" {
             let mut other = original.mcp.attachments[0].clone();
-            other.attachment_id = awaken_session_mcp_contract::McpAttachmentId("other".into());
+            other.attachment_id = crate::session_mcp::McpAttachmentId("other".into());
             other.name = "other".into();
             original.mcp.attachments.push(other);
         }
@@ -5987,8 +5975,8 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
             }
             "session" => w.session_id = "foreign".into(),
             "attachment" => {
-                w.generation = awaken_session_mcp_contract::McpGeneration::new(
-                    awaken_session_mcp_contract::McpAttachmentId("foreign".into()),
+                w.generation = crate::session_mcp::McpGeneration::new(
+                    crate::session_mcp::McpAttachmentId("foreign".into()),
                     w.generation.version(),
                     w.generation.digest().clone(),
                 );
@@ -6058,8 +6046,8 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
         match fault {
             "session" => w.session_id = "foreign".into(),
             "attachment" => {
-                w.generation = awaken_session_mcp_contract::McpGeneration::new(
-                    awaken_session_mcp_contract::McpAttachmentId("foreign".into()),
+                w.generation = crate::session_mcp::McpGeneration::new(
+                    crate::session_mcp::McpAttachmentId("foreign".into()),
                     w.generation.version(),
                     w.generation.digest().clone(),
                 );
@@ -6071,13 +6059,13 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
             "owner" => lease.owner = "foreign".into(),
             "duplicate-expiry" => {
                 let mut other = original.mcp.attachments[0].clone();
-                other.attachment_id = awaken_session_mcp_contract::McpAttachmentId("other".into());
+                other.attachment_id = crate::session_mcp::McpAttachmentId("other".into());
                 other.name = "other".into();
                 original.mcp.attachments.push(other);
             }
             _ => unreachable!(),
         }
-        let generation: awaken_session_mcp_contract::McpGenerationRef = w.try_into().unwrap();
+        let generation: crate::session_mcp::McpGenerationRef = w.try_into().unwrap();
         let mut published = vec![generation.clone()];
         if fault == "duplicate-expiry" {
             published.push(generation.expiring_at(generation.lease_expires_at_unix_ms() - 1));
@@ -6223,12 +6211,12 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
     let (replacement, replacement_lease, wrong_generation) = fixture("ack-replaced");
     create(repo.as_ref(), replacement).await;
     let mut w = wrong_generation.to_wire();
-    w.generation = awaken_session_mcp_contract::McpGeneration::new(
-        awaken_session_mcp_contract::McpAttachmentId("other".into()),
+    w.generation = crate::session_mcp::McpGeneration::new(
+        crate::session_mcp::McpAttachmentId("other".into()),
         w.generation.version(),
         w.generation.digest().clone(),
     );
-    let wrong_generation: awaken_session_mcp_contract::McpGenerationRef = w.try_into().unwrap();
+    let wrong_generation: crate::session_mcp::McpGenerationRef = w.try_into().unwrap();
     let error =
         awaken_session_realization_contract::SessionRealizationControl::acknowledge_session_realization(
             &application,
@@ -6293,7 +6281,7 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
         Arc::new(RecordingEnvironmentSource::default()),
     )
     .with_clock(clock.clone());
-    let lease = awaken_session_resource_contract::SessionRealizationLease {
+    let lease = crate::session_resource::SessionRealizationLease {
         owner: "worker-a".into(),
         runtime_incarnation: "worker-a/boot-2".into(),
         epoch: 2,

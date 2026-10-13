@@ -130,7 +130,7 @@ impl MemoryMaterializationReferenceEncoder<SessionResourceMaterializationIntent>
                 detail: "Session Resource materialization target is not an input".into(),
             });
         };
-        let awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
+        let awaken_session_configuration_contract::resource::ResolvedInputSource::MemoryStore {
             memory_store_id: expected_store,
             config,
         } = &input.source
@@ -509,7 +509,7 @@ fn manifest_allows(
         manifest.resources.inputs().iter().any(|input| {
             matches!(
                 &input.source,
-                awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
+                awaken_session_configuration_contract::resource::ResolvedInputSource::MemoryStore {
                     memory_store_id,
                     config,
                 } if memory_store_id.as_str() == reference.memory_store_id
@@ -730,7 +730,7 @@ async fn memory_operation(
             else {
                 return StatusCode::FORBIDDEN.into_response();
             };
-            let awaken_session_resource_contract::ResolvedInputSource::MemoryStore {
+            let awaken_session_configuration_contract::resource::ResolvedInputSource::MemoryStore {
                 memory_store_id,
                 config,
             } = &input.source
@@ -1316,7 +1316,7 @@ mod tests {
                 "session-memory",
                 "cleanup-root",
             ),
-            awaken_session_resource_contract::SessionRealizationLease {
+            awaken_session_configuration_contract::resource::SessionRealizationLease {
                 owner: "worker-memory".into(),
                 runtime_incarnation: "worker-memory:incarnation:3".into(),
                 epoch: 3,

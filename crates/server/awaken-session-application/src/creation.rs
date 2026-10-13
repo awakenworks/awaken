@@ -11,10 +11,10 @@
 //! activation, lifecycle-fact commit, and WorkQueue projection ordering.
 
 use awaken_session_budget_contract::SessionBudgetState;
+use awaken_session_configuration_contract::mcp::SessionMcpAttachmentSet;
 use awaken_session_configuration_contract::{
     CompiledSessionCreation, SessionCreationIntent, SessionToolConfiguration,
 };
-use awaken_session_mcp_contract::SessionMcpAttachmentSet;
 use awaken_session_realization_contract::SessionRealizationControlDisposition;
 use awaken_session_state_contract::{
     IdempotencyRecord, PersistedSession, SessionAggregate, SessionExecutionState,

@@ -94,3 +94,7 @@ pub use state::{
 };
 pub use tunnel::{ManagedTunnelApplication, ManagedTunnelApplicationError, ManagedTunnelScope};
 pub use work_session_access::{ManagedWorkSessionAccess, work_session_guard};
+
+pub(crate) use awaken_session_configuration_contract::mcp as session_mcp;
+
+pub(crate) use awaken_session_configuration_contract::resource as session_resource;

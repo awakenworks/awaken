@@ -244,8 +244,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                             resource_holder: holder,
                         },
                 },
-                runtime_placement:
-                    awaken_session_configuration_contract::SessionRuntimePlacement::Local,
+                runtime_placement: awaken_session_types::SessionRuntimePlacement::Local,
                 mcp_authoring: Default::default(),
                 agent_id: "agent".into(),
                 agent_revision: None,
@@ -268,12 +267,12 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             environment_materialization: None,
             environment: Default::default(),
             resource_revision: 7,
-            resources: awaken_session_resource_contract::ResolvedSessionResources::default(),
+            resources: crate::session_resource::ResolvedSessionResources::default(),
             previous_resource_manifest: Some(
-                awaken_session_resource_contract::SessionResourceManifest::at_revision(
+                crate::session_resource::SessionResourceManifest::at_revision(
                     "workspace",
                     7,
-                    awaken_session_resource_contract::ResolvedSessionResources::default(),
+                    crate::session_resource::ResolvedSessionResources::default(),
                 ),
             ),
             mcp: Vec::new(),
@@ -613,8 +612,16 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         // | A0 | T | F | F | Coordinator Dispatch | E0 |
         // | A1 | T | T | T | Worker claim | E2 |
         // | A2 | T | T | T | Coordinator Dispatch | E1 |
-        let amendment_host = ((crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub").await)
-            .with_session_execution(crate::SessionExecutionDependencies::default().with_repository_binding_verifier(Arc::new(RepositoryClaimRecorder::default())))).build().expect("validated Host dependencies");
+        let amendment_host =
+            ((crate::HostDependencies::ephemeral(Arc::new(MemoryHostModel), "stub").await)
+                .with_session_execution(
+                    crate::SessionExecutionDependencies::default()
+                        .with_repository_binding_verifier(Arc::new(
+                            RepositoryClaimRecorder::default(),
+                        )),
+                ))
+            .build()
+            .expect("validated Host dependencies");
         let amendment_managed = crate::ManagedHost::new(amendment_host.clone());
         let initial_dispatch = projection("authority amendment", false);
         awaken_session_execution_contract::RealizationRuntime::install_session_projection(
@@ -632,10 +639,14 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                     slot.inputs.baseline.is_some()
                         && slot.run.session_dispatch
                         && slot.realization.manifest.is_none()
-                        && slot.realization.resource_transition.as_ref().is_some_and(|transition| {
-                            transition.desired().revision == initial_dispatch.resource_revision
-                                && transition.desired().resources == initial_dispatch.resources
-                        })
+                        && slot
+                            .realization
+                            .resource_transition
+                            .as_ref()
+                            .is_some_and(|transition| {
+                                transition.desired().revision == initial_dispatch.resource_revision
+                                    && transition.desired().resources == initial_dispatch.resources
+                            })
                 })
                 .unwrap_or(false),
             "A0/E0 complete projection stages one transition without forging physical completion"
@@ -674,7 +685,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                     r.manifest.is_none()
                         && r.resource_transition.as_ref().is_some_and(|transition| {
                             transition.desired().resources
-                                == awaken_session_resource_contract::ResolvedSessionResources::default()
+                                == crate::session_resource::ResolvedSessionResources::default()
                         })
                 })
                 .unwrap_or(false),
@@ -695,7 +706,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                     r.manifest.is_none()
                         && r.resource_transition.as_ref().is_some_and(|transition| {
                             transition.desired()
-                                == &awaken_session_resource_contract::SessionResourceManifest::at_revision(
+                                == &crate::session_resource::SessionResourceManifest::at_revision(
                                     amended_dispatch.workspace_id.clone(),
                                     amended_dispatch.resource_revision,
                                     amended_dispatch.resources.clone(),
@@ -865,7 +876,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                         && r.resource_transition.as_ref().is_some_and(|transition| {
                             transition.desired().revision == 7
                                 && transition.desired().resources
-                                    == awaken_session_resource_contract::ResolvedSessionResources::default()
+                                    == crate::session_resource::ResolvedSessionResources::default()
                         })
                 })
                 .unwrap_or(false),

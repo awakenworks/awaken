@@ -6,6 +6,8 @@
 //! preparation, physical disposal, restore, or checkpoint-delete effect
 //! through the existing Host and provider owners.
 
+use awaken_session_configuration_contract::mcp as session_mcp;
+use awaken_session_configuration_contract::resource as session_resource;
 use awaken_session_realization_contract::ResourceOperationFence;
 use std::time::Duration;
 
@@ -43,9 +45,9 @@ impl ManagedHost {
     fn continuation_current_lease(
         &self,
         thread: &str,
-        asserted: &awaken_session_resource_contract::SessionRealizationLease,
+        asserted: &session_resource::SessionRealizationLease,
         stale_code: &'static str,
-    ) -> Result<awaken_session_resource_contract::SessionRealizationLease, RunError> {
+    ) -> Result<session_resource::SessionRealizationLease, RunError> {
         let (current, live) = self
             .host
             .installed_sessions
@@ -152,7 +154,7 @@ impl ManagedHost {
         source_effect_id: &str,
         source_binding: &str,
         generation: &awaken_session_state_contract::SandboxGeneration,
-        expected_mcp_generations: &[awaken_session_mcp_contract::McpGenerationRef],
+        expected_mcp_generations: &[session_mcp::McpGenerationRef],
     ) -> Result<awaken_session_state_contract::QuiescenceReceipt, RunError> {
         let sessions = &self.host.installed_sessions;
         self.continuation_effect_fence(thread, operation)?;
@@ -594,8 +596,8 @@ mod tests {
     #[tokio::test]
     async fn continuation_fence_keeps_control_coordinates_but_requires_current_local_proof() {
         use crate::installed_session::SessionRealizationAuthority as Authority;
+        use awaken_session_configuration_contract::resource::SessionRealizationLease;
         use awaken_session_realization_contract::SessionRealizationLeaseReceipt;
-        use awaken_session_resource_contract::SessionRealizationLease;
         // F1 exact live receipt with Control expiry older than local wall time
         // -> return the unchanged Control fence. F2 missing root, F3 expired
         // observation, F4 closed root, F5 replaced incarnation -> reject before

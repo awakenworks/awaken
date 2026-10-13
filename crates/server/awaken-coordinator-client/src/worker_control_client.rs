@@ -321,7 +321,9 @@ impl WorkerControlClient {
         claim: &RunClaim,
         session_id: &str,
         session_work_authority: Option<&awaken_worker_contract::SessionWorkAuthorityReceipt>,
-        continuation: Option<&awaken_session_resource_contract::SessionRealizationLease>,
+        continuation: Option<
+            &awaken_session_configuration_contract::resource::SessionRealizationLease,
+        >,
     ) -> Result<
         Option<awaken_session_realization_contract::SessionRealizationDirective>,
         ClaimedSessionControlError,
@@ -434,7 +436,7 @@ impl WorkerControlClient {
         &self,
         identity: &WorkerIdentity,
         session_id: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_realization_contract::SessionTerminalCleanupWork>,
         awaken_session_realization_contract::SessionRealizationControlFailure,
@@ -496,7 +498,7 @@ impl WorkerControlClient {
     pub async fn record_terminal_cleanup_preparation(
         &self,
         identity: &WorkerIdentity,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         preparation: awaken_session_state_contract::SessionCleanupPreparation,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.realization_response(
@@ -540,7 +542,7 @@ impl WorkerControlClient {
     pub async fn record_terminal_cleanup_disposal(
         &self,
         identity: &WorkerIdentity,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         receipt: awaken_session_state_contract::SessionCleanupDisposalReceipt,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.realization_response(
@@ -562,7 +564,7 @@ impl WorkerControlClient {
         &self,
         identity: &WorkerIdentity,
         session_id: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
     ) -> Result<
         Option<awaken_session_realization_contract::SessionRepositoryPublicationProjection>,
         awaken_session_realization_contract::SessionRealizationControlFailure,
@@ -593,7 +595,7 @@ impl WorkerControlClient {
         &self,
         identity: &WorkerIdentity,
         session_id: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         receipt: awaken_session_state_contract::SessionRepositoryPublicationReceipt,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.realization_response(
@@ -613,7 +615,7 @@ impl WorkerControlClient {
         &self,
         identity: &WorkerIdentity,
         session_id: &str,
-        lease: &awaken_session_resource_contract::SessionRealizationLease,
+        lease: &awaken_session_configuration_contract::resource::SessionRealizationLease,
         rejection: awaken_session_state_contract::SessionRepositoryPublicationRejection,
     ) -> Result<(), awaken_session_realization_contract::SessionRealizationControlFailure> {
         self.realization_response(

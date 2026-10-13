@@ -611,7 +611,8 @@ fn admitted_materialization_cannot_project_unattempted_archive_or_start_after_te
     // joins remain covered by the unchanged late-receipt owner table.
     let mut root = fresh_root(SessionExecutionState::Preparing, 0).into_snapshot();
     if let crate::SessionBaselineState::Frozen(baseline) = &mut root.baseline {
-        baseline.mutation_policy = awaken_session_resource_contract::SessionMutationPolicy::Frozen;
+        baseline.mutation_policy =
+            awaken_session_configuration_contract::resource::SessionMutationPolicy::Frozen;
     }
     root.created_at_unix_ms = Some(1);
     assert!(
@@ -1462,9 +1463,11 @@ fn physical_readiness_promotes_admitted_activity_as_one_valid_root() {
 
 #[test]
 fn root_and_projection_renewal_is_atomic_and_terminal_claims_retain_frozen_projections() {
-    use awaken_session_mcp_contract::{
-        McpAttachmentDraft, McpAttachmentOrigin, McpRealizationClaim, McpTarget,
-        SessionMcpAttachmentSet,
+    use {
+        awaken_agent_contract::McpTarget,
+        awaken_session_configuration_contract::mcp::{
+            McpAttachmentDraft, McpAttachmentOrigin, McpRealizationClaim, SessionMcpAttachmentSet,
+        },
     };
     let mcp = |foreign: bool| {
         let mut set = SessionMcpAttachmentSet::from_initial(

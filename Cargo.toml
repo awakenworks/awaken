@@ -57,8 +57,6 @@ awaken-service-lifecycle = { path = "crates/server/awaken-service-lifecycle" }
 awaken-session-configuration-contract = { path = "crates/contract/awaken-session-configuration-contract" }
 awaken-session-application-contract = { path = "crates/contract/awaken-session-application-contract" }
 awaken-session-types = { path = "crates/contract/awaken-session-types" }
-awaken-session-mcp-contract = { path = "crates/contract/awaken-session-mcp-contract" }
-awaken-session-resource-contract = { path = "crates/contract/awaken-session-resource-contract" }
 awaken-session-execution-contract = { path = "crates/contract/awaken-session-execution-contract" }
 awaken-session-repository-contract = { path = "crates/contract/awaken-session-repository-contract" }
 awaken-session-realization-contract = { path = "crates/contract/awaken-session-realization-contract" }
