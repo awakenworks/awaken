@@ -101,12 +101,11 @@ fi
 # The snapshotted crates are the members that declare
 # `[package.metadata.awaken] api_snapshot = true`: a surface something outside
 # the compiler's reach depends on (an INVARIANTS row, the out-of-workspace fuzz
-# crate, the plugin SPI). Every other member's consumers are workspace crates,
-# and the compiler already refuses a breaking change there, so a snapshot of it
-# was a second, hand-blessed copy of what `cargo check` proves -- and the most
-# co-edited file set in the tree (ADR-0081, 2026-09-28 amendment). Selection is
-# positive and lives beside the crate, so a new member is unsnapshotted unless
-# its manifest says otherwise.
+# crate, the plugin SPI, or an SDK publication promise). Selection remains
+# explicit beside each crate. Publishing preparation requires every publishable
+# SDK member to select its surface; an internal or unpublished member need not.
+# Product and Cargo publish metadata own this set, not a second package list or
+# separation reason (a publishable SDK vocabulary may remain a contract seam).
 if ! metadata_json="$(cargo metadata --no-deps --format-version 1)"; then
   echo "cargo metadata failed; the public API gate cannot enumerate its crates" >&2
   exit 1
@@ -114,6 +113,16 @@ fi
 crates=$(printf '%s' "$metadata_json" | python3 -c "
 import json, sys
 packages = json.load(sys.stdin)['packages']
+missing_sdk = sorted(
+    p['name'] for p in packages
+    if ((p.get('metadata') or {}).get('awaken') or {}).get('product') == 'sdk'
+    and p.get('publish') != []
+    and ((p.get('metadata') or {}).get('awaken') or {}).get('api_snapshot') is not True
+)
+if missing_sdk:
+    sys.stderr.write('publishable SDK crates must explicitly select public API snapshots: '
+                     + ', '.join(missing_sdk) + '\n')
+    sys.exit(1)
 selected = sorted(
     p['name'] for p in packages
     if ((p.get('metadata') or {}).get('awaken') or {}).get('api_snapshot') is True
