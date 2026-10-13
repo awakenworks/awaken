@@ -507,11 +507,11 @@ pub async fn record_dispatch_recovery_history(
         .await
         .expect("R2 stale settlement");
     let predecessor_finish = store
-        .finish_attempt(&first_claim)
+        .finish_attempt(&first_claim, None)
         .await
         .expect("R3 predecessor finish");
     assert_eq!(
-        store.finish_attempt(&first_claim).await.unwrap(),
+        store.finish_attempt(&first_claim, None).await.unwrap(),
         SettleOutcome::Applied,
         "R5 lost finish response is an idempotent ACK"
     );
@@ -531,7 +531,7 @@ pub async fn record_dispatch_recovery_history(
         .await
         .expect("R3 successor admission");
     assert_eq!(
-        store.finish_attempt(&first_claim).await.unwrap(),
+        store.finish_attempt(&first_claim, None).await.unwrap(),
         SettleOutcome::Fenced,
         "R6 a delayed old ACK cannot clear the successor slot"
     );
@@ -542,7 +542,7 @@ pub async fn record_dispatch_recovery_history(
         "R6 the successor slot survives the delayed old ACK"
     );
     let successor_finish = store
-        .finish_attempt(&recovered_claim)
+        .finish_attempt(&recovered_claim, None)
         .await
         .expect("R3 successor finish");
     let successor_settlement = store
@@ -723,7 +723,7 @@ async fn occupied_recovery_does_not_starve_other_threads(
                         "R3 original slot preserved"
                     );
                     assert_eq!(
-                        store.finish_attempt(&first_claim).await.unwrap(),
+                        store.finish_attempt(&first_claim, None).await.unwrap(),
                         SettleOutcome::Applied,
                         "R4 exact ACK releases old slot"
                     );

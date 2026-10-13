@@ -25,7 +25,10 @@ use harness::{FailingCommit, activation, schedule_n_runtime, text_runtime};
 
 const LEASE: u64 = 1_000;
 
-struct UncertainScheduledExecutor(Arc<awaken_runtime::Runtime>);
+struct UncertainScheduledExecutor(
+    Arc<awaken_runtime::Runtime>,
+    awaken_runtime_contract::model_operation::ModelEffectScope,
+);
 
 #[async_trait::async_trait]
 impl RunExecutor for UncertainScheduledExecutor {
@@ -35,7 +38,7 @@ impl RunExecutor for UncertainScheduledExecutor {
         context: RuntimeRunContext,
     ) -> awaken_runtime_contract::execution::Result<RunState> {
         let state = self.0.execute(activation, context.clone()).await?;
-        context.physical_quiescence.mark_uncertain();
+        context.physical_quiescence.mark_model_uncertain(self.1);
         Ok(state)
     }
 }
@@ -65,7 +68,10 @@ async fn uncertain_scheduled_stage_neither_launches_its_successor_nor_acknowledg
     ));
     let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
     let worker = DispatchWorker::new(runtime.clone(), store.clone(), commit, "uncertain");
-    worker.install_attempt_executor(Arc::new(UncertainScheduledExecutor(runtime)));
+    worker.install_attempt_executor(Arc::new(UncertainScheduledExecutor(
+        runtime,
+        awaken_runtime_contract::model_operation::ModelEffectScope::Opaque,
+    )));
     store
         .enqueue(RunDispatch::new(activation("uncertain-schedule")))
         .await
@@ -74,6 +80,54 @@ async fn uncertain_scheduled_stage_neither_launches_its_successor_nor_acknowledg
     assert_eq!(ran.load(Ordering::SeqCst), 0, "no next-stage effect");
     assert!(store.finish_claims().is_empty(), "no ACK");
     assert_eq!(store.dispatch_count(), 1, "no settlement");
+}
+
+#[tokio::test]
+async fn response_only_unknown_structured_return_keeps_local_fact_without_stop_assertion() {
+    // R1 response-only consumer uncertainty closes new scheduled entry but
+    // permits the observed local return ACK; R2 opaque uncertainty above keeps
+    // the slot and sends no ACK. Both rows keep the result/provider outcome
+    // Unknown. Same executor/tracker/driver, not a second return implementation.
+    let (runtime, ran) = schedule_n_runtime(1);
+    let store = Arc::new(harness::FlakyDispatchStore::new(
+        0,
+        awaken_time::system_clock(),
+    ));
+    let commit = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+    let worker = DispatchWorker::new(runtime.clone(), store.clone(), commit, "response-only");
+    worker.install_attempt_executor(Arc::new(UncertainScheduledExecutor(
+        runtime,
+        awaken_runtime_contract::model_operation::ModelEffectScope::ResponseOnly,
+    )));
+    store
+        .enqueue(RunDispatch::new(activation("response-only-local")))
+        .await
+        .unwrap();
+    let _outcome = worker.tick(harness::clock(0)).await;
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        0,
+        "R1 no scheduled successor entry"
+    );
+    assert!(!store.finish_claims().is_empty(), "R1 actual local ACK");
+    let retained = store
+        .attempt_closure_records_after(
+            awaken_dispatch::DispatchCursor::default(),
+            usize::MAX,
+            Some(&RunId("response-only-local".into())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(retained.events.len(), 1);
+    let awaken_dispatch::AttemptPhysicalFact::Acknowledgement { record } =
+        &retained.events[0].record
+    else {
+        panic!("R1 cannot fabricate All/Controlled provider stop")
+    };
+    assert_eq!(
+        record.cause(),
+        awaken_dispatch::AttemptReturnCause::StructuredReturnObserved
+    );
 }
 
 #[tokio::test]

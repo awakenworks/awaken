@@ -74,62 +74,44 @@ impl MemoryDispatchStore {
     pub(super) async fn finish_physical_attempt_with(
         &self,
         claim: &RunClaim,
-        closure: Option<&crate::AttemptClosureRecord>,
+        purpose: crate::dispatch::AttemptFinish<'_>,
     ) -> Result<SettleOutcome, DispatchError> {
-        if let Some(record) = closure {
-            record.validate()?;
-        }
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
-        let prior = |state: &State| {
-            state
-                .operations
-                .iter()
-                .filter_map(|event| event.operation.closure())
-                .filter(|record| record.attempt().claim.run_id == claim.run_id)
-                .cloned()
-                .collect::<Vec<_>>()
-        };
-        let Some(row) = state.rows.get(&claim.run_id) else {
-            return match closure {
-                Some(record) => {
-                    crate::dispatch::attempt_closure_replay(record, prior(&state).iter())
-                }
-                None => Ok(SettleOutcome::Fenced),
-            };
-        };
-        let slot = match row.active_attempt.as_ref() {
+        let row = state.rows.get(&claim.run_id);
+        let slot = match row.and_then(|row| row.active_attempt.as_ref()) {
             None => PhysicalAttemptSlot::Empty,
             Some(active) if active == claim => PhysicalAttemptSlot::ExactClaim,
             Some(_) => PhysicalAttemptSlot::OtherClaim,
         };
-        let (transition, outcome) = crate::dispatch::decide_physical_attempt_finish(
+        let closing = row.is_some_and(|row| row.active_attempt_closing);
+        // Preserve legacy None's original behavior: it need not decode a
+        // historical binding. Evidence-bearing ACKs freeze the actual row.
+        let original = if purpose.requires_fact() {
+            row.map(Row::physical_attempt).transpose()?.flatten()
+        } else {
+            None
+        };
+        let (transition, outcome, fact) = crate::dispatch::plan_physical_attempt_finish(
+            claim,
+            purpose,
             slot,
-            row.active_attempt_closing,
-            closure.is_some(),
+            closing,
+            original.as_ref(),
+            state
+                .operations
+                .iter()
+                .filter(|_| purpose.requires_fact())
+                .filter_map(|event| event.operation.physical_fact())
+                .filter(|fact| fact.attempt().claim.run_id == claim.run_id),
+            row.is_some(),
         )?;
-        if let Some(record) = closure {
-            if transition == PhysicalAttemptTransition::Stutter {
-                return crate::dispatch::attempt_closure_replay(record, prior(&state).iter());
-            }
-            if transition == PhysicalAttemptTransition::Clear {
-                if row.physical_attempt()?.as_ref() != Some(record.attempt()) {
-                    return Err(DispatchError::Conflict(
-                        "closure subject differs from the frozen physical attempt".into(),
-                    ));
-                }
-                if prior(&state)
-                    .iter()
-                    .any(|old| old.attempt().claim == claim.clone())
-                {
-                    return Err(DispatchError::Conflict(
-                        "a retired closure subject cannot be asserted for another active entry"
-                            .into(),
-                    ));
-                }
-            }
-        }
         if transition == PhysicalAttemptTransition::Clear {
+            // Validate/compile before either mutation; Memory's authority lock
+            // is the same consistency boundary as the two native transactions.
+            if let Some(fact) = &fact {
+                push_operation(&mut state, fact);
+            }
             let row = state
                 .rows
                 .get_mut(&claim.run_id)
@@ -138,9 +120,6 @@ impl MemoryDispatchStore {
             row.active_attempt_binding = None;
             row.active_attempt_closing = false;
             row.retired_attempt_epoch = claim.epoch;
-            if let Some(record) = closure {
-                push_operation(&mut state, record);
-            }
         }
         Ok(outcome)
     }
@@ -219,5 +198,158 @@ impl MemoryDispatchStore {
             events,
             next_cursor,
         })
+    }
+}
+
+// This existing Execution role belongs with the physical-attempt transaction
+// owner; no duplicate port implementation or return policy remains in parent.
+#[async_trait]
+impl awaken_dispatch_contract::DispatchExecution for MemoryDispatchStore {
+    async fn record_credential_realization(
+        &self,
+        claim: &RunClaim,
+        receipt: CredentialRealizationReceipt,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        let Some(row) = state.rows.get_mut(&claim.run_id) else {
+            return Ok(SettleOutcome::Fenced);
+        };
+        if row.state != DispatchState::Leased
+            || row.lease_epoch != claim.epoch
+            || row
+                .lease
+                .as_ref()
+                .is_none_or(|lease| lease.owner() != claim.owner)
+        {
+            return Ok(SettleOutcome::Fenced);
+        }
+        verify_credential_realization_receipt(&row.credential_bindings, &receipt)
+            .map_err(|error| DispatchError::Rejected(error.to_string()))?;
+        let existing = row
+            .credential_receipts
+            .iter()
+            .find(|existing| existing.candidate_fingerprint == receipt.candidate_fingerprint);
+        match credential_realization_persistence_decision(existing, &receipt) {
+            CredentialRealizationPersistenceDecision::ExactReplay => {
+                return Ok(SettleOutcome::Applied);
+            }
+            CredentialRealizationPersistenceDecision::Collision => {
+                return Err(DispatchError::Rejected(
+                    "credential realization receipt conflicts with committed evidence".to_string(),
+                ));
+            }
+            CredentialRealizationPersistenceDecision::Insert => {}
+        }
+        row.credential_receipts.push(receipt);
+        Ok(SettleOutcome::Applied)
+    }
+
+    async fn bind_sandbox(
+        &self,
+        claim: &RunClaim,
+        sandbox_ref: &str,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        if let Some(row) = state.rows.get_mut(&claim.run_id)
+            && row.state == DispatchState::Leased
+            && row.lease_epoch == claim.epoch
+            && row
+                .lease
+                .as_ref()
+                .is_some_and(|lease| lease.owner() == claim.owner)
+        {
+            row.sandbox = Some(sandbox_ref.to_string());
+            return Ok(SettleOutcome::Applied);
+        }
+        Ok(SettleOutcome::Fenced)
+    }
+
+    async fn renew_lease(
+        &self,
+        claim: &RunClaim,
+        lease_ms: u64,
+    ) -> Result<LeaseRenewalOutcome, DispatchError> {
+        let now_ms = self.clock.now_ms();
+        let mut state = lock(&self.state)?;
+        let Some(row) = state.rows.get_mut(&claim.run_id) else {
+            return Ok(LeaseRenewalOutcome::Lost);
+        };
+        let current_claim = matches!(
+            row.state,
+            DispatchState::ReservationLeased | DispatchState::Leased
+        ) && row
+            .lease
+            .as_ref()
+            .is_some_and(|lease| lease.owner() == claim.owner && lease.epoch() == claim.epoch);
+        let cancelled_physical_attempt = row.cancellation_requested
+            && row
+                .active_attempt
+                .as_ref()
+                .is_some_and(|active| active == claim);
+        let outcome = decide_lease_renewal(current_claim, cancelled_physical_attempt);
+        if outcome == LeaseRenewalOutcome::Current
+            && let Some(lease) = row.lease.as_mut()
+        {
+            *lease = lease.with_deadline(crate::clock::deadline_millis(now_ms, lease_ms));
+        }
+        Ok(outcome)
+    }
+
+    async fn begin_attempt(
+        &self,
+        claim: &RunClaim,
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
+    ) -> Result<AttemptAdmission, DispatchError> {
+        let now_ms = self.clock.now_ms();
+        self.admit_physical_attempt(claim, now_ms, false, _binding)
+            .await
+    }
+
+    async fn handoff_attempt(
+        &self,
+        claim: &RunClaim,
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
+    ) -> Result<AttemptAdmission, DispatchError> {
+        let now_ms = self.clock.now_ms();
+        self.admit_physical_attempt(claim, now_ms, true, _binding)
+            .await
+    }
+
+    async fn close_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+        self.close_physical_attempt(claim).await
+    }
+
+    async fn finish_attempt(
+        &self,
+        claim: &RunClaim,
+        cause: Option<awaken_dispatch_contract::AttemptReturnCause>,
+    ) -> Result<SettleOutcome, DispatchError> {
+        self.finish_physical_attempt_with(claim, crate::dispatch::AttemptFinish::Ordinary(cause))
+            .await
+    }
+
+    async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        release_claim(&mut state, claim, None)
+    }
+
+    async fn defer_claim(
+        &self,
+        claim: &RunClaim,
+        retry_after_ms: u64,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        release_claim(
+            &mut state,
+            claim,
+            Some(crate::clock::deadline_millis(
+                self.clock.now_ms(),
+                retry_after_ms,
+            )),
+        )
     }
 }

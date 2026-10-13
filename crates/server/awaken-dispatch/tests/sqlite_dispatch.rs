@@ -8,6 +8,136 @@
 mod harness;
 
 #[tokio::test]
+async fn ordinary_ack_append_failure_rolls_back_and_cold_replay_retains_original_subject() {
+    use awaken_dispatch::{
+        AttemptAdmission, AttemptPhysicalFact, AttemptReturnCause, DispatchCursor,
+        DispatchSettlement, SettleOutcome, SqliteDispatchStore,
+    };
+    // R1 exact ordinary Some + INSERT failure -> rollback slot/retired epoch
+    // and zero fact; R2 same original ACK after the fault is removed -> one
+    // binding+cause event; R3 process reopen/response loss -> exact same event,
+    // even after live Dispatch-row deletion. This native transaction test does
+    // not turn a structured return into a Provider or Session stop assertion.
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("ordinary-ack.db");
+    let clock = awaken_dispatch_testkit::ManualStoreClock::new(0);
+    let store = SqliteDispatchStore::open(path.to_str().unwrap(), clock.clock())
+        .await
+        .unwrap();
+    let (claim, binding, _) =
+        harness::attempt_binding::bound_claim(&store, "ordinary-cold", &clock).await;
+    assert_eq!(
+        store.begin_attempt(&claim, Some(&binding)).await.unwrap(),
+        AttemptAdmission::Applied
+    );
+    let original = store
+        .load_physical_attempt(&claim.run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let failure = awaken_sqlite_pool::EmbeddedSqlite::file(&path)
+        .open()
+        .await
+        .unwrap();
+    sqlx::query("CREATE TRIGGER test_reject_ack_insert BEFORE INSERT ON runtime_dispatch_operation WHEN json_extract(NEW.operation, '$.type') = 'attempt_acknowledgement' BEGIN SELECT RAISE(ABORT, 'test ACK append failure'); END").execute(&failure).await.unwrap();
+    assert!(
+        store
+            .finish_attempt(&claim, Some(AttemptReturnCause::StructuredReturnObserved))
+            .await
+            .is_err(),
+        "R1 append failure"
+    );
+    assert_eq!(
+        store.load_physical_attempt(&claim.run_id).await.unwrap(),
+        Some(original.clone()),
+        "R1 original binding still visible"
+    );
+    assert!(
+        store
+            .attempt_closure_records_after(
+                DispatchCursor::default(),
+                usize::MAX,
+                Some(&claim.run_id)
+            )
+            .await
+            .unwrap()
+            .events
+            .is_empty()
+    );
+    assert_eq!(
+        store.begin_attempt(&claim, Some(&binding)).await.unwrap(),
+        AttemptAdmission::AlreadyApplied,
+        "R1 epoch was not retired"
+    );
+    sqlx::query("DROP TRIGGER test_reject_ack_insert")
+        .execute(&failure)
+        .await
+        .unwrap();
+    failure.close().await;
+    assert_eq!(
+        store
+            .finish_attempt(&claim, Some(AttemptReturnCause::StructuredReturnObserved))
+            .await
+            .unwrap(),
+        SettleOutcome::Applied,
+        "R2"
+    );
+    let retained = store
+        .attempt_closure_records_after(DispatchCursor::default(), usize::MAX, Some(&claim.run_id))
+        .await
+        .unwrap();
+    assert_eq!(retained.events.len(), 1);
+    let AttemptPhysicalFact::Acknowledgement { record } = &retained.events[0].record else {
+        panic!("R2 local observation is not independent closure")
+    };
+    assert_eq!(record.attempt(), &original);
+    drop(store);
+    let reopened = SqliteDispatchStore::open(path.to_str().unwrap(), clock.clock())
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened
+            .finish_attempt(&claim, Some(AttemptReturnCause::StructuredReturnObserved))
+            .await
+            .unwrap(),
+        SettleOutcome::Applied,
+        "R3 cold ACK replay"
+    );
+    assert_eq!(
+        reopened
+            .settle(
+                &claim.run_id,
+                claim.epoch,
+                awaken_dispatch::DispatchOutcome::Done,
+                &[]
+            )
+            .await
+            .unwrap(),
+        SettleOutcome::Applied
+    );
+    assert_eq!(
+        reopened
+            .finish_attempt(&claim, Some(AttemptReturnCause::StructuredReturnObserved))
+            .await
+            .unwrap(),
+        SettleOutcome::Applied,
+        "R3 row tombstone"
+    );
+    assert_eq!(
+        reopened
+            .attempt_closure_records_after(
+                DispatchCursor::default(),
+                usize::MAX,
+                Some(&claim.run_id)
+            )
+            .await
+            .unwrap(),
+        retained,
+        "R3 original cursor/time, no duplicate"
+    );
+}
+
+#[tokio::test]
 async fn closed_entry_survives_process_reopen_and_rejects_late_worker_ack() {
     use awaken_dispatch::{SettleOutcome, SqliteDispatchStore};
     // C1 close is committed before its caller loses the response; C2 all
@@ -43,7 +173,7 @@ async fn closed_entry_survives_process_reopen_and_rejects_late_worker_ack() {
     )
     .unwrap();
     assert_eq!(
-        reopened.finish_attempt(&claim).await.unwrap(),
+        reopened.finish_attempt(&claim, None).await.unwrap(),
         SettleOutcome::Fenced
     );
     // S5 the original transaction's append fails after slot update: neither
@@ -122,7 +252,10 @@ async fn closed_entry_survives_process_reopen_and_rejects_late_worker_ack() {
         "S4 one retained fact across cold reopen"
     );
     assert_eq!(
-        retained.events[0].record, closure,
+        retained.events[0].record,
+        awaken_dispatch::AttemptPhysicalFact::IndependentClosure {
+            record: closure.clone()
+        },
         "S4 exact original subject/kind/ref"
     );
     assert_eq!(
@@ -291,7 +424,7 @@ async fn sqlite_execution_binding_survives_reopen_without_the_worker() {
         .await
         .unwrap();
     assert_eq!(
-        reopened.finish_attempt(&claim).await.unwrap(),
+        reopened.finish_attempt(&claim, None).await.unwrap(),
         awaken_dispatch::SettleOutcome::Applied
     );
     drop(reopened);
@@ -340,7 +473,7 @@ async fn sqlite_ack_retirement_survives_reopen_and_sql_bypass_is_rejected() {
     let a = RunClaim::from(&a.lease);
     clock.set(0);
     assert_eq!(store.begin_attempt(&a, None).await.unwrap(), A::Applied);
-    assert_eq!(store.finish_attempt(&a).await.unwrap(), S::Applied);
+    assert_eq!(store.finish_attempt(&a, None).await.unwrap(), S::Applied);
     drop(store);
     let reopened = SqliteDispatchStore::open(path, clock.clock())
         .await
@@ -352,7 +485,7 @@ async fn sqlite_ack_retirement_survives_reopen_and_sql_bypass_is_rejected() {
         "R8"
     );
     assert_eq!(
-        reopened.finish_attempt(&a).await.unwrap(),
+        reopened.finish_attempt(&a, None).await.unwrap(),
         S::Applied,
         "lost ACK response"
     );

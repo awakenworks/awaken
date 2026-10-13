@@ -286,7 +286,13 @@ pub trait DispatchExecution: Send + Sync {
     /// is insufficient. This intentionally accepts the exact predecessor epoch
     /// after a durable reclaim: it can only clear its own execution slot and grants no
     /// commit, checkpoint, or settlement authority. A mismatched claim is fenced.
-    async fn finish_attempt(&self, _claim: &RunClaim) -> Result<SettleOutcome, DispatchError>;
+    /// A supplied cause retains only the original local observation, never
+    /// Provider/Session closure; missing legacy evidence is not backfilled.
+    async fn finish_attempt(
+        &self,
+        _claim: &RunClaim,
+        cause: Option<super::AttemptReturnCause>,
+    ) -> Result<SettleOutcome, DispatchError>;
 
     /// Return an exact, still-current claim to `pending` without consuming its
     /// crash retry budget.
@@ -592,7 +598,7 @@ pub trait DispatchControlReads: Send + Sync {
         run_id: &RunId,
     ) -> Result<Option<PhysicalAttempt>, DispatchError>;
 
-    /// Read retained independent closure facts from the one original operation
+    /// Read retained ordinary acknowledgements and independent closure facts from the one original operation
     /// storage. Missing records remain unknown; these are not an inventory of
     /// all old execution or a cleanup/placement grant. Filtering precedes the
     /// logical page limit and the original global cursor is retained.

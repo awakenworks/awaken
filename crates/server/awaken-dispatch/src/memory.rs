@@ -1166,152 +1166,6 @@ impl awaken_dispatch_contract::DispatchEnqueue for MemoryDispatchStore {
 }
 
 #[async_trait]
-impl awaken_dispatch_contract::DispatchExecution for MemoryDispatchStore {
-    async fn record_credential_realization(
-        &self,
-        claim: &RunClaim,
-        receipt: CredentialRealizationReceipt,
-    ) -> Result<SettleOutcome, DispatchError> {
-        let _authority = self.authority.lock().await;
-        let mut state = lock(&self.state)?;
-        let Some(row) = state.rows.get_mut(&claim.run_id) else {
-            return Ok(SettleOutcome::Fenced);
-        };
-        if row.state != DispatchState::Leased
-            || row.lease_epoch != claim.epoch
-            || row
-                .lease
-                .as_ref()
-                .is_none_or(|lease| lease.owner() != claim.owner)
-        {
-            return Ok(SettleOutcome::Fenced);
-        }
-        verify_credential_realization_receipt(&row.credential_bindings, &receipt)
-            .map_err(|error| DispatchError::Rejected(error.to_string()))?;
-        let existing = row
-            .credential_receipts
-            .iter()
-            .find(|existing| existing.candidate_fingerprint == receipt.candidate_fingerprint);
-        match credential_realization_persistence_decision(existing, &receipt) {
-            CredentialRealizationPersistenceDecision::ExactReplay => {
-                return Ok(SettleOutcome::Applied);
-            }
-            CredentialRealizationPersistenceDecision::Collision => {
-                return Err(DispatchError::Rejected(
-                    "credential realization receipt conflicts with committed evidence".to_string(),
-                ));
-            }
-            CredentialRealizationPersistenceDecision::Insert => {}
-        }
-        row.credential_receipts.push(receipt);
-        Ok(SettleOutcome::Applied)
-    }
-
-    async fn bind_sandbox(
-        &self,
-        claim: &RunClaim,
-        sandbox_ref: &str,
-    ) -> Result<SettleOutcome, DispatchError> {
-        let _authority = self.authority.lock().await;
-        let mut state = lock(&self.state)?;
-        if let Some(row) = state.rows.get_mut(&claim.run_id)
-            && row.state == DispatchState::Leased
-            && row.lease_epoch == claim.epoch
-            && row
-                .lease
-                .as_ref()
-                .is_some_and(|lease| lease.owner() == claim.owner)
-        {
-            row.sandbox = Some(sandbox_ref.to_string());
-            return Ok(SettleOutcome::Applied);
-        }
-        Ok(SettleOutcome::Fenced)
-    }
-
-    async fn renew_lease(
-        &self,
-        claim: &RunClaim,
-        lease_ms: u64,
-    ) -> Result<LeaseRenewalOutcome, DispatchError> {
-        let now_ms = self.clock.now_ms();
-        let mut state = lock(&self.state)?;
-        let Some(row) = state.rows.get_mut(&claim.run_id) else {
-            return Ok(LeaseRenewalOutcome::Lost);
-        };
-        let current_claim = matches!(
-            row.state,
-            DispatchState::ReservationLeased | DispatchState::Leased
-        ) && row
-            .lease
-            .as_ref()
-            .is_some_and(|lease| lease.owner() == claim.owner && lease.epoch() == claim.epoch);
-        let cancelled_physical_attempt = row.cancellation_requested
-            && row
-                .active_attempt
-                .as_ref()
-                .is_some_and(|active| active == claim);
-        let outcome = decide_lease_renewal(current_claim, cancelled_physical_attempt);
-        if outcome == LeaseRenewalOutcome::Current
-            && let Some(lease) = row.lease.as_mut()
-        {
-            *lease = lease.with_deadline(crate::clock::deadline_millis(now_ms, lease_ms));
-        }
-        Ok(outcome)
-    }
-
-    async fn begin_attempt(
-        &self,
-        claim: &RunClaim,
-        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
-    ) -> Result<AttemptAdmission, DispatchError> {
-        let now_ms = self.clock.now_ms();
-        self.admit_physical_attempt(claim, now_ms, false, _binding)
-            .await
-    }
-
-    async fn handoff_attempt(
-        &self,
-        claim: &RunClaim,
-        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
-    ) -> Result<AttemptAdmission, DispatchError> {
-        let now_ms = self.clock.now_ms();
-        self.admit_physical_attempt(claim, now_ms, true, _binding)
-            .await
-    }
-
-    async fn close_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
-        self.close_physical_attempt(claim).await
-    }
-
-    async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
-        self.finish_physical_attempt_with(claim, None).await
-    }
-
-    async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
-        let _authority = self.authority.lock().await;
-        let mut state = lock(&self.state)?;
-        release_claim(&mut state, claim, None)
-    }
-
-    async fn defer_claim(
-        &self,
-        claim: &RunClaim,
-        retry_after_ms: u64,
-    ) -> Result<SettleOutcome, DispatchError> {
-        let _authority = self.authority.lock().await;
-        let mut state = lock(&self.state)?;
-        release_claim(
-            &mut state,
-            claim,
-            Some(crate::clock::deadline_millis(
-                self.clock.now_ms(),
-                retry_after_ms,
-            )),
-        )
-    }
-}
-
-#[async_trait]
 impl awaken_dispatch_contract::DispatchClaimOwnership for MemoryDispatchStore {
     /// The store's own clock decides liveness, exactly as it does for every
     /// other deadline this backend judges. This used to ride the trait default
@@ -1531,8 +1385,11 @@ impl awaken_dispatch_contract::DispatchAttemptControl for MemoryDispatchStore {
         &self,
         record: &crate::AttemptClosureRecord,
     ) -> Result<SettleOutcome, DispatchError> {
-        self.finish_physical_attempt_with(&record.attempt().claim, Some(record))
-            .await
+        self.finish_physical_attempt_with(
+            &record.attempt().claim,
+            crate::dispatch::AttemptFinish::Independent(record),
+        )
+        .await
     }
 
     async fn admit_attempt_guarded(

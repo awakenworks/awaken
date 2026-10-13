@@ -1070,6 +1070,7 @@ impl awaken_dispatch_contract::DispatchExecution for FlakyDispatchStore {
     async fn finish_attempt(
         &self,
         claim: &awaken_dispatch::RunClaim,
+        cause: Option<awaken_dispatch::AttemptReturnCause>,
     ) -> Result<awaken_dispatch::SettleOutcome, awaken_dispatch::DispatchError> {
         self.finish_claims.lock().unwrap().push(claim.clone());
         let fault = self.finish_fault.lock().unwrap().take();
@@ -1080,7 +1081,7 @@ impl awaken_dispatch_contract::DispatchExecution for FlakyDispatchStore {
                 ));
             }
             Some(FinishFault::LostResponse) => {
-                self.inner.finish_attempt(claim).await?;
+                self.inner.finish_attempt(claim, cause).await?;
                 return Err(awaken_dispatch::DispatchError::Unavailable(
                     "lost response".into(),
                 ));
@@ -1093,7 +1094,7 @@ impl awaken_dispatch_contract::DispatchExecution for FlakyDispatchStore {
             }
             None => {}
         }
-        self.inner.finish_attempt(claim).await
+        self.inner.finish_attempt(claim, cause).await
     }
     async fn relinquish_claim(
         &self,
@@ -2930,7 +2931,7 @@ pub async fn assert_physical_attempt_admission<
         "A5 retained A slot still excludes C executor entry"
     );
     assert_eq!(
-        store.finish_attempt(&claim_a).await.expect("A6"),
+        store.finish_attempt(&claim_a, None).await.expect("A6"),
         SettleOutcome::Applied,
         "A6 stale mutation owner may acknowledge its exact physical slot"
     );
@@ -2942,20 +2943,23 @@ pub async fn assert_physical_attempt_admission<
     );
     assert_eq!(
         store
-            .finish_attempt(&claim_a)
+            .finish_attempt(&claim_a, None)
             .await
             .expect("A7 stale retry"),
         SettleOutcome::Fenced,
         "A7 A cannot clear C's slot"
     );
     assert_eq!(
-        store.finish_attempt(&claim_c).await.expect("A7 C finish"),
+        store
+            .finish_attempt(&claim_c, None)
+            .await
+            .expect("A7 C finish"),
         SettleOutcome::Applied,
         "A7 C releases its exact slot"
     );
     assert_eq!(
         store
-            .finish_attempt(&claim_c)
+            .finish_attempt(&claim_c, None)
             .await
             .expect("A8 C finish response-loss retry"),
         SettleOutcome::Applied,
@@ -3040,14 +3044,17 @@ pub async fn assert_physical_attempt_admission<
     );
     assert_eq!(
         store
-            .finish_attempt(&claim_d)
+            .finish_attempt(&claim_d, None)
             .await
             .expect("A10 stale D finish"),
         SettleOutcome::Fenced,
         "A10 predecessor cannot clear its successor"
     );
     assert_eq!(
-        store.finish_attempt(&claim_e).await.expect("A10 E finish"),
+        store
+            .finish_attempt(&claim_e, None)
+            .await
+            .expect("A10 E finish"),
         SettleOutcome::Applied,
         "A10 current continuation releases its exact slot"
     );
@@ -3133,7 +3140,7 @@ pub async fn assert_physical_attempt_admission<
         AttemptAdmission::Applied,
         "E2"
     );
-    store.finish_attempt(&a).await.unwrap();
+    store.finish_attempt(&a, None).await.unwrap();
     clock.set(now);
     assert_eq!(
         store.begin_attempt(&b, None).await.unwrap(),
@@ -3141,7 +3148,7 @@ pub async fn assert_physical_attempt_admission<
         "E3"
     );
     assert_eq!(
-        store.finish_attempt(&a).await.unwrap(),
+        store.finish_attempt(&a, None).await.unwrap(),
         SettleOutcome::Applied,
         "E4 empty A retry"
     );
@@ -3151,8 +3158,8 @@ pub async fn assert_physical_attempt_admission<
         AttemptAdmission::AlreadyApplied,
         "E4 old Run A acknowledgement cannot clear Run B"
     );
-    store.finish_attempt(&b).await.unwrap();
-    store.finish_attempt(&other).await.unwrap();
+    store.finish_attempt(&b, None).await.unwrap();
+    store.finish_attempt(&other, None).await.unwrap();
 }
 
 /// Shared spec for time-windowed dead-letter GC (ADR-0023): GC removes only

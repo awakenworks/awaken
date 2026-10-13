@@ -25,8 +25,11 @@ impl awaken_dispatch_contract::DispatchAttemptControl for SqliteDispatchStore {
         &self,
         record: &crate::AttemptClosureRecord,
     ) -> Result<SettleOutcome, DispatchError> {
-        self.finish_physical_attempt_with(&record.attempt().claim, Some(record))
-            .await
+        self.finish_physical_attempt_with(
+            &record.attempt().claim,
+            crate::dispatch::AttemptFinish::Independent(record),
+        )
+        .await
     }
 
     async fn admit_attempt_guarded(

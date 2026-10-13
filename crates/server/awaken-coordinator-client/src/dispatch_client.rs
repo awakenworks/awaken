@@ -724,7 +724,7 @@ impl awaken_dispatch_contract::DispatchExecution for HttpDispatchQueue {
         binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
         reject_worker_supplied_execution_binding(binding)?;
-        let value = self.attempt_command(claim, "begin").await?;
+        let value = self.attempt_command(claim, "begin", None).await?;
         serde_json::from_value(
             value
                 .get("admission")
@@ -740,7 +740,7 @@ impl awaken_dispatch_contract::DispatchExecution for HttpDispatchQueue {
         binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
         reject_worker_supplied_execution_binding(binding)?;
-        let value = self.attempt_command(claim, "handoff").await?;
+        let value = self.attempt_command(claim, "handoff", None).await?;
         serde_json::from_value(
             value
                 .get("admission")
@@ -751,7 +751,7 @@ impl awaken_dispatch_contract::DispatchExecution for HttpDispatchQueue {
     }
 
     async fn close_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
-        let value = self.attempt_command(claim, "close").await?;
+        let value = self.attempt_command(claim, "close", None).await?;
         Ok(
             if value.get("closed").and_then(serde_json::Value::as_bool) == Some(true) {
                 SettleOutcome::Applied
@@ -761,8 +761,12 @@ impl awaken_dispatch_contract::DispatchExecution for HttpDispatchQueue {
         )
     }
 
-    async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
-        let value = self.attempt_command(claim, "finish").await?;
+    async fn finish_attempt(
+        &self,
+        claim: &RunClaim,
+        cause: Option<awaken_dispatch_contract::AttemptReturnCause>,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let value = self.attempt_command(claim, "finish", cause).await?;
         Ok(
             if value
                 .get("finished")
@@ -992,12 +996,14 @@ impl HttpDispatchQueue {
         &self,
         claim: &RunClaim,
         action: &str,
+        return_cause: Option<awaken_dispatch_contract::AttemptReturnCause>,
     ) -> Result<serde_json::Value, DispatchError> {
         self.post_idempotent(
             &format!("/v1/worker/dispatch/attempt/{action}"),
             &AttemptExecutionRequest {
                 claim: claim.clone(),
                 identity: Some(self.worker_identity.clone()),
+                return_cause,
             },
             self.worker_id(),
         )

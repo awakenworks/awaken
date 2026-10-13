@@ -168,10 +168,14 @@ pub async fn assert_binding_lifecycle(
         expected_a,
         "new assignment preserves old domain"
     );
-    assert_eq!(store.finish_attempt(&a).await.unwrap(), S::Applied, "B6");
+    assert_eq!(
+        store.finish_attempt(&a, None).await.unwrap(),
+        S::Applied,
+        "B6"
+    );
     assert_eq!(store.load_physical_attempt(&a.run_id).await.unwrap(), None);
     assert_eq!(
-        store.finish_attempt(&a).await.unwrap(),
+        store.finish_attempt(&a, None).await.unwrap(),
         S::Applied,
         "ACK response-loss retry"
     );
@@ -181,7 +185,7 @@ pub async fn assert_binding_lifecycle(
         A::Applied
     );
     assert_eq!(
-        store.finish_attempt(&a).await.unwrap(),
+        store.finish_attempt(&a, None).await.unwrap(),
         S::Fenced,
         "B6 old evidence"
     );
@@ -229,8 +233,8 @@ pub async fn assert_binding_lifecycle(
             session_thread_id: None,
         })
     );
-    assert_eq!(store.finish_attempt(&b).await.unwrap(), S::Fenced);
-    assert_eq!(store.finish_attempt(&c).await.unwrap(), S::Applied);
+    assert_eq!(store.finish_attempt(&b, None).await.unwrap(), S::Fenced);
+    assert_eq!(store.finish_attempt(&c, None).await.unwrap(), S::Applied);
     clock.set(2);
     assert_eq!(
         store.begin_attempt(&c, Some(&binding_c)).await.unwrap(),
@@ -266,7 +270,7 @@ pub async fn assert_binding_lifecycle(
             .binding,
         None
     );
-    assert_eq!(store.finish_attempt(&d).await.unwrap(), S::Applied);
+    assert_eq!(store.finish_attempt(&d, None).await.unwrap(), S::Applied);
 
     store
         .enqueue(RunDispatch::new(super::activation_on(
@@ -330,7 +334,7 @@ pub async fn assert_binding_lifecycle(
     );
     assert_eq!(a.unwrap(), A::AlreadyApplied, "B15");
     assert_eq!(b.unwrap(), A::AlreadyApplied, "B15");
-    assert_eq!(store.finish_attempt(&race).await.unwrap(), S::Applied);
+    assert_eq!(store.finish_attempt(&race, None).await.unwrap(), S::Applied);
 
     // B16 a Session-affined child freezes both its logical Thread and physical
     // Session partition from the canonical RunDispatch payload. B17 all store
@@ -375,7 +379,7 @@ pub async fn assert_binding_lifecycle(
         "B16/B17"
     );
     assert_eq!(
-        store.finish_attempt(&partitioned).await.unwrap(),
+        store.finish_attempt(&partitioned, None).await.unwrap(),
         S::Applied
     );
 }
@@ -443,7 +447,7 @@ pub async fn assert_closing_lifecycle(
     assert_eq!(closed.claim, old);
     assert_eq!(closed.binding.as_ref(), Some(&binding));
     assert_eq!(
-        store.finish_attempt(&old).await.unwrap(),
+        store.finish_attempt(&old, None).await.unwrap(),
         S::Fenced,
         "D3 late ACK"
     );
@@ -571,7 +575,12 @@ pub async fn assert_closing_lifecycle(
         1,
         "D6 duplicate response has one fact"
     );
-    assert_eq!(retained.events[0].record, record);
+    assert_eq!(
+        retained.events[0].record,
+        awaken_dispatch::AttemptPhysicalFact::IndependentClosure {
+            record: record.clone()
+        }
+    );
     let changed = AttemptClosureRecord::try_new(
         record.attempt().clone(),
         AttemptClosureKind::AllExecutionStopped,
@@ -594,6 +603,211 @@ pub async fn assert_closing_lifecycle(
         retained
     );
     assert_internal_history_preserves_public_projection(store, clock).await;
+    assert_ordinary_acknowledgement_history(store, clock).await;
+}
+
+async fn assert_ordinary_acknowledgement_history(
+    store: &(impl ConformanceDispatch + awaken_dispatch::DispatchOperationalFeed),
+    clock: &dyn awaken_dispatch_testkit::ConformanceClock,
+) {
+    use awaken_dispatch::{
+        AttemptPhysicalFact as F, AttemptReturnCause as C, DispatchCursor, DispatchOutcome,
+    };
+    // Cause graph: O1 actual local cause (Future not entered or structured
+    // return); O2 exact/changed cause; O3 same slot/closing/newer slot; O4 first
+    // response lost/row removed. O5 legacy None has no retained observation.
+    // R1 O1+exact+open -> one original binding+Thread/cause fact and retirement;
+    // R2 response loss/cold reader/row deletion -> same event once, no refill;
+    // R3 changed/closing/successor -> reject without mutation; R4 O5 stays
+    // Unknown. Local return includes response-only result uncertainty, and
+    // pre-driver Create/Adopt/MCP IO is outside OperationFutureNotEntered;
+    // therefore NO row produces an IndependentClosure/All/Controlled proof.
+    for (name, cause) in [
+        ("ack-not-entered", C::OperationFutureNotEntered),
+        ("ack-returned", C::StructuredReturnObserved),
+    ] {
+        let (claim, binding, _) = bound_claim(store, name, clock).await;
+        assert_eq!(
+            store.begin_attempt(&claim, Some(&binding)).await.unwrap(),
+            A::Applied
+        );
+        let original = store
+            .load_physical_attempt(&claim.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            store.finish_attempt(&claim, Some(cause)).await.unwrap(),
+            S::Applied,
+            "R1"
+        );
+        assert!(
+            store
+                .load_physical_attempt(&claim.run_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let retained = store
+            .attempt_closure_records_after(
+                DispatchCursor::default(),
+                usize::MAX,
+                Some(&claim.run_id),
+            )
+            .await
+            .unwrap();
+        assert_eq!(retained.events.len(), 1);
+        let F::Acknowledgement { record } = &retained.events[0].record else {
+            panic!("R1 ordinary cause cannot become an independent stop kind")
+        };
+        assert_eq!(
+            record.attempt(),
+            &original,
+            "R1 original binding/Thread/partition"
+        );
+        assert_eq!(record.cause(), cause);
+        assert!(!record.attempt().closing, "R1 do not fabricate closing");
+        assert_eq!(
+            store.finish_attempt(&claim, Some(cause)).await.unwrap(),
+            S::Applied,
+            "R2 response loss"
+        );
+        let different = if cause == C::OperationFutureNotEntered {
+            C::StructuredReturnObserved
+        } else {
+            C::OperationFutureNotEntered
+        };
+        assert!(
+            store.finish_attempt(&claim, Some(different)).await.is_err(),
+            "R3 cause rewrite"
+        );
+        assert_eq!(
+            store.finish_attempt(&claim, None).await.unwrap(),
+            S::Applied,
+            "R4 legacy replay preserves existing fact"
+        );
+        assert_eq!(
+            store
+                .settle(&claim.run_id, claim.epoch, DispatchOutcome::Done, &[])
+                .await
+                .unwrap(),
+            S::Applied
+        );
+        assert_eq!(
+            store.finish_attempt(&claim, Some(cause)).await.unwrap(),
+            S::Applied,
+            "R2 row deletion replay"
+        );
+        assert_eq!(
+            store
+                .attempt_closure_records_after(
+                    DispatchCursor::default(),
+                    usize::MAX,
+                    Some(&claim.run_id)
+                )
+                .await
+                .unwrap(),
+            retained,
+            "R2 same original event cursor/time"
+        );
+    }
+    let (claim, binding, _) = bound_claim(store, "ack-closed", clock).await;
+    store.begin_attempt(&claim, Some(&binding)).await.unwrap();
+    store.close_attempt(&claim).await.unwrap();
+    let closed = store.load_physical_attempt(&claim.run_id).await.unwrap();
+    assert_eq!(
+        store
+            .finish_attempt(&claim, Some(C::StructuredReturnObserved))
+            .await
+            .unwrap(),
+        S::Fenced,
+        "R3 independent closing rejects ordinary Some"
+    );
+    assert_eq!(
+        store.load_physical_attempt(&claim.run_id).await.unwrap(),
+        closed
+    );
+    assert!(
+        store
+            .attempt_closure_records_after(
+                DispatchCursor::default(),
+                usize::MAX,
+                Some(&claim.run_id)
+            )
+            .await
+            .unwrap()
+            .events
+            .is_empty()
+    );
+
+    let (old, old_binding, mut worker) = bound_claim(store, "ack-successor", clock).await;
+    store.begin_attempt(&old, Some(&old_binding)).await.unwrap();
+    store
+        .finish_attempt(&old, Some(C::StructuredReturnObserved))
+        .await
+        .unwrap();
+    // Use the original cancellation claim succession, not wall-clock expiry
+    // manipulation; PostgreSQL reads its own authority clock.
+    store.cancel(&old.run_id).await.unwrap();
+    worker.identity = WorkerIdentity::new(&worker.identity.worker_id, "new-boot", 2);
+    let next = store
+        .claim_run_compatible(&old.run_id, &worker, 60_000)
+        .await
+        .unwrap()
+        .unwrap();
+    let next = RunClaim::from(&next.lease);
+    let next_binding = AttemptExecutionBinding::new(
+        worker.identity.clone(),
+        "kubernetes-installation-a",
+        "successor-process",
+    )
+    .unwrap();
+    assert_eq!(
+        store
+            .begin_attempt(&next, Some(&next_binding))
+            .await
+            .unwrap(),
+        A::Applied
+    );
+    let successor = store.load_physical_attempt(&old.run_id).await.unwrap();
+    assert_eq!(
+        store
+            .finish_attempt(&old, Some(C::StructuredReturnObserved))
+            .await
+            .unwrap(),
+        S::Fenced,
+        "R3 old replay cannot clear successor"
+    );
+    assert_eq!(
+        store.load_physical_attempt(&old.run_id).await.unwrap(),
+        successor
+    );
+    let (legacy, legacy_binding, _) = bound_claim(store, "ack-missing-old-fact", clock).await;
+    store
+        .begin_attempt(&legacy, Some(&legacy_binding))
+        .await
+        .unwrap();
+    store.finish_attempt(&legacy, None).await.unwrap();
+    assert_eq!(
+        store
+            .finish_attempt(&legacy, Some(C::OperationFutureNotEntered))
+            .await
+            .unwrap(),
+        S::Fenced,
+        "R4 no post-hoc backfill"
+    );
+    assert!(
+        store
+            .attempt_closure_records_after(
+                DispatchCursor::default(),
+                usize::MAX,
+                Some(&legacy.run_id)
+            )
+            .await
+            .unwrap()
+            .events
+            .is_empty()
+    );
 }
 
 use awaken_dispatch_testkit::ConformanceDispatch;
@@ -673,7 +887,12 @@ async fn assert_internal_history_preserves_public_projection(
         .await
         .unwrap();
     assert_eq!(first.events.len(), 1);
-    assert_eq!(first.events[0].record, records[0]);
+    assert_eq!(
+        first.events[0].record,
+        awaken_dispatch::AttemptPhysicalFact::IndependentClosure {
+            record: records[0].clone()
+        }
+    );
 
     let suffix = "history-public-suffix";
     store
@@ -764,7 +983,10 @@ async fn assert_internal_history_preserves_public_projection(
         retained
             .events
             .iter()
-            .map(|event| &event.record)
+            .map(|event| match &event.record {
+                awaken_dispatch::AttemptPhysicalFact::IndependentClosure { record } => record,
+                _ => panic!("H5 only independent observations were submitted"),
+            })
             .collect::<Vec<_>>(),
         records.iter().collect::<Vec<_>>(),
         "H5 no history mirror or row-lifetime loss"
@@ -777,7 +999,7 @@ async fn assert_internal_history_preserves_public_projection(
         .await
         .unwrap()
         .unwrap();
-    store.finish_attempt(&source).await.unwrap();
+    store.finish_attempt(&source, None).await.unwrap();
     old.closing = true;
     let invented = AttemptClosureRecord::try_new(
         old,

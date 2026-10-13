@@ -564,7 +564,11 @@ async fn closed_worker_releases_idle_evidence_only_after_the_original_physical_a
         "R1 no retirement"
     );
     assert!(
-        f.store.finish_attempt(&f.old).await.unwrap().applied(),
+        f.store
+            .finish_attempt(&f.old, None)
+            .await
+            .unwrap()
+            .applied(),
         "R2 original ACK"
     );
     assert!(
@@ -702,7 +706,7 @@ async fn postgres_guarded_admission_uses_one_process_connection_and_rejects_fore
                         .binding,
                     Some(binding)
                 );
-                assert!(store.finish_attempt(&claim).await.unwrap().applied());
+                assert!(store.finish_attempt(&claim, None).await.unwrap().applied());
             }
             "foreign" => {
                 assert!(outcome.is_err());
@@ -781,7 +785,13 @@ async fn blocked_http_closes_exact_expired_worker_but_local_exit_never_clears_re
         let (reply, ()) = tokio::join!(f.begin(), async {
             f.stop.entered.notified().await;
             tokio::time::timeout(std::time::Duration::from_secs(1), async {
-                assert!(f.store.finish_attempt(&f.old).await.unwrap().applied());
+                assert!(
+                    f.store
+                        .finish_attempt(&f.old, None)
+                        .await
+                        .unwrap()
+                        .applied()
+                );
                 assert_eq!(
                     f.store.begin_attempt(&f.next, None).await.unwrap(),
                     AttemptAdmission::Applied
@@ -875,7 +885,7 @@ async fn stop_admission_rejects_live_replaced_historical_and_noncurrent_subjects
                 );
             }
             "empty" => {
-                f.store.finish_attempt(&f.old).await.unwrap();
+                f.store.finish_attempt(&f.old, None).await.unwrap();
             }
             _ => {}
         }
@@ -1427,7 +1437,7 @@ async fn reported_local_entry_closure_recovers_without_stopping_a_healthy_worker
         assert_eq!(reply.json::<Value>().await.unwrap()["closed"], true);
     }
     assert_eq!(
-        f.store.finish_attempt(&f.old).await.unwrap(),
+        f.store.finish_attempt(&f.old, None).await.unwrap(),
         awaken_dispatch::SettleOutcome::Fenced
     );
     probe.release.add_permits(1);
@@ -1700,7 +1710,11 @@ async fn committed_terminal_closure_needs_no_current_successor_and_retains_unkno
             "T8 exact old identity"
         );
         assert_eq!(
-            records.events[0].record.evidence_ref(),
+            match &records.events[0].record {
+                awaken_dispatch::AttemptPhysicalFact::IndependentClosure { record } =>
+                    record.evidence_ref(),
+                _ => panic!("T8 trusted stop must retain independent closure"),
+            },
             "all-original-participants-terminal",
             "T8"
         );

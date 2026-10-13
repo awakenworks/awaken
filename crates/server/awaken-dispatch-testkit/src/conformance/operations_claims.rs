@@ -216,7 +216,7 @@ pub async fn assert_occupied_slot_quarantine_conformance_with_clock<S>(
     // E3: the slot survives quarantine, so physical truth is never fabricated.
     assert_eq!(
         store
-            .finish_attempt(&RunClaim::from(&stuck_first.lease))
+            .finish_attempt(&RunClaim::from(&stuck_first.lease), None)
             .await
             .expect("a returning predecessor still settles its own slot"),
         SettleOutcome::Applied,

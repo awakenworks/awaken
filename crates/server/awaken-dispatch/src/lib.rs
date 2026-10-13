@@ -116,15 +116,15 @@ pub use awaken_dispatch_contract::{
 };
 pub use awaken_dispatch_contract::{ClaimedStreamPublisher, SessionContinuationOutbox};
 pub use dispatch::{
-    AttemptAdmission, AttemptClosureEvent, AttemptClosurePage, AttemptClosureRecord,
-    AttemptCredentialBinding, AttemptExecutionBinding, CandidateFingerprint, CasOutcome, Claimed,
-    ClaimedCheckpointTransport, ClaimedCredentialDeliveryTransport, CommitEpochGuard,
-    ContinuationAdmission, CredentialRealizationReceipt, DispatchCompletion, DispatchDepths,
-    DispatchError, DispatchLease, DispatchOutcome, DispatchSettlementError,
-    DispatchSettlementObserver, DispatchState, DispatchSummary, Inbox, LeaseRenewalOutcome, Outbox,
-    PendingInput, PendingRecord, PhysicalAttempt, RunClaim, SessionChildAdmission,
-    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
-    SettleOutcome, SubmitOptions,
+    AttemptAcknowledgementRecord, AttemptAdmission, AttemptClosureEvent, AttemptClosurePage,
+    AttemptClosureRecord, AttemptCredentialBinding, AttemptExecutionBinding, AttemptPhysicalFact,
+    AttemptReturnCause, CandidateFingerprint, CasOutcome, Claimed, ClaimedCheckpointTransport,
+    ClaimedCredentialDeliveryTransport, CommitEpochGuard, ContinuationAdmission,
+    CredentialRealizationReceipt, DispatchCompletion, DispatchDepths, DispatchError, DispatchLease,
+    DispatchOutcome, DispatchSettlementError, DispatchSettlementObserver, DispatchState,
+    DispatchSummary, Inbox, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord,
+    PhysicalAttempt, RunClaim, SessionChildAdmission, SessionRunReservationActivation,
+    SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
 };
 pub use dispatch_schema::dispatch_bundle;
 #[cfg(feature = "test-support")]

@@ -339,6 +339,11 @@ async fn admit_attempt(
     request: &AttemptExecutionReq,
     handoff: bool,
 ) -> Result<Value, HostError> {
+    if request.return_cause.is_some() {
+        return Err(HostError::bad_request(
+            "only physical finish accepts a return cause",
+        ));
+    }
     let authority = claim_authority(service, worker, request.identity.as_ref(), false).await?;
     if authority.owner != request.claim.owner {
         return Err(HostError::bad_request(
@@ -451,10 +456,13 @@ pub(super) async fn finish_attempt(
     Json(request): Json<AttemptExecutionReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        exact_attempt_return_identity(&worker, &request)?;
+        let identity = exact_attempt_return_identity(&worker, &request)?;
+        if request.return_cause.is_some() {
+            require_attempt_observation_protocol(&service, identity).await?;
+        }
         let finished = service
             .dispatch
-            .finish_attempt(&request.claim)
+            .finish_attempt(&request.claim, request.return_cause)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?
             .applied();
@@ -538,27 +546,42 @@ fn exact_attempt_return_identity<'a>(
     Ok(identity)
 }
 
+/// The original close guard admits observation semantics for one immutable
+/// incarnation. It never requires current/Ready/TTL and grants no stop role.
+async fn require_attempt_observation_protocol(
+    service: &WorkerDispatchService,
+    identity: &WorkerIdentity,
+) -> Result<(), HostError> {
+    let directory = service
+        .directory
+        .as_ref()
+        .ok_or_else(|| HostError::bad_request("entry closure requires a registered Worker"))?;
+    let record = directory
+        .incarnation(identity)
+        .await
+        .map_err(|error| HostError::unavailable(error.to_string()))?
+        .ok_or_else(|| HostError::bad_request("Worker incarnation is unknown"))?;
+    if !record.snapshot.manifest.supports_current_runtime_protocol() {
+        return Err(HostError::bad_request(
+            "Worker cannot attest the current attempt-closure protocol",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) async fn close_attempt(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
     Json(request): Json<AttemptExecutionReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        let identity = exact_attempt_return_identity(&worker, &request)?;
-        let directory = service
-            .directory
-            .as_ref()
-            .ok_or_else(|| HostError::bad_request("entry closure requires a registered Worker"))?;
-        let record = directory
-            .incarnation(identity)
-            .await
-            .map_err(|error| HostError::unavailable(error.to_string()))?
-            .ok_or_else(|| HostError::bad_request("Worker incarnation is unknown"))?;
-        if !record.snapshot.manifest.supports_current_runtime_protocol() {
+        if request.return_cause.is_some() {
             return Err(HostError::bad_request(
-                "Worker cannot attest the current attempt-closure protocol",
+                "only physical finish accepts a return cause",
             ));
         }
+        let identity = exact_attempt_return_identity(&worker, &request)?;
+        require_attempt_observation_protocol(&service, identity).await?;
         let closed = service
             .dispatch
             .close_attempt(&request.claim)

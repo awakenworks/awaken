@@ -295,8 +295,9 @@ macro_rules! worker_roles {
             async fn finish_attempt(
                 &self,
                 claim: &RunClaim,
+                cause: Option<awaken_dispatch_contract::AttemptReturnCause>,
             ) -> Result<SettleOutcome, DispatchError> {
-                delegate!(self, finish_attempt(claim))
+                delegate!(self, finish_attempt(claim, cause))
             }
 
             async fn relinquish_claim(
