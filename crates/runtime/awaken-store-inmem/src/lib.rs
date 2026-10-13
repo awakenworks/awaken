@@ -80,8 +80,9 @@ struct CommitState {
     /// so a resume against a terminal/resumed run finds nothing (fail closed).
     resume_tickets: HashMap<RunId, ResumeTicket>,
     /// Durable in the reference store's lifetime; filesystem persistence replays
-    /// operation log entries through this same map.
-    receipts: HashMap<CommitOperationId, CommitReceipt>,
+    /// operation log entries through this same map. The original Thread is kept
+    /// with its receipt; a declared hash alone cannot establish that association.
+    receipts: HashMap<CommitOperationId, (ThreadId, CommitReceipt)>,
 }
 
 impl CommitState {
@@ -264,6 +265,7 @@ impl MemoryCommitCoordinator {
         let operation_id = operation.operation_id;
         let payload_hash = operation.payload_hash;
         let commit = operation.commit;
+        let thread_id = commit.thread_id.clone();
         let record = apply_commit_locked(&mut state, commit, committed_at_unix_ms, append);
         let receipt = applied_commit_receipt(
             operation_id.clone(),
@@ -271,7 +273,9 @@ impl MemoryCommitCoordinator {
             record.sequence,
             thread_version,
         );
-        state.receipts.insert(operation_id, receipt.clone());
+        state
+            .receipts
+            .insert(operation_id, (thread_id, receipt.clone()));
         Ok(receipt)
     }
 }
@@ -313,9 +317,14 @@ fn inspect_operation_locked(
 ) -> Result<OperationInspection, Error> {
     require_commit_operation_identity(operation)
         .map_err(|error| Error::Rejected(error.to_string()))?;
-    if let Some(receipt) =
-        replay_commit_operation_receipt(operation, state.receipts.get(&operation.operation_id))
-            .map_err(|error| Error::Rejected(error.to_string()))?
+    if let Some(receipt) = replay_commit_operation_receipt(
+        operation,
+        state
+            .receipts
+            .get(&operation.operation_id)
+            .map(|(thread_id, receipt)| (thread_id, receipt)),
+    )
+    .map_err(|error| Error::Rejected(error.to_string()))?
     {
         return Ok(OperationInspection::Replay(receipt));
     }

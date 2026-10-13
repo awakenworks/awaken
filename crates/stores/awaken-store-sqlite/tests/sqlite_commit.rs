@@ -441,21 +441,22 @@ async fn operation_receipt_survives_reopen() {
             events: Vec::new(),
         },
     };
-    {
+    let applied = {
         let store = SqliteCommitCoordinator::open(path.to_str().unwrap())
             .await
             .expect("open");
-        assert!(
-            !store
-                .commit_operation(operation.clone())
-                .await
-                .unwrap()
-                .duplicate
-        );
-    }
+        let receipt = store.commit_operation(operation.clone()).await.unwrap();
+        assert!(!receipt.duplicate);
+        receipt
+    };
     let reopened = SqliteCommitCoordinator::open(path.to_str().unwrap())
         .await
         .expect("reopen");
+    // Cold binding uses the same B1-B4 decision table as warm conformance.
+    awaken_store_conformance::operation_receipt_replay_is_thread_bound(
+        &reopened, &operation, &applied,
+    )
+    .await;
     assert!(
         reopened
             .commit_operation(operation)

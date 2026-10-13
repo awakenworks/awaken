@@ -894,6 +894,8 @@ pub async fn commit_operation_is_idempotent_and_cas<
         "a duplicate receipt does not append facts"
     );
 
+    operation_receipt_replay_is_thread_bound(store, &first, &applied).await;
+
     let mut hash_conflict = first;
     hash_conflict.payload_hash = CommitPayloadHash("sha256:different".to_string());
     assert!(
@@ -946,6 +948,53 @@ pub async fn commit_operation_is_idempotent_and_cas<
         snapshot.commit_timestamps.get(&applied.commit_sequence),
         original_times.get(&applied.commit_sequence)
     );
+}
+
+/// The same receipt identity law for warm stores and cold reopen/reconnect.
+/// Storage fixtures supply their actual first receipt; this helper creates no
+/// receipt or persistence implementation and invokes the original operation port.
+pub async fn operation_receipt_replay_is_thread_bound<
+    S: OperationCoordinator + RunRecoverySource,
+>(
+    store: &S,
+    operation: &CommitOperation,
+    original: &awaken_agent_contract::thread::commit::operation::CommitReceipt,
+) {
+    // Causes: B1 an original receipt exists; B2 Run/ordinal/declared hash are
+    // unchanged; B3 request Thread matches its original durable Thread; B4
+    // expected version is stale or maximal. Rules: R1=B1+B2+B3+B4=>the original
+    // duplicate receipt; R2=B1+B2+!B3+B4=>reject and both complete prefixes
+    // remain unchanged. Declared hashes in this existing conformance fixture
+    // do not certify body content; this checks the independent Thread binding.
+    // Replay precedes current CAS, but cannot move a receipt across Threads.
+    let thread = &operation.commit.thread_id;
+    let run = &operation.operation_id.run_id;
+    let foreign_thread = ThreadId(format!("{}-foreign", thread.0));
+    let original_prefix = store.recovery_snapshot(thread, run).await.unwrap();
+    let foreign_prefix = store.recovery_snapshot(&foreign_thread, run).await.unwrap();
+    for expected_version in [0, u64::MAX] {
+        let mut same = operation.clone();
+        same.expected_thread_version = expected_version;
+        let replay = store.commit_operation(same.clone()).await.unwrap();
+        let mut expected = original.clone();
+        expected.duplicate = true;
+        assert_eq!(replay, expected, "R1 complete original receipt before CAS");
+        same.commit.thread_id = foreign_thread.clone();
+        assert!(
+            store.commit_operation(same).await.is_err(),
+            "R2 a stored receipt cannot certify another Thread"
+        );
+        assert_eq!(
+            store.recovery_snapshot(thread, run).await.unwrap(),
+            original_prefix,
+            "R2 original complete prefix is unchanged"
+        );
+        assert_eq!(
+            store.recovery_snapshot(&foreign_thread, run).await.unwrap(),
+            foreign_prefix,
+            "R2 foreign complete prefix is unchanged"
+        );
+    }
 }
 
 /// Two operations prepared from the same Thread prefix race: the Thread CAS

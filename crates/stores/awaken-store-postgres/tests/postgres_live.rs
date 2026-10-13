@@ -1747,7 +1747,7 @@ async fn operation_receipt_survives_reconnect() {
             events,
         },
     };
-    {
+    let applied = {
         let coordinator = PostgresCommitCoordinator::with_pool(pool.clone())
             .await
             .expect("coordinator a");
@@ -1759,10 +1759,17 @@ async fn operation_receipt_survives_reconnect() {
         assert_eq!(receipt.commit_sequence, 1, "R1/E1");
         // Deliberately discard the response: the caller may retry after a
         // transport loss even though PostgreSQL already committed it.
-    }
+        receipt
+    };
     let reopened = PostgresCommitCoordinator::with_pool(pool.clone())
         .await
         .expect("coordinator b");
+    // with_pool is unbound: the shared cold Thread-binding matrix reaches the
+    // original receipt SQL instead of being hidden by a projection-view guard.
+    awaken_store_conformance::operation_receipt_replay_is_thread_bound(
+        &reopened, &operation, &applied,
+    )
+    .await;
     let replay = reopened
         .commit_operation(operation.clone())
         .await

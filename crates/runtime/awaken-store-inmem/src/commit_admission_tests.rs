@@ -58,7 +58,7 @@ async fn prefix(
     store: &MemoryCommitCoordinator,
 ) -> (
     RunRecoverySnapshot,
-    HashMap<CommitOperationId, CommitReceipt>,
+    HashMap<CommitOperationId, (ThreadId, CommitReceipt)>,
 ) {
     let snapshot = store
         .recovery_snapshot(
