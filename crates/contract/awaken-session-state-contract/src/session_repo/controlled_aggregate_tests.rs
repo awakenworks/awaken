@@ -49,6 +49,16 @@ fn named_activity_admissions_retain_raw_identity_without_requiring_a_created_dom
     let mut aggregate = fresh_root(SessionExecutionState::Idle, 0);
     assert!(aggregate.environment_materialization().unwrap().is_empty());
     assert_eq!(aggregate.run_activities(), Some((&[][..], false)));
+    // Q1 complete fresh prefix + no receipt/record => eligible Missing;
+    // Q2 exact retained receipt => eligible ACK observation. Q3 each changed
+    // operation/epoch/raw coordinate => error, whole root unchanged. Q4 legacy
+    // omitted or sticky-unrecorded history => Unknown, while old optional replay
+    // law remains unchanged and never repairs either historical shape.
+    assert!(
+        validate_complete_run_activity(aggregate.snapshot(), Some("fresh-op"), None, &thread, &run)
+            .is_ok(),
+        "Q1"
+    );
     for (operation, epoch) in [("op-first", 1), ("op-continuation", 2)] {
         assert_eq!(
             aggregate.activity().open(
@@ -77,6 +87,42 @@ fn named_activity_admissions_retain_raw_identity_without_requiring_a_created_dom
         assert_eq!(record.activity_epoch().get(), epoch);
         assert_eq!(record.thread_id(), &thread);
         assert_eq!(record.run_id(), &run);
+    }
+    let before_query = aggregate.snapshot().clone();
+    assert!(
+        validate_complete_run_activity(
+            aggregate.snapshot(),
+            Some("op-first"),
+            Some(1),
+            &thread,
+            &run
+        )
+        .is_ok(),
+        "Q2 child"
+    );
+    assert!(
+        validate_complete_run_activity(aggregate.snapshot(), None, Some(1), &thread, &run).is_ok(),
+        "Q2 report"
+    );
+    let foreign_thread = awaken_agent_contract::ThreadId("foreign".into());
+    let foreign_run = awaken_agent_contract::RunId("foreign".into());
+    for (op, epoch, t, r) in [
+        (Some("absent-op"), Some(1), &thread, &run),
+        (Some("op-first"), None, &thread, &run),
+        (Some("op-first"), Some(0), &thread, &run),
+        (Some("op-first"), Some(2), &thread, &run),
+        (Some("op-first"), Some(1), &foreign_thread, &run),
+        (None, Some(1), &thread, &foreign_run),
+    ] {
+        assert!(
+            validate_complete_run_activity(aggregate.snapshot(), op, epoch, t, r).is_err(),
+            "Q3"
+        );
+        assert_eq!(
+            aggregate.snapshot(),
+            &before_query,
+            "Q3 observation stutter"
+        );
     }
     let empty_thread = awaken_agent_contract::ThreadId(" ".into());
     let empty_run = awaken_agent_contract::RunId(String::new());
@@ -115,6 +161,15 @@ fn named_activity_admissions_retain_raw_identity_without_requiring_a_created_dom
         dto.run_activities().unwrap().1,
         "R3 later named admission cannot clear unknown"
     );
+    assert!(
+        validate_complete_run_activity(&dto, Some("op-first"), Some(1), &thread, &run).is_err(),
+        "Q4 sticky unknown"
+    );
+    assert!(
+        dto.validate_run_activity_replay("op-first", 1, Some((&thread, &run)))
+            .is_ok(),
+        "Q4 unchanged optional replay"
+    );
     let before = dto.clone();
     assert!(!dto.begin_activity_epoch_at(4, None));
     assert_eq!(
@@ -123,6 +178,16 @@ fn named_activity_admissions_retain_raw_identity_without_requiring_a_created_dom
     );
     let mut legacy = root(SessionExecutionState::Idle, 0).into_snapshot();
     assert!(legacy.begin_activity_epoch_at(1, Some(("legacy-op", &thread, &run))));
+    assert!(
+        validate_complete_run_activity(&legacy, Some("legacy-op"), Some(1), &thread, &run).is_err(),
+        "Q4 no fabrication"
+    );
+    assert!(
+        legacy
+            .validate_run_activity_replay("legacy-op", 1, Some((&thread, &run)))
+            .is_ok(),
+        "Q4 old replay compatibility"
+    );
     assert!(
         legacy.run_activities().is_none(),
         "legacy history is never backfilled"
@@ -981,6 +1046,11 @@ fn activity_admission_matrix_changes_all_coordinates_or_none() {
 
 #[test]
 fn final_activity_closes_interval_and_compiles_one_intrinsic_fact() {
+    // Causes: an active epoch, then the final settled epoch; required intrinsic
+    // closing fact absent or already supplied. Active refuses without mutation;
+    // final settlement emits the canonical event fact once, and supplying that
+    // same fact leaves the outbox unchanged. Both application and aggregate use
+    // the event contract's factory; the aggregate retains its revision filter.
     let mut aggregate = root(SessionExecutionState::Idle, 4);
     assert_eq!(
         aggregate.activity().open(None, false, false, 10, 7, None),

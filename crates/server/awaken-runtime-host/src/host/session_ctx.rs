@@ -311,6 +311,13 @@ pub(crate) struct SessionCtx {
 }
 
 impl SessionCtx {
+    pub(crate) fn has_active_run(&self) -> bool {
+        self.active_run
+            .lock()
+            .expect("active run mutex poisoned")
+            .is_some()
+    }
+
     pub(crate) fn is_coordination_envelope(&self) -> bool {
         let is_coordination_envelope = self.purpose == RuntimeContextPurpose::CoordinationEnvelope;
         debug_assert!(

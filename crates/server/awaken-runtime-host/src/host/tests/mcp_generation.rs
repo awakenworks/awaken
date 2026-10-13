@@ -625,12 +625,46 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
 
     let runtime_thread = "mcp-runtime-quiescence";
     let (runtime_host, _runtime_managed) = dispatch_test_host(host_with_process_reaper().await);
+    // Physical query causes/effects (the same Runtime marker used by P2-P4):
+    // RQ0 absent Session => no callback, no slot created; RQ1 installed/no
+    // Context => (false,false); RQ2 Context/inactive => (true,false); RQ3
+    // Context/active => (true,true); RQ4 settled => (true,false), same owner.
+    // holds_context never proves physical activity. The existing view reads
+    // under registry -> active_run; MCP uses the same SessionCtx primitive.
+    let view = &runtime_host.realizer.cleanup.sessions;
+    let query = |thread: &str| {
+        view.modify_session(thread, |slot| {
+            (slot.run.holds_context(), slot.run.has_active_run())
+        })
+    };
+    assert_eq!(query("mcp-missing-query"), None, "RQ0 no callback");
+    assert!(
+        runtime_host
+            .installed_sessions
+            .read("mcp-missing-query", |_| ())
+            .is_none(),
+        "RQ0 never creates a slot"
+    );
+    runtime_host
+        .installed_sessions
+        .update("mcp-empty-query", |_| ());
+    assert_eq!(query("mcp-empty-query"), Some((false, false)), "RQ1");
     let runtime = runtime_host
         .ctx_for(runtime_thread, None)
         .await
         .expect("runtime owner");
+    assert_eq!(
+        query(runtime_thread),
+        Some((true, false)),
+        "RQ2 inactive Context"
+    );
     *runtime.active_run.lock().expect("active run mutex") =
         Some(RunId("mcp-runtime-active-run".into()));
+    assert_eq!(
+        query(runtime_thread),
+        Some((true, true)),
+        "RQ3 physical marker"
+    );
     let runtime_generation = generation(runtime_thread, 3);
     runtime_host
         .insert_mcp_projection(projection(runtime_generation.clone(), false))
@@ -712,6 +746,11 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
     );
 
     *runtime.active_run.lock().expect("active run mutex") = None;
+    assert_eq!(
+        query(runtime_thread),
+        Some((true, false)),
+        "RQ4 settled marker"
+    );
     let proof = runtime_host
         .drain_mcp_projections(runtime_thread, std::slice::from_ref(&runtime_generation))
         .await
@@ -738,6 +777,30 @@ async fn mcp_quiescence_retains_failed_effect_owners_for_retry() {
                 .is_some_and(|owner| Arc::ptr_eq(owner, &runtime)))
             .unwrap_or(false),
         "P4 leaves Runtime removal to the outer quiesce owner"
+    );
+    // RQ5 active mutex poison => preserve the original panic diagnostic,
+    // never substitute context presence or return a false quiescence result.
+    // Poison the same actual Runtime only after all P2-P4 cleanup assertions;
+    // the primitive reads no registry, so this fault does not poison the slot.
+    let poisoned_runtime = runtime.clone();
+    let poisoned = std::thread::spawn(move || {
+        let _held = poisoned_runtime
+            .active_run
+            .lock()
+            .expect("before RQ5 poison");
+        panic!("RQ5 inject active marker poison");
+    });
+    assert!(poisoned.join().is_err(), "RQ5 actual marker poisoned");
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runtime.has_active_run()))
+        .expect_err("RQ5 poison must not become inactive");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        message.contains("active run mutex poisoned"),
+        "RQ5 original diagnostic"
     );
 }
 

@@ -94,34 +94,16 @@ impl SharedHost {
             r.terminal_cleanup_root = Some(effect.command.session_id.to_string());
         });
 
-        let primary_active = self
-            .installed_sessions
-            .read_run(&effect.command.thread_id, |run| {
-                run.context.as_ref().is_some_and(|runtime| {
-                    runtime
-                        .active_run
-                        .lock()
-                        .expect("active run mutex poisoned")
-                        .is_some()
-                })
-            })
+        let primary_active = sessions
+            .modify_session(&effect.command.thread_id, |slot| slot.run.has_active_run())
             .unwrap_or(false);
         let delegated = self
             .delegated_runs_under_lifecycle(&effect.command.thread_id)
             .await?;
         let delegated_active = delegated.iter().any(|run| {
             run.status.occupies_parallel_slot()
-                && self
-                    .installed_sessions
-                    .read_run(&run.run_id.0, |run| {
-                        run.context.as_ref().is_some_and(|runtime| {
-                            runtime
-                                .active_run
-                                .lock()
-                                .expect("active run mutex poisoned")
-                                .is_some()
-                        })
-                    })
+                && sessions
+                    .modify_session(&run.run_id.0, |slot| slot.run.has_active_run())
                     .unwrap_or(false)
         });
         if primary_active || delegated_active {

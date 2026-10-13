@@ -9,6 +9,7 @@ mod commit_fence;
 #[cfg(test)]
 mod composition_tests;
 mod control_dispatch;
+mod coordination_activation;
 mod error;
 pub mod execution_capacity;
 mod fenced_checkpoint;
@@ -37,6 +38,7 @@ pub use commit_fence::{
     ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit, validate_commit_dispatch_binding,
 };
 pub use control_dispatch::{ControlDispatch, LocalWorkerDispatch, TerminalRecoveryDispatch};
+pub use coordination_activation::{coordinated_activation_matches, coordinated_run_activation};
 pub use error::Error;
 pub use fenced_checkpoint::FencedStreamCheckpointStore;
 pub use live_control::{Error as LiveRunControlError, LiveAttemptControl, LiveRunControlService};

@@ -73,11 +73,7 @@ impl McpSessionSlots for InstalledSessions {
     }
 
     fn runtime_has_active_run(runtime: &Self::Runtime) -> bool {
-        runtime
-            .active_run
-            .lock()
-            .expect("active run mutex poisoned")
-            .is_some()
+        runtime.has_active_run()
     }
 }
 

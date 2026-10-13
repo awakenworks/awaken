@@ -25,7 +25,10 @@ use crate::{SessionRealizationLease, SessionRevision};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod activity_state;
-pub use activity_state::SessionRunActivityAdmissionRecord;
+pub use activity_state::{
+    SessionActivitySettlementPlan, SessionRunActivityAdmissionRecord,
+    session_activity_settlement_plan, validate_complete_run_activity,
+};
 mod disposition;
 #[cfg(test)]
 mod event_history_tests;

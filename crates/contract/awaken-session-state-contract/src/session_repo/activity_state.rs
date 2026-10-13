@@ -37,6 +37,66 @@ impl SessionRunActivityAdmissionRecord {
     }
 }
 
+/// The logical effects after settling one exact activity epoch.
+#[must_use]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionActivitySettlementPlan {
+    Stutter,
+    RetainExecution,
+    CloseRunningInterval,
+}
+
+/// Decide the logical effect after the aggregate's exact epoch set has applied
+/// a removal. Only removal of the final current epoch may close Running.
+pub const fn session_activity_settlement_plan(
+    exact_epoch_removed: bool,
+    last_active: bool,
+    execution_running: bool,
+) -> SessionActivitySettlementPlan {
+    if !exact_epoch_removed {
+        SessionActivitySettlementPlan::Stutter
+    } else if last_active && execution_running {
+        SessionActivitySettlementPlan::CloseRunningInterval
+    } else {
+        SessionActivitySettlementPlan::RetainExecution
+    }
+}
+
+/// Require complete original membership before interpreting absent work as
+/// fresh. This is stronger observation eligibility; the historical optional
+/// replay law below deliberately remains unchanged. No evidence is repaired.
+pub fn validate_complete_run_activity(
+    session: &super::PersistedSession,
+    operation: Option<&str>,
+    epoch: Option<u64>,
+    thread: &awaken_agent_contract::ThreadId,
+    run: &awaken_agent_contract::RunId,
+) -> Result<(), super::SessionMutationValidationError> {
+    let (records, unrecorded) = session
+        .run_activities()
+        .ok_or(super::SessionMutationValidationError::ActivityHistoryMismatch)?;
+    if unrecorded || epoch == Some(0) {
+        return Err(super::SessionMutationValidationError::ActivityHistoryMismatch);
+    }
+    let record = records.iter().find(|record| {
+        operation.map_or_else(
+            || epoch.is_some_and(|epoch| record.activity_epoch().get() == epoch),
+            |operation| record.operation_id() == operation,
+        )
+    });
+    match (epoch, record) {
+        (None, None) => Ok(()),
+        (Some(epoch), Some(record))
+            if record.activity_epoch().get() == epoch
+                && record.thread_id() == thread
+                && record.run_id() == run =>
+        {
+            Ok(())
+        }
+        _ => Err(super::SessionMutationValidationError::ActivityHistoryMismatch),
+    }
+}
+
 /// Retained facts of the existing Root, not another activity/child registry.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]

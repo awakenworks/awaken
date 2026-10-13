@@ -2166,6 +2166,18 @@ impl awaken_session_runtime_contract::CoordinationRuntime for AcceptingFake {
 
 #[async_trait::async_trait]
 impl awaken_session_runtime_contract::SessionCoordinationReads for AcceptingFake {
+    async fn coordinated_admission_receipt(
+        &self,
+        command: awaken_session_runtime_contract::CoordinatedAdmissionRef<'_>,
+    ) -> Result<
+        Option<awaken_session_runtime_contract::SessionAgentMessageReceipt>,
+        awaken_session_types::RunError,
+    > {
+        awaken_session_runtime_contract::NeutralRuntime
+            .coordinated_admission_receipt(command)
+            .await
+    }
+
     /// Read the exact Run lifecycle from existing committed Thread truth. This
     /// is the recovery observation for batch advancement, not a completion
     /// registry or protocol event cache.

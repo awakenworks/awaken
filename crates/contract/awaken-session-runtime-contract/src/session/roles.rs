@@ -176,6 +176,15 @@ pub trait CoordinationRuntime: Send + Sync {
 /// ```
 #[async_trait]
 pub trait SessionCoordinationReads: Send + Sync {
+    /// Project an exact already-accepted original business receipt. Some grants
+    /// no execution; None is ONLY original dispatch Missing and the caller must
+    /// still prove fresh eligibility from original activity/history. Unknown,
+    /// incomplete legacy and completion-only evidence remain Unavailable.
+    async fn coordinated_admission_receipt(
+        &self,
+        command: crate::CoordinatedAdmissionRef<'_>,
+    ) -> Result<Option<crate::SessionAgentMessageReceipt>, RunError>;
+
     /// Read the exact Run lifecycle from existing committed Thread truth. This
     /// is the recovery observation for batch advancement, not a completion
     /// registry or protocol event cache.
