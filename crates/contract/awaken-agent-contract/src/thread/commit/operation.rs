@@ -24,6 +24,8 @@ const CANONICAL_COMMIT_VERSION: &str = "awaken.thread-commit.v1";
 pub enum CommitHashError {
     #[error("serialize ThreadCommit for canonical hashing: {0}")]
     Serialize(String),
+    #[error("commit operation payload hash does not match ThreadCommit")]
+    PayloadMismatch,
 }
 
 /// Hash one retryable commit with the contract-owned canonical encoding.
@@ -34,6 +36,20 @@ pub fn commit_payload_hash(commit: &ThreadCommit) -> Result<CommitPayloadHash, C
     crate::canonical_json_sha256(CANONICAL_COMMIT_VERSION, commit)
         .map(CommitPayloadHash)
         .map_err(|error| CommitHashError::Serialize(error.to_string()))
+}
+
+/// Validate a new operation with the same canonical body encoding its producer uses.
+///
+/// Storage calls this after exact receipt replay and before new append admission.
+/// Existing immutable receipts retain their original declared-hash semantics;
+/// this check does not certify a historical receipt or grant execution authority.
+pub fn require_commit_operation_payload_hash(
+    operation: &CommitOperation,
+) -> Result<(), CommitHashError> {
+    if commit_payload_hash(&operation.commit)? != operation.payload_hash {
+        return Err(CommitHashError::PayloadMismatch);
+    }
+    Ok(())
 }
 
 /// Stable identity of one logical commit within a Run.
@@ -293,6 +309,25 @@ mod tests {
             commit_payload_hash(&left).unwrap(),
             commit_payload_hash(&changed).unwrap(),
             "H2/E2"
+        );
+        // H3 the real declared hash names this body (including reordered keys)
+        // => accept; H4 it names a different real body => typed refusal. The
+        // body comparison uses the production canonical encoder, not a free
+        // hash predicate. Operation id/version remain outside the body encoding.
+        let mut operation = CommitOperation {
+            operation_id: CommitOperationId::new(RunId("run".into()), 0),
+            expected_thread_version: u64::MAX,
+            payload_hash: commit_payload_hash(&left).unwrap(),
+            commit: reordered,
+        };
+        require_commit_operation_payload_hash(&operation).expect("H3 canonical body");
+        operation.commit = changed;
+        assert!(
+            matches!(
+                require_commit_operation_payload_hash(&operation),
+                Err(CommitHashError::PayloadMismatch)
+            ),
+            "H4 another body's hash cannot certify this body"
         );
     }
 

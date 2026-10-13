@@ -354,3 +354,62 @@ async fn empty_store_reads_are_absent() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn mismatched_fresh_operation_hash_rejects_before_fsync_and_cold_recovery() {
+    // Causes: F1 valid body A carries canonical hash(body B), B != A; F2 live
+    // filesystem append is requested; F3 the store is reopened. Rules F1+F2
+    // =>reject before any durable byte or complete prefix change; F3=>same
+    // empty prefix. A corrected canonical operation then appends normally.
+    // This uses the existing reference-owned pre-fsync admission, not a second
+    // filesystem hash validator or a new historical decoding path.
+    let (dir, store) = fresh("canonical-hash").await;
+    let candidate = ck("t1", "r1", "body-a", RunState::Running);
+    let other = ck("t1", "r1", "body-b", RunState::Running);
+    let mut request = operation(candidate.clone(), 0);
+    request.payload_hash = commit_payload_hash(&other).unwrap();
+    let before = store
+        .recovery_snapshot(&ThreadId("t1".into()), &RunId("r1".into()))
+        .await
+        .unwrap();
+    let bytes = std::fs::read(dir.join("commits.ndjson")).unwrap();
+    assert!(store.commit_operation(request).await.is_err(), "F1/F2");
+    assert_eq!(
+        std::fs::read(dir.join("commits.ndjson")).unwrap(),
+        bytes,
+        "F2 before fsync"
+    );
+    assert_eq!(
+        store
+            .recovery_snapshot(&ThreadId("t1".into()), &RunId("r1".into()))
+            .await
+            .unwrap(),
+        before,
+        "F2 warm prefix"
+    );
+    drop(store);
+    let reopened = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened
+            .recovery_snapshot(&ThreadId("t1".into()), &RunId("r1".into()))
+            .await
+            .unwrap(),
+        before,
+        "F3 cold prefix"
+    );
+    assert_eq!(
+        std::fs::read(dir.join("commits.ndjson")).unwrap(),
+        bytes,
+        "F3 bytes"
+    );
+    let canonical = reopened
+        .commit_operation(operation(candidate, 0))
+        .await
+        .unwrap();
+    assert_eq!(canonical.commit_sequence, 1, "corrected original append");
+    assert!(!canonical.duplicate);
+    drop(reopened);
+    let _ = std::fs::remove_dir_all(dir);
+}

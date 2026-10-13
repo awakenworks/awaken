@@ -55,7 +55,7 @@ use awaken_agent_contract::thread::read::recovery::{
 };
 use awaken_fs_durability::sync_directory;
 use awaken_sandbox_fs::{ExclusiveFileLock, PathEntry, try_lock_exclusive};
-use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_store_inmem::{MemoryCommitCoordinator, MemoryCommitReplay};
 
 const LOG_FILE: &str = "commits.ndjson";
 const LOG_LOCK_FILE: &str = "commits.lock";
@@ -308,7 +308,7 @@ impl FsCommitCoordinator {
         let lifecycle_lock = try_lock_exclusive(&dir.join(LOG_LOCK_FILE))?;
         migrate_log_if_needed(&lifecycle_lock)?;
 
-        let inner = MemoryCommitCoordinator::new(clock.clone());
+        let mut replay = MemoryCommitReplay::new(clock.clone());
         let mut durable_len = 0_u64;
         if let Ok(file) = File::open(&path) {
             let mut reader = BufReader::new(file);
@@ -321,14 +321,14 @@ impl FsCommitCoordinator {
                     CommitLogEntry::Commit(commit) => {
                         // Replaying through the tested read model reconstructs the
                         // same committed state (and sequence) the writer produced.
-                        inner
-                            .commit_at(commit, plan.committed_at)
+                        replay
+                            .replay_commit_at(commit, plan.committed_at)
                             .await
                             .map_err(|err| std::io::Error::other(err.to_string()))?;
                     }
                     CommitLogEntry::Operation(operation) => {
-                        let receipt = inner
-                            .commit_operation_at(operation.clone(), plan.committed_at)
+                        let receipt = replay
+                            .replay_operation_at(operation.clone(), plan.committed_at)
                             .await
                             .map_err(|err| std::io::Error::other(err.to_string()))?;
                         // Recovery refuses to open if the rebuilt receipt does
@@ -363,7 +363,7 @@ impl FsCommitCoordinator {
         }
         Ok(Self {
             log: Mutex::new(log),
-            inner,
+            inner: replay.finish(),
             clock,
             write_lock: tokio::sync::Mutex::new(()),
             _lifecycle_lock: lifecycle_lock,

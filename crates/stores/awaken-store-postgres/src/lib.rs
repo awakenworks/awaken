@@ -40,6 +40,7 @@ use awaken_agent_contract::thread::commit::coordinator::{
 use awaken_agent_contract::thread::commit::operation::{
     CommitOperation, CommitPayloadHash, CommitReceipt, admit_commit_operation_append,
     applied_commit_receipt, replay_commit_operation_receipt, require_commit_operation_identity,
+    require_commit_operation_payload_hash,
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
@@ -604,6 +605,8 @@ impl OperationCoordinator for PostgresCommitCoordinator {
         {
             return Ok(receipt);
         }
+        require_commit_operation_payload_hash(&operation)
+            .map_err(|error| Error::Rejected(error.to_string()))?;
         let current_ordinal: i64 = sqlx::query_scalar(&format!(
             "SELECT COUNT(*) FROM {NS}_commit WHERE run_id = $1"
         ))
