@@ -494,12 +494,6 @@ impl crate::host::SharedHost {
         self.tools.skills.store_handle()
     }
 
-    pub(crate) fn memory_mounter(
-        &self,
-    ) -> Option<Arc<dyn awaken_provisioning_contract::MemoryMounter>> {
-        self.realizer.env.memory_mounter.clone()
-    }
-
     pub(crate) fn register_thread_memory(&self, thread: &str, memory: Option<Arc<MemoryBinding>>) {
         self.installed_sessions.update_realization(thread, |r| {
             r.memory_bindings.clear();

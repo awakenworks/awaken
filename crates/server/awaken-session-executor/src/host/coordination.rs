@@ -67,7 +67,7 @@ fn dispatch_admission_error(error: awaken_dispatch_contract::DispatchError) -> H
             HostError::bad_request(message)
         }
         awaken_dispatch_contract::DispatchError::Conflict(message) => {
-            HostError::conflict(message)
+            HostError::unavailable(message)
         }
         awaken_dispatch_contract::DispatchError::Unavailable(message) => {
             HostError::unavailable(message)
@@ -869,26 +869,128 @@ mod tests {
     use super::*;
     use awaken_dispatch_contract::DispatchClaims;
 
-    #[test]
-    fn dispatch_admission_errors_preserve_commit_certainty() {
+    #[tokio::test]
+    async fn dispatch_admission_errors_preserve_commit_certainty() {
         // Cause/effect graph: C1 validation proves no write; C2 an existing
         // identity has another payload; C3 storage or transport cannot prove
-        // whether the write committed. Effects: E1 caller correction may close
-        // a new activity; E2 the original activity remains recoverable; E3 exact
-        // retry remains mandatory. Decision table: R1=C1->BadRequest/E1,
-        // R2=C2->Conflict/E2, R3=C3->Unavailable/E3.
+        // whether the write committed; C4 the original accepted request is
+        // retried exactly. Effects: E1 only C1 may close a new activity; E2 C2/C3
+        // remain Unavailable through Host -> Run so Session cannot mistake them
+        // for proof of nonacceptance; E3 C4 reuses the original row without a
+        // second queue write, claim or settlement. Decision table:
+        // R1=C1 -> BadRequest/E1; R2=C2 -> Unavailable/E2;
+        // R3=C3 -> Unavailable/E2; R4=C2+C4 -> success/E3.
+        // R2 uses the real SQLite enqueue owner: A is committed but its first
+        // acknowledgement is deliberately withheld from the retrying caller;
+        // B changes only runtime input under the same Run identity. A later
+        // conflict cannot erase that accepted A. Summary and operational cursor
+        // stutter guard the original authority; no claim is used as a read.
         let rejected = dispatch_admission_error(
             awaken_dispatch_contract::DispatchError::Rejected("invalid shape".into()),
-        );
-        let conflict = dispatch_admission_error(
-            awaken_dispatch_contract::DispatchError::Conflict("identity collision".into()),
         );
         let unavailable = dispatch_admission_error(
             awaken_dispatch_contract::DispatchError::Unavailable("response lost".into()),
         );
         assert_eq!(rejected.kind, HostErrorKind::BadRequest, "R1/E1");
-        assert_eq!(conflict.kind, HostErrorKind::Conflict, "R2/E2");
-        assert_eq!(unavailable.kind, HostErrorKind::Unavailable, "R3/E3");
+        assert_eq!(unavailable.kind, HostErrorKind::Unavailable, "R3/E2");
+        let rejected = crate::host_error::to_run_error(rejected);
+        let unavailable = crate::host_error::to_run_error(unavailable);
+        assert_eq!(
+            rejected.kind,
+            awaken_session_types::RunErrorKind::BadRequest
+        );
+        assert_eq!(rejected.code, "invalid_request");
+        assert_eq!(rejected.message, "invalid shape");
+        assert_eq!(
+            unavailable.kind,
+            awaken_session_types::RunErrorKind::Unavailable
+        );
+        assert_eq!(unavailable.code, "unavailable");
+        assert_eq!(unavailable.message, "response lost");
+
+        use crate::host::worker_resolver::test_support::{eager_environment, test_activation};
+        use awaken_dispatch_contract::{
+            DispatchCursor, DispatchOperationalFeed as _, SessionChildAdmission,
+            SessionRuntimeEnvelope,
+        };
+
+        let clock = Arc::new(awaken_lease_testkit::ManualClock::new(0));
+        let dispatch = awaken_dispatch::open_sqlite_dispatch_store_in_memory(clock)
+            .await
+            .expect("R2 original dispatch owner");
+        let mut runtime = awaken_session_configuration_contract::SessionRuntimeProjection {
+            environment: eager_environment(),
+            tools: None,
+            mcp_stages: Some(Vec::new()),
+        };
+        let (encoded, requirements) = runtime.dispatch().expect("R2 frozen runtime A");
+        let mut accepted = awaken_dispatch_contract::RunDispatch::new(test_activation(
+            "certainty-child",
+            "certainty-run",
+        ))
+        .for_session(ThreadId("certainty-session".into()))
+        .with_session_activity_epoch(1)
+        .with_session_runtime(SessionRuntimeEnvelope::new(encoded));
+        accepted.placement.session_mcp_credentials = Some(requirements);
+        let admission = SessionChildAdmission::new(24, Vec::new());
+        dispatch
+            .enqueue_session_child(accepted.clone(), admission.clone())
+            .await
+            .expect("R2 A commits; acknowledgement is not delivered to the caller");
+        let before = dispatch.list_dispatches().await.expect("R2 original row");
+        assert_eq!(before.len(), 1, "R2 A was durably accepted");
+        let cursor = dispatch
+            .events_after(DispatchCursor::default(), 16, None)
+            .await
+            .expect("R2 original operation cursor")
+            .next_cursor;
+
+        runtime.tools = Some(Default::default());
+        let (encoded, requirements) = runtime.dispatch().expect("R2 frozen runtime B");
+        assert_ne!(
+            accepted.session_runtime.as_ref().unwrap().projection_json,
+            encoded,
+            "R2 tools None inherits while Some(empty) explicitly clears"
+        );
+        let mut changed = accepted
+            .clone()
+            .with_session_runtime(SessionRuntimeEnvelope::new(encoded));
+        changed.placement.session_mcp_credentials = Some(requirements);
+        let conflict = dispatch
+            .enqueue_session_child(changed, admission.clone())
+            .await
+            .expect_err("R2 same Run with different runtime input must conflict");
+        let message = match &conflict {
+            awaken_dispatch_contract::DispatchError::Conflict(message) => message.clone(),
+            other => panic!("R2 expected actual identity conflict, got {other}"),
+        };
+        let conflict = dispatch_admission_error(conflict);
+        assert_eq!(conflict.kind, HostErrorKind::Unavailable, "R2/E2");
+        let conflict = crate::host_error::to_run_error(conflict);
+        assert_eq!(
+            conflict.kind,
+            awaken_session_types::RunErrorKind::Unavailable,
+            "R2/E2 the Session settler must retain the accepted activity"
+        );
+        assert_eq!(conflict.code, "unavailable");
+        assert_eq!(
+            conflict.message, message,
+            "R2 original diagnostic preserved"
+        );
+        assert_eq!(
+            dispatch.list_dispatches().await.unwrap(),
+            before,
+            "R2 stutter"
+        );
+
+        dispatch
+            .enqueue_session_child(accepted, admission)
+            .await
+            .expect("R4 exact A still replays");
+        assert_eq!(dispatch.list_dispatches().await.unwrap(), before, "R4/E3");
+        let after = dispatch.events_after(cursor, 16, None).await.unwrap();
+        assert!(after.events.is_empty(), "R2/R4 no claim or settlement");
+        assert_eq!(after.next_cursor, cursor, "R2/R4 cursor stutter");
     }
 
     #[test]
