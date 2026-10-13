@@ -8,39 +8,61 @@
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_dispatch_contract::{DispatchCompletion, RunDispatch};
-use sqlx::postgres::PgPool;
+use sqlx::postgres::{PgConnection, PgPool, PgRow};
 use sqlx::types::Json;
 use sqlx::{Postgres, Row, Transaction};
 
 use crate::dispatch::{DispatchError, RunIdentityDecision, StoredRunIdentity, decide_run_identity};
+
+pub(crate) async fn load_run_identity_evidence(
+    connection: &mut PgConnection,
+    prefix: &str,
+    run_id: &RunId,
+) -> Result<PgRow, DispatchError> {
+    sqlx::query(&format!(
+        "SELECT d.run_id AS live_run_id, d.thread_id AS live_thread_id, \
+         d.status, d.request, c.sequence, c.run_id, c.request_fingerprint, \
+         c.thread_id, c.session_thread_id FROM (SELECT $1::TEXT AS run_id) k \
+         LEFT JOIN {prefix}_dispatch d ON d.run_id = k.run_id \
+         LEFT JOIN {prefix}_dispatch_completion c ON c.run_id = k.run_id"
+    ))
+    .bind(&run_id.0)
+    .fetch_one(connection)
+    .await
+    .map_err(store_error)
+}
+
+pub(crate) fn decode_live_identity(row: &PgRow) -> Result<Option<RunDispatch>, DispatchError> {
+    row.try_get::<Option<String>, _>("live_run_id")
+        .map_err(store_error)?
+        .map(|_| decode_live_dispatch(row))
+        .transpose()
+}
+
+pub(crate) fn decode_live_dispatch(row: &PgRow) -> Result<RunDispatch, DispatchError> {
+    row.try_get::<Json<RunDispatch>, _>("request")
+        .map(|Json(request)| request)
+        .map_err(store_error)
+}
+
+pub(crate) fn decode_completed_identity(
+    row: &PgRow,
+) -> Result<Option<Option<String>>, DispatchError> {
+    row.try_get::<Option<String>, _>("run_id")
+        .map_err(store_error)?
+        .map(|_| row.try_get("request_fingerprint").map_err(store_error))
+        .transpose()
+}
 
 pub(crate) async fn exact_run_replay(
     tx: &mut Transaction<'_, Postgres>,
     prefix: &str,
     request: &RunDispatch,
 ) -> Result<bool, DispatchError> {
-    let live = sqlx::query(&format!(
-        "SELECT request FROM {prefix}_dispatch WHERE run_id = $1"
-    ))
-    .bind(&request.run_id().0)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(store_error)?
-    .map(|row| row.try_get::<Json<RunDispatch>, _>("request"))
-    .transpose()
-    .map_err(store_error)?
-    .map(|Json(request)| request);
+    let evidence = load_run_identity_evidence(tx, prefix, request.run_id()).await?;
+    let live = decode_live_identity(&evidence)?;
     let completed = if live.is_none() {
-        sqlx::query(&format!(
-            "SELECT request_fingerprint FROM {prefix}_dispatch_completion WHERE run_id = $1"
-        ))
-        .bind(&request.run_id().0)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(store_error)?
-        .map(|row| row.try_get::<Option<String>, _>("request_fingerprint"))
-        .transpose()
-        .map_err(store_error)?
+        decode_completed_identity(&evidence)?
     } else {
         None
     };
@@ -50,6 +72,25 @@ pub(crate) async fn exact_run_replay(
         (None, None) => StoredRunIdentity::Absent,
     };
     decide_run_identity(stored, request).map(|decision| decision == RunIdentityDecision::Replay)
+}
+
+pub(crate) fn decode_dispatch_completion(row: &PgRow) -> Result<DispatchCompletion, DispatchError> {
+    let sequence = row.try_get::<i64, _>("sequence").map_err(store_error)?;
+    Ok(DispatchCompletion {
+        sequence: u64::try_from(sequence).map_err(|_| {
+            DispatchError::Rejected("persisted completion sequence is negative".to_string())
+        })?,
+        run_id: RunId(row.try_get("run_id").map_err(store_error)?),
+        thread_id: row
+            .try_get::<Option<String>, _>("thread_id")
+            .map_err(store_error)?
+            .map(awaken_agent_contract::agent::thread::Id),
+        session_thread_id: row
+            .try_get::<Option<String>, _>("session_thread_id")
+            .map_err(store_error)?
+            .map(awaken_agent_contract::agent::thread::Id),
+        request_fingerprint: row.try_get("request_fingerprint").map_err(store_error)?,
+    })
 }
 
 /// Serialize absent-row admission for one caller-owned Run id. Row locks cannot
@@ -106,26 +147,7 @@ pub(crate) async fn load_completion_events(
     .fetch_all(pool)
     .await
     .map_err(store_error)?;
-    rows.into_iter()
-        .map(|row| {
-            let sequence = row.try_get::<i64, _>("sequence").map_err(store_error)?;
-            Ok(DispatchCompletion {
-                sequence: u64::try_from(sequence).map_err(|_| {
-                    DispatchError::Rejected("persisted completion sequence is negative".to_string())
-                })?,
-                run_id: RunId(row.try_get("run_id").map_err(store_error)?),
-                thread_id: row
-                    .try_get::<Option<String>, _>("thread_id")
-                    .map_err(store_error)?
-                    .map(awaken_agent_contract::agent::thread::Id),
-                session_thread_id: row
-                    .try_get::<Option<String>, _>("session_thread_id")
-                    .map_err(store_error)?
-                    .map(awaken_agent_contract::agent::thread::Id),
-                request_fingerprint: row.try_get("request_fingerprint").map_err(store_error)?,
-            })
-        })
-        .collect()
+    rows.iter().map(decode_dispatch_completion).collect()
 }
 
 fn store_error(error: impl std::fmt::Display) -> DispatchError {

@@ -285,6 +285,40 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
         SettleOutcome::Applied
     );
 
+    // O2 Awaiting: this original operational case just settled its real
+    // recovered claim. Full A remains readable; state and diagnostic cursor
+    // stutter, so observation cannot wake or claim the parked Run.
+    let awaiting_rows = store.list_dispatches().await.unwrap();
+    assert_eq!(
+        awaiting_rows
+            .iter()
+            .find(|row| row.run_id == settled_run)
+            .unwrap()
+            .state,
+        DispatchState::Awaiting,
+        "O2 original Awaiting phase"
+    );
+    let awaiting_feed = store.events_after(cursor, 100, None).await.unwrap();
+    assert_eq!(
+        store
+            .observe_session_run_admission(&settled_run)
+            .await
+            .unwrap(),
+        awaken_dispatch_contract::SessionRunAdmissionObservation::Live(Box::new(
+            recovered.request.clone()
+        )),
+        "O2 Awaiting full A"
+    );
+    assert_eq!(
+        store.list_dispatches().await.unwrap(),
+        awaiting_rows,
+        "O2 Awaiting state stutter"
+    );
+    assert_eq!(
+        store.events_after(cursor, 100, None).await.unwrap(),
+        awaiting_feed,
+        "O2 Awaiting diagnostic cursor stutter"
+    );
     let dead_run = run_id(namespace, "operations-dead-letter");
     store
         .enqueue(dispatch(
@@ -316,6 +350,40 @@ pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
         1
     );
 
+    // O2 DeadLetter: quarantine is the original transition above, not a
+    // hand-authored status fixture. Full A stays observable without requeue,
+    // new claim, row effect or diagnostic cursor advancement.
+    let dead_rows = store.list_dispatches().await.unwrap();
+    assert_eq!(
+        dead_rows
+            .iter()
+            .find(|row| row.run_id == dead_run)
+            .unwrap()
+            .state,
+        DispatchState::DeadLetter,
+        "O2 original quarantined phase"
+    );
+    let dead_feed = store.events_after(cursor, 100, None).await.unwrap();
+    assert_eq!(
+        store
+            .observe_session_run_admission(&dead_run)
+            .await
+            .unwrap(),
+        awaken_dispatch_contract::SessionRunAdmissionObservation::Live(Box::new(
+            dead_recovered.request.clone()
+        )),
+        "O2 DeadLetter full A"
+    );
+    assert_eq!(
+        store.list_dispatches().await.unwrap(),
+        dead_rows,
+        "O2 DeadLetter state stutter"
+    );
+    assert_eq!(
+        store.events_after(cursor, 100, None).await.unwrap(),
+        dead_feed,
+        "O2 DeadLetter diagnostic cursor stutter"
+    );
     let cancelled_run = run_id(namespace, "operations-cancelled");
     store
         .enqueue(dispatch(

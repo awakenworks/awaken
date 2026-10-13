@@ -463,6 +463,18 @@ pub trait DispatchMaintenance: Send + Sync {
 /// Coordinator reservation and Session-child admission commands.
 #[async_trait]
 pub trait SessionRunReservations: SessionReservationAuthority {
+    /// Observe this exact Run's original request or retained completion in one
+    /// store snapshot. This never claims, writes, consumes a cursor or authorizes
+    /// replay. Missing is not historical nonexecution; legacy absent fields stay
+    /// absent. Invalid data/storage failures return their original error rather
+    /// than Missing. Observation errors are uncertainty, not definitive admission
+    /// rejection. A caller must bind the data to its original command and still
+    /// use the ordinary exact admission transaction to resolve subsequent races.
+    async fn observe_session_run_admission(
+        &self,
+        run_id: &RunId,
+    ) -> Result<SessionRunAdmissionObservation, DispatchError>;
+
     /// Persist one complete self-affine Session Run intent without making it
     /// claimable. The store applies this TTL using its own clock, granting an
     /// exclusive window to commit the Session activity and activate this row.

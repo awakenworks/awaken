@@ -590,20 +590,30 @@ fn claim_new_local(
     claim_exact(state, &run_id, owner, lease_ms, now_ms, None, capabilities)
 }
 
+/// Borrow the original row-first evidence without cloning an admission body.
+fn stored_run_evidence<'a>(
+    state: &'a State,
+    run_id: &RunId,
+) -> (Option<&'a Row>, Option<&'a DispatchCompletion>) {
+    let live = state.rows.get(run_id);
+    let completed = live
+        .is_none()
+        .then(|| state.completions.iter().find(|row| &row.run_id == run_id))
+        .flatten();
+    (live, completed)
+}
+
 /// Same-Run replay is permitted only for the exact canonical dispatch. This is
 /// evaluated by the queue authority before any supersession or claim mutation.
 fn known_run_identity(state: &State, request: &RunDispatch) -> Result<bool, DispatchError> {
     let run_id = request.run_id();
-    let stored = if let Some(row) = state.rows.get(run_id) {
-        StoredRunIdentity::Live(&row.request)
-    } else if let Some(completion) = state
-        .completions
-        .iter()
-        .find(|completion| &completion.run_id == run_id)
-    {
-        StoredRunIdentity::Completed(completion.request_fingerprint.as_deref())
-    } else {
-        StoredRunIdentity::Absent
+    let (live, completed) = stored_run_evidence(state, run_id);
+    let stored = match (live, completed) {
+        (Some(row), _) => StoredRunIdentity::Live(&row.request),
+        (None, Some(completion)) => {
+            StoredRunIdentity::Completed(completion.request_fingerprint.as_deref())
+        }
+        (None, None) => StoredRunIdentity::Absent,
     };
     decide_run_identity(stored, request).map(|decision| decision == RunIdentityDecision::Replay)
 }
@@ -1506,6 +1516,30 @@ impl awaken_dispatch_contract::DispatchControlReads for MemoryDispatchStore {
 
 #[async_trait]
 impl awaken_dispatch_contract::SessionRunReservations for MemoryDispatchStore {
+    async fn observe_session_run_admission(
+        &self,
+        run_id: &RunId,
+    ) -> Result<awaken_dispatch_contract::SessionRunAdmissionObservation, DispatchError> {
+        use awaken_dispatch_contract::SessionRunAdmissionObservation;
+        let state = lock(&self.state)?;
+        let (live, completed) = stored_run_evidence(&state, run_id);
+        if let Some(row) = live {
+            crate::dispatch::validate_observed_dispatch_key(
+                run_id,
+                row.request.thread_id(),
+                &row.request,
+            )?;
+            return Ok(SessionRunAdmissionObservation::Live(Box::new(
+                row.request.clone(),
+            )));
+        }
+        Ok(
+            completed.map_or(SessionRunAdmissionObservation::Missing, |row| {
+                SessionRunAdmissionObservation::Completed(row.clone())
+            }),
+        )
+    }
+
     async fn reserve_session_run(
         &self,
         request: RunDispatch,
@@ -1518,18 +1552,15 @@ impl awaken_dispatch_contract::SessionRunReservations for MemoryDispatchStore {
         let reservation_deadline_ms =
             crate::clock::deadline_millis(self.clock.now_ms(), reservation_ttl_ms);
         let run_id = request.run_id().clone();
-        if let Some(row) = state.rows.get(&run_id) {
+        let (live, completed) = stored_run_evidence(&state, &run_id);
+        if let Some(row) = live {
             return Ok(classify_live_session_run_reservation(
                 &row.request,
                 row.state,
                 &request,
             ));
         }
-        if let Some(completion) = state
-            .completions
-            .iter()
-            .find(|completion| completion.run_id == run_id)
-        {
+        if let Some(completion) = completed {
             return Ok(classify_completed_session_run_reservation(
                 completion.request_fingerprint.as_deref(),
                 &request,
@@ -1760,3 +1791,28 @@ impl DispatchOperationalFeed for MemoryDispatchStore {
 }
 
 use awaken_dispatch_contract::DispatchCommitAuthority as _;
+
+#[cfg(test)]
+mod admission_observation_tests {
+    use super::MemoryDispatchStore;
+    use awaken_agent_contract::agent::run::Id as RunId;
+    use awaken_dispatch_contract::{DispatchError, SessionRunReservations};
+
+    #[tokio::test]
+    async fn admission_observation_propagates_poison_without_false_absence() {
+        // O9: poisoned original State lock -> original Unavailable, no unwind
+        // and no fabricated Missing. Integration callers cannot poison private
+        // State, so this one owner-local negative guard complements the real
+        // backend/conformance cases without adding a public injection port.
+        let store = MemoryDispatchStore::new(awaken_time::system_clock());
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = store.state.lock().unwrap();
+            panic!("poison original dispatch State for O9");
+        }));
+        assert!(poisoned.is_err());
+        assert!(
+            matches!(store.observe_session_run_admission(&RunId("missing".into())).await,
+            Err(DispatchError::Unavailable(message)) if message == "dispatch store poisoned")
+        );
+    }
+}

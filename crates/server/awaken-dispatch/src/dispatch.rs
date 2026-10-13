@@ -617,6 +617,22 @@ pub(crate) enum RunIdentityDecision {
     Replay,
 }
 
+/// An observation must not return another Run/Thread hidden under this key.
+/// This storage-integrity check grants no replay or execution authority.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+pub(crate) fn validate_observed_dispatch_key(
+    run_id: &awaken_agent_contract::agent::run::Id,
+    thread_id: &awaken_agent_contract::agent::thread::Id,
+    request: &RunDispatch,
+) -> Result<(), DispatchError> {
+    if request.run_id() != run_id || request.thread_id() != thread_id {
+        return Err(DispatchError::unavailable(
+            "persisted dispatch request does not match its Run/Thread storage key",
+        ));
+    }
+    Ok(())
+}
+
 /// Incoming identity views compared with one permanent completion tombstone.
 /// The generic value is the exact canonical byte/fingerprint value selected by
 /// [`RunDispatch`]; storage adapters never supply a precomputed match bit.
