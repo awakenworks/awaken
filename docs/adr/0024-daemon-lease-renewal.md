@@ -950,3 +950,27 @@ and remote IO together. A queued request does not receive a fresh timeout after
 a previous wave releases its permit. Timeout or cancellation releases exactly
 the permit actually acquired; local response application and per-Session cleanup
 retain their existing exclusion and never mint a grace period.
+
+
+## Amendment 2026-10-13: reuse original Create retention for Sandbox process evidence
+
+The Kubernetes process observer recognizes the original Create broker's
+`ORIGINAL_GUARD_FINALIZER` as retained evidence, alongside the existing Worker
+and continuation guards. The broker installs this guard on the original Pod
+before returning its Create result and only the original resource cleanup owner
+releases it after UID-fenced terminal deletion. A second process finalizer is
+unnecessary and would duplicate retention ownership.
+
+Binding still requires the exact live UID, node, complete private process set,
+non-restarting topology and completed init participants. Sandbox capability still
+requires provider-attested no-network execution. The process binding freezes the
+selected guard before ToolBatch entry; removing or substituting that guard cannot
+produce a stop receipt. Worker authentication and Worker evidence release accept
+only their Worker guard. Sandbox stop never releases the Create or continuation
+guard, harvests files, removes a PVC or retires a Dispatch slot.
+
+Thus Create -> exact pre-tool binding -> canonical ToolBatch -> exact process
+stop observation -> existing Dispatch closure -> resource-owned terminal cleanup
+remains one path. This is prospective; historical opaque ToolBatch entries are
+not upgraded. The process-observation and stopper tests own the retention,
+identity-drift and guard-release decision tables.
