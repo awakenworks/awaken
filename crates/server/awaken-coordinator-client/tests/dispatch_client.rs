@@ -1257,6 +1257,15 @@ impl awaken_dispatch_contract::ClaimedRunCommit for SelectionOnlyCommit {
     > {
         panic!("construction has zero commit effects")
     }
+    async fn commit_operation(
+        &self,
+        _: awaken_dispatch_contract::ClaimedCommitCommand,
+    ) -> Result<
+        awaken_agent_contract::thread::commit::operation::CommitReceipt,
+        awaken_agent_contract::thread::commit::coordinator::Error,
+    > {
+        panic!("construction has zero commit effects")
+    }
 }
 #[test]
 fn any_dispatch_store_preserves_the_claimed_recovery_transport() {

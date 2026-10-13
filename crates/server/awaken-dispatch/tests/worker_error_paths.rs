@@ -11,6 +11,8 @@
 //!    `drive_claimed`, via the worker's `while state == Awaiting` loop.
 
 mod harness;
+#[path = "worker_error_paths/operation_receipts.rs"]
+mod operation_receipts;
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;

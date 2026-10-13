@@ -13,6 +13,11 @@ async fn worker_control_rpc_continues_trace_without_exporting_payload() {
     // C3 an authenticated control RPC with identity/payload. R1 C1+C2 ->
     // propagate the same W3C trace over the actual HTTP boundary; R2 !C1 ->
     // same RPC result, no trace dependency; both rows export no request body.
+    // C4 completed RPC spans are buffered by the configured batch exporter.
+    // R1+C4 -> the existing shutdown flush exports the actual RPC span before
+    // inspecting its trace/path/outcome and secret-free attributes. File arrival
+    // before that flush is not a completion witness and must not depend on the
+    // exporter's periodic schedule. R2 still has no exporter/file effect.
     // Subscriber/meter globals are isolated in a child of this test binary.
     const CHILD: &str = "AWAKEN_CONTROL_TRACE_TEST_CHILD";
     if std::env::var_os(CHILD).is_none() {
@@ -90,18 +95,6 @@ async fn worker_control_rpc_continues_trace_without_exporting_payload() {
     drop(client);
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
-    if enabled {
-        // The HTTP connection can retain the RPC span until its background task
-        // observes client shutdown. Wait for the actual exporter witness before
-        // shutting down the provider; no empty file is fabricated as evidence.
-        tokio::time::timeout(std::time::Duration::from_secs(3), async {
-            while !trace_file.exists() {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("closed RPC span reaches the configured trace exporter");
-    }
     awaken_observability::shutdown();
     if enabled {
         assert!(

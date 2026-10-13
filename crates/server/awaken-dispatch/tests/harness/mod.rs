@@ -710,21 +710,41 @@ impl<C> FailingCommit<C> {
     pub fn lose_next_response(&self) {
         self.lose_response.store(true, Ordering::SeqCst);
     }
-}
 
-#[async_trait::async_trait]
-impl<C: CommitCoordinator> CommitCoordinator for FailingCommit<C> {
-    async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, CommitError> {
+    async fn with_fault<T>(
+        &self,
+        apply: impl std::future::Future<Output = Result<T, CommitError>> + Send,
+    ) -> Result<T, CommitError> {
         if self.fail.load(Ordering::SeqCst) {
             return Err(CommitError::Rejected("injected commit failure".to_string()));
         }
-        let receipt = self.inner.commit(commit).await?;
+        let receipt = apply.await?;
         if self.lose_response.swap(false, Ordering::SeqCst) {
             return Err(CommitError::Rejected(
                 "injected lost commit response".to_string(),
             ));
         }
         Ok(receipt)
+    }
+}
+
+#[async_trait::async_trait]
+impl<C: CommitCoordinator> CommitCoordinator for FailingCommit<C> {
+    async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, CommitError> {
+        self.with_fault(self.inner.commit(commit)).await
+    }
+}
+
+#[async_trait::async_trait]
+impl<C: awaken_agent_contract::thread::commit::coordinator::OperationCoordinator>
+    awaken_agent_contract::thread::commit::coordinator::OperationCoordinator for FailingCommit<C>
+{
+    async fn commit_operation(
+        &self,
+        operation: awaken_agent_contract::thread::commit::operation::CommitOperation,
+    ) -> Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, CommitError> {
+        self.with_fault(self.inner.commit_operation(operation))
+            .await
     }
 }
 
