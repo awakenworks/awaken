@@ -175,7 +175,7 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
     let runtime = Arc::new(runtime);
     let repo = Arc::new(ephemeral_session_repo().await);
     let environments = crate::state::test_support::environment_components().1;
-    let application = awaken_session_application::SessionApplication::new_with_configuration(
+    let application = awaken_session_application::SessionApplicationBuilder::fixture(
         runtime.clone(),
         Arc::new(mcp_attachment::UnsupportedMcpAttachmentRealizer),
         awaken_session_application::SessionPersistence::new(
@@ -183,12 +183,16 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
             awaken_time::system_clock(),
         ),
         environments.clone(),
+    )
+    .configuration(
         awaken_session_application::SessionApplicationConfiguration {
             execution_placement:
                 awaken_session_application::SessionExecutionPlacement::RegisteredWorker,
             ..Default::default()
         },
-    );
+    )
+    .build()
+    .expect("valid fixture Session application");
     let state = ManagedState::from_application(
         Arc::new(application),
         environments,

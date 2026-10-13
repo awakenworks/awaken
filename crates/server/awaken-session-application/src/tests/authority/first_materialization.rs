@@ -192,12 +192,14 @@ async fn first_admission_waits_for_real_cas_and_returns_the_durable_winner_after
         Arc::new(awaken_lease_testkit::ManualClock::new(200)),
     );
     let sink = persistence.environment_binding_sink();
-    let app = SessionApplication::new(
+    let app = SessionApplicationBuilder::fixture(
         Arc::new(RecordingCleanupRuntime::default()),
         Arc::new(NoopMcpRealizer),
         persistence,
         Arc::new(RecordingEnvironmentSource::default()),
-    );
+    )
+    .build()
+    .expect("valid fixture Session application");
     let id = "first-admission-race";
     create(repo.as_ref(), fresh_subject(id)).await;
     let lease = original_lease();

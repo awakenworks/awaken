@@ -1,7 +1,9 @@
 // @formal surface requirement=session.lifecycle.session_state
-// @formal reason: Application construction validates process configuration and freezes complete Runtime,
-// @formal reason: credential and Resource capabilities before sharing the Session authority. This product
-// @formal reason: link does not claim a proof of provider I/O, plaintext custody or runtime execution.
+// @formal reason: Consumes validated Session configuration and complete role values before sharing.
+// @formal reason: Configuration validation remains in the application contract; this module selects
+// @formal reason: the canonical Store/Clock and initializes application state once, without issuing
+// @formal reason: credentials, changing durable authority, or starting effects. Constructor matrices
+// @formal reason: in tests/construction.rs check refusal ordering and preserved capability identity.
 //! Consume process configuration and complete feature capabilities before sharing.
 
 use awaken_executable_agent_contract::ExecutableAgentProfileSource;
@@ -16,7 +18,7 @@ use std::sync::Arc;
 use crate::{
     CredentialMaterialIngress, McpAttachmentRealizer, SessionApplication,
     SessionApplicationBuildError, SessionApplicationConfiguration, SessionCredentialSource,
-    SessionEnvironmentSource, SessionExecutor, SessionPersistence,
+    SessionEnvironmentSource, SessionExecutionAdmission, SessionExecutor, SessionPersistence,
 };
 
 /// Material ingress always includes the matching credential read capability.
@@ -91,6 +93,7 @@ pub struct SessionApplicationBuilder {
     mcp: Arc<dyn McpAttachmentRealizer>,
     persistence: SessionPersistence,
     environments: Arc<dyn SessionEnvironmentSource>,
+    execution: SessionExecutionAdmission,
     configuration: SessionApplicationConfiguration,
     credentials: Option<SessionCredentials>,
     resources: Option<SessionResources>,
@@ -101,18 +104,37 @@ pub struct SessionApplicationBuilder {
 }
 
 impl SessionApplicationBuilder {
-    #[must_use]
-    pub(super) fn new(
+    /// Explicit partial assembly for fixtures only.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fixture(
         runtime: impl Into<SessionExecutor>,
         mcp: Arc<dyn McpAttachmentRealizer>,
         persistence: SessionPersistence,
         environments: Arc<dyn SessionEnvironmentSource>,
+    ) -> Self {
+        Self::new(
+            runtime,
+            mcp,
+            persistence,
+            environments,
+            SessionExecutionAdmission::fixture(),
+        )
+    }
+
+    #[must_use]
+    pub fn new(
+        runtime: impl Into<SessionExecutor>,
+        mcp: Arc<dyn McpAttachmentRealizer>,
+        persistence: SessionPersistence,
+        environments: Arc<dyn SessionEnvironmentSource>,
+        execution: SessionExecutionAdmission,
     ) -> Self {
         Self {
             runtime: runtime.into(),
             mcp,
             persistence,
             environments,
+            execution,
             configuration: SessionApplicationConfiguration::default(),
             credentials: None,
             resources: None,
@@ -122,9 +144,6 @@ impl SessionApplicationBuilder {
             refresh: None,
         }
     }
-}
-
-impl SessionApplicationBuilder {
     #[must_use]
     pub fn configuration(mut self, configuration: SessionApplicationConfiguration) -> Self {
         self.configuration = configuration;
@@ -172,29 +191,56 @@ impl SessionApplicationBuilder {
 
     pub fn build(self) -> Result<SessionApplication, SessionApplicationBuildError> {
         let configuration = self.configuration.validate()?;
-        let mut application = SessionApplication::new_inner(
-            self.runtime,
-            self.mcp,
-            self.persistence,
-            self.environments,
+        let crate::SessionPersistence {
+            store,
+            clock,
+            environment_binding_sink,
+        } = self.persistence;
+        let (credential_source, credential_material_ingress) = self
+            .credentials
+            .map_or((None, None), |value| (Some(value.source), value.ingress));
+        let (resource_registry, retention) = self
+            .resources
+            .map_or((None, None), |value| (Some(value.catalog), value.retention));
+        let (resource_references, resource_files, resource_purge_scheduler) = retention
+            .map_or((None, None, None), |value| {
+                (Some(value.references), Some(value.files), Some(value.purge))
+            });
+        let started_at = clock.now().as_unix_nanos();
+        Ok(SessionApplication {
+            clock,
             configuration,
-        );
-        if let Some(credentials) = self.credentials {
-            application.credential_source = Some(credentials.source);
-            application.credential_material_ingress = credentials.ingress;
-        }
-        if let Some(resources) = self.resources {
-            application.resource_registry = Some(resources.catalog);
-            if let Some(retention) = resources.retention {
-                application.resource_references = Some(retention.references);
-                application.resource_files = Some(retention.files);
-                application.resource_purge_scheduler = Some(retention.purge);
-            }
-        }
-        application.config_source = self.profiles;
-        application.model_publication_resolver = self.models;
-        application.managed_list_prices = self.prices;
-        application.executable_projection_refresh = self.refresh;
-        Ok(application)
+            runtime: self.runtime,
+            mcp_realizer: self.mcp,
+            credential_source,
+            credential_material_ingress,
+            environments: self.environments,
+            config_source: self.profiles,
+            model_publication_resolver: self.models,
+            resource_registry,
+            resource_purge_scheduler,
+            resource_references,
+            resource_files,
+            managed_list_prices: self.prices,
+            sessions_repo: store.clone(),
+            environment_binding_sink,
+            lifecycle_outbox: store,
+            executable_projection_refresh: self.refresh,
+            lifecycle_notifier: std::sync::OnceLock::new(),
+            execution_admission: self.execution,
+            session_preparation_cursors: tokio::sync::Mutex::new(std::collections::BTreeMap::new()),
+            runtime_incarnation: format!(
+                "session:{}:{started_at}:{}",
+                std::process::id(),
+                crate::APPLICATION_INCARNATION_SEQ
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ),
+            local_realization_locks: Arc::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            mutation_sequence: std::sync::atomic::AtomicU64::new(0),
+            lifecycle_supervisor_started: std::sync::atomic::AtomicBool::new(false),
+            lifecycle_wakeup: tokio::sync::Notify::new(),
+            event_batch_cutover_validation: Arc::default(),
+        })
     }
 }

@@ -139,9 +139,20 @@ values. The constructor preserves the existing Store/Clock and binding-sink
 identity. Tests cross invalid configuration, normalized owners, exact creation
 replay, disabled retention, authority failure before root CAS and recovery.
 
-The four write-once lifecycle, Worker observation, dispatch observation and
-preparation-compiler bindings remain a separate process-composition phase.
-Their removal from the shared application mutation surface is still pending.
+`SessionApplicationBuilder::new` requires a complete `SessionExecutionAdmission`
+value containing the dispatch feed, Worker roster and preparation compiler.
+Production application construction installs these once before sharing the
+application. Coordinator mounting verifies the exact selected instances before
+binding Runtime wakeups or building transports; equal observations from another
+instance are refused without querying any service. Individual installation
+helpers are private to application unit tests. Scenario assembly can complete
+its explicit fixture value, first rejecting every existing foreign binding.
+The lifecycle notifier still has a separate process-composition phase; removing
+that final shared setter is the next lifecycle assembly change.
+
+The Store and Clock are selected together in `SessionPersistence::new` before
+the application incarnation is created. Fixtures use the consuming builder too;
+there is no second application constructor or later clock replacement path.
 
 Session credential SPIs, process configuration and reconciliation DTOs have one
 definition in `awaken-session-application-contract`. Environment projection
@@ -173,3 +184,17 @@ and fingerprints retain the same definitions. Callers name SDK MCP targets,
 Session ids and provisioning checkpoint values at their actual owners rather
 than importing them through a second contract. Creation replay tests cross exact
 replay, a Resource-only change, an MCP-only change and corrupt Resource identity.
+
+Profiled release uses the existing archive CAS and terminal cleanup driver. An
+unattempted Frozen preparation retains its existing admission. A Frozen WorkUnit
+whose execution projection is still Running may instead request archive when its
+current committed primary Run ended in error or cancellation, its original Run
+activity receipt matches the current root epoch, and no other activity, delegate
+or incomplete Event batch is retained. The application rereads these authorities
+on each CAS attempt. Ordinary archive remains idle-only; managed and interactive
+Sessions cannot borrow this admission. Missing or conflicting evidence refuses
+archive. Archive fences future entry but grants neither effect closure nor
+successor admission. The private release response still requires the exact
+verified cleanup receipt; pending cleanup retains the original cleanup obligation
+and returns no successful release. No route, persisted Session field, recovery
+queue or product WorkUnit state is added.

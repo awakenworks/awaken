@@ -544,11 +544,16 @@ async fn local_managed_state_over(
     let environments =
         environments.unwrap_or_else(|| volatile_environment_execution(clock.clone()));
     let runtime = Arc::new(ManagedHost::new(host.clone()));
-    let mut builder = awaken_session_application::SessionApplication::builder(
+    let mut builder = awaken_session_application::SessionApplicationBuilder::new(
         runtime.clone(),
         runtime.clone(),
         persistence,
         environments.clone(),
+        awaken_session_application::SessionExecutionAdmission::fixture_with_dispatch(
+            runtime
+                .dispatch_observation_source()
+                .expect("fixture canonical dispatch feed"),
+        ),
     )
     .configuration(
         awaken_session_application::SessionApplicationConfiguration {
@@ -1376,26 +1381,19 @@ async fn mount_with_managed_over_and_models(
         worker_clock,
         org_admission,
     } = routing;
-    // Bind the exact Coordinator Worker registry into the Session root-CAS
-    // authority before any claim transport is exposed. HTTP still authenticates
-    // each request, but it cannot become a second eligibility source or let an
-    // in-process caller bypass the current registry incarnation.
     let worker_observations: Arc<dyn awaken_worker_contract::WorkerObservationSource> =
         worker_directory.clone();
+    let preparation: Arc<dyn awaken_session_realization_contract::SessionPreparationPlacement> =
+        host.clone();
+    #[cfg(feature = "test-support")]
     session_application
-        .set_worker_observation_source(worker_observations)
-        .map_err(|error| {
-            WorkerTransportBuildError::Dispatch(format!(
-                "bind Session Worker observation source: {error}"
-            ))
-        })?;
+        .execution_admission()
+        .complete_fixture_worker_admission(worker_observations.clone(), preparation.clone())
+        .map_err(|error| WorkerTransportBuildError::Dispatch(error.into()))?;
     session_application
-        .set_session_preparation_placement(host.clone())
-        .map_err(|error| {
-            WorkerTransportBuildError::Dispatch(format!(
-                "bind Session preparation placement compiler: {error}"
-            ))
-        })?;
+        .execution_admission()
+        .verify_worker_admission(&worker_observations, &preparation)
+        .map_err(|error| WorkerTransportBuildError::Dispatch(error.into()))?;
     managed_application::bind_committed_progress_wakeup(&host, &session_application).map_err(
         |error| {
             WorkerTransportBuildError::Dispatch(format!(

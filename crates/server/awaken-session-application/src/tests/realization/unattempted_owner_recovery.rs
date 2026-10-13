@@ -29,16 +29,18 @@ async fn seed_expired_cleanup_affinity(
     let witness = matches!(evidence, NoCreateEvidence::ArchiveReceipt);
     let modern = matches!(evidence, NoCreateEvidence::FreshEmpty);
     let runtime = Arc::new(RecordingCleanupRuntime::default());
-    let app = SessionApplication::new_with_configuration(
+    let app = SessionApplicationBuilder::fixture(
         runtime.clone(),
         Arc::new(NoopMcpRealizer),
         crate::SessionPersistence::new(repository.clone(), system_clock()),
         Arc::new(RecordingEnvironmentSource::default()),
-        SessionApplicationConfiguration {
-            execution_placement: SessionExecutionPlacement::RegisteredWorker,
-            ..Default::default()
-        },
-    );
+    )
+    .configuration(SessionApplicationConfiguration {
+        execution_placement: SessionExecutionPlacement::RegisteredWorker,
+        ..Default::default()
+    })
+    .build()
+    .expect("valid fixture Session application");
     let mut root = unattempted_with_placement(id, SessionRuntimePlacement::Worker);
     if modern {
         root = PersistedSession::frozen_with_budget(
@@ -59,7 +61,7 @@ async fn seed_expired_cleanup_affinity(
     runtime.fail_quiesce_once.store(true, Ordering::SeqCst);
     if witness {
         let _pending = app
-            .release_unattempted_profiled_session(id, "2026-10-10T00:00:00Z", fact(id))
+            .release_profiled_session(id, "2026-10-10T00:00:00Z", fact(id))
             .await;
     } else {
         app.terminate_session(id, "2026-10-10T00:00:00Z", fact(id))
@@ -136,7 +138,9 @@ async fn seed_expired_cleanup_affinity(
         "fixture uses the existing Registry's exact owner/generation/incarnation"
     );
     workers.replace(vec![registered]);
-    app.set_worker_observation_source(workers.clone()).unwrap();
+    app.execution_admission()
+        .set_worker_observation_source(workers.clone())
+        .unwrap();
     (app, runtime, workers)
 }
 

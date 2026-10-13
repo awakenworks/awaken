@@ -10,15 +10,18 @@ fn timed_application(
     repo: Arc<dyn awaken_session_repository_contract::SessionStore>,
     now: u64,
 ) -> SessionApplication {
-    application_with_configuration(
-        repo,
+    SessionApplicationBuilder::fixture(
+        Arc::new(NoopRuntime),
+        Arc::new(NoopMcpRealizer),
+        SessionPersistence::new(repo, Arc::new(ManualClock::new(now))),
         Arc::new(RecordingEnvironmentSource::default()),
-        SessionApplicationConfiguration {
-            execution_placement: SessionExecutionPlacement::RegisteredWorker,
-            ..Default::default()
-        },
     )
-    .with_clock(Arc::new(ManualClock::new(now)))
+    .configuration(SessionApplicationConfiguration {
+        execution_placement: SessionExecutionPlacement::RegisteredWorker,
+        ..Default::default()
+    })
+    .build()
+    .expect("valid fixture Store/Clock composition")
 }
 
 fn command() -> CreateSessionCommand {

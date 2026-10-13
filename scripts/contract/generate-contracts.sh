@@ -41,11 +41,11 @@ python3 "$repo_root/scripts/contract/test_schema_to_typescript.py"
 
 # 1. JSON Schema SSOT from the Rust DTOs, plus the OpenAPI 3.1 document (route
 #    registry over the same schemas; drives frontend openapi-typescript codegen).
-cargo run --locked -q -p awaken-admin-config-api --features schema --example export_schemas \
+cargo run --locked -q -p awaken-admin-config-api --features schema --example export_admin_schemas \
     > "$tmp/schemas.json"
 cargo run --locked -q -p awaken-admin-config-api --features schema --example export_openapi \
     > "$tmp/openapi.generated.json"
-cargo run --locked -q -p awaken-protocol-managed --features schema --example export_schemas \
+cargo run --locked -q -p awaken-protocol-managed --features schema --example export_managed_schemas \
     > "$tmp/managed-agents.schemas.json"
 
 # Control-owned MCP read/config DTOs share the same management contract output.

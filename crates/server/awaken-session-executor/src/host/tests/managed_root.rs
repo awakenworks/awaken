@@ -309,16 +309,20 @@ impl ManagedSessionRootFixture {
                 );
                 let runtime: Arc<dyn awaken_session_execution_contract::CompleteSessionRuntime> =
                     Arc::new(managed.clone());
-                Arc::new(awaken_session_application::SessionApplication::new(
-                    runtime,
-                    Arc::new(managed.clone()),
-                    self.persistence
-                        .lock()
-                        .unwrap()
-                        .take()
-                        .expect("one selected Persistence"),
-                    environments,
-                ))
+                Arc::new(
+                    awaken_session_application::SessionApplicationBuilder::fixture(
+                        runtime,
+                        Arc::new(managed.clone()),
+                        self.persistence
+                            .lock()
+                            .unwrap()
+                            .take()
+                            .expect("one selected Persistence"),
+                        environments,
+                    )
+                    .build()
+                    .expect("valid fixture Session application"),
+                )
             })
             .clone()
     }

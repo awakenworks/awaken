@@ -183,8 +183,8 @@ pub enum AgentCoordinationInstallError {
     AlreadyInstalled,
     #[error("Session dispatch observation source is unavailable")]
     DispatchObservationUnavailable,
-    #[error("Session dispatch observation source is already installed")]
-    DispatchObservationAlreadyInstalled,
+    #[error("Session dispatch observation source differs from the canonical Runtime")]
+    DispatchObservationMismatch,
     #[error("Session coordination application is unavailable at composition")]
     ApplicationUnavailable,
 }

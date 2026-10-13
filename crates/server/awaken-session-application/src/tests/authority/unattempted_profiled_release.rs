@@ -224,7 +224,7 @@ fn unattempted_profiled_release_checks_every_root_admission_cause() {
             create(repo.as_ref(), candidate).await;
             let before = repo.get(&SessionId::from(&id)).await.unwrap();
             assert!(
-                app.release_unattempted_profiled_session(&id, "2026-10-10T00:00:00Z", fact(&id))
+                app.release_profiled_session(&id, "2026-10-10T00:00:00Z", fact(&id))
                     .await
                     .is_err(),
                 "U2 {cause}"
@@ -276,7 +276,7 @@ fn unattempted_profiled_release_retains_cleanup_and_absorbs_replay() {
         );
         runtime.fail_quiesce_once.store(true, Ordering::SeqCst);
         assert!(
-            app.release_unattempted_profiled_session(id, "2026-10-10T00:00:00Z", fact(id))
+            app.release_profiled_session(id, "2026-10-10T00:00:00Z", fact(id))
                 .await
                 .is_err(),
             "U3 no premature success"
@@ -287,7 +287,7 @@ fn unattempted_profiled_release_retains_cleanup_and_absorbs_replay() {
             SessionDisposition::Archived { .. }
         ));
         assert!(!pending.verified_terminal_cleanup().unwrap().is_completed());
-        app.release_unattempted_profiled_session(id, "2026-10-10T00:00:00Z", fact(id))
+        app.release_profiled_session(id, "2026-10-10T00:00:00Z", fact(id))
             .await
             .unwrap();
         let completed = repo.get(&SessionId::from(id)).await.unwrap();
@@ -303,7 +303,7 @@ fn unattempted_profiled_release_retains_cleanup_and_absorbs_replay() {
             "U1 terminal absorption"
         );
         let effects = runtime.effective_ids.lock().unwrap().len();
-        app.release_unattempted_profiled_session(id, "another-timestamp", fact(id))
+        app.release_profiled_session(id, "another-timestamp", fact(id))
             .await
             .unwrap();
         assert_eq!(
@@ -345,7 +345,7 @@ fn unattempted_profiled_release_and_activity_share_the_root_cas() {
         let session_id = SessionId::from(id);
         let (activity, release) = tokio::join!(
             app.begin_activity(&session_id),
-            app.release_unattempted_profiled_session(id, "2026-10-10T00:00:00Z", fact(id))
+            app.release_profiled_session(id, "2026-10-10T00:00:00Z", fact(id))
         );
         assert_ne!(
             activity.is_ok(),
@@ -364,6 +364,158 @@ fn unattempted_profiled_release_and_activity_share_the_root_cas() {
                 root.disposition,
                 SessionDisposition::Archived { .. }
             ));
+        }
+    });
+}
+
+#[test]
+fn failed_profiled_release_joins_current_run_activity_without_claiming_cleanup() {
+    run_composed_async_test(|| async {
+        // Cause-effect decision table: C1 Frozen primary Session; C2 committed
+        // current Run failed/cancelled; C3 original activity receipt owns the
+        // current epoch with no other activity; C4 no delegate/pending Events;
+        // C5 cleanup driver can finish. R1 C1..C4 + !C5 => archived, original
+        // cleanup retained, error response. R2 any !C1..C4 => unchanged root.
+        // R3 response loss/restart of R1 => absorbing archive, no reopen and
+        // no fabricated cleanup success. Successful verified cleanup itself is
+        // covered by the existing preparation/terminal release matrix above.
+        for cause in [
+            "cancelled",
+            "failed",
+            "running",
+            "awaiting",
+            "succeeded",
+            "managed",
+            "missing_run",
+            "missing_receipt",
+            "newer_activity",
+            "delegate",
+            "foreign_thread",
+            "race",
+        ] {
+            let repo = Arc::new(
+                awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                    .await
+                    .unwrap(),
+            );
+            let runtime = Arc::new(RecordingAgentAdmissionRuntime::new([]));
+            let app = application_with_runtime(
+                runtime.clone(),
+                repo.clone(),
+                Arc::new(RecordingEnvironmentSource::default()),
+            );
+            let id = format!("failed-profiled-{cause}");
+            let sid = SessionId::from(id.as_str());
+            let thread = ThreadId(id.clone());
+            let run = RunId("original-run".into());
+            let mut session = persisted(&id, false, "idle");
+            if let awaken_session_configuration_contract::SessionBaselineState::Frozen(b) =
+                &mut session.baseline
+            {
+                b.mutation_policy = if cause == "managed" {
+                    SessionMutationPolicy::Managed
+                } else {
+                    SessionMutationPolicy::Frozen
+                };
+            }
+            if cause == "delegate"
+                && let awaken_session_configuration_contract::SessionBaselineState::Frozen(b) =
+                    &mut session.baseline
+            {
+                b.delegate_ids.push("child".into());
+            }
+            create(repo.as_ref(), session).await;
+            let operation =
+                awaken_session_execution_contract::session_run_activity_operation_id(&sid, &run);
+            app.begin_activity_for_operation_with_policy(
+                &sid,
+                if cause == "missing_receipt" {
+                    "unrelated-operation"
+                } else {
+                    &operation
+                },
+                false,
+                None,
+                None,
+                Some((&thread, &run)),
+            )
+            .await
+            .unwrap();
+            if cause == "newer_activity" {
+                app.begin_activity_for_operation(&sid, "newer-operation")
+                    .await
+                    .unwrap();
+            }
+            let state = match cause {
+                "running" => RunState::Running,
+                "awaiting" => RunState::Awaiting,
+                "succeeded" => RunState::Ended(EndCause::NaturalEnd),
+                "failed" => RunState::Ended(EndCause::Error(
+                    awaken_agent_contract::agent::run::Failure::Inference {
+                        code: "response_body".into(),
+                        message: "provider failed".into(),
+                    },
+                )),
+                _ => RunState::Ended(EndCause::Cancelled),
+            };
+            if cause != "missing_run" {
+                runtime.boundaries.commit(&id, &thread, &run, state, "");
+                if cause == "foreign_thread" {
+                    let mut snapshot = runtime.boundaries.snapshot(&id, &id).unwrap();
+                    snapshot.thread_id = ThreadId("foreign".into());
+                    runtime
+                        .boundaries
+                        .0
+                        .lock()
+                        .unwrap()
+                        .insert((id.clone(), id.clone()), snapshot);
+                }
+            }
+            let before = repo.get(&sid).await.unwrap();
+            let (release, racing_activity) = if cause == "race" {
+                let (release, activity) = tokio::join!(
+                    app.release_profiled_session(&id, "2026-10-14T00:00:00Z", fact(&id)),
+                    app.begin_activity_for_operation(&sid, "racing-operation"),
+                );
+                (release, Some(activity))
+            } else {
+                (
+                    app.release_profiled_session(&id, "2026-10-14T00:00:00Z", fact(&id))
+                        .await,
+                    None,
+                )
+            };
+            assert!(release.is_err(), "no unsupported cleanup success: {cause}");
+            let after = repo.get(&sid).await.unwrap();
+            if let Some(activity) = racing_activity {
+                // R4: one root CAS wins. Archive wins => no newer activity;
+                // activity wins => old terminal Run cannot archive its epoch.
+                assert_ne!(after.is_terminal(), activity.is_ok(), "R4 exclusive owner");
+            } else if matches!(cause, "cancelled" | "failed") {
+                assert!(after.is_terminal(), "R1 {cause}");
+                assert!(
+                    !after.verified_terminal_cleanup().unwrap().is_completed(),
+                    "R1 retained cleanup"
+                );
+                assert!(app.begin_activity(&sid).await.is_err(), "R1 no reentry");
+                let restarted = application_with_runtime(
+                    runtime.clone(),
+                    repo.clone(),
+                    Arc::new(RecordingEnvironmentSource::default()),
+                );
+                assert!(
+                    restarted
+                        .release_profiled_session(&id, "different-display-time", fact(&id))
+                        .await
+                        .is_err()
+                );
+                assert!(
+                    repo.get(&sid).await.unwrap().is_terminal(),
+                    "R3 restart retains fence"
+                );
+            } else {
+                assert_eq!(after, before, "R2 {cause}");
+            }
         }
     });
 }

@@ -1002,9 +1002,8 @@ impl ManagedState {
         self.archive_session_with_cleanup(id, false).await
     }
 
-    /// The existing profiled release joins verified cleanup for an already
-    /// terminal Session or a frozen, never-attempted preparation. It never uses
-    /// a live Run outcome as termination authority.
+    /// Profiled release joins verified cleanup through the existing Session
+    /// archive owner, including exact failed Frozen WorkUnit admission.
     /// Public archive keeps its strict idle-only admission.
     pub async fn release_profiled_session_without_publication(
         &self,
@@ -1035,8 +1034,9 @@ impl ManagedState {
             if !execution.is_terminal() {
                 let initial_fact = terminated_fact.clone();
                 let initial_release = match execution {
-                    SessionExecutionState::Preparing => termination
-                        .release_unattempted_profiled_session(id, &archived_at, initial_fact),
+                    SessionExecutionState::Preparing | SessionExecutionState::Running => {
+                        termination.release_profiled_session(id, &archived_at, initial_fact)
+                    }
                     _ => termination.terminate_session(id, &archived_at, initial_fact),
                 };
                 initial_release.await.map_err(Self::map_preparation_error)?;
