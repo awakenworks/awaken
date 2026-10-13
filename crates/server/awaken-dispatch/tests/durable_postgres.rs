@@ -31,8 +31,8 @@ use awaken_agent_contract::thread::commit::coordinator::{
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, RunDisposition, ThreadCommit};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch::{
-    ClaimedCommitCoordinator, ClaimedRunCommit, DEFAULT_LEASE_MS, DispatchTestHarness,
-    DispatchWorker, GuardedRunCommit, Inbox, LeastLoadedPolicy, PendingInput,
+    ClaimedCommitCoordinator, ClaimedRunCommit, DEFAULT_LEASE_MS, DispatchControlReads,
+    DispatchTestHarness, DispatchWorker, GuardedRunCommit, Inbox, LeastLoadedPolicy, PendingInput,
     PlacementRequirements, PostgresDispatchStore, PostgresStreamCheckpointStore, RunClaim,
     RunDispatch, SubmitOptions,
 };
@@ -355,6 +355,71 @@ async fn postgres_execution_binding_is_frozen_with_the_physical_slot() {
         error.as_database_error().unwrap().code().as_deref(),
         Some("23514"),
         "B10"
+    );
+    // O8 cause/effect: failure inserting the new local observation must roll
+    // back the same real transaction's retirement. This fixture's schema-local
+    // trigger owns only its INSERT fault; no production constraint is removed.
+    let (claim, binding, _) = harness::attempt_binding::bound_claim(
+        &store,
+        "pg-ack-rollback",
+        &awaken_dispatch_testkit::AuthoritativeWallClock,
+    )
+    .await;
+    store.begin_attempt(&claim, Some(&binding)).await.unwrap();
+    let original = store.load_physical_attempt(&claim.run_id).await.unwrap();
+    sqlx::query("CREATE FUNCTION test_reject_ack_insert() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test ordinary ACK append failure'; END $$").execute(&pool).await.unwrap();
+    sqlx::query("CREATE TRIGGER test_reject_ack_insert BEFORE INSERT ON runtime_dispatch_operation FOR EACH ROW WHEN (NEW.operation ->> 'type' = 'attempt_acknowledgement') EXECUTE FUNCTION test_reject_ack_insert()").execute(&pool).await.unwrap();
+    assert!(
+        store
+            .finish_attempt(
+                &claim,
+                Some(awaken_dispatch::AttemptReturnCause::StructuredReturnObserved)
+            )
+            .await
+            .is_err(),
+        "O8 native append failure"
+    );
+    assert_eq!(
+        store.load_physical_attempt(&claim.run_id).await.unwrap(),
+        original,
+        "O8 exact slot/binding preserved"
+    );
+    assert!(
+        store
+            .attempt_closure_records_after(
+                awaken_dispatch::DispatchCursor::default(),
+                usize::MAX,
+                Some(&claim.run_id)
+            )
+            .await
+            .unwrap()
+            .events
+            .is_empty(),
+        "O8 no fact or cursor"
+    );
+    assert_eq!(
+        store.begin_attempt(&claim, Some(&binding)).await.unwrap(),
+        awaken_dispatch::AttemptAdmission::AlreadyApplied,
+        "O8 retired epoch did not advance"
+    );
+    sqlx::query("DROP TRIGGER test_reject_ack_insert ON runtime_dispatch_operation")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DROP FUNCTION test_reject_ack_insert()")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .finish_attempt(
+                &claim,
+                Some(awaken_dispatch::AttemptReturnCause::StructuredReturnObserved)
+            )
+            .await
+            .unwrap(),
+        awaken_dispatch::SettleOutcome::Applied,
+        "O8 same original after fault removal"
     );
 }
 

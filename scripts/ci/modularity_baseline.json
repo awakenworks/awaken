@@ -270,7 +270,7 @@
     "awaken-credential-store::postgres.rs::commit_managed_mutation": 275,
     "awaken-credential-store::sqlite/managed.rs::commit_managed_mutation": 244,
     "awaken-dispatch-execution::worker.rs::drive_claimed_inner": 594,
-    "awaken-dispatch-execution::worker/physical_attempt.rs::run_physical_attempt": 202,
+    "awaken-dispatch-execution::worker/physical_attempt.rs::run_physical_attempt": 197,
     "awaken-dream-application::lib.rs::run_job": 184,
     "awaken-execution-composition::sandbox_source.rs::open": 197,
     "awaken-ext-state-machine::plugin.rs::on_phase": 238,

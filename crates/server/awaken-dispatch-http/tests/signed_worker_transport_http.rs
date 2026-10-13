@@ -1118,93 +1118,10 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         1,
         "claim admission acquires exactly one Session Work receipt"
     );
-    // Physical-slot transport rules: exact live identity begins; exact begin
-    // and continuation-handoff response-loss retries are idempotent; a body
-    // identity different from the signed incarnation can neither hand off nor
-    // acknowledge; the exact owner can finish. The
-    // final ACK endpoint intentionally authenticates the signed predecessor but
-    // does not require it to remain the current registry/Run owner, because that
-    // would make safe handoff impossible after reclaim.
-    assert_eq!(
-        queue.begin_attempt(&claim, None).await.expect("P1 begin"),
-        AttemptAdmission::Applied,
-        "P1 exact identity"
-    );
-    assert_eq!(
-        queue.begin_attempt(&claim, None).await.expect("P2 retry"),
-        AttemptAdmission::AlreadyApplied,
-        "P2 exact response-loss retry"
-    );
-    assert_eq!(
-        queue
-            .handoff_attempt(&claim, None)
-            .await
-            .expect("P2 handoff retry"),
-        AttemptAdmission::AlreadyApplied,
-        "P2 exact durable-continuation retry"
-    );
-    let mismatched_queue = awaken_coordinator_client::dispatch_transport_with_upstream(
-        &upstream,
-        WorkerIdentity::new("signed-http-worker", "different-boot", 2),
-    );
-    assert!(
-        mismatched_queue
-            .handoff_attempt(&claim, None)
-            .await
-            .is_err(),
-        "P3 mismatched signed-body incarnation cannot replace the slot"
-    );
-    assert!(
-        mismatched_queue.finish_attempt(&claim).await.is_err(),
-        "P3 mismatched signed-body incarnation cannot clear the slot"
-    );
-    // Upgrade table U1: an already-occupied claim belongs to a persisted v3
-    // incarnation. New begin/handoff requests are rejected without touching its
-    // slot; U2 its authenticated exact ACK still retires that slot; U3 an ACK
-    // retry is idempotent. Seed historical manifest state only in this fixture
-    // (production cannot mutate an incarnation's immutable manifest).
-    let before_upgrade = directory.0.lock().unwrap().clone();
-    {
-        let mut record = directory.0.lock().unwrap();
-        let snapshot = &mut record.as_mut().unwrap().snapshot;
-        snapshot.manifest.runtime_protocol.max = 3;
-        snapshot.capability_fingerprint = snapshot.manifest.fingerprint().unwrap();
-    }
-    let occupied_before = dispatch.list_dispatches().await.unwrap();
-    assert!(queue.begin_attempt(&claim, None).await.is_err(), "U1 begin");
-    assert!(
-        queue.handoff_attempt(&claim, None).await.is_err(),
-        "U1 handoff"
-    );
-    assert_eq!(
-        dispatch.list_dispatches().await.unwrap(),
-        occupied_before,
-        "U1 no mutation"
-    );
-    assert_eq!(
-        queue.finish_attempt(&claim).await.expect("P4 exact ACK"),
-        SettleOutcome::Applied,
-        "P4 exact owner quiescence"
-    );
-    // P5: an ACK committed but its HTTP response was lost. Retrying the same
-    // authenticated command sees Empty -> Applied, with no executor re-entry.
-    assert_eq!(
-        queue.finish_attempt(&claim).await.expect("P5 ACK retry"),
-        SettleOutcome::Applied,
-        "P5 transport preserves the store's idempotent empty-slot ACK"
-    );
-    // U4: neither an old peer nor a current replacement may re-admit the same
-    // acknowledged identity; protocol rejection and epoch retirement compose.
-    assert!(
-        queue.begin_attempt(&claim, None).await.is_err(),
-        "U4 old peer"
-    );
-    *directory.0.lock().unwrap() = before_upgrade;
-    assert_eq!(
-        queue.begin_attempt(&claim, None).await.unwrap(),
-        AttemptAdmission::Fenced,
-        "U4 retired epoch"
-    );
+    attempt_binding::verify_ordinary_return_compatibility(
+        &queue, &upstream, &directory, &dispatch, &claim,
+    )
+    .await;
 
     // Cause graph: signed exact incarnation -> live registry lease -> identity
     // owns the exact Run claim -> guarded Run thread equals Session -> resume the
@@ -2539,7 +2456,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "T27a no application effect"
     );
     assert_eq!(
-        queue.finish_attempt(&child_claim).await.unwrap(),
+        queue.finish_attempt(&child_claim, None).await.unwrap(),
         SettleOutcome::Applied,
         "T27b exact return"
     );

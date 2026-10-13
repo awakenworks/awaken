@@ -18,7 +18,10 @@ use std::sync::Arc;
 
 use super::{ClaimedSnapshotAuthority, DispatchWorker};
 use crate::Error;
-use crate::dispatch::{AttemptAdmission, Claimed, DispatchError, RunClaim, SettleOutcome};
+use crate::dispatch::{
+    AttemptAdmission, AttemptReturnCause, Claimed, DispatchError, DispatchExecution, RunClaim,
+    SettleOutcome,
+};
 use crate::execution_capacity::ExecutionCapacity;
 use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::run::RunState;
@@ -155,24 +158,9 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         };
 
         if cancellation.is_cancelled() {
-            if !admission.permits_pre_start_no_effect_ack() {
-                // Causes: C1 cancellation arrives before this invocation builds
-                // the executor Future; C2 admission freshly installed an empty
-                // slot, stuttered an earlier admission, or replaced a predecessor.
-                // Effects: E1 fresh install may ACK this invocation's known
-                // no-effect slot; E2 stutter/replacement retains the inherited
-                // responsibility and reports it as unconfirmed. Decision table:
-                // R1=C1+Applied -> E1; R2=C1+(AlreadyApplied|Replaced) -> E2.
-                // In particular, local "not started" cannot prove that a prior
-                // caller or handed-off remote operation did not start.
-                return Ok(PhysicalAttemptOutcome::PredecessorUnconfirmed);
-            }
-            let _ = self.finish_observed_attempt(&claim, &timing).await?;
-            return Err(Error::Execution(
-                awaken_runtime_contract::execution::Error::Execution(
-                    "dispatch authority was lost before physical attempt start".to_string(),
-                ),
-            ));
+            return self
+                .acknowledge_unentered_operation(&claim, admission, &timing)
+                .await;
         }
 
         // Worker placement capacity starts at the same boundary as physical
@@ -252,7 +240,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 "Executor returned without physical termination evidence; retaining attempt slot");
             return Ok(PhysicalAttemptOutcome::Returned(result));
         }
-        if self.finish_observed_attempt(&claim, &timing).await? != SettleOutcome::Applied {
+        // Structured/nested return can coexist with response-only result
+        // uncertainty. Retain the local observation, never an All stop claim.
+        if finish_observed_attempt(
+            self.store.as_ref(),
+            &claim,
+            &timing,
+            AttemptReturnCause::StructuredReturnObserved,
+        )
+        .await?
+            != SettleOutcome::Applied
+        {
             return Err(Error::Execution(
                 awaken_runtime_contract::execution::Error::Execution(
                     "physical Run attempt quiescence acknowledgement was fenced".to_string(),
@@ -262,28 +260,69 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         Ok(PhysicalAttemptOutcome::Returned(result))
     }
 
-    async fn finish_observed_attempt(
+    /// The original fresh-install cancellation law, before operation Future
+    /// construction. It has no new state, executor or independent stop grant.
+    async fn acknowledge_unentered_operation(
         &self,
         claim: &RunClaim,
+        admission: AttemptAdmission,
         timing: &AuthorityLeaseTiming,
-    ) -> Result<SettleOutcome, Error> {
-        loop {
-            match tokio::time::timeout(timing.request_timeout(), self.store.finish_attempt(claim))
-                .await
-            {
-                Ok(Ok(outcome)) => return Ok(outcome),
-                Ok(Err(DispatchError::Unavailable(_))) | Err(_) => {
-                    // Actual return is already known; retry only its exact,
-                    // idempotent ACK. A lost response may have cleared the slot.
-                    // Claim loss cannot invalidate evidence about this old slot,
-                    // and a successor slot is fenced by the existing store.
-                    tracing::warn!(run_id = %claim.run_id.0, owner = %claim.owner,
-                        lease_epoch = claim.epoch, phase = "physical_quiescence_ack",
-                        "Physical attempt ACK unavailable; retaining observed return for retry");
-                    tokio::time::sleep(timing.retry_delay()).await;
-                }
-                Ok(Err(error)) => return Err(error.into()),
+    ) -> Result<PhysicalAttemptOutcome, Error> {
+        if !admission.permits_pre_start_no_effect_ack() {
+            // Causes: C1 cancellation arrives before this invocation builds
+            // the executor Future; C2 admission freshly installed an empty
+            // slot, stuttered an earlier admission, or replaced a predecessor.
+            // Effects: E1 fresh install may ACK this invocation's known
+            // no-effect slot; E2 stutter/replacement retains the inherited
+            // responsibility and reports it as unconfirmed. Decision table:
+            // R1=C1+Applied -> E1; R2=C1+(AlreadyApplied|Replaced) -> E2.
+            // In particular, local "not started" cannot prove that a prior
+            // caller or handed-off remote operation did not start.
+            return Ok(PhysicalAttemptOutcome::PredecessorUnconfirmed);
+        }
+        // This proves only that this operation Future was not constructed.
+        // Earlier resolver/Sandbox/MCP IO is outside this local fact.
+        let _ = finish_observed_attempt(
+            self.store.as_ref(),
+            claim,
+            timing,
+            AttemptReturnCause::OperationFutureNotEntered,
+        )
+        .await?;
+        Err(Error::Execution(
+            awaken_runtime_contract::execution::Error::Execution(
+                "dispatch authority was lost before physical attempt start".to_string(),
+            ),
+        ))
+    }
+}
+
+// The ACK retry law depends only on the original Dispatch role, not Worker state.
+async fn finish_observed_attempt(
+    store: &impl DispatchExecution,
+    claim: &RunClaim,
+    timing: &AuthorityLeaseTiming,
+    cause: AttemptReturnCause,
+) -> Result<SettleOutcome, Error> {
+    loop {
+        match tokio::time::timeout(
+            timing.request_timeout(),
+            store.finish_attempt(claim, Some(cause)),
+        )
+        .await
+        {
+            Ok(Ok(outcome)) => return Ok(outcome),
+            Ok(Err(DispatchError::Unavailable(_))) | Err(_) => {
+                // Actual return is already known; retry only its exact,
+                // idempotent ACK. A lost response may have cleared the slot.
+                // Claim loss cannot invalidate evidence about this old slot,
+                // and a successor slot is fenced by the existing store.
+                tracing::warn!(run_id = %claim.run_id.0, owner = %claim.owner,
+                    lease_epoch = claim.epoch, phase = "physical_quiescence_ack",
+                    "Physical attempt ACK unavailable; retaining observed return for retry");
+                tokio::time::sleep(timing.retry_delay()).await;
             }
+            Ok(Err(error)) => return Err(error.into()),
         }
     }
 }

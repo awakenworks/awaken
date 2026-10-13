@@ -3,7 +3,7 @@ use super::*;
 use awaken_dispatch::{
     ApplicationError, AttemptExecutionBinding, RunClaim, WorkerExecutionBindingSource,
 };
-use awaken_worker_contract::WorkerCurrentSource;
+use awaken_worker_contract::{WorkerCurrentSource, WorkerIncarnationSource};
 
 use awaken_dispatch_testkit::worker_http as support;
 use serde_json::{Value, json};
@@ -70,6 +70,125 @@ struct Fixture {
     claim: RunClaim,
     upstream: WorkerUpstream,
     server: tokio::task::JoinHandle<()>,
+}
+
+#[tokio::test]
+async fn ordinary_return_uses_historical_protocol_identity_without_authorizing_other_verbs() {
+    use awaken_dispatch::{AttemptPhysicalFact, AttemptReturnCause, DispatchCursor};
+    // O1 exact current-protocol incarnation becomes superseded/expired; O2
+    // typed cause appears on begin/handoff/close; O3 ordinary Some is repeated
+    // or changed. R1 O1+finish -> original binding+local cause only, no current
+    // Ready/TTL requirement; R2 O2 -> reject before Provider/slot IO; R3 exact
+    // retry is one event, different cause rejects. The original manifest covers
+    // CURRENT (5), not an exact old version. U5 covers v3/exact4 Some denial
+    // plus None compatibility. Worker JSON cannot carry All/URI.
+    let mut f = Fixture::new(true, 5_000).await;
+    let identity = f.upstream.worker_identity().unwrap().clone();
+    let begin = f.request("begin", f.body());
+    f.entered().await;
+    f.source.release.add_permits(1);
+    assert_eq!(begin.await.unwrap().0, reqwest::StatusCode::OK);
+    let original = f
+        .store
+        .load_physical_attempt(&f.claim.run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut observed = f.body();
+    observed["return_cause"] = json!(AttemptReturnCause::StructuredReturnObserved);
+    let source_calls = f.source.calls.load(Ordering::SeqCst);
+    for action in ["begin", "handoff", "close"] {
+        let (status, _) = f.request(action, observed.clone()).await.unwrap();
+        assert_eq!(status, reqwest::StatusCode::BAD_REQUEST, "R2 {action}");
+        assert_eq!(
+            f.store
+                .load_physical_attempt(&f.claim.run_id)
+                .await
+                .unwrap(),
+            Some(original.clone())
+        );
+        assert_eq!(
+            f.source.calls.load(Ordering::SeqCst),
+            source_calls,
+            "R2 no Provider observation"
+        );
+    }
+    let manifest = f
+        .directory
+        .incarnation(&identity)
+        .await
+        .unwrap()
+        .unwrap()
+        .snapshot
+        .manifest;
+    let next = f
+        .directory
+        .register(
+            WorkerRegistration {
+                worker_id: identity.worker_id.clone(),
+                incarnation_id: "replacement-boot".into(),
+                manifest,
+                create_ledger: None,
+            },
+            50_000,
+            30_000,
+        )
+        .await
+        .unwrap();
+    assert_ne!(next.snapshot.identity, identity);
+    assert!(
+        f.directory
+            .incarnation(&identity)
+            .await
+            .unwrap()
+            .unwrap()
+            .snapshot
+            .manifest
+            .supports_current_runtime_protocol(),
+        "R1 immutable original record"
+    );
+    f.clock.set(50_000);
+    let (status, body) = f.request("finish", observed.clone()).await.unwrap();
+    assert_eq!(
+        status,
+        reqwest::StatusCode::OK,
+        "R1 late original observation"
+    );
+    assert_eq!(body["finished"], true);
+    let retained = f
+        .store
+        .attempt_closure_records_after(DispatchCursor::default(), usize::MAX, Some(&f.claim.run_id))
+        .await
+        .unwrap();
+    assert_eq!(retained.events.len(), 1);
+    let AttemptPhysicalFact::Acknowledgement { record } = &retained.events[0].record else {
+        panic!("R1 ordinary observation cannot become independent closure")
+    };
+    assert_eq!(record.attempt(), &original);
+    assert_eq!(record.cause(), AttemptReturnCause::StructuredReturnObserved);
+    assert_eq!(
+        f.request("finish", observed.clone()).await.unwrap().0,
+        reqwest::StatusCode::OK,
+        "R3 response-loss retry"
+    );
+    observed["return_cause"] = json!(AttemptReturnCause::OperationFutureNotEntered);
+    assert!(
+        !f.request("finish", observed).await.unwrap().0.is_success(),
+        "R3 immutable cause"
+    );
+    assert_eq!(
+        f.store
+            .attempt_closure_records_after(
+                DispatchCursor::default(),
+                usize::MAX,
+                Some(&f.claim.run_id)
+            )
+            .await
+            .unwrap(),
+        retained
+    );
+    f.server.abort();
+    let _ = (&mut f.server).await;
 }
 
 #[tokio::test]
@@ -742,3 +861,160 @@ use awaken_dispatch_contract::{
     DispatchAdministration as _, DispatchClaims as _, DispatchControlReads as _,
     DispatchEnqueue as _, DispatchExecution as _,
 };
+
+/// The signed physical-attempt protocol family belongs beside its original
+/// binding/Registry tests; all P1-P5/U1-U4 assertions move intact from parent.
+pub(super) async fn verify_ordinary_return_compatibility(
+    queue: &awaken_coordinator_client::HttpDispatchQueue,
+    upstream: &WorkerUpstream,
+    directory: &TestWorkerDirectory,
+    dispatch: &MemoryDispatchStore,
+    claim: &RunClaim,
+) {
+    // Physical-slot transport rules: exact live identity begins; exact begin
+    // and continuation-handoff response-loss retries are idempotent; a body
+    // identity different from the signed incarnation can neither hand off nor
+    // acknowledge; the exact owner can finish. The
+    // final ACK endpoint intentionally authenticates the signed predecessor but
+    // does not require it to remain the current registry/Run owner, because that
+    // would make safe handoff impossible after reclaim.
+    assert_eq!(
+        queue.begin_attempt(claim, None).await.expect("P1 begin"),
+        AttemptAdmission::Applied,
+        "P1 exact identity"
+    );
+    assert_eq!(
+        queue.begin_attempt(claim, None).await.expect("P2 retry"),
+        AttemptAdmission::AlreadyApplied,
+        "P2 exact response-loss retry"
+    );
+    assert_eq!(
+        queue
+            .handoff_attempt(claim, None)
+            .await
+            .expect("P2 handoff retry"),
+        AttemptAdmission::AlreadyApplied,
+        "P2 exact durable-continuation retry"
+    );
+    let mismatched_queue = awaken_coordinator_client::dispatch_transport_with_upstream(
+        upstream,
+        WorkerIdentity::new("signed-http-worker", "different-boot", 2),
+    );
+    assert!(
+        mismatched_queue.handoff_attempt(claim, None).await.is_err(),
+        "P3 mismatched signed-body incarnation cannot replace the slot"
+    );
+    assert!(
+        mismatched_queue.finish_attempt(claim, None).await.is_err(),
+        "P3 mismatched signed-body incarnation cannot clear the slot"
+    );
+    assert!(
+        mismatched_queue
+            .finish_attempt(
+                claim,
+                Some(awaken_dispatch::AttemptReturnCause::StructuredReturnObserved)
+            )
+            .await
+            .is_err(),
+        "P3 Some also binds the signed original identity"
+    );
+    // Upgrade table U1: an already-occupied claim belongs to a persisted v3
+    // incarnation. New begin/handoff requests are rejected without touching its
+    // slot; U2 its authenticated exact ACK still retires that slot; U3 an ACK
+    // retry is idempotent. Seed historical manifest state only in this fixture
+    // (production cannot mutate an incarnation's immutable manifest).
+    let before_upgrade = directory.0.lock().unwrap().clone();
+    {
+        let mut record = directory.0.lock().unwrap();
+        let snapshot = &mut record.as_mut().unwrap().snapshot;
+        snapshot.manifest.runtime_protocol.max = 3;
+        snapshot.capability_fingerprint = snapshot.manifest.fingerprint().unwrap();
+    }
+    let occupied_before = dispatch.list_dispatches().await.unwrap();
+    assert!(queue.begin_attempt(claim, None).await.is_err(), "U1 begin");
+    assert!(
+        queue.handoff_attempt(claim, None).await.is_err(),
+        "U1 handoff"
+    );
+    assert_eq!(
+        dispatch.list_dispatches().await.unwrap(),
+        occupied_before,
+        "U1 no mutation"
+    );
+    // U5 new local facts require the exact immutable protocol record; the
+    // legacy None ACK below remains legal and cannot backfill this observation.
+    assert!(
+        queue
+            .finish_attempt(
+                claim,
+                Some(awaken_dispatch::AttemptReturnCause::StructuredReturnObserved)
+            )
+            .await
+            .is_err(),
+        "U5 v3 cannot attest the new local observation"
+    );
+    assert_eq!(
+        dispatch.list_dispatches().await.unwrap(),
+        occupied_before,
+        "U5 preserve original slot"
+    );
+    {
+        let mut record = directory.0.lock().unwrap();
+        let snapshot = &mut record.as_mut().unwrap().snapshot;
+        snapshot.manifest.runtime_protocol.min = 4;
+        snapshot.manifest.runtime_protocol.max = 4;
+        snapshot.capability_fingerprint = snapshot.manifest.fingerprint().unwrap();
+    }
+    assert!(
+        queue
+            .finish_attempt(
+                claim,
+                Some(awaken_dispatch::AttemptReturnCause::StructuredReturnObserved)
+            )
+            .await
+            .is_err(),
+        "U5 exact4 does not cover CURRENT5"
+    );
+    assert_eq!(
+        dispatch.list_dispatches().await.unwrap(),
+        occupied_before,
+        "U5 exact4 leaves slot unchanged"
+    );
+    {
+        let mut record = directory.0.lock().unwrap();
+        let snapshot = &mut record.as_mut().unwrap().snapshot;
+        snapshot.manifest.runtime_protocol.min = 1;
+        snapshot.manifest.runtime_protocol.max = 3;
+        snapshot.capability_fingerprint = snapshot.manifest.fingerprint().unwrap();
+    }
+    assert_eq!(
+        queue
+            .finish_attempt(claim, None)
+            .await
+            .expect("P4 exact ACK"),
+        SettleOutcome::Applied,
+        "P4 exact owner quiescence"
+    );
+    // P5: an ACK committed but its HTTP response was lost. Retrying the same
+    // authenticated command sees Empty -> Applied, with no executor re-entry.
+    assert_eq!(
+        queue
+            .finish_attempt(claim, None)
+            .await
+            .expect("P5 ACK retry"),
+        SettleOutcome::Applied,
+        "P5 transport preserves the store's idempotent empty-slot ACK"
+    );
+    // U4: neither an old peer nor a current replacement may re-admit the same
+    // acknowledged identity; protocol rejection and epoch retirement compose.
+    assert!(
+        queue.begin_attempt(claim, None).await.is_err(),
+        "U4 old peer"
+    );
+    *directory.0.lock().unwrap() = before_upgrade;
+    assert_eq!(
+        queue.begin_attempt(claim, None).await.unwrap(),
+        AttemptAdmission::Fenced,
+        "U4 retired epoch"
+    );
+}

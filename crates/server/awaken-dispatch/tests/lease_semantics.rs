@@ -407,6 +407,27 @@ async fn pre_start_cancellation_acknowledges_only_a_freshly_installed_slot() {
         !fresh_store.list_dispatches().await.unwrap()[0].physical_attempt_active,
         "R1/E2 the exact fresh no-effect slot is acknowledged"
     );
+    // R1 retains only operation-Future provenance. Resolver/prepare IO before
+    // this boundary and independent durable tasks are not a stopped-domain
+    // proof. The same factual kind must be absent from stutter/replacement.
+    let local = fresh_store
+        .attempt_closure_records_after(
+            awaken_dispatch::DispatchCursor::default(),
+            usize::MAX,
+            Some(&RunId("pre-start-fresh".into())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(local.events.len(), 1, "R1 one original ACK observation");
+    let awaken_dispatch::AttemptPhysicalFact::Acknowledgement { record } =
+        &local.events[0].record
+    else {
+        panic!("R1 no independent termination kind")
+    };
+    assert_eq!(
+        record.cause(),
+        awaken_dispatch::AttemptReturnCause::OperationFutureNotEntered
+    );
 
     let stutter_token = tokio_util::sync::CancellationToken::new();
     stutter_token.cancel();
@@ -457,8 +478,24 @@ async fn pre_start_cancellation_acknowledges_only_a_freshly_installed_slot() {
         stutter_store.list_dispatches().await.unwrap()[0].physical_attempt_active,
         "R2/E3 response-loss stutter retains the possible prior effect"
     );
+    assert!(
+        stutter_store
+            .attempt_closure_records_after(
+                awaken_dispatch::DispatchCursor::default(),
+                usize::MAX,
+                Some(&stutter_claim.run_id)
+            )
+            .await
+            .unwrap()
+            .events
+            .is_empty(),
+        "R2 no invented not-entered fact"
+    );
     assert_eq!(
-        stutter_store.finish_attempt(&stutter_claim).await.unwrap(),
+        stutter_store
+            .finish_attempt(&stutter_claim, None)
+            .await
+            .unwrap(),
         awaken_dispatch::SettleOutcome::Applied,
         "R2 fixture cleanup uses the exact retained owner"
     );
@@ -516,6 +553,19 @@ async fn pre_start_cancellation_acknowledges_only_a_freshly_installed_slot() {
         inherited_store.list_dispatches().await.unwrap()[0].physical_attempt_active,
         "R3/E3 inherited responsibility remains visible"
     );
+    assert!(
+        inherited_store
+            .attempt_closure_records_after(
+                awaken_dispatch::DispatchCursor::default(),
+                usize::MAX,
+                Some(&replacement_claim.run_id)
+            )
+            .await
+            .unwrap()
+            .events
+            .is_empty(),
+        "R3 handoff is not new empty-slot provenance"
+    );
     assert_eq!(
         CommittedThreadView::run(
             inherited_commit.as_ref(),
@@ -528,7 +578,7 @@ async fn pre_start_cancellation_acknowledges_only_a_freshly_installed_slot() {
     );
     assert_eq!(
         inherited_store
-            .finish_attempt(&predecessor_claim)
+            .finish_attempt(&predecessor_claim, None)
             .await
             .unwrap(),
         awaken_dispatch::SettleOutcome::Fenced,
@@ -536,7 +586,7 @@ async fn pre_start_cancellation_acknowledges_only_a_freshly_installed_slot() {
     );
     assert_eq!(
         inherited_store
-            .finish_attempt(&replacement_claim)
+            .finish_attempt(&replacement_claim, None)
             .await
             .unwrap(),
         awaken_dispatch::SettleOutcome::Applied,
@@ -834,7 +884,10 @@ async fn replacement_claim_defers_until_predecessor_quiescence_before_model_entr
         "W1 mutation takeover did not enter the model"
     );
     assert_eq!(
-        store.finish_attempt(&claim_a).await.expect("W2 A ACK"),
+        store
+            .finish_attempt(&claim_a, None)
+            .await
+            .expect("W2 A ACK"),
         awaken_dispatch::SettleOutcome::Applied
     );
     clock.set(LEASE * 2 + 1);
@@ -1138,7 +1191,7 @@ async fn assert_occupied_attempt_terminal_recovery<
         "R2 no premature Session boundary"
     );
     assert_eq!(
-        store.finish_attempt(&predecessor).await.unwrap(),
+        store.finish_attempt(&predecessor, None).await.unwrap(),
         awaken_dispatch::SettleOutcome::Applied
     );
     clock.set(3 * LEASE);

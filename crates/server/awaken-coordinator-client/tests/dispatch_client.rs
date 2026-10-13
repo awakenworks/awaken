@@ -303,14 +303,113 @@ async fn finish_attempt(
         req.get("identity").is_some(),
         "exact Worker identity crosses"
     );
-    let claim: RunClaim = serde_json::from_value(req["claim"].clone()).expect("claim");
+    let request: awaken_dispatch::AttemptExecutionRequest =
+        serde_json::from_value(req).expect("exact finish request");
     let finished = state
         .store
-        .finish_attempt(&claim)
+        .finish_attempt(&request.claim, request.return_cause)
         .await
         .expect("finish attempt")
         .applied();
     Json(json!({ "finished": finished }))
+}
+
+#[tokio::test]
+async fn local_return_cause_crosses_http_without_fallback_on_old_strict_rejection() {
+    use awaken_dispatch::{AttemptPhysicalFact, AttemptReturnCause, DispatchControlReads as _};
+    // T1 current codec/client preserves Some through the original finish verb;
+    // T2 a strict old two-field JSON extractor returns 422 before its handler;
+    // the client must retain that explicit failure, never retry a None body.
+    // Handler entry count and signed body shape distinguish a format rejection
+    // from a fake successful ACK or a provider-stop assertion.
+    let (base, store, clock, _) = spawn_transport_server().await;
+    let identity = WorkerIdentity::new("worker-A", "boot-A", 1);
+    let queue = HttpDispatchQueue::new(base, identity.clone());
+    store
+        .enqueue(RunDispatch::new(activation("wire-local-return")))
+        .await
+        .unwrap();
+    clock.set(0);
+    let claimed = store
+        .claim(&identity.lease_owner(), 1000, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    let claim = RunClaim::from(&claimed.lease);
+    queue.begin_attempt(&claim, None).await.unwrap();
+    assert_eq!(
+        queue
+            .finish_attempt(&claim, Some(AttemptReturnCause::StructuredReturnObserved))
+            .await
+            .unwrap(),
+        SettleOutcome::Applied,
+        "T1 typed cause"
+    );
+    let records = store
+        .attempt_closure_records_after(
+            awaken_dispatch::DispatchCursor::default(),
+            usize::MAX,
+            Some(&claim.run_id),
+        )
+        .await
+        .unwrap();
+    let AttemptPhysicalFact::Acknowledgement { record } = &records.events[0].record else {
+        panic!("T1 no Provider assertion")
+    };
+    assert_eq!(record.cause(), AttemptReturnCause::StructuredReturnObserved);
+
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct OldStrictRequest {
+        claim: RunClaim,
+        identity: Option<WorkerIdentity>,
+    }
+    let entered = Arc::new(AtomicUsize::new(0));
+    let observed = entered.clone();
+    let app = Router::new().route(
+        "/v1/worker/dispatch/attempt/finish",
+        post(move |Json(request): Json<OldStrictRequest>| {
+            let entered = observed.clone();
+            async move {
+                entered.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(
+                    request.identity.as_ref().map(WorkerIdentity::lease_owner),
+                    Some(request.claim.owner)
+                );
+                Json(json!({"finished":true}))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let old = HttpDispatchQueue::new(format!("http://{address}"), identity);
+    let status = reqwest::Client::new().post(format!("http://{address}/v1/worker/dispatch/attempt/finish"))
+        .json(&json!({"claim":claim,"identity":WorkerIdentity::new("worker-A","boot-A",1),"return_cause":"operation_future_not_entered"})).send().await.unwrap().status();
+    assert_eq!(
+        status,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+        "T2 actual old extractor status"
+    );
+    assert!(
+        old.finish_attempt(&claim, Some(AttemptReturnCause::OperationFutureNotEntered))
+            .await
+            .is_err(),
+        "T2 strict 422 does not downgrade"
+    );
+    assert_eq!(
+        entered.load(Ordering::SeqCst),
+        0,
+        "T2 no fallback None request"
+    );
+    assert_eq!(
+        old.finish_attempt(&claim, None).await.unwrap(),
+        SettleOutcome::Applied,
+        "T2 genuine legacy request is compatible"
+    );
+    assert_eq!(entered.load(Ordering::SeqCst), 1);
+    server.abort();
+    let _ = server.await;
 }
 
 async fn settle(
@@ -597,7 +696,7 @@ async fn exhausted_finish_transport_remains_retryable_for_the_physical_ack_loop(
     };
     let (base, calls) = spawn_unavailable_finish_server().await;
     let queue = HttpDispatchQueue::new(base, WorkerIdentity::new("worker-A", "boot-A", 1));
-    let error = queue.finish_attempt(&claim).await.unwrap_err();
+    let error = queue.finish_attempt(&claim, None).await.unwrap_err();
     assert!(matches!(error, DispatchError::Unavailable(_)), "R1");
     assert!(
         error
@@ -914,7 +1013,7 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
         "D5/E6 active external work cannot be erased"
     );
     assert_eq!(
-        queue.finish_attempt(&claim).await.expect("D6 finish"),
+        queue.finish_attempt(&claim, None).await.expect("D6 finish"),
         SettleOutcome::Applied,
         "D6 quiescence ACK"
     );
@@ -980,13 +1079,13 @@ async fn continuation_handoff_preserves_replacement_provenance_over_http() {
         "H2/E2 replacement provenance survives JSON"
     );
     assert_eq!(
-        queue_a.finish_attempt(&claim_a).await.unwrap(),
+        queue_a.finish_attempt(&claim_a, None).await.unwrap(),
         SettleOutcome::Fenced,
         "H2/E3 A cannot clear B"
     );
     assert!(store.list_dispatches().await.unwrap()[0].physical_attempt_active);
     assert_eq!(
-        queue_b.finish_attempt(&claim_b).await.unwrap(),
+        queue_b.finish_attempt(&claim_b, None).await.unwrap(),
         SettleOutcome::Applied,
         "H2/E3 exact B ACK clears the inherited slot"
     );

@@ -38,7 +38,7 @@ pub async fn assert_retirement(
         A::AlreadyApplied,
         "R1"
     );
-    assert_eq!(store.finish_attempt(&a).await.unwrap(), S::Applied);
+    assert_eq!(store.finish_attempt(&a, None).await.unwrap(), S::Applied);
     clock.set(now);
     assert_eq!(
         store.begin_attempt(&a, None).await.unwrap(),
@@ -51,7 +51,11 @@ pub async fn assert_retirement(
         A::Fenced,
         "R2 handoff"
     );
-    assert_eq!(store.finish_attempt(&a).await.unwrap(), S::Applied, "R3");
+    assert_eq!(
+        store.finish_attempt(&a, None).await.unwrap(),
+        S::Applied,
+        "R3"
+    );
     store.relinquish_claim(&a).await.unwrap();
     clock.set(now);
     let b = store
@@ -68,7 +72,7 @@ pub async fn assert_retirement(
         "R4"
     );
     assert_eq!(
-        store.finish_attempt(&a).await.unwrap(),
+        store.finish_attempt(&a, None).await.unwrap(),
         S::Fenced,
         "R4 delayed ACK"
     );
@@ -98,7 +102,7 @@ pub async fn assert_retirement(
         A::Applied,
         "R6"
     );
-    assert_eq!(store.finish_attempt(&c).await.unwrap(), S::Applied);
+    assert_eq!(store.finish_attempt(&c, None).await.unwrap(), S::Applied);
     clock.set(now);
     assert_eq!(
         store.renew_lease(&b, 0).await.unwrap(),
@@ -121,7 +125,7 @@ pub async fn assert_retirement(
         A::Blocked,
         "R5"
     );
-    assert_eq!(store.finish_attempt(&b).await.unwrap(), S::Applied);
+    assert_eq!(store.finish_attempt(&b, None).await.unwrap(), S::Applied);
     clock.set(now);
     assert_eq!(
         store.begin_attempt(&b, None).await.unwrap(),
@@ -135,11 +139,11 @@ pub async fn assert_retirement(
         "R5 after ACK"
     );
     assert_eq!(
-        store.finish_attempt(&b).await.unwrap(),
+        store.finish_attempt(&b, None).await.unwrap(),
         S::Fenced,
         "R4 third generation"
     );
-    assert_eq!(store.finish_attempt(&d).await.unwrap(), S::Applied);
+    assert_eq!(store.finish_attempt(&d, None).await.unwrap(), S::Applied);
 }
 
 use awaken_dispatch_testkit::ConformanceDispatch;

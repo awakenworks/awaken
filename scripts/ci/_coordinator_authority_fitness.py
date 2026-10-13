@@ -108,6 +108,11 @@ ATTEMPT_BACKENDS = {
     "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs": ("admission", "close"),
     "crates/server/awaken-dispatch/src/postgres/message_ports.rs": ("finish",),
 }
+ATTEMPT_DECISIONS = {
+    "admission": "decide_physical_attempt_admission",
+    "finish": "plan_physical_attempt_finish",
+    "close": "decide_physical_attempt_close",
+}
 
 
 def attempt_rule_violations(relative: str, source: str) -> list[str]:
@@ -118,11 +123,27 @@ def attempt_rule_violations(relative: str, source: str) -> list[str]:
             r"\b(?:begin|handoff|finish|can_close)_physical_attempt\s*\(", source
         ):
             errors.append(f"{relative}: physical-slot rules must use {ATTEMPT_RESULT_OWNER}")
+        if relative != ATTEMPT_RESULT_OWNER and re.search(
+            r"\bfn\s+plan_physical_attempt_finish\b", _crate_boundary_workspace.rust_syntax(source)
+        ):
+            errors.append(f"{relative}: finish plan must be defined by {ATTEMPT_RESULT_OWNER}")
     if relative in ATTEMPT_BACKENDS:
         for operation in ATTEMPT_BACKENDS[relative]:
-            decision = f"decide_physical_attempt_{operation}"
+            decision = ATTEMPT_DECISIONS[operation]
             if not re.search(rf"\b{decision}\s*\(", source):
                 errors.append(f"{relative}: missing canonical {decision} call")
+    if relative == ATTEMPT_RESULT_OWNER:
+        # The retained-fact plan still delegates to the original slot kernel.
+        # Reuse the existing Rust syntax/item reader; a kernel name in another
+        # function, comment or declaration is not this required call chain.
+        syntax = _crate_boundary_workspace.rust_syntax(source)
+        plan = re.search(r"\bfn\s+plan_physical_attempt_finish\b", syntax)
+        end = _crate_boundary_workspace._rust_item_end(syntax, plan.start()) if plan else None
+        opening = _crate_boundary_workspace._first_expression_brace(syntax, plan.end()) if plan else None
+        if opening is None or end is None or not re.search(
+            r"(?<!fn )\bdecide_physical_attempt_finish\s*\(", syntax[opening + 1:end - 1]
+        ):
+            errors.append(f"{relative}: canonical finish plan must call decide_physical_attempt_finish in its own body")
     return errors
 
 
@@ -203,16 +224,17 @@ def selftest() -> None:
     # Thin forwarding is not a second decision owner.
     # Constraint: this is structural ownership evidence, not a proof of SQL
     # transaction semantics; backend conformance owns behavioral refinement.
-    shared = "decide_physical_attempt_admission(x); decide_physical_attempt_finish(x); decide_physical_attempt_close(x);"
-    assert attempt_rule_violations(ATTEMPT_RESULT_OWNER, "begin_physical_attempt(x)") == []
+    shared = "decide_physical_attempt_admission(x); plan_physical_attempt_finish(x); decide_physical_attempt_close(x);"
+    owner = "fn plan_physical_attempt_finish(x: X) { decide_physical_attempt_finish(x); }"
+    assert attempt_rule_violations(ATTEMPT_RESULT_OWNER, owner + "begin_physical_attempt(x)") == []
     for backend, operations in ATTEMPT_BACKENDS.items():
-        assigned = " ".join(f"decide_physical_attempt_{op}(x);" for op in operations)
+        assigned = " ".join(f"{ATTEMPT_DECISIONS[op]}(x);" for op in operations)
         assert attempt_rule_violations(backend, assigned) == []  # A5
         assert attempt_rule_violations(backend, shared) == []  # A3
         for verb in ("begin", "handoff", "finish", "can_close"):
             assert attempt_rule_violations(backend, shared + f"{verb}_physical_attempt(x)")  # A2
         for operation in operations:
-            missing = shared.replace(f"decide_physical_attempt_{operation}(x);", "")
+            missing = shared.replace(f"{ATTEMPT_DECISIONS[operation]}(x);", "")
             assert attempt_rule_violations(backend, missing)  # A4
     postgres_queue = "crates/server/awaken-dispatch/src/postgres/dispatch_queue.rs"
     postgres_records = "crates/server/awaken-dispatch/src/postgres/message_ports.rs"
@@ -220,14 +242,23 @@ def selftest() -> None:
         postgres_queue, "decide_physical_attempt_admission(x); decide_physical_attempt_close(x);"
     ) == []  # A6 responsibilities retained at the actual queue owner
     assert attempt_rule_violations(
-        postgres_records, "decide_physical_attempt_finish(x);"
+        postgres_records, "plan_physical_attempt_finish(x);"
     ) == []  # A6 finish shares the operation writer's transaction
     misplaced = attempt_rule_violations(postgres_queue, shared)
     misplaced += attempt_rule_violations(postgres_records, "")
     assert any(
-        error == f"{postgres_records}: missing canonical decide_physical_attempt_finish call"
+        error == f"{postgres_records}: missing canonical plan_physical_attempt_finish call"
         for error in misplaced
     )  # A6 even a queue finish cannot cover the actual owner's missing call
+    # A7 one real two-layer chain, not an old-direct/plan compatibility choice.
+    # Structural ownership is the scope; actual cause/transaction behavior is
+    # qualified by the native backend and authenticated transport conformance.
+    assert attempt_rule_violations(postgres_records, "decide_physical_attempt_finish(x);")
+    assert attempt_rule_violations(ATTEMPT_RESULT_OWNER, "fn plan_physical_attempt_finish(x: X) {} fn other() { decide_physical_attempt_finish(x); }")
+    assert attempt_rule_violations(ATTEMPT_RESULT_OWNER, "fn plan_physical_attempt_finish(x: X) { /* decide_physical_attempt_finish(x); */ }")
+    assert attempt_rule_violations(ATTEMPT_RESULT_OWNER, "fn plan_physical_attempt_finish(x: X) { fn decide_physical_attempt_finish(x: X) {} }")
+    assert attempt_rule_violations(postgres_records, owner)
+    assert attempt_rule_violations(postgres_records, owner + "finish_physical_attempt(x);")
 
 
 def check_all(repo_root: Path, crates_root: Path) -> list[str]:

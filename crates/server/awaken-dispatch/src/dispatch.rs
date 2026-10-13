@@ -13,6 +13,8 @@
 //! consumers are unchanged.
 
 pub use awaken_dispatch_contract::dispatch::*;
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+use awaken_dispatch_contract::{PhysicalAttemptSlot, PhysicalAttemptTransition};
 
 /// One private stored alternative in the original operation storage. The public
 /// diagnostics enum keeps its five unchanged variants and codec. No second
@@ -22,14 +24,7 @@ pub use awaken_dispatch_contract::dispatch::*;
 #[serde(untagged)]
 pub(crate) enum StoredDispatchOperation {
     Diagnostic(awaken_dispatch_contract::DispatchOperation),
-    Closure(StoredAttemptClosure),
-}
-
-#[cfg(any(feature = "durable", test, feature = "test-support"))]
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum StoredAttemptClosure {
-    AttemptClosure { record: AttemptClosureRecord },
+    PhysicalFact(AttemptPhysicalFact),
 }
 
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
@@ -45,11 +40,9 @@ impl From<awaken_dispatch_contract::DispatchOperation> for StoredDispatchOperati
     }
 }
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
-impl From<&AttemptClosureRecord> for StoredDispatchOperation {
-    fn from(record: &AttemptClosureRecord) -> Self {
-        Self::Closure(StoredAttemptClosure::AttemptClosure {
-            record: record.clone(),
-        })
+impl From<&AttemptPhysicalFact> for StoredDispatchOperation {
+    fn from(fact: &AttemptPhysicalFact) -> Self {
+        Self::PhysicalFact(fact.clone())
     }
 }
 
@@ -58,30 +51,28 @@ impl StoredDispatchOperation {
     #[cfg(any(feature = "durable", test))]
     pub(crate) fn decode(encoded: &str) -> Result<Self, DispatchError> {
         let operation: Self = serde_json::from_str(encoded).map_err(DispatchError::unavailable)?;
-        if let Some(record) = operation.closure() {
-            record.validate()?;
+        if let Some(fact) = operation.physical_fact() {
+            fact.validate()?;
         }
         Ok(operation)
     }
     pub(crate) fn run_id(&self) -> &awaken_agent_contract::agent::run::Id {
         match self {
             Self::Diagnostic(operation) => operation.run_id(),
-            Self::Closure(StoredAttemptClosure::AttemptClosure { record }) => {
-                &record.attempt().claim.run_id
-            }
+            Self::PhysicalFact(fact) => &fact.attempt().claim.run_id,
         }
     }
-    pub(crate) fn closure(&self) -> Option<&AttemptClosureRecord> {
+    pub(crate) fn physical_fact(&self) -> Option<&AttemptPhysicalFact> {
         match self {
             Self::Diagnostic(_) => None,
-            Self::Closure(StoredAttemptClosure::AttemptClosure { record }) => Some(record),
+            Self::PhysicalFact(fact) => Some(fact),
         }
     }
     pub(crate) fn matches(&self, purpose: OperationReadPurpose) -> bool {
         matches!(
             (self, purpose),
             (Self::Diagnostic(_), OperationReadPurpose::Diagnostics)
-                | (Self::Closure(_), OperationReadPurpose::AttemptClosure)
+                | (Self::PhysicalFact(_), OperationReadPurpose::AttemptClosure)
         )
     }
 }
@@ -145,49 +136,130 @@ impl StoredDispatchEvent {
                     operation,
                 })
             }
-            StoredDispatchOperation::Closure(_) => None,
+            StoredDispatchOperation::PhysicalFact(_) => None,
         }
     }
     pub(crate) fn attempt_closure(self) -> Option<AttemptClosureEvent> {
         match self.operation {
-            StoredDispatchOperation::Closure(StoredAttemptClosure::AttemptClosure { record }) => {
-                Some(AttemptClosureEvent {
-                    cursor: self.cursor,
-                    recorded_at_ms: self.recorded_at_ms,
-                    record,
-                })
-            }
+            StoredDispatchOperation::PhysicalFact(record) => Some(AttemptClosureEvent {
+                cursor: self.cursor,
+                recorded_at_ms: self.recorded_at_ms,
+                record,
+            }),
             StoredDispatchOperation::Diagnostic(_) => None,
         }
     }
 }
 
-/// Independent replay needs the exact first retained record. Neither an empty
-/// slot, a historical retired epoch nor a changed reference backfills evidence.
+/// The two existing finish purposes share one storage plan. Ordinary local
+/// observations never satisfy the independent closing ACK gate.
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
-pub(crate) fn attempt_closure_replay<'a>(
-    record: &AttemptClosureRecord,
-    prior: impl IntoIterator<Item = &'a AttemptClosureRecord>,
-) -> Result<SettleOutcome, DispatchError> {
+#[derive(Clone, Copy)]
+pub(crate) enum AttemptFinish<'a> {
+    Ordinary(Option<AttemptReturnCause>),
+    Independent(&'a AttemptClosureRecord),
+}
+
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+impl AttemptFinish<'_> {
+    pub(crate) fn requires_fact(self) -> bool {
+        !matches!(self, Self::Ordinary(None))
+    }
+}
+
+/// Canonical cause/identity/replay law around the original finish kernel.
+/// Adapters supply their locked original row and original operation prefix;
+/// only the returned Clear plan may atomically append and remove that slot.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+pub(crate) fn plan_physical_attempt_finish<'a>(
+    claim: &RunClaim,
+    purpose: AttemptFinish<'_>,
+    slot: PhysicalAttemptSlot,
+    closing: bool,
+    original: Option<&PhysicalAttempt>,
+    prior: impl IntoIterator<Item = &'a AttemptPhysicalFact>,
+    row_exists: bool,
+) -> Result<
+    (
+        PhysicalAttemptTransition,
+        SettleOutcome,
+        Option<AttemptPhysicalFact>,
+    ),
+    DispatchError,
+> {
+    if let AttemptFinish::Independent(record) = purpose {
+        record.validate()?;
+    }
+    let (transition, mut outcome) = if row_exists {
+        decide_physical_attempt_finish(
+            slot,
+            closing,
+            matches!(purpose, AttemptFinish::Independent(_)),
+        )?
+    } else {
+        (PhysicalAttemptTransition::Stutter, SettleOutcome::Fenced)
+    };
+    if !purpose.requires_fact() || transition == PhysicalAttemptTransition::Fenced {
+        return Ok((transition, outcome, None));
+    }
     let mut found = None;
     for previous in prior {
-        if previous.attempt().claim == record.attempt().claim {
+        previous.validate()?;
+        if previous.attempt().claim == *claim {
             if found.is_some() {
                 return Err(DispatchError::Conflict(
-                    "duplicate independent attempt closure subjects".into(),
+                    "duplicate physical attempt fact subjects".into(),
                 ));
             }
             found = Some(previous);
         }
     }
-    match found {
-        Some(previous) if previous == record => Ok(SettleOutcome::Applied),
-        Some(_) => Err(DispatchError::Conflict(
-            "independent attempt closure replay changed its original subject, kind or reference"
-                .into(),
-        )),
-        None => Ok(SettleOutcome::Fenced),
+    if transition == PhysicalAttemptTransition::Stutter {
+        outcome = match (purpose, found) {
+            (
+                AttemptFinish::Independent(expected),
+                Some(AttemptPhysicalFact::IndependentClosure { record: previous }),
+            ) if previous == expected => SettleOutcome::Applied,
+            (
+                AttemptFinish::Ordinary(Some(cause)),
+                Some(AttemptPhysicalFact::Acknowledgement { record: previous }),
+            ) if previous.cause() == cause => SettleOutcome::Applied,
+            (_, Some(_)) => return Err(DispatchError::Conflict(
+                "physical attempt replay changed its original purpose, cause, subject or reference"
+                    .into(),
+            )),
+            (_, None) => SettleOutcome::Fenced,
+        };
+        return Ok((transition, outcome, None));
     }
+    if found.is_some() {
+        return Err(DispatchError::Conflict(
+            "a retired fact subject cannot be asserted for another active entry".into(),
+        ));
+    }
+    let original = original.ok_or_else(corrupt_physical_attempt)?;
+    if original.claim != *claim {
+        return Err(DispatchError::Conflict(
+            "finish fact differs from the original physical claim".into(),
+        ));
+    }
+    let fact = match purpose {
+        AttemptFinish::Independent(record) => {
+            if original != record.attempt() {
+                return Err(DispatchError::Conflict(
+                    "closure subject differs from the frozen physical attempt".into(),
+                ));
+            }
+            AttemptPhysicalFact::IndependentClosure {
+                record: record.clone(),
+            }
+        }
+        AttemptFinish::Ordinary(Some(cause)) => AttemptPhysicalFact::Acknowledgement {
+            record: AttemptAcknowledgementRecord::try_new(original.clone(), cause)?,
+        },
+        AttemptFinish::Ordinary(None) => unreachable!("legacy ACK has no fact"),
+    };
+    Ok((transition, outcome, Some(fact)))
 }
 
 // SQL projection of the one Thread-peer exclusion rule. SQLite and PostgreSQL
@@ -1394,6 +1466,72 @@ mod operation_storage_tests {
     use super::*;
 
     #[test]
+    fn ordinary_ack_codec_keeps_its_original_subject_without_independent_closure_fields() {
+        // O1 either local cause + original open subject -> exact private
+        // roundtrip; O2 closing/foreign-shaped independent fields/unknown cause
+        // -> reject, not an empty fact. O3 public diagnostics never project
+        // these entries. All/Controlled golden remains the existing W2 case.
+        for cause in [
+            AttemptReturnCause::OperationFutureNotEntered,
+            AttemptReturnCause::StructuredReturnObserved,
+        ] {
+            let original = PhysicalAttempt {
+                claim: RunClaim {
+                    run_id: awaken_agent_contract::RunId("ack".into()),
+                    owner: "w".into(),
+                    epoch: 1,
+                },
+                binding: None,
+                thread_id: Some(awaken_agent_contract::ThreadId("t".into())),
+                session_thread_id: None,
+                closing: false,
+            };
+            let fact = AttemptPhysicalFact::Acknowledgement {
+                record: AttemptAcknowledgementRecord::try_new(original, cause).unwrap(),
+            };
+            let stored = StoredDispatchOperation::from(&fact);
+            let wire = serde_json::to_value(&stored).unwrap();
+            assert_eq!(
+                wire["type"], "attempt_acknowledgement",
+                "O1 original operation family"
+            );
+            assert!(
+                wire["record"].get("evidence_ref").is_none(),
+                "O1 no fabricated Provider reference"
+            );
+            let decoded = StoredDispatchOperation::decode(&wire.to_string()).unwrap();
+            assert_eq!(decoded.physical_fact(), Some(&fact));
+            assert!(
+                !decoded.matches(OperationReadPurpose::Diagnostics),
+                "O3 no public wire expansion"
+            );
+            for (field, value) in [
+                ("closing", serde_json::json!(true)),
+                ("unknown", serde_json::json!(1)),
+            ] {
+                let mut bad = wire.clone();
+                bad["record"]["attempt"][field] = value;
+                assert!(
+                    StoredDispatchOperation::decode(&bad.to_string()).is_err(),
+                    "O2 subject"
+                );
+            }
+            let mut bad = wire.clone();
+            bad["record"]["cause"] = serde_json::json!("all_execution_stopped");
+            assert!(
+                StoredDispatchOperation::decode(&bad.to_string()).is_err(),
+                "O2 Worker cause cannot upgrade to All"
+            );
+            bad = wire;
+            bad["record"]["evidence_ref"] = serde_json::json!("not-a-provider-proof");
+            assert!(
+                StoredDispatchOperation::decode(&bad.to_string()).is_err(),
+                "O2 no sibling proof fields"
+            );
+        }
+    }
+
+    #[test]
     fn private_closure_codec_preserves_public_wire_and_rejects_unknown_facts() {
         // Codec decision table: W1 one of the five original public JSON shapes
         // -> unchanged serialization and diagnostics projection; W2 either
@@ -1465,9 +1603,28 @@ mod operation_storage_tests {
                 "codec-storage-reference",
             )
             .unwrap();
-            let encoded = serde_json::to_string(&StoredDispatchOperation::from(&record)).unwrap();
+            let fact = AttemptPhysicalFact::IndependentClosure {
+                record: record.clone(),
+            };
+            let encoded = serde_json::to_string(&StoredDispatchOperation::from(&fact)).unwrap();
+            let kind_tag = match kind {
+                AttemptClosureKind::AllExecutionStopped => "all_execution_stopped",
+                AttemptClosureKind::ControlledExecutionClosed => "controlled_execution_closed",
+            };
+            // W2 the unique contract sum is also the stored codec: retire the
+            // former private duplicate without changing either old tag/byte.
+            assert_eq!(
+                encoded,
+                format!(
+                    r#"{{"type":"attempt_closure","record":{{"attempt":{{"claim":{{"run_id":"r","owner":"w","epoch":1}},"binding":null,"thread_id":"t","session_thread_id":null,"closing":true}},"kind":"{kind_tag}","evidence_ref":"codec-storage-reference"}}}}"#
+                )
+            );
             let decoded = StoredDispatchOperation::decode(&encoded).unwrap();
-            assert_eq!(decoded.closure(), Some(&record), "W2 exact typed payload");
+            assert_eq!(
+                decoded.physical_fact(),
+                Some(&fact),
+                "W2 exact typed payload"
+            );
             assert!(
                 !decoded.matches(OperationReadPurpose::Diagnostics),
                 "W2 no public variant"
@@ -1483,6 +1640,18 @@ mod operation_storage_tests {
             assert!(
                 StoredDispatchOperation::decode(&bad.to_string()).is_err(),
                 "W3 open subject"
+            );
+            let mut bad: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+            bad["type"] = "unknown_physical_fact".into();
+            assert!(
+                StoredDispatchOperation::decode(&bad.to_string()).is_err(),
+                "W3 unknown tag cannot fall back to diagnostics"
+            );
+            bad["type"] = "attempt_closure".into();
+            bad["unknown"] = true.into();
+            assert!(
+                StoredDispatchOperation::decode(&bad.to_string()).is_err(),
+                "W3 unknown outer field cannot fall back to diagnostics"
             );
         }
         for bad in [
