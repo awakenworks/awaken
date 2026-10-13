@@ -67,7 +67,7 @@ impl K8sCreateTransport for ClaimOnlyBroker {
             name,
             "a".repeat(64),
         )?;
-        if self.ledger.admit_request(self.binding(), &ticket).await? != TicketAdmission::Forward {
+        if self.ledger.admit_request(self.binding(), &ticket).await?.0 != TicketAdmission::Forward {
             return Err(RuntimeError::Backend(
                 "original PVC did not win one durable Create ticket".into(),
             ));
@@ -381,7 +381,7 @@ async fn worker_create_ledger_joins_api_requests_and_rejects_recreated_uid() {
         first.admit_request(binding, &request),
         replacement.seal_group_and_join(binding, "effect-a")
     );
-    let admission = admission.unwrap();
+    let admission = admission.unwrap().0;
     let joined = joined.unwrap();
     match admission {
         TicketAdmission::Forward => {
@@ -428,7 +428,8 @@ async fn worker_create_ledger_joins_api_requests_and_rejects_recreated_uid() {
                 .unwrap()
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .0,
         TicketAdmission::Sealed,
         "L1/E2"
     );
@@ -611,7 +612,7 @@ async fn brokered_create_isolation_joins_six_real_api_uids_after_reservation() {
             )?);
         }
         for ticket in &requests {
-            if ledger.admit_request(anchor, ticket).await? != TicketAdmission::Forward {
+            if ledger.admit_request(anchor, ticket).await?.0 != TicketAdmission::Forward {
                 return Err(io::Error::other(format!("first {resource} ticket did not win CAS", resource = ticket.resource)).into());
             }
         }

@@ -90,6 +90,14 @@ pub(super) fn continuation_claim_for_pod(pod_name: &str) -> Result<String, Runti
     Ok(continuation_claim_name(runtime_id))
 }
 
+/// Inverse of the same canonical Pod/PVC projection, used only to derive
+/// possible capacity obligations. It grants no resource ownership.
+pub(super) fn pod_for_continuation_claim(claim: &str) -> Option<String> {
+    let id = claim.strip_prefix("awc-").filter(|id| !id.is_empty())?;
+    let pod = pod_name(id);
+    (pod.len() <= K8S_DNS_SUBDOMAIN_MAX_LEN).then_some(pod)
+}
+
 /// Deterministic ConfigMap name for the i-th inline-content mount.
 pub(super) fn configmap_name(id: &str, i: usize) -> String {
     format!("{}-cfg-{i}", pod_name(id))
@@ -194,6 +202,16 @@ mod tests {
             claim,
             "N6 exact inverse"
         );
+        // N7/C8-C10: capacity inverse uses this same canonical naming owner,
+        // not a second prefix rule or a membership/cleanup grant.
+        assert_eq!(pod_for_continuation_claim(&claim), Some(pod.clone()));
+        assert_eq!(pod_for_continuation_claim("unclassified"), None);
+        assert_eq!(pod_for_continuation_claim("awc-"), None);
+        assert_eq!(
+            pod_for_continuation_claim(&format!("awc-{}", "x".repeat(253))),
+            None
+        );
+
         assert!(
             continuation_claim_for_pod("foreign-session").is_err(),
             "N6 foreign prefix"

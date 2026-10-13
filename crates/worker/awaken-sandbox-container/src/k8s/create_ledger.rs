@@ -9,8 +9,13 @@
 //! namespace. The Registry freezes the returned UID before Worker Ready; a
 //! replacement process must never initialize a missing ledger to claim proof.
 
+mod capacity;
+mod capture;
 mod isolation;
 mod state;
+pub use capture::{
+    CreateReplyProfile, K8S_CREATE_CAPTURE_HEADER, K8S_CREATE_WIRE_VERSION, collect_create_body,
+};
 pub(crate) use isolation::original_guard_release_required;
 pub(crate) use isolation::release_original_guard;
 pub(crate) use isolation::verify_reservation as verify_pod_isolation;
@@ -145,7 +150,7 @@ impl K8sWorkerCreateLedger {
             },
             data: Some(BTreeMap::from([(
                 "ledger".into(),
-                WorkerCreateLedgerState::default()
+                WorkerCreateLedgerState::fresh()
                     .encode()
                     .expect("initial Create ledger state is valid"),
             )])),
@@ -206,6 +211,7 @@ impl K8sWorkerCreateLedger {
             ));
         }
         let desired = self.desired(worker_namespace, worker_name, worker_uid);
+        capacity::validate_candidate(&desired, &WorkerCreateLedgerState::fresh())?;
         let name = desired.name_any();
         let api: Api<ConfigMap> = Api::namespaced(self.client.clone(), &self.control_namespace);
         let observed = match api.create(&PostParams::default(), &desired).await {
@@ -263,6 +269,7 @@ impl K8sWorkerCreateLedger {
             .as_ref()
             .and_then(|data| data.get("ledger"))
             .ok_or_else(|| backend("Kubernetes Create ledger state is missing"))?;
+        capacity::validate_observed(&observed)?;
         let state = WorkerCreateLedgerState::decode(encoded)?;
         Ok((observed, state))
     }
@@ -283,13 +290,16 @@ impl K8sWorkerCreateLedger {
         for _ in 0..CAS_ATTEMPTS {
             let (mut object, mut state) = self.load_exact(binding).await?;
             let (result, changed) = transition(&mut object, &mut state)?;
+            if changed || state.reply_profile() == CreateReplyProfile::FreshCreate {
+                object
+                    .data
+                    .get_or_insert_with(Default::default)
+                    .insert("ledger".into(), state.encode()?);
+                capacity::validate_candidate(&object, &state)?;
+            }
             if !changed {
                 return Ok(result);
             }
-            object
-                .data
-                .get_or_insert_with(Default::default)
-                .insert("ledger".into(), state.encode()?);
             match api
                 .replace(binding.ledger_name, &PostParams::default(), &object)
                 .await
@@ -298,6 +308,17 @@ impl K8sWorkerCreateLedger {
                     if self.verify(&desired, &updated)? != binding.ledger_uid {
                         return Err(backend("Kubernetes Create ledger replacement changed UID"));
                     }
+                    if updated.data.as_ref().and_then(|data| data.get("ledger"))
+                        != object.data.as_ref().and_then(|data| data.get("ledger"))
+                    {
+                        return Err(backend(
+                            "Kubernetes Create ledger replacement changed admitted bytes",
+                        ));
+                    }
+                    // A mutating admission response can already consume the
+                    // reserve. Do not grant Forward merely because UID/RV CAS
+                    // succeeded; the original ticket remains pending instead.
+                    capacity::validate_candidate(&updated, &state)?;
                     return Ok(result);
                 }
                 Err(error) if api_conflict(&error) => continue,
@@ -384,15 +405,22 @@ impl K8sWorkerCreateLedger {
         &self,
         binding: K8sLedgerBinding<'_>,
         request: &CreateTicketRequest,
-    ) -> Result<TicketAdmission, RuntimeError> {
+    ) -> Result<(TicketAdmission, CreateReplyProfile), RuntimeError> {
         // One candidate per caller, reused across resourceVersion CAS retries.
         // A losing caller reads the winner's retained identity and cannot
         // replace it with its own nonce.
         let isolation_id = uuid::Uuid::new_v4().simple().to_string();
         self.mutate(binding, |state| {
             let admission = state.admit(request, &isolation_id)?;
+            if state.reply_profile() == CreateReplyProfile::LegacyRetainedCreate
+                && admission == TicketAdmission::Forward
+            {
+                return Err(backend(
+                    "historical Create ledger cannot admit a new unreserved request",
+                ));
+            }
             let changed = admission == TicketAdmission::Forward;
-            Ok((admission, changed))
+            Ok(((admission, state.reply_profile()), changed))
         })
         .await
     }
@@ -456,6 +484,10 @@ impl K8sWorkerCreateLedger {
         group: &str,
     ) -> Result<RequestJoin, RuntimeError> {
         let (_, state) = self.load_exact(binding).await?;
+        let isolation_client = capture::isolation_client(
+            &self.client,
+            state.reply_profile() == CreateReplyProfile::FreshCreate,
+        );
         let Some(tickets) = state.sealed_worker_group_tickets(group) else {
             return Ok(RequestJoin::Unknown);
         };
@@ -474,7 +506,7 @@ impl K8sWorkerCreateLedger {
             if !should_isolate {
                 continue;
             }
-            let Some(result) = isolation::isolate(&self.client, &ticket).await? else {
+            let Some(result) = isolation::isolate(&isolation_client, &ticket).await? else {
                 return Ok(RequestJoin::Unknown);
             };
             self.mutate(binding, |state| {
@@ -564,6 +596,7 @@ impl K8sWorkerCreateLedger {
 
 #[cfg(test)]
 mod tests {
+    mod finite_policy;
     use super::*;
     use http::{Request, Response};
     use kube::client::Body;
@@ -576,6 +609,7 @@ mod tests {
         stored: Arc<Mutex<Option<Value>>>,
         calls: Arc<Mutex<Vec<String>>>,
         conflict: Arc<AtomicBool>,
+        lose_finish_reply: Arc<AtomicBool>,
     }
 
     fn fixture(lose_first_response: bool) -> Fixture {
@@ -583,19 +617,22 @@ mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let lost = Arc::new(Mutex::new(false));
         let conflict = Arc::new(AtomicBool::new(false));
+        let lose_finish_reply = Arc::new(AtomicBool::new(false));
         let service = tower::service_fn({
-            let (stored, calls, lost, conflict) = (
+            let (stored, calls, lost, conflict, lose_finish_reply) = (
                 stored.clone(),
                 calls.clone(),
                 lost.clone(),
                 conflict.clone(),
+                lose_finish_reply.clone(),
             );
             move |request: Request<Body>| {
-                let (stored, calls, lost, conflict) = (
+                let (stored, calls, lost, conflict, lose_finish_reply) = (
                     stored.clone(),
                     calls.clone(),
                     lost.clone(),
                     conflict.clone(),
+                    lose_finish_reply.clone(),
                 );
                 async move {
                     let path = request.uri().path().to_owned();
@@ -660,6 +697,9 @@ mod tests {
                                     .unwrap() + 1;
                                 value["metadata"]["resourceVersion"] = json!(next.to_string());
                                 *existing = value.clone();
+                                if lose_finish_reply.swap(false, Ordering::SeqCst) {
+                                    return Err(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "finish reply lost after exact CAS"));
+                                }
                                 (200, value)
                             }
                         }
@@ -685,6 +725,7 @@ mod tests {
             stored,
             calls,
             conflict,
+            lose_finish_reply,
         }
     }
 
@@ -811,6 +852,7 @@ mod tests {
             stored,
             calls,
             conflict,
+            ..
         } = fixture(false);
         let fingerprint = ledger.configuration_fingerprint().to_owned();
         let (name, uid) = ledger
@@ -835,7 +877,7 @@ mod tests {
         .unwrap();
         conflict.store(true, Ordering::SeqCst);
         assert_eq!(
-            ledger.admit_request(binding, &request).await.unwrap(),
+            ledger.admit_request(binding, &request).await.unwrap().0,
             TicketAdmission::Forward,
             "T1"
         );
@@ -847,7 +889,7 @@ mod tests {
             .count();
         assert_eq!(writes, 2, "T1 one conflicted CAS and one winner");
         assert_eq!(
-            ledger.admit_request(binding, &request).await.unwrap(),
+            ledger.admit_request(binding, &request).await.unwrap().0,
             TicketAdmission::InFlight,
             "T2"
         );

@@ -2671,6 +2671,7 @@ dependencies = [
  "bollard",
  "futures-util",
  "http",
+ "http-body-util",
  "k8s-openapi",
  "kube",
  "serde",

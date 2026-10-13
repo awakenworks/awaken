@@ -404,8 +404,8 @@
     },
     "awaken-sandbox-container": {
       "deps": 11,
-      "lines": 25120,
-      "reason": "ADR-0092 quota/unschedulable/probe handling; removed when W34 moves the Kubernetes backend into its own crate"
+      "lines": 25503,
+      "reason": "ADR-0092 quota/unschedulable/probe handling plus reviewed single-ledger finite capture policy (+383 required lines after duplicate byte-count/collector consolidation): canonical full ConfigMap/future-result/guard projection and original Limited response adaptation; no new store or resource budget. Removed when W34 moves the Kubernetes backend into its own crate."
     },
     "awaken-session-application": {
       "deps": 24,

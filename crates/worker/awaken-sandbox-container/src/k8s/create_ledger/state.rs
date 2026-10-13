@@ -9,6 +9,9 @@
 //! transitions decide the bytes to write; they never turn an in-flight API
 //! request, a retry count, or an object 404 into a completion witness.
 
+mod capacity;
+pub(super) use capacity::future_capacity;
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -195,6 +198,8 @@ pub enum RequestJoin {
 #[serde(deny_unknown_fields)]
 pub struct WorkerCreateLedgerState {
     version: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    capture_policy: Option<super::capture::FreshCapturePolicy>,
     worker_sealed: bool,
     groups: BTreeMap<String, GroupAdmission>,
     tickets: BTreeMap<String, CreateTicket>,
@@ -204,6 +209,7 @@ impl Default for WorkerCreateLedgerState {
     fn default() -> Self {
         Self {
             version: VERSION,
+            capture_policy: None,
             worker_sealed: false,
             groups: BTreeMap::new(),
             tickets: BTreeMap::new(),
@@ -212,6 +218,21 @@ impl Default for WorkerCreateLedgerState {
 }
 
 impl WorkerCreateLedgerState {
+    pub(super) fn fresh() -> Self {
+        Self {
+            capture_policy: Some(super::capture::FreshCapturePolicy::BoundedV1),
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn reply_profile(&self) -> super::capture::CreateReplyProfile {
+        if self.capture_policy.is_some() {
+            super::capture::CreateReplyProfile::FreshCreate
+        } else {
+            super::capture::CreateReplyProfile::LegacyRetainedCreate
+        }
+    }
+
     fn worker_group_is_sealed(&self, group: &str) -> bool {
         self.worker_sealed && self.groups.get(group) == Some(&GroupAdmission::Sealed)
     }
@@ -285,6 +306,9 @@ impl WorkerCreateLedgerState {
             }
             if let TicketStatus::Finished(result) = &ticket.status {
                 result.validate()?;
+                if self.capture_policy.is_some() {
+                    super::capture::validate_fresh_result(result)?;
+                }
                 if matches!(result, TicketResult::Isolated { .. })
                     && !valid_isolation_id(&ticket.isolation_id)
                 {
@@ -353,6 +377,9 @@ impl WorkerCreateLedgerState {
     ) -> Result<bool, RuntimeError> {
         request.validate()?;
         result.validate()?;
+        if self.capture_policy.is_some() {
+            super::capture::validate_fresh_result(&result)?;
+        }
         let ticket = self
             .tickets
             .get_mut(&request.key())
@@ -395,6 +422,9 @@ impl WorkerCreateLedgerState {
     ) -> Result<bool, RuntimeError> {
         request.validate()?;
         result.validate()?;
+        if self.capture_policy.is_some() {
+            super::capture::validate_fresh_result(&result)?;
+        }
         if !matches!(
             result,
             TicketResult::Isolated { .. } | TicketResult::Created { .. }

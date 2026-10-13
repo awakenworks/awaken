@@ -116,10 +116,11 @@ pub use sandbox_control::{
 
 pub use crate::k8s_package_image::K8sPackageImageProvisioner;
 pub use create_ledger::{
-    CreateTicket, CreateTicketRequest, ISOLATION_ID_ANNOTATION, ISOLATION_LABEL, K8sLedgerBinding,
+    CreateReplyProfile, CreateTicket, CreateTicketRequest, ISOLATION_ID_ANNOTATION,
+    ISOLATION_LABEL, K8S_CREATE_CAPTURE_HEADER, K8S_CREATE_WIRE_VERSION, K8sLedgerBinding,
     K8sWorkerCreateLedger, ORIGINAL_GUARD_FINALIZER, REQUEST_DIGEST_ANNOTATION, RequestJoin,
     TicketAdmission, TicketOrigin, TicketResult, TicketStatus, WorkerCreateLedgerState,
-    original_request_metadata_matches,
+    collect_create_body, original_request_metadata_matches,
 };
 pub(crate) use create_transport::brokered_client;
 pub use create_transport::{K8sCreateRequest, K8sCreateResponse, K8sCreateTransport};
