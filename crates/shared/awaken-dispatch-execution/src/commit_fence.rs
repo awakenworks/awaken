@@ -17,16 +17,17 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_agent_contract::thread::commit::coordinator::{
-    Coordinator as CommitCoordinator, Error as CommitError,
+    Coordinator as CommitCoordinator, Error as CommitError, OperationCoordinator,
 };
 use awaken_agent_contract::thread::commit::operation::{
-    CommitOperation, CommitOperationId, commit_payload_hash,
+    CommitOperation, CommitOperationId, CommitReceipt, commit_payload_hash,
 };
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 
 use crate::dispatch::{ClaimedCommitCommand, DispatchCommitAuthority, RunClaim};
 use crate::{RecoveryProjection, RunDispatch};
 pub use awaken_dispatch_contract::ClaimedRunCommit;
+use awaken_dispatch_contract::CommitEpochGuard;
 
 /// Verify that committed logical Run/Thread truth belongs to the dispatch whose
 /// exact claim is currently fenced. Both embedded and remote workers cross this
@@ -52,16 +53,58 @@ pub fn validate_commit_dispatch_binding(
     Ok(())
 }
 
-/// Local implementation: acquire the store's exact claim guard, keep it alive
-/// across the ordinary thread commit, and fail closed when the claim is stale.
+/// Local claim fence around the authority selected at construction.
+/// Versioned callers retain the actual operation port; a plain split reader
+/// cannot acquire that capability by enabling a projection after erasure.
 pub struct GuardedRunCommit {
-    inner: Arc<dyn CommitCoordinator>,
+    inner: CommitAuthority,
     store: Arc<dyn DispatchCommitAuthority>,
 }
 
+enum CommitAuthority {
+    Plain(Arc<dyn CommitCoordinator>),
+    Versioned(Arc<dyn OperationCoordinator>),
+}
+
 impl GuardedRunCommit {
-    pub fn new(inner: Arc<dyn CommitCoordinator>, store: Arc<dyn DispatchCommitAuthority>) -> Self {
-        Self { inner, store }
+    pub fn new(
+        inner: Arc<dyn OperationCoordinator>,
+        store: Arc<dyn DispatchCommitAuthority>,
+    ) -> Self {
+        Self {
+            inner: CommitAuthority::Versioned(inner),
+            store,
+        }
+    }
+
+    /// Existing direct-reader composition supports only ordinary commits.
+    pub fn from_plain(
+        inner: Arc<dyn CommitCoordinator>,
+        store: Arc<dyn DispatchCommitAuthority>,
+    ) -> Self {
+        Self {
+            inner: CommitAuthority::Plain(inner),
+            store,
+        }
+    }
+
+    async fn guard(
+        &self,
+        claim: &RunClaim,
+        commit: &ThreadCommit,
+    ) -> Result<CommitEpochGuard, CommitError> {
+        let guard = self
+            .store
+            .lock_commit_epoch(claim)
+            .await
+            .map_err(|error| CommitError::Rejected(format!("commit claim lock failed: {error}")))?
+            .ok_or_else(|| fenced_error(claim))?;
+        // Validation failures also pass through explicit asynchronous release.
+        // No caller may observe completion while the exact claim is still held.
+        if let Err(error) = validate_commit_dispatch_binding(guard.request(), commit) {
+            return release_commit_guard(guard, Err(CommitError::Rejected(error))).await;
+        }
+        Ok(guard)
     }
 }
 
@@ -72,30 +115,39 @@ impl ClaimedRunCommit for GuardedRunCommit {
         claim: &RunClaim,
         commit: ThreadCommit,
     ) -> Result<CommitRecord, CommitError> {
-        let guard =
-            self.store.lock_commit_epoch(claim).await.map_err(|error| {
-                CommitError::Rejected(format!("commit claim lock failed: {error}"))
-            })?;
-        let Some(guard) = guard else {
-            return Err(fenced_error(claim));
+        let coordinator: &dyn CommitCoordinator = match &self.inner {
+            CommitAuthority::Plain(inner) => inner.as_ref(),
+            CommitAuthority::Versioned(inner) => inner.as_ref(),
         };
-        validate_commit_dispatch_binding(guard.request(), &commit)
-            .map_err(CommitError::Rejected)?;
-        // Cause/effect decision table for the cross-aggregate lock boundary:
-        // C1 the Thread commit succeeds/fails; C2 the backend guard releases
-        // synchronously/asynchronously. Every rule keeps the guard across the
-        // commit and awaits its exact release before returning. A release error
-        // is surfaced even after an idempotent Thread commit so a caller cannot
-        // mistake a still-locked dispatch row for an available recovery slot.
-        // R1/R2 C1=* + C2=* => commit result only after release; R3 release
-        // error => explicit release rejection, never early success.
-        let committed = self.inner.commit(commit).await;
-        match guard.release_after(committed).await {
-            Ok(committed) => committed,
-            Err(error) => Err(CommitError::Rejected(format!(
-                "commit claim lock release failed: {error}"
-            ))),
-        }
+        let guard = self.guard(claim, &commit).await?;
+        release_commit_guard(guard, coordinator.commit(commit).await).await
+    }
+
+    async fn commit_operation(
+        &self,
+        command: ClaimedCommitCommand,
+    ) -> Result<CommitReceipt, CommitError> {
+        let CommitAuthority::Versioned(inner) = &self.inner else {
+            return Err(CommitError::Rejected(
+                "plain claimed commit authority does not support versioned CommitOperation".into(),
+            ));
+        };
+        let guard = self
+            .guard(&command.claim, &command.operation.commit)
+            .await?;
+        release_commit_guard(guard, inner.commit_operation(command.operation).await).await
+    }
+}
+
+async fn release_commit_guard<T>(
+    guard: CommitEpochGuard,
+    committed: Result<T, CommitError>,
+) -> Result<T, CommitError> {
+    match guard.release_after(committed).await {
+        Ok(committed) => committed,
+        Err(error) => Err(CommitError::Rejected(format!(
+            "commit claim lock release failed: {error}"
+        ))),
     }
 }
 
@@ -166,3 +218,7 @@ fn fenced_error(claim: &RunClaim) -> CommitError {
         claim.run_id.0, claim.owner, claim.epoch
     ))
 }
+
+#[cfg(test)]
+#[path = "commit_fence/tests.rs"]
+mod tests;

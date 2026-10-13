@@ -86,4 +86,13 @@ impl ClaimedRunCommit for FlakyDispatchStore {
     async fn commit(&self, _: &RunClaim, _: ThreadCommit) -> Result<CommitRecord, CommitError> {
         unreachable!("empty scheduler fixture must not commit")
     }
+    async fn commit_operation(
+        &self,
+        _: awaken_dispatch_contract::ClaimedCommitCommand,
+    ) -> Result<
+        awaken_agent_contract::thread::commit::operation::CommitReceipt,
+        awaken_agent_contract::thread::commit::coordinator::Error,
+    > {
+        unreachable!("empty scheduler fixture must not commit")
+    }
 }

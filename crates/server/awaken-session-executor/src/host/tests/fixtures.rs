@@ -915,6 +915,15 @@ impl awaken_dispatch_contract::ClaimedRunCommit for SelectedOnly {
     > {
         unreachable!("port selection never commits")
     }
+    async fn commit_operation(
+        &self,
+        _: awaken_dispatch_contract::ClaimedCommitCommand,
+    ) -> Result<
+        awaken_agent_contract::thread::commit::operation::CommitReceipt,
+        awaken_agent_contract::thread::commit::coordinator::Error,
+    > {
+        unreachable!("port selection never commits")
+    }
 }
 
 #[async_trait::async_trait]

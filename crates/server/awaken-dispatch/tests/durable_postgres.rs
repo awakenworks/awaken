@@ -710,7 +710,7 @@ async fn postgres_epoch_guard_prevents_reclaim_until_commit_returns() {
         release: tokio::sync::Notify::new(),
     });
     let service: Arc<dyn ClaimedRunCommit> =
-        Arc::new(GuardedRunCommit::new(inner.clone(), store.clone()));
+        Arc::new(GuardedRunCommit::from_plain(inner.clone(), store.clone()));
     let fenced = ClaimedCommitCoordinator::new(service, RunClaim::from(&lease));
     let committing = tokio::spawn(async move { fenced.commit(running_commit("guarded")).await });
     inner.entered.notified().await;

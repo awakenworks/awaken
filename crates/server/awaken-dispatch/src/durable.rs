@@ -12,7 +12,7 @@ use awaken_dispatch_execution::ControlDispatch;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
-use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
+use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_runtime::Runtime;
@@ -64,7 +64,7 @@ impl<S: ControlDispatch + awaken_dispatch_contract::DispatchReads + 'static>
         clock: Arc<dyn WallClock>,
     ) -> Self
     where
-        C: CommitCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
+        C: OperationCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
     {
         Self::with_owner(runtime, store, commit, "dispatch-test-harness", None, clock)
     }
@@ -84,7 +84,7 @@ impl<S: ControlDispatch + awaken_dispatch_contract::DispatchReads + 'static>
         clock: Arc<dyn WallClock>,
     ) -> Self
     where
-        C: CommitCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
+        C: OperationCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
     {
         Self::with_owner_and_resolver(
             runtime,
@@ -116,7 +116,7 @@ impl<S: ControlDispatch + awaken_dispatch_contract::DispatchReads + 'static>
         clock: Arc<dyn WallClock>,
     ) -> Self
     where
-        C: CommitCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
+        C: OperationCoordinator + CommittedThreadView + RunRecoverySource + Send + Sync + 'static,
     {
         let mut worker = DispatchWorker::new(runtime, store, commit, owner);
         if let Some(store) = stream_checkpoint {

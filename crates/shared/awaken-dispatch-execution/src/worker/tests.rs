@@ -42,6 +42,8 @@ use awaken_runtime_contract::{
 };
 use tokio_util::sync::CancellationToken;
 
+#[path = "tests/operation_receipts.rs"]
+mod operation_receipts;
 #[path = "tests/terminal_pending.rs"]
 mod terminal_pending;
 
