@@ -5,6 +5,8 @@ edition = "2024"
 license.workspace = true
 
 [package.metadata.awaken]
+# SDK publishing preparation: skill configuration and plugin composition are public API.
+api_snapshot = true
 context = "runtime"
 product = "sdk"
 bounded_context = "agent-runtime"

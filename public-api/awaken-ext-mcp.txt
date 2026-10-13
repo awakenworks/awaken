@@ -1,0 +1,576 @@
+pub mod awaken_ext_mcp
+pub use awaken_ext_mcp::AuthChallenge
+pub use awaken_ext_mcp::CallToolResult
+pub use awaken_ext_mcp::CreateTaskResult
+pub use awaken_ext_mcp::Credential
+pub use awaken_ext_mcp::CredentialRefresher
+pub use awaken_ext_mcp::McpProgressUpdate
+pub use awaken_ext_mcp::McpTask
+pub use awaken_ext_mcp::McpToolDefinition
+pub use awaken_ext_mcp::McpTransportError
+pub use awaken_ext_mcp::TaskStatus
+pub use awaken_ext_mcp::jsonrpc
+pub use awaken_ext_mcp::normalize_progress
+pub use awaken_ext_mcp::progress
+pub use awaken_ext_mcp::sse
+pub mod awaken_ext_mcp::client
+pub struct awaken_ext_mcp::client::McpConnection
+pub awaken_ext_mcp::client::McpConnection::descriptors: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+pub awaken_ext_mcp::client::McpConnection::server_name: alloc::string::String
+pub awaken_ext_mcp::client::McpConnection::tools: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_tool_contract::tool::RawTool>>
+pub async fn awaken_ext_mcp::client::connect_tools(&str, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>) -> core::result::Result<awaken_ext_mcp::client::McpConnection, awaken_ext_mcp::error::McpError>
+pub mod awaken_ext_mcp::credential
+pub use awaken_ext_mcp::credential::AuthChallenge
+pub use awaken_ext_mcp::credential::Credential
+pub use awaken_ext_mcp::credential::CredentialRefresher
+pub enum awaken_ext_mcp::credential::AuthRetrySafety
+pub awaken_ext_mcp::credential::AuthRetrySafety::Never
+pub awaken_ext_mcp::credential::AuthRetrySafety::ReadOnly
+pub fn awaken_ext_mcp::credential::auth_retry_safety(&serde_json::value::Value) -> awaken_ext_mcp::credential::AuthRetrySafety
+pub mod awaken_ext_mcp::error
+pub enum awaken_ext_mcp::error::McpError
+pub awaken_ext_mcp::error::McpError::DuplicateServerName(alloc::string::String)
+pub awaken_ext_mcp::error::McpError::EmptyServerName
+pub awaken_ext_mcp::error::McpError::InvalidRefreshInterval
+pub awaken_ext_mcp::error::McpError::InvalidToolIdComponent(alloc::string::String)
+pub awaken_ext_mcp::error::McpError::InvalidToolSchema(alloc::string::String)
+pub awaken_ext_mcp::error::McpError::NamespaceCollision
+pub awaken_ext_mcp::error::McpError::NamespaceCollision::existing: alloc::string::String
+pub awaken_ext_mcp::error::McpError::NamespaceCollision::name: alloc::string::String
+pub awaken_ext_mcp::error::McpError::NamespaceCollision::namespace: alloc::string::String
+pub awaken_ext_mcp::error::McpError::PeriodicRefreshAlreadyRunning
+pub awaken_ext_mcp::error::McpError::RuntimeUnavailable
+pub awaken_ext_mcp::error::McpError::ServerDisabled(alloc::string::String)
+pub awaken_ext_mcp::error::McpError::ServerPermanentlyFailed(alloc::string::String)
+pub awaken_ext_mcp::error::McpError::ToolIdConflict(alloc::string::String)
+pub awaken_ext_mcp::error::McpError::Transport(alloc::string::String)
+pub awaken_ext_mcp::error::McpError::UnknownServer(alloc::string::String)
+pub awaken_ext_mcp::error::McpError::UnsupportedCapability
+pub awaken_ext_mcp::error::McpError::UnsupportedCapability::capability: &'static str
+pub awaken_ext_mcp::error::McpError::UnsupportedCapability::server_name: alloc::string::String
+impl core::convert::From<awaken_mcp_wire::types::McpTransportError> for awaken_ext_mcp::error::McpError
+pub fn awaken_ext_mcp::error::McpError::from(awaken_mcp_wire::types::McpTransportError) -> Self
+pub mod awaken_ext_mcp::http
+pub struct awaken_ext_mcp::http::HttpTransport
+impl awaken_ext_mcp::http::HttpTransport
+pub async fn awaken_ext_mcp::http::HttpTransport::connect(impl core::convert::Into<alloc::string::String>, awaken_agent_contract::credential::outbound::Credential) -> core::result::Result<Self, awaken_mcp_wire::types::McpTransportError>
+pub async fn awaken_ext_mcp::http::HttpTransport::connect_streaming(impl core::convert::Into<alloc::string::String>, awaken_agent_contract::credential::outbound::Credential, core::option::Option<alloc::sync::Arc<dyn awaken_ext_mcp::sampling::SamplingHandler>>) -> core::result::Result<Self, awaken_mcp_wire::types::McpTransportError>
+pub fn awaken_ext_mcp::http::HttpTransport::new(impl core::convert::Into<alloc::string::String>, awaken_agent_contract::credential::outbound::Credential) -> Self
+pub fn awaken_ext_mcp::http::HttpTransport::set_credential(&self, awaken_agent_contract::credential::outbound::Credential)
+pub fn awaken_ext_mcp::http::HttpTransport::subscribe_list_changed(&self) -> tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>
+pub fn awaken_ext_mcp::http::HttpTransport::subscribe_resource_updated(&self) -> tokio::sync::broadcast::Receiver<alloc::string::String>
+impl awaken_ext_mcp::transport::McpToolTransport for awaken_ext_mcp::http::HttpTransport
+pub fn awaken_ext_mcp::http::HttpTransport::call_tool<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::call_tool_as_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, core::option::Option<u64>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CreateTaskResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::call_tool_with_progress<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, tokio::sync::mpsc::bounded::Sender<awaken_mcp_wire::progress::McpProgressUpdate>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::cancel_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::McpTask, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::get_prompt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_mcp::types::McpPromptResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::get_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::McpTask, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::get_task_result<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::is_alive(&self) -> bool
+pub fn awaken_ext_mcp::http::HttpTransport::list_prompts<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpPromptDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::list_resources<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpResourceDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::list_tools<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_mcp_wire::types::McpToolDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::read_resource<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::set_notification_handler(&self, alloc::vec::Vec<alloc::string::String>, core::option::Option<alloc::sync::Arc<dyn awaken_ext_mcp::notification::McpNotificationHandler>>) -> core::result::Result<(), awaken_mcp_wire::types::McpTransportError>
+pub fn awaken_ext_mcp::http::HttpTransport::supports_task_cancel(&self) -> bool
+pub fn awaken_ext_mcp::http::HttpTransport::supports_task_tools_call(&self) -> bool
+impl core::ops::drop::Drop for awaken_ext_mcp::http::HttpTransport
+pub fn awaken_ext_mcp::http::HttpTransport::drop(&mut self)
+pub struct awaken_ext_mcp::http::HttpTransportBuilder
+impl awaken_ext_mcp::http::HttpTransportBuilder
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::build(self) -> awaken_ext_mcp::http::HttpTransport
+pub async fn awaken_ext_mcp::http::HttpTransportBuilder::connect(self) -> core::result::Result<awaken_ext_mcp::http::HttpTransport, awaken_mcp_wire::types::McpTransportError>
+pub async fn awaken_ext_mcp::http::HttpTransportBuilder::connect_streaming(self) -> core::result::Result<awaken_ext_mcp::http::HttpTransport, awaken_mcp_wire::types::McpTransportError>
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::credential(self, awaken_agent_contract::credential::outbound::Credential) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::header(self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::refresher(self, alloc::sync::Arc<dyn awaken_agent_contract::credential::outbound::CredentialRefresher>) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::request_trace(self, alloc::sync::Arc<awaken_ext_mcp::http::McpRequestTrace>) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::sampling(self, alloc::sync::Arc<dyn awaken_ext_mcp::sampling::SamplingHandler>) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::tool_call_timeout(self, core::time::Duration) -> Self
+pub struct awaken_ext_mcp::http::McpHttpFailure
+pub awaken_ext_mcp::http::McpHttpFailure::body: alloc::string::String
+pub awaken_ext_mcp::http::McpHttpFailure::body_truncated: bool
+pub awaken_ext_mcp::http::McpHttpFailure::content_type: core::option::Option<alloc::string::String>
+pub awaken_ext_mcp::http::McpHttpFailure::status: u16
+pub struct awaken_ext_mcp::http::McpRequestTrace
+impl awaken_ext_mcp::http::McpRequestTrace
+pub fn awaken_ext_mcp::http::McpRequestTrace::last_failure(&self) -> core::option::Option<awaken_ext_mcp::http::McpHttpFailure>
+pub fn awaken_ext_mcp::http::McpRequestTrace::last_method(&self) -> core::option::Option<alloc::string::String>
+pub fn awaken_ext_mcp::http::McpRequestTrace::new() -> Self
+pub const awaken_ext_mcp::http::HTTP_FAILURE_BODY_LIMIT: usize
+pub mod awaken_ext_mcp::id_mapping
+pub fn awaken_ext_mcp::id_mapping::to_tool_id(&str, &str) -> core::result::Result<alloc::string::String, awaken_ext_mcp::error::McpError>
+pub fn awaken_ext_mcp::id_mapping::tool_namespace(&str) -> core::result::Result<alloc::string::String, awaken_ext_mcp::error::McpError>
+pub mod awaken_ext_mcp::manager
+pub struct awaken_ext_mcp::manager::McpManager
+impl awaken_ext_mcp::manager::McpManager
+pub fn awaken_ext_mcp::manager::McpManager::add(&mut self, awaken_ext_mcp::plugin::McpServer) -> core::result::Result<(), awaken_ext_mcp::error::McpError>
+pub fn awaken_ext_mcp::manager::McpManager::is_empty(&self) -> bool
+pub fn awaken_ext_mcp::manager::McpManager::len(&self) -> usize
+pub fn awaken_ext_mcp::manager::McpManager::new() -> Self
+pub fn awaken_ext_mcp::manager::McpManager::plugins(&self) -> alloc::vec::Vec<awaken_ext_mcp::plugin::McpPlugin>
+pub fn awaken_ext_mcp::manager::McpManager::server_names(&self) -> alloc::vec::Vec<alloc::string::String>
+pub fn awaken_ext_mcp::manager::McpManager::status(&self) -> alloc::vec::Vec<awaken_ext_mcp::manager::ServerStatus>
+pub struct awaken_ext_mcp::manager::ServerStatus
+pub awaken_ext_mcp::manager::ServerStatus::alive: bool
+pub awaken_ext_mcp::manager::ServerStatus::name: alloc::string::String
+pub awaken_ext_mcp::manager::ServerStatus::tool_version: u64
+pub mod awaken_ext_mcp::notification
+pub enum awaken_ext_mcp::notification::McpInputDelivery
+pub awaken_ext_mcp::notification::McpInputDelivery::CancelResponse
+pub awaken_ext_mcp::notification::McpInputDelivery::CancelResponse::input_event_id: alloc::string::String
+pub awaken_ext_mcp::notification::McpInputDelivery::CancelResponse::input_method: alloc::string::String
+pub awaken_ext_mcp::notification::McpInputDelivery::Message
+pub awaken_ext_mcp::notification::McpInputDelivery::Message::text: alloc::string::String
+pub enum awaken_ext_mcp::notification::McpSelectedInput
+pub awaken_ext_mcp::notification::McpSelectedInput::CancelResponse
+pub awaken_ext_mcp::notification::McpSelectedInput::CancelResponse::input_event_id: alloc::string::String
+pub awaken_ext_mcp::notification::McpSelectedInput::CancelResponse::input_method: alloc::string::String
+pub awaken_ext_mcp::notification::McpSelectedInput::Message
+pub awaken_ext_mcp::notification::McpSelectedInput::Message::event_id: alloc::string::String
+pub awaken_ext_mcp::notification::McpSelectedInput::Message::text: alloc::string::String
+pub struct awaken_ext_mcp::notification::McpInputRule
+pub awaken_ext_mcp::notification::McpInputRule::delivery: awaken_ext_mcp::notification::McpInputDelivery
+pub awaken_ext_mcp::notification::McpInputRule::event_id: alloc::string::String
+pub awaken_ext_mcp::notification::McpInputRule::when: alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>
+pub struct awaken_ext_mcp::notification::McpNotificationConfig
+pub awaken_ext_mcp::notification::McpNotificationConfig::notifications: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_ext_mcp::notification::McpInputRule>
+impl awaken_ext_mcp::notification::McpNotificationConfig
+pub fn awaken_ext_mcp::notification::McpNotificationConfig::parse(core::option::Option<&serde_json::value::Value>) -> core::result::Result<Self, alloc::string::String>
+pub fn awaken_ext_mcp::notification::McpNotificationConfig::select(&self, &str, &serde_json::value::Value) -> core::option::Option<awaken_ext_mcp::notification::McpSelectedInput>
+pub trait awaken_ext_mcp::notification::McpNotificationHandler: core::marker::Send + core::marker::Sync
+pub fn awaken_ext_mcp::notification::McpNotificationHandler::receive<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub mod awaken_ext_mcp::plugin
+pub struct awaken_ext_mcp::plugin::McpPlugin
+impl awaken_runtime_contract::plugin::contributions::Plugin for awaken_ext_mcp::plugin::McpPlugin
+pub fn awaken_ext_mcp::plugin::McpPlugin::live_version(&self) -> core::option::Option<u64>
+pub fn awaken_ext_mcp::plugin::McpPlugin::manifest(&self) -> awaken_runtime_contract::plugin::capability::PluginManifest
+pub fn awaken_ext_mcp::plugin::McpPlugin::resolve(&self) -> awaken_runtime_contract::plugin::contributions::Contributions
+pub fn awaken_ext_mcp::plugin::McpPlugin::resolve_configured(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<awaken_runtime_contract::plugin::contributions::Contributions, awaken_runtime_contract::plugin::contributions::PluginConfigError>
+pub struct awaken_ext_mcp::plugin::McpServer
+impl awaken_ext_mcp::plugin::McpServer
+pub async fn awaken_ext_mcp::plugin::McpServer::connect_http(impl core::convert::Into<alloc::string::String>, awaken_ext_mcp::http::HttpTransport) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
+pub async fn awaken_ext_mcp::plugin::McpServer::connect_stdio(impl core::convert::Into<alloc::string::String>, awaken_ext_mcp::stdio::StdioTransport) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
+pub fn awaken_ext_mcp::plugin::McpServer::is_alive(&self) -> bool
+pub fn awaken_ext_mcp::plugin::McpServer::name(&self) -> &str
+pub fn awaken_ext_mcp::plugin::McpServer::namespace(&self) -> &str
+pub fn awaken_ext_mcp::plugin::McpServer::plugin(&self) -> awaken_ext_mcp::plugin::McpPlugin
+pub async fn awaken_ext_mcp::plugin::McpServer::start(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>, tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
+pub async fn awaken_ext_mcp::plugin::McpServer::start_with_sensitive(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>, tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>, awaken_ext_mcp::plugin::SensitiveFields) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
+pub fn awaken_ext_mcp::plugin::McpServer::version(&self) -> u64
+pub type awaken_ext_mcp::plugin::SensitiveFields = std::collections::hash::map::HashMap<alloc::string::String, alloc::vec::Vec<alloc::string::String>>
+pub mod awaken_ext_mcp::sampling
+pub struct awaken_ext_mcp::sampling::SamplingBridge
+impl awaken_ext_mcp::sampling::SamplingBridge
+pub fn awaken_ext_mcp::sampling::SamplingBridge::new(alloc::sync::Arc<dyn awaken_ext_mcp::sampling::SamplingHandler>) -> Self
+impl awaken_mcp_wire::jsonrpc::ServerRequestHandler for awaken_ext_mcp::sampling::SamplingBridge
+pub fn awaken_ext_mcp::sampling::SamplingBridge::handle<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 serde_json::value::Value, &'life2 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub struct awaken_ext_mcp::sampling::SamplingError(pub alloc::string::String)
+pub struct awaken_ext_mcp::sampling::SamplingMessage
+pub awaken_ext_mcp::sampling::SamplingMessage::content: alloc::string::String
+pub awaken_ext_mcp::sampling::SamplingMessage::role: alloc::string::String
+pub struct awaken_ext_mcp::sampling::SamplingRequest
+pub awaken_ext_mcp::sampling::SamplingRequest::max_tokens: core::option::Option<u64>
+pub awaken_ext_mcp::sampling::SamplingRequest::messages: alloc::vec::Vec<awaken_ext_mcp::sampling::SamplingMessage>
+pub awaken_ext_mcp::sampling::SamplingRequest::system_prompt: core::option::Option<alloc::string::String>
+pub struct awaken_ext_mcp::sampling::SamplingResponse
+pub awaken_ext_mcp::sampling::SamplingResponse::content: alloc::string::String
+pub awaken_ext_mcp::sampling::SamplingResponse::model: core::option::Option<alloc::string::String>
+pub awaken_ext_mcp::sampling::SamplingResponse::role: alloc::string::String
+pub awaken_ext_mcp::sampling::SamplingResponse::stop_reason: core::option::Option<alloc::string::String>
+impl awaken_ext_mcp::sampling::SamplingResponse
+pub fn awaken_ext_mcp::sampling::SamplingResponse::assistant(impl core::convert::Into<alloc::string::String>) -> Self
+pub const awaken_ext_mcp::sampling::SAMPLING_METHOD: &str
+pub trait awaken_ext_mcp::sampling::SamplingHandler: core::marker::Send + core::marker::Sync
+pub fn awaken_ext_mcp::sampling::SamplingHandler::create_message<'life0, 'async_trait>(&'life0 self, awaken_ext_mcp::sampling::SamplingRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_mcp::sampling::SamplingResponse, awaken_ext_mcp::sampling::SamplingError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::sampling::build_sampling_result(&awaken_ext_mcp::sampling::SamplingResponse) -> serde_json::value::Value
+pub fn awaken_ext_mcp::sampling::parse_sampling_request(&serde_json::value::Value) -> awaken_ext_mcp::sampling::SamplingRequest
+pub mod awaken_ext_mcp::sensitive
+pub const awaken_ext_mcp::sensitive::REDACTED: &str
+pub fn awaken_ext_mcp::sensitive::mark_sensitive<S: core::convert::AsRef<str>>(&mut serde_json::value::Value, &[S])
+pub fn awaken_ext_mcp::sensitive::redact_arguments(&serde_json::value::Value, &serde_json::value::Value) -> serde_json::value::Value
+pub fn awaken_ext_mcp::sensitive::sensitive_paths(&serde_json::value::Value) -> alloc::vec::Vec<alloc::string::String>
+pub mod awaken_ext_mcp::stdio
+pub struct awaken_ext_mcp::stdio::StdioTransport
+impl awaken_ext_mcp::stdio::StdioTransport
+pub async fn awaken_ext_mcp::stdio::StdioTransport::connect(&str, &[alloc::string::String], core::time::Duration) -> core::result::Result<Self, awaken_mcp_wire::types::McpTransportError>
+pub async fn awaken_ext_mcp::stdio::StdioTransport::connect_stream<S>(S, core::option::Option<serde_json::value::Value>, core::time::Duration, core::option::Option<alloc::sync::Arc<dyn awaken_mcp_wire::jsonrpc::ServerRequestHandler>>) -> core::result::Result<Self, awaken_mcp_wire::types::McpTransportError> where S: tokio::io::async_read::AsyncRead + tokio::io::async_write::AsyncWrite + core::marker::Unpin + core::marker::Send + 'static
+pub async fn awaken_ext_mcp::stdio::StdioTransport::connect_with_env(&str, &[alloc::string::String], std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>, core::option::Option<serde_json::value::Value>, core::time::Duration) -> core::result::Result<Self, awaken_mcp_wire::types::McpTransportError>
+pub async fn awaken_ext_mcp::stdio::StdioTransport::connect_with_handler(&str, &[alloc::string::String], std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>, core::option::Option<serde_json::value::Value>, core::time::Duration, alloc::sync::Arc<dyn awaken_mcp_wire::jsonrpc::ServerRequestHandler>) -> core::result::Result<Self, awaken_mcp_wire::types::McpTransportError>
+pub async fn awaken_ext_mcp::stdio::StdioTransport::connect_with_sampling(&str, &[alloc::string::String], std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>, core::option::Option<serde_json::value::Value>, core::time::Duration, alloc::sync::Arc<dyn awaken_ext_mcp::sampling::SamplingHandler>) -> core::result::Result<Self, awaken_mcp_wire::types::McpTransportError>
+pub fn awaken_ext_mcp::stdio::StdioTransport::is_alive(&self) -> bool
+pub async fn awaken_ext_mcp::stdio::StdioTransport::stop(&self) -> core::result::Result<(), awaken_mcp_wire::types::McpTransportError>
+pub fn awaken_ext_mcp::stdio::StdioTransport::subscribe_list_changed(&self) -> tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>
+pub fn awaken_ext_mcp::stdio::StdioTransport::subscribe_resource_updated(&self) -> tokio::sync::broadcast::Receiver<alloc::string::String>
+impl awaken_ext_mcp::transport::McpToolTransport for awaken_ext_mcp::stdio::StdioTransport
+pub fn awaken_ext_mcp::stdio::StdioTransport::call_tool<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::call_tool_as_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, core::option::Option<u64>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CreateTaskResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::call_tool_with_progress<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, tokio::sync::mpsc::bounded::Sender<awaken_mcp_wire::progress::McpProgressUpdate>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::cancel_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::McpTask, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::get_prompt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_mcp::types::McpPromptResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::get_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::McpTask, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::get_task_result<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::is_alive(&self) -> bool
+pub fn awaken_ext_mcp::stdio::StdioTransport::list_prompts<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpPromptDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::list_resources<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpResourceDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::list_tools<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_mcp_wire::types::McpToolDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::read_resource<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::set_notification_handler(&self, alloc::vec::Vec<alloc::string::String>, core::option::Option<alloc::sync::Arc<dyn awaken_ext_mcp::notification::McpNotificationHandler>>) -> core::result::Result<(), awaken_mcp_wire::types::McpTransportError>
+pub fn awaken_ext_mcp::stdio::StdioTransport::supports_task_cancel(&self) -> bool
+pub fn awaken_ext_mcp::stdio::StdioTransport::supports_task_tools_call(&self) -> bool
+pub const awaken_ext_mcp::stdio::DEFAULT_TIMEOUT: core::time::Duration
+pub mod awaken_ext_mcp::tool
+pub struct awaken_ext_mcp::tool::McpRawTool
+impl awaken_ext_mcp::tool::McpRawTool
+pub fn awaken_ext_mcp::tool::McpRawTool::from_definition(&str, &awaken_mcp_wire::types::McpToolDefinition, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
+pub fn awaken_ext_mcp::tool::McpRawTool::new(&str, &str, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
+impl awaken_tool_contract::tool::DurableTaskTool for awaken_ext_mcp::tool::McpRawTool
+pub fn awaken_ext_mcp::tool::McpRawTool::cancel_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall, &'life2 awaken_tool_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolTaskPoll, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_ext_mcp::tool::McpRawTool::poll_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall, &'life2 awaken_tool_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolTaskPoll, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_ext_mcp::tool::McpRawTool::start_task<'life0, 'async_trait>(&'life0 self, awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolTaskStart, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_tool_contract::tool::RawTool for awaken_ext_mcp::tool::McpRawTool
+pub fn awaken_ext_mcp::tool::McpRawTool::durable_tasks(&self) -> core::option::Option<&dyn awaken_tool_contract::tool::DurableTaskTool>
+pub fn awaken_ext_mcp::tool::McpRawTool::id(&self) -> &str
+pub fn awaken_ext_mcp::tool::McpRawTool::invoke<'life0, 'async_trait>(&'life0 self, awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub const awaken_ext_mcp::tool::MCP_TASK_OWNER: &str
+pub fn awaken_ext_mcp::tool::mcp_tool_descriptor(&str, &awaken_mcp_wire::types::McpToolDefinition) -> core::result::Result<awaken_runtime_contract::resolved::ToolDescriptor, awaken_ext_mcp::error::McpError>
+pub mod awaken_ext_mcp::transport
+pub enum awaken_ext_mcp::transport::ListChangedKind
+pub awaken_ext_mcp::transport::ListChangedKind::Prompts
+pub awaken_ext_mcp::transport::ListChangedKind::Resources
+pub awaken_ext_mcp::transport::ListChangedKind::Tools
+pub struct awaken_ext_mcp::transport::McpCallFence(_)
+impl awaken_ext_mcp::transport::McpCallFence
+pub async fn awaken_ext_mcp::transport::McpCallFence::close_and_wait(&self)
+pub fn awaken_ext_mcp::transport::McpCallFence::open() -> Self
+pub fn awaken_ext_mcp::transport::McpCallFence::try_enter(&self) -> core::option::Option<awaken_ext_mcp::transport::McpCallPermit>
+pub struct awaken_ext_mcp::transport::McpCallPermit(_)
+impl awaken_ext_mcp::transport::McpCallPermit
+pub async fn awaken_ext_mcp::transport::McpCallPermit::cancelled(&self)
+pub fn awaken_ext_mcp::transport::McpCallPermit::is_cancelled(&self) -> bool
+impl core::ops::drop::Drop for awaken_ext_mcp::transport::McpCallPermit
+pub fn awaken_ext_mcp::transport::McpCallPermit::drop(&mut self)
+pub trait awaken_ext_mcp::transport::McpToolTransport: core::marker::Send + core::marker::Sync
+pub fn awaken_ext_mcp::transport::McpToolTransport::call_tool<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::transport::McpToolTransport::call_tool_as_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, core::option::Option<u64>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CreateTaskResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::transport::McpToolTransport::call_tool_with_progress<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, tokio::sync::mpsc::bounded::Sender<awaken_mcp_wire::progress::McpProgressUpdate>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::transport::McpToolTransport::cancel_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::McpTask, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::transport::McpToolTransport::get_prompt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_mcp::types::McpPromptResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::transport::McpToolTransport::get_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::McpTask, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::transport::McpToolTransport::get_task_result<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::transport::McpToolTransport::is_alive(&self) -> bool
+pub fn awaken_ext_mcp::transport::McpToolTransport::list_prompts<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpPromptDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::transport::McpToolTransport::list_resources<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpResourceDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::transport::McpToolTransport::list_tools<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_mcp_wire::types::McpToolDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::transport::McpToolTransport::read_resource<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::transport::McpToolTransport::set_notification_handler(&self, alloc::vec::Vec<alloc::string::String>, core::option::Option<alloc::sync::Arc<dyn awaken_ext_mcp::notification::McpNotificationHandler>>) -> core::result::Result<(), awaken_mcp_wire::types::McpTransportError>
+pub fn awaken_ext_mcp::transport::McpToolTransport::supports_task_cancel(&self) -> bool
+pub fn awaken_ext_mcp::transport::McpToolTransport::supports_task_tools_call(&self) -> bool
+impl awaken_ext_mcp::transport::McpToolTransport for awaken_ext_mcp::http::HttpTransport
+pub fn awaken_ext_mcp::http::HttpTransport::call_tool<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::call_tool_as_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, core::option::Option<u64>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CreateTaskResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::call_tool_with_progress<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, tokio::sync::mpsc::bounded::Sender<awaken_mcp_wire::progress::McpProgressUpdate>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::cancel_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::McpTask, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::get_prompt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_mcp::types::McpPromptResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::get_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::McpTask, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::get_task_result<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::is_alive(&self) -> bool
+pub fn awaken_ext_mcp::http::HttpTransport::list_prompts<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpPromptDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::list_resources<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpResourceDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::list_tools<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_mcp_wire::types::McpToolDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::read_resource<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::set_notification_handler(&self, alloc::vec::Vec<alloc::string::String>, core::option::Option<alloc::sync::Arc<dyn awaken_ext_mcp::notification::McpNotificationHandler>>) -> core::result::Result<(), awaken_mcp_wire::types::McpTransportError>
+pub fn awaken_ext_mcp::http::HttpTransport::supports_task_cancel(&self) -> bool
+pub fn awaken_ext_mcp::http::HttpTransport::supports_task_tools_call(&self) -> bool
+impl awaken_ext_mcp::transport::McpToolTransport for awaken_ext_mcp::stdio::StdioTransport
+pub fn awaken_ext_mcp::stdio::StdioTransport::call_tool<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::call_tool_as_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, core::option::Option<u64>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CreateTaskResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::call_tool_with_progress<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, tokio::sync::mpsc::bounded::Sender<awaken_mcp_wire::progress::McpProgressUpdate>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::cancel_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::McpTask, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::get_prompt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_mcp::types::McpPromptResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::get_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::McpTask, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::get_task_result<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::is_alive(&self) -> bool
+pub fn awaken_ext_mcp::stdio::StdioTransport::list_prompts<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpPromptDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::list_resources<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpResourceDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::list_tools<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_mcp_wire::types::McpToolDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::read_resource<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::set_notification_handler(&self, alloc::vec::Vec<alloc::string::String>, core::option::Option<alloc::sync::Arc<dyn awaken_ext_mcp::notification::McpNotificationHandler>>) -> core::result::Result<(), awaken_mcp_wire::types::McpTransportError>
+pub fn awaken_ext_mcp::stdio::StdioTransport::supports_task_cancel(&self) -> bool
+pub fn awaken_ext_mcp::stdio::StdioTransport::supports_task_tools_call(&self) -> bool
+pub fn awaken_ext_mcp::transport::revocable_transport(alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>) -> (alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>, awaken_ext_mcp::transport::McpCallFence)
+pub mod awaken_ext_mcp::types
+pub struct awaken_ext_mcp::types::McpPromptArgument
+pub awaken_ext_mcp::types::McpPromptArgument::description: core::option::Option<alloc::string::String>
+pub awaken_ext_mcp::types::McpPromptArgument::name: alloc::string::String
+pub awaken_ext_mcp::types::McpPromptArgument::required: bool
+pub struct awaken_ext_mcp::types::McpPromptDefinition
+pub awaken_ext_mcp::types::McpPromptDefinition::arguments: alloc::vec::Vec<awaken_ext_mcp::types::McpPromptArgument>
+pub awaken_ext_mcp::types::McpPromptDefinition::description: core::option::Option<alloc::string::String>
+pub awaken_ext_mcp::types::McpPromptDefinition::name: alloc::string::String
+pub awaken_ext_mcp::types::McpPromptDefinition::title: core::option::Option<alloc::string::String>
+pub struct awaken_ext_mcp::types::McpPromptMessage
+pub awaken_ext_mcp::types::McpPromptMessage::content: serde_json::value::Value
+pub awaken_ext_mcp::types::McpPromptMessage::role: alloc::string::String
+pub struct awaken_ext_mcp::types::McpPromptResult
+pub awaken_ext_mcp::types::McpPromptResult::description: core::option::Option<alloc::string::String>
+pub awaken_ext_mcp::types::McpPromptResult::messages: alloc::vec::Vec<awaken_ext_mcp::types::McpPromptMessage>
+pub struct awaken_ext_mcp::types::McpResourceDefinition
+pub awaken_ext_mcp::types::McpResourceDefinition::description: core::option::Option<alloc::string::String>
+pub awaken_ext_mcp::types::McpResourceDefinition::mime_type: core::option::Option<alloc::string::String>
+pub awaken_ext_mcp::types::McpResourceDefinition::name: alloc::string::String
+pub awaken_ext_mcp::types::McpResourceDefinition::size: core::option::Option<u64>
+pub awaken_ext_mcp::types::McpResourceDefinition::title: core::option::Option<alloc::string::String>
+pub awaken_ext_mcp::types::McpResourceDefinition::uri: alloc::string::String
+pub enum awaken_ext_mcp::AuthRetrySafety
+pub awaken_ext_mcp::AuthRetrySafety::Never
+pub awaken_ext_mcp::AuthRetrySafety::ReadOnly
+pub enum awaken_ext_mcp::ListChangedKind
+pub awaken_ext_mcp::ListChangedKind::Prompts
+pub awaken_ext_mcp::ListChangedKind::Resources
+pub awaken_ext_mcp::ListChangedKind::Tools
+pub enum awaken_ext_mcp::McpError
+pub awaken_ext_mcp::McpError::DuplicateServerName(alloc::string::String)
+pub awaken_ext_mcp::McpError::EmptyServerName
+pub awaken_ext_mcp::McpError::InvalidRefreshInterval
+pub awaken_ext_mcp::McpError::InvalidToolIdComponent(alloc::string::String)
+pub awaken_ext_mcp::McpError::InvalidToolSchema(alloc::string::String)
+pub awaken_ext_mcp::McpError::NamespaceCollision
+pub awaken_ext_mcp::McpError::NamespaceCollision::existing: alloc::string::String
+pub awaken_ext_mcp::McpError::NamespaceCollision::name: alloc::string::String
+pub awaken_ext_mcp::McpError::NamespaceCollision::namespace: alloc::string::String
+pub awaken_ext_mcp::McpError::PeriodicRefreshAlreadyRunning
+pub awaken_ext_mcp::McpError::RuntimeUnavailable
+pub awaken_ext_mcp::McpError::ServerDisabled(alloc::string::String)
+pub awaken_ext_mcp::McpError::ServerPermanentlyFailed(alloc::string::String)
+pub awaken_ext_mcp::McpError::ToolIdConflict(alloc::string::String)
+pub awaken_ext_mcp::McpError::Transport(alloc::string::String)
+pub awaken_ext_mcp::McpError::UnknownServer(alloc::string::String)
+pub awaken_ext_mcp::McpError::UnsupportedCapability
+pub awaken_ext_mcp::McpError::UnsupportedCapability::capability: &'static str
+pub awaken_ext_mcp::McpError::UnsupportedCapability::server_name: alloc::string::String
+impl core::convert::From<awaken_mcp_wire::types::McpTransportError> for awaken_ext_mcp::error::McpError
+pub fn awaken_ext_mcp::error::McpError::from(awaken_mcp_wire::types::McpTransportError) -> Self
+pub struct awaken_ext_mcp::HttpTransport
+impl awaken_ext_mcp::http::HttpTransport
+pub async fn awaken_ext_mcp::http::HttpTransport::connect(impl core::convert::Into<alloc::string::String>, awaken_agent_contract::credential::outbound::Credential) -> core::result::Result<Self, awaken_mcp_wire::types::McpTransportError>
+pub async fn awaken_ext_mcp::http::HttpTransport::connect_streaming(impl core::convert::Into<alloc::string::String>, awaken_agent_contract::credential::outbound::Credential, core::option::Option<alloc::sync::Arc<dyn awaken_ext_mcp::sampling::SamplingHandler>>) -> core::result::Result<Self, awaken_mcp_wire::types::McpTransportError>
+pub fn awaken_ext_mcp::http::HttpTransport::new(impl core::convert::Into<alloc::string::String>, awaken_agent_contract::credential::outbound::Credential) -> Self
+pub fn awaken_ext_mcp::http::HttpTransport::set_credential(&self, awaken_agent_contract::credential::outbound::Credential)
+pub fn awaken_ext_mcp::http::HttpTransport::subscribe_list_changed(&self) -> tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>
+pub fn awaken_ext_mcp::http::HttpTransport::subscribe_resource_updated(&self) -> tokio::sync::broadcast::Receiver<alloc::string::String>
+impl awaken_ext_mcp::transport::McpToolTransport for awaken_ext_mcp::http::HttpTransport
+pub fn awaken_ext_mcp::http::HttpTransport::call_tool<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::call_tool_as_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, core::option::Option<u64>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CreateTaskResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::call_tool_with_progress<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, tokio::sync::mpsc::bounded::Sender<awaken_mcp_wire::progress::McpProgressUpdate>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::cancel_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::McpTask, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::get_prompt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_mcp::types::McpPromptResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::get_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::McpTask, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::get_task_result<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::is_alive(&self) -> bool
+pub fn awaken_ext_mcp::http::HttpTransport::list_prompts<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpPromptDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::list_resources<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpResourceDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::list_tools<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_mcp_wire::types::McpToolDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::read_resource<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::set_notification_handler(&self, alloc::vec::Vec<alloc::string::String>, core::option::Option<alloc::sync::Arc<dyn awaken_ext_mcp::notification::McpNotificationHandler>>) -> core::result::Result<(), awaken_mcp_wire::types::McpTransportError>
+pub fn awaken_ext_mcp::http::HttpTransport::supports_task_cancel(&self) -> bool
+pub fn awaken_ext_mcp::http::HttpTransport::supports_task_tools_call(&self) -> bool
+impl core::ops::drop::Drop for awaken_ext_mcp::http::HttpTransport
+pub fn awaken_ext_mcp::http::HttpTransport::drop(&mut self)
+pub struct awaken_ext_mcp::HttpTransportBuilder
+impl awaken_ext_mcp::http::HttpTransportBuilder
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::build(self) -> awaken_ext_mcp::http::HttpTransport
+pub async fn awaken_ext_mcp::http::HttpTransportBuilder::connect(self) -> core::result::Result<awaken_ext_mcp::http::HttpTransport, awaken_mcp_wire::types::McpTransportError>
+pub async fn awaken_ext_mcp::http::HttpTransportBuilder::connect_streaming(self) -> core::result::Result<awaken_ext_mcp::http::HttpTransport, awaken_mcp_wire::types::McpTransportError>
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::credential(self, awaken_agent_contract::credential::outbound::Credential) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::header(self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::refresher(self, alloc::sync::Arc<dyn awaken_agent_contract::credential::outbound::CredentialRefresher>) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::request_trace(self, alloc::sync::Arc<awaken_ext_mcp::http::McpRequestTrace>) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::sampling(self, alloc::sync::Arc<dyn awaken_ext_mcp::sampling::SamplingHandler>) -> Self
+pub fn awaken_ext_mcp::http::HttpTransportBuilder::tool_call_timeout(self, core::time::Duration) -> Self
+pub struct awaken_ext_mcp::McpConnection
+pub awaken_ext_mcp::McpConnection::descriptors: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+pub awaken_ext_mcp::McpConnection::server_name: alloc::string::String
+pub awaken_ext_mcp::McpConnection::tools: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_tool_contract::tool::RawTool>>
+pub struct awaken_ext_mcp::McpHttpFailure
+pub awaken_ext_mcp::McpHttpFailure::body: alloc::string::String
+pub awaken_ext_mcp::McpHttpFailure::body_truncated: bool
+pub awaken_ext_mcp::McpHttpFailure::content_type: core::option::Option<alloc::string::String>
+pub awaken_ext_mcp::McpHttpFailure::status: u16
+pub struct awaken_ext_mcp::McpManager
+impl awaken_ext_mcp::manager::McpManager
+pub fn awaken_ext_mcp::manager::McpManager::add(&mut self, awaken_ext_mcp::plugin::McpServer) -> core::result::Result<(), awaken_ext_mcp::error::McpError>
+pub fn awaken_ext_mcp::manager::McpManager::is_empty(&self) -> bool
+pub fn awaken_ext_mcp::manager::McpManager::len(&self) -> usize
+pub fn awaken_ext_mcp::manager::McpManager::new() -> Self
+pub fn awaken_ext_mcp::manager::McpManager::plugins(&self) -> alloc::vec::Vec<awaken_ext_mcp::plugin::McpPlugin>
+pub fn awaken_ext_mcp::manager::McpManager::server_names(&self) -> alloc::vec::Vec<alloc::string::String>
+pub fn awaken_ext_mcp::manager::McpManager::status(&self) -> alloc::vec::Vec<awaken_ext_mcp::manager::ServerStatus>
+pub struct awaken_ext_mcp::McpPlugin
+impl awaken_runtime_contract::plugin::contributions::Plugin for awaken_ext_mcp::plugin::McpPlugin
+pub fn awaken_ext_mcp::plugin::McpPlugin::live_version(&self) -> core::option::Option<u64>
+pub fn awaken_ext_mcp::plugin::McpPlugin::manifest(&self) -> awaken_runtime_contract::plugin::capability::PluginManifest
+pub fn awaken_ext_mcp::plugin::McpPlugin::resolve(&self) -> awaken_runtime_contract::plugin::contributions::Contributions
+pub fn awaken_ext_mcp::plugin::McpPlugin::resolve_configured(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<awaken_runtime_contract::plugin::contributions::Contributions, awaken_runtime_contract::plugin::contributions::PluginConfigError>
+pub struct awaken_ext_mcp::McpPromptArgument
+pub awaken_ext_mcp::McpPromptArgument::description: core::option::Option<alloc::string::String>
+pub awaken_ext_mcp::McpPromptArgument::name: alloc::string::String
+pub awaken_ext_mcp::McpPromptArgument::required: bool
+pub struct awaken_ext_mcp::McpPromptDefinition
+pub awaken_ext_mcp::McpPromptDefinition::arguments: alloc::vec::Vec<awaken_ext_mcp::types::McpPromptArgument>
+pub awaken_ext_mcp::McpPromptDefinition::description: core::option::Option<alloc::string::String>
+pub awaken_ext_mcp::McpPromptDefinition::name: alloc::string::String
+pub awaken_ext_mcp::McpPromptDefinition::title: core::option::Option<alloc::string::String>
+pub struct awaken_ext_mcp::McpPromptMessage
+pub awaken_ext_mcp::McpPromptMessage::content: serde_json::value::Value
+pub awaken_ext_mcp::McpPromptMessage::role: alloc::string::String
+pub struct awaken_ext_mcp::McpPromptResult
+pub awaken_ext_mcp::McpPromptResult::description: core::option::Option<alloc::string::String>
+pub awaken_ext_mcp::McpPromptResult::messages: alloc::vec::Vec<awaken_ext_mcp::types::McpPromptMessage>
+pub struct awaken_ext_mcp::McpRawTool
+impl awaken_ext_mcp::tool::McpRawTool
+pub fn awaken_ext_mcp::tool::McpRawTool::from_definition(&str, &awaken_mcp_wire::types::McpToolDefinition, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
+pub fn awaken_ext_mcp::tool::McpRawTool::new(&str, &str, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
+impl awaken_tool_contract::tool::DurableTaskTool for awaken_ext_mcp::tool::McpRawTool
+pub fn awaken_ext_mcp::tool::McpRawTool::cancel_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall, &'life2 awaken_tool_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolTaskPoll, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_ext_mcp::tool::McpRawTool::poll_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tool_contract::tool::ToolCall, &'life2 awaken_tool_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolTaskPoll, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_ext_mcp::tool::McpRawTool::start_task<'life0, 'async_trait>(&'life0 self, awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolTaskStart, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_tool_contract::tool::RawTool for awaken_ext_mcp::tool::McpRawTool
+pub fn awaken_ext_mcp::tool::McpRawTool::durable_tasks(&self) -> core::option::Option<&dyn awaken_tool_contract::tool::DurableTaskTool>
+pub fn awaken_ext_mcp::tool::McpRawTool::id(&self) -> &str
+pub fn awaken_ext_mcp::tool::McpRawTool::invoke<'life0, 'async_trait>(&'life0 self, awaken_tool_contract::tool::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_contract::tool::ToolOutput, awaken_tool_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_ext_mcp::McpRequestTrace
+impl awaken_ext_mcp::http::McpRequestTrace
+pub fn awaken_ext_mcp::http::McpRequestTrace::last_failure(&self) -> core::option::Option<awaken_ext_mcp::http::McpHttpFailure>
+pub fn awaken_ext_mcp::http::McpRequestTrace::last_method(&self) -> core::option::Option<alloc::string::String>
+pub fn awaken_ext_mcp::http::McpRequestTrace::new() -> Self
+pub struct awaken_ext_mcp::McpResourceDefinition
+pub awaken_ext_mcp::McpResourceDefinition::description: core::option::Option<alloc::string::String>
+pub awaken_ext_mcp::McpResourceDefinition::mime_type: core::option::Option<alloc::string::String>
+pub awaken_ext_mcp::McpResourceDefinition::name: alloc::string::String
+pub awaken_ext_mcp::McpResourceDefinition::size: core::option::Option<u64>
+pub awaken_ext_mcp::McpResourceDefinition::title: core::option::Option<alloc::string::String>
+pub awaken_ext_mcp::McpResourceDefinition::uri: alloc::string::String
+pub struct awaken_ext_mcp::McpServer
+impl awaken_ext_mcp::plugin::McpServer
+pub async fn awaken_ext_mcp::plugin::McpServer::connect_http(impl core::convert::Into<alloc::string::String>, awaken_ext_mcp::http::HttpTransport) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
+pub async fn awaken_ext_mcp::plugin::McpServer::connect_stdio(impl core::convert::Into<alloc::string::String>, awaken_ext_mcp::stdio::StdioTransport) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
+pub fn awaken_ext_mcp::plugin::McpServer::is_alive(&self) -> bool
+pub fn awaken_ext_mcp::plugin::McpServer::name(&self) -> &str
+pub fn awaken_ext_mcp::plugin::McpServer::namespace(&self) -> &str
+pub fn awaken_ext_mcp::plugin::McpServer::plugin(&self) -> awaken_ext_mcp::plugin::McpPlugin
+pub async fn awaken_ext_mcp::plugin::McpServer::start(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>, tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
+pub async fn awaken_ext_mcp::plugin::McpServer::start_with_sensitive(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>, tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>, awaken_ext_mcp::plugin::SensitiveFields) -> core::result::Result<Self, awaken_ext_mcp::error::McpError>
+pub fn awaken_ext_mcp::plugin::McpServer::version(&self) -> u64
+pub struct awaken_ext_mcp::SamplingError(pub alloc::string::String)
+pub struct awaken_ext_mcp::SamplingMessage
+pub awaken_ext_mcp::SamplingMessage::content: alloc::string::String
+pub awaken_ext_mcp::SamplingMessage::role: alloc::string::String
+pub struct awaken_ext_mcp::SamplingRequest
+pub awaken_ext_mcp::SamplingRequest::max_tokens: core::option::Option<u64>
+pub awaken_ext_mcp::SamplingRequest::messages: alloc::vec::Vec<awaken_ext_mcp::sampling::SamplingMessage>
+pub awaken_ext_mcp::SamplingRequest::system_prompt: core::option::Option<alloc::string::String>
+pub struct awaken_ext_mcp::SamplingResponse
+pub awaken_ext_mcp::SamplingResponse::content: alloc::string::String
+pub awaken_ext_mcp::SamplingResponse::model: core::option::Option<alloc::string::String>
+pub awaken_ext_mcp::SamplingResponse::role: alloc::string::String
+pub awaken_ext_mcp::SamplingResponse::stop_reason: core::option::Option<alloc::string::String>
+impl awaken_ext_mcp::sampling::SamplingResponse
+pub fn awaken_ext_mcp::sampling::SamplingResponse::assistant(impl core::convert::Into<alloc::string::String>) -> Self
+pub struct awaken_ext_mcp::ServerStatus
+pub awaken_ext_mcp::ServerStatus::alive: bool
+pub awaken_ext_mcp::ServerStatus::name: alloc::string::String
+pub awaken_ext_mcp::ServerStatus::tool_version: u64
+pub struct awaken_ext_mcp::StdioTransport
+impl awaken_ext_mcp::stdio::StdioTransport
+pub async fn awaken_ext_mcp::stdio::StdioTransport::connect(&str, &[alloc::string::String], core::time::Duration) -> core::result::Result<Self, awaken_mcp_wire::types::McpTransportError>
+pub async fn awaken_ext_mcp::stdio::StdioTransport::connect_stream<S>(S, core::option::Option<serde_json::value::Value>, core::time::Duration, core::option::Option<alloc::sync::Arc<dyn awaken_mcp_wire::jsonrpc::ServerRequestHandler>>) -> core::result::Result<Self, awaken_mcp_wire::types::McpTransportError> where S: tokio::io::async_read::AsyncRead + tokio::io::async_write::AsyncWrite + core::marker::Unpin + core::marker::Send + 'static
+pub async fn awaken_ext_mcp::stdio::StdioTransport::connect_with_env(&str, &[alloc::string::String], std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>, core::option::Option<serde_json::value::Value>, core::time::Duration) -> core::result::Result<Self, awaken_mcp_wire::types::McpTransportError>
+pub async fn awaken_ext_mcp::stdio::StdioTransport::connect_with_handler(&str, &[alloc::string::String], std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>, core::option::Option<serde_json::value::Value>, core::time::Duration, alloc::sync::Arc<dyn awaken_mcp_wire::jsonrpc::ServerRequestHandler>) -> core::result::Result<Self, awaken_mcp_wire::types::McpTransportError>
+pub async fn awaken_ext_mcp::stdio::StdioTransport::connect_with_sampling(&str, &[alloc::string::String], std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>, core::option::Option<serde_json::value::Value>, core::time::Duration, alloc::sync::Arc<dyn awaken_ext_mcp::sampling::SamplingHandler>) -> core::result::Result<Self, awaken_mcp_wire::types::McpTransportError>
+pub fn awaken_ext_mcp::stdio::StdioTransport::is_alive(&self) -> bool
+pub async fn awaken_ext_mcp::stdio::StdioTransport::stop(&self) -> core::result::Result<(), awaken_mcp_wire::types::McpTransportError>
+pub fn awaken_ext_mcp::stdio::StdioTransport::subscribe_list_changed(&self) -> tokio::sync::broadcast::Receiver<awaken_ext_mcp::transport::ListChangedKind>
+pub fn awaken_ext_mcp::stdio::StdioTransport::subscribe_resource_updated(&self) -> tokio::sync::broadcast::Receiver<alloc::string::String>
+impl awaken_ext_mcp::transport::McpToolTransport for awaken_ext_mcp::stdio::StdioTransport
+pub fn awaken_ext_mcp::stdio::StdioTransport::call_tool<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::call_tool_as_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, core::option::Option<u64>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CreateTaskResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::call_tool_with_progress<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, tokio::sync::mpsc::bounded::Sender<awaken_mcp_wire::progress::McpProgressUpdate>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::cancel_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::McpTask, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::get_prompt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_mcp::types::McpPromptResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::get_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::McpTask, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::get_task_result<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::is_alive(&self) -> bool
+pub fn awaken_ext_mcp::stdio::StdioTransport::list_prompts<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpPromptDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::list_resources<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpResourceDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::list_tools<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_mcp_wire::types::McpToolDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::read_resource<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::set_notification_handler(&self, alloc::vec::Vec<alloc::string::String>, core::option::Option<alloc::sync::Arc<dyn awaken_ext_mcp::notification::McpNotificationHandler>>) -> core::result::Result<(), awaken_mcp_wire::types::McpTransportError>
+pub fn awaken_ext_mcp::stdio::StdioTransport::supports_task_cancel(&self) -> bool
+pub fn awaken_ext_mcp::stdio::StdioTransport::supports_task_tools_call(&self) -> bool
+pub const awaken_ext_mcp::DEFAULT_TIMEOUT: core::time::Duration
+pub const awaken_ext_mcp::HTTP_FAILURE_BODY_LIMIT: usize
+pub const awaken_ext_mcp::MCP_TASK_OWNER: &str
+pub const awaken_ext_mcp::REDACTED: &str
+pub trait awaken_ext_mcp::McpToolTransport: core::marker::Send + core::marker::Sync
+pub fn awaken_ext_mcp::McpToolTransport::call_tool<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::McpToolTransport::call_tool_as_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, core::option::Option<u64>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CreateTaskResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::McpToolTransport::call_tool_with_progress<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, tokio::sync::mpsc::bounded::Sender<awaken_mcp_wire::progress::McpProgressUpdate>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::McpToolTransport::cancel_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::McpTask, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::McpToolTransport::get_prompt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_mcp::types::McpPromptResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::McpToolTransport::get_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::McpTask, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::McpToolTransport::get_task_result<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::McpToolTransport::is_alive(&self) -> bool
+pub fn awaken_ext_mcp::McpToolTransport::list_prompts<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpPromptDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::McpToolTransport::list_resources<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpResourceDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::McpToolTransport::list_tools<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_mcp_wire::types::McpToolDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::McpToolTransport::read_resource<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::McpToolTransport::set_notification_handler(&self, alloc::vec::Vec<alloc::string::String>, core::option::Option<alloc::sync::Arc<dyn awaken_ext_mcp::notification::McpNotificationHandler>>) -> core::result::Result<(), awaken_mcp_wire::types::McpTransportError>
+pub fn awaken_ext_mcp::McpToolTransport::supports_task_cancel(&self) -> bool
+pub fn awaken_ext_mcp::McpToolTransport::supports_task_tools_call(&self) -> bool
+impl awaken_ext_mcp::transport::McpToolTransport for awaken_ext_mcp::http::HttpTransport
+pub fn awaken_ext_mcp::http::HttpTransport::call_tool<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::call_tool_as_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, core::option::Option<u64>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CreateTaskResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::call_tool_with_progress<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, tokio::sync::mpsc::bounded::Sender<awaken_mcp_wire::progress::McpProgressUpdate>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::cancel_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::McpTask, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::get_prompt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_mcp::types::McpPromptResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::get_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::McpTask, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::get_task_result<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::is_alive(&self) -> bool
+pub fn awaken_ext_mcp::http::HttpTransport::list_prompts<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpPromptDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::list_resources<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpResourceDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::list_tools<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_mcp_wire::types::McpToolDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::read_resource<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::http::HttpTransport::set_notification_handler(&self, alloc::vec::Vec<alloc::string::String>, core::option::Option<alloc::sync::Arc<dyn awaken_ext_mcp::notification::McpNotificationHandler>>) -> core::result::Result<(), awaken_mcp_wire::types::McpTransportError>
+pub fn awaken_ext_mcp::http::HttpTransport::supports_task_cancel(&self) -> bool
+pub fn awaken_ext_mcp::http::HttpTransport::supports_task_tools_call(&self) -> bool
+impl awaken_ext_mcp::transport::McpToolTransport for awaken_ext_mcp::stdio::StdioTransport
+pub fn awaken_ext_mcp::stdio::StdioTransport::call_tool<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::call_tool_as_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, core::option::Option<u64>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CreateTaskResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::call_tool_with_progress<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, serde_json::value::Value, tokio::sync::mpsc::bounded::Sender<awaken_mcp_wire::progress::McpProgressUpdate>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::cancel_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::McpTask, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::get_prompt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_mcp::types::McpPromptResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::get_task<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::McpTask, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::get_task_result<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_mcp_wire::types::CallToolResult, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::is_alive(&self) -> bool
+pub fn awaken_ext_mcp::stdio::StdioTransport::list_prompts<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpPromptDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::list_resources<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_mcp::types::McpResourceDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::list_tools<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_mcp_wire::types::McpToolDefinition>, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::read_resource<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_ext_mcp::stdio::StdioTransport::set_notification_handler(&self, alloc::vec::Vec<alloc::string::String>, core::option::Option<alloc::sync::Arc<dyn awaken_ext_mcp::notification::McpNotificationHandler>>) -> core::result::Result<(), awaken_mcp_wire::types::McpTransportError>
+pub fn awaken_ext_mcp::stdio::StdioTransport::supports_task_cancel(&self) -> bool
+pub fn awaken_ext_mcp::stdio::StdioTransport::supports_task_tools_call(&self) -> bool
+pub trait awaken_ext_mcp::SamplingHandler: core::marker::Send + core::marker::Sync
+pub fn awaken_ext_mcp::SamplingHandler::create_message<'life0, 'async_trait>(&'life0 self, awaken_ext_mcp::sampling::SamplingRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_mcp::sampling::SamplingResponse, awaken_ext_mcp::sampling::SamplingError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::auth_retry_safety(&serde_json::value::Value) -> awaken_ext_mcp::credential::AuthRetrySafety
+pub async fn awaken_ext_mcp::connect_tools(&str, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>) -> core::result::Result<awaken_ext_mcp::client::McpConnection, awaken_ext_mcp::error::McpError>
+pub fn awaken_ext_mcp::mark_sensitive<S: core::convert::AsRef<str>>(&mut serde_json::value::Value, &[S])
+pub fn awaken_ext_mcp::mcp_tool_descriptor(&str, &awaken_mcp_wire::types::McpToolDefinition) -> core::result::Result<awaken_runtime_contract::resolved::ToolDescriptor, awaken_ext_mcp::error::McpError>
+pub fn awaken_ext_mcp::redact_arguments(&serde_json::value::Value, &serde_json::value::Value) -> serde_json::value::Value
+pub fn awaken_ext_mcp::sensitive_paths(&serde_json::value::Value) -> alloc::vec::Vec<alloc::string::String>
+pub fn awaken_ext_mcp::to_tool_id(&str, &str) -> core::result::Result<alloc::string::String, awaken_ext_mcp::error::McpError>
+pub fn awaken_ext_mcp::tool_namespace(&str) -> core::result::Result<alloc::string::String, awaken_ext_mcp::error::McpError>
+pub type awaken_ext_mcp::SensitiveFields = std::collections::hash::map::HashMap<alloc::string::String, alloc::vec::Vec<alloc::string::String>>

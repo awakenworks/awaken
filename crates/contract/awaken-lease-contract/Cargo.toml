@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [package.metadata.awaken]
+# SDK publishing preparation: the shared fence types and ownership laws are public API.
+api_snapshot = true
 # The fence law (epoch, tenure, lease, slot) is generic time-bounded ownership
 # with no platform dependency; the SDK's own background-task extension fences
 # its attempts with it, so it belongs to the Runtime SDK.

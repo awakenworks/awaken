@@ -443,18 +443,29 @@ not a second executable specification.
 | C5 | present | current | exact replay | idempotent prior result; no duplicate effect |
 | C6 | present | current | malformed or wrong response kind | typed rejection; no substituted default |
 
-The pre-push hook now invokes the existing fail-closed public-API snapshot gate
-exactly once. **Amended 2026-09-28:** that gate snapshots only the crates whose
-manifest declares `[package.metadata.awaken] api_snapshot = true` -- today
-`awaken-runtime-contract`, `awaken-agent-contract`, `awaken-tool-contract`,
-`awaken-mcp-wire` and `awaken-runtime`, the surfaces an INVARIANTS row, the
-out-of-workspace fuzz crate or the plugin SPI depends on. No crate is published,
-so every other member's consumers are workspace crates and the compiler already
-refuses a breaking change to them; their 126 snapshots were a hand-blessed second
-copy of that proof and the most co-edited file set in the tree (102 of 332
-production commits). A snapshot file without a selecting manifest is refused as an
-orphan. `check-rust.sh --push` already owned maximal all-feature clippy, so
-no duplicate lint lane was added; the orchestration self-test locks both facts.
+The pre-push hook invokes the existing fail-closed public-API snapshot gate
+exactly once. **Amended 2026-09-28:** selection lives in each manifest's
+`[package.metadata.awaken] api_snapshot = true`. The initial five selections
+covered INVARIANTS, the out-of-workspace fuzz crate and the plugin SPI; the
+compiler already checked other workspace-only consumers. Their 126 snapshots
+had been a hand-blessed second copy of that proof and the most co-edited file set
+in the tree (102 of 332 production commits).
+
+**Amended 2026-10-14, SDK publishing preparation:** a publishable
+`product = "sdk"` member's public surface is an external compatibility promise
+and must explicitly select its snapshot. The existing gate checks completeness
+using product and Cargo publish metadata, independently of the separation reason;
+the SDK Web policy vocabulary remains a contract seam. `publish = false`
+examples and internal members need no selection, while their existing explicit
+selections remain valid. There is no second package catalog or generator. The
+same pinned tool generates and compares the selected surfaces; missing or
+drifting snapshots fail until their actual output is reviewed and explicitly
+blessed. Selecting a crate does not prove an independent build, package or
+semver check, and does not establish registry publication.
+
+A snapshot file without a selecting manifest remains an orphan.
+`check-rust.sh --push` already owns maximal all-feature clippy, so no duplicate
+lint lane is added; the orchestration self-test locks both facts.
 ADR-0082 remains Deferred and none of this closure changes the open-product
 placement in §10.
 
