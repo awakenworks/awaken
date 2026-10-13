@@ -389,44 +389,11 @@ impl FsCommitCoordinator {
 impl Coordinator for FsCommitCoordinator {
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
         let _writing = self.write_lock.lock().await;
-        // Every rejection the inner reference model would raise MUST be raised HERE
-        // first — before the durable append below — so the append-only log never
-        // records a line that the read model would then reject when it is rebuilt on
-        // open. If a rejectable line reached the log, replaying it on the next
-        // `open` would fail and the store would be permanently unopenable. The two
-        // rejection paths inner enforces are (1) plan validation and (2) the
-        // terminal fence; we mirror both, in the same order, before writing.
-
-        // (1) Plan validation: empty ids / a cross-run|thread awaiting ticket are
-        // rejected up front, exactly as the inner model does.
-        commit
-            .validate()
-            .map_err(|err| Error::Rejected(err.to_string()))?;
-
-        // (2) Terminal-is-final (exactly-once committed LOG under a stale reclaim):
-        // reject a post-terminal commit for a run whose committed state is already
-        // `Ended`. (See awaken-store-inmem for the full rationale on why a stale
-        // owner's duplicate commit must be fenced.) This uses the per-run fact
-        // lookup (`CommittedThreadView::run`), not the latest-run cache
-        // (`CommittedThreadView::run`): a run that ended is fenced even after a *different*
-        // run committed afterwards and became the thread's latest — matching what
-        // inner's own run-fact scan enforces.
-        //
-        // This read is process-LOCAL (the inner in-memory model), which is correct
-        // because the retained lifecycle lock makes this coordinator the one
-        // process allowed to replay and append in the directory. The fleet uses
-        // Postgres, whose guard is instead a durable in-transaction
-        // `SELECT ... FOR UPDATE` on the shared DB.
-        if self
-            .inner
-            .run(commit.run_id())
-            .is_some_and(|record| !record.state.permits(&commit.run_state()))
-        {
-            return Err(Error::Rejected(format!(
-                "run {} is already terminal; refusing post-terminal commit",
-                commit.run_id().0
-            )));
-        }
+        // The private inner model cannot change between inspection and apply:
+        // every writer holds this append lock and the retained lifecycle lock
+        // excludes another process. Reuse its complete shape, terminal, global
+        // sequence, and event-cursor admission before writing any durable byte.
+        self.inner.inspect_commit(&commit)?;
         // Durable first: append + fsync the record before it is acknowledged, so a
         // crash after ack cannot lose it and a crash before ack replays nothing.
         let committed_at_unix_ms = Some(awaken_time::WallClockExt::now_ms(&*self.clock));

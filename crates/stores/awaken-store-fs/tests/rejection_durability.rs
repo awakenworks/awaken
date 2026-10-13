@@ -1,20 +1,27 @@
 //! Rejections must leave the durable log intact (G13): a commit the read model
 //! would reject must never reach the append-only log, or replaying it on the next
 //! `open` would fail and the store would be permanently unopenable. These pin the
-//! two rejection paths — plan validation and the terminal fence — against that
-//! failure mode, mirroring `awaken-store-sqlite`'s `g13_failed_commit_*` tests so
-//! the filesystem backend cannot diverge from the embedded one.
+//! reference-owned shape, terminal, sequence, and event-cursor admission against
+//! that failure mode. Reachable event-capacity rejects exercise real fsync/reopen;
+//! private in-memory boundary tests cover unreachably large global cursors.
 
+use awaken_agent_contract::agent::awaiting::{AwaitTarget, PauseReason, ResumeTicket};
 use awaken_agent_contract::agent::message::{Id as MsgId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
 use awaken_agent_contract::thread::commit::RunDisposition;
-use awaken_agent_contract::thread::commit::coordinator::Coordinator;
-use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_agent_contract::thread::commit::coordinator::{
+    Coordinator, Error, OperationCoordinator,
+};
+use awaken_agent_contract::thread::commit::operation::{
+    CommitOperation, CommitOperationId, CommitReceipt, commit_payload_hash,
+};
+use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_store_fs::FsCommitCoordinator;
 
 fn ck(thread: &str, run: &str, text: &str, state: RunState) -> ThreadCommit {
@@ -47,6 +54,173 @@ async fn fresh(name: &str) -> (std::path::PathBuf, FsCommitCoordinator) {
         .await
         .expect("open");
     (dir, store)
+}
+
+fn operation(commit: ThreadCommit, ordinal: u64) -> CommitOperation {
+    CommitOperation {
+        operation_id: CommitOperationId::new(commit.run_id().clone(), ordinal),
+        expected_thread_version: ordinal,
+        payload_hash: commit_payload_hash(&commit).unwrap(),
+        commit,
+    }
+}
+
+async fn submit(
+    store: &FsCommitCoordinator,
+    commit: ThreadCommit,
+    operation_path: bool,
+    ordinal: u64,
+) -> Result<CommitRecord, Error> {
+    if operation_path {
+        store
+            .commit_operation(operation(commit, ordinal))
+            .await
+            .map(|receipt| receipt.commit_record())
+    } else {
+        store.commit(commit).await
+    }
+}
+
+fn oversized_candidate(first: &ThreadCommit) -> ThreadCommit {
+    let mut rejected = first.clone();
+    rejected.events.push(rejected.events[0].clone());
+    rejected.messages = ck("t1", "r1", "rejected", RunState::Running).messages;
+    rejected
+        .state
+        .push(awaken_agent_contract::agent::state::Command::set(
+            awaken_agent_contract::agent::state::Scope::Thread,
+            awaken_agent_contract::agent::state::MergePolicy::Exclusive,
+            "rejected.candidate",
+            serde_json::json!(true),
+        ));
+    rejected.run = RunDisposition::awaiting(ResumeTicket::new(
+        "rejected",
+        RunId("r1".into()),
+        ThreadId("t1".into()),
+        "snapshot",
+        "fingerprint",
+        AwaitTarget::Pause(PauseReason::Manual),
+    ));
+    rejected
+        .validate()
+        .expect("E2 candidate has a valid commit shape");
+    rejected
+}
+
+async fn exact_replay(
+    store: &FsCommitCoordinator,
+    first: ThreadCommit,
+    dir: &std::path::Path,
+    bytes: &[u8],
+) -> CommitReceipt {
+    let original = operation(first, 0);
+    let receipt = store.commit_operation(original.clone()).await.unwrap();
+    assert!(receipt.duplicate, "E4");
+    assert_eq!(receipt.payload_hash, original.payload_hash, "E4 hash");
+    assert_eq!(receipt.commit_sequence, 1, "E4 original sequence");
+    assert_eq!(receipt.thread_version, 1, "E4 original version");
+    assert_eq!(
+        std::fs::read(dir.join("commits.ndjson")).unwrap(),
+        bytes,
+        "E4 no reappend"
+    );
+    receipt
+}
+
+#[tokio::test]
+async fn oversized_event_batch_is_rejected_before_fsync_for_commit_and_operation() {
+    // Cause/effect table: E1 event count=1000 => exact legal dense append;
+    // E2 event count=1001 => reject before fsync, warm prefix and raw log bytes
+    // unchanged; E3 cold reopen => exact same messages/state/events/Run/tickets/
+    // versions/ordinals/times; E4 exact operation replay => original receipt/hash,
+    // duplicate=true and no appended byte. Both ordinary and operation paths
+    // execute E1-E3; E4 applies only to the existing idempotent operation path.
+    // The in-memory owner tests MAX sequence and multiplication/addition overflow;
+    // this test proves the real filesystem calls that complete owner before append.
+    for operation_path in [false, true] {
+        let (dir, store) = fresh(if operation_path {
+            "event-op"
+        } else {
+            "event-plain"
+        })
+        .await;
+        let mut first = ck("t1", "r1", "legal", RunState::Running);
+        first.events = vec![first.events[0].clone(); 1000];
+        assert_eq!(
+            submit(&store, first.clone(), operation_path, 0)
+                .await
+                .unwrap()
+                .sequence,
+            1,
+            "E1"
+        );
+        let baseline = store
+            .recovery_snapshot(&ThreadId("t1".into()), &RunId("r1".into()))
+            .await
+            .unwrap();
+        assert_eq!(baseline.events.len(), 1000, "E1 exact event count");
+        assert_eq!(baseline.events[0].sequence, 1000, "E1 original encoding");
+        assert_eq!(baseline.events[999].sequence, 1999, "E1 last legal offset");
+        let bytes = std::fs::read(dir.join("commits.ndjson")).unwrap();
+        let receipt = if operation_path {
+            Some(exact_replay(&store, first.clone(), &dir, &bytes).await)
+        } else {
+            None
+        };
+        assert!(
+            submit(&store, oversized_candidate(&first), operation_path, 1)
+                .await
+                .is_err(),
+            "E2"
+        );
+        assert_eq!(
+            std::fs::read(dir.join("commits.ndjson")).unwrap(),
+            bytes,
+            "E2 zero durable bytes"
+        );
+        assert_eq!(
+            store
+                .recovery_snapshot(&ThreadId("t1".into()), &RunId("r1".into()))
+                .await
+                .unwrap(),
+            baseline,
+            "E2 warm prefix"
+        );
+        drop(store);
+        let reopened = FsCommitCoordinator::open(&dir, awaken_time::system_clock())
+            .await
+            .unwrap();
+        assert_eq!(
+            reopened
+                .recovery_snapshot(&ThreadId("t1".into()), &RunId("r1".into()))
+                .await
+                .unwrap(),
+            baseline,
+            "E3 cold prefix"
+        );
+        if let Some(receipt) = receipt {
+            assert_eq!(
+                exact_replay(&reopened, first, &dir, &bytes).await,
+                receipt,
+                "E4 complete warm/cold receipt"
+            );
+        }
+        assert_eq!(
+            submit(
+                &reopened,
+                ck("t1", "r1", "after", RunState::Running),
+                operation_path,
+                1
+            )
+            .await
+            .unwrap()
+            .sequence,
+            2,
+            "E2 rejected append consumed no sequence"
+        );
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 // G13: an invalid plan (empty thread_id) is rejected AND writes nothing durable —
