@@ -165,7 +165,11 @@ impl ManagedSessionRootFixture {
         })?;
         self.check_actor(current)?;
         let (resource_revision, resources) = root.resources.desired_generation();
-        let frozen = managed.host.installed_sessions.frozen(thread);
+        let frozen = managed
+            .host
+            .installed_sessions
+            .realizations()
+            .frozen(thread);
         let projection = awaken_session_realization_contract::FrozenSessionProjection {
             workspace_id: owner,
             revision: root.revision,
@@ -227,7 +231,7 @@ impl ManagedSessionRootFixture {
         let current = root.realization.as_ref().ok_or_else(|| {
             awaken_session_types::RunError::unavailable("fixture assignment is absent")
         })?;
-        let closed = source.host.installed_sessions.read_realization(thread, |r| {
+        let closed = source.host.installed_sessions.realizations().read_realization(thread, |r| {
             matches!(&r.authority, crate::session_realizations::SessionRealizationAuthority::Closed(Some(old)) if old == current)
         }).unwrap_or(false);
         if !closed {
@@ -405,6 +409,7 @@ impl ManagedSessionRootFixture {
         let exact_stage = managed
             .host
             .installed_sessions
+            .realizations()
             .read_realization(thread, |r| {
                 r.manifest.as_ref() == Some(&prepared)
                     && r.authority.lease() == Some(lease)

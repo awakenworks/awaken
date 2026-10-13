@@ -117,7 +117,7 @@ async fn conflicting_revocation_preserves_active_worker_relay_until_compatible_d
     assert!(error.to_string().contains("lower-priority"), "R1/E1");
     assert!(
         matches!(
-            host.installed_sessions
+            host.installed_sessions.realizations()
                 .read_realization(thread, |r| r.environment_owner.clone()),
             Some(SessionEnvironmentOwner::Retiring(current))
                 if current.exact_matches(&terminal.owner)
@@ -228,6 +228,7 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
     let spec_before = host.realizer.sandbox_spec(thread);
     let lifecycle = host
         .installed_sessions
+        .realizations()
         .read_realization(thread, |r| r.lifecycle.clone())
         .unwrap();
     let _lifecycle = lifecycle.lock().await;
@@ -249,6 +250,7 @@ async fn failed_revocation_retains_provider_mount_and_pending_owner_for_retry() 
     );
     assert_eq!(
         host.installed_sessions
+            .realizations()
             .published_snapshot(thread)
             .map(|snapshot| snapshot.id),
         Some(snapshot.id),
@@ -346,11 +348,13 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         &generation,
     );
     host.installed_sessions
+        .realizations()
         .close_mcp_realization_admission(thread, fence.clone())
         .unwrap();
     let spec_before = host.realizer.sandbox_spec(thread);
     let lifecycle = host
         .installed_sessions
+        .realizations()
         .read_realization(thread, |r| r.lifecycle.clone())
         .unwrap();
     let _lifecycle = lifecycle.lock().await;
@@ -359,6 +363,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
         .expect("C2 live revocation");
     assert_eq!(
         host.installed_sessions
+            .realizations()
             .read_realization(thread, |r| r.authority.clone()),
         Some(crate::installed_session::SessionRealizationAuthority::Closed(Some(lease.clone()))),
         "E4"
@@ -373,7 +378,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     );
     assert!(
         matches!(
-            host.installed_sessions
+            host.installed_sessions.realizations()
                 .read_realization(thread, |r| r.environment_owner.clone()),
             Some(SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
                 cause: SessionEnvironmentRetirementCause::RealizationRevocation,
@@ -389,6 +394,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     );
     assert_eq!(
         host.installed_sessions
+            .realizations()
             .published_snapshot(thread)
             .map(|current| current.id),
         Some(snapshot.id),
@@ -396,6 +402,7 @@ async fn live_revocation_retains_retiring_owner_and_its_retry_inputs() {
     );
     assert_eq!(
         host.installed_sessions
+            .realizations()
             .read_realization(thread, |r| r.mcp.quiescence_fence().cloned()),
         Some(Some(fence)),
         "E3 revocation is not a quiescence-fence reopen authority"
@@ -476,6 +483,7 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
     // inventing another generation hid invalid adoption in the old publisher.
     let source_identity = first
         .installed_sessions
+        .realizations()
         .read_realization(thread, |r| match &r.environment_owner {
             SessionEnvironmentOwner::Resident(owned) => owned.identity.clone(),
             _ => panic!("first committed resident"),

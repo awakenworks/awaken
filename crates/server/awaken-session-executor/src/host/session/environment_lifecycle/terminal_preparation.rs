@@ -21,9 +21,9 @@ impl SharedHost {
         mode: BoundEnvironmentPreparationMode,
     ) -> Result<Option<(Arc<crate::session_environment::SessionEnvironment>, bool)>, HostError>
     {
-        let sessions = &self.installed_sessions;
+        let sessions = &self.realizer.environments.sessions;
         let cleanup = &self.realizer.cleanup;
-        let exec = &self.realizer;
+        let exec = &self.realizer.environments;
         let TerminalEnvironmentInstallation {
             thread,
             binding,
@@ -343,10 +343,10 @@ impl SharedHost {
         resolved_resources: Option<&session_resource::ResolvedSessionResources>,
         mode: BoundEnvironmentPreparationMode,
     ) -> Result<PreparedBoundEnvironment, HostError> {
+        let realizations = self.installed_sessions.realizations();
         let exec = &self.realizer;
         if mode.requires_live_source()
-            && self
-                .installed_sessions
+            && realizations
                 .read_realization(thread, |r| {
                     matches!(
                         &r.environment_owner,
@@ -472,7 +472,7 @@ impl SharedHost {
                         effect_id: effect_fence.operation_id().to_owned(),
                     };
                     if let Some(candidate) = committed_candidate.as_ref() {
-                        self.installed_sessions.update_realization(thread, |r| {
+                        realizations.update_realization(thread, |r| {
                             r.environment_owner
                                 .begin_retirement_with_committed_candidate(candidate, cause)
                         })?;

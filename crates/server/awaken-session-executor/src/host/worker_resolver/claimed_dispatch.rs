@@ -252,6 +252,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         claimed: &awaken_dispatch_contract::Claimed,
     ) -> Result<Arc<DispatchWorker<AnyDispatchStore>>, Error> {
         let host = self.host()?;
+        let sessions = &host.installed_sessions;
         Self::require_local_execution(&host)?;
         // Reservation repair owns no executable Run yet. It needs only the
         // parent commit boundary, queue fence, and Session admission observer;
@@ -316,8 +317,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             let projection = decode_dispatched_projection(envelope, claimed.lease.run_id())?;
             host.install_environment_projection(&thread_id.0, &projection.environment)
                 .map_err(Self::map_host_resolution_error)?;
-            host.installed_sessions
-                .replace_frozen_with(&thread_id.0, |next| next.tools = projection.tools);
+            sessions.replace_frozen_with(&thread_id.0, |next| next.tools = projection.tools);
             projection.mcp_stages
         } else {
             None
@@ -329,8 +329,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             dispatched_resources.as_ref(),
         )
         .await?;
-        let canonical_session_realization = host
-            .installed_sessions
+        let canonical_session_realization = sessions
             .read(&thread_id.0, |slot| {
                 canonical_session_projection_is_installed(
                     super::claimed_session::has_session_projection_authority(claimed),
@@ -361,7 +360,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                 )));
             }
         }
-        host.installed_sessions.update_run(&thread_id.0, |run| {
+        sessions.update_run(&thread_id.0, |run| {
             run.dispatch_claim = Some(claim);
         });
         // A complete frozen Session projection owns MCP realization regardless
@@ -391,8 +390,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                 host.register_thread_workspace(&thread_id.0, workspace);
             }
         }
-        let needs_deferred_executor = host
-            .installed_sessions
+        let needs_deferred_executor = sessions
             .read(&thread_id.0, |slot| {
                 let environment = slot.inputs.environment_projection.as_ref();
                 slot.run.deferred_executor.is_none()
@@ -408,8 +406,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                     Arc::downgrade(&host),
                     &thread_id.0,
                 ));
-            host.installed_sessions
-                .update_run(&thread_id.0, |run| run.deferred_executor = Some(executor));
+            sessions.update_run(&thread_id.0, |run| run.deferred_executor = Some(executor));
         }
         let _adoption = if canonical_session_realization {
             // The Control synchronizer merged projection + claim binding before
@@ -471,7 +468,8 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         // execution closure. Compatibility dispatch without a complete frozen
         // projection still uses the delivered root as its sole authority.
         let immutable_publication = if canonical_session_realization {
-            host.installed_sessions
+            sessions
+                .realizations()
                 .published_snapshot(&thread_id.0)
                 .unwrap_or_else(|| claimed.request.activation.snapshot.clone())
         } else {

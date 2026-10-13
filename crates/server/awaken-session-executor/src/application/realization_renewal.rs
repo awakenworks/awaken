@@ -41,19 +41,21 @@ impl<'a> ResourcePreparation<'a> {
         let cancellation = Arc::new(awaken_runtime_contract::CancellationToken::new());
         let (introduced_lease, changed) =
             host.realizer.execution.authorize_worker_effect(|| {
-                host.installed_sessions.update_realization(session, |r| {
-                    if r.resource_preparation.is_some() {
-                        return Err(crate::HostError::internal(
-                            "Resource preparation already holds its projection lock",
-                        ));
-                    }
-                    let introduced = r.authority.lease().is_none();
-                    if !r.install_lease(proof) {
-                        return Err(Self::ended());
-                    }
-                    r.resource_preparation = Some(cancellation.clone());
-                    Ok((introduced, r.changed.clone()))
-                })
+                host.installed_sessions
+                    .realizations()
+                    .update_realization(session, |r| {
+                        if r.resource_preparation.is_some() {
+                            return Err(crate::HostError::internal(
+                                "Resource preparation already holds its projection lock",
+                            ));
+                        }
+                        let introduced = r.authority.lease().is_none();
+                        if !r.install_lease(proof) {
+                            return Err(Self::ended());
+                        }
+                        r.resource_preparation = Some(cancellation.clone());
+                        Ok((introduced, r.changed.clone()))
+                    })
             })?;
         changed.notify_waiters();
         let preparation = Self {
@@ -104,11 +106,9 @@ impl<'a> ResourcePreparation<'a> {
     }
 
     pub(super) async fn authority_ended(&self) -> crate::HostError {
+        let realizations = self.host.installed_sessions.realizations();
         loop {
-            let Some(changed) = self
-                .host
-                .installed_sessions
-                .read_realization(self.session, |r| r.changed.clone())
+            let Some(changed) = realizations.read_realization(self.session, |r| r.changed.clone())
             else {
                 return Self::ended();
             };
@@ -139,20 +139,19 @@ impl<'a> ResourcePreparation<'a> {
 
 impl Drop for ResourcePreparation<'_> {
     fn drop(&mut self) {
-        self.host.installed_sessions.modify_realization(self.session, |r| {
+        let realizations = self.host.installed_sessions.realizations();
+        realizations.modify_realization(self.session, |r| {
             if r.resource_preparation
                 .as_ref()
                 .is_some_and(|current| Arc::ptr_eq(current, &self.cancellation))
             {
                 r.resource_preparation = None;
-                if self.introduced_lease
-                    && r.authority.lease().is_some_and(|current| {
-                        awaken_session_realization_contract::realization_lease_generation_authorizes(
-                            current,
-                            &self.asserted,
-                        )
-                    })
-                {
+                if self.introduced_lease && r.authority.lease().is_some_and(|current| {
+                    awaken_session_realization_contract::realization_lease_generation_authorizes(
+                        current,
+                        &self.asserted,
+                    )
+                }) {
                     r.authority =
                         crate::installed_session::SessionRealizationAuthority::Uninstalled;
                     r.changed.notify_waiters();
@@ -171,6 +170,7 @@ impl crate::SharedHost {
         lease: crate::session_resource::SessionRealizationLease,
         requested_expiry_unix_ms: u64,
     ) -> Result<bool, crate::HostError> {
+        let realizations = self.installed_sessions.realizations();
         // Cause/effect decision table: C1 this lease was selected by the due-only
         // scheduler; C2 Control extends its exact generation; C3 Control
         // explicitly rejects this owner; C4 Control is temporarily unavailable;
@@ -242,8 +242,7 @@ impl crate::SharedHost {
                 self.realizer
                     .execution
                     .authorize_worker_effect(|| {
-                        Ok(self
-                            .installed_sessions
+                        Ok(realizations
                             .modify_realization(&session_id, |state| {
                                 Arc::ptr_eq(&state.realization, &realization)
                                     && state.renew_lease(&lease, renewed_lease)
@@ -256,8 +255,7 @@ impl crate::SharedHost {
         };
         match renewal {
             Ok(false)
-                if self
-                    .installed_sessions
+                if realizations
                     .read_realization(&session_id, |state| {
                         Arc::ptr_eq(&state.realization, &realization)
                             && state.authority.lease() == Some(&lease)
@@ -271,8 +269,7 @@ impl crate::SharedHost {
             }
             Ok(applied) => Ok(applied),
             Err(_)
-                if !self
-                    .installed_sessions
+                if !realizations
                     .read_realization(&session_id, |state| {
                         Arc::ptr_eq(&state.realization, &realization)
                             && state.authority.lease() == Some(&lease)
@@ -283,8 +280,7 @@ impl crate::SharedHost {
             }
             Err((error, revoke_immediately))
                 if !revoke_immediately
-                    && self
-                        .installed_sessions
+                    && realizations
                         .read_realization(&session_id, |r| r.authority.remaining().is_some())
                         .unwrap_or(false) =>
             {

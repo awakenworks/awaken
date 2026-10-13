@@ -28,16 +28,18 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     .await)
         .build()
         .expect("validated Host dependencies");
-    host.installed_sessions.update_realization(thread, |r| {
-        r.environment_owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
-            identity: BoundSessionEnvironmentIdentity::Durable {
-                effect_id: format!("effect-{thread}"),
-                generation: durable_generation.clone(),
-            },
-            binding: serde_json::to_string(&environment.lifecycle().handle()).unwrap(),
-            environment: environment.clone(),
+    host.installed_sessions
+        .realizations()
+        .update_realization(thread, |r| {
+            r.environment_owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
+                identity: BoundSessionEnvironmentIdentity::Durable {
+                    effect_id: format!("effect-{thread}"),
+                    generation: durable_generation.clone(),
+                },
+                binding: serde_json::to_string(&environment.lifecycle().handle()).unwrap(),
+                environment: environment.clone(),
+            });
         });
-    });
     let (activity_generation, origin) = host
         .realizer
         .resident_environment_activity_identity(thread, &environment)
@@ -98,15 +100,18 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
     // mutable effect changes. O2 a foreign Arc fails instead of borrowing its
     // desired key. O3 legacy activity fallback remains usable but cannot
     // manufacture the new provenance reference or historical Create evidence.
-    host.installed_sessions.update_realization(thread, |r| {
-        let SessionEnvironmentOwner::Resident(owned) = &mut r.environment_owner else {
-            panic!("O1 Resident")
-        };
-        let BoundSessionEnvironmentIdentity::Durable { effect_id, .. } = &mut owned.identity else {
-            panic!("O1 durable")
-        };
-        *effect_id = "later-adopt-effect".into();
-    });
+    host.installed_sessions
+        .realizations()
+        .update_realization(thread, |r| {
+            let SessionEnvironmentOwner::Resident(owned) = &mut r.environment_owner else {
+                panic!("O1 Resident")
+            };
+            let BoundSessionEnvironmentIdentity::Durable { effect_id, .. } = &mut owned.identity
+            else {
+                panic!("O1 durable")
+            };
+            *effect_id = "later-adopt-effect".into();
+        });
     let (_, after_adopt) = host
         .realizer
         .resident_environment_activity_identity(thread, &environment)
@@ -119,17 +124,19 @@ async fn durable_activity_generation_is_the_only_background_quiescence_key() {
             .is_err(),
         "O2 exact Resident Arc required"
     );
-    host.installed_sessions.update_realization(thread, |r| {
-        let SessionEnvironmentOwner::Resident(owned) = &mut r.environment_owner else {
-            panic!("O3 Resident")
-        };
-        owned.identity = BoundSessionEnvironmentIdentity::LegacyDirect(
-            crate::environment_owner::LegacyDirectEnvironmentProvenance::DurableBinding {
-                binding: owned.binding.clone(),
-                effect: crate::environment_owner::LegacyEnvironmentEffect::Absent,
-            },
-        );
-    });
+    host.installed_sessions
+        .realizations()
+        .update_realization(thread, |r| {
+            let SessionEnvironmentOwner::Resident(owned) = &mut r.environment_owner else {
+                panic!("O3 Resident")
+            };
+            owned.identity = BoundSessionEnvironmentIdentity::LegacyDirect(
+                crate::environment_owner::LegacyDirectEnvironmentProvenance::DurableBinding {
+                    binding: owned.binding.clone(),
+                    effect: crate::environment_owner::LegacyEnvironmentEffect::Absent,
+                },
+            );
+        });
     let (legacy_activity, unknown_origin) = host
         .realizer
         .resident_environment_activity_identity(thread, &environment)
@@ -246,9 +253,11 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             generation: durable.then(|| durable_generation.clone()),
             idle_since_unix_ms: None,
         };
-        host.installed_sessions.update_realization(thread, |r| {
-            r.environment_owner = SessionEnvironmentOwner::Resident(owned.clone());
-        });
+        host.installed_sessions
+            .realizations()
+            .update_realization(thread, |r| {
+                r.environment_owner = SessionEnvironmentOwner::Resident(owned.clone());
+            });
 
         let output = root
             .path()
@@ -294,10 +303,14 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
             )
             .await;
         if retiring {
-            let realization = host.installed_sessions.realization_lock(thread);
+            let realization = host
+                .installed_sessions
+                .realizations()
+                .realization_lock(thread);
             let _realization = realization.lock().await;
             let lifecycle = host
                 .installed_sessions
+                .realizations()
                 .read_realization(thread, |r| r.lifecycle.clone())
                 .unwrap();
             let _lifecycle = lifecycle.lock().await;
@@ -406,6 +419,7 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         );
         let retained = host
             .installed_sessions
+            .realizations()
             .read_realization(thread, |r| r.environment_owner.clone())
             .unwrap();
         assert!(
@@ -637,6 +651,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     assert!(output.exists(), "U1 Preparation cannot delete");
     let retained = host
         .installed_sessions
+        .realizations()
         .read_realization(thread, |r| r.environment_owner.clone())
         .unwrap();
     let SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
@@ -666,6 +681,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     )];
     for wrong in &rejected_owners {
         host.installed_sessions
+            .realizations()
             .update_realization(thread, |r| r.environment_owner = wrong.clone());
         host.prepare_terminal_cleanup_effect(effect.clone(), authorization.clone())
             .await
@@ -676,6 +692,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         );
     }
     host.installed_sessions
+        .realizations()
         .update_realization(thread, |r| r.environment_owner = retained.clone());
     let mut stale = effect.clone();
     stale.lease.epoch += 1;
@@ -697,6 +714,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     assert_eq!(first, preparation, "U2 stable receipt");
     let same_owner = || {
         host.installed_sessions
+            .realizations()
             .read_realization(thread, |r| match &r.environment_owner {
                 SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
                     owned: RetiringEnvironmentOwner::Unbound(current),
@@ -741,6 +759,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
     // predecessor; neither a valid receipt nor its fingerprint relabels it.
     for wrong in rejected_owners.drain(..) {
         host.installed_sessions
+            .realizations()
             .update_realization(thread, |r| r.environment_owner = wrong);
         host.dispose_terminal_cleanup_effect(disposal.clone())
             .await
@@ -748,6 +767,7 @@ async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_a
         assert!(output.exists(), "U6 rejected Disposal keeps physical bytes");
     }
     host.installed_sessions
+        .realizations()
         .update_realization(thread, |r| r.environment_owner = retained.clone());
     let mut stale_disposal = disposal.clone();
     stale_disposal.lease.epoch += 1;

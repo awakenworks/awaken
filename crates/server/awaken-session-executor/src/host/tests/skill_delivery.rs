@@ -487,6 +487,7 @@ async fn managed_session_ignores_unbound_host_skill_sources() {
     );
     assert_eq!(
         host.installed_sessions
+            .realizations()
             .read_realization("managed-no-frozen-skill", |r| r.skill_prompt.clone())
             .flatten(),
         None,
@@ -619,6 +620,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
     );
     let provisional_metadata = host
         .installed_sessions
+        .realizations()
         .read_realization("deferred-managed-filesystem-skill", |r| {
             r.skill_prompt.clone()
         })
@@ -715,6 +717,7 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
     );
     assert_eq!(
         host.installed_sessions
+            .realizations()
             .read_realization("deferred-managed-filesystem-skill", |r| {
                 r.skill_prompt.clone()
             })

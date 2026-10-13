@@ -230,7 +230,7 @@ async fn unknown_candidate_retry_never_authorizes_or_relabels_its_owner() {
             0,
             "U1 zero authorize"
         );
-        host.installed_sessions.read_realization(thread, |realization| {
+        host.installed_sessions.realizations().read_realization(thread, |realization| {
             if let Some(retirement) = &retirement {
                 assert!(matches!(&realization.environment_owner, SessionEnvironmentOwner::Retiring(current) if current.exact_matches(&retirement.owner)), "U1 exact retirement");
             } else {
@@ -482,19 +482,21 @@ async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
             host.realizer
                 .publish_prepared_session_environment(thread, &candidate, source.clone())
                 .unwrap();
-            host.installed_sessions.update_realization(thread, |r| {
-                let retiring = r
-                    .environment_owner
-                    .begin_retirement(
-                        SessionEnvironmentRetirementCause::RealizationRevocation,
-                        state::RetirementSelection::Current,
-                    )
-                    .unwrap()
-                    .unwrap();
-                r.environment_owner
-                    .prepare_retiring_realization_adoption(&retiring, environment.clone(), None)
-                    .unwrap();
-            });
+            host.installed_sessions
+                .realizations()
+                .update_realization(thread, |r| {
+                    let retiring = r
+                        .environment_owner
+                        .begin_retirement(
+                            SessionEnvironmentRetirementCause::RealizationRevocation,
+                            state::RetirementSelection::Current,
+                        )
+                        .unwrap()
+                        .unwrap();
+                    r.environment_owner
+                        .prepare_retiring_realization_adoption(&retiring, environment.clone(), None)
+                        .unwrap();
+                });
         }
         let candidate = host.prepared_session_environment(thread).unwrap();
         let successor = BoundSessionEnvironmentIdentity::Durable {
@@ -688,6 +690,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
             assert!(Arc::ptr_eq(&published, &environment), "B3");
             assert!(
                 host.installed_sessions
+                    .realizations()
                     .read_realization(thread, |r| matches!(&r.environment_owner,
                 SessionEnvironmentOwner::Resident(owned) if owned.identity == expected))
                     .unwrap()
@@ -698,7 +701,7 @@ async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identit
                 "B direct success"
             );
         }
-        assert!(host.installed_sessions.read_realization(thread, |r| matches!(&r.environment_owner,
+        assert!(host.installed_sessions.realizations().read_realization(thread, |r| matches!(&r.environment_owner,
             SessionEnvironmentOwner::Resident(owned) if matches!(&owned.identity,
                 BoundSessionEnvironmentIdentity::Durable { effect_id, generation }
                     if effect_id == effect.authorization.intent().effect_id() && Some(generation) == source.generation()
@@ -782,6 +785,7 @@ async fn committed_hidden_create_candidate_is_terminally_retired_without_publica
     };
     let retirement = host
         .installed_sessions
+        .realizations()
         .update_realization(thread, |r| {
             r.environment_owner
                 .begin_retirement_with_committed_candidate(&committed, cause)
@@ -1076,6 +1080,7 @@ async fn unacknowledged_candidate_adoption_requires_aggregate_authority() {
         "UA1: {error}"
     );
     host.installed_sessions
+        .realizations()
         .read_realization(thread, |r| {
             assert!(matches!(&r.environment_owner,
         SessionEnvironmentOwner::Retiring(current) if current.exact_matches(&retirement.owner)))

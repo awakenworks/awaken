@@ -98,7 +98,7 @@ pub struct McpCredentialMaterialization<'a> {
 impl McpSessions {
     pub async fn stage_attachment<S: McpSessionSlots>(
         &self,
-        slots: &S,
+        slots: &Arc<S>,
         host: &dyn McpStagingSession,
         credentials: McpCredentialMaterialization<'_>,
         request: awaken_session_configuration_contract::mcp::StageMcpAttachment,
@@ -147,7 +147,7 @@ impl McpSessions {
             ));
         }
         let request_fingerprint = request.fingerprint();
-        if let Some(existing) = self.projection(slots, &request.generation) {
+        if let Some(existing) = self.projection(slots.as_ref(), &request.generation) {
             let exact_replay = existing.request.realization_id == request.realization_id
                 && existing.request.stage_idempotency_key == request.stage_idempotency_key
                 && existing.receipt.receipt_fingerprint == request_fingerprint;
@@ -181,8 +181,8 @@ impl McpSessions {
         // A completed drain has no effect left to renew. Both exact retry and
         // same-binding lease catch-up re-enter ordinary staging through this
         // single tombstone owner; live/Staging/Draining projections stay fenced.
-        self.forget_replayable_removed_projection(slots, &request);
-        match self.renew_projection(slots, &request) {
+        self.forget_replayable_removed_projection(slots.as_ref(), &request);
+        match self.renew_projection(slots.as_ref(), &request) {
             Ok(Some(receipt)) => return Ok(receipt),
             Ok(None) => {}
             Err(error) => {
@@ -574,23 +574,20 @@ impl McpSessions {
                     )
                 })?;
             let staging = crate::mcp_material::McpStagingActivity::default();
-            self.insert_projection(
-                slots,
-                crate::mcp_material::McpGenerationProjection {
-                    request: projection_request.clone(),
-                    receipt: receipt.clone(),
-                    server: Some(server.clone()),
-                    native_wiring: None,
-                    mcp_process: None,
-                    staging: Some(staging.clone()),
-                    drain: Arc::new(tokio::sync::Mutex::new(())),
-                    state: crate::mcp_material::McpProjectionState::Staging,
-                },
-            )
-            .map_err(run_error)?;
+            let projection = crate::mcp_material::McpGenerationProjection {
+                request: projection_request.clone(),
+                receipt: receipt.clone(),
+                server: Some(server.clone()),
+                native_wiring: None,
+                mcp_process: None,
+                staging: Some(staging.clone()),
+                drain: Arc::new(tokio::sync::Mutex::new(())),
+                state: crate::mcp_material::McpProjectionState::Staging,
+            };
+            self.insert_projection(slots.as_ref(), projection.clone())
+                .map_err(run_error)?;
             let sessions = self.clone();
             let task_slots = slots.clone();
-            let generation = request.generation.clone();
             let command = awaken_provisioning_contract::Command {
                 argv,
                 cwd: environment.agent_process().workspace_cwd(),
@@ -606,69 +603,14 @@ impl McpSessions {
             // keeping the guard in the Future's captured state makes that drop
             // finish the already-installed Staging owner as well.
             let staging_activity = staging.guard();
-            let staging_server = server.clone();
-            let stage = tokio::spawn(async move {
-                let _staging_activity = staging_activity;
-                let (process, channel) =
-                    match environment.agent_process().spawn_agent(command).await {
-                        Ok(spawned) => spawned,
-                        Err(error) => {
-                            staging.finish();
-                            let cleanup = sessions.drain_projection(&task_slots, &generation).await;
-                            if let Err(cleanup) = cleanup {
-                                return Err(run_error(cleanup));
-                            }
-                            return Err(RunError::classified(
-                                "mcp_sandbox_spawn_failed",
-                                format!("sandbox stdio MCP process could not start: {error}"),
-                            ));
-                        }
-                    };
-                let process: Arc<dyn awaken_provisioning_contract::ProcessHandle> =
-                    Arc::from(process);
-                match sessions.attach_staging_process(&task_slots, &generation, process.clone()) {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        // A concurrent canonical drain owns this tracked process
-                        // and is waiting on the staging activity barrier.
-                        staging.finish();
-                        return Err(RunError::unavailable_classified(
-                            "mcp_generation_draining",
-                            "MCP generation began draining while its process was spawning",
-                        ));
-                    }
-                    Err(owner_error) => {
-                        let reap = process_reaper
-                            .reap(process.as_ref(), std::time::Duration::from_secs(5))
-                            .await;
-                        staging.finish();
-                        if let Err(error) = reap {
-                            return Err(RunError::unavailable_classified(
-                                "mcp_generation_process_reap_failed",
-                                format!(
-                                    "unadopted MCP process could not be reaped after owner transition: {error}"
-                                ),
-                            ));
-                        }
-                        return Err(run_error(owner_error));
-                    }
-                }
-                match crate::mcp::connect_sandbox_stdio(&staging_server, channel).await {
-                    Ok(wiring) => {
-                        let completed = sessions.complete_staging(&task_slots, &generation, wiring);
-                        staging.finish();
-                        completed.map_err(run_error)
-                    }
-                    Err(error) => {
-                        staging.finish();
-                        sessions
-                            .drain_projection(&task_slots, &generation)
-                            .await
-                            .map_err(run_error)?;
-                        Err(run_error(error))
-                    }
-                }
-            });
+            let stage = tokio::spawn(sessions.stage_sandbox_stdio(
+                task_slots,
+                environment,
+                command,
+                projection,
+                staging_activity,
+                process_reaper,
+            ));
             match stage.await {
                 Ok(result) => result?,
                 Err(error) => {
@@ -722,7 +664,7 @@ impl McpSessions {
             };
         if !projection_already_inserted
             && let Err(error) = self.insert_projection(
-                slots,
+                slots.as_ref(),
                 crate::mcp_material::McpGenerationProjection {
                     request: projection_request,
                     receipt: receipt.clone(),
@@ -743,6 +685,82 @@ impl McpSessions {
             return Err(run_error(error));
         }
         Ok(receipt)
+    }
+
+    async fn stage_sandbox_stdio<S: McpSessionSlots>(
+        self,
+        task_slots: Arc<S>,
+        environment: Arc<awaken_session_environment_contract::SessionEnvironment>,
+        command: awaken_provisioning_contract::Command,
+        projection: crate::mcp_material::McpGenerationProjection,
+        staging_activity: crate::mcp_material::McpStagingActivityGuard,
+        process_reaper: Arc<dyn awaken_session_environment_contract::ProcessReaper>,
+    ) -> Result<(), RunError> {
+        let generation = projection.request.generation;
+        let staging = projection
+            .staging
+            .expect("owned stdio projection has staging");
+        let staging_server = projection
+            .server
+            .expect("owned stdio projection has transport");
+
+        let _staging_activity = staging_activity;
+        let (process, channel) = match environment.agent_process().spawn_agent(command).await {
+            Ok(spawned) => spawned,
+            Err(error) => {
+                staging.finish();
+                let cleanup = self.drain_projection::<S>(&task_slots, &generation).await;
+                if let Err(cleanup) = cleanup {
+                    return Err(run_error(cleanup));
+                }
+                return Err(RunError::classified(
+                    "mcp_sandbox_spawn_failed",
+                    format!("sandbox stdio MCP process could not start: {error}"),
+                ));
+            }
+        };
+        let process: Arc<dyn awaken_provisioning_contract::ProcessHandle> = Arc::from(process);
+        match self.attach_staging_process::<S>(&task_slots, &generation, process.clone()) {
+            Ok(true) => {}
+            Ok(false) => {
+                // A concurrent canonical drain owns this tracked process
+                // and is waiting on the staging activity barrier.
+                staging.finish();
+                return Err(RunError::unavailable_classified(
+                    "mcp_generation_draining",
+                    "MCP generation began draining while its process was spawning",
+                ));
+            }
+            Err(owner_error) => {
+                let reap = process_reaper
+                    .reap(process.as_ref(), std::time::Duration::from_secs(5))
+                    .await;
+                staging.finish();
+                if let Err(error) = reap {
+                    return Err(RunError::unavailable_classified(
+                        "mcp_generation_process_reap_failed",
+                        format!(
+                            "unadopted MCP process could not be reaped after owner transition: {error}"
+                        ),
+                    ));
+                }
+                return Err(run_error(owner_error));
+            }
+        }
+        match crate::mcp::connect_sandbox_stdio(&staging_server, channel).await {
+            Ok(wiring) => {
+                let completed = self.complete_staging::<S>(&task_slots, &generation, wiring);
+                staging.finish();
+                completed.map_err(run_error)
+            }
+            Err(error) => {
+                staging.finish();
+                self.drain_projection::<S>(&task_slots, &generation)
+                    .await
+                    .map_err(run_error)?;
+                Err(run_error(error))
+            }
+        }
     }
 
     pub async fn publish_attachment<S: McpSessionSlots>(
@@ -777,6 +795,30 @@ impl McpSessions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn staging_guard_finishes_when_future_is_dropped_before_first_poll() {
+        // Cause/effect rule G1: the original activity is pending, its guard is
+        // captured by value before a Future is polled, then that Future drops.
+        // Effect: the same activity becomes complete without executing a body
+        // or creating a process. This is the guard primitive used by the owned
+        // staging phase; Host S1-S5 separately cover actual spawn/drain effects.
+        let activity = crate::mcp_material::McpStagingActivity::default();
+        let completion = activity.wait();
+        let mut completion = std::pin::pin!(completion);
+        assert!(futures_util::poll!(completion.as_mut()).is_pending());
+        let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let entered_body = entered.clone();
+        let guard = activity.guard();
+        let future = async move {
+            let _guard = guard;
+            entered_body.store(true, std::sync::atomic::Ordering::SeqCst);
+            std::future::pending::<()>().await;
+        };
+        drop(future);
+        assert!(!entered.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(futures_util::poll!(completion.as_mut()).is_ready());
+    }
 
     #[test]
     fn stdio_requires_an_explicit_secret_environment_binding_before_credentials() {

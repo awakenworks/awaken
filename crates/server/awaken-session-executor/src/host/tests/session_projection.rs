@@ -821,6 +821,7 @@ async fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
         "CD2 auxiliary snapshot would independently derive semantic delivery"
     );
     host.installed_sessions
+        .realizations()
         .update_realization("filesystem-session", |r| {
             r.content_delivery = Some(ManagedContentDelivery::ManagedFilesystem)
         });

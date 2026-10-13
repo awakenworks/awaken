@@ -141,12 +141,14 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
     .await)
         .build()
         .expect("validated Host dependencies");
-    host.installed_sessions.update_realization(thread, |r| {
-        r.environment_owner = SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
-            cause: SessionEnvironmentRetirementCause::RealizationRevocation,
-            owned: RetiringEnvironmentOwner::Bound(initial.clone()),
+    host.installed_sessions
+        .realizations()
+        .update_realization(thread, |r| {
+            r.environment_owner = SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
+                cause: SessionEnvironmentRetirementCause::RealizationRevocation,
+                owned: RetiringEnvironmentOwner::Bound(initial.clone()),
+            });
         });
-    });
     let (_, _, resident, candidate) = host
         .realizer
         .validated_session_environment_adoption(
@@ -174,7 +176,7 @@ async fn revoked_resource_successor_reaches_only_the_canonical_adoption_edge() {
         "R2 foreign generation"
     );
     assert!(
-        matches!(host.installed_sessions.read_realization(thread, |r| r.environment_owner.clone()),
+        matches!(host.installed_sessions.realizations().read_realization(thread, |r| r.environment_owner.clone()),
         Some(SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
             cause: SessionEnvironmentRetirementCause::RealizationRevocation,
             owned: RetiringEnvironmentOwner::Bound(owned),
@@ -635,6 +637,7 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
         None,
     );
     host.installed_sessions
+        .realizations()
         .close_mcp_realization_admission(
             thread,
             awaken_session_mcp::McpQuiescenceAdmissionFence::new(
@@ -657,7 +660,10 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
     )
     .unwrap();
     assert!(
-        !host.installed_sessions.mcp_realization_admitted(thread),
+        !host
+            .installed_sessions
+            .realizations()
+            .mcp_realization_admitted(thread),
         "E1 expiry before disposal cannot reopen"
     );
 
@@ -673,7 +679,9 @@ async fn source_free_projection_does_not_reopen_mcp_before_retiring_owner_is_dis
     )
     .unwrap();
     assert!(
-        host.installed_sessions.mcp_realization_admitted(thread),
+        host.installed_sessions
+            .realizations()
+            .mcp_realization_admitted(thread),
         "E2 exact source-free+Vacant projection admits a new realization"
     );
 }
@@ -710,6 +718,7 @@ async fn discard_keeps_live_owner_and_exact_retry_clears_after_termination() {
     assert!(
         matches!(
             host.installed_sessions
+                .realizations()
                 .read_realization(thread, |r| r.environment_owner.clone()),
             Some(SessionEnvironmentOwner::Retiring(_))
         ),
@@ -938,6 +947,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
 
     let lifecycle = host
         .installed_sessions
+        .realizations()
         .read_realization(thread, |r| r.lifecycle.clone())
         .unwrap();
     {
@@ -951,6 +961,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     }
     let retired = host
         .installed_sessions
+        .realizations()
         .read_realization(thread, |r| r.environment_owner.clone())
         .unwrap();
     assert!(
@@ -988,7 +999,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     );
     assert!(
         matches!(
-            host.installed_sessions
+            host.installed_sessions.realizations()
                 .read_realization(thread, |r| r.environment_owner.clone()),
             Some(SessionEnvironmentOwner::Retiring(current)) if current.exact_matches(
                 match &retired {
@@ -1031,6 +1042,7 @@ async fn assert_legacy_rebuild_observation(thread: &str, preclosed: bool) {
     assert!(
         matches!(
             host.installed_sessions
+                .realizations()
                 .read_realization(thread, |r| r.environment_owner.clone()),
             Some(SessionEnvironmentOwner::Vacant)
         ),

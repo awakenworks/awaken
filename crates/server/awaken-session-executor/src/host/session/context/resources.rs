@@ -60,19 +60,19 @@ pub(super) async fn acquire(
     // projection synchronizer; only an explicit resume may consume the
     // quiesced owner here, after frozen publication and local-placement
     // validation. Ordinary and remote-only contexts remain fail-closed.
-    let exec = &host.realizer;
+    let exec = &host.realizer.environments;
     if recover_revoked_legacy && !a2a_only {
         let provider = exec.session_environment_provider_for_thread(thread, provisioning)?;
         exec.rebuild_claimed_legacy_environment_after_revocation(thread, provider)
             .await?;
     }
-    let retained = host
-        .installed_sessions
+    let retained = exec
+        .sessions
         .read_realization(thread, |r| r.environment_owner.resident())
         .flatten();
     let environment_owner_is_vacant = exec.session_environment_owner_is_vacant(thread);
-    let environment_owner_has_unpublished_candidate = host
-        .installed_sessions
+    let environment_owner_has_unpublished_candidate = exec
+        .sessions
         .read_realization(thread, |r| {
             r.environment_owner.unpublished_candidate().is_some()
         })
@@ -237,7 +237,7 @@ pub(super) async fn acquire(
         .as_ref()
         .map(|snapshot| snapshot.resolved_spec.plugin_config.agent.toolsets.clone())
         .unwrap_or_default();
-    let session_tools = host.installed_sessions.frozen(thread).tools.clone();
+    let session_tools = exec.sessions.frozen(thread).tools.clone();
     let toolsets = session_tools
         .as_ref()
         .map(|tools| tools.toolsets.clone())

@@ -494,13 +494,6 @@ impl crate::host::SharedHost {
         self.tools.skills.store_handle()
     }
 
-    pub(crate) fn register_thread_memory(&self, thread: &str, memory: Option<Arc<MemoryBinding>>) {
-        self.installed_sessions.update_realization(thread, |r| {
-            r.memory_bindings.clear();
-            r.memory = memory;
-        });
-    }
-
     /// Replace the complete set of standard mounted MemoryStore bindings. No
     /// automatic recall/extraction binding is inferred from collection order.
     #[cfg(test)]
@@ -509,37 +502,16 @@ impl crate::host::SharedHost {
         thread: &str,
         bindings: std::collections::HashMap<String, Arc<MemoryBinding>>,
     ) {
-        self.installed_sessions.update_realization(thread, |r| {
+        let realizations = self.installed_sessions.realizations();
+        realizations.update_realization(thread, |r| {
             r.memory_bindings = bindings;
             r.memory = None;
         });
     }
 
-    /// Select the exact Awaken extension binding authored by the published
-    /// Agent. A missing binding clears any prior selection before failing, so a
-    /// rebuilt context cannot retain stale automatic-memory authority.
-    pub(crate) fn select_thread_memory_binding(
-        &self,
-        thread: &str,
-        binding_id: Option<&str>,
-    ) -> Result<Option<BoundMemory>, String> {
-        let selected = self.installed_sessions.update(thread, |slot| {
-            let selected =
-                binding_id.and_then(|id| slot.realization.memory_bindings.get(id).cloned());
-            slot.realization.memory = selected.clone();
-            selected
-        });
-        match (binding_id, selected) {
-            (_, Some(selected)) => Ok(Some(self.resources.memory.bound(selected))),
-            (None, None) => Ok(None),
-            (Some(binding_id), None) => Err(format!(
-                "automatic memory binding `{binding_id}` is not mounted for this Session"
-            )),
-        }
-    }
-
     pub(crate) fn memory_for_thread(&self, thread: &str) -> Option<BoundMemory> {
-        self.installed_sessions
+        let realizations = self.installed_sessions.realizations();
+        realizations
             .read_realization(thread, |r| r.memory.clone())
             .flatten()
             .map(|binding| self.resources.memory.bound(binding))
@@ -555,6 +527,7 @@ impl crate::host::SharedHost {
         session_thread: &str,
         commit: Arc<HostCommit>,
     ) -> Result<usize, crate::HostError> {
+        let realizations = self.installed_sessions.realizations();
         // A database-less execution Worker owns only the frozen Memory data-plane
         // binding. The Coordinator's guarded settlement observer is the sole
         // owner of remote terminal observation and its durable extraction outbox;
@@ -563,8 +536,7 @@ impl crate::host::SharedHost {
         if !self.authority.observes_terminal_memory_locally() {
             return Ok(0);
         }
-        let bindings = self
-            .installed_sessions
+        let bindings = realizations
             .read_realization(session_thread, |r| {
                 let mut bindings: Vec<Arc<MemoryBinding>> = Vec::new();
                 for memory in r
@@ -638,7 +610,9 @@ impl crate::host::SharedHost {
             config,
             writable,
         );
-        self.register_thread_memory(thread, Some(Arc::new(binding)));
+        self.realizer
+            .staging
+            .register_thread_memory(thread, Some(Arc::new(binding)));
     }
 }
 

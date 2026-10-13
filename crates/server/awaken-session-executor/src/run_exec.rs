@@ -754,7 +754,7 @@ pub(crate) mod tests {
     }
 
     struct ReplacingClaimExecutor {
-        slots: crate::installed_session::InstalledSessions,
+        slots: Arc<crate::installed_session::InstalledSessions>,
         thread: String,
         replacement: awaken_dispatch_contract::RunClaim,
         failure: Option<&'static str>,
@@ -762,7 +762,7 @@ pub(crate) mod tests {
 
     impl ReplacingClaimExecutor {
         fn succeeding(
-            slots: crate::installed_session::InstalledSessions,
+            slots: Arc<crate::installed_session::InstalledSessions>,
             thread: &str,
             replacement: awaken_dispatch_contract::RunClaim,
         ) -> Self {
@@ -775,7 +775,7 @@ pub(crate) mod tests {
         }
 
         fn failing(
-            slots: crate::installed_session::InstalledSessions,
+            slots: Arc<crate::installed_session::InstalledSessions>,
             thread: &str,
             replacement: awaken_dispatch_contract::RunClaim,
             failure: &'static str,

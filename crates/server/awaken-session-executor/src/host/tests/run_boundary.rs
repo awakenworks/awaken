@@ -201,6 +201,7 @@ async fn worker_authority_loss_interrupts_active_session_before_revocation() {
     assert!(
         host.installed_sessions.session_ids().iter().all(|id| {
             host.installed_sessions
+                .realizations()
                 .read_realization(id, |r| r.authority.is_closed())
                 .unwrap()
         }),

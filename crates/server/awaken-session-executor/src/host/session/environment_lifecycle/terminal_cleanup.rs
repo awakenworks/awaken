@@ -19,7 +19,8 @@ impl SharedHost {
         effect: awaken_session_state_contract::SessionTerminalCleanupEffect,
         authorization: awaken_session_realization_contract::SessionTerminalCleanupPreparationAuthorization,
     ) -> Result<awaken_session_state_contract::SessionCleanupPreparation, HostError> {
-        let sessions = &self.installed_sessions;
+        let cleanup = &self.realizer.cleanup;
+        let sessions = &cleanup.sessions;
         authorization.verify_for(&effect).map_err(|error| {
             HostError::unavailable_classified(
                 "session_terminal_cleanup_preparation_unauthorized",
@@ -86,18 +87,15 @@ impl SharedHost {
         }
         let memory_plan = root_environment
             .as_ref()
-            .map(|root| {
-                self.realizer
-                    .cleanup
-                    .memory_plan(&effect, &root.environment)
-            })
+            .map(|root| cleanup.memory_plan(&effect, &root.environment))
             .transpose()?;
 
         sessions.update_realization(&effect.command.thread_id, |r| {
             r.terminal_cleanup_root = Some(effect.command.session_id.to_string());
         });
 
-        let primary_active = sessions
+        let primary_active = self
+            .installed_sessions
             .read_run(&effect.command.thread_id, |run| {
                 run.context.as_ref().is_some_and(|runtime| {
                     runtime
@@ -113,7 +111,8 @@ impl SharedHost {
             .await?;
         let delegated_active = delegated.iter().any(|run| {
             run.status.occupies_parallel_slot()
-                && sessions
+                && self
+                    .installed_sessions
                     .read_run(&run.run_id.0, |run| {
                         run.context.as_ref().is_some_and(|runtime| {
                             runtime
@@ -310,7 +309,7 @@ impl SharedHost {
         &self,
         effect: awaken_session_state_contract::SessionTerminalCleanupDisposalEffect,
     ) -> Result<awaken_session_state_contract::SessionCleanupDisposalReceipt, HostError> {
-        let sessions = &self.installed_sessions;
+        let sessions = &self.realizer.cleanup.sessions;
         let session_id = &effect.command.session_id;
         let root_realization = sessions
             .read_realization(session_id.as_str(), |r| r.realization.clone())
@@ -523,8 +522,8 @@ impl SharedHost {
         session_id: &str,
         lease: &session_resource::SessionRealizationLease,
     ) -> bool {
-        let projected_terminal = self
-            .installed_sessions
+        let realizations = self.installed_sessions.realizations();
+        let projected_terminal = realizations
             .read_realization(session_id, |r| r.terminal_cleanup_assignment.is_some())
             .unwrap_or(false);
         if !projected_terminal {
@@ -540,15 +539,14 @@ impl SharedHost {
         lease: &session_resource::SessionRealizationLease,
         target: Option<&str>,
     ) -> bool {
-        let Some(root_realization) = self
-            .installed_sessions
-            .read_realization(session_id, |r| r.realization.clone())
+        let realizations = self.installed_sessions.realizations();
+        let Some(root_realization) =
+            realizations.read_realization(session_id, |r| r.realization.clone())
         else {
             return false;
         };
         let _root_realization = root_realization.lock().await;
-        let authorized = self
-            .installed_sessions
+        let authorized = realizations
             .read_realization(session_id, |r| {
                 r.authority.lease().is_some_and(|current| {
                     awaken_session_realization_contract::realization_lease_generation_authorizes(
@@ -567,8 +565,7 @@ impl SharedHost {
                 .into_iter()
                 .filter(|thread_id| {
                     thread_id == session_id
-                        || self
-                            .installed_sessions
+                        || realizations
                             .read_realization(thread_id, |r| {
                                 r.terminal_cleanup_root.as_deref() == Some(session_id)
                             })
@@ -583,13 +580,11 @@ impl SharedHost {
         targets.sort_by_key(|thread_id| thread_id == session_id);
         let mut removed = false;
         for thread_id in targets {
-            let target_lifecycle = self
-                .installed_sessions
-                .read_realization(&thread_id, |r| r.lifecycle.clone());
+            let target_lifecycle =
+                realizations.read_realization(&thread_id, |r| r.lifecycle.clone());
             if let Some(lifecycle) = target_lifecycle {
                 let _target_lifecycle = lifecycle.lock().await;
-                let authorized = self
-                    .installed_sessions
+                let authorized = realizations
                     .read_realization(session_id, |r| {
                         r.authority.lease().is_some_and(|current| {
                             awaken_session_realization_contract::realization_lease_generation_authorizes(
@@ -602,8 +597,7 @@ impl SharedHost {
                     return removed;
                 }
                 let belongs_to_operation = thread_id == session_id
-                    || self
-                        .installed_sessions
+                    || realizations
                         .read_realization(&thread_id, |r| {
                             r.terminal_cleanup_root.as_deref() == Some(session_id)
                         })
@@ -615,8 +609,7 @@ impl SharedHost {
                 removed |= self.installed_sessions.remove(&thread_id).is_some();
                 continue;
             }
-            let authorized = self
-                .installed_sessions
+            let authorized = realizations
                 .read_realization(session_id, |r| {
                     r.authority.lease().is_some_and(|current| {
                         awaken_session_realization_contract::realization_lease_generation_authorizes(
@@ -629,8 +622,7 @@ impl SharedHost {
                 return removed;
             }
             let belongs_to_operation = thread_id == session_id
-                || self
-                    .installed_sessions
+                || realizations
                     .read_realization(&thread_id, |r| {
                         r.terminal_cleanup_root.as_deref() == Some(session_id)
                     })

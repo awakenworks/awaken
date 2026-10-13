@@ -305,7 +305,7 @@ mod tests {
     }
 
     struct Fixture {
-        slots: InstalledSessions,
+        slots: Arc<InstalledSessions>,
         environment: Arc<SessionEnvironment>,
         worker: Arc<Worker>,
         authority: Arc<SessionExecutionAuthority>,
@@ -321,7 +321,7 @@ mod tests {
                 .unwrap();
             let environment =
                 Arc::new(SandboxEnvironment::workdir(sandbox).into_session_environment());
-            let slots = InstalledSessions::default();
+            let slots = Arc::new(InstalledSessions::default());
             let worker = Arc::new(Worker(Mutex::new(Some(Duration::from_secs(30)))));
             let asserted = SessionRealizationLease {
                 owner: "worker".into(),
@@ -330,7 +330,7 @@ mod tests {
                 expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms()
                     + 60_000,
             };
-            let authority = slots.update_realization("session", |r| {
+            let authority = slots.realizations().update_realization("session", |r| {
                 r.authority = SessionRealizationAuthority::Live(
                     crate::installed_session::test_observed_lease(asserted.clone()),
                 );
@@ -430,12 +430,12 @@ mod tests {
                 }
                 "slot_aba" => {
                     let old = f.slots.remove("session").unwrap();
-                    f.slots.update_realization("session", |r| {
+                    f.slots.realizations().update_realization("session", |r| {
                         r.authority = old.realization.authority;
                         r.environment_owner = old.realization.environment_owner;
                     });
                 }
-                _ => f.slots.update_realization("session", |r| {
+                _ => f.slots.realizations().update_realization("session", |r| {
                     let mut lease = f.authority.asserted.clone();
                     match rule {
                         "uninstalled" => {
@@ -633,7 +633,7 @@ mod tests {
         });
         assert_eq!(failure.unwrap_err().to_string(), "provider effect failed");
         assert_eq!(calls, 1);
-        f.slots.update_realization("session", |r| {
+        f.slots.realizations().update_realization("session", |r| {
             r.environment_owner = SessionEnvironmentOwner::Vacant
         });
         assert!(f.current().is_err());
@@ -657,6 +657,10 @@ mod tests {
 
     #[tokio::test]
     async fn execution_authority_poison_and_callback_unwind_fail_closed() {
+        // The original local registry now implements Source itself. Every
+        // view borrows that same Mutex through the same Source Arc: healthy
+        // absence remains absence, while poison remains Internal/zero effects.
+        // S32/S33 below retain both fresh-capture and held-callback failures.
         // Cause/effect table: C1 installed/missing slot; C2 healthy/poisoned
         // slot lock; C3 poison from a slot writer (S32) or the held effect
         // callback (S33, also poisons Worker). E1 healthy exact capture succeeds;
@@ -716,11 +720,16 @@ mod tests {
 
     #[tokio::test]
     async fn execution_authority_does_not_retain_environment_or_slot_owner() {
+        // C1 a temporary view captures a Weak Source while the registry lives;
+        // C2 all strong registry/Environment owners are dropped. The same Arc
+        // registry backs every view, so C1 cannot expire early, and C2 must
+        // still expire without an effect or a self-cycle. The assertions below
+        // now observe that original owner rather than an inner Mutex Arc.
         // S21: outstanding authority after Host/Environment drop cannot keep
         // the ownership graph alive or authorize work (Weak edges, no cycle).
         let f = Fixture::new().await;
         let environment = Arc::downgrade(&f.environment);
-        let slots = Arc::downgrade(f.slots.test_map());
+        let slots = Arc::downgrade(&f.slots);
         let authority = f.authority.clone();
         drop(f);
         assert!(slots.upgrade().is_none());

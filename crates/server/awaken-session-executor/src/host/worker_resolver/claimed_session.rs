@@ -571,6 +571,7 @@ mod tests {
             );
             assert!(
                 host.installed_sessions
+                    .realizations()
                     .realization_lock("shared-session")
                     .try_lock()
                     .is_err(),

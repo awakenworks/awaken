@@ -20,7 +20,7 @@ const MCP_GENERATION_CALL_QUIESCENCE_TIMEOUT: Duration = Duration::from_secs(10)
 /// The Runtime Host's per-Session slot registry, seen only through each
 /// slot's [`SessionMcpState`] and its cached Session Runtime. Every closure
 /// runs under the registry's own lock, exactly like a direct slot access.
-pub trait McpSessionSlots: Clone + Send + Sync + 'static {
+pub trait McpSessionSlots: Send + Sync + 'static {
     /// The Session Runtime a slot caches; publication invalidates it and drain
     /// cancels and awaits its active Run.
     type Runtime: Clone + Send + Sync;

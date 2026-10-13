@@ -192,6 +192,7 @@ async fn pinned_reads_during_concurrent_first_hand_calls_do_not_join_sandbox_sta
     );
     assert!(
         host.installed_sessions
+            .realizations()
             .read_realization("skill-race", |r| r.manifest.is_none())
             .unwrap()
     );
@@ -316,6 +317,7 @@ async fn cold_resource_replacement_and_revocation_never_return_old_skill_bytes()
     );
     assert!(
         host.installed_sessions
+            .realizations()
             .read_realization("skill-change", |r| r.manifest.is_none())
             .unwrap()
     );
@@ -518,6 +520,7 @@ async fn failed_skill_file_write_blocks_tools_and_repaired_pin_reuses_environmen
         );
         assert!(
             host.installed_sessions
+                .realizations()
                 .read_realization("skill-write-fault", |r| r.manifest.is_none())
                 .unwrap()
         );
@@ -801,6 +804,7 @@ async fn pinned_read_path_and_text_decision_table() {
     }
     assert!(
         host.installed_sessions
+            .realizations()
             .read_realization("text-table", |r| r.manifest.is_none())
             .unwrap(),
         "no physical completion invented"
@@ -979,6 +983,7 @@ async fn lazy_skill_installation_reloads_exact_bytes_and_reuses_environment() {
         .await
         .unwrap();
     host.installed_sessions
+        .realizations()
         .update_realization("install-retry", |r| {
             r.skills.as_mut().unwrap()[0].files[0].content.push(b'!')
         });
@@ -1026,6 +1031,7 @@ async fn lazy_skill_installation_reloads_exact_bytes_and_reuses_environment() {
     );
     assert!(
         host.installed_sessions
+            .realizations()
             .read_realization("install-retry", |r| r.manifest.is_some())
             .unwrap(),
         "P11 physical completion"

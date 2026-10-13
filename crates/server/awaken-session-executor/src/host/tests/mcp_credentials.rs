@@ -345,6 +345,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     assert_eq!(
         host.installed_sessions
+            .realizations()
             .read_realization("mcp-exact", |r| r.mcp.projection_count()),
         Some(1),
         "H22 no duplicate tombstone"
@@ -437,6 +438,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     assert_eq!(
         host.installed_sessions
+            .realizations()
             .read_realization("mcp-removed-renewal", |r| r.mcp.projection_count()),
         Some(1),
         "H28 one projection"
@@ -447,6 +449,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H28 staged, not published"
     );
     host.installed_sessions
+        .realizations()
         .modify_realization("mcp-exact", |r| {
             r.mcp.projections_mut()[0].state = awaken_session_mcp::McpProjectionState::Staging;
             r.mcp.projections_mut()[0].staging =
@@ -462,6 +465,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H25"
     );
     host.installed_sessions
+        .realizations()
         .modify_realization("mcp-exact", |r| {
             r.mcp.projections_mut()[0].state = awaken_session_mcp::McpProjectionState::Staged;
             r.mcp.projections_mut()[0].staging = None;
@@ -516,6 +520,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     assert_eq!(
         host.installed_sessions
+            .realizations()
             .read_realization("mcp-conflict", |r| r.mcp.projection_count()),
         Some(1),
         "H10"

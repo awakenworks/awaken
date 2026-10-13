@@ -347,6 +347,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
 
     let bindings = host
         .installed_sessions
+        .realizations()
         .read_realization("semantic-memory", |r| r.memory_bindings.clone())
         .unwrap();
     let tools = crate::session_memory_tools::SessionMemoryTools::new(bindings).unwrap();
@@ -445,6 +446,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         .expect("M6 rebuilds from the frozen Session projection");
     assert_eq!(
         host.installed_sessions
+            .realizations()
             .read_realization("semantic-memory", |r| r.content_delivery)
             .flatten(),
         Some(crate::frozen_inputs::ManagedContentDelivery::SemanticTools),
@@ -1084,6 +1086,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     let mut terminal_projection = ordinary_projection.clone();
     let retained = host
         .installed_sessions
+        .realizations()
         .read_realization(session_id, |r| {
             r.environment_owner.terminal_bound_environment()
         })
@@ -1221,7 +1224,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             ordinary.is_err(),
             "P6 terminal retirement remains hidden from ordinary live IO"
         );
-        host.installed_sessions.update_realization(session_id, |r| {
+        host.installed_sessions.realizations().update_realization(session_id, |r| {
             if let crate::installed_session::SessionEnvironmentOwner::Retiring(retiring) =
                 &mut r.environment_owner
             {
@@ -1233,6 +1236,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
         });
         let before = host
             .installed_sessions
+            .realizations()
             .read_realization(session_id, |r| {
                 r.environment_owner.terminal_bound_environment().unwrap()
             })
@@ -1243,6 +1247,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
             .expect("P7 fresh wrapper resumes exact terminal publication");
         let after = host
             .installed_sessions
+            .realizations()
             .read_realization(session_id, |r| {
                 assert!(
                     matches!(
@@ -1337,6 +1342,7 @@ async fn terminal_repository_publication_fixture(retained_terminal: bool, source
     );
     assert!(
         host.installed_sessions
+            .realizations()
             .read_realization(session_id, |r| {
                 r.environment_owner.terminal_bound_environment().is_some()
             })

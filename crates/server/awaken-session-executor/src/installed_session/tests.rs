@@ -69,19 +69,21 @@ fn environment_only_session_lease_remains_supervised() {
     // C2 the Session has no MCP projection; C3 supervision filters on MCP.
     // E1 C1+C2 must still expose the lease for renewal, otherwise C3 lets
     // the durable fence expire before the Environment receipt can commit.
-    let slots = InstalledSessions::default();
-    slots.update_realization("environment-only", |r| {
-        assert!(!r.mcp.has_frozen_attachment(), "C2");
-        r.authority = crate::installed_session::SessionRealizationAuthority::Live(
-            test_observed_lease(crate::session_resource::SessionRealizationLease {
-                owner: "worker".into(),
-                runtime_incarnation: "worker/incarnation".into(),
-                epoch: 1,
-                expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms()
-                    + 30_000,
-            }),
-        );
-    });
+    let slots = Arc::new(InstalledSessions::default());
+    slots
+        .realizations()
+        .update_realization("environment-only", |r| {
+            assert!(!r.mcp.has_frozen_attachment(), "C2");
+            r.authority = crate::installed_session::SessionRealizationAuthority::Live(
+                test_observed_lease(crate::session_resource::SessionRealizationLease {
+                    owner: "worker".into(),
+                    runtime_incarnation: "worker/incarnation".into(),
+                    epoch: 1,
+                    expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms(
+                    ) + 30_000,
+                }),
+            );
+        });
 
     let leases = slots.realization_leases();
     assert_eq!(leases.len(), 1, "E1");
@@ -197,7 +199,7 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
     // | F4 | exact | same generation + new effect/binding | E4 |
     // | F5 | exact | Unmaterialized + pending source owner | E3 |
     // | F6 | exact | Unmaterialized + Vacant + no local effects | E4 |
-    let slots = InstalledSessions::default();
+    let slots = Arc::new(InstalledSessions::default());
     let generation = awaken_session_state_contract::SandboxGeneration::new(
         &awaken_session_types::SessionId::from("mcp-admission"),
         1,
@@ -222,12 +224,14 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
     );
     assert!(
         slots
+            .realizations()
             .close_mcp_realization_admission("mcp-admission", fence.clone())
             .unwrap(),
         "F1/E1"
     );
     assert!(
         !slots
+            .realizations()
             .close_mcp_realization_admission("mcp-admission", fence.clone())
             .unwrap(),
         "F1 replay"
@@ -236,6 +240,7 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
     foreign.activity_epoch += 1;
     assert!(
         slots
+            .realizations()
             .close_mcp_realization_admission("mcp-admission", foreign)
             .is_err(),
         "F2/E2"
@@ -309,9 +314,15 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
         }),
         "F4/E4"
     );
-    assert!(slots.mcp_realization_admitted("mcp-admission"), "F4/E4");
+    assert!(
+        slots
+            .realizations()
+            .mcp_realization_admitted("mcp-admission"),
+        "F4/E4"
+    );
 
     slots
+        .realizations()
         .close_mcp_realization_admission("mcp-admission", fence.clone())
         .unwrap();
     assert!(
@@ -340,7 +351,12 @@ fn mcp_quiescence_admission_reopens_only_from_post_suspend_authority() {
         }),
         "F6/E4 exact source-free projection"
     );
-    assert!(slots.mcp_realization_admitted("mcp-admission"), "F6/E4");
+    assert!(
+        slots
+            .realizations()
+            .mcp_realization_admitted("mcp-admission"),
+        "F6/E4"
+    );
 }
 
 #[test]

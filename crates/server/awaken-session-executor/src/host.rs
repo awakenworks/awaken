@@ -196,7 +196,7 @@ pub struct SharedHost {
     pub(crate) local_workspace: String,
     /// Process-local projections materialized for prepared Sessions. The private
     /// slot makes their lifecycle atomic while the durable manifest stays authoritative.
-    pub(crate) installed_sessions: crate::installed_session::InstalledSessions,
+    pub(crate) installed_sessions: Arc<crate::installed_session::InstalledSessions>,
     pub(crate) hub: Arc<ThreadEventHub>,
     /// When set, each thread commits to a durable SQLite database at
     /// `store_dir/<thread>.db`, so an awaiting run survives a process restart. When

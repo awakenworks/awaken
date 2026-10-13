@@ -43,8 +43,8 @@ impl awaken_session_mcp::McpStagingSession for ManagedHost {
         &self,
         session: &str,
     ) -> Option<awaken_runtime_contract::resolved::Backend> {
-        self.host
-            .installed_sessions
+        let realizations = self.host.installed_sessions.realizations();
+        realizations
             .frozen(session)
             .backend_ref
             .clone()
@@ -63,8 +63,8 @@ impl awaken_session_mcp::McpStagingSession for ManagedHost {
     }
 
     fn frozen_network(&self, session: &str) -> Option<awaken_provisioning_contract::NetworkPolicy> {
-        self.host
-            .installed_sessions
+        let realizations = self.host.installed_sessions.realizations();
+        realizations
             .frozen(session)
             .environment_projection
             .as_ref()
@@ -140,7 +140,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
     ) -> Result<(), RunError> {
         self.host
             .mcp
-            .publish_attachment(&self.host.installed_sessions, self, generation)
+            .publish_attachment(self.host.installed_sessions.as_ref(), self, generation)
             .await
     }
 
@@ -150,7 +150,7 @@ impl awaken_session_execution_contract::McpAttachmentRealizer for ManagedHost {
     ) -> Result<(), RunError> {
         self.host
             .mcp
-            .drain_attachment(&self.host.installed_sessions, generation)
+            .drain_attachment(self.host.installed_sessions.as_ref(), generation)
             .await
     }
 }
