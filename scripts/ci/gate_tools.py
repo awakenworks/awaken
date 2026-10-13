@@ -324,6 +324,8 @@ def version_problem(tool: dict, found: Found) -> str | None:
         )
     except (OSError, subprocess.SubprocessError) as error:
         return f"{tool['name']}: its version could not be read ({error})"
+    if result.returncode != 0:
+        return f"{tool['name']}: its version could not be read (exit code {result.returncode})"
     actual = (result.stdout or result.stderr).strip().splitlines()
     actual_line = actual[0] if actual else ""
     if "expect" in pin and actual_line != pin["expect"]:
@@ -874,6 +876,123 @@ def self_test() -> int:
             "cannot answer whether this machine can run it"
         )
 
+    # M5 version certainty C/E: a pin and usable location select one query;
+    # its exit and first stdout-or-stderr line determine evidence. A query must
+    # succeed before text can certify the pin; failed queries are not absence.
+    # | Rule | query status | line                           | helper effect |
+    # | V1   | 0            | expect/contains match          | None          |
+    # | V2   | 0            | wrong/empty                    | old mismatch  |
+    # | V3   | 23/75/-15    | match/wrong/empty, either pipe | named unread  |
+    # | V4   | spawn/timeout| no terminal output             | named unread  |
+    # | V5   | no pin/command or unusable location           | zero queries  |
+    # V1 also retains stdout precedence over stderr. V2/V3/V4 are crossed with
+    # required/optional x hard-error/warning: require and solver retain hard
+    # refusal versus warning; report remains diagnostic0 but shows the problem.
+    # V6 known absent optional/required -> require0/1; undecidable -> require1;
+    # solver absent/undecidable/builtin retains3/3/0. No query can redefine Found.
+    # These use the existing subprocess IO edge, never a fake Cargo/build tool.
+    from unittest.mock import patch
+    fixture_tool = {
+        "name": "fixture-version", "locate": "path", "gates": ["api"],
+        "requirement": "required", "install": "original IO fixture",
+        "solver": True,
+    }
+    matching = "fixture version 1"
+    present = Found("present")
+    for field in ("expect", "contains"):
+        pin = {"command": ["fixture-version", "--version"],
+               field: matching if field == "expect" else "version 1"}
+        tool = {**fixture_tool, "version": pin}
+        observations = [
+            (f"{status}/{output}", status, output,
+             subprocess.CompletedProcess([], status, stdout, stderr), None)
+            for status in (0, 23, 75, -15)
+            for output, stdout, stderr in (
+                ("stdout", matching + "\n", ""),
+                ("stderr", "", matching + "\n"),
+                ("wrong", "fixture version 2\n", ""),
+                ("empty", "", ""),
+                ("precedence", matching + "\n", "fixture version 2\n"),
+            )
+        ]
+        observations.extend(("V4/" + type(error).__name__, None, None, None, error)
+                            for error in (OSError("fixture version spawn refusal"),
+                                          subprocess.TimeoutExpired(["fixture-version", "--version"], 120)))
+        for cause, status, output, result, error in observations:
+            rule = f"M5 {field}/{cause}"
+            with patch.object(subprocess, "run", return_value=result, side_effect=error) as query:
+                problem = version_problem(tool, present)
+                query.assert_called_once_with(
+                    ["fixture-version", "--version"], capture_output=True,
+                    text=True, timeout=120,
+                )
+            if error is not None:
+                if problem != f"fixture-version: its version could not be read ({error})":
+                    problems.append(f"{rule}: original spawn/timeout refusal changed")
+            elif status:
+                expected = f"fixture-version: its version could not be read (exit code {status})"
+                if problem != expected:
+                    problems.append(f"{rule}: failed query certified text or lost its named status")
+            elif output in ("stdout", "stderr", "precedence"):
+                if problem is not None:
+                    problems.append(f"{rule}: a successful matching version was rejected")
+            elif problem is None or "expected" not in problem:
+                problems.append(f"{rule}: successful mismatching text lost its old refusal")
+            for requirement in ("required", "optional"):
+                for policy in ("hard-error", "warning"):
+                    judged = {**tool, "requirement": requirement,
+                              "version": {**pin, "mismatch": policy}}
+                    fixture = {"tools": [judged]}
+                    refusal = bool(problem) and policy == "hard-error"
+                    with patch(__name__ + ".locate", return_value=present), \
+                            patch.object(subprocess, "run", return_value=result, side_effect=error), \
+                            patch("builtins.print") as printed:
+                        for label, judge, arguments, expected_code in (
+                            ("require", command_require, (fixture, "api"), 1 if refusal else 0),
+                            ("solver", command_solver_status, (fixture, judged["name"]),
+                             SOLVER_REFUSED if refusal else SOLVER_USABLE),
+                            ("report", command_report, (fixture,), 0),
+                        ):
+                            printed.reset_mock()
+                            code = judge(*arguments)
+                            if code != expected_code:
+                                problems.append(f"{rule}/{requirement}/{policy}/{label}: policy changed")
+                            output_text = "\n".join(str(value) for call in printed.call_args_list
+                                                    for value in call.args)
+                            if problem and label in ("require", "report") and problem not in output_text:
+                                problems.append(f"{rule}/{label}: diagnostic lost the version problem")
+                            if problem and label == "solver" and refusal and problem not in output_text:
+                                problems.append(f"{rule}/solver: hard refusal lost the version problem")
+
+    for tool, found in (
+        (fixture_tool, present),
+        ({**fixture_tool, "version": {"expect": matching}}, present),
+        ({**fixture_tool, "version": {"command": ["fixture-version", "--version"]}}, Found("absent")),
+        ({**fixture_tool, "version": {"command": ["fixture-version", "--version"]}}, Found("undecidable")),
+    ):
+        with patch.object(subprocess, "run") as query:
+            if version_problem(tool, found) is not None:
+                problems.append("M5 V5: an unselected query changed the version result")
+            query.assert_not_called()
+    for requirement in ("required", "optional"):
+        tool = {**fixture_tool, "requirement": requirement,
+                "version": {"command": ["fixture-version", "--version"],
+                            "expect": matching, "mismatch": "hard-error"}}
+        for status in ("absent", "undecidable"):
+            with patch(__name__ + ".locate", return_value=Found(status)), \
+                    patch.object(subprocess, "run") as query:
+                expected_code = 0 if status == "absent" and requirement == "optional" else 1
+                if _quiet(lambda: command_require({"tools": [tool]}, "api")) != expected_code:
+                    problems.append(f"M5 V6/{requirement}/{status}: existing tool admission changed")
+                if _quiet(lambda: command_solver_status({"tools": [tool]}, tool["name"])) != SOLVER_ABSENT:
+                    problems.append(f"M5 V6/{status}: existing solver absence changed")
+                query.assert_not_called()
+    with patch(__name__ + ".locate", return_value=Found("builtin")), \
+            patch.object(subprocess, "run") as query:
+        if _quiet(lambda: command_solver_status({"tools": [tool]}, tool["name"])) != SOLVER_USABLE:
+            problems.append("M5 V6: builtin solver admission changed")
+        query.assert_not_called()
+
     stages = [entry["stage"] for entry in manifest["disk_minimums"]]
     if len(stages) != len(set(stages)):
         problems.append("M1 two disk minimums claim the same stage")
@@ -888,7 +1007,6 @@ def self_test() -> int:
     # M7 artifact capacity >=/< stage minimum => delegate once / return 75
     # before the host query. Ambient pressure is a separate cause owned by the
     # resource adapter table; it cannot impersonate an artifact-policy failure.
-    from unittest.mock import patch
     with patch(__name__ + '.free_gigabytes', return_value=100), \
             patch(__name__ + '.command_resources', return_value=0) as resources:
         for required in (0.000001, 100):
