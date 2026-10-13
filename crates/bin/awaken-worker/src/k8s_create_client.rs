@@ -8,7 +8,8 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use awaken_sandbox_container::k8s::{
-    K8sCreateRequest, K8sCreateResponse, K8sCreateTransport, RequestJoin,
+    CreateReplyProfile, K8S_CREATE_CAPTURE_HEADER, K8S_CREATE_WIRE_VERSION, K8sCreateRequest,
+    K8sCreateResponse, K8sCreateTransport, RequestJoin,
 };
 use awaken_sandbox_container::{ContainerEffectFence, RuntimeError};
 use awaken_worker_contract::WorkerIdentity;
@@ -116,14 +117,32 @@ impl WorkerK8sCreateClient {
                         status.is_server_error() || status.as_u16() == 429,
                     ));
                 }
-                response.json::<R>().await.map_err(|error| {
-                    (
-                        RuntimeError::MayHaveCommitted(format!(
-                            "Kubernetes broker response could not be decoded: {error}"
-                        )),
-                        true,
-                    )
-                })
+                let profile = response.headers().get(K8S_CREATE_CAPTURE_HEADER)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(CreateReplyProfile::from_header)
+                    .filter(|profile| match path {
+                        PATH => matches!(profile, CreateReplyProfile::FreshCreate | CreateReplyProfile::LegacyRetainedCreate),
+                        SEAL_PATH => *profile == CreateReplyProfile::WholeJoin,
+                        _ => false,
+                    })
+                    .ok_or_else(|| (RuntimeError::MayHaveCommitted("Create control response lacks its exact current capture profile".into()), false))?;
+                if let Some(limit) = profile.body_limit() {
+                    let response: axum::http::Response<_> = response.into();
+                    let body = axum::body::Body::new(response.into_body());
+                    let bytes = axum::body::to_bytes(body, limit).await.map_err(|_| {
+                        (RuntimeError::MayHaveCommitted("Create control response is incomplete or exceeds its full body policy".into()), true)
+                    })?;
+                    serde_json::from_slice::<R>(&bytes).map_err(|_| {
+                        (RuntimeError::MayHaveCommitted("Create control response could not be decoded".into()), true)
+                    })
+                } else {
+                    // Only an explicitly retained historical Create reply has
+                    // the old whole-object read scope. Never infer it from a
+                    // missing marker or downgrade the current request wire.
+                    response.json::<R>().await.map_err(|error| {
+                        (RuntimeError::MayHaveCommitted(format!("Kubernetes broker response could not be decoded: {error}")), true)
+                    })
+                }
             })
             .await;
             match result {
@@ -150,12 +169,14 @@ impl WorkerK8sCreateClient {
 
 #[derive(Serialize)]
 struct CreateWire<'a> {
+    wire_version: u8,
     identity: &'a WorkerIdentity,
     create: K8sCreateRequest,
 }
 
 #[derive(Serialize)]
 struct SealWire<'a> {
+    wire_version: u8,
     identity: &'a WorkerIdentity,
     scope: &'a str,
     predecessor: &'a ContainerEffectFence,
@@ -168,6 +189,7 @@ impl K8sCreateTransport for WorkerK8sCreateClient {
         self.post(
             PATH,
             &CreateWire {
+                wire_version: K8S_CREATE_WIRE_VERSION,
                 identity: self.identity()?,
                 create: request,
             },
@@ -184,6 +206,7 @@ impl K8sCreateTransport for WorkerK8sCreateClient {
         self.post(
             SEAL_PATH,
             &SealWire {
+                wire_version: K8S_CREATE_WIRE_VERSION,
                 identity: self.identity()?,
                 scope,
                 predecessor,
@@ -196,6 +219,7 @@ impl K8sCreateTransport for WorkerK8sCreateClient {
 
 #[cfg(test)]
 mod tests {
+    mod capture_tests;
     use super::*;
     use axum::routing::post;
     use axum::{Json, Router};
@@ -251,15 +275,25 @@ mod tests {
                                 "awaken-worker",
                                 "E1"
                             );
+                            assert_eq!(
+                                body["wire_version"], K8S_CREATE_WIRE_VERSION,
+                                "V1 current only"
+                            );
                             assert_eq!(body["identity"]["incarnation_id"], "boot", "E2");
                             assert_eq!(body["create"]["path"], "/api/v1/namespaces/ns/pods", "E2");
                             assert_eq!(body["create"]["object"]["metadata"]["name"], "pod", "E2");
-                            Json(serde_json::json!({
-                                "status":201,
-                                "object":{"apiVersion":"v1","kind":"Pod","metadata":{
-                                    "name":"pod","namespace":"ns","uid":"pod-uid"
-                                }}
-                            }))
+                            (
+                                [(
+                                    K8S_CREATE_CAPTURE_HEADER,
+                                    CreateReplyProfile::FreshCreate.header_value(),
+                                )],
+                                Json(serde_json::json!({
+                                    "status":201,
+                                    "object":{"apiVersion":"v1","kind":"Pod","metadata":{
+                                        "name":"pod","namespace":"ns","uid":"pod-uid"
+                                    }}
+                                })),
+                            )
                         }
                     }
                 }),
@@ -277,11 +311,21 @@ mod tests {
                                 "awaken-worker",
                                 "E4"
                             );
+                            assert_eq!(
+                                body["wire_version"], K8S_CREATE_WIRE_VERSION,
+                                "V1 current seal"
+                            );
                             assert_eq!(body["identity"]["incarnation_id"], "boot", "E4");
                             assert_eq!(body["scope"], "scope", "E4");
                             assert_eq!(body["predecessor"]["operation_id"], "old-effect", "E4");
                             assert_eq!(body["expected_pod_name"], "awaken-realization-scope", "E4");
-                            Json(serde_json::json!("unknown"))
+                            (
+                                [(
+                                    K8S_CREATE_CAPTURE_HEADER,
+                                    CreateReplyProfile::WholeJoin.header_value(),
+                                )],
+                                Json(serde_json::json!("unknown")),
+                            )
                         }
                     }
                 }),
@@ -336,10 +380,10 @@ mod tests {
                     let mut history = bodies.lock().unwrap();
                     history.push(body);
                     if history.len() == 1 {
-                        (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error":"reply unavailable after Create admission"})))
+                        (axum::http::StatusCode::SERVICE_UNAVAILABLE, [(K8S_CREATE_CAPTURE_HEADER, CreateReplyProfile::FreshCreate.header_value())], Json(serde_json::json!({"error":"reply unavailable after Create admission"})))
                     } else {
                         assert_eq!(history[0], history[1], "R1 identical ledger key and request digest");
-                        (axum::http::StatusCode::OK, Json(serde_json::json!({"status":409,"object":{"kind":"Status","reason":"AlreadyExists"}})))
+                        (axum::http::StatusCode::OK, [(K8S_CREATE_CAPTURE_HEADER, CreateReplyProfile::FreshCreate.header_value())], Json(serde_json::json!({"status":409,"object":{"kind":"Status","reason":"AlreadyExists"}})))
                     }
                 }
             }
