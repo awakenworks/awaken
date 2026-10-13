@@ -234,6 +234,7 @@ impl ManagedState {
             .projection_thread_snapshot(
                 &awaken_session_types::SessionId::from(session_id),
                 thread_id,
+                None,
             )
             .await
             .map_err(StateError::Run)

@@ -1674,17 +1674,11 @@ impl awaken_session_execution_contract::ThreadReadRuntime for LifecycleRuntime {
         Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
         awaken_session_types::RunError,
     > {
-        let Some(mut snapshot) = self
-            .session_thread_recovery_snapshot(session_id, thread_id)
-            .await?
-        else {
-            return Ok(None);
-        };
-        if !snapshot.runs.iter().any(|run| &run.id == run_id) {
-            return Ok(None);
-        }
-        snapshot.claimed_run_id = run_id.clone();
-        Ok(Some(snapshot))
+        awaken_session_execution_contract::select_recovery_snapshot_run(
+            self.session_thread_recovery_snapshot(session_id, thread_id)
+                .await?,
+            run_id,
+        )
     }
 
     // Former `awaken_session_execution_contract::SessionRuntime` default, kept verbatim: this implementation never

@@ -1,25 +1,59 @@
-//! The read-only committed-truth port behind protocol projections.
+//! The read-only committed-truth port behind Session projections.
 
 use super::*;
 
-/// Committed Session/Thread truth a protocol projection (Managed Events and
-/// Session GET) is built from, and nothing else.
+/// Project the original exact-Run fallback from an already-read prefix.
+/// This performs no query and never changes committed facts, cursors or
+/// ordinals; only the caller's claimed-Run read coordinate is selected.
+/// Native exact stores still own the physical partition and ordinal query.
+pub fn select_recovery_snapshot_run(
+    snapshot: Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+    run_id: &RunId,
+) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError> {
+    let Some(mut snapshot) = snapshot else {
+        return Ok(None);
+    };
+    if snapshot
+        .run_record(run_id)
+        .map_err(|error| RunError::internal(error.to_string()))?
+        .is_none()
+    {
+        return Ok(None);
+    }
+    snapshot.claimed_run_id = run_id.clone();
+    Ok(Some(snapshot))
+}
+
+/// Committed Session/Thread truth for protocol projections and exact-Run
+/// observations. Selecting a Run grants no execution or cleanup authority.
 ///
-/// Consumer: `SessionApplication`'s projection-evidence reads, which the
+/// Consumer: `SessionApplication`'s committed projection reads, which the
 /// Managed adapter calls instead of reaching into the Runtime itself. The
-/// port deliberately exposes no Run, realization, Environment, or execution
+/// port deliberately exposes no Run execution, realization, Environment, or
 /// context operation: a projection read that could build an execution context
 /// is how a GET once installed physical Environment state and reported a
 /// placeholder Agent. Implementations answer from committed commit-partition
 /// reads only (the Runtime Host's `commit_for_read`).
+///
+/// ```compile_fail,E0599
+/// use awaken_session_execution_contract::SessionProjectionSource;
+/// async fn cannot_quiesce(source: &dyn SessionProjectionSource) {
+///     // A selected committed Run is data; the pure role has no stop command.
+///     source.quiesce_terminal_delegations("session").await;
+/// }
+/// ```
 #[async_trait]
 pub trait SessionProjectionSource: Send + Sync {
-    /// One internally consistent logical Thread prefix through the parent
-    /// Session partition; `None` when the Thread has no committed Run.
+    /// One internally consistent logical Thread prefix through the explicit
+    /// parent Session partition. `None` selects the latest committed Run;
+    /// `Some` selects the supplied original Run while retaining every Run and
+    /// state command in the prefix. An absent selected Run returns no snapshot;
+    /// neither absence nor a selected snapshot proves physical quiescence.
     async fn projection_thread_snapshot(
         &self,
         session_id: &crate::SessionId,
         thread_id: &str,
+        selected_run: Option<&RunId>,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>;
 
     /// Coordinated Thread links derived from committed facts at or before the
@@ -50,9 +84,41 @@ where
         &self,
         session_id: &crate::SessionId,
         thread_id: &str,
+        selected_run: Option<&RunId>,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
-        ThreadReadRuntime::session_thread_recovery_snapshot(self, session_id, thread_id).await
+        let snapshot = match selected_run {
+            Some(run_id) => {
+                ThreadReadRuntime::session_thread_run_recovery_snapshot(
+                    self, session_id, thread_id, run_id,
+                )
+                .await
+            }
+            None => {
+                ThreadReadRuntime::session_thread_recovery_snapshot(self, session_id, thread_id)
+                    .await
+            }
+        }?;
+        if snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.thread_id.0 != thread_id)
+        {
+            return Err(RunError::internal(
+                "Runtime returned a recovery snapshot for a different Session Thread",
+            ));
+        }
+        if let Some((snapshot, run)) = snapshot.as_ref().zip(selected_run)
+            && (snapshot.claimed_run_id != *run
+                || snapshot
+                    .run_record(run)
+                    .map_err(|error| RunError::internal(error.to_string()))?
+                    .is_none())
+        {
+            return Err(RunError::internal(
+                "Runtime returned a recovery snapshot for a different selected Run",
+            ));
+        }
+        Ok(snapshot)
     }
 
     async fn projection_coordinated_threads(

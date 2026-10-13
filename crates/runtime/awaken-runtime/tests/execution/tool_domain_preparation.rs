@@ -37,6 +37,8 @@ struct PreparingExecutor {
     failing_tool: &'static str,
     parallel: bool,
     invocations: Mutex<Vec<String>>,
+    durable: Arc<MemoryCommitCoordinator>,
+    origin: Option<awaken_tool_contract::tool_batch::ResourceOriginRef>,
 }
 
 #[async_trait::async_trait]
@@ -63,7 +65,9 @@ impl ToolExecutor for PreparingExecutor {
                 Preparation::Ready => {}
             }
         }
-        Ok(ToolExecutionDomain::Worker {})
+        Ok(ToolExecutionDomain::Worker {
+            resource_origin: None,
+        })
     }
     fn concurrency(&self, _: &str, _: &serde_json::Value) -> ToolConcurrency {
         if self.parallel {
@@ -73,6 +77,24 @@ impl ToolExecutor for PreparingExecutor {
         }
     }
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
+        let state = awaken_agent_contract::agent::state::Store::rebuild(
+            &self.durable.committed_state(&ThreadId("thread-1".into())),
+        );
+        let batch = ActiveToolBatch::load(&state).unwrap().unwrap();
+        let entered = batch
+            .calls()
+            .iter()
+            .find(|entry| entry.call.call_id == call.call_id)
+            .unwrap();
+        assert!(matches!(
+            entered.phase,
+            awaken_tool_contract::tool_batch::ToolCallPhase::Executing { .. }
+        ));
+        assert_eq!(
+            entered.execution_domain.as_ref().unwrap().resource_origin(),
+            self.origin.as_ref(),
+            "actual durable origin precedes invoke, not just an in-memory label"
+        );
         self.invocations.lock().unwrap().push(call.tool_id.clone());
         Ok(ToolOutput::ok(
             &call.call_id,
@@ -161,129 +183,149 @@ async fn tool_domain_preparation_preserves_result_and_fatal_boundaries_in_each_d
     // R5 fatal second + serial => retain earlier healthy call's completed state;
     // fatal second + parallel => no invocation before the whole wave's metadata
     // admission finishes. Earlier metadata success is NOT executor entry.
-    for parallel in [false, true] {
-        for failing_tool in ["a", "b"] {
-            for preparation in [
-                Preparation::Ready,
-                Preparation::Unavailable,
-                Preparation::Failed,
-                Preparation::Indeterminate,
-                Preparation::Invalidated,
-            ] {
-                let fatal = matches!(
-                    preparation,
-                    Preparation::Indeterminate | Preparation::Invalidated
-                );
-                let expected_error = !matches!(preparation, Preparation::Ready);
-                let model = Arc::new(CallsThenReply {
-                    calls: AtomicUsize::new(0),
-                    expected_error_id: expected_error.then_some(failing_tool),
-                });
-                let executor = Arc::new(PreparingExecutor {
-                    preparation,
-                    failing_tool,
-                    parallel,
-                    invocations: Mutex::new(Vec::new()),
-                });
-                let durable = Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
-                let mut request = activation("catalog-a");
-                request.snapshot.resolved_spec.tool_descriptors = ["a", "b"]
-                    .into_iter()
-                    .map(|id| {
-                        ToolDescriptor::pinned("test", id, id, serde_json::json!({"type":"object"}))
-                    })
-                    .collect();
-                let context = RuntimeRunContext::new()
-                    .with_reader(durable.clone())
-                    .with_commit(durable.clone())
-                    .with_tool_executor(executor.clone());
-                let quiescence = context.physical_quiescence.clone();
-                let result = Runtime::new()
-                    .with_llm(model.clone())
-                    .with_tool(Arc::new(SandboxDeclaration("a")))
-                    .with_tool(Arc::new(SandboxDeclaration("b")))
-                    .execute(request, context)
-                    .await
-                    .unwrap();
-                let expected = match preparation {
-                    Preparation::Indeterminate => EndCause::Indeterminate,
-                    Preparation::Invalidated => EndCause::Error(Failure::StateConflict),
-                    _ => EndCause::NaturalEnd,
-                };
-                assert_eq!(
-                    result,
-                    RunState::Ended(expected),
-                    "{preparation:?} parallel={parallel} failing={failing_tool}"
-                );
-                assert_eq!(
-                    model.calls.load(Ordering::SeqCst),
-                    if fatal { 1 } else { 2 }
-                );
-                let mut invocations = executor.invocations.lock().unwrap().clone();
-                invocations.sort();
-                assert_eq!(
-                    invocations,
-                    if fatal {
-                        if !parallel && failing_tool == "b" {
-                            vec!["a".to_string()]
+    // O1 every original row is crossed with absent/present opaque origin.
+    // Both keep containment/result semantics, while every entered callback
+    // verifies the origin in the real same ThreadCommit before side effects.
+    for origin in [
+        None,
+        Some(
+            awaken_tool_contract::tool_batch::ResourceOriginRef::new("original-generation")
+                .unwrap(),
+        ),
+    ] {
+        for parallel in [false, true] {
+            for failing_tool in ["a", "b"] {
+                for preparation in [
+                    Preparation::Ready,
+                    Preparation::Unavailable,
+                    Preparation::Failed,
+                    Preparation::Indeterminate,
+                    Preparation::Invalidated,
+                ] {
+                    let fatal = matches!(
+                        preparation,
+                        Preparation::Indeterminate | Preparation::Invalidated
+                    );
+                    let expected_error = !matches!(preparation, Preparation::Ready);
+                    let model = Arc::new(CallsThenReply {
+                        calls: AtomicUsize::new(0),
+                        expected_error_id: expected_error.then_some(failing_tool),
+                    });
+                    let durable =
+                        Arc::new(MemoryCommitCoordinator::new(awaken_time::system_clock()));
+                    let executor = Arc::new(PreparingExecutor {
+                        preparation,
+                        failing_tool,
+                        parallel,
+                        invocations: Mutex::new(Vec::new()),
+                        durable: durable.clone(),
+                        origin: origin.clone(),
+                    });
+                    let mut request = activation("catalog-a");
+                    request.snapshot.resolved_spec.tool_descriptors = ["a", "b"]
+                        .into_iter()
+                        .map(|id| {
+                            ToolDescriptor::pinned(
+                                "test",
+                                id,
+                                id,
+                                serde_json::json!({"type":"object"}),
+                            )
+                        })
+                        .collect();
+                    let mut context = RuntimeRunContext::new()
+                        .with_reader(durable.clone())
+                        .with_commit(durable.clone())
+                        .with_tool_executor(executor.clone());
+                    context.resource_origin = origin.clone();
+                    let quiescence = context.physical_quiescence.clone();
+                    let result = Runtime::new()
+                        .with_llm(model.clone())
+                        .with_tool(Arc::new(SandboxDeclaration("a")))
+                        .with_tool(Arc::new(SandboxDeclaration("b")))
+                        .execute(request, context)
+                        .await
+                        .unwrap();
+                    let expected = match preparation {
+                        Preparation::Indeterminate => EndCause::Indeterminate,
+                        Preparation::Invalidated => EndCause::Error(Failure::StateConflict),
+                        _ => EndCause::NaturalEnd,
+                    };
+                    assert_eq!(
+                        result,
+                        RunState::Ended(expected),
+                        "{preparation:?} parallel={parallel} failing={failing_tool}"
+                    );
+                    assert_eq!(
+                        model.calls.load(Ordering::SeqCst),
+                        if fatal { 1 } else { 2 }
+                    );
+                    let mut invocations = executor.invocations.lock().unwrap().clone();
+                    invocations.sort();
+                    assert_eq!(
+                        invocations,
+                        if fatal {
+                            if !parallel && failing_tool == "b" {
+                                vec!["a".to_string()]
+                            } else {
+                                vec![]
+                            }
+                        } else if expected_error {
+                            vec![if failing_tool == "a" { "b" } else { "a" }.to_string()]
                         } else {
-                            vec![]
+                            vec!["a".to_string(), "b".to_string()]
                         }
-                    } else if expected_error {
-                        vec![if failing_tool == "a" { "b" } else { "a" }.to_string()]
-                    } else {
-                        vec!["a".to_string(), "b".to_string()]
+                    );
+                    assert_eq!(
+                        quiescence.can_acknowledge_return(),
+                        !matches!(preparation, Preparation::Indeterminate)
+                    );
+                    let batches: Vec<ToolBatch> = durable
+                        .committed_state(&ThreadId("thread-1".into()))
+                        .into_iter()
+                        .filter_map(|c| {
+                            if c.key.0 == ActiveToolBatch::KEY
+                                && let awaken_agent_contract::agent::state::Action::Set(value) =
+                                    c.action
+                            {
+                                return Some(serde_json::from_value(value).unwrap());
+                            }
+                            None
+                        })
+                        .collect();
+                    let last = batches.last().unwrap();
+                    assert_eq!(last.phase(), ToolBatchPhase::Finalized);
+                    if fatal {
+                        // Terminal sealing is the existing owner: it closes Requested
+                        // calls as unconsumed, without inventing an ordinary ToolResult.
+                        assert!(
+                            last.calls()
+                                .iter()
+                                .filter(|c| c.call.tool_id == failing_tool)
+                                .all(|c| c.result_messages.is_empty())
+                        );
                     }
-                );
-                assert_eq!(
-                    quiescence.can_acknowledge_return(),
-                    !matches!(preparation, Preparation::Indeterminate)
-                );
-                let batches: Vec<ToolBatch> = durable
-                    .committed_state(&ThreadId("thread-1".into()))
-                    .into_iter()
-                    .filter_map(|c| {
-                        if c.key.0 == ActiveToolBatch::KEY
-                            && let awaken_agent_contract::agent::state::Action::Set(value) =
-                                c.action
-                        {
-                            return Some(serde_json::from_value(value).unwrap());
-                        }
-                        None
-                    })
-                    .collect();
-                let last = batches.last().unwrap();
-                assert_eq!(last.phase(), ToolBatchPhase::Finalized);
-                if fatal {
-                    // Terminal sealing is the existing owner: it closes Requested
-                    // calls as unconsumed, without inventing an ordinary ToolResult.
-                    assert!(
-                        last.calls()
+                    if expected_error {
+                        assert!(
+                            batches.iter().all(|b| b
+                                .calls()
+                                .iter()
+                                .filter(|c| c.call.tool_id == failing_tool)
+                                .all(|c| c.execution_domain.is_none())),
+                            "failed metadata never publishes an executor entry"
+                        );
+                    }
+                    assert_eq!(
+                        durable
+                            .committed()
+                            .run_facts
                             .iter()
-                            .filter(|c| c.call.tool_id == failing_tool)
-                            .all(|c| c.result_messages.is_empty())
+                            .filter(|f| matches!(f.state, RunState::Ended(_)))
+                            .count(),
+                        1,
+                        "one terminal fact, no transient execution retry"
                     );
                 }
-                if expected_error {
-                    assert!(
-                        batches.iter().all(|b| b
-                            .calls()
-                            .iter()
-                            .filter(|c| c.call.tool_id == failing_tool)
-                            .all(|c| c.execution_domain.is_none())),
-                        "failed metadata never publishes an executor entry"
-                    );
-                }
-                assert_eq!(
-                    durable
-                        .committed()
-                        .run_facts
-                        .iter()
-                        .filter(|f| matches!(f.state, RunState::Ended(_)))
-                        .count(),
-                    1,
-                    "one terminal fact, no transient execution retry"
-                );
             }
         }
     }

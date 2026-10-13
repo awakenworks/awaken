@@ -113,11 +113,14 @@ impl NativeAttemptFootprint {
         &self,
         closed: &[awaken_tool_contract::tool_batch::ToolExecutionDomain],
     ) -> NativeAttemptTermination {
-        use awaken_tool_contract::tool_batch::ToolExecutionDomain;
-        let tools_closed = self.domains.iter().all(|domain| match domain {
-            ToolExecutionDomain::Worker {} => true,
-            ToolExecutionDomain::ControlledProcess { .. } => closed.contains(domain),
-            ToolExecutionDomain::Opaque {} => false,
+        // This classifies execution containment only. An origin label does not
+        // prove membership, resource exclusivity, closure or target access.
+        let tools_closed = self.domains.iter().all(|domain| {
+            domain.is_worker_contained()
+                || (domain.controlled_process_binding().is_some()
+                    && closed
+                        .iter()
+                        .any(|observed| observed.same_containment_as(domain)))
         });
         let covered = self.profile != NativeAttemptCoverage::Unspecified;
         if termination_from_facts(covered, false, self.all_models_stopped, tools_closed)
@@ -144,11 +147,10 @@ impl NativeAttemptFootprint {
             all_model_effects_closed: false,
             domains: Vec::new(),
         };
-        if snapshot.claimed_run_id.0.trim().is_empty()
-            || !snapshot
-                .runs
-                .iter()
-                .any(|run| run.id == snapshot.claimed_run_id && run.thread_id == snapshot.thread_id)
+        if snapshot
+            .run_record(&snapshot.claimed_run_id)
+            .map_err(|_| NativeAttemptTerminationError::RunMismatch)?
+            .is_none()
         {
             return Err(NativeAttemptTerminationError::RunMismatch);
         }
@@ -281,14 +283,17 @@ mod tests {
         use awaken_runtime_contract::model_operation::ModelEffectScope;
         use awaken_tool_contract::tool_batch::ToolExecutionDomain;
         // C1 pre-effect coverage; C2 model is response-only/opaque; C3 exact
-        // process closure delivered/missing/wrong. R1=C1+response-only+exact
+        // process closure delivered/missing/wrong; C4 Requested prefix before
+        // executor entry. R1=C1+C4+response-only+exact
         // => controlled closure, original Unknown unchanged, no model replay.
-        // R2=!C1|opaque|missing|wrong => Unknown. Worker-local tool containment
+        // R2=!C1|opaque|missing|wrong => Unknown; R3=!C4 => Unknown.
+        // Worker-local tool containment
         // adds no remote participant; a contained process does, even after its
         // ordinary output was committed. All rules consume real canonical cells.
         let domain = ToolExecutionDomain::ControlledProcess {
             provider_ref: "test-process".into(),
             execution_ref: "old-incarnation".into(),
+            resource_origin: None,
         };
         let mut batch = ToolBatch::for_step(
             RunId("run".into()),
@@ -303,6 +308,7 @@ mod tests {
             )],
         )
         .unwrap();
+        let requested = bind(ActiveToolBatch::write(&Some(batch.clone())));
         batch
             .mark_executing_in_domain("tool", Some(domain.clone()))
             .unwrap();
@@ -316,6 +322,7 @@ mod tests {
                 operation.effect_scope = scope;
                 let mut commands = vec![
                     bind(ActiveModelOperation::write(&Some(operation.clone()))),
+                    requested.clone(),
                     bind(ActiveToolBatch::write(&Some(batch.clone()))),
                 ];
                 if covered {
@@ -326,7 +333,8 @@ mod tests {
                         )),
                     );
                 }
-                let view = NativeAttemptFootprint::decode(&snapshot(commands)).unwrap();
+                let complete = snapshot(commands);
+                let view = NativeAttemptFootprint::decode(&complete).unwrap();
                 assert!(
                     !view.model_only_coverage(),
                     "J1 journalled coverage is not a local process-only proof"
@@ -334,6 +342,7 @@ mod tests {
                 let wrong = ToolExecutionDomain::ControlledProcess {
                     provider_ref: "test-process".into(),
                     execution_ref: "replacement-incarnation".into(),
+                    resource_origin: None,
                 };
                 assert_eq!(view.classify(&[]), NativeAttemptTermination::Unknown);
                 assert_eq!(view.classify(&[wrong]), NativeAttemptTermination::Unknown);
@@ -347,6 +356,19 @@ mod tests {
                 );
                 assert_eq!(operation.execution, ModelExecutionEvidence::Unknown);
                 assert!(!ModelOperation::permits_reentry(Some(&operation), false));
+                // R3: the same exact process receipt cannot close an isolated
+                // tail. The real SDK commits Requested before entry; losing
+                // that prefix retains Unknown even with later complete data.
+                let mut tail = complete;
+                let position = tail.state.iter().position(|row| row == &requested).unwrap();
+                tail.state.remove(position);
+                tail.state_commit_cursors.remove(position);
+                let tail = NativeAttemptFootprint::decode(&tail).unwrap();
+                assert_eq!(
+                    tail.classify(std::slice::from_ref(&domain)),
+                    NativeAttemptTermination::Unknown,
+                    "R3 missing entry prefix is never backfilled"
+                );
             }
         }
     }
@@ -552,6 +574,32 @@ mod tests {
             ),
             "T10"
         );
+        // T10 shares the SDK selection law: blank id/Thread, foreign owner,
+        // and equal/conflicting duplicates all map to the existing RunMismatch,
+        // before any coverage/process classification; no first row or repair.
+        for defect in 0..6 {
+            let mut malformed = snapshot(Vec::new());
+            match defect {
+                0 => malformed.claimed_run_id = RunId(" ".into()),
+                1 => malformed.thread_id = ThreadId(" ".into()),
+                2 => malformed.runs[0].thread_id = ThreadId(" ".into()),
+                3 => malformed.runs[0].thread_id = ThreadId("foreign".into()),
+                _ => {
+                    let mut duplicate = malformed.runs[0].clone();
+                    if defect == 5 {
+                        duplicate.state = RunState::Awaiting;
+                    }
+                    malformed.runs.push(duplicate);
+                }
+            }
+            assert!(
+                matches!(
+                    classify_native_attempt_termination(&malformed),
+                    Err(NativeAttemptTerminationError::RunMismatch)
+                ),
+                "T10 defect={defect}"
+            );
+        }
         let mut invalid = snapshot(Vec::new());
         invalid.state_commit_cursors.push(1);
         assert!(

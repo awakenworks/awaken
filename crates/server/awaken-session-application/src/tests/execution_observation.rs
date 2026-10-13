@@ -680,6 +680,194 @@ fn recovery_snapshot(
     }
 }
 
+#[tokio::test]
+async fn projection_selector_keeps_exact_parent_partition_and_session_unchanged() {
+    // Causes: C1 explicit physical parent differs from logical child; C2 the
+    // prefix retains older A/newer B; C3 selector None/exact A/absent; C4 the
+    // same logical id is queried under another physical partition; C5 a damaged
+    // source replies with another Thread, a blank/foreign selected owner or
+    // equal/conflicting duplicate Run rows. Effects: E1 None keeps B, exact keeps
+    // A plus all original history; E2 absent/foreign partition stays None, never
+    // latest or child-owned storage; E3 wrong Thread rejects the whole prefix;
+    // E4 all reads leave the SQL Root and Environment/Runtime effects untouched.
+    // R1=C1+C2+None|A => E1/E4; R2=absent|C4 => E2/E4;
+    // R3=C5+None|A => E3/E4. These values grant no cleanup or execution right.
+    let repository = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .await
+            .unwrap(),
+    );
+    let id = SessionId::from("projection-physical-parent");
+    let child = ThreadId("projection-logical-child".into());
+    create(repository.as_ref(), observed_session(id.as_str())).await;
+    let runtime = Arc::new(RecordingAgentAdmissionRuntime::new([]));
+    let environments = Arc::new(RecordingEnvironmentSource::default());
+    let old = RunId("projection-old-run".into());
+    let latest = RunId("projection-latest-run".into());
+    let snapshot = recovery_snapshot(
+        &child.0,
+        vec![
+            RunRecord {
+                id: old.clone(),
+                thread_id: child.clone(),
+                state: RunState::Ended(EndCause::NaturalEnd),
+            },
+            RunRecord {
+                id: latest.clone(),
+                thread_id: child.clone(),
+                state: RunState::Running,
+            },
+        ],
+        vec![Message::text(
+            MessageId::assistant(&old, 0),
+            Role::Assistant,
+            "retained old output",
+        )],
+        Vec::new(),
+    );
+    runtime.set_recovery_snapshot(id.as_str(), &child, snapshot.clone());
+    let application =
+        application_with_runtime(runtime.clone(), repository.clone(), environments.clone());
+    let before = repository.get(&id).await.unwrap();
+    let selected_latest = application
+        .projection_thread_snapshot(&id, &child.0, None)
+        .await
+        .unwrap()
+        .unwrap();
+    let selected_old = application
+        .projection_thread_snapshot(&id, &child.0, Some(&old))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        selected_latest.claimed_run_id, latest,
+        "R1/E1 original None behavior"
+    );
+    assert_eq!(selected_old.claimed_run_id, old, "R1/E1 exact original Run");
+    assert_eq!(
+        selected_old.latest_run_id,
+        Some(latest),
+        "R1/E1 latest is not claimed fallback"
+    );
+    assert_eq!(selected_old.runs, snapshot.runs, "R1/E1 every Run retained");
+    assert_eq!(
+        selected_old.messages, snapshot.messages,
+        "R1/E1 old transcript retained"
+    );
+    assert_eq!(
+        selected_old.store_cursor, snapshot.store_cursor,
+        "R1/E1 owned projection keeps the original prefix coordinate"
+    );
+    assert_eq!(
+        selected_old.next_commit_ordinal, snapshot.next_commit_ordinal,
+        "R1/E1 fallback never invents an ordinal for the selected Run"
+    );
+    assert!(
+        application
+            .projection_thread_snapshot(&id, &child.0, Some(&RunId("absent".into())))
+            .await
+            .unwrap()
+            .is_none(),
+        "R2/E2 absent is not latest"
+    );
+    assert!(
+        application
+            .projection_thread_snapshot(&SessionId::from(child.0.clone()), &child.0, Some(&old))
+            .await
+            .unwrap()
+            .is_none(),
+        "R2/E2 child id is not its physical owner"
+    );
+
+    runtime
+        .boundaries
+        .0
+        .lock()
+        .unwrap()
+        .get_mut(&(id.to_string(), child.0.clone()))
+        .unwrap()
+        .thread_id = ThreadId("foreign-thread".into());
+    for selector in [None, Some(&old)] {
+        let error = application
+            .projection_thread_snapshot(&id, &child.0, selector)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.kind,
+            awaken_session_types::RunErrorKind::Internal,
+            "R3/E3 whole foreign prefix refused"
+        );
+    }
+    let mut wrong_run_owner = snapshot.clone();
+    wrong_run_owner.runs[0].thread_id = ThreadId("foreign-run-thread".into());
+    runtime.set_recovery_snapshot(id.as_str(), &child, wrong_run_owner);
+    let error = application
+        .projection_thread_snapshot(&id, &child.0, Some(&old))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.kind,
+        awaken_session_types::RunErrorKind::Internal,
+        "R3/E3 exact Run cannot come from a foreign logical Thread"
+    );
+    for conflicting in [false, true] {
+        let mut duplicate = snapshot.clone();
+        let mut row = duplicate.runs[0].clone();
+        if conflicting {
+            row.state = RunState::Awaiting;
+        }
+        duplicate.runs.push(row);
+        runtime.set_recovery_snapshot(id.as_str(), &child, duplicate);
+        let error = application
+            .projection_thread_snapshot(&id, &child.0, Some(&old))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.kind,
+            awaken_session_types::RunErrorKind::Internal,
+            "R3/E3 equal/conflicting duplicates are never deduplicated"
+        );
+    }
+    let mut blank_owner = snapshot.clone();
+    blank_owner.runs[0].thread_id = ThreadId(" ".into());
+    runtime.set_recovery_snapshot(id.as_str(), &child, blank_owner);
+    assert_eq!(
+        application
+            .projection_thread_snapshot(&id, &child.0, Some(&old))
+            .await
+            .unwrap_err()
+            .kind,
+        awaken_session_types::RunErrorKind::Internal,
+        "R3/E3 blank selected owner"
+    );
+    assert_eq!(
+        repository.get(&id).await.unwrap(),
+        before,
+        "R1-R3/E4 SQL Root unchanged"
+    );
+    assert_eq!(
+        environments.dispatch_calls.load(Ordering::SeqCst),
+        0,
+        "E4 no Environment lookup/materialization"
+    );
+    assert!(
+        environments.awakened.lock().unwrap().is_empty(),
+        "E4 no Environment prepare"
+    );
+    assert!(
+        runtime.installed_projections.lock().unwrap().is_empty(),
+        "E4 no projection install"
+    );
+    assert!(
+        runtime.interruptions.lock().unwrap().is_empty(),
+        "E4 no child quiescence"
+    );
+    assert!(
+        runtime.admissions.lock().unwrap().is_empty(),
+        "E4 no Run admission"
+    );
+}
+
 #[test]
 fn user_run_retry_identity_has_one_aggregate_owner_and_fails_closed_on_ambiguity() {
     // Cause/effect decision table: C1 one admitted HTTP batch owns the Run and

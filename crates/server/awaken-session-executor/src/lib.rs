@@ -984,11 +984,7 @@ impl awaken_session_execution_contract::ThreadReadRuntime for ManagedHost {
             )
             .await
             .map_err(to_run_error)?;
-        Ok(snapshot
-            .runs
-            .iter()
-            .any(|run| &run.id == run_id)
-            .then_some(snapshot))
+        awaken_session_execution_contract::select_recovery_snapshot_run(Some(snapshot), run_id)
     }
 
     async fn session_thread_disposition(

@@ -44,7 +44,7 @@ impl ToolOutputSpiller for SandboxToolOutputSpiller {
         content: &str,
     ) -> Result<awaken_tool_contract::tool_batch::ToolExecutionDomain, ToolError> {
         if !needs_materialization(content) {
-            return Ok(awaken_tool_contract::tool_batch::ToolExecutionDomain::Worker {});
+            return Ok(awaken_tool_contract::tool_batch::ToolExecutionDomain::worker());
         }
         self.environment
             .agent_tools()
